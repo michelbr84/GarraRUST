@@ -135,6 +135,7 @@ async fn auth_check(
 const KNOWN_PROVIDERS: &[(&str, &str, bool)] = &[
     ("anthropic", "Anthropic", true),
     ("openai", "OpenAI", true),
+    ("openrouter", "OpenRouter", true),
     ("deepseek", "DeepSeek", true),
     ("mistral", "Mistral", true),
     ("sansa", "Sansa", true),
@@ -273,6 +274,29 @@ async fn add_provider(
             );
             state.agents.register_provider(Arc::new(provider));
             persist_api_key("OPENAI_API_KEY", key);
+        }
+        "openrouter" => {
+            let Some(key) = &body.api_key else {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "status": "error",
+                        "message": "api_key is required for openrouter",
+                    })),
+                );
+            };
+            let base_url = body
+                .base_url
+                .clone()
+                .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
+            let model = body
+                .model
+                .clone()
+                .or_else(|| Some("openai/gpt-4o".to_string()));
+            let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
+                .with_name("openrouter");
+            state.agents.register_provider(Arc::new(provider));
+            persist_api_key("OPENROUTER_API_KEY", key);
         }
         "sansa" => {
             let Some(key) = &body.api_key else {

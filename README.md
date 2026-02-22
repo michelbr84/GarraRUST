@@ -120,6 +120,7 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Cohere** - Command R Plus
 - **MiniMax** - MiniMax Text 01
 - **Moonshot** - Kimi K2
+- **OpenRouter** - Acesso a +100 LLMs (Anthropic, OpenAI, Meta, etc.) via [openrouter.ai](https://openrouter.ai)
 
 ### Canais
 - **Telegram** - respostas streaming, MarkdownV2, comandos do bot, indicadores de digitação, lista de permissões de usuários com códigos de pareamento
@@ -179,6 +180,17 @@ llm:
     model: claude-sonnet-4-5-20250929
     # api_key resolvido de: vault > config > variável de ambiente ANTHROPIC_API_KEY
 
+  openai:
+    provider: openai
+    model: gpt-4o
+    # api_key resolvido de: vault > config > variável de ambiente OPENAI_API_KEY
+
+  # OpenRouter - acesso a +100 modelos diferentes
+  openrouter:
+    provider: openrouter
+    model: openai/gpt-4o  # modelos: openai/gpt-4o, anthropic/claude-3.5-sonnet, meta-llama/llama-3.1-70b-instruct, etc.
+    # api_key resolvido de: vault > config > variável de ambiente OPENROUTER_API_KEY
+
   ollama-local:
     provider: ollama
     model: llama3.1
@@ -232,7 +244,7 @@ crates/
 | Slack (Socket Mode, streaming) | Funcionando |
 | WhatsApp (webhooks) | Funcionando |
 | iMessage (macOS, grupos) | Funcionando |
-| Provedores de LLM (14: Anthropic, OpenAI, Ollama + 11 compatíveis com OpenAI) | Funcionando |
+| Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | Funcionando |
 | Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | Funcionando |
 | Cliente MCP (stdio, bridge de ferramentas) | Funcionando |
 | Skills (SKILL.md, auto-descoberta) | Funcionando |

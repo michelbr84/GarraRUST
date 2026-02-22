@@ -1,4 +1,4 @@
-use opencrust_config::{AppConfig, NamedAgentConfig};
+use garraia_config::{AppConfig, NamedAgentConfig};
 
 /// Resolve which named agent config to use for a given request.
 ///
@@ -36,7 +36,7 @@ pub fn resolve<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencrust_config::AppConfig;
+    use garraia_config::AppConfig;
 
     #[test]
     fn resolve_explicit_agent_id() {

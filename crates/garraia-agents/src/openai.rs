@@ -17,12 +17,14 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
 /// OpenAI Chat Completions provider.
 /// Also works with OpenAI-compatible APIs (Azure, local models) via `base_url`.
+/// For OpenRouter, it automatically adds the required HTTP-Referer header.
 pub struct OpenAiProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
     base_url: String,
     name: Option<String>,
+    is_openrouter: bool,
 }
 
 impl OpenAiProvider {
@@ -31,12 +33,15 @@ impl OpenAiProvider {
         model: Option<String>,
         base_url: Option<String>,
     ) -> Self {
+        let base_url_str = base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let is_openrouter = base_url_str.contains("openrouter.ai");
         Self {
             client: reqwest::Client::new(),
             api_key: api_key.into(),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            base_url: base_url_str,
             name: None,
+            is_openrouter,
         }
     }
 
@@ -44,15 +49,119 @@ impl OpenAiProvider {
     /// Useful for OpenAI-compatible APIs (e.g. Sansa) that should register
     /// under a distinct name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
+        let name_str = name.into();
+        // Also detect OpenRouter from the name
+        if name_str.to_lowercase().contains("openrouter") {
+            self.is_openrouter = true;
+        }
+        self.name = Some(name_str);
         self
     }
 
     fn endpoint(&self) -> String {
+        // Remove /v1 or /v1/ from end of base_url if present, to avoid duplication
+        let base = self.base_url.trim_end_matches('/');
+        // Remove /v1 from end if present (e.g., api/v1 -> api)
+        let base = if base.ends_with("/v1") {
+            &base[..base.len() - 3]
+        } else {
+            base
+        };
         format!(
             "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
+            base
         )
+    }
+
+    /// List models available from OpenRouter API
+    /// Returns a curated list of popular models to avoid overwhelming the UI
+    async fn list_models(&self) -> Result<Vec<String>> {
+        if !self.is_openrouter {
+            return Ok(Vec::new());
+        }
+
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!("{}/models", base);
+
+        tracing::info!("Fetching models from OpenRouter: {}", url);
+
+        let mut req = self
+            .client
+            .get(&url)
+            .header("authorization", format!("Bearer {}", self.api_key))
+            .header("content-type", "application/json");
+
+        if self.is_openrouter {
+            req = req.header("Referer", "https://garraia.dev");
+        }
+
+        let response = req
+            .send()
+            .await
+            .map_err(|e| Error::Agent(format!("failed to list models: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::warn!("Failed to list models: status={}, body={}", status, body);
+            return Err(Error::Agent(format!(
+                "failed to list models: status={}, body={}",
+                status, body
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct OpenRouterModelsResponse {
+            data: Vec<OpenRouterModel>,
+        }
+
+        #[derive(Deserialize)]
+        struct OpenRouterModel {
+            id: String,
+        }
+
+        let models_response: OpenRouterModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::Agent(format!("failed to parse models response: {e}")))?;
+
+        let all_models: Vec<String> = models_response
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+
+        tracing::info!("OpenRouter total models: {}", all_models.len());
+
+        // Return popular models for UI display
+        let popular_models = vec![
+            "openai/gpt-4o".to_string(),
+            "openai/gpt-4o-mini".to_string(),
+            "openai/gpt-4".to_string(),
+            "openai/gpt-3.5-turbo".to_string(),
+            "anthropic/claude-sonnet-4.5".to_string(),
+            "anthropic/claude-opus-4.5".to_string(),
+            "anthropic/claude-haiku-4.5".to_string(),
+            "google/gemini-2.5-pro".to_string(),
+            "google/gemini-2.5-flash".to_string(),
+            "meta-llama/llama-3.1-70b-instruct".to_string(),
+            "meta-llama/llama-3.3-70b-instruct".to_string(),
+            "deepseek/deepseek-r1".to_string(),
+            "mistralai/mistral-large".to_string(),
+            "qwen/qwen-plus".to_string(),
+            "moonshotai/kimi-k2".to_string(),
+            "openrouter/auto".to_string(),
+        ];
+
+        // Filter to only include models that exist in the available models
+        let models: Vec<String> = popular_models
+            .into_iter()
+            .filter(|m| all_models.contains(m))
+            .collect();
+
+        tracing::info!("OpenRouter popular models count: {}", models.len());
+
+        Ok(models)
     }
 
     fn build_request(&self, request: &LlmRequest) -> OpenAiRequest {
@@ -221,11 +330,27 @@ impl LlmProvider for OpenAiProvider {
         tracing::Span::current().record("model", body.model.as_str());
         debug!("openai request: model={}", body.model);
 
-        let response = self
+        let mut req = self
             .client
             .post(self.endpoint())
             .header("authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        // Debug log the request details
+        tracing::debug!(
+            "openai request: endpoint={}, is_openrouter={}, model={}, provider_id={}",
+            self.endpoint(),
+            self.is_openrouter,
+            body.model,
+            self.provider_id()
+        );
+
+        // OpenRouter requires Referer header
+        if self.is_openrouter {
+            req = req.header("Referer", "https://garraia.dev");
+        }
+
+        let response = req
             .json(&body)
             .send()
             .await
@@ -234,6 +359,13 @@ impl LlmProvider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // Log more details for debugging
+            tracing::warn!(
+                "openai API error: status={}, body_truncated={}, endpoint={}",
+                status,
+                &body[..body.len().min(500)],
+                self.endpoint()
+            );
             return Err(Error::Agent(format!(
                 "openai API error: status={status}, body={body}"
             )));
@@ -262,11 +394,18 @@ impl LlmProvider for OpenAiProvider {
             .map_err(|e| Error::Agent(format!("failed to serialize request: {e}")))?;
         body_value["stream"] = serde_json::Value::Bool(true);
 
-        let response = self
+        let mut req = self
             .client
             .post(self.endpoint())
             .header("authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        // OpenRouter requires Referer header
+        if self.is_openrouter {
+            req = req.header("Referer", "https://garraia.dev");
+        }
+
+        let response = req
             .json(&body_value)
             .send()
             .await
@@ -365,6 +504,14 @@ impl LlmProvider for OpenAiProvider {
                 info!("openai health check failed: {e}");
                 Ok(false)
             }
+        }
+    }
+
+    async fn available_models(&self) -> Result<Vec<String>> {
+        if self.is_openrouter {
+            self.list_models().await
+        } else {
+            Ok(Vec::new())
         }
     }
 }
@@ -840,6 +987,25 @@ mod tests {
             Some("call_123".to_string())
         );
         assert_eq!(openai_req.messages[1].content, Some("hi\n".to_string()));
+    }
+
+    #[test]
+    fn endpoint_openrouter_no_duplication() {
+        let provider = OpenAiProvider::new(
+            "test-key",
+            None,
+            Some("https://openrouter.ai/api/v1".to_string()),
+        );
+        let endpoint = provider.endpoint();
+        assert!(
+            !endpoint.contains("/v1/v1/"),
+            "endpoint should not have /v1/v1/ duplication: {}",
+            endpoint
+        );
+        assert_eq!(
+            endpoint,
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
     }
 
     #[test]

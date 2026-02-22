@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use opencrust_agents::{ContentBlock, MessagePart};
+use garraia_agents::{ContentBlock, MessagePart};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
