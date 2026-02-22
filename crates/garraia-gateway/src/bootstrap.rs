@@ -380,6 +380,31 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     );
                 }
             }
+            "openrouter" => {
+                let api_key = resolve_api_key(
+                    llm_config.api_key.as_deref(),
+                    "OPENROUTER_API_KEY",
+                    "OPENROUTER_API_KEY",
+                );
+
+                if let Some(key) = api_key {
+                    let base_url = llm_config
+                        .base_url
+                        .clone()
+                        .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
+                    let model = llm_config
+                        .model
+                        .clone()
+                        .or_else(|| Some("openai/gpt-4o".to_string()));
+                    let provider = OpenAiProvider::new(key, model, base_url).with_name("openrouter");
+                    runtime.register_provider(Arc::new(provider));
+                    info!("configured openrouter provider: {name}");
+                } else {
+                    warn!(
+                        "skipping openrouter provider {name}: no API key (set api_key in config or OPENROUTER_API_KEY env var)"
+                    );
+                }
+            }
             other => {
                 warn!("unknown LLM provider type: {other}, skipping {name}");
             }

@@ -88,6 +88,19 @@ impl Channel for TelegramChannel {
 
     async fn connect(&mut self) -> Result<()> {
         let bot = Bot::new(&self.bot_token);
+        
+        // Validate token before starting polling
+        let me = bot.get_me().await;
+        if let Err(e) = me {
+            error!("Telegram token validation failed: {}", e);
+            self.status = ChannelStatus::Disconnected;
+            return Err(garraia_common::Error::Channel(
+                format!("Telegram token inválido: {}. Verifique o token no arquivo .env", e)
+            ));
+        }
+        let bot_info = me.unwrap();
+        info!("Telegram bot validated: @{}", bot_info.username.as_deref().unwrap_or("unknown"));
+        
         self.bot = Some(bot.clone());
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
