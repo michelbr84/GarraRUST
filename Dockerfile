@@ -1,0 +1,29 @@
+# Stage 1: Build
+FROM rust:1.93-slim AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Clone from GitHub
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/michelbr84/GarraRUST.git .
+
+# Build release binary
+RUN cargo build --release
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/garraia /usr/local/bin/garraia
+
+RUN useradd -m -s /bin/bash garraia
+USER garraia
+WORKDIR /home/garraia
+
+EXPOSE 3888
+
+ENTRYPOINT ["garraia"]
+CMD ["start", "--host", "0.0.0.0"]

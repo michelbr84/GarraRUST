@@ -1,0 +1,33 @@
+[package]
+name = "garraia-agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM agent runtime and orchestration for GarraIA"
+
+[dependencies]
+garraia-common = { workspace = true }
+garraia-db = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
+futures = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true, features = ["serde"] }
+
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"], optional = true }
+
+[features]
+default = []
+mcp = ["dep:rmcp"]
+mcp-http = ["mcp", "rmcp?/transport-streamable-http-client-reqwest"]
+
+[dev-dependencies]
+tempfile = "3"
+axum = { workspace = true }
+tokio-stream = { workspace = true }

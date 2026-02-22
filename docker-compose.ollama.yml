@@ -1,0 +1,40 @@
+services:
+  garraia:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3888:3888"
+    volumes:
+      # Mount configuration for Ollama integration
+      - ./docs/deployment/config.ollama.yml:/home/garraia/.config/garraia/config.yml:ro
+      - garraia_credentials:/home/garraia/.config/garraia/credentials
+      - garraia_data:/home/garraia/.config/garraia/data
+      - garraia_skills:/home/garraia/.config/garraia/skills
+    depends_on:
+      - ollama
+    env_file:
+      - .env
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      # Persist Ollama models
+      - ollama_models:/root/.ollama
+    # Enable GPU support if available (requires NVIDIA Container Toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  garraia_credentials:
+  garraia_data:
+  garraia_skills:
+  ollama_models:
