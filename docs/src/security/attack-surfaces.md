@@ -28,7 +28,7 @@ The most critical and least-solved attack surface for AI agents.
 **Indirect injection:** Malicious content embedded in data the agent processes (web pages fetched by tools, documents read from disk, MCP server responses) that hijacks agent behavior.
 
 **Mitigations:**
-- Pattern-based input filtering (14 patterns in OpenCrust)
+- Pattern-based input filtering (14 patterns in GarraIA)
 - System prompt hardening with explicit boundary instructions
 - Tool result sandboxing and size limits
 - Human-in-the-loop for destructive operations

@@ -70,9 +70,9 @@ download_and_verify() {
 }
 
 install_binary() {
-    # Priority: $OPENCRUST_INSTALL_DIR > ~/.local/bin (if in PATH) > /usr/local/bin
-    if [ -n "${OPENCRUST_INSTALL_DIR:-}" ]; then
-        INSTALL_DIR="$OPENCRUST_INSTALL_DIR"
+    # Priority: $GARRAIA_INSTALL_DIR > ~/.local/bin (if in PATH) > /usr/local/bin
+    if [ -n "${GARRAIA_INSTALL_DIR:-}" ]; then
+        INSTALL_DIR="$GARRAIA_INSTALL_DIR"
     elif echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
         INSTALL_DIR="$HOME/.local/bin"
     else

@@ -1,18 +1,18 @@
 # Security-First Architecture
 
-OpenCrust treats security as a core requirement, not an afterthought. AI agents that run 24/7, access private data, and communicate externally demand a higher standard than typical web applications.
+GarraIA treats security as a core requirement, not an afterthought. AI agents that run 24/7, access private data, and communicate externally demand a higher standard than typical web applications.
 
 ## Credential Vault
 
 All API keys and tokens are encrypted at rest using **AES-256-GCM** with keys derived via **PBKDF2-SHA256** (600,000 iterations). The implementation uses the `ring` crate (BoringSSL-derived, FIPS-grade primitives).
 
-- **Storage:** `~/.opencrust/credentials/vault.json`
+- **Storage:** `~/.garraia/credentials/vault.json`
 - **Salt:** 32 bytes, unique per vault, generated with `SystemRandom`
 - **Nonce:** 12 bytes (AES-256-GCM standard), regenerated on every save
 - **Key derivation:** PBKDF2-HMAC-SHA256, 600k iterations, 32-byte derived key
 - **Resolution chain:** vault > config file > environment variable
 
-Credentials never appear in plaintext on disk. The vault passphrase is prompted at `opencrust init` and required to unlock at startup.
+Credentials never appear in plaintext on disk. The vault passphrase is prompted at `garraia init` and required to unlock at startup.
 
 ## Authentication
 
