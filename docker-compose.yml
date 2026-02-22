@@ -1,0 +1,24 @@
+services:
+  garraia:
+    # Build from current directory
+    build: .
+    restart: unless-stopped
+    ports:
+      # Map container port 3888 (default) to host port 3888
+      - "3888:3888"
+    volumes:
+      # Mount configuration file
+      - ./docs/deployment/config.basic.yml:/home/garraia/.config/garraia/config.yml:ro
+      # Persist credentials (encrypted vault)
+      - garraia_credentials:/home/garraia/.config/garraia/credentials
+      # Persist session data and memory
+      - garraia_data:/home/garraia/.config/garraia/data
+      # Persist skills
+      - garraia_skills:/home/garraia/.config/garraia/skills
+    env_file:
+      - .env
+
+volumes:
+  garraia_credentials:
+  garraia_data:
+  garraia_skills:

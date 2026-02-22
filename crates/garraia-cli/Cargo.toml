@@ -1,0 +1,50 @@
+[package]
+name = "garraia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GarraIA CLI - Personal AI assistant platform"
+
+[[bin]]
+name = "garraia"
+path = "src/main.rs"
+
+[dependencies]
+garraia-common = { workspace = true }
+garraia-config = { workspace = true }
+garraia-gateway = { workspace = true }
+garraia-channels = { workspace = true }
+garraia-agents = { workspace = true, features = ["mcp"] }
+garraia-db = { workspace = true }
+garraia-plugins = { workspace = true, optional = true }
+garraia-security = { workspace = true }
+garraia-skills = { workspace = true }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+dialoguer = "0.11"
+serde_yaml = { workspace = true }
+serde = { workspace = true }
+dirs = "6"
+regex = { workspace = true }
+ring = { workspace = true }
+
+[features]
+default = []
+plugins = ["dep:garraia-plugins"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+daemonize = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }

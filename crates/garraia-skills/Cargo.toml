@@ -1,0 +1,13 @@
+[package]
+name = "garraia-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+garraia-common = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }

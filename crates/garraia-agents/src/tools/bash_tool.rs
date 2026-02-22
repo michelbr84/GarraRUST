@@ -1,0 +1,192 @@
+use async_trait::async_trait;
+use garraia_common::{Error, Result};
+use std::time::Duration;
+use tokio::process::Command;
+
+use super::{Tool, ToolContext, ToolOutput};
+
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+
+/// Execute shell commands with configurable timeout and output limits.
+/// On Windows, this uses PowerShell. On Unix-like systems, it uses Bash.
+pub struct BashTool {
+    timeout: Duration,
+}
+
+impl BashTool {
+    pub fn new(timeout_secs: Option<u64>) -> Self {
+        Self {
+            timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        if cfg!(target_os = "windows") {
+            "Execute a shell command using PowerShell. Returns the output."
+        } else {
+            "Execute a shell command using Bash. Returns the output."
+        }
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute"
+                }
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput> {
+        let command_str = input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Agent("missing 'command' parameter".into()))?;
+
+        let (shell, arg) = if cfg!(target_os = "windows") {
+            ("powershell", "-Command")
+        } else {
+            ("bash", "-c")
+        };
+
+        let result = tokio::time::timeout(
+            self.timeout,
+            Command::new(shell).arg(arg).arg(command_str).output(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                let mut combined = String::new();
+                if !stdout.is_empty() {
+                    combined.push_str(&stdout);
+                }
+                if !stderr.is_empty() {
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str("STDERR:\n");
+                    combined.push_str(&stderr);
+                }
+
+                // Truncate if too large
+                if combined.len() > MAX_OUTPUT_BYTES {
+                    combined.truncate(MAX_OUTPUT_BYTES);
+                    combined.push_str("\n... (output truncated)");
+                }
+
+                if combined.is_empty() {
+                    combined = format!("(exit code: {})", output.status.code().unwrap_or(-1));
+                }
+
+                if output.status.success() {
+                    Ok(ToolOutput::success(combined))
+                } else {
+                    Ok(ToolOutput::error(format!(
+                        "exit code {}: {}",
+                        output.status.code().unwrap_or(-1),
+                        combined
+                    )))
+                }
+            }
+            Ok(Err(e)) => Ok(ToolOutput::error(format!("failed to execute command: {e}"))),
+            Err(_) => Ok(ToolOutput::error(format!(
+                "command timed out after {}s",
+                self.timeout.as_secs()
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn executes_simple_command() {
+        let tool = BashTool::new(None);
+        // echo works on both
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+        };
+        let output = tool
+            .execute(&ctx, serde_json::json!({"command": "echo hello"}))
+            .await
+            .unwrap();
+        assert!(!output.is_error);
+        assert!(output.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn reports_error_on_failing_command() {
+        let tool = BashTool::new(None);
+        let cmd = if cfg!(target_os = "windows") {
+            "exit 1"
+        } else {
+            "false"
+        };
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+        };
+        let output = tool
+            .execute(&ctx, serde_json::json!({"command": cmd}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+    }
+
+    #[tokio::test]
+    async fn returns_error_on_missing_command() {
+        let tool = BashTool::new(None);
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+        };
+        let result = tool.execute(&ctx, serde_json::json!({})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn captures_stderr() {
+        let tool = BashTool::new(None);
+        let cmd = if cfg!(target_os = "windows") {
+            "Write-Error 'err'"
+        } else {
+            "echo err >&2"
+        };
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+        };
+        let output = tool
+            .execute(&ctx, serde_json::json!({"command": cmd}))
+            .await
+            .unwrap();
+        assert!(output.content.contains("err"));
+    }
+}

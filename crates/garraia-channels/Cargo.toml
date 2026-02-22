@@ -1,0 +1,34 @@
+[package]
+name = "garraia-channels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Messaging channel traits and implementations for GarraIA"
+
+[dependencies]
+garraia-common = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+
+serenity = { workspace = true, optional = true }
+poise = { workspace = true, optional = true }
+teloxide = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
+dirs = { version = "6", optional = true }
+
+[features]
+default = []
+discord = ["dep:serenity", "dep:poise"]
+telegram = ["dep:teloxide"]
+slack = ["dep:tokio-tungstenite", "dep:futures"]
+whatsapp = ["dep:axum"]
+imessage = ["dep:rusqlite", "dep:dirs"]
