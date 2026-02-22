@@ -1,6 +1,6 @@
 # AI Agent Security Checklist
 
-A vendor-neutral audit checklist for securing AI agent deployments. Applicable to any framework, not just OpenCrust.
+A vendor-neutral audit checklist for securing AI agent deployments. Applicable to any framework, not just GarraIA.
 
 ## Credentials & Secrets
 

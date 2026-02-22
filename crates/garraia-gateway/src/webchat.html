@@ -337,7 +337,9 @@
     .panel-art {
       display: block;
       width: 95%;
-      max-height: 148px;
+      max-width: 200px;
+      max-height: 180px;
+      height: auto;
       object-fit: contain;
       border-radius: 12px;
       border: 1px solid var(--panel-edge);
@@ -1812,9 +1814,11 @@
       const models = Array.isArray(provider.models)
         ? provider.models.filter(m => typeof m === "string" && m.trim().length > 0)
         : [];
+      console.log("Loading models for provider:", provider.id, "count:", models.length);
       for (const modelName of models) {
         const opt = document.createElement("option");
         opt.value = modelName;
+        opt.textContent = modelName;
         providerModelOptions.appendChild(opt);
       }
 

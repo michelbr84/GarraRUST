@@ -109,7 +109,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
                     vault.set(env_hint, &api_key);
                     vault.save().context("failed to save vault")?;
                     println!("  API key encrypted in vault.");
-                    println!("  Set OPENCRUST_VAULT_PASSPHRASE env var for server mode.");
+                    println!("  Set GARRAIA_VAULT_PASSPHRASE env var for server mode.");
                 }
                 Err(e) => {
                     println!("  Warning: vault creation failed ({e}), storing in config instead.");

@@ -268,7 +268,7 @@ pub fn run_rollback() -> Result<()> {
 /// Check for updates (non-blocking, cached). Returns a message if an update
 /// is available, or None.
 pub fn check_for_update_notice() -> Option<String> {
-    if std::env::var("OPENCRUST_NO_UPDATE_CHECK").is_ok() {
+    if std::env::var("GARRAIA_NO_UPDATE_CHECK").is_ok() {
         return None;
     }
 
@@ -288,7 +288,7 @@ pub fn check_for_update_notice() -> Option<String> {
 /// Spawn a background version check that updates the cache file.
 /// Does not block. Failures are silently ignored.
 pub fn spawn_background_check() {
-    if std::env::var("OPENCRUST_NO_UPDATE_CHECK").is_ok() {
+    if std::env::var("GARRAIA_NO_UPDATE_CHECK").is_ok() {
         return;
     }
 

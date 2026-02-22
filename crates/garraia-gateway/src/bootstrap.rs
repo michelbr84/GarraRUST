@@ -37,7 +37,7 @@ pub(crate) fn resolve_api_key(
     vault_credential_key: &str,
     env_var: &str,
 ) -> Option<String> {
-    // 1. Try credential vault (only works when OPENCRUST_VAULT_PASSPHRASE is set)
+    // 1. Try credential vault (only works when GARRAIA_VAULT_PASSPHRASE is set)
     if let Some(vault_path) = default_vault_path()
         && let Some(val) = garraia_security::try_vault_get(&vault_path, vault_credential_key)
     {
@@ -1704,7 +1704,7 @@ mod tests {
     #[test]
     fn resolve_api_key_falls_back_to_env() {
         // Set a unique env var for this test
-        let var_name = "OPENCRUST_TEST_API_KEY_BOOTSTRAP_72";
+        let var_name = "GARRAIA_TEST_API_KEY_BOOTSTRAP_72";
         // SAFETY: this test is single-threaded and uses a unique env var name.
         unsafe { std::env::set_var(var_name, "from-env") };
         let result = resolve_api_key(None, "NONEXISTENT_VAULT_KEY", var_name);
