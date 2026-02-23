@@ -1,26 +1,27 @@
-# GarraIA configuration for local Docker deployment with Ollama
-# Connects to the local 'ollama' service in the same Docker network.
+# Configuração do GarraIA para implantação local com Docker e Ollama
+# Conecta-se ao serviço local 'ollama' na mesma rede Docker.
 
 gateway:
+  # Vincula a todas as interfaces dentro do container
   host: "0.0.0.0"
   port: 3888
 
 llm:
-  # Local Ollama service
+  # Serviço local do Ollama
   ollama-local:
     provider: ollama
-    # Adjust model as needed (must be pulled in Ollama container first)
+    # Ajuste o modelo conforme necessário (deve ser baixado primeiro no container Ollama)
     model: llama3.1
-    # Point to the 'ollama' service name from docker-compose.ollama.yml
+    # Aponta para o serviço 'ollama' definido no docker-compose.ollama.yml
     base_url: "http://ollama:11434"
 
 agent:
-  system_prompt: "You are a helpful AI assistant running locally via Ollama."
+  system_prompt: "Você é o GarraIA, um assistente de inteligência artificial executando localmente através do Ollama."
   default_provider: ollama-local
 
-# Enable channels as needed
+# Habilite os canais conforme necessário
 channels:
   telegram:
     type: telegram
     enabled: false
-    # bot_token from TELEGRAM_BOT_TOKEN
+    # bot_token é resolvido automaticamente a partir da variável de ambiente TELEGRAM_BOT_TOKEN

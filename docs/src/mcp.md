@@ -1,26 +1,45 @@
 # MCP (Model Context Protocol)
 
-MCP lets you connect external tool servers to GarraIA. Any MCP-compatible server - filesystem access, GitHub, databases, web search - becomes available as native agent tools.
+O MCP permite conectar servidores de ferramentas externas ao GarraIA. Qualquer servidor compatível com MCP — acesso ao sistema de arquivos, GitHub, bancos de dados, busca na web, entre outros — torna-se disponível como ferramentas nativas do agente.
 
-## How It Works
+---
 
-1. You configure MCP servers in `config.yml` or `~/.garraia/mcp.json`
-2. At startup, GarraIA connects to each enabled server and discovers its tools
-3. MCP tools appear alongside built-in tools with namespaced names: `server.tool_name`
-4. The agent can call them like any other tool during conversations
+## Como funciona
 
-## Transports
+1. Você configura servidores MCP no arquivo `config.yml` ou em `~/.garraia/mcp.json`
+2. Na inicialização, o GarraIA conecta-se a cada servidor habilitado e descobre suas ferramentas
+3. As ferramentas MCP aparecem junto com as ferramentas nativas usando nomes com namespace: `servidor.nome_da_ferramenta`
+4. O agente pode chamá-las normalmente durante uma conversa
 
-- **stdio** (default) - GarraIA spawns the server process and communicates via stdin/stdout
-- **HTTP** - Connect to a remote MCP server over HTTP (tracked in [#80](https://github.com/michelbr84/GarraRUST/issues/80))
+---
 
-## Configuration
+## Tipos de transporte
 
-MCP servers can be configured in two places. Both are merged at startup.
+* **stdio** (padrão)
+  O GarraIA inicia o processo do servidor e comunica-se via stdin/stdout.
+
+* **HTTP** (em desenvolvimento)
+  Permite conectar a um servidor MCP remoto via HTTP.
+  Acompanhe o progresso em:
+  [https://github.com/michelbr84/GarraRUST/issues/80](https://github.com/michelbr84/GarraRUST/issues/80)
+
+---
+
+## Configuração
+
+Servidores MCP podem ser configurados em dois locais. Ambos são combinados automaticamente na inicialização.
+
+---
 
 ### config.yml
 
-Add an `mcp:` section to `~/.garraia/config.yml`:
+Adicione uma seção `mcp:` em:
+
+```text
+~/.garraia/config.yml
+```
+
+Exemplo:
 
 ```yaml
 mcp:
@@ -36,9 +55,17 @@ mcp:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 ```
 
-### mcp.json (Claude Desktop compatible)
+---
 
-You can also use `~/.garraia/mcp.json`, which follows the same format as Claude Desktop's MCP configuration:
+### mcp.json (compatível com Claude Desktop)
+
+Você também pode usar o arquivo:
+
+```text
+~/.garraia/mcp.json
+```
+
+Formato:
 
 ```json
 {
@@ -58,76 +85,133 @@ You can also use `~/.garraia/mcp.json`, which follows the same format as Claude 
 }
 ```
 
-If the same server name appears in both files, the `config.yml` entry takes precedence.
+Se o mesmo servidor estiver definido em ambos os arquivos, a configuração do `config.yml` terá prioridade.
 
-## McpServerConfig Fields
+---
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `command` | string | (required) | Executable to spawn |
-| `args` | string[] | `[]` | Command-line arguments |
-| `env` | map | `{}` | Environment variables passed to the process |
-| `transport` | string | `"stdio"` | Transport type (`stdio` or `http`) |
-| `url` | string | (none) | URL for HTTP transport |
-| `enabled` | bool | `true` | Whether to connect at startup |
-| `timeout` | integer | `30` | Connection timeout in seconds |
+## Campos de configuração (McpServerConfig)
 
-## CLI Commands
+| Campo       | Tipo     | Padrão      | Descrição                                            |
+| ----------- | -------- | ----------- | ---------------------------------------------------- |
+| `command`   | string   | obrigatório | Executável a ser iniciado                            |
+| `args`      | string[] | `[]`        | Argumentos de linha de comando                       |
+| `env`       | mapa     | `{}`        | Variáveis de ambiente do processo                    |
+| `transport` | string   | `"stdio"`   | Tipo de transporte (`stdio` ou `http`)               |
+| `url`       | string   | nenhum      | URL para transporte HTTP                             |
+| `enabled`   | boolean  | `true`      | Define se o servidor será conectado na inicialização |
+| `timeout`   | inteiro  | `30`        | Tempo limite de conexão em segundos                  |
 
-### List configured servers
+---
+
+## Comandos CLI do MCP
+
+### Listar servidores configurados
 
 ```bash
 garraia mcp list
 ```
 
-Shows all configured MCP servers with their enabled status, command, args, and timeout.
+Mostra todos os servidores MCP configurados, incluindo:
 
-### Inspect tools
+* Status (habilitado/desabilitado)
+* Comando
+* Argumentos
+* Timeout
 
-```bash
-garraia mcp inspect <name>
-```
+---
 
-Connects to the named server, discovers all available tools, and prints each one as `server.tool_name` with its description. Disconnects after inspection.
-
-### List resources
-
-```bash
-garraia mcp resources <name>
-```
-
-Connects to the server and lists all available resources with URI, MIME type, name, and description.
-
-### List prompts
+### Inspecionar ferramentas
 
 ```bash
-garraia mcp prompts <name>
+garraia mcp inspect <nome>
 ```
 
-Connects to the server and lists all available prompts with their names, descriptions, and arguments (including required flags).
+Conecta-se ao servidor especificado, descobre todas as ferramentas disponíveis e exibe no formato:
 
-## Tool Namespacing
+```text
+servidor.nome_da_ferramenta
+```
 
-MCP tools are namespaced with the server name to avoid collisions. For example, if you have a server named `filesystem` that exposes a `read_file` tool, it appears as `filesystem.read_file` in the agent's tool list.
+Depois desconecta automaticamente.
 
-This means multiple MCP servers can expose tools with the same name without conflict.
+---
 
-## Examples
+### Listar recursos
 
-### Filesystem server
+```bash
+garraia mcp resources <nome>
+```
 
-Give the agent access to read and write files in a specific directory:
+Mostra todos os recursos disponíveis no servidor:
+
+* URI
+* Tipo MIME
+* Nome
+* Descrição
+
+---
+
+### Listar prompts
+
+```bash
+garraia mcp prompts <nome>
+```
+
+Mostra todos os prompts disponíveis:
+
+* Nome
+* Descrição
+* Argumentos
+* Campos obrigatórios
+
+---
+
+## Namespace das ferramentas
+
+Ferramentas MCP usam namespace baseado no nome do servidor para evitar conflitos.
+
+Exemplo:
+
+Servidor:
+
+```yaml
+filesystem
+```
+
+Ferramenta:
+
+```text
+read_file
+```
+
+Nome final no GarraIA:
+
+```text
+filesystem.read_file
+```
+
+Isso permite que múltiplos servidores tenham ferramentas com o mesmo nome sem conflito.
+
+---
+
+## Exemplos
+
+### Servidor de sistema de arquivos
+
+Permite ler e escrever arquivos em um diretório específico:
 
 ```yaml
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documentos"]
 ```
 
-### GitHub server
+---
 
-Let the agent interact with GitHub repositories:
+### Servidor GitHub
+
+Permite interação com repositórios GitHub:
 
 ```yaml
 mcp:
@@ -138,41 +222,68 @@ mcp:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 ```
 
-### SQLite server
+---
 
-Query a local database:
+### Servidor SQLite
+
+Permite consultar um banco de dados local:
 
 ```yaml
 mcp:
   sqlite:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"]
+    args: ["-y", "@modelcontextprotocol/server-sqlite", "/caminho/para/banco.db"]
 ```
 
-### HTTP server (future)
+---
 
-Connect to a remote MCP server:
+### Servidor HTTP (futuro)
+
+Permite conectar a um servidor MCP remoto:
 
 ```yaml
 mcp:
-  remote-tools:
+  ferramentas-remotas:
     transport: http
-    url: "https://mcp.example.com"
+    url: "https://mcp.exemplo.com"
     timeout: 60
 ```
 
-## Implementation Details
+---
 
-- MCP support is feature-gated behind the `mcp` feature in `garraia-agents` (enabled by default)
-- Uses the `rmcp` crate (official Rust MCP SDK)
-- `McpManager` in `crates/garraia-agents/src/mcp/manager.rs` handles connections
-- `McpTool` in `crates/garraia-agents/src/mcp/tool_bridge.rs` bridges MCP tool definitions to the internal tool interface
+## Detalhes de implementação
 
-## Limitations and Future Work
+* O suporte ao MCP é controlado pela feature `mcp` no crate `garraia-agents` (habilitado por padrão)
+* Utiliza o crate oficial Rust MCP SDK: `rmcp`
+* O gerenciador está em:
 
-Tracked in [#80](https://github.com/michelbr84/GarraRUST/issues/80):
+```text
+crates/garraia-agents/src/mcp/manager.rs
+```
 
-- HTTP transport support
-- MCP resources integration
-- MCP prompts integration
-- Auto-reconnect on server crash
+* A ponte entre MCP e ferramentas internas está em:
+
+```text
+crates/garraia-agents/src/mcp/tool_bridge.rs
+```
+
+Classe responsável:
+
+```text
+McpTool
+```
+
+---
+
+## Limitações e melhorias futuras
+
+Acompanhe em:
+
+[https://github.com/michelbr84/GarraRUST/issues/80](https://github.com/michelbr84/GarraRUST/issues/80)
+
+Planejado:
+
+* Suporte completo a transporte HTTP
+* Integração de recursos MCP
+* Integração de prompts MCP
+* Reconexão automática após falha do servidor

@@ -1,128 +1,264 @@
-# Tools
+# Ferramentas (Tools)
 
-GarraIA's agent runtime gives the LLM access to built-in tools and dynamically registered MCP tools. When the LLM decides to use a tool, the runtime executes it and feeds the result back into the conversation.
+O runtime de agentes do GarraIA fornece ao LLM acesso a ferramentas integradas e ferramentas MCP registradas dinamicamente. Quando o LLM decide usar uma ferramenta, o runtime a executa e envia o resultado de volta para a conversa.
 
-## Tool Loop
+---
 
-The agent processes each message through a tool loop that runs for up to **10 iterations**. In each iteration:
+# Loop de Ferramentas (Tool Loop)
 
-1. The LLM generates a response, optionally including tool calls
-2. If tool calls are present, the runtime executes them
-3. Tool results are appended to the conversation and sent back to the LLM
-4. The loop continues until the LLM responds without tool calls or the iteration limit is reached
+O agente processa cada mensagem através de um loop de ferramentas que executa por até **10 iterações**. Em cada iteração:
 
-## Built-in Tools
+1. O LLM gera uma resposta, opcionalmente incluindo chamadas de ferramentas
+2. Se houver chamadas de ferramentas, o runtime as executa
+3. Os resultados das ferramentas são adicionados à conversa e enviados de volta ao LLM
+4. O loop continua até que o LLM responda sem chamadas de ferramentas ou o limite de iterações seja atingido
 
-### bash
+---
 
-Execute shell commands. Uses `bash -c` on Unix and `powershell -Command` on Windows.
+# Ferramentas Integradas
 
-| Property | Value |
-|----------|-------|
-| Timeout | 30 seconds |
-| Max output | 32 KB (truncated if exceeded) |
+## bash
 
-**Input:**
+Executa comandos do sistema.
+
+Utiliza:
+
+* `bash -c` em sistemas Unix
+* `powershell -Command` no Windows
+
+|Propriedade|Valor|
+|-|-|
+|Timeout|30 segundos|
+|Saída máxima|32 KB (truncada se excedida)|
+
+**Entrada:**
 
 ```json
 { "command": "ls -la /tmp" }
+````
+
+Tanto stdout quanto stderr são capturados.
+
+stderr aparece prefixado com:
+
+```
+STDERR:
 ```
 
-Both stdout and stderr are captured. Stderr is prefixed with `STDERR:` in the output. Non-zero exit codes are reported as errors.
+Códigos de saída diferentes de zero são reportados como erro.
 
-### file_read
+---
 
-Read the contents of a file.
+## file\_read
 
-| Property | Value |
-|----------|-------|
-| Max file size | 1 MB |
-| Path traversal | Rejected (`..` components blocked) |
+Lê o conteúdo de um arquivo.
 
-**Input:**
+|Propriedade|Valor|
+|-|-|
+|Tamanho máximo do arquivo|1 MB|
+|Proteção contra path traversal|Ativado (`..` bloqueado)|
+
+**Entrada:**
 
 ```json
-{ "path": "/home/user/notes.txt" }
+{ "path": "/home/user/notas.txt" }
 ```
 
-Files exceeding the size limit return an error rather than truncating.
+Arquivos maiores que o limite retornam erro em vez de truncamento.
 
-### file_write
+---
 
-Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Parent directories are created automatically.
+## file\_write
 
-| Property | Value |
-|----------|-------|
-| Max content size | 1 MB |
-| Path traversal | Rejected (`..` components blocked) |
+Escreve conteúdo em um arquivo.
 
-**Input:**
+* Cria o arquivo se não existir
+* Sobrescreve se já existir
+* Cria diretórios automaticamente se necessário
+
+|Propriedade|Valor|
+|-|-|
+|Tamanho máximo do conteúdo|1 MB|
+|Proteção contra path traversal|Ativado (`..` bloqueado)|
+
+**Entrada:**
 
 ```json
-{ "path": "/home/user/output.txt", "content": "Hello, world!" }
+{ "path": "/home/user/saida.txt", "content": "Olá, mundo!" }
 ```
 
-### web_fetch
+---
 
-Fetch the content of a web page. Returns the raw response body (HTML, JSON, plain text).
+## web\_fetch
 
-| Property | Value |
-|----------|-------|
-| Timeout | 30 seconds |
-| Max response size | 1 MB (truncated if exceeded) |
+Busca o conteúdo de uma página web.
 
-**Input:**
+Retorna o conteúdo bruto:
+
+* HTML
+* JSON
+* Texto simples
+
+|Propriedade|Valor|
+|-|-|
+|Timeout|30 segundos|
+|Tamanho máximo da resposta|1 MB (truncado se excedido)|
+
+**Entrada:**
 
 ```json
 { "url": "https://example.com" }
 ```
 
-Non-2xx HTTP status codes are reported as errors. An optional `blocked_domains` list can be configured to restrict which domains the agent can access.
+Códigos HTTP diferentes de 2xx retornam erro.
 
-### web_search
+É possível configurar uma lista de domínios bloqueados:
 
-Search the web using the Brave Search API. Only available when a Brave API key is configured.
-
-| Property | Value |
-|----------|-------|
-| Timeout | 15 seconds |
-| Default results | 5 |
-| Max results | 10 |
-| Requires | `BRAVE_API_KEY` |
-
-**Input:**
-
-```json
-{ "query": "rust async runtime comparison", "count": 5 }
+```
+blocked\\\_domains
 ```
 
-The `count` parameter is optional (defaults to 5, clamped to 1-10). Results are returned as formatted markdown with title, snippet, and URL for each result.
+para restringir acesso.
 
-The tool is only registered at startup if a Brave API key is found (config key `brave` or env var `BRAVE_API_KEY`).
+---
 
-### schedule_heartbeat
+## web\_search
 
-Schedule a future wake-up for the agent. Useful for reminders, follow-ups, or checking back on long-running tasks.
+Pesquisa na internet usando a API Brave Search.
 
-| Property | Value |
-|----------|-------|
-| Max delay | 30 days (2,592,000 seconds) |
-| Max pending per session | 5 |
+Disponível apenas quando `BRAVE\\\_API\\\_KEY` está configurada.
 
-**Input:**
+|Propriedade|Valor|
+|-|-|
+|Timeout|15 segundos|
+|Resultados padrão|5|
+|Resultados máximos|10|
+|Requer|BRAVE\_API\_KEY|
+
+**Entrada:**
 
 ```json
-{ "delay_seconds": 3600, "reason": "Check if the deployment finished" }
+{ "query": "comparação runtimes async rust", "count": 5 }
 ```
 
-The delay must be a positive integer. Heartbeats cannot be scheduled from within a heartbeat execution context (no recursive self-scheduling). The scheduled task is stored in SQLite and the scheduler polls for due tasks.
+Parâmetro `count` é opcional:
 
-## MCP Tools
+* padrão: 5
+* mínimo: 1
+* máximo: 10
 
-In addition to built-in tools, the agent can use tools from connected [MCP servers](./mcp.md). MCP tools are discovered at startup and registered with namespaced names in the format `server.tool_name`.
+Resultados são retornados em formato Markdown contendo:
 
-For example, a filesystem MCP server named `fs` exposing a `read_file` tool would appear as `fs.read_file`.
+* título
+* descrição
+* URL
 
-MCP tools have the same interface as built-in tools from the LLM's perspective - they receive JSON input and return text output.
+A ferramenta é registrada apenas se a chave Brave estiver configurada.
 
-See [MCP](./mcp.md) for configuration details.
+---
+
+## schedule\_heartbeat
+
+Agenda uma execução futura do agente.
+
+Útil para:
+
+* lembretes
+* verificações futuras
+* tarefas assíncronas
+* monitoramento
+
+|Propriedade|Valor|
+|-|-|
+|Delay máximo|30 dias (2.592.000 segundos)|
+|Máximo por sessão|5 heartbeats pendentes|
+
+**Entrada:**
+
+```json
+{ "delay\\\_seconds": 3600, "reason": "Verificar se o deploy terminou" }
+```
+
+Regras:
+
+* delay deve ser positivo
+* não pode agendar heartbeat dentro de outro heartbeat
+* previne loops recursivos
+
+Tarefas são armazenadas em SQLite.
+
+O scheduler verifica periodicamente tarefas pendentes.
+
+---
+
+# Ferramentas MCP
+
+Além das ferramentas integradas, o agente pode usar ferramentas de servidores MCP conectados.
+
+Veja:
+
+```
+./mcp.md
+```
+
+Ferramentas MCP são:
+
+* descobertas automaticamente na inicialização
+* registradas com namespace
+
+Formato:
+
+```
+server.tool\\\_name
+```
+
+Exemplo:
+
+Servidor:
+
+```
+fs
+```
+
+Ferramenta:
+
+```
+read\\\_file
+```
+
+Nome completo:
+
+```
+fs.read\\\_file
+```
+
+---
+
+# Interface das ferramentas MCP
+
+Do ponto de vista do LLM, ferramentas MCP funcionam exatamente como ferramentas integradas:
+
+Entrada:
+
+```
+JSON
+```
+
+Saída:
+
+```
+Texto
+```
+
+---
+
+# Referência MCP
+
+Veja o arquivo:
+
+```
+mcp.md
+```
+
+para detalhes completos de configuração.
+

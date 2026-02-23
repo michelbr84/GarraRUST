@@ -1,23 +1,25 @@
-# Getting Started
+# Primeiros Passos
 
-## Quick Start
+## Início Rápido
 
-The fastest way to get started is using the install script:
+A forma mais rápida de começar é utilizando o script de instalação:
 
 ```bash
-# Install (Linux, macOS)
+# Instalar (Linux, macOS)
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 
-# Interactive setup — pick your LLM provider, store API keys in encrypted vault
+# Configuração interativa — escolha seu provedor de LLM e armazene suas chaves de API em um cofre criptografado
 garraia init
 
-# Start
+# Iniciar o GarraIA
 garraia start
 ```
 
-## Build from Source
+---
 
-You can also build from source if you have Rust installed (1.85+).
+## Compilar a partir do código-fonte
+
+Você também pode compilar o GarraIA a partir do código-fonte, caso tenha o Rust instalado (versão 1.85 ou superior).
 
 ```bash
 cargo build --release
@@ -25,11 +27,24 @@ cargo build --release
 ./target/release/garraia start
 ```
 
-## Configuration
+No Windows:
 
-GarraIA looks for its configuration file at `~/.garraia/config.yml`.
+```powershell
+target\release\garraia.exe init
+target\release\garraia.exe start
+```
 
-Example configuration:
+---
+
+## Configuração
+
+O GarraIA procura seu arquivo de configuração no seguinte caminho:
+
+```text
+~/.garraia/config.yml
+```
+
+Exemplo de configuração:
 
 ```yaml
 gateway:
@@ -40,7 +55,8 @@ llm:
   claude:
     provider: anthropic
     model: claude-sonnet-4-5-20250929
-    # api_key resolved from: vault > config > ANTHROPIC_API_KEY env var
+    # api_key é resolvida automaticamente na seguinte ordem:
+    # cofre criptografado > config.yml > variável de ambiente ANTHROPIC_API_KEY
 
   ollama-local:
     provider: ollama
@@ -51,29 +67,38 @@ channels:
   telegram:
     type: telegram
     enabled: true
-    bot_token: "your-bot-token"  # or TELEGRAM_BOT_TOKEN env var
+    bot_token: "seu-bot-token"  # ou variável de ambiente TELEGRAM_BOT_TOKEN
 
 agent:
-  system_prompt: "You are a helpful assistant."
+  system_prompt: "Você é o GarraIA, um assistente de inteligência artificial útil."
   max_tokens: 4096
   max_context_tokens: 100000
 
 memory:
   enabled: true
 
-# MCP servers for external tools
+# Servidores MCP para ferramentas externas
 mcp:
   filesystem:
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
 
-## Migrating from OpenClaw
+---
 
-If you are migrating from OpenClaw, you can use the migration tool to import your skills, channel configs, and credentials.
+## Migração a partir do OpenClaw
+
+Se você estiver migrando do OpenClaw, pode utilizar a ferramenta de migração integrada para importar suas habilidades, configurações de canais e credenciais.
 
 ```bash
 garraia migrate openclaw
 ```
 
-Use `--dry-run` to preview changes before committing. Use `--source /path/to/openclaw` to specify a custom OpenClaw config directory.
+Opções disponíveis:
+
+```bash
+# Visualizar mudanças sem aplicá-las
+garraia migrate openclaw --dry-run
+
+# Especificar um diretório personalizado do OpenClaw
+garraia migrate openclaw --source /caminho/para/openclaw

@@ -1,67 +1,89 @@
-# Providers
+# Provedores (Providers)
 
-GarraIA supports 14 LLM providers. Three are native implementations with provider-specific APIs. The remaining eleven use the OpenAI-compatible chat completions format and are built on top of the `OpenAiProvider` with custom base URLs.
+O GarraIA suporta **14 provedores de modelos LLM**. Três são implementações nativas com APIs específicas. Os restantes utilizam o formato compatível com a API de chat completions da OpenAI e são construídos sobre o `OpenAiProvider`, utilizando URLs base personalizadas.
 
-All providers support streaming responses and tool use.
+Todos os provedores suportam:
 
-## API Key Resolution
+* Respostas em streaming
+* Uso de ferramentas (tools)
+* Execução em tempo real
 
-For every provider, API keys are resolved in this order:
+---
 
-1. **Credential vault** - `~/.garraia/credentials/vault.json` (requires `GARRAIA_VAULT_PASSPHRASE`)
-2. **Config file** - `api_key` field under the `llm:` section in `config.yml`
-3. **Environment variable** - provider-specific env var (listed below)
+## Resolução da chave de API
 
-## Native Providers
+Para cada provedor, as chaves de API são resolvidas na seguinte ordem de prioridade:
 
-### Anthropic Claude
+1. **Vault de credenciais**
+   `~/.garraia/credentials/vault.json`
+   (requer `GARRAIA_VAULT_PASSPHRASE`)
 
-Claude models with native streaming (SSE) and tool use via the Anthropic Messages API.
+2. **Arquivo de configuração**
+   Campo `api_key` dentro da seção `llm:` no `config.yml`
 
-| Field | Value |
-|-------|-------|
-| Config type | `anthropic` |
-| Default model | `claude-sonnet-4-5-20250929` |
-| Base URL | `https://api.anthropic.com` |
-| Env var | `ANTHROPIC_API_KEY` |
+3. **Variável de ambiente**
+   Variável específica do provedor (listada abaixo)
+
+---
+
+# Provedores nativos
+
+## Anthropic Claude
+
+Modelos Claude com streaming nativo (SSE) e suporte a ferramentas via API Anthropic Messages.
+
+| Campo                | Valor                        |
+| -------------------- | ---------------------------- |
+| Tipo                 | `anthropic`                  |
+| Modelo padrão        | `claude-sonnet-4-5-20250929` |
+| URL base             | `https://api.anthropic.com`  |
+| Variável de ambiente | `ANTHROPIC_API_KEY`          |
+
+Exemplo:
 
 ```yaml
 llm:
   claude:
     provider: anthropic
     model: claude-sonnet-4-5-20250929
-    # api_key: sk-... (or use vault / ANTHROPIC_API_KEY env var)
 ```
 
-### OpenAI
+---
 
-GPT models via the OpenAI Chat Completions API. Also works with Azure OpenAI or any OpenAI-compatible endpoint by overriding `base_url`.
+## OpenAI
 
-| Field | Value |
-|-------|-------|
-| Config type | `openai` |
-| Default model | `gpt-4o` |
-| Base URL | `https://api.openai.com` |
-| Env var | `OPENAI_API_KEY` |
+Modelos GPT via API Chat Completions da OpenAI.
+
+| Campo                | Valor                    |
+| -------------------- | ------------------------ |
+| Tipo                 | `openai`                 |
+| Modelo padrão        | `gpt-4o`                 |
+| URL base             | `https://api.openai.com` |
+| Variável de ambiente | `OPENAI_API_KEY`         |
+
+Exemplo:
 
 ```yaml
 llm:
   gpt:
     provider: openai
     model: gpt-4o
-    # base_url: https://your-azure-endpoint.openai.azure.com  # optional override
 ```
 
-### Ollama
+---
 
-Run local models with streaming. No API key required.
+## Ollama (local)
 
-| Field | Value |
-|-------|-------|
-| Config type | `ollama` |
-| Default model | `llama3.1` |
-| Base URL | `http://localhost:11434` |
-| Env var | None |
+Executa modelos localmente. Não requer chave de API.
+
+| Campo                | Valor                    |
+| -------------------- | ------------------------ |
+| Tipo                 | `ollama`                 |
+| Modelo padrão        | `llama3.1`               |
+| URL base             | `http://localhost:11434` |
+| Variável de ambiente | Nenhuma                  |
+
+Exemplo:
 
 ```yaml
 llm:
@@ -71,20 +93,79 @@ llm:
     base_url: "http://localhost:11434"
 ```
 
-## OpenAI-Compatible Providers
+---
 
-These providers all use the OpenAI chat completions wire format. GarraIA sends requests to their respective API endpoints using the standard `Authorization: Bearer` header.
+# Provedores compatíveis com OpenAI
 
-### Sansa
+Esses provedores utilizam o formato compatível com OpenAI:
 
-Regional LLM from [sansaml.com](https://sansaml.com).
+```text
+Authorization: Bearer <API_KEY>
+```
 
-| Field | Value |
-|-------|-------|
-| Config type | `sansa` |
-| Default model | `sansa-auto` |
-| Base URL | `https://api.sansaml.com` |
-| Env var | `SANSA_API_KEY` |
+---
+
+## OpenRouter
+
+O OpenRouter permite acessar múltiplos provedores e modelos através de uma única API compatível com OpenAI.
+
+Permite alternar facilmente entre:
+
+* Claude
+* GPT-4
+* DeepSeek
+* Llama
+* Mistral
+* e muitos outros
+
+| Campo                | Valor                          |
+| -------------------- | ------------------------------ |
+| Tipo                 | `openrouter`                   |
+| Modelo padrão        | `openai/gpt-4o`                |
+| URL base             | `https://openrouter.ai/api/v1` |
+| Variável de ambiente | `OPENROUTER_API_KEY`           |
+
+Exemplo:
+
+```yaml
+llm:
+  openrouter:
+    provider: openrouter
+    model: openai/gpt-4o
+    base_url: "https://openrouter.ai/api/v1"
+```
+
+Exemplos de modelos:
+
+```yaml
+llm:
+  claude:
+    provider: openrouter
+    model: anthropic/claude-3.5-sonnet
+
+  deepseek:
+    provider: openrouter
+    model: deepseek/deepseek-chat
+
+  llama:
+    provider: openrouter
+    model: meta-llama/llama-3.1-70b-instruct
+```
+
+Site oficial:
+
+[https://openrouter.ai](https://openrouter.ai)
+
+---
+
+## Sansa
+
+| Campo         | Valor                     |
+| ------------- | ------------------------- |
+| Tipo          | `sansa`                   |
+| Modelo padrão | `sansa-auto`              |
+| URL base      | `https://api.sansaml.com` |
+| Variável      | `SANSA_API_KEY`           |
 
 ```yaml
 llm:
@@ -93,14 +174,16 @@ llm:
     model: sansa-auto
 ```
 
-### DeepSeek
+---
 
-| Field | Value |
-|-------|-------|
-| Config type | `deepseek` |
-| Default model | `deepseek-chat` |
-| Base URL | `https://api.deepseek.com` |
-| Env var | `DEEPSEEK_API_KEY` |
+## DeepSeek
+
+| Campo         | Valor                      |
+| ------------- | -------------------------- |
+| Tipo          | `deepseek`                 |
+| Modelo padrão | `deepseek-chat`            |
+| URL base      | `https://api.deepseek.com` |
+| Variável      | `DEEPSEEK_API_KEY`         |
 
 ```yaml
 llm:
@@ -109,14 +192,16 @@ llm:
     model: deepseek-chat
 ```
 
-### Mistral
+---
 
-| Field | Value |
-|-------|-------|
-| Config type | `mistral` |
-| Default model | `mistral-large-latest` |
-| Base URL | `https://api.mistral.ai` |
-| Env var | `MISTRAL_API_KEY` |
+## Mistral
+
+| Campo         | Valor                    |
+| ------------- | ------------------------ |
+| Tipo          | `mistral`                |
+| Modelo padrão | `mistral-large-latest`   |
+| URL base      | `https://api.mistral.ai` |
+| Variável      | `MISTRAL_API_KEY`        |
 
 ```yaml
 llm:
@@ -125,16 +210,16 @@ llm:
     model: mistral-large-latest
 ```
 
-### Gemini
+---
 
-Google Gemini via the OpenAI-compatible endpoint.
+## Gemini
 
-| Field | Value |
-|-------|-------|
-| Config type | `gemini` |
-| Default model | `gemini-2.5-flash` |
-| Base URL | `https://generativelanguage.googleapis.com/v1beta/openai/` |
-| Env var | `GEMINI_API_KEY` |
+| Campo         | Valor                                                      |
+| ------------- | ---------------------------------------------------------- |
+| Tipo          | `gemini`                                                   |
+| Modelo padrão | `gemini-2.5-flash`                                         |
+| URL base      | `https://generativelanguage.googleapis.com/v1beta/openai/` |
+| Variável      | `GEMINI_API_KEY`                                           |
 
 ```yaml
 llm:
@@ -143,16 +228,16 @@ llm:
     model: gemini-2.5-flash
 ```
 
-### Falcon
+---
 
-TII Falcon 180B via AI71.
+## Falcon
 
-| Field | Value |
-|-------|-------|
-| Config type | `falcon` |
-| Default model | `tiiuae/falcon-180b-chat` |
-| Base URL | `https://api.ai71.ai/v1` |
-| Env var | `FALCON_API_KEY` |
+| Campo         | Valor                     |
+| ------------- | ------------------------- |
+| Tipo          | `falcon`                  |
+| Modelo padrão | `tiiuae/falcon-180b-chat` |
+| URL base      | `https://api.ai71.ai/v1`  |
+| Variável      | `FALCON_API_KEY`          |
 
 ```yaml
 llm:
@@ -161,16 +246,16 @@ llm:
     model: tiiuae/falcon-180b-chat
 ```
 
-### Jais
+---
 
-Core42 Jais 70B.
+## Jais
 
-| Field | Value |
-|-------|-------|
-| Config type | `jais` |
-| Default model | `jais-adapted-70b-chat` |
-| Base URL | `https://api.core42.ai/v1` |
-| Env var | `JAIS_API_KEY` |
+| Campo         | Valor                      |
+| ------------- | -------------------------- |
+| Tipo          | `jais`                     |
+| Modelo padrão | `jais-adapted-70b-chat`    |
+| URL base      | `https://api.core42.ai/v1` |
+| Variável      | `JAIS_API_KEY`             |
 
 ```yaml
 llm:
@@ -179,16 +264,16 @@ llm:
     model: jais-adapted-70b-chat
 ```
 
-### Qwen
+---
 
-Alibaba Qwen via DashScope international.
+## Qwen
 
-| Field | Value |
-|-------|-------|
-| Config type | `qwen` |
-| Default model | `qwen-plus` |
-| Base URL | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
-| Env var | `QWEN_API_KEY` |
+| Campo         | Valor                                                    |
+| ------------- | -------------------------------------------------------- |
+| Tipo          | `qwen`                                                   |
+| Modelo padrão | `qwen-plus`                                              |
+| URL base      | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| Variável      | `QWEN_API_KEY`                                           |
 
 ```yaml
 llm:
@@ -197,16 +282,16 @@ llm:
     model: qwen-plus
 ```
 
-### Yi
+---
 
-01.AI Yi Large.
+## Yi
 
-| Field | Value |
-|-------|-------|
-| Config type | `yi` |
-| Default model | `yi-large` |
-| Base URL | `https://api.lingyiwanwu.com/v1` |
-| Env var | `YI_API_KEY` |
+| Campo         | Valor                            |
+| ------------- | -------------------------------- |
+| Tipo          | `yi`                             |
+| Modelo padrão | `yi-large`                       |
+| URL base      | `https://api.lingyiwanwu.com/v1` |
+| Variável      | `YI_API_KEY`                     |
 
 ```yaml
 llm:
@@ -215,16 +300,16 @@ llm:
     model: yi-large
 ```
 
-### Cohere
+---
 
-Cohere Command R Plus via the compatibility endpoint.
+## Cohere
 
-| Field | Value |
-|-------|-------|
-| Config type | `cohere` |
-| Default model | `command-r-plus` |
-| Base URL | `https://api.cohere.com/compatibility/v1` |
-| Env var | `COHERE_API_KEY` |
+| Campo         | Valor                                     |
+| ------------- | ----------------------------------------- |
+| Tipo          | `cohere`                                  |
+| Modelo padrão | `command-r-plus`                          |
+| URL base      | `https://api.cohere.com/compatibility/v1` |
+| Variável      | `COHERE_API_KEY`                          |
 
 ```yaml
 llm:
@@ -233,14 +318,16 @@ llm:
     model: command-r-plus
 ```
 
-### MiniMax
+---
 
-| Field | Value |
-|-------|-------|
-| Config type | `minimax` |
-| Default model | `MiniMax-Text-01` |
-| Base URL | `https://api.minimaxi.chat/v1` |
-| Env var | `MINIMAX_API_KEY` |
+## MiniMax
+
+| Campo         | Valor                          |
+| ------------- | ------------------------------ |
+| Tipo          | `minimax`                      |
+| Modelo padrão | `MiniMax-Text-01`              |
+| URL base      | `https://api.minimaxi.chat/v1` |
+| Variável      | `MINIMAX_API_KEY`              |
 
 ```yaml
 llm:
@@ -249,16 +336,16 @@ llm:
     model: MiniMax-Text-01
 ```
 
-### Moonshot
+---
 
-Kimi models from Moonshot AI.
+## Moonshot
 
-| Field | Value |
-|-------|-------|
-| Config type | `moonshot` |
-| Default model | `kimi-k2-0711-preview` |
-| Base URL | `https://api.moonshot.cn/v1` |
-| Env var | `MOONSHOT_API_KEY` |
+| Campo         | Valor                        |
+| ------------- | ---------------------------- |
+| Tipo          | `moonshot`                   |
+| Modelo padrão | `kimi-k2-0711-preview`       |
+| URL base      | `https://api.moonshot.cn/v1` |
+| Variável      | `MOONSHOT_API_KEY`           |
 
 ```yaml
 llm:
@@ -267,51 +354,39 @@ llm:
     model: kimi-k2-0711-preview
 ```
 
-## Runtime Provider Switching
+---
 
-You can add or switch providers at runtime without restarting the daemon.
+# Troca de provedor em tempo de execução
 
-**REST API:**
+Listar provedores:
 
 ```bash
-# List active providers
 curl http://127.0.0.1:3888/api/providers
+```
 
-# Add a new provider
+Adicionar provedor:
+
+```bash
 curl -X POST http://127.0.0.1:3888/api/providers \
   -H "Content-Type: application/json" \
-  -d '{"provider": "deepseek", "api_key": "sk-..."}'
+  -d '{"provider":"openrouter","api_key":"sk-..."}'
 ```
 
-**WebSocket:** Include an optional `provider` field in your message to route it to a specific provider:
+---
 
-```json
-{"type": "message", "content": "Hello", "provider": "deepseek"}
-```
-
-**Webchat UI:** The sidebar has a provider dropdown and API key input. Click "Save & Activate" to register a new provider at runtime. API keys are persisted to the vault when `GARRAIA_VAULT_PASSPHRASE` is set.
-
-## Multiple Instances
-
-You can configure multiple instances of the same provider type with different models or settings:
+# Múltiplas instâncias
 
 ```yaml
 llm:
-  claude-sonnet:
-    provider: anthropic
-    model: claude-sonnet-4-5-20250929
+  claude:
+    provider: openrouter
+    model: anthropic/claude-3.5-sonnet
 
-  claude-haiku:
-    provider: anthropic
-    model: claude-haiku-4-5-20251001
+  gpt4:
+    provider: openrouter
+    model: openai/gpt-4o
 
-  gpt4o:
-    provider: openai
-    model: gpt-4o
-
-  gpt4o-mini:
-    provider: openai
-    model: gpt-4o-mini
+  deepseek:
+    provider: openrouter
+    model: deepseek/deepseek-chat
 ```
-
-The first configured provider is used by default. Use the `provider` field in WebSocket messages or the webchat dropdown to select a specific one.
