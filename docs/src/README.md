@@ -1,48 +1,155 @@
 # GarraIA
 
-**The secure, lightweight open-source AI agent framework.**
+O framework de agentes de IA open-source, seguro e leve.
 
-A single 17 MB binary that runs your AI agents across Telegram, Discord, Slack, WhatsApp, and iMessage — with encrypted credential storage, config hot-reload, and 13 MB of RAM at idle. Built in Rust for the security and reliability that AI agents demand.
+Um único executável de **17 MB** que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com armazenamento de credenciais criptografado, recarregamento dinâmico de configuração e apenas **13 MB de RAM em idle**. Construído em **Rust** para oferecer o nível de segurança e confiabilidade que agentes de IA exigem.
 
-## Why GarraIA?
+---
 
-### vs OpenClaw, ZeroClaw, and other AI agent frameworks
+# Por que GarraIA?
 
-||**GarraIA**|**OpenClaw** (Node.js)|**ZeroClaw** (Rust)|
-|-|-|-|-|
-|**Binary size**|17 MB|~1.2 GB (with node\_modules)|~25 MB|
-|**Memory at idle**|13 MB|~388 MB|~20 MB|
-|**Cold start**|3 ms|13.9 s|~50 ms|
-|**Credential storage**|AES-256-GCM encrypted vault|Plaintext config file|Plaintext config file|
-|**Auth default**|Enabled (WebSocket pairing)|Disabled by default|Disabled by default|
-|**Scheduling**|Cron, interval, one-shot|Yes|No|
-|**Multi-agent routing**|Planned (#108)|Yes (agentId)|No|
-|**Session orchestration**|Planned (#108)|Yes|No|
-|**MCP support**|Stdio|Stdio + HTTP|Stdio|
-|**Channels**|5|6+|4|
-|**LLM providers**|14|10+|22+|
-|**Pre-compiled binaries**|Yes|N/A (Node.js)|Build from source|
-|**Config hot-reload**|Yes|No|No|
-|**WASM plugin system**|Yes (sandboxed)|No|No|
+Comparação com OpenClaw, ZeroClaw e outros frameworks de agentes de IA:
 
-*Benchmarks measured on a 1 vCPU, 1 GB RAM DigitalOcean droplet.* [*Reproduce them yourself*](bench/)*.*
+| Recurso                        | GarraIA                         | OpenClaw (Node.js)         | ZeroClaw (Rust)       |
+| ------------------------------ | ------------------------------- | -------------------------- | --------------------- |
+| Tamanho do executável          | 17 MB                           | ~1.2 GB (com node_modules) | ~25 MB                |
+| Memória em idle                | 13 MB                           | ~388 MB                    | ~20 MB                |
+| Inicialização (cold start)     | 3 ms                            | 13.9 s                     | ~50 ms                |
+| Armazenamento de credenciais   | Vault criptografado AES-256-GCM | Arquivo plaintext          | Arquivo plaintext     |
+| Autenticação padrão            | Ativada (pareamento WebSocket)  | Desativada por padrão      | Desativada por padrão |
+| Agendamento                    | Cron, intervalo, execução única | Sim                        | Não                   |
+| Roteamento multi-agente        | Planejado (#108)                | Sim (agentId)              | Não                   |
+| Orquestração de sessões        | Planejado (#108)                | Sim                        | Não                   |
+| Suporte a MCP                  | Stdio                           | Stdio + HTTP               | Stdio                 |
+| Canais suportados              | 5                               | 6+                         | 4                     |
+| Provedores LLM                 | 14                              | 10+                        | 22+                   |
+| Binários pré-compilados        | Sim                             | Não aplicável (Node.js)    | Compilar manualmente  |
+| Recarregamento de configuração | Sim                             | Não                        | Não                   |
+| Sistema de plugins WASM        | Sim (sandbox seguro)            | Não                        | Não                   |
 
-## Features
+Benchmarks medidos em uma instância DigitalOcean com:
 
-* **LLM Providers**: 14 providers - Anthropic Claude, OpenAI, Ollama, and 11 OpenAI-compatible (Sansa, DeepSeek, Mistral, Gemini, Falcon, Jais, Qwen, Yi, Cohere, MiniMax, Moonshot).
-* **Channels**: Telegram, Discord, Slack, WhatsApp, iMessage.
-* **MCP**: Connect any MCP-compatible server for external tools.
-* **Agent Runtime**: 6 built-in tools (bash, file\_read, file\_write, web\_fetch, web\_search, schedule\_heartbeat), memory with vector search, scheduled tasks.
-* **Skills**: Define skills as Markdown files.
-* **Infrastructure**: Config hot-reload, daemonization, self-update, migration tools.
+* 1 vCPU
+* 1 GB de RAM
 
-## Documentation Structure
+Você pode reproduzir esses resultados por conta própria.
 
-* [**Getting Started**](./getting_started.md): Install and configure GarraIA.
-* [**Architecture**](./architecture.md): Understand the internal design.
-* [**Channels**](./channels.md): Configure communication channels.
-* [**Providers**](./providers.md): Set up LLM providers.
-* [**Tools**](./tools.md): Built-in agent tools reference.
-* [**MCP**](./mcp.md): Connect external tools via Model Context Protocol.
-* [**Security**](./security.md): Learn about security features.
-* [**Plugins**](./plugins.md): Extend functionality with WASM plugins.
+---
+
+# Recursos
+
+## Provedores LLM
+
+15 provedores suportados:
+
+* Anthropic Claude
+* OpenAI
+* OpenRouter
+* Ollama
+* 11 provedores compatíveis com OpenAI:
+
+  * Sansa
+  * DeepSeek
+  * Mistral
+  * Gemini
+  * Falcon
+  * Jais
+  * Qwen
+  * Yi
+  * Cohere
+  * MiniMax
+  * Moonshot
+
+Observação: o OpenRouter permite rotear para vários modelos/provedores através de uma única API, mantendo compatibilidade com o formato de chat completions.
+
+---
+
+## Canais de comunicação
+
+Suporte completo para:
+
+* Telegram
+* Discord
+* Slack
+* WhatsApp
+* iMessage
+
+---
+
+## MCP (Model Context Protocol)
+
+Permite conectar qualquer servidor compatível com MCP para expandir as capacidades do agente com ferramentas externas.
+
+---
+
+## Runtime do agente
+
+Inclui:
+
+* 6 ferramentas integradas:
+
+  * bash
+  * file_read
+  * file_write
+  * web_fetch
+  * web_search
+  * schedule_heartbeat
+
+* Memória persistente com busca vetorial
+
+* Execução de tarefas agendadas
+
+* Execução multi-etapas
+
+---
+
+## Skills
+
+Permite definir habilidades do agente usando arquivos Markdown.
+
+---
+
+## Infraestrutura
+
+Inclui:
+
+* Recarregamento automático de configuração
+* Execução como daemon
+* Atualização automática
+* Ferramentas de migração
+
+---
+
+# Estrutura da documentação
+
+## Getting Started
+
+Guia inicial para instalação e configuração do GarraIA.
+
+## Architecture
+
+Descrição da arquitetura interna.
+
+## Channels
+
+Configuração dos canais de comunicação.
+
+## Providers
+
+Configuração dos provedores de LLM.
+
+## Tools
+
+Referência das ferramentas integradas.
+
+## MCP
+
+Integração com ferramentas externas via Model Context Protocol.
+
+## Security
+
+Recursos e arquitetura de segurança.
+
+## Plugins
+
+Extensão do GarraIA usando plugins WebAssembly.

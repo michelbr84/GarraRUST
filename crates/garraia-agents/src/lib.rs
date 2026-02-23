@@ -12,7 +12,7 @@ pub mod runtime;
 pub mod tools;
 
 pub use anthropic::AnthropicProvider;
-pub use embeddings::{CohereEmbeddingProvider, EmbeddingProvider};
+pub use embeddings::{CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider};
 pub use execution_budget::ExecutionBudget;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;

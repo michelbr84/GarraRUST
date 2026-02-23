@@ -11,6 +11,85 @@ pub trait EmbeddingProvider: Send + Sync {
     async fn health_check(&self) -> Result<bool>;
 }
 
+/// Ollama embeddings provider (local, free).
+pub struct OllamaEmbeddingProvider {
+    client: reqwest::Client,
+    model: String,
+    base_url: String,
+}
+
+impl OllamaEmbeddingProvider {
+    pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            model: model.unwrap_or_else(|| "nomic-embed-text".to_string()),
+            base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
+        }
+    }
+
+    fn endpoint(&self) -> String {
+        format!("{}/api/embeddings", self.base_url.trim_end_matches('/'))
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OllamaEmbeddingProvider {
+    fn provider_id(&self) -> &str {
+        "ollama"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut embeddings = Vec::new();
+        for text in texts {
+            let emb = self.embed_query(text).await?;
+            embeddings.push(emb);
+        }
+        Ok(embeddings)
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        let response = self
+            .client
+            .post(self.endpoint())
+            .json(&serde_json::json!({
+                "model": self.model,
+                "prompt": text
+            }))
+            .send()
+            .await
+            .map_err(|e| Error::Agent(format!("ollama embeddings request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::Agent(format!(
+                "ollama embeddings request failed: status={}, body={}",
+                status, body
+            )));
+        }
+
+        let payload: OllamaEmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::Agent(format!("failed to decode ollama response: {}", e)))?;
+
+        Ok(payload.embedding)
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        Ok(self.embed_query("health check").await.is_ok())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OllamaEmbedResponse {
+    embedding: Vec<f32>,
+}
+
 /// Cohere embeddings provider.
 pub struct CohereEmbeddingProvider {
     client: reqwest::Client,

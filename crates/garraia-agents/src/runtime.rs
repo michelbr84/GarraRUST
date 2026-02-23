@@ -484,6 +484,16 @@ impl AgentRuntime {
         user_id: Option<&str>,
         is_heartbeat: bool,
     ) -> Result<String> {
+        // Debug: Log system prompt presence
+        if let Some(prompt) = &self.system_prompt {
+            info!("system_prompt present, length: {}", prompt.len());
+            if prompt.contains("Fatos do Usuário") {
+                info!("system_prompt contains user facts!");
+            }
+        } else {
+            warn!("system_prompt is None!");
+        }
+
         let provider: Arc<dyn LlmProvider> = self
             .default_provider()
             .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?;

@@ -1,49 +1,83 @@
-# Architecture
+# Arquitetura
 
-GarraIA is a Rust-based AI agent framework designed for performance and security.
+O GarraIA é um framework de agente de inteligência artificial desenvolvido em Rust, projetado com foco em desempenho, segurança e extensibilidade.
 
-## Structure
+---
+
+## Estrutura
 
 ```
 crates/
-  garraia-cli/        # CLI, init wizard, daemon management
-  garraia-gateway/    # WebSocket gateway, HTTP API, sessions
-  garraia-config/     # YAML/TOML loading, hot-reload, MCP config
-  garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
-  garraia-agents/     # LLM providers, tools, MCP client, agent runtime
-  garraia-db/         # SQLite memory, vector search (sqlite-vec)
-  garraia-plugins/    # WASM plugin sandbox (wasmtime)
-  garraia-media/      # Media processing
-  garraia-security/   # Credential vault, allowlists, pairing, validation
-  garraia-skills/     # SKILL.md parser, scanner, installer
-  garraia-common/     # Shared types, errors, utilities
+  garraia-cli/        # Interface de linha de comando (CLI), assistente de inicialização e gerenciamento do daemon
+  garraia-gateway/    # Gateway WebSocket, API HTTP e gerenciamento de sessões
+  garraia-config/     # Carregamento de configurações YAML/TOML, recarregamento dinâmico e configuração do MCP
+  garraia-channels/   # Integrações com Discord, Telegram, Slack, WhatsApp e iMessage
+  garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP e runtime do agente
+  garraia-db/         # Memória baseada em SQLite e busca vetorial (sqlite-vec)
+  garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
+  garraia-media/      # Processamento de mídia
+  garraia-security/   # Cofre de credenciais, listas de permissão, pareamento e validação
+  garraia-skills/     # Interpretador, scanner e instalador de arquivos SKILL.md
+  garraia-common/     # Tipos compartilhados, erros e utilitários
 ```
 
-## Tools
+---
 
-The agent runtime includes 6 built-in tools that the LLM can invoke during a conversation. The tool loop runs for up to 10 iterations per message.
+## Ferramentas
 
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute shell commands (30s timeout, 32 KB max output) |
-| `file_read` | Read file contents (1 MB max, path traversal prevention) |
-| `file_write` | Write file contents (1 MB max, path traversal prevention) |
-| `web_fetch` | Fetch web pages (30s timeout, 1 MB max response) |
-| `web_search` | Search via Brave Search API (requires `BRAVE_API_KEY`) |
-| `schedule_heartbeat` | Schedule future agent wake-ups (30-day max, 5 pending limit) |
+O runtime do agente inclui 6 ferramentas nativas que o modelo de linguagem (LLM) pode invocar durante uma conversa. O loop de execução de ferramentas pode ocorrer por múltiplas iterações dentro de uma única mensagem, respeitando os limites de segurança do ExecutionBudget.
 
-See [Tools](./tools.md) for the full reference.
+| Ferramenta           | Descrição                                                                                             |
+| -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `bash`               | Executa comandos do sistema (timeout de 30 segundos, saída máxima de 32 KB)                           |
+| `file_read`          | Lê o conteúdo de arquivos (máximo de 1 MB, com proteção contra acesso fora do diretório permitido)    |
+| `file_write`         | Escreve conteúdo em arquivos (máximo de 1 MB, com proteção contra acesso fora do diretório permitido) |
+| `web_fetch`          | Obtém páginas da web (timeout de 30 segundos, resposta máxima de 1 MB)                                |
+| `web_search`         | Realiza buscas usando a API Brave Search (requer `BRAVE_API_KEY`)                                     |
+| `schedule_heartbeat` | Agenda a reativação futura do agente (máximo de 30 dias, limite de 5 agendamentos pendentes)          |
+
+Consulte [Ferramentas](./tools.md) para a referência completa.
+
+---
 
 ## MCP (Model Context Protocol)
 
-GarraIA can connect to external MCP servers to extend the agent's capabilities. MCP tools are discovered at startup and appear as native agent tools with namespaced names (`server.tool_name`).
+O GarraIA pode se conectar a servidores MCP externos para expandir suas capacidades. As ferramentas MCP são descobertas automaticamente na inicialização e aparecem como ferramentas nativas do agente, utilizando nomes com namespace (`servidor.nome_da_ferramenta`).
 
-Configuration lives in `config.yml` under the `mcp:` section or in `~/.garraia/mcp.json` (Claude Desktop compatible format). Both sources are merged at startup.
+A configuração está localizada em:
 
-The `garraia-agents` crate contains the MCP client (using the `rmcp` crate) with a tool bridge that converts MCP tool definitions into the internal tool format.
+```text
+config.yml
+```
 
-See [MCP](./mcp.md) for the full reference.
+na seção:
 
-## Architectural Decision Records
+```text
+mcp:
+```
 
-See [Decision Records](./adr/README.md).
+ou no arquivo:
+
+```text
+~/.garraia/mcp.json
+```
+
+(formato compatível com Claude Desktop).
+
+Ambas as fontes são carregadas e combinadas automaticamente na inicialização.
+
+O crate `garraia-agents` contém o cliente MCP (utilizando o crate `rmcp`), incluindo uma camada de adaptação que converte ferramentas MCP para o formato interno de ferramentas do GarraIA.
+
+Consulte [MCP](./mcp.md) para a referência completa.
+
+---
+
+## Registros de Decisões Arquiteturais
+
+Consulte:
+
+```text
+./adr/README.md
+```
+
+para acessar os registros completos de decisões arquiteturais do projeto.

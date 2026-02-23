@@ -1,16 +1,23 @@
-# Sumario
+# Sumário
 
-- [Introducao](./README.md)
+- [Introdução](./README.md)
 - [Primeiros Passos](./getting_started.md)
+
 - [Arquitetura](./architecture.md)
-  - [Registros de Decisao](./adr/README.md)
+  - [Registros de Decisão](./adr/README.md)
+
 - [Canais](./channels.md)
-  - [Configuracao do iMessage](./channels/imessage.md)
+  - [Configuração do iMessage](./channels/imessage.md)
+
 - [Provedores](./providers.md)
+
 - [Ferramentas](./tools.md)
-- [MCP](./mcp.md)
-- [Seguranca](./security.md)
-  - [Arquitetura](./security/architecture.md)
-  - [Superficies de Ataque](./security/attack-surfaces.md)
-  - [Lista de Verificacao](./security/checklist.md)
+
+- [MCP (Model Context Protocol)](./mcp.md)
+
+- [Segurança](./security.md)
+  - [Arquitetura de Segurança](./security/architecture.md)
+  - [Superfícies de Ataque](./security/attack-surfaces.md)
+  - [Checklist de Segurança](./security/checklist.md)
+
 - [Plugins](./plugins.md)

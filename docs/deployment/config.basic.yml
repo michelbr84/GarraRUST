@@ -1,37 +1,37 @@
-# Basic GarraIA configuration for Docker deployment
-# Uses Cloud providers (Anthropic, OpenAI) and connects to external APIs.
+# Configuração básica do GarraIA para implantação com Docker
+# Utiliza provedores em nuvem (Anthropic, OpenAI) e conecta-se a APIs externas.
 
 gateway:
-  # Bind to all interfaces inside the container
+  # Vincula a todas as interfaces dentro do container
   host: "0.0.0.0"
   port: 3888
 
 llm:
-  # Anthropic Claude (requires ANTHROPIC_API_KEY env var)
+  # Anthropic Claude (requer variável de ambiente ANTHROPIC_API_KEY)
   claude:
     provider: anthropic
-    # Use a valid model ID (e.g., claude-3-5-sonnet-20240620)
+    # Use um ID de modelo válido (ex: claude-3-5-sonnet-20240620)
     model: claude-3-5-sonnet-20240620
-    # api_key is resolved from ANTHROPIC_API_KEY environment variable
+    # api_key é resolvida automaticamente a partir da variável de ambiente ANTHROPIC_API_KEY
 
-  # OpenAI (requires OPENAI_API_KEY env var)
+  # OpenAI (requer variável de ambiente OPENAI_API_KEY)
   # openai-gpt4:
   #   provider: openai
   #   model: gpt-4o
 
 agent:
-  system_prompt: "You are a helpful AI assistant running in a Docker container."
+  system_prompt: "Você é o GarraIA, um assistente de inteligência artificial útil executando dentro de um container Docker."
   default_provider: claude
 
 channels:
-  # Telegram (requires TELEGRAM_BOT_TOKEN env var)
+  # Telegram (requer variável de ambiente TELEGRAM_BOT_TOKEN)
   telegram:
     type: telegram
     enabled: true
-    # bot_token is resolved from TELEGRAM_BOT_TOKEN environment variable
+    # bot_token é resolvido automaticamente a partir da variável de ambiente TELEGRAM_BOT_TOKEN
 
-  # Discord (requires DISCORD_BOT_TOKEN and DISCORD_APP_ID env vars)
+  # Discord (requer variáveis de ambiente DISCORD_BOT_TOKEN e DISCORD_APP_ID)
   discord:
     type: discord
     enabled: true
-    # bot_token and application_id are resolved from environment variables
+    # bot_token e application_id são resolvidos automaticamente a partir das variáveis de ambiente

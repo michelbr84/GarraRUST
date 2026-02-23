@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider, FileReadTool,
-    FileWriteTool, McpManager, OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
+    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
 };
 #[cfg(target_os = "macos")]
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
@@ -449,31 +449,64 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 if let Some(embed_name) = &config.memory.embedding_provider
                     && let Some(embed_config) = config.embeddings.get(embed_name)
                 {
-                    match embed_config.provider.as_str() {
-                        "cohere" => {
-                            let api_key = resolve_api_key(
-                                embed_config.api_key.as_deref(),
-                                "COHERE_API_KEY",
-                                "COHERE_API_KEY",
-                            );
+match embed_config.provider.as_str() {
 
-                            if let Some(key) = api_key {
-                                let provider = CohereEmbeddingProvider::new(
-                                    key,
-                                    embed_config.model.clone(),
-                                    embed_config.base_url.clone(),
-                                );
-                                runtime.set_embedding_provider(Arc::new(provider));
-                                info!("configured cohere embedding provider: {embed_name}");
-                            } else {
-                                warn!("skipping cohere embedding provider: no API key");
-                            }
-                        }
-                        other => {
-                            warn!("unknown embedding provider type: {other}");
-                        }
-                    }
-                }
+    // =====================================
+    // COHERE
+    // =====================================
+    "cohere" => {
+
+        let api_key = resolve_api_key(
+            embed_config.api_key.as_deref(),
+            "COHERE_API_KEY",
+            "COHERE_API_KEY",
+        );
+
+        if let Some(key) = api_key {
+
+            let provider = CohereEmbeddingProvider::new(
+                key,
+                embed_config.model.clone(),
+                embed_config.base_url.clone(),
+            );
+
+            runtime.set_embedding_provider(Arc::new(provider));
+
+            info!("configured cohere embedding provider: {embed_name}");
+
+        } else {
+
+            warn!("skipping cohere embedding provider: no API key");
+
+        }
+    }
+
+
+    // =====================================
+    // OLLAMA (ADICIONE ESTE BLOCO)
+    // =====================================
+    "ollama" => {
+
+        let provider = OllamaEmbeddingProvider::new(
+            embed_config.model.clone(),
+            embed_config.base_url.clone()
+        );
+
+        runtime.set_embedding_provider(Arc::new(provider));
+
+        info!("configured ollama embedding provider: {embed_name}");
+    }
+
+
+    // =====================================
+    // UNKNOWN
+    // =====================================
+    other => {
+
+        warn!("unknown embedding provider type: {other}");
+
+    }
+}                }
             }
             Err(e) => {
                 warn!("failed to open memory store: {e}");
@@ -520,6 +553,163 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         }
         Ok(_) => {} // no skills found
         Err(e) => warn!("failed to scan skills directory: {e}"),
+    }
+
+    // --- Facts (User Information) ---
+    let facts_path = garraia_config::ConfigLoader::default_config_dir()
+        .join("memoria")
+        .join("fatos.json");
+    if facts_path.exists() {
+        match std::fs::read_to_string(&facts_path) {
+            Ok(content) => {
+                if let Ok(facts) = serde_json::from_str::<serde_json::Value>(&content) {
+                    // Build facts context for system prompt
+                    let mut facts_context = String::from("\n\n# Fatos do Usuário\n");
+                    
+                    // Nome
+                    if let Some(nome) = facts.get("nome").and_then(|v| v.as_str()) {
+                        if !nome.is_empty() {
+                            facts_context.push_str(&format!("Nome: {}\n", nome));
+                        }
+                    }
+                    // Apelido
+                    if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str()) {
+                        if !apelido.is_empty() {
+                            facts_context.push_str(&format!("Apelido: {}\n", apelido));
+                        }
+                    }
+                    // Sobre
+                    if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str()) {
+                        if !sobre.is_empty() {
+                            facts_context.push_str(&format!("Sobre: {}\n", sobre));
+                        }
+                    }
+                    // Empresa
+                    if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str()) {
+                        if !empresa.is_empty() {
+                            facts_context.push_str(&format!("Empresa: {}\n", empresa));
+                        }
+                    }
+                    // Cargo
+                    if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str()) {
+                        if !cargo.is_empty() {
+                            facts_context.push_str(&format!("Cargo: {}\n", cargo));
+                        }
+                    }
+                    // Localização
+                    if let Some(local) = facts.get("localizacao").and_then(|v| v.as_object()) {
+                        let mut parts = Vec::new();
+                        if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
+                            if !v.is_empty() { parts.push(v.to_string()); }
+                        }
+                        if let Some(v) = local.get("estado").and_then(|v| v.as_str()) {
+                            if !v.is_empty() { parts.push(v.to_string()); }
+                        }
+                        if let Some(v) = local.get("pais").and_then(|v| v.as_str()) {
+                            if !v.is_empty() { parts.push(v.to_string()); }
+                        }
+                        if !parts.is_empty() {
+                            facts_context.push_str(&format!("Localização: {}\n", parts.join(", ")));
+                        }
+                    }
+                    // Idiomas
+                    if let Some(idioma) = facts.get("idioma_principal").and_then(|v| v.as_str()) {
+                        facts_context.push_str(&format!("Idioma principal: {}\n", idioma));
+                    }
+                    if let Some(idiomas) = facts.get("idiomas_secundarios").and_then(|v| v.as_array()) {
+                        let langs: Vec<&str> = idiomas.iter().filter_map(|v| v.as_str()).collect();
+                        if !langs.is_empty() {
+                            facts_context.push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
+                        }
+                    }
+                    // Preferências
+                    if let Some(prefs) = facts.get("preferencias").and_then(|v| v.as_object()) {
+                        facts_context.push_str("Preferências:\n");
+                        if let Some(v) = prefs.get("idioma").and_then(|v| v.as_str()) {
+                            facts_context.push_str(&format!("  - Idioma: {}\n", v));
+                        }
+                        if let Some(v) = prefs.get("tom").and_then(|v| v.as_str()) {
+                            facts_context.push_str(&format!("  - Tom: {}\n", v));
+                        }
+                        if let Some(v) = prefs.get("nivel_detalhe").and_then(|v| v.as_str()) {
+                            facts_context.push_str(&format!("  - Nivel de detalhe: {}\n", v));
+                        }
+                        if let Some(v) = prefs.get("formato_resposta").and_then(|v| v.as_str()) {
+                            facts_context.push_str(&format!("  - Formato: {}\n", v));
+                        }
+                    }
+                    // Ambiente
+                    if let Some(amb) = facts.get("ambiente").and_then(|v| v.as_object()) {
+                        facts_context.push_str("Ambiente:\n");
+                        if let Some(v) = amb.get("sistema_operacional").and_then(|v| v.as_str()) {
+                            facts_context.push_str(&format!("  - SO: {}\n", v));
+                        }
+                        if let Some(v) = amb.get("usa_ollama").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Usa Ollama: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                        if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Usa OpenRouter: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                        if let Some(v) = amb.get("usa_modelos_locais").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Modelos locais: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                    }
+                    // Interesses
+                    if let Some(interesses) = facts.get("interesses").and_then(|v| v.as_array()) {
+                        let interesses: Vec<&str> = interesses.iter().filter_map(|v| v.as_str()).collect();
+                        if !interesses.is_empty() {
+                            facts_context.push_str(&format!("Interesses: {}\n", interesses.join(", ")));
+                        }
+                    }
+                    // Projetos
+                    if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array()) {
+                        let projetos: Vec<&str> = projetos.iter().filter_map(|v| v.as_str()).collect();
+                        if !projetos.is_empty() {
+                            facts_context.push_str(&format!("Projetos: {}\n", projetos.join(", ")));
+                        }
+                    }
+                    // Restrições
+                    if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object()) {
+                        facts_context.push_str("Restricoes:\n");
+                        if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Nao alucinar: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                        if let Some(v) = rest.get("priorizar_precisao").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Priorizar precisao: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                        if let Some(v) = rest.get("priorizar_respostas_tecnicas").and_then(|v| v.as_bool()) {
+                            facts_context.push_str(&format!("  - Respostas tecnicas: {}\n", if v { "Sim" } else { "Nao" }));
+                        }
+                    }
+                    // Fatos importantes
+                    if let Some(fatos) = facts.get("fatos_importantes").and_then(|v| v.as_array()) {
+                        if !fatos.is_empty() {
+                            facts_context.push_str("Fatos importantes:\n");
+                            for fato in fatos {
+                                if let Some(f) = fato.as_str() {
+                                    facts_context.push_str(&format!("- {}\n", f));
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Inject facts into system prompt (only if we have content)
+                    if facts_context.len() > 30 {  // Has more than just the header
+                        let new_prompt = match runtime.system_prompt() {
+                            Some(existing) => format!("{}\n{}", existing, facts_context),
+                            None => facts_context.clone(),
+                        };
+                        runtime.set_system_prompt(new_prompt);
+                        info!("loaded user facts from {} (context len: {})", facts_path.display(), facts_context.len());
+                    } else {
+                        warn!("facts.json has insufficient content, skipping injection");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("failed to read facts file: {}", e);
+            }
+        }
     }
 
     runtime
