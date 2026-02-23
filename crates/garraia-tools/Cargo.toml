@@ -1,0 +1,14 @@
+[package]
+name = "garraia-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Sistema de ferramentas do GarraIA — trait Tool, registry e execução com timeout"
+
+[dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["time"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+garraia-common = { path = "../garraia-common" }
