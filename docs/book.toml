@@ -1,5 +1,5 @@
 [book]
-authors = ["GarraIA Contributors"]
-language = "en"
+authors = ["Colaboradores do GarraIA"]
+language = "pt-BR"
 src = "src"
-title = "GarraIA Documentation"
+title = "Documentação do GarraIA"

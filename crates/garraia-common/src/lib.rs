@@ -4,4 +4,4 @@ pub mod types;
 
 pub use error::{Error, Result};
 pub use message::{Message, MessageContent, MessageDirection};
-pub use types::{ChannelId, SessionId, UserId};
+pub use types::{AgentResponse, ChannelId, SessionId, UserId};

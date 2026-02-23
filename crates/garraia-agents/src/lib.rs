@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod a2a;
 pub mod anthropic;
 pub mod embeddings;
+pub mod execution_budget;
 pub mod ollama;
 pub mod openai;
 pub mod providers;
@@ -12,6 +13,7 @@ pub mod tools;
 
 pub use anthropic::AnthropicProvider;
 pub use embeddings::{CohereEmbeddingProvider, EmbeddingProvider};
+pub use execution_budget::ExecutionBudget;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 pub use providers::{

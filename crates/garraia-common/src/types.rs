@@ -44,3 +44,52 @@ macro_rules! impl_id_type {
 impl_id_type!(SessionId);
 impl_id_type!(UserId);
 impl_id_type!(ChannelId);
+
+/// Result of agent execution - supports multi-turn workflows
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentResponse {
+    /// Agent completed with final response
+    Completed(String),
+    /// Turn limit reached, caller should continue in next turn
+    ContinueNextTurn,
+    /// Task limit reached, cannot continue
+    TaskLimitReached(String),
+    /// Loop detected
+    LoopDetected(String),
+    /// Tool timeout
+    ToolTimeout(String),
+    /// Other error
+    Error(String),
+}
+
+impl AgentResponse {
+    /// Returns the response text if completed, None otherwise
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            AgentResponse::Completed(text) => Some(text),
+            _ => None,
+        }
+    }
+    
+    /// Returns true if execution should continue in next turn
+    pub fn should_continue(&self) -> bool {
+        matches!(self, AgentResponse::ContinueNextTurn)
+    }
+    
+    /// Returns true if execution is complete
+    pub fn is_complete(&self) -> bool {
+        matches!(self, AgentResponse::Completed(_))
+    }
+}
+
+impl From<String> for AgentResponse {
+    fn from(s: String) -> Self {
+        AgentResponse::Completed(s)
+    }
+}
+
+impl From<&str> for AgentResponse {
+    fn from(s: &str) -> Self {
+        AgentResponse::Completed(s.to_string())
+    }
+}

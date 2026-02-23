@@ -2,20 +2,19 @@ use std::sync::{Arc, RwLock};
 
 use futures::StreamExt;
 use futures::future::join_all;
-use garraia_common::{Error, Result};
+use garraia_common::{Error, Result, AgentResponse};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tracing::{info, instrument, warn};
 
 use crate::embeddings::EmbeddingProvider;
+use crate::execution_budget::ExecutionBudget;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart, StreamEvent,
     ToolDefinition,
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
-
-/// Maximum number of tool-use round-trips before the loop is forcibly stopped.
-const MAX_TOOL_ITERATIONS: usize = 10;
 
 /// Manages agent sessions, tool execution, and LLM provider routing.
 pub struct AgentRuntime {
@@ -368,7 +367,27 @@ impl AgentRuntime {
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
+        let mut budget = ExecutionBudget::padrao();
+        
+        // Reset turn counter at the start of processing a new user message
+        budget.resetar_turno();
+
+        loop {
+            // Auto-reset turn limit when reached (but task limit not reached)
+            // This allows multi-turn agent loops without failing
+            if budget.atingiu_limite_turno() {
+                budget.resetar_turno();
+                info!("auto-reset turn budget, continuing agent loop");
+            }
+            
+            // Check if task limit is reached (hard limit)
+            if !budget.pode_chamar_ferramenta() {
+                return Err(Error::Agent(format!(
+                    "execution budget exceeded: {}",
+                    budget.status()
+                )));
+            }
+
             let request = LlmRequest {
                 model: effective_model.clone(),
                 messages: messages.clone(),
@@ -409,11 +428,36 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat: false,
                     };
+                    
+                    // registra chamada com payload para detecção de loop por assinatura
+                    budget.registrar_chamada(name, input);
+                    
+                    // detecta loop
+                    if budget.detectar_loop_ferramenta() {
+                        return Err(Error::Agent(format!(
+                            "tool loop detected: {}",
+                            name
+                        )));
+                    }
+                    
+                    // executa com timeout
                     let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                        Some(tool) => {
+                            match timeout(
+                                budget.timeout(),
+                                tool.execute(&context, input.clone())
+                            ).await {
+                                Ok(result) => {
+                                    result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
+                                }
+                                Err(_) => {
+                                    ToolOutput::error(format!(
+                                        "tool timeout: {}",
+                                        name
+                                    ))
+                                }
+                            }
+                        }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
                     };
                     tool_results.push(ContentBlock::ToolResult {
@@ -428,11 +472,6 @@ impl AgentRuntime {
                 content: MessagePart::Parts(tool_results),
             });
         }
-
-        Err(Error::Agent(format!(
-            "tool loop exceeded maximum of {} iterations",
-            MAX_TOOL_ITERATIONS
-        )))
     }
 
     #[instrument(skip(self, conversation_history), fields(provider_id, continuity_key = ?continuity_key))]
@@ -487,7 +526,28 @@ impl AgentRuntime {
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
+        let mut budget = ExecutionBudget::padrao();
+        
+        // Reset turn counter at the start of processing a new user message
+        budget.resetar_turno();
+
+        loop {
+            // Check if turn or task limit reached
+            if budget.atingiu_limite_turno() {
+                return Err(Error::Agent(format!(
+                    "turn budget exceeded: {}",
+                    budget.status()
+                )));
+            }
+            
+            // Check if task limit is reached (hard limit)
+            if !budget.pode_chamar_ferramenta() {
+                return Err(Error::Agent(format!(
+                    "execution budget exceeded: {}",
+                    budget.status()
+                )));
+            }
+
             let request = LlmRequest {
                 model: String::new(),
                 messages: messages.clone(),
@@ -515,6 +575,7 @@ impl AgentRuntime {
                     warn!("failed to store turn in memory: {}", e);
                 }
 
+                budget.resetar_turno();
                 return Ok(final_text);
             }
 
@@ -533,11 +594,36 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat,
                     };
+                    
+                    // registra chamada com payload para detecção de loop por assinatura
+                    budget.registrar_chamada(name, input);
+                    
+                    // detecta loop
+                    if budget.detectar_loop_ferramenta() {
+                        return Err(Error::Agent(format!(
+                            "tool loop detected: {}",
+                            name
+                        )));
+                    }
+                    
+                    // executa com timeout
                     let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                        Some(tool) => {
+                            match timeout(
+                                budget.timeout(),
+                                tool.execute(&context, input.clone())
+                            ).await {
+                                Ok(result) => {
+                                    result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
+                                }
+                                Err(_) => {
+                                    ToolOutput::error(format!(
+                                        "tool timeout: {}",
+                                        name
+                                    ))
+                                }
+                            }
+                        }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
                     };
                     tool_results.push(ContentBlock::ToolResult {
@@ -553,11 +639,6 @@ impl AgentRuntime {
                 content: MessagePart::Parts(tool_results),
             });
         }
-
-        Err(Error::Agent(format!(
-            "tool loop exceeded maximum of {} iterations",
-            MAX_TOOL_ITERATIONS
-        )))
     }
 
     /// Run the conversation loop with streaming. Text deltas are sent through
@@ -634,7 +715,26 @@ impl AgentRuntime {
 
         let mut full_response = String::new();
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
+        let mut budget = ExecutionBudget::padrao();
+        
+        // Reset turn counter at the start of processing a new user message
+        budget.resetar_turno();
+
+        loop {
+            // Auto-reset turn limit when reached (but task limit not reached)
+            // This allows multi-turn agent loops without failing
+            if budget.atingiu_limite_turno() {
+                budget.resetar_turno();
+                info!("auto-reset turn budget, continuing agent loop");
+            }
+            
+            // Check if task limit is reached (hard limit)
+            if !budget.pode_chamar_ferramenta() {
+                return Err(Error::Agent(format!(
+                    "execution budget exceeded: {}",
+                    budget.status()
+                )));
+            }
             let request = LlmRequest {
                 model: String::new(),
                 messages: messages.clone(),
@@ -736,11 +836,36 @@ impl AgentRuntime {
                             user_id: user_id.map(|s| s.to_string()),
                             is_heartbeat: false,
                         };
+                        
+                        // registra chamada com payload para detecção de loop por assinatura
+                        budget.registrar_chamada(name, &input);
+                        
+                        // detecta loop
+                        if budget.detectar_loop_ferramenta() {
+                            return Err(Error::Agent(format!(
+                                "tool loop detected: {}",
+                                name
+                            )));
+                        }
+                        
+                        // executa com timeout
                         let output = match self.find_tool(name) {
-                            Some(tool) => tool
-                                .execute(&context, input)
-                                .await
-                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                            Some(tool) => {
+                                match timeout(
+                                    budget.timeout(),
+                                    tool.execute(&context, input)
+                                ).await {
+                                    Ok(result) => {
+                                        result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
+                                    }
+                                    Err(_) => {
+                                        ToolOutput::error(format!(
+                                            "tool timeout: {}",
+                                            name
+                                        ))
+                                    }
+                                }
+                            }
                             None => ToolOutput::error(format!("unknown tool: {}", name)),
                         };
                         tool_results.push(ContentBlock::ToolResult {
@@ -803,11 +928,36 @@ impl AgentRuntime {
                                 user_id: user_id.map(|s| s.to_string()),
                                 is_heartbeat: false,
                             };
+                            
+                            // registra chamada com payload para detecção de loop por assinatura
+                            budget.registrar_chamada(name, input);
+                            
+                            // detecta loop
+                            if budget.detectar_loop_ferramenta() {
+                                return Err(Error::Agent(format!(
+                                    "tool loop detected: {}",
+                                    name
+                                )));
+                            }
+                            
+                            // executa com timeout
                             let output = match self.find_tool(name) {
-                                Some(tool) => tool
-                                    .execute(&context, input.clone())
-                                    .await
-                                    .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                                Some(tool) => {
+                                    match timeout(
+                                        budget.timeout(),
+                                        tool.execute(&context, input.clone())
+                                    ).await {
+                                        Ok(result) => {
+                                            result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
+                                        }
+                                        Err(_) => {
+                                            ToolOutput::error(format!(
+                                                "tool timeout: {}",
+                                                name
+                                            ))
+                                        }
+                                    }
+                                }
                                 None => ToolOutput::error(format!("unknown tool: {}", name)),
                             };
                             tool_results.push(ContentBlock::ToolResult {
@@ -824,11 +974,6 @@ impl AgentRuntime {
                 }
             }
         }
-
-        Err(Error::Agent(format!(
-            "tool loop exceeded maximum of {} iterations",
-            MAX_TOOL_ITERATIONS
-        )))
     }
 
     pub async fn health_check_all(&self) -> Result<Vec<(String, bool)>> {

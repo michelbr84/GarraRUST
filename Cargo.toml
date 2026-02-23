@@ -12,6 +12,8 @@ members = [
     "crates/garraia-security",
     "crates/garraia-common",
     "crates/garraia-skills",
+    "crates/garraia-tools",
+    "crates/garraia-runtime",
 ]
 
 [workspace.package]
@@ -97,6 +99,8 @@ garraia-plugins = { path = "crates/garraia-plugins" }
 garraia-media = { path = "crates/garraia-media" }
 garraia-security = { path = "crates/garraia-security" }
 garraia-skills = { path = "crates/garraia-skills" }
+garraia-tools = { path = "crates/garraia-tools" }
+garraia-runtime = { path = "crates/garraia-runtime" }
 
 [profile.release]
 lto = true
