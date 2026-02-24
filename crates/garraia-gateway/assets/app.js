@@ -38,6 +38,29 @@ let nanoTimerInterval = null;
 let nanoElapsed = 0;
 let thinkingTimeout = null;
 
+// Initialize i18n on page load
+document.addEventListener("DOMContentLoaded", async () => {
+    const savedLang = localStorage.getItem("lang");
+    
+    if (savedLang) {
+        await loadLocale(savedLang);
+    } else {
+        const browserLang = navigator.language || "en-US";
+        if (browserLang.startsWith("pt")) {
+            await loadLocale("pt-BR");
+        } else {
+            await loadLocale("en-US");
+        }
+    }
+});
+
+// Language switch function
+function setLanguage(lang) {
+    localStorage.setItem("lang", lang);
+    loadLocale(lang);
+}
+window.setLanguage = setLanguage;
+
 function setAgentThinking(thinking) {
   const widget = document.getElementById('nano-agents');
   const timeEl = document.getElementById('nano-time');
@@ -78,10 +101,16 @@ function resetThinkingDebounce() {
 keyGatewayEl.value = gatewayKey;
 
 function setTheme(theme, persist = true) {
-  const selected = theme === "dark" ? "dark" : "light";
+  const validThemes = ["light", "dark", "brasil"];
+  const selected = validThemes.includes(theme) ? theme : "light";
   document.documentElement.setAttribute("data-theme", selected);
   if (themeToggleBtn) {
-    themeToggleBtn.textContent = selected === "dark" ? "Light Mode" : "Dark Mode";
+    const labels = {
+      light: t("theme.light_mode"),
+      dark: t("theme.dark_mode"),
+      brasil: t("theme.brasil")
+    };
+    themeToggleBtn.textContent = labels[selected] || t("theme.dark_mode");
   }
   if (persist) {
     localStorage.setItem(themeStorageKey, selected);
@@ -90,7 +119,8 @@ function setTheme(theme, persist = true) {
 
 function initTheme() {
   const stored = localStorage.getItem(themeStorageKey);
-  if (stored === "light" || stored === "dark") {
+  const validThemes = ["light", "dark", "brasil"];
+  if (validThemes.includes(stored)) {
     setTheme(stored, false);
     return;
   }
@@ -107,8 +137,8 @@ function wsUrl() {
 
 function setConnectionState(isConnected) {
   connPill.innerHTML = isConnected
-    ? '<span class="online">Connected</span>'
-    : '<span class="offline">Disconnected</span>';
+    ? '<span class="online">' + t("status.connected") + '</span>'
+    : '<span class="offline">' + t("status.disconnected") + '</span>';
 }
 
 function setSession(id) {
@@ -119,7 +149,7 @@ function setSession(id) {
     sessionEl.title = sessionId;
   } else {
     localStorage.removeItem(storageKey);
-    sessionEl.textContent = "none";
+    sessionEl.textContent = t("session.none");
     sessionEl.title = "";
   }
 }
@@ -177,8 +207,7 @@ async function refreshStatus() {
     if (j.latest_version && j.version) {
       const dismissed = sessionStorage.getItem("garraia.update_dismissed");
       if (dismissed !== j.latest_version) {
-        updateBannerText.innerHTML =
-          `Update available: v${j.version} &rarr; v${j.latest_version.replace(/^v/, "")} &mdash; run <code>garraia update</code>`;
+        updateBannerText.innerHTML = t("update.available", { version: j.version, latest: j.latest_version.replace(/^v/, "") }).replace('garraia update', '<code>garraia update</code>');
         updateBanner.style.display = "";
       }
     } else {
@@ -190,10 +219,10 @@ async function refreshStatus() {
         .map(ch => `<span class="channel-tag"><span class="status-dot dot-ok"></span>${ch}</span>`)
         .join("");
     } else {
-      channelListEl.innerHTML = '<span class="no-channels">None configured</span>';
+      channelListEl.innerHTML = '<span class="no-channels">' + t("none_configured") + '</span>';
     }
   } catch {
-    apiStatusEl.innerHTML = '<span class="status-dot dot-off"></span>unavailable';
+    apiStatusEl.innerHTML = '<span class="status-dot dot-off"></span>' + t("status.unavailable");
     sessionCountEl.textContent = "-";
     channelListEl.innerHTML = '<span class="no-channels">-</span>';
   }
@@ -211,7 +240,7 @@ async function loadProviders() {
     for (const p of providerData) {
       const opt = document.createElement("option");
       opt.value = p.id;
-      opt.textContent = p.active ? p.display_name : `${p.display_name} (not configured)`;
+      opt.textContent = p.active ? p.display_name : p.display_name + t("provider.not_configured_suffix");
       providerSelect.appendChild(opt);
     }
 
@@ -223,7 +252,7 @@ async function loadProviders() {
     }
     updateProviderUI();
   } catch {
-    providerSelect.innerHTML = '<option value="">unavailable</option>';
+    providerSelect.innerHTML = '<option value="">' + t("status.unavailable") + '</option>';
     providerStatus.textContent = "";
   }
 }
@@ -237,11 +266,11 @@ function updateProviderUI() {
     return;
   }
   if (p.active) {
-    const tag = p.is_default ? "active, default" : "active";
+    const tag = p.is_default ? t("provider.active_default") : t("provider.active");
     providerStatus.innerHTML = `<span class="status-dot dot-ok"></span>${tag}`;
     providerKeySection.style.display = "none";
   } else {
-    providerStatus.innerHTML = `<span class="status-dot dot-off"></span>not configured`;
+    providerStatus.innerHTML = '<span class="status-dot dot-off"></span>' + t("provider.not_configured");
     providerKeySection.style.display = p.needs_api_key ? "" : "none";
   }
   selectedProvider = id;
@@ -266,7 +295,7 @@ providerActivateBtn.addEventListener("click", async () => {
   const key = providerApiKey.value.trim();
   if (!key) return;
 
-  providerActivateBtn.textContent = "Activating...";
+  providerActivateBtn.textContent = t("button.activating");
   providerActivateBtn.disabled = true;
 
   try {
@@ -278,15 +307,15 @@ providerActivateBtn.addEventListener("click", async () => {
     const j = await r.json();
     if (r.ok) {
       providerApiKey.value = "";
-      appendMessage("sys", `Provider ${id} activated.`);
+      appendMessage("sys", t("message.provider_activated", { id: id }));
       await loadProviders();
     } else {
-      appendMessage("error", j.message || "Failed to activate provider.");
+      appendMessage("error", j.message || t("error.provider_activation"));
     }
   } catch (e) {
-    appendMessage("error", `Failed to activate provider: ${e}`);
+    appendMessage("error", t("error.provider_activation") + " " + e);
   } finally {
-    providerActivateBtn.textContent = "Save & Activate";
+    providerActivateBtn.textContent = t("button.save_activate");
     providerActivateBtn.disabled = false;
   }
 });
@@ -304,7 +333,7 @@ function handleServerEvent(raw) {
   try {
     evt = JSON.parse(raw);
   } catch {
-    appendMessage("sys", `Raw: ${raw}`);
+    appendMessage("sys", t("message.raw", { raw: raw }));
     return;
   }
 
@@ -313,23 +342,23 @@ function handleServerEvent(raw) {
   switch (evt.type) {
     case "connected":
       if (evt.note) {
-        appendMessage("sys", `Connected (${evt.note}).`);
+        appendMessage("sys", t("message.connected") + ` (${evt.note}).`);
       }
       refreshStatus();
       break;
     case "resumed":
-      appendMessage("sys", `Session resumed (${evt.history_length ?? 0} messages in history).`);
+      appendMessage("sys", t("message.session_resumed", { count: evt.history_length ?? 0 }));
       refreshStatus();
       break;
     case "message":
-      appendOrUpdateStreamMessage("assistant", evt.content || "(empty response)");
+      appendOrUpdateStreamMessage("assistant", evt.content || t("message.empty_response"));
       break;
     case "error":
       setAgentThinking(false);
-      appendMessage("error", `${evt.code || "error"}: ${evt.message || "unknown error"}`);
+      appendMessage("error", `${evt.code || t("error.unknown")}: ${evt.message || t("error.unknown")}`);
       break;
     default:
-      appendMessage("sys", `Event ${evt.type || "unknown"}: ${JSON.stringify(evt)}`);
+      appendMessage("sys", t("message.event") + ' ' + (evt.type || t("error.unknown")) + ': ' + JSON.stringify(evt));
   }
 }
 
@@ -380,7 +409,7 @@ function sendMessage() {
   if (!content) return;
 
   if (!socket || socket.readyState !== WebSocket.OPEN) {
-    appendMessage("error", "Not connected. Click Reconnect to try again.");
+    appendMessage("error", t("error.not_connected"));
     return;
   }
 
@@ -433,7 +462,10 @@ authConnectBtn.addEventListener("click", () => {
 if (themeToggleBtn) {
   themeToggleBtn.addEventListener("click", () => {
     const current = document.documentElement.getAttribute("data-theme") || "light";
-    setTheme(current === "dark" ? "light" : "dark");
+    const themeOrder = ["light", "dark", "brasil"];
+    const currentIndex = themeOrder.indexOf(current);
+    const nextIndex = (currentIndex + 1) % themeOrder.length;
+    setTheme(themeOrder[nextIndex]);
   });
 }
 
@@ -498,7 +530,7 @@ async function boot() {
       // Have a saved key — try connecting with it
       connect();
     } else {
-      appendMessage("sys", "This gateway requires an API key. Enter it in the sidebar.");
+      appendMessage("sys", t("auth.api_key_required"));
     }
   } else {
     authSection.style.display = "none";

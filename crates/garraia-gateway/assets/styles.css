@@ -58,6 +58,36 @@
       --warn-text: #e2c68b;
     }
 
+    [data-theme="brasil"] {
+      --bg: #002776;
+      --bg-accent: #001d54;
+      --ink: #ffffff;
+      --ink-soft: #ffdf00;
+      --panel: #003399;
+      --panel-2: #002776;
+      --panel-edge: #ffdf00;
+      --elev: 0 16px 34px rgba(0, 0, 0, 0.42);
+      --brand: #009b3a;
+      --brand-2: #007a2f;
+      --online: #009b3a;
+      --offline: #ffdf00;
+      --sys: #003399;
+      --assistant: #1a3a5c;
+      --error: #44221f;
+      --error-edge: #9d6649;
+      --sand-1: #002776;
+      --sand-2: #001d54;
+      --accent-line: rgba(255, 223, 0, 0.32);
+      --topbar: rgba(0, 39, 118, 0.9);
+      --glow-a: rgba(255, 223, 0, 0.09);
+      --glow-b: rgba(0, 155, 58, 0.2);
+      --user-grad-a: #009b3a;
+      --user-grad-b: #007a2f;
+      --warn-edge: #ffdf00;
+      --warn-bg: #332800;
+      --warn-text: #ffdf00;
+    }
+
     * {
       box-sizing: border-box;
     }
@@ -886,6 +916,11 @@
     [data-theme="dark"] .nano-agent {
       background: rgba(40, 30, 20, 0.8);
       border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    [data-theme="brasil"] .nano-agent {
+      background: rgba(0, 39, 118, 0.8);
+      border: 1px solid rgba(255, 223, 0, 0.3);
     }
 
     .nano-pixel {

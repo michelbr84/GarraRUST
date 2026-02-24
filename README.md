@@ -21,6 +21,7 @@
   <a href="#início-rápido">Início Rápido</a> &middot;
   <a href="#por-que-garraia">Por que GarraIA?</a> &middot;
   <a href="#recursos">Recursos</a> &middot;
+  <a href="#memória-e-auto-aprendizado">Memória</a> &middot;
   <a href="#segurança">Segurança</a> &middot;
   <a href="#arquitetura">Arquitetura</a> &middot;
   <a href="#migrando-do-openclaw">Migrar do OpenClaw</a> &middot;
@@ -29,7 +30,9 @@
 
 ---
 
-Um único binário de 16 MB que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage - com armazenamento de credenciais criptografadas, recarregamento de configuração a quente e 13 MB de RAM em idle. Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
+**O assistente de IA brasileiro que funciona 100% no seu computador.** Um único binário de 16 MB que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com armazenamento de credenciais criptografadas, recarregamento de configuração a quente, sistema completo de memória e apenas 13 MB de RAM em modo de espera. Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
+
+**100% Local** — Todos os seus dados, conversas e configurações ficam exclusivamente no seu computador. Nenhum dado é enviado para servidores externos.
 
 <!-- TODO: Adicionar GIF de demonstração do terminal VHS aqui (#103) -->
 
@@ -66,36 +69,28 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 
 ### vs OpenClaw, ZeroClaw e outros frameworks de agentes de IA
 
-| | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
-|---|---|---|---|
-| **Tamanho do binário** | 16 MB | ~1.2 GB (com node_modules) | ~25 MB |
-| **Memória em idle** | 13 MB | ~388 MB | ~20 MB |
-| **Início a frio** | 3 ms | 13.9 s | ~50 ms |
-| **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
-| **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
-| **Agendamento** | Cron, intervalo, único | Sim | Não |
-| **Roteamento multi-agente** | Planejado (#108) | Sim (agentId) | Não |
-| **Orquestração de sessões** | Planejado (#108) | Sim | Não |
-| **Suporte MCP** | Stdio | Stdio + HTTP | Stdio |
-| **Canais** | 5 | 6+ | 4 |
-| **Provedores de LLM** | 14 | 10+ | 22+ |
-| **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
-| **Recarregamento de config a quente** | Sim | Não | Não |
-| **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
+| | | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
+|---|---|---|---|---|
+| | **Tamanho do binário** | 16 MB | ~1.2 GB (com node_modules) | ~25 MB |
+| | **Memória em idle** | 13 MB | ~388 MB | ~20 MB |
+| | **Início a frio** | 3 ms | 13.9 s | ~50 ms |
+| | **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
+| | **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
+| | **Agendamento** | Cron, intervalo, único | Sim | Não |
+| | **Roteamento multi-agente** | Planejado (#108) | Sim (agentId) | Não |
+| | **Orquestração de sessões** | Planejado (#108) | Sim | Não |
+| | **Suporte MCP** | Stdio | Stdio + HTTP | Stdio |
+| | **Canais** | 5 | 6+ | 4 |
+| | **Provedores de LLM** | 14 | 10+ | 22+ |
+| | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
+| | **Recarregamento de config a quente** | Sim | Não | Não |
+| | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
+| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
+| | **Arquitetura 100% local** | ✅ Sim | Não | Não |
+| | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
+| | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
 
 *Benchmarks medidos em um droplet DigitalOcean com 1 vCPU, 1 GB RAM. [Reproduza você mesmo](bench/).*
-
-## Segurança
-
-O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que ficam sempre ativos, acessam dados privados e se comunicam externamente.
-
-- **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
-- **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
-- **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
-- **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
-- **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
-- **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
 
 ## Recursos
 
@@ -105,7 +100,7 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 
 - **Anthropic Claude** - streaming (SSE), uso de ferramentas
 - **OpenAI** - GPT-4o, Azure, qualquer endpoint compatível com OpenAI via `base_url`
-- **Ollama** - modelos locais com streaming
+- **Ollama** - modelos locais com streaming, embeddings locais
 
 **Provedores compatíveis com OpenAI:**
 
@@ -154,6 +149,103 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
 - **Ferramenta de migração** - `garraia migrate openclaw` importa skills, canais e credenciais
 - **Configuração interativa** - `garraia init` wizard para configuração de provedor e chave de API
+
+## Memória e Auto-Aprendizado
+
+O GarraIA possui um sistema completo de memória que permite ao agente aprender e lembrar informações entre conversas.
+
+### Sistema de Memória Completo
+
+```
+~/.garraia/
+├── memoria/
+│   ├── fatos.json          # Facts extraídos pelo LLM
+│   └── embeddings/         # Embeddings vetoriais locais
+├── data/
+│   ├── memory.db           # Memória SQLite com vetores
+│   └── sessions.db         # Sessões de conversa
+└── credentials/
+    └── vault.json          # Credenciais criptografadas
+```
+
+### Componentes da Memória
+
+| Componente | Descrição |
+|------------|-----------|
+| **facts.json** | Fatos importantes extraídos automaticamente das conversas pelo extrator LLM |
+| **memory.db** | Banco SQLite com histórico de conversas e busca vetorial (sqlite-vec) |
+| **sessions.db** | Gerenciamento de sessões de conversa persistentes |
+| **embeddings/** | Vetores de embedding armazenados localmente para busca semântica |
+
+### Auto-Learning com Extrator LLM
+
+O GarraIA aprende automaticamente das conversas usando um extrator LLM dedicado:
+
+- **Extração automática** - Após cada conversa, o extrator analisa as mensagens e identifica fatos importantes
+- **Fatos estruturados** - Informações são salvas em `fatos.json` com contexto e data
+- **Busca semântica** - Use embeddings locais (Ollama) para buscar fatos relevantes
+- **Integração com o prompt** - Facts são automaticamente incluídos no contexto do agente
+
+```yaml
+memory:
+  enabled: true
+  auto_extract: true        # Extrai fatos automaticamente
+  extraction_interval: 5    # Intervalo em minutos
+  max_facts: 100           # Máximo de fatos armazenados
+  
+embeddings:
+  provider: ollama          # ou "openai", "cohere"
+  model: nomic-embed-text  # Modelo de embedding local
+  base_url: "http://localhost:11434"
+```
+
+### Embeddings Locais com Ollama
+
+Execute embeddings 100% no seu computador usando Ollama:
+
+- **Modelos suportados**: nomic-embed-text, mxbai-embed-large, all-minilm, etc.
+- **Busca semântica** - Encontre informações relevantes por significado, não apenas palavras
+- **Privacidade total** - Nenhum dado sai do seu computador
+- **Performance** - Rápido e eficiente com modelos locais
+
+```yaml
+embeddings:
+  provider: ollama
+  model: nomic-embed-text
+  base_url: "http://localhost:11434"
+  dimension: 768
+```
+
+### API de Memória
+
+| Comando | Descrição |
+|---------|-----------|
+| `garraia memory list` | Listar todos os fatos |
+| `garraia memory search <query>` | Buscar fatos por相似idade |
+| `garraia memory add <fato>` | Adicionar um fato manualmente |
+| `garraia memory clear` | Limpar todos os fatos |
+| `garraia memory export` | Exportar fatos para JSON |
+
+## Segurança
+
+O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que ficam sempre ativos, acessam dados privados e se comunicam externamente.
+
+- **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
+- **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
+- **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
+- **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
+- **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
+- **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
+
+### Arquitetura Local e Sob Controle do Usuário
+
+O GarraIA foi projetado para funcionar 100% no seu computador:
+
+- **Sem dependência de nuvem** - Execute tudo localmente
+- **Seus dados são seus** - Conversas, facts e configurações ficam no seu PC
+- **Sem telemetria** - Nenhum dado é enviado para servidores externos
+- **Controle total** - Você decide onde e como executar
+- **Offline capable** - Funciona com modelos locais Ollama sem internet
 
 ## Migrando do OpenClaw?
 
@@ -209,6 +301,13 @@ agent:
 
 memory:
   enabled: true
+  auto_extract: true
+  extraction_interval: 5
+
+embeddings:
+  provider: ollama
+  model: nomic-embed-text
+  base_url: "http://localhost:11434"
 
 # Servidores MCP para ferramentas externas
 mcp:
@@ -238,23 +337,25 @@ crates/
 
 | Componente | Status |
 |-----------|--------|
-| Gateway (WebSocket, HTTP, sessões) | Funcionando |
-| Telegram (streaming, comandos, pareamento) | Funcionando |
-| Discord (comandos slash, sessões) | Funcionando |
-| Slack (Socket Mode, streaming) | Funcionando |
-| WhatsApp (webhooks) | Funcionando |
-| iMessage (macOS, grupos) | Funcionando |
-| Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | Funcionando |
-| Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | Funcionando |
-| Cliente MCP (stdio, bridge de ferramentas) | Funcionando |
-| Skills (SKILL.md, auto-descoberta) | Funcionando |
-| Configuração (YAML/TOML, hot-reload) | Funcionando |
-| Memória (SQLite, busca vetorial) | Funcionando |
-| Segurança (cofre, lista de permissões, pareamento) | Funcionando |
-| Agendamento (cron, intervalo, único) | Funcionando |
-| CLI (init, start/stop/restart, update, migrate, mcp, skills) | Funcionando |
-| Sistema de plugins (Sandbox WASM) | Esquelético |
-| Processamento de mídia | Esquelético |
+| Gateway (WebSocket, HTTP, sessões) | ✅ Funcionando |
+| Telegram (streaming, comandos, pareamento) | ✅ Funcionando |
+| Discord (comandos slash, sessões) | ✅ Funcionando |
+| Slack (Socket Mode, streaming) | ✅ Funcionando |
+| WhatsApp (webhooks) | ✅ Funcionando |
+| iMessage (macOS, grupos) | ✅ Funcionando |
+| Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
+| Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
+| Cliente MCP (stdio, bridge de ferramentas) | ✅ Funcionando |
+| Skills (SKILL.md, auto-descoberta) | ✅ Funcionando |
+| Configuração (YAML/TOML, hot-reload) | ✅ Funcionando |
+| Memória (SQLite, busca vetorial, facts.json) | ✅ Funcionando |
+| Auto-learning (extrator LLM) | ✅ Funcionando |
+| Embeddings locais (Ollama) | ✅ Funcionando |
+| Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
+| Agendamento (cron, intervalo, único) | ✅ Funcionando |
+| CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
+| Sistema de plugins (Sandbox WASM) | 🔶 Esquelético |
+| Processamento de mídia | 🔶 Esquelético |
 
 ## Contribuindo
 
