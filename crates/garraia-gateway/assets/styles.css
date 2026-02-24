@@ -1002,3 +1002,13 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
+.settings-header {
+  margin-bottom: 16px;
+  display: flex !important;
+  justify-content: space-between;
+  align-items: center;
+}
+.text-secondary {
+  color: var(--text-secondary);
+}
