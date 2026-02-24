@@ -5,6 +5,7 @@ pub mod a2a;
 pub mod anthropic;
 pub mod embeddings;
 pub mod execution_budget;
+pub mod memory_extractor;
 pub mod ollama;
 pub mod openai;
 pub mod providers;

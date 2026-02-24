@@ -1,0 +1,73 @@
+{
+  "app.title": "GarraIA",
+  "app.subtitle": "Your personal AI assistant",
+
+  "status.connected": "Connected",
+  "status.disconnected": "Disconnected",
+  "status.running": "Running",
+  "status.unavailable": "unavailable",
+
+  "system.status": "System Status",
+
+  "gateway": "Gateway",
+  "server": "Server",
+  "session": "Session",
+  "session.none": "none",
+  "active_sessions": "Active sessions",
+
+  "channels": "Channels",
+  "none_configured": "None configured",
+  "not_configured": "Not configured",
+
+  "llm_provider": "LLM Provider",
+  "model_optional": "Model (optional)",
+
+  "activate_provider": "Activate provider",
+  "save_activate": "Save and activate",
+
+  "refresh_status": "Refresh status",
+
+  "settings.mcps": "MCP Settings",
+  "extensions": "Extensions",
+
+  "chat.placeholder": "Type a message...",
+  "chat.send": "Send",
+  "chat.new": "New chat",
+  "chat.reconnect": "Reconnect",
+
+  "theme.dark_mode": "Dark Mode",
+  "theme.light_mode": "Light Mode",
+  "theme.brasil": "🇧🇷 Brasil Mode",
+
+  "error.not_connected": "Not connected. Click Reconnect to try again.",
+  "error.provider_activation": "Failed to activate provider.",
+  "error.unknown": "Unknown error",
+
+  "message.provider_activated": "Provider ${id} activated.",
+  "message.session_resumed": "Session resumed (${count} messages in history).",
+  "message.connected": "Connected",
+  "message.raw": "Raw: ${raw}",
+  "message.empty_response": "(empty response)",
+  "message.event": "Event",
+
+  "auth.api_key_required": "This gateway requires an API key. Enter it in the sidebar.",
+  "auth.enter_key": "Enter API key",
+  "auth.connect": "Connect",
+
+  "provider.not_configured": "not configured",
+  "provider.active": "active",
+  "provider.active_default": "active, default",
+  "provider.not_configured_suffix": " (not configured)",
+
+  "button.activating": "Activating...",
+  "button.save_activate": "Save & Activate",
+
+  "update.available": "Update available: v${version} → v${latest} — run garraia update",
+
+  "status.checking": "checking...",
+  "auth.enter_api_key": "Enter API key...",
+  "auth.enter_gateway_key": "Enter your gateway key",
+  "auth.requires_auth": "This gateway requires authentication.",
+
+  "provider.model_placeholder": "Provider default model"
+}

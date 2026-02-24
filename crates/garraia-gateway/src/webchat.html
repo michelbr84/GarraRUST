@@ -1092,7 +1092,7 @@
         <div class="badge"></div>
         <div>
           <h1 class="title">GarraIA</h1>
-          <p class="subtitle">Your personal AI assistant</p>
+          <p class="subtitle" data-i18n="app.subtitle">Your personal AI assistant</p>
         </div>
       </div>
 
@@ -1111,7 +1111,7 @@
           <line x1="8" y1="21" x2="16" y2="21"></line>
           <line x1="12" y1="17" x2="12" y2="21"></line>
         </svg>
-        MCPs Settings
+        <span data-i18n="settings.mcps">MCPs Settings</span>
       </div>
 
       <div class="nav-item" id="nav-extensions">
@@ -1126,15 +1126,17 @@
           <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
           <line x1="12" y1="22.08" x2="12" y2="12"></line>
         </svg>
-        Extensions
+        <span data-i18n="extensions">Extensions</span>
       </div>
     </aside>
 
     <div class="main-wrapper">
       <header class="topbar">
         <div class="topbar-actions">
-          <button id="theme-toggle" class="theme-toggle" type="button">Dark Mode</button>
-          <div class="pill" id="conn-pill"><span class="offline">Disconnected</span></div>
+          <button onclick="setLanguage('pt-BR')">PT</button>
+          <button onclick="setLanguage('en-US')">EN</button>
+          <button id="theme-toggle" class="theme-toggle" type="button" data-i18n="theme.dark_mode">Modo Escuro</button>
+          <div class="pill" id="conn-pill"><span class="offline" data-i18n="status.disconnected">Desconectado</span></div>
         </div>
       </header>
 
@@ -1151,8 +1153,8 @@
               <span>Enter sends, Shift+Enter newline</span>
             </div>
             <div class="actions">
-              <button id="reconnect">Reconnect</button>
-              <button id="clear">New Chat</button>
+              <button id="reconnect" data-i18n="chat.reconnect">Reconectar</button>
+              <button id="clear" data-i18n="chat.new">Novo Chat</button>
             </div>
           </div>
 
@@ -1169,8 +1171,8 @@
 
           <div class="controls">
             <div class="composer">
-              <textarea id="input" placeholder="Type a message..."></textarea>
-              <button id="send" class="primary">Send</button>
+              <textarea id="input" data-i18n-placeholder="chat.placeholder" placeholder="Digite uma mensagem..."></textarea>
+              <button id="send" class="primary" data-i18n="chat.send">Enviar</button>
             </div>
           </div>
         </section>
@@ -1216,22 +1218,22 @@
         </section>
         <aside class="panel">
           <div class="panel-head">
-            <img class="panel-art" src="/assets/UI%20Crab.png" alt="GarraIA UI crab">
-            <h2>System Status</h2>
+            <img class="panel-art" src="/static/UI%20Crab.png" alt="GarraIA UI crab">
+            <h2 data-i18n="system.status">Status do Sistema</h2>
           </div>
           <div class="sidebar-body">
             <div class="status-group">
-              <h3>Gateway</h3>
+              <h3 data-i18n="gateway">Gateway</h3>
               <div class="status-row">
-                <span>Server</span>
-                <code id="api-status">checking...</code>
+                <span data-i18n="server">Server</span>
+                <code id="api-status" data-i18n="status.checking">checking...</code>
               </div>
               <div class="status-row">
-                <span>Session</span>
+                <span data-i18n="session">Session</span>
                 <code id="session">none</code>
               </div>
               <div class="status-row">
-                <span>Active sessions</span>
+                <span data-i18n="active_sessions">Active sessions</span>
                 <code id="session-count">-</code>
               </div>
             </div>
@@ -1239,48 +1241,50 @@
             <hr class="divider">
 
             <div class="status-group">
-              <h3>Channels</h3>
+              <h3 data-i18n="channels">Channels</h3>
               <div id="channel-list" class="channel-list">
-                <span class="no-channels">No channels connected</span>
+                <span class="no-channels" data-i18n="none_configured">No channels connected</span>
               </div>
             </div>
 
             <hr class="divider">
 
             <div class="status-group">
-              <h3>LLM Provider</h3>
+              <h3>Provedor LLM</h3>
               <select id="provider-select" class="provider-select">
                 <option value="">Loading...</option>
               </select>
               <div id="provider-status" class="provider-status"></div>
-              <label for="provider-model-input" class="provider-model-label">Model (optional)</label>
+              <label for="provider-model-input" class="provider-model-label" data-i18n="model_optional">Model (optional)</label>
               <input id="provider-model-input" class="provider-model-input" list="provider-model-options"
-                placeholder="Provider default model" autocomplete="off">
+                data-i18n-placeholder="provider.model_placeholder" placeholder="Provider default model" autocomplete="off">
               <datalist id="provider-model-options"></datalist>
               <div id="provider-model-status" class="provider-model-status"></div>
               <div id="provider-key-section" style="display:none">
-                <input id="provider-api-key" type="password" placeholder="Enter API key..." autocomplete="off"
+                <input id="provider-api-key" type="password" data-i18n-placeholder="auth.enter_api_key" placeholder="Enter API key..." autocomplete="off"
                   class="provider-key-input">
-                <button id="provider-activate" class="provider-activate-btn">Save & Activate</button>
+                <button id="provider-activate" class="provider-activate-btn" data-i18n="save_activate">Save & Activate</button>
               </div>
             </div>
 
             <div id="auth-section" class="gateway-key-section" style="display:none">
               <hr class="divider">
               <label for="key-gateway">Gateway API Key</label>
-              <input id="key-gateway" type="password" placeholder="Enter your gateway key" autocomplete="off">
-              <p class="hint">This gateway requires authentication.</p>
-              <button id="auth-connect">Connect</button>
+              <input id="key-gateway" type="password" data-i18n-placeholder="auth.enter_gateway_key" placeholder="Enter your gateway key" autocomplete="off">
+              <p class="hint" data-i18n="auth.requires_auth">This gateway requires authentication.</p>
+              <button id="auth-connect" data-i18n="auth.connect">Connect</button>
             </div>
 
             <div class="actions">
-              <button id="refresh">Refresh Status</button>
+              <button id="refresh" data-i18n="refresh_status">Refresh Status</button>
             </div>
           </div>
         </aside>
       </div>
     </div>
   </main>
+
+  <script src="/assets/i18n.js"></script>
 
   <script>
     const chatEl = document.getElementById("chat");
@@ -1327,6 +1331,29 @@
     let nanoElapsed = 0;
     let thinkingTimeout = null;
 
+    // Initialize i18n on page load
+    document.addEventListener("DOMContentLoaded", async () => {
+        const savedLang = localStorage.getItem("lang");
+        
+        if (savedLang) {
+            await loadLocale(savedLang);
+        } else {
+            const browserLang = navigator.language || "en-US";
+            if (browserLang.startsWith("pt")) {
+                await loadLocale("pt-BR");
+            } else {
+                await loadLocale("en-US");
+            }
+        }
+    });
+
+    // Language switch function
+    function setLanguage(lang) {
+        localStorage.setItem("lang", lang);
+        loadLocale(lang);
+    }
+    window.setLanguage = setLanguage;
+
     // Pre-fill saved key
     keyGatewayEl.value = gatewayKey;
     try {
@@ -1365,7 +1392,7 @@
       const selected = theme === "dark" ? "dark" : "light";
       document.documentElement.setAttribute("data-theme", selected);
       if (themeToggleBtn) {
-        themeToggleBtn.textContent = selected === "dark" ? "Light Mode" : "Dark Mode";
+        themeToggleBtn.textContent = selected === "dark" ? t("theme.light_mode") : t("theme.dark_mode");
       }
       if (persist) {
         localStorage.setItem(themeStorageKey, selected);
@@ -1391,8 +1418,8 @@
 
     function setConnectionState(isConnected) {
       connPill.innerHTML = isConnected
-        ? '<span class="online">Connected</span>'
-        : '<span class="offline">Disconnected</span>';
+        ? '<span class="online" data-i18n="status.connected">' + t("status.connected") + '</span>'
+        : '<span class="offline" data-i18n="status.disconnected">' + t("status.disconnected") + '</span>';
     }
 
     function setSession(id) {
@@ -1403,7 +1430,7 @@
         sessionEl.title = sessionId;
       } else {
         localStorage.removeItem(storageKey);
-        sessionEl.textContent = "none";
+        sessionEl.textContent = t("session.none");
         sessionEl.title = "";
       }
     }
@@ -1732,7 +1759,7 @@
           const dismissed = sessionStorage.getItem("garraia.update_dismissed");
           if (dismissed !== j.latest_version) {
             updateBannerText.textContent =
-              `Update available: v${j.version} \u2192 v${j.latest_version.replace(/^v/, "")} - run garraia update`;
+              t("update.available", { version: j.version, latest: j.latest_version.replace(/^v/, "") });
             updateBanner.style.display = "";
           }
         } else {
@@ -1753,7 +1780,8 @@
         } else {
           const noChannels = document.createElement("span");
           noChannels.className = "no-channels";
-          noChannels.textContent = "None configured";
+          noChannels.setAttribute("data-i18n", "none_configured");
+          noChannels.textContent = t("none_configured");
           channelListEl.appendChild(noChannels);
         }
       } catch {
@@ -1761,7 +1789,7 @@
         const offDot = document.createElement("span");
         offDot.className = "status-dot dot-off";
         apiStatusEl.appendChild(offDot);
-        apiStatusEl.appendChild(document.createTextNode("unavailable"));
+        apiStatusEl.appendChild(document.createTextNode(t("status.unavailable")));
         sessionCountEl.textContent = "-";
         channelListEl.textContent = "-";
       }
@@ -1779,7 +1807,7 @@
         for (const p of providerData) {
           const opt = document.createElement("option");
           opt.value = p.id;
-          opt.textContent = p.active ? p.display_name : `${p.display_name} (not configured)`;
+          opt.textContent = p.active ? p.display_name : p.display_name + t("provider.not_configured_suffix");
           providerSelect.appendChild(opt);
         }
 
@@ -1791,7 +1819,7 @@
         }
         updateProviderUI();
       } catch {
-        providerSelect.innerHTML = '<option value="">unavailable</option>';
+        providerSelect.innerHTML = '<option value="">' + t("status.unavailable") + '</option>';
         providerStatus.textContent = "";
         providerModelInput.value = "";
         providerModelInput.disabled = true;
@@ -1805,7 +1833,7 @@
 
       if (!provider) {
         providerModelInput.value = "";
-        providerModelInput.placeholder = "Provider default model";
+        providerModelInput.placeholder = t("provider.model_placeholder");
         providerModelInput.disabled = true;
         providerModelStatus.textContent = "";
         return;
@@ -1827,8 +1855,8 @@
       const preferredModel = savedModel || defaultModel;
       providerModelInput.value = preferredModel;
       providerModelInput.placeholder = defaultModel
-        ? `Provider default: ${defaultModel}`
-        : "Provider default model";
+        ? t("provider.model_placeholder") + ": " + defaultModel
+        : t("provider.model_placeholder");
       providerModelInput.disabled = !provider.active;
 
       if (!provider.active) {
@@ -1854,7 +1882,7 @@
         providerStatus.innerHTML = `<span class="status-dot dot-ok"></span>${tag}`;
         providerKeySection.style.display = "none";
       } else {
-        providerStatus.innerHTML = `<span class="status-dot dot-off"></span>not configured`;
+        providerStatus.innerHTML = '<span class="status-dot dot-off"></span>' + t("provider.not_configured");
         providerKeySection.style.display = p.needs_api_key ? "" : "none";
       }
       selectedProvider = id;
@@ -1881,7 +1909,7 @@
       if (!key) return;
       const model = providerModelInput.value.trim();
 
-      providerActivateBtn.textContent = "Activating...";
+      providerActivateBtn.textContent = t("button.activating");
       providerActivateBtn.disabled = true;
 
       try {
@@ -1895,15 +1923,15 @@
         const j = await r.json();
         if (r.ok) {
           providerApiKey.value = "";
-          appendMessage("sys", `Provider ${id} activated.`);
+          appendMessage("sys", t("message.provider_activated", { id: id }));
           await loadProviders();
         } else {
-          appendMessage("error", j.message || "Failed to activate provider.");
+          appendMessage("error", j.message || t("error.provider_activation"));
         }
       } catch (e) {
-        appendMessage("error", `Failed to activate provider: ${e}`);
+        appendMessage("error", t("error.provider_activation") + " " + e);
       } finally {
-        providerActivateBtn.textContent = "Save & Activate";
+        providerActivateBtn.textContent = t("button.save_activate");
         providerActivateBtn.disabled = false;
       }
     });
@@ -1927,7 +1955,7 @@
       try {
         evt = JSON.parse(raw);
       } catch {
-        appendMessage("sys", `Raw: ${raw}`);
+        appendMessage("sys", `Bruto: ${raw}`);
         return;
       }
 
@@ -1936,23 +1964,23 @@
       switch (evt.type) {
         case "connected":
           if (evt.note) {
-            appendMessage("sys", `Connected (${evt.note}).`);
+            appendMessage("sys", t("message.connected") + ` (${evt.note}).`);
           }
           refreshStatus();
           break;
         case "resumed":
-          appendMessage("sys", `Session resumed (${evt.history_length ?? 0} messages in history).`);
+          appendMessage("sys", t("message.session_resumed", { count: evt.history_length ?? 0 }));
           refreshStatus();
           break;
         case "message":
-          appendOrUpdateStreamMessage("assistant", evt.content || "(empty response)");
+          appendOrUpdateStreamMessage("assistant", evt.content || t("message.empty_response"));
           break;
         case "error":
           setAgentThinking(false);
-          appendMessage("error", `${evt.code || "error"}: ${evt.message || "unknown error"}`);
+          appendMessage("error", `${evt.code || t("error.unknown")}: ${evt.message || t("error.unknown")}`);
           break;
         default:
-          appendMessage("sys", `Event ${evt.type || "unknown"}: ${JSON.stringify(evt)}`);
+          appendMessage("sys", t("message.event") + ' ' + (evt.type || t("error.unknown")) + ': ' + JSON.stringify(evt));
       }
     }
 
@@ -2005,7 +2033,7 @@
       if (!content) return;
 
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        appendMessage("error", "Not connected. Click Reconnect to try again.");
+        appendMessage("error", t("error.not_connected"));
         return;
       }
 
@@ -2116,7 +2144,7 @@
         }
         list.innerHTML = servers.map(s => {
           const statusClass = s.connected ? "online" : "offline";
-          const statusText = s.connected ? "Connected" : "Disconnected";
+          const statusText = s.connected ? t("status.connected") : t("status.disconnected");
           return `<div class="card">
             <div class="card-header">
               <h3 class="card-title">${s.name}</h3>
@@ -2155,7 +2183,7 @@
           // Have a saved key — try connecting with it
           connect();
         } else {
-          appendMessage("sys", "This gateway requires an API key. Enter it in the sidebar.");
+          appendMessage("sys", t("auth.api_key_required"));
         }
       } else {
         authSection.style.display = "none";

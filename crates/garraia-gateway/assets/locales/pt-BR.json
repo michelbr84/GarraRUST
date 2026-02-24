@@ -1,0 +1,73 @@
+{
+  "app.title": "GarraIA",
+  "app.subtitle": "Seu assistente pessoal de IA",
+
+  "status.connected": "Conectado",
+  "status.disconnected": "Desconectado",
+  "status.running": "Em execução",
+  "status.unavailable": "indisponível",
+
+  "system.status": "Status do Sistema",
+
+  "gateway": "Gateway",
+  "server": "Servidor",
+  "session": "Sessão",
+  "session.none": "nenhuma",
+  "active_sessions": "Sessões ativas",
+
+  "channels": "Canais",
+  "none_configured": "Nenhum configurado",
+  "not_configured": "Não configurado",
+
+  "llm_provider": "Provedor LLM",
+  "model_optional": "Modelo (opcional)",
+
+  "activate_provider": "Ativar provedor",
+  "save_activate": "Salvar e ativar",
+
+  "refresh_status": "Atualizar status",
+
+  "settings.mcps": "Configurações MCP",
+  "extensions": "Extensões",
+
+  "chat.placeholder": "Digite uma mensagem...",
+  "chat.send": "Enviar",
+  "chat.new": "Novo chat",
+  "chat.reconnect": "Reconectar",
+
+  "theme.dark_mode": "Modo Escuro",
+  "theme.light_mode": "Modo Claro",
+  "theme.brasil": "🇧🇷 Modo Brasil",
+
+  "error.not_connected": "Não conectado. Clique em Reconectar para tentar novamente.",
+  "error.provider_activation": "Falha ao ativar provedor.",
+  "error.unknown": "Erro desconhecido",
+
+  "message.provider_activated": "Provedor ${id} ativado.",
+  "message.session_resumed": "Sessão retomada (${count} mensagens no histórico).",
+  "message.connected": "Conectado",
+  "message.raw": "Bruto: ${raw}",
+  "message.empty_response": "(resposta vazia)",
+  "message.event": "Evento",
+
+  "auth.api_key_required": "Este gateway requer uma chave de API. Insira-a na barra lateral.",
+  "auth.enter_key": "Digite a chave de API",
+  "auth.connect": "Conectar",
+
+  "provider.not_configured": "não configurado",
+  "provider.active": "ativo",
+  "provider.active_default": "ativo, padrão",
+  "provider.not_configured_suffix": " (não configurado)",
+
+  "button.activating": "Ativando...",
+  "button.save_activate": "Salvar & Ativar",
+
+  "update.available": "Atualização disponível: v${version} → v${latest} — execute garraia update",
+
+  "status.checking": "verificando...",
+  "auth.enter_api_key": "Digite a chave de API...",
+  "auth.enter_gateway_key": "Digite a chave do gateway",
+  "auth.requires_auth": "Este gateway requer autenticação.",
+
+  "provider.model_placeholder": "Modelo padrão do provedor"
+}

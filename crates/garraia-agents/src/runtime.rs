@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use futures::StreamExt;
 use futures::future::join_all;
-use garraia_common::{Error, Result, AgentResponse};
+use garraia_common::{Error, Result};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -10,6 +10,7 @@ use tracing::{info, instrument, warn};
 
 use crate::embeddings::EmbeddingProvider;
 use crate::execution_budget::ExecutionBudget;
+use crate::memory_extractor::LlmMemoryExtractor;
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart, StreamEvent,
     ToolDefinition,
@@ -26,6 +27,7 @@ pub struct AgentRuntime {
     system_prompt: Option<String>,
     max_tokens: Option<u32>,
     max_context_tokens: Option<usize>,
+    memory_extractor: LlmMemoryExtractor,
 }
 
 impl AgentRuntime {
@@ -39,6 +41,7 @@ impl AgentRuntime {
             system_prompt: None,
             max_tokens: None,
             max_context_tokens: None,
+            memory_extractor: LlmMemoryExtractor::new(),
         }
     }
 
@@ -585,6 +588,39 @@ impl AgentRuntime {
                     warn!("failed to store turn in memory: {}", e);
                 }
 
+                // Auto-learning: extrair fatos da mensagem do usuário
+                let facts_result = self.memory_extractor.extract_facts(self, user_text).await;
+                if let Ok(facts) = facts_result {
+                    for fact in facts {
+                        // Validar que o fato tem valores não vazios
+                        if fact.confidence >= 0.80 
+                            && !fact.key.trim().is_empty() 
+                            && !fact.value.trim().is_empty() 
+                        {
+                            let content = format!(
+                                "[FACT] type={} key={} value={} confidence={:.2}",
+                                fact.fact_type, fact.key, fact.value, fact.confidence
+                            );
+                            if let Some(memory) = &self.memory {
+                                // Store fact in memory with embedding
+                                let embedding = self.embed_document(&content).await;
+                                let _ = memory.remember(NewMemoryEntry {
+                                    session_id: session_id.to_string(),
+                                    channel_id: None,
+                                    user_id: user_id.map(|s| s.to_string()),
+                                    continuity_key: continuity_key.map(|s| s.to_string()),
+                                    role: MemoryRole::User,
+                                    content,
+                                    embedding,
+                                    embedding_model: self.embedding_model(),
+                                    metadata: serde_json::json!({ "kind": "learned_fact" }),
+                                }).await;
+                                info!("stored learned fact: {}={}", fact.key, fact.value);
+                            }
+                        }
+                    }
+                }
+
                 budget.resetar_turno();
                 return Ok(final_text);
             }
@@ -1043,6 +1079,33 @@ impl AgentRuntime {
         self.embeddings
             .as_ref()
             .map(|provider| provider.model().to_string())
+    }
+
+    /// Simple chat completion for use by memory extractor
+    pub async fn chat_completion(
+        &self,
+        messages: Vec<ChatMessage>,
+        _system: Option<String>,
+        _model: Option<String>,
+        _max_tokens: Option<u32>,
+        _temperature: Option<f32>,
+        _tools: Option<Vec<ToolDefinition>>,
+    ) -> Result<String> {
+        let provider = self
+            .default_provider()
+            .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?;
+
+        let request = LlmRequest {
+            model: String::new(),
+            messages,
+            system: None,
+            max_tokens: Some(4096),
+            temperature: None,
+            tools: Vec::new(),
+        };
+
+        let response = provider.complete(&request).await?;
+        Ok(extract_text(&response.content))
     }
 }
 
