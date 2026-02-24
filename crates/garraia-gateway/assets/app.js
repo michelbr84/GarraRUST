@@ -19,7 +19,7 @@ async function boot() {
   
   // Set initial state from DOM / Storage
   EventBus.emit("state:session", GarraState.session);
-  GarraState.setView("chat"); // Trigger initial router state
+  // Router handles initial view automatically now based on hash
   
   requestAnimationFrame(() => {
     document.body.classList.add("ready");

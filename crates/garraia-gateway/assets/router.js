@@ -4,14 +4,27 @@ import { loadMemory } from './views/memoryView.js';
 import { loadLogs } from './views/logsView.js';
 
 export function initRouter() {
+  // Listen to hash changes to drive the state
+  window.addEventListener("hashchange", () => {
+    let hash = window.location.hash.replace("#/", "");
+    if (!hash || hash === "") hash = "chat";
+    GarraState.setView(hash);
+  });
+
+  // Intercept nav clicks to just change the hash
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".nav-item[data-view]");
     if (!btn) return;
     e.preventDefault();
-    GarraState.setView(btn.dataset.view);
+    window.location.hash = `#/${btn.dataset.view}`;
   });
 
   EventBus.on("state:view", (viewName) => {
+    // Ensure URL hash matches the state (if driven programmatically)
+    if (window.location.hash !== `#/${viewName}`) {
+      window.history.replaceState(null, null, `#/${viewName}`);
+    }
+
     document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
       btn.classList.toggle("active", btn.dataset.view === viewName);
       btn.classList.toggle("is-active", btn.dataset.view === viewName);
@@ -30,4 +43,9 @@ export function initRouter() {
     if (viewName === "memory") loadMemory();
     if (viewName === "logs") loadLogs();
   });
+
+  // Trigger initial route based on hash on boot
+  let initialHash = window.location.hash.replace("#/", "");
+  if (!initialHash) initialHash = "chat";
+  GarraState.setView(initialHash);
 }
