@@ -182,26 +182,33 @@ function initTheme() {
 // ===============================
 // 4. View Router
 // ===============================
-const navItemsList = document.querySelectorAll(".nav-item");
-const viewSections = document.querySelectorAll(".panel-view");
+const navItemsList = document.querySelectorAll(".nav-item[data-view]");
+const viewSections = document.querySelectorAll(".panel-view[data-view-panel]");
 
 function initRouter() {
-  navItemsList.forEach(item => {
-    const viewName = item.id.replace("nav-", "");
-    item.addEventListener("click", () => GarraState.setView(viewName));
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".nav-item[data-view]");
+    if (!btn) return;
+    e.preventDefault();
+    GarraState.setView(btn.dataset.view);
   });
 
   EventBus.on("state:view", (viewName) => {
     // Update nav active states
-    navItemsList.forEach(item => {
-      if (item.id === `nav-${viewName}`) item.classList.add("active");
-      else item.classList.remove("active");
+    document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.view === viewName);
+      btn.classList.toggle("is-active", btn.dataset.view === viewName); // For compatibility
     });
 
     // Update view visibility
-    viewSections.forEach(section => {
-      if (section.id === `view-${viewName}`) section.style.display = "";
-      else section.style.display = "none";
+    document.querySelectorAll(".panel-view[data-view-panel]").forEach(panel => {
+      if (panel.dataset.viewPanel === viewName) {
+        panel.style.display = "";
+        panel.classList.add("is-active");
+      } else {
+        panel.style.display = "none";
+        panel.classList.remove("is-active");
+      }
     });
 
     // View-specific actions

@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use garraia_db::RecallQuery;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::state::SharedState;
 
