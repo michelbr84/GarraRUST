@@ -15,7 +15,7 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
 
-/// Anthropic Claude LLM provider.
+/// Provedor de LLM Anthropic Claude.
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
@@ -91,7 +91,7 @@ impl LlmProvider for AnthropicProvider {
         let body = self.build_request(request);
 
         tracing::Span::current().record("model", body.model.as_str());
-        debug!("anthropic request: model={}", body.model);
+        debug!("requisição Anthropic: model={}", body.model);
 
         let response = self
             .client
@@ -102,20 +102,20 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("anthropic request failed: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha na requisição à Anthropic: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(Error::Agent(format!(
-                "anthropic API error: status={status}, body={body}"
+                "erro na API da Anthropic: status={status}, body={body}"
             )));
         }
 
         let api_response: AnthropicResponse = response
             .json()
             .await
-            .map_err(|e| Error::Agent(format!("failed to parse anthropic response: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha ao interpretar resposta da Anthropic: {e}")))?;
 
         Ok(from_anthropic_response(api_response))
     }
@@ -127,10 +127,10 @@ impl LlmProvider for AnthropicProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let body = self.build_request(request);
         tracing::Span::current().record("model", body.model.as_str());
-        debug!("anthropic streaming request: model={}", body.model);
+        debug!("requisição streaming Anthropic: model={}", body.model);
 
         let mut body_value = serde_json::to_value(&body)
-            .map_err(|e| Error::Agent(format!("failed to serialize request: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha ao serializar requisição: {e}")))?;
         body_value["stream"] = serde_json::Value::Bool(true);
 
         let response = self
@@ -142,13 +142,13 @@ impl LlmProvider for AnthropicProvider {
             .json(&body_value)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("anthropic stream request failed: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha na requisição streaming à Anthropic: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(Error::Agent(format!(
-                "anthropic API error: status={status}, body={body}"
+                "erro na API da Anthropic: status={status}, body={body}"
             )));
         }
 
@@ -164,12 +164,12 @@ impl LlmProvider for AnthropicProvider {
             (byte_stream, String::new()),
             |(mut stream, mut buffer)| async move {
                 loop {
-                    // Look for complete SSE events (separated by \n\n)
+                    // Procura eventos SSE completos (separados por \n\n)
                     if let Some(pos) = buffer.find("\n\n") {
                         let event_str = buffer[..pos].to_string();
                         buffer = buffer[pos + 2..].to_string();
 
-                        // Parse "data: ..." line
+                        // Interpreta a linha "data: ..."
                         let mut data_line = None;
                         for line in event_str.lines() {
                             if let Some(d) = line.strip_prefix("data: ") {
@@ -185,14 +185,14 @@ impl LlmProvider for AnthropicProvider {
                         continue;
                     }
 
-                    // Need more data from the byte stream
+                    // Precisa de mais dados do stream de bytes
                     match stream.next().await {
                         Some(Ok(bytes)) => {
                             buffer.push_str(&String::from_utf8_lossy(&bytes));
                         }
                         Some(Err(e)) => {
                             return Some((
-                                Err(Error::Agent(format!("stream read error: {e}"))),
+                                Err(Error::Agent(format!("erro ao ler stream: {e}"))),
                                 (stream, buffer),
                             ));
                         }
@@ -223,14 +223,14 @@ impl LlmProvider for AnthropicProvider {
         match self.complete(&request).await {
             Ok(_) => Ok(true),
             Err(e) => {
-                info!("anthropic health check failed: {e}");
+                info!("falha no health check da Anthropic: {e}");
                 Ok(false)
             }
         }
     }
 }
 
-// --- Anthropic Wire Types (private) ---
+// --- Tipos Wire da Anthropic (privado) ---
 
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -297,7 +297,7 @@ struct AnthropicUsage {
     output_tokens: u32,
 }
 
-// --- SSE Parsing ---
+// --- Parsing de SSE ---
 
 #[derive(Debug, Deserialize)]
 struct SseData {
@@ -349,7 +349,7 @@ fn parse_sse_data(data: &str) -> Option<StreamEvent> {
                     name: block.name.unwrap_or_default(),
                 })
             } else {
-                None // text block starts don't need a separate event
+                None // início de bloco de texto não precisa de evento separado
             }
         }
         "content_block_delta" => {
@@ -380,7 +380,7 @@ fn parse_sse_data(data: &str) -> Option<StreamEvent> {
     }
 }
 
-// --- Conversion Functions ---
+// --- Funções de Conversão ---
 
 fn to_anthropic_message(msg: &ChatMessage) -> AnthropicMessage {
     let role = match msg.role {
@@ -409,7 +409,7 @@ fn to_anthropic_message(msg: &ChatMessage) -> AnthropicMessage {
                         content: content.clone(),
                     },
                     ContentBlock::Image { url } => AnthropicBlock::Text {
-                        text: format!("[image: {url}]"),
+                        text: format!("[imagem: {url}]"),
                     },
                 })
                 .collect();
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(llm_response.content.len(), 1);
         match &llm_response.content[0] {
             ContentBlock::Text { text } => assert_eq!(text, "Hello! How can I help?"),
-            _ => panic!("expected text block"),
+            _ => panic!("esperava um bloco de texto"),
         }
         assert_eq!(llm_response.usage.as_ref().unwrap().input_tokens, 10);
         assert_eq!(llm_response.usage.as_ref().unwrap().output_tokens, 20);
@@ -573,7 +573,7 @@ mod tests {
                 assert_eq!(name, "bash");
                 assert_eq!(input["command"], "echo hello");
             }
-            _ => panic!("expected tool_use block"),
+            _ => panic!("esperava um bloco tool_use"),
         }
     }
 
@@ -600,10 +600,10 @@ mod tests {
                         assert_eq!(tool_use_id, "toolu_123");
                         assert_eq!(content, "hello\n");
                     }
-                    _ => panic!("expected tool_result block"),
+                    _ => panic!("esperava um bloco tool_result"),
                 }
             }
-            _ => panic!("expected blocks content"),
+            _ => panic!("esperava conteúdo em blocos"),
         }
     }
 

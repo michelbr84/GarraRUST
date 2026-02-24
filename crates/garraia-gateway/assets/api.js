@@ -87,6 +87,31 @@ export function updateProviderUI() {
     dom.providerStatus.innerHTML = '<span class="status-dot dot-off"></span>' + (window.t ? window.t("provider.not_configured") : "Not Configured");
     if (dom.providerKeySection) dom.providerKeySection.style.display = p.needs_api_key ? "" : "none";
   }
+
+  // Handle Model Datalist and Default value
+  if (dom.providerModelOptions) {
+    dom.providerModelOptions.innerHTML = "";
+    if (p.models && p.models.length > 0) {
+      for (const m of p.models) {
+        const option = document.createElement("option");
+        option.value = m;
+        dom.providerModelOptions.appendChild(option);
+      }
+    }
+  }
+
+  if (dom.providerModelInput) {
+    // If the provider has a known configured model from backend, use it
+    if (p.model) {
+      dom.providerModelInput.value = p.model;
+    } else if (p.models && p.models.length > 0) {
+       // If no model is configured, but there are available models, default to it
+       dom.providerModelInput.value = p.models[0];
+    } else {
+       dom.providerModelInput.value = "";
+    }
+  }
+
   GarraState.setProvider(id);
 }
 

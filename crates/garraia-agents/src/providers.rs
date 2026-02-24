@@ -5,38 +5,39 @@ use futures::Stream;
 use garraia_common::Result;
 use serde::{Deserialize, Serialize};
 
-/// Trait for LLM provider integrations (Anthropic, OpenAI, Ollama, etc.).
+/// Trait para integrações com provedores de LLM (Anthropic, OpenAI, Ollama, etc.).
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Provider identifier (e.g. "anthropic", "openai", "ollama").
+    /// Identificador do provedor (ex: "anthropic", "openai", "ollama").
     fn provider_id(&self) -> &str;
 
-    /// Send a completion request and return the response.
+    /// Envia uma requisição de completion e retorna a resposta.
     async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse>;
 
-    /// Stream a completion request, returning events as they arrive.
-    /// Default implementation returns an error indicating streaming is not supported.
+    /// Envia uma requisição de completion em modo streaming,
+    /// retornando eventos conforme são recebidos.
+    /// A implementação padrão retorna erro indicando que streaming não é suportado.
     async fn stream_complete(
         &self,
         _request: &LlmRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         Err(garraia_common::Error::Agent(format!(
-            "{} provider does not support streaming",
+            "provedor {} não suporta streaming",
             self.provider_id()
         )))
     }
 
-    /// Return the provider's configured default model, if known.
+    /// Retorna o modelo padrão configurado para o provedor, se conhecido.
     fn configured_model(&self) -> Option<&str> {
         None
     }
 
-    /// Return a list of models that can be selected for this provider.
+    /// Retorna a lista de modelos disponíveis para este provedor.
     async fn available_models(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
 
-    /// Check if the provider is available and configured.
+    /// Verifica se o provedor está disponível e corretamente configurado.
     async fn health_check(&self) -> Result<bool>;
 }
 
@@ -113,26 +114,26 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
-/// Events emitted during a streaming LLM completion.
+/// Eventos emitidos durante uma completion em modo streaming.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    /// A chunk of text output.
+    /// Um trecho incremental de texto gerado.
     TextDelta(String),
-    /// A tool use block started.
+    /// Início de um bloco de uso de ferramenta.
     ToolUseStart {
         index: usize,
         id: String,
         name: String,
     },
-    /// Partial JSON input for a tool use block.
+    /// Fragmento parcial de JSON de entrada para um bloco de ferramenta.
     InputJsonDelta(String),
-    /// A content block finished.
+    /// Finalização de um bloco de conteúdo.
     ContentBlockStop { index: usize },
-    /// The message is finishing with metadata.
+    /// Indica que a mensagem está sendo finalizada, incluindo metadados.
     MessageDelta {
         stop_reason: Option<String>,
         usage: Option<Usage>,
     },
-    /// Stream complete.
+    /// Indica que o streaming foi concluído.
     MessageStop,
 }

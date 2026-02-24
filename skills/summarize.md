@@ -1,42 +1,51 @@
 ---
 name: summarize
-description: Summarize text, URLs, or files. Produce concise summaries at adjustable length.
+description: Resume textos, URLs ou arquivos. Produz resumos concisos com tamanho ajustável.
 triggers:
-  - summarize
+  - resumir
   - tldr
   - recap
-  - summary
+  - resumo
 dependencies: []
 ---
 
-# Summarize
+# Summarizar
 
-When the user asks you to summarize content, follow this process:
+Quando o usuário pedir para resumir um conteúdo, siga este processo:
 
-## Determine the source
+---
 
-- **URL**: Use the `web_fetch` tool to retrieve the page content.
-- **File path**: Use the `file_read` tool to read the file contents.
-- **Inline text**: Work directly with the text provided in the message.
+## Determinar a fonte
 
-## Produce the summary
+- **URL**: Use a ferramenta `web_fetch` para obter o conteúdo da página.
+- **Caminho de arquivo**: Use a ferramenta `file_read` para ler o conteúdo do arquivo.
+- **Texto inline**: Trabalhe diretamente com o texto fornecido na mensagem.
 
-1. Read the full content before summarizing. Do not summarize incrementally.
-2. Identify the key points, arguments, or findings.
-3. Preserve the original structure (if the source has sections, reflect them).
-4. Default to a short summary (3-5 bullet points). If the user asks for more detail, expand.
+---
 
-## Output format
+## Produzir o resumo
 
-- **Short** (default): 3-5 bullet points capturing the essential takeaways.
-- **Medium**: 1-2 paragraphs with supporting details.
-- **Long**: Section-by-section breakdown preserving the document's structure.
+1. Leia o conteúdo completo antes de resumir. Nunca resuma incrementalmente.
+2. Identifique os pontos-chave, argumentos ou conclusões.
+3. Preserve a estrutura original (se houver seções, reflita isso no resumo).
+4. Por padrão, gere um resumo curto (3–5 bullet points). Se o usuário pedir mais detalhes, expanda.
 
-If the user says "tldr" or "recap", use the short format. If they say "summarize in detail", use long.
+---
 
-## Rules
+## Formato de saída
 
-- Never fabricate information not present in the source.
-- If a URL fails to fetch, tell the user and suggest they paste the content directly.
-- For very long content (>10,000 words), summarize in sections rather than as one block.
-- Always mention the source at the top of your summary (URL, filename, or "from your message").
+- **Curto (padrão)**: 3–5 bullet points com os principais pontos.
+- **Médio**: 1–2 parágrafos com detalhes de apoio.
+- **Longo**: Quebra seção por seção, preservando a estrutura do documento.
+
+Se o usuário disser “tldr” ou “recap”, use o formato curto.  
+Se disser “resuma em detalhes” ou equivalente, use o formato longo.
+
+---
+
+## Regras
+
+- Nunca invente informações que não estejam na fonte.
+- Se uma URL falhar ao carregar, informe o usuário e sugira que ele cole o conteúdo diretamente.
+- Para conteúdos muito longos (>10.000 palavras), resuma por seções em vez de um único bloco.
+- Sempre mencione a fonte no topo do resumo (URL, nome do arquivo ou "a partir da sua mensagem").
