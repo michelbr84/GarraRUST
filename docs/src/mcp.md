@@ -18,10 +18,8 @@ O MCP permite conectar servidores de ferramentas externas ao GarraIA. Qualquer s
 * **stdio** (padrão)
   O GarraIA inicia o processo do servidor e comunica-se via stdin/stdout.
 
-* **HTTP** (em desenvolvimento)
+* **HTTP**
   Permite conectar a um servidor MCP remoto via HTTP.
-  Acompanhe o progresso em:
-  [https://github.com/michelbr84/GarraRUST/issues/80](https://github.com/michelbr84/GarraRUST/issues/80)
 
 ---
 
@@ -237,7 +235,7 @@ mcp:
 
 ---
 
-### Servidor HTTP (futuro)
+### Servidor HTTP
 
 Permite conectar a um servidor MCP remoto:
 
@@ -275,15 +273,8 @@ McpTool
 
 ---
 
-## Limitações e melhorias futuras
+## Estado atual e melhorias
 
-Acompanhe em:
+A partir desta versão, o MCP oferece suporte completo ao transporte HTTP nativo (o recurso `mcp-http` está habilitado por padrão). As operações de recursos e prompts foram integradas ao MCP, permitindo que ferramentas, recursos e prompts sejam expostos como ferramentas nativas pelo agente. Além disso, o gerenciador tenta reconectar automaticamente aos servidores MCP após falhas, garantindo maior resiliência.
 
-[https://github.com/michelbr84/GarraRUST/issues/80](https://github.com/michelbr84/GarraRUST/issues/80)
-
-Planejado:
-
-* Suporte completo a transporte HTTP
-* Integração de recursos MCP
-* Integração de prompts MCP
-* Reconexão automática após falha do servidor
+Atualmente não há issues abertas relacionadas a essas funcionalidades. Novas melhorias serão avaliadas conforme o feedback da comunidade.
