@@ -25,7 +25,6 @@ const updateBannerClose = document.getElementById("update-banner-close");
 const storageKey = "garraia.session_id";
 const keyStorage = "garraia.gateway_key";
 const providerStorage = "garraia.provider";
-const themeStorageKey = "garraia.ui.theme";
 let sessionId = localStorage.getItem(storageKey) || "";
 let gatewayKey = localStorage.getItem(keyStorage) || "";
 let selectedProvider = localStorage.getItem(providerStorage) || "";
@@ -40,44 +39,44 @@ let thinkingTimeout = null;
 
 // Initialize i18n on page load
 document.addEventListener("DOMContentLoaded", async () => {
-    const savedLang = localStorage.getItem("lang");
-    
-    if (savedLang) {
-        await loadLocale(savedLang);
+  const savedLang = localStorage.getItem("lang");
+
+  if (savedLang) {
+    await loadLocale(savedLang);
+  } else {
+    const browserLang = navigator.language || "en-US";
+    if (browserLang.startsWith("pt")) {
+      await loadLocale("pt-BR");
     } else {
-        const browserLang = navigator.language || "en-US";
-        if (browserLang.startsWith("pt")) {
-            await loadLocale("pt-BR");
-        } else {
-            await loadLocale("en-US");
-        }
+      await loadLocale("en-US");
     }
+  }
 });
 
 // Language switch function
 function setLanguage(lang) {
-    localStorage.setItem("lang", lang);
-    loadLocale(lang);
+  localStorage.setItem("lang", lang);
+  loadLocale(lang);
 }
 window.setLanguage = setLanguage;
 
 function setAgentThinking(thinking) {
-  const widget = document.getElementById('nano-agents');
-  const timeEl = document.getElementById('nano-time');
+  const widget = document.getElementById("nano-agents");
+  const timeEl = document.getElementById("nano-time");
   if (!widget) return;
 
   if (thinking) {
-    widget.style.display = 'inline-flex';
+    widget.style.display = "inline-flex";
     if (!nanoTimerInterval) {
       nanoElapsed = 0;
-      if (timeEl) timeEl.textContent = '0s';
+      if (timeEl) timeEl.textContent = "0s";
       nanoTimerInterval = setInterval(() => {
         nanoElapsed++;
-        if (timeEl) timeEl.textContent = nanoElapsed + 's';
+        if (timeEl) timeEl.textContent = nanoElapsed + "s";
       }, 1000);
     }
   } else {
-    widget.style.display = 'none';
+    widget.style.display = "none";
     if (nanoTimerInterval) {
       clearInterval(nanoTimerInterval);
       nanoTimerInterval = null;
@@ -100,33 +99,84 @@ function resetThinkingDebounce() {
 // Pre-fill saved key
 keyGatewayEl.value = gatewayKey;
 
-function setTheme(theme, persist = true) {
-  const validThemes = ["light", "dark", "brasil"];
-  const selected = validThemes.includes(theme) ? theme : "light";
+// ===============================
+// Themes (light | dark | brasil)
+// ===============================
+const themeStorageKey = "garraia.ui.theme";
+const themeOrder = ["light", "dark", "brasil"];
+
+function getCurrentTheme() {
+  const fromDom = document.documentElement.getAttribute("data-theme");
+  if (fromDom && themeOrder.includes(fromDom)) return fromDom;
+
+  const stored = localStorage.getItem(themeStorageKey);
+  if (stored && themeOrder.includes(stored)) return stored;
+
+  const prefersDark =
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return prefersDark ? "dark" : "light";
+}
+
+function themeLabelKey(theme) {
+  // O botão mostra o "PRÓXIMO" modo (fica intuitivo)
+  if (theme === "light") return "theme.dark_mode";
+  if (theme === "dark") return "theme.brasil";
+  return "theme.light_mode";
+}
+
+function applyTheme(theme, persist = true) {
+  const selected = themeOrder.includes(theme) ? theme : "light";
   document.documentElement.setAttribute("data-theme", selected);
-  if (themeToggleBtn) {
-    const labels = {
-      light: t("theme.light_mode"),
-      dark: t("theme.dark_mode"),
-      brasil: t("theme.brasil")
-    };
-    themeToggleBtn.textContent = labels[selected] || t("theme.dark_mode");
+
+  if (persist) localStorage.setItem(themeStorageKey, selected);
+
+  // Atualiza texto do botão usando i18n
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    const key = themeLabelKey(selected);
+    btn.setAttribute("data-i18n", key);
+
+    // Se seu i18n expõe t() global, usa. Se não, fallback pro texto.
+    if (typeof window.t === "function") {
+      btn.textContent = window.t(key);
+    } else {
+      btn.textContent =
+        key === "theme.dark_mode"
+          ? "Modo Escuro"
+          : key === "theme.light_mode"
+            ? "Modo Claro"
+            : "🇧🇷 Modo Brasil";
+    }
   }
-  if (persist) {
-    localStorage.setItem(themeStorageKey, selected);
+
+  // Se seu i18n tem applyTranslations(), reaplica pra garantir placeholders/titles
+  if (typeof window.applyTranslations === "function") {
+    window.applyTranslations();
   }
 }
 
-function initTheme() {
-  const stored = localStorage.getItem(themeStorageKey);
-  const validThemes = ["light", "dark", "brasil"];
-  if (validThemes.includes(stored)) {
-    setTheme(stored, false);
-    return;
-  }
-  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-  setTheme(prefersDark ? "dark" : "light");
+function cycleTheme() {
+  const current = getCurrentTheme();
+  const idx = themeOrder.indexOf(current);
+  const next = themeOrder[(idx + 1) % themeOrder.length];
+  applyTheme(next, true);
 }
+
+function initTheme() {
+  applyTheme(getCurrentTheme(), false);
+
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    // Prevent duplicated listener if boot() and DOMContentLoaded both call initTheme
+    btn.removeEventListener("click", cycleTheme);
+    btn.addEventListener("click", cycleTheme);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+});
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -137,8 +187,8 @@ function wsUrl() {
 
 function setConnectionState(isConnected) {
   connPill.innerHTML = isConnected
-    ? '<span class="online">' + t("status.connected") + '</span>'
-    : '<span class="offline">' + t("status.disconnected") + '</span>';
+    ? '<span class="online">' + t("status.connected") + "</span>"
+    : '<span class="offline">' + t("status.disconnected") + "</span>";
 }
 
 function setSession(id) {
@@ -166,9 +216,9 @@ function appendOrUpdateStreamMessage(role, text) {
   let isStreamChunk = false;
   let parsedContent = "";
   try {
-    const lines = text.split('\n');
+    const lines = text.split("\n");
     for (const line of lines) {
-      if (line.trim().startsWith('{') && line.trim().endsWith('}')) {
+      if (line.trim().startsWith("{") && line.trim().endsWith("}")) {
         const data = JSON.parse(line);
         if (data.content !== undefined) {
           isStreamChunk = true;
@@ -176,7 +226,7 @@ function appendOrUpdateStreamMessage(role, text) {
         }
       }
     }
-  } catch (e) { }
+  } catch (e) {}
 
   if (!isStreamChunk) {
     appendMessage(role, text);
@@ -186,7 +236,7 @@ function appendOrUpdateStreamMessage(role, text) {
 
   resetThinkingDebounce();
 
-  const msgs = chatEl.querySelectorAll('.msg.assistant');
+  const msgs = chatEl.querySelectorAll(".msg.assistant");
   if (msgs.length > 0) {
     const lastMsg = msgs[msgs.length - 1];
     lastMsg.textContent += parsedContent;
@@ -207,7 +257,10 @@ async function refreshStatus() {
     if (j.latest_version && j.version) {
       const dismissed = sessionStorage.getItem("garraia.update_dismissed");
       if (dismissed !== j.latest_version) {
-        updateBannerText.innerHTML = t("update.available", { version: j.version, latest: j.latest_version.replace(/^v/, "") }).replace('garraia update', '<code>garraia update</code>');
+        updateBannerText.innerHTML = t("update.available", {
+          version: j.version,
+          latest: j.latest_version.replace(/^v/, ""),
+        }).replace("garraia update", "<code>garraia update</code>");
         updateBanner.style.display = "";
       }
     } else {
@@ -216,13 +269,18 @@ async function refreshStatus() {
 
     if (j.channels && j.channels.length > 0) {
       channelListEl.innerHTML = j.channels
-        .map(ch => `<span class="channel-tag"><span class="status-dot dot-ok"></span>${ch}</span>`)
+        .map(
+          (ch) =>
+            `<span class="channel-tag"><span class="status-dot dot-ok"></span>${ch}</span>`,
+        )
         .join("");
     } else {
-      channelListEl.innerHTML = '<span class="no-channels">' + t("none_configured") + '</span>';
+      channelListEl.innerHTML =
+        '<span class="no-channels">' + t("none_configured") + "</span>";
     }
   } catch {
-    apiStatusEl.innerHTML = '<span class="status-dot dot-off"></span>' + t("status.unavailable");
+    apiStatusEl.innerHTML =
+      '<span class="status-dot dot-off"></span>' + t("status.unavailable");
     sessionCountEl.textContent = "-";
     channelListEl.innerHTML = '<span class="no-channels">-</span>';
   }
@@ -240,37 +298,44 @@ async function loadProviders() {
     for (const p of providerData) {
       const opt = document.createElement("option");
       opt.value = p.id;
-      opt.textContent = p.active ? p.display_name : p.display_name + t("provider.not_configured_suffix");
+      opt.textContent = p.active
+        ? p.display_name
+        : p.display_name + t("provider.not_configured_suffix");
       providerSelect.appendChild(opt);
     }
 
     // Restore saved selection, or pick the default
-    const defaultProvider = providerData.find(p => p.is_default);
-    const saved = selectedProvider || (defaultProvider ? defaultProvider.id : "");
-    if (saved && [...providerSelect.options].some(o => o.value === saved)) {
+    const defaultProvider = providerData.find((p) => p.is_default);
+    const saved =
+      selectedProvider || (defaultProvider ? defaultProvider.id : "");
+    if (saved && [...providerSelect.options].some((o) => o.value === saved)) {
       providerSelect.value = saved;
     }
     updateProviderUI();
   } catch {
-    providerSelect.innerHTML = '<option value="">' + t("status.unavailable") + '</option>';
+    providerSelect.innerHTML =
+      '<option value="">' + t("status.unavailable") + "</option>";
     providerStatus.textContent = "";
   }
 }
 
 function updateProviderUI() {
   const id = providerSelect.value;
-  const p = providerData.find(x => x.id === id);
+  const p = providerData.find((x) => x.id === id);
   if (!p) {
     providerStatus.textContent = "";
     providerKeySection.style.display = "none";
     return;
   }
   if (p.active) {
-    const tag = p.is_default ? t("provider.active_default") : t("provider.active");
+    const tag = p.is_default
+      ? t("provider.active_default")
+      : t("provider.active");
     providerStatus.innerHTML = `<span class="status-dot dot-ok"></span>${tag}`;
     providerKeySection.style.display = "none";
   } else {
-    providerStatus.innerHTML = '<span class="status-dot dot-off"></span>' + t("provider.not_configured");
+    providerStatus.innerHTML =
+      '<span class="status-dot dot-off"></span>' + t("provider.not_configured");
     providerKeySection.style.display = p.needs_api_key ? "" : "none";
   }
   selectedProvider = id;
@@ -280,7 +345,7 @@ function updateProviderUI() {
 providerSelect.addEventListener("change", () => {
   updateProviderUI();
   // If switching to an active provider, tell the backend to use it as default
-  const p = providerData.find(x => x.id === providerSelect.value);
+  const p = providerData.find((x) => x.id === providerSelect.value);
   if (p && p.active) {
     fetch("/api/providers", {
       method: "POST",
@@ -302,7 +367,11 @@ providerActivateBtn.addEventListener("click", async () => {
     const r = await fetch("/api/providers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider_type: id, api_key: key, set_default: true }),
+      body: JSON.stringify({
+        provider_type: id,
+        api_key: key,
+        set_default: true,
+      }),
     });
     const j = await r.json();
     if (r.ok) {
@@ -347,23 +416,43 @@ function handleServerEvent(raw) {
       refreshStatus();
       break;
     case "resumed":
-      appendMessage("sys", t("message.session_resumed", { count: evt.history_length ?? 0 }));
+      appendMessage(
+        "sys",
+        t("message.session_resumed", { count: evt.history_length ?? 0 }),
+      );
       refreshStatus();
       break;
     case "message":
-      appendOrUpdateStreamMessage("assistant", evt.content || t("message.empty_response"));
+      appendOrUpdateStreamMessage(
+        "assistant",
+        evt.content || t("message.empty_response"),
+      );
       break;
     case "error":
       setAgentThinking(false);
-      appendMessage("error", `${evt.code || t("error.unknown")}: ${evt.message || t("error.unknown")}`);
+      appendMessage(
+        "error",
+        `${evt.code || t("error.unknown")}: ${evt.message || t("error.unknown")}`,
+      );
       break;
     default:
-      appendMessage("sys", t("message.event") + ' ' + (evt.type || t("error.unknown")) + ': ' + JSON.stringify(evt));
+      appendMessage(
+        "sys",
+        t("message.event") +
+          " " +
+          (evt.type || t("error.unknown")) +
+          ": " +
+          JSON.stringify(evt),
+      );
   }
 }
 
 function connect() {
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
+  ) {
     return;
   }
 
@@ -397,7 +486,9 @@ function reconnectFresh() {
   }
   if (socket) {
     socket.onclose = null;
-    try { socket.close(); } catch { }
+    try {
+      socket.close();
+    } catch {}
     socket = null;
   }
   setConnectionState(false);
@@ -459,27 +550,17 @@ authConnectBtn.addEventListener("click", () => {
   reconnectFresh();
 });
 
-if (themeToggleBtn) {
-  themeToggleBtn.addEventListener("click", () => {
-    const current = document.documentElement.getAttribute("data-theme") || "light";
-    const themeOrder = ["light", "dark", "brasil"];
-    const currentIndex = themeOrder.indexOf(current);
-    const nextIndex = (currentIndex + 1) % themeOrder.length;
-    setTheme(themeOrder[nextIndex]);
-  });
-}
-
 // Navigation logic
 const navItems = {
   chat: document.getElementById("nav-chat"),
   mcps: document.getElementById("nav-mcps"),
-  extensions: document.getElementById("nav-extensions")
+  extensions: document.getElementById("nav-extensions"),
 };
 
 const views = {
   chat: document.getElementById("view-chat"),
   mcps: document.getElementById("view-mcps"),
-  extensions: document.getElementById("view-extensions")
+  extensions: document.getElementById("view-extensions"),
 };
 
 function switchView(viewId) {
@@ -538,59 +619,66 @@ async function boot() {
   }
 } // end of boot()
 function initNanoAgents() {
-  const bg = document.getElementById('nano-bg');
-  const grid = document.getElementById('nano-grid');
-  const widget = document.getElementById('nano-agents');
+  const bg = document.getElementById("nano-bg");
+  const grid = document.getElementById("nano-grid");
+  const widget = document.getElementById("nano-agents");
 
   if (!bg || !grid) return;
-  if (widget) widget.style.display = 'none'; // hidden initially
+  if (widget) widget.style.display = "none"; // hidden initially
 
   // Background bits
-  const colors = ['var(--brand)', 'var(--brand-2)', 'var(--online)', 'var(--accent-line)'];
+  const colors = [
+    "var(--brand)",
+    "var(--brand-2)",
+    "var(--online)",
+    "var(--accent-line)",
+  ];
   const bits = [];
   for (let i = 0; i < 6; i++) {
-    const bit = document.createElement('div');
-    bit.className = 'nano-bit';
+    const bit = document.createElement("div");
+    bit.className = "nano-bit";
     const size = Math.random() * 2 + 1;
-    bit.style.width = size + 'px';
-    bit.style.height = size + 'px';
-    bit.style.left = (Math.random() * 100) + '%';
-    bit.style.top = (Math.random() * 100) + '%';
-    bit.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+    bit.style.width = size + "px";
+    bit.style.height = size + "px";
+    bit.style.left = Math.random() * 100 + "%";
+    bit.style.top = Math.random() * 100 + "%";
+    bit.style.backgroundColor =
+      colors[Math.floor(Math.random() * colors.length)];
     bit.style.opacity = 0;
     bg.appendChild(bit);
     bits.push({ el: bit, id: Math.random() });
   }
 
   setInterval(() => {
-    bits.forEach(b => {
+    bits.forEach((b) => {
       if (Math.random() > 0.95) {
-        b.el.style.left = (Math.random() * 100) + '%';
-        b.el.style.top = (Math.random() * 100) + '%';
+        b.el.style.left = Math.random() * 100 + "%";
+        b.el.style.top = Math.random() * 100 + "%";
         b.el.style.opacity = 0;
       } else {
-        b.el.style.opacity = Math.sin(Date.now() / 1500 + b.id * 10) * 0.1 + 0.1;
+        b.el.style.opacity =
+          Math.sin(Date.now() / 1500 + b.id * 10) * 0.1 + 0.1;
       }
     });
   }, 250);
 
   // 4 pixel agents
   const agentColors = [
-    ['var(--brand)', 'var(--brand-2)'],
-    ['var(--online)', '#4ade80'],
-    ['var(--warn-text)', 'var(--warn-edge)'],
-    ['var(--ink-soft)', 'var(--ink)']
+    ["var(--brand)", "var(--brand-2)"],
+    ["var(--online)", "#4ade80"],
+    ["var(--warn-text)", "var(--warn-edge)"],
+    ["var(--ink-soft)", "var(--ink)"],
   ];
 
   const agentEls = [];
   let positions = [0, 1, 2, 3];
 
   for (let i = 0; i < 4; i++) {
-    const agent = document.createElement('div');
-    agent.className = 'nano-agent';
+    const agent = document.createElement("div");
+    agent.className = "nano-agent";
     for (let p = 0; p < 4; p++) {
-      const pixel = document.createElement('div');
-      pixel.className = 'nano-pixel';
+      const pixel = document.createElement("div");
+      pixel.className = "nano-pixel";
       agent.appendChild(pixel);
     }
     grid.appendChild(agent);
@@ -598,10 +686,11 @@ function initNanoAgents() {
   }
 
   setInterval(() => {
-    agentEls.forEach(a => {
+    agentEls.forEach((a) => {
       const pixels = a.el.children;
       for (let i = 0; i < pixels.length; i++) {
-        pixels[i].style.backgroundColor = a.colors[Math.floor(Math.random() * a.colors.length)];
+        pixels[i].style.backgroundColor =
+          a.colors[Math.floor(Math.random() * a.colors.length)];
         pixels[i].style.opacity = 0.7 + Math.random() * 0.3;
       }
     });
