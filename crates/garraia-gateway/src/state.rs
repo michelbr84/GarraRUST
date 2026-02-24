@@ -30,6 +30,8 @@ pub struct AppState {
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     /// Receives hot-reloaded config updates. `None` if watcher is not active.
     config_rx: Option<watch::Receiver<AppConfig>>,
+    /// Broadcast channel for tailing logs to WebSocket clients.
+    pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 /// Per-connection session tracking.
@@ -58,6 +60,7 @@ impl AppState {
             mcp_manager_arc: None,
             session_store: None,
             config_rx: None,
+            log_tx: tokio::sync::broadcast::channel(100).0,
         }
     }
 

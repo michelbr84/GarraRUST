@@ -98,3 +98,39 @@ pub async fn search_memory(
             .into_response(),
     }
 }
+
+#[derive(Deserialize)]
+pub struct ClearMemoryQuery {
+    pub session_id: String,
+}
+
+/// DELETE /api/memory
+pub async fn clear_memory(
+    State(state): State<SharedState>,
+    Query(params): Query<ClearMemoryQuery>,
+) -> impl IntoResponse {
+    let memory_provider = match state.agents.memory_provider() {
+        Some(provider) => provider,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "Memory is disabled" })),
+            )
+                .into_response();
+        }
+    };
+
+    match memory_provider.delete_session_memory(&params.session_id).await {
+        Ok(count) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "success": true, "deleted_count": count })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+

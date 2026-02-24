@@ -181,8 +181,15 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
     // Per-WebSocket sliding window rate limiter
     let mut msg_timestamps: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
 
+    let mut log_rx = state.log_tx.subscribe();
+
     loop {
         tokio::select! {
+            Ok(log_msg) = log_rx.recv() => {
+                if sender.send(Message::Text(log_msg.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
             _ = heartbeat.tick() => {
                 // Check pong timeout
                 if last_pong.elapsed() > HEARTBEAT_TIMEOUT {
