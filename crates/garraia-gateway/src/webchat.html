@@ -68,6 +68,36 @@
       --warn-text: #e2c68b;
     }
 
+    [data-theme="brasil"] {
+      --bg: #002776;
+      --bg-accent: #001c4d;
+      --ink: #f4f4f4;
+      --ink-soft: #b8c5d6;
+      --panel: #003399;
+      --panel-2: #002776;
+      --panel-edge: #0055aa;
+      --elev: 0 16px 34px rgba(0, 20, 60, 0.42);
+      --brand: #ffdf00;
+      --brand-2: #ffc400;
+      --online: #009c3b;
+      --offline: #8fa3b8;
+      --sys: #002968;
+      --assistant: #003399;
+      --error: #8b0000;
+      --error-edge: #cc0000;
+      --sand-1: #002968;
+      --sand-2: #001c4d;
+      --accent-line: rgba(255, 223, 0, 0.4);
+      --topbar: rgba(0, 51, 153, 0.92);
+      --glow-a: rgba(255, 223, 0, 0.12);
+      --glow-b: rgba(0, 30, 80, 0.25);
+      --user-grad-a: #0040a0;
+      --user-grad-b: #002060;
+      --warn-edge: #ffaa00;
+      --warn-bg: #332800;
+      --warn-text: #ffdd66;
+    }
+
     * {
       box-sizing: border-box;
     }
@@ -222,6 +252,11 @@
     [data-theme="dark"] .nano-agent {
       background: rgba(40, 30, 20, 0.8);
       border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    [data-theme="brasil"] .nano-agent {
+      background: rgba(0, 39, 118, 0.8);
+      border: 1px solid rgba(255, 223, 0, 0.2);
     }
 
     .nano-pixel {
@@ -1389,10 +1424,19 @@
     }
 
     function setTheme(theme, persist = true) {
-      const selected = theme === "dark" ? "dark" : "light";
+      const validThemes = ["light", "dark", "brasil"];
+      const selected = validThemes.includes(theme) ? theme : "light";
       document.documentElement.setAttribute("data-theme", selected);
       if (themeToggleBtn) {
-        themeToggleBtn.textContent = selected === "dark" ? t("theme.light_mode") : t("theme.dark_mode");
+        if (selected === "light") {
+          themeToggleBtn.textContent = t("theme.dark_mode");
+        }
+        else if (selected === "dark") {
+          themeToggleBtn.textContent = t("theme.brasil");
+        }
+        else if (selected === "brasil") {
+          themeToggleBtn.textContent = t("theme.light_mode");
+        }
       }
       if (persist) {
         localStorage.setItem(themeStorageKey, selected);
@@ -1401,7 +1445,8 @@
 
     function initTheme() {
       const stored = localStorage.getItem(themeStorageKey);
-      if (stored === "light" || stored === "dark") {
+      const validThemes = ["light", "dark", "brasil"];
+      if (validThemes.includes(stored)) {
         setTheme(stored, false);
         return;
       }
@@ -2089,7 +2134,10 @@
     if (themeToggleBtn) {
       themeToggleBtn.addEventListener("click", () => {
         const current = document.documentElement.getAttribute("data-theme") || "light";
-        setTheme(current === "dark" ? "light" : "dark");
+        const themeOrder = ["light", "dark", "brasil"];
+        const currentIndex = themeOrder.indexOf(current);
+        const nextIndex = (currentIndex + 1) % themeOrder.length;
+        setTheme(themeOrder[nextIndex]);
       });
     }
 
