@@ -125,6 +125,10 @@ impl AgentRuntime {
         self.memory.is_some()
     }
 
+    pub fn memory_provider(&self) -> Option<Arc<dyn MemoryProvider>> {
+        self.memory.clone()
+    }
+
     pub fn set_embedding_provider(&mut self, embeddings: Arc<dyn EmbeddingProvider>) {
         self.embeddings = Some(embeddings);
         info!("embedding provider attached to agent runtime");

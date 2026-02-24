@@ -553,12 +553,16 @@ authConnectBtn.addEventListener("click", () => {
 // Navigation logic
 const navItems = {
   chat: document.getElementById("nav-chat"),
+  memory: document.getElementById("nav-memory"),
+  logs: document.getElementById("nav-logs"),
   mcps: document.getElementById("nav-mcps"),
   extensions: document.getElementById("nav-extensions"),
 };
 
 const views = {
   chat: document.getElementById("view-chat"),
+  memory: document.getElementById("view-memory"),
+  logs: document.getElementById("view-logs"),
   mcps: document.getElementById("view-mcps"),
   extensions: document.getElementById("view-extensions"),
 };
@@ -584,8 +588,91 @@ function switchView(viewId) {
 }
 
 navItems.chat.addEventListener("click", () => switchView("chat"));
+navItems.memory.addEventListener("click", () => {
+  switchView("memory");
+  loadMemory();
+});
+navItems.logs.addEventListener("click", () => {
+  switchView("logs");
+  loadLogs();
+});
 navItems.mcps.addEventListener("click", () => switchView("mcps"));
 navItems.extensions.addEventListener("click", () => switchView("extensions"));
+
+const memoryRefreshBtn = document.getElementById("memory-refresh-btn");
+const memorySearchBtn = document.getElementById("memory-search-btn");
+const memorySearchInput = document.getElementById("memory-search-input");
+const memoryList = document.getElementById("memory-list");
+
+const logsRefreshBtn = document.getElementById("logs-refresh-btn");
+const logsView = document.getElementById("logs-view");
+
+async function loadMemory(query = "") {
+  if (!memoryList) return;
+  memoryList.innerHTML = `<p style="color: var(--text-secondary)">Loading...</p>`;
+  try {
+    const url = query ? `/api/memory/search?q=${encodeURIComponent(query)}` : `/api/memory/recent`;
+    const res = await fetch(url, {
+      headers: gatewayKey ? { "X-Gateway-Key": gatewayKey } : {},
+    });
+    if (!res.ok) throw new Error("Failed to fetch memories");
+    const data = await res.json();
+    if (!data.memories || data.memories.length === 0) {
+      memoryList.innerHTML = `<p style="color: var(--text-secondary)">No memories found.</p>`;
+      return;
+    }
+    memoryList.innerHTML = data.memories.map(m => `
+      <div style="background: var(--bg); padding: 12px; border-radius: 8px; border: 1px solid var(--panel-edge);">
+        <div style="font-size: 0.8rem; color: var(--ink-soft); margin-bottom: 4px; display: flex; justify-content: space-between;">
+          <span>${new Date(m.created_at).toLocaleString()}</span>
+          <span>${m.role}</span>
+        </div>
+        <div style="color: var(--ink); white-space: pre-wrap; font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem;">${m.content}</div>
+      </div>
+    `).join("");
+  } catch (e) {
+    memoryList.innerHTML = `<p style="color: var(--warn-text)">Error: ${e.message}</p>`;
+  }
+}
+
+if (memoryRefreshBtn) {
+  memoryRefreshBtn.addEventListener("click", () => {
+    memorySearchInput.value = "";
+    loadMemory();
+  });
+}
+if (memorySearchBtn) {
+  memorySearchBtn.addEventListener("click", () => {
+    loadMemory(memorySearchInput.value.trim());
+  });
+}
+if (memorySearchInput) {
+  memorySearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      loadMemory(memorySearchInput.value.trim());
+    }
+  });
+}
+
+async function loadLogs() {
+  if (!logsView) return;
+  logsView.textContent = "Loading logs...";
+  try {
+    const res = await fetch("/api/logs", {
+      headers: gatewayKey ? { "X-Gateway-Key": gatewayKey } : {},
+    });
+    if (!res.ok) throw new Error("Failed to fetch logs");
+    const data = await res.json();
+    logsView.textContent = data.logs || "No logs available.";
+    logsView.scrollTop = logsView.scrollHeight;
+  } catch (e) {
+    logsView.textContent = `Error: ${e.message}`;
+  }
+}
+
+if (logsRefreshBtn) {
+  logsRefreshBtn.addEventListener("click", loadLogs);
+}
 
 // Boot: check if auth is required, then connect
 async function boot() {
