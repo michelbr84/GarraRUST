@@ -5,11 +5,11 @@ use tokio::process::Command;
 
 use super::{Tool, ToolContext, ToolOutput};
 
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+const TIMEOUT_PADRAO_SEGS: u64 = 30;
+const MAX_BYTES_SAIDA: usize = 32 * 1024;
 
-/// Execute shell commands with configurable timeout and output limits.
-/// On Windows, this uses PowerShell. On Unix-like systems, it uses Bash.
+/// Executa comandos de shell com timeout configurável e limite de saída.
+/// No Windows utiliza PowerShell. Em sistemas Unix-like utiliza Bash.
 pub struct BashTool {
     timeout: Duration,
 }
@@ -17,7 +17,7 @@ pub struct BashTool {
 impl BashTool {
     pub fn new(timeout_secs: Option<u64>) -> Self {
         Self {
-            timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
         }
     }
 }
@@ -30,9 +30,9 @@ impl Tool for BashTool {
 
     fn description(&self) -> &str {
         if cfg!(target_os = "windows") {
-            "Execute a shell command using PowerShell. Returns the output."
+            "Executa um comando de shell usando PowerShell. Retorna a saída."
         } else {
-            "Execute a shell command using Bash. Returns the output."
+            "Executa um comando de shell usando Bash. Retorna a saída."
         }
     }
 
@@ -42,7 +42,7 @@ impl Tool for BashTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "Comando de shell a ser executado"
                 }
             },
             "required": ["command"]
@@ -54,10 +54,10 @@ impl Tool for BashTool {
         _context: &ToolContext,
         input: serde_json::Value,
     ) -> Result<ToolOutput> {
-        let command_str = input
+        let comando = input
             .get("command")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("missing 'command' parameter".into()))?;
+            .ok_or_else(|| Error::Agent("parâmetro 'command' ausente".into()))?;
 
         let (shell, arg) = if cfg!(target_os = "windows") {
             ("powershell", "-Command")
@@ -65,52 +65,59 @@ impl Tool for BashTool {
             ("bash", "-c")
         };
 
-        let result = tokio::time::timeout(
+        let resultado = tokio::time::timeout(
             self.timeout,
-            Command::new(shell).arg(arg).arg(command_str).output(),
+            Command::new(shell).arg(arg).arg(comando).output(),
         )
         .await;
 
-        match result {
+        match resultado {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
-                let mut combined = String::new();
+                let mut combinado = String::new();
+
                 if !stdout.is_empty() {
-                    combined.push_str(&stdout);
+                    combinado.push_str(&stdout);
                 }
+
                 if !stderr.is_empty() {
-                    if !combined.is_empty() {
-                        combined.push('\n');
+                    if !combinado.is_empty() {
+                        combinado.push('\n');
                     }
-                    combined.push_str("STDERR:\n");
-                    combined.push_str(&stderr);
+                    combinado.push_str("STDERR:\n");
+                    combinado.push_str(&stderr);
                 }
 
-                // Truncate if too large
-                if combined.len() > MAX_OUTPUT_BYTES {
-                    combined.truncate(MAX_OUTPUT_BYTES);
-                    combined.push_str("\n... (output truncated)");
+                // Truncar se exceder limite
+                if combinado.len() > MAX_BYTES_SAIDA {
+                    combinado.truncate(MAX_BYTES_SAIDA);
+                    combinado.push_str("\n... (saída truncada)");
                 }
 
-                if combined.is_empty() {
-                    combined = format!("(exit code: {})", output.status.code().unwrap_or(-1));
+                if combinado.is_empty() {
+                    combinado = format!(
+                        "(código de saída: {})",
+                        output.status.code().unwrap_or(-1)
+                    );
                 }
 
                 if output.status.success() {
-                    Ok(ToolOutput::success(combined))
+                    Ok(ToolOutput::success(combinado))
                 } else {
                     Ok(ToolOutput::error(format!(
-                        "exit code {}: {}",
+                        "código de saída {}: {}",
                         output.status.code().unwrap_or(-1),
-                        combined
+                        combinado
                     )))
                 }
             }
-            Ok(Err(e)) => Ok(ToolOutput::error(format!("failed to execute command: {e}"))),
+            Ok(Err(e)) => Ok(ToolOutput::error(format!(
+                "falha ao executar comando: {e}"
+            ))),
             Err(_) => Ok(ToolOutput::error(format!(
-                "command timed out after {}s",
+                "comando excedeu o tempo limite após {}s",
                 self.timeout.as_secs()
             ))),
         }
@@ -122,71 +129,84 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn executes_simple_command() {
+    async fn executa_comando_simples() {
         let tool = BashTool::new(None);
-        // echo works on both
+
         let ctx = ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
         };
+
         let output = tool
             .execute(&ctx, serde_json::json!({"command": "echo hello"}))
             .await
             .unwrap();
+
         assert!(!output.is_error);
         assert!(output.content.contains("hello"));
     }
 
     #[tokio::test]
-    async fn reports_error_on_failing_command() {
+    async fn reporta_erro_em_comando_falho() {
         let tool = BashTool::new(None);
+
         let cmd = if cfg!(target_os = "windows") {
             "exit 1"
         } else {
             "false"
         };
+
         let ctx = ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
         };
+
         let output = tool
             .execute(&ctx, serde_json::json!({"command": cmd}))
             .await
             .unwrap();
+
         assert!(output.is_error);
     }
 
     #[tokio::test]
-    async fn returns_error_on_missing_command() {
+    async fn retorna_erro_se_faltar_comando() {
         let tool = BashTool::new(None);
+
         let ctx = ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
         };
+
         let result = tool.execute(&ctx, serde_json::json!({})).await;
+
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn captures_stderr() {
+    async fn captura_stderr() {
         let tool = BashTool::new(None);
+
         let cmd = if cfg!(target_os = "windows") {
             "Write-Error 'err'"
         } else {
             "echo err >&2"
         };
+
         let ctx = ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
         };
+
         let output = tool
             .execute(&ctx, serde_json::json!({"command": cmd}))
             .await
             .unwrap();
+
         assert!(output.content.contains("err"));
     }
 }

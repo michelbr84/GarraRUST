@@ -7,13 +7,13 @@ use tokio::sync::Mutex;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Maximum delay: 30 days in seconds.
+/// Atraso máximo permitido: 30 dias em segundos.
 const MAX_DELAY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
-/// Maximum pending heartbeats per session.
+/// Máximo de heartbeats pendentes por sessão.
 const MAX_PENDING_PER_SESSION: i64 = 5;
 
-/// Tool for scheduling a future "heartbeat" wake-up call for the agent.
+/// Ferramenta para agendar um "heartbeat" futuro (acordar o agente no futuro).
 pub struct ScheduleHeartbeat {
     store: Arc<Mutex<SessionStore>>,
 }
@@ -31,7 +31,7 @@ impl Tool for ScheduleHeartbeat {
     }
 
     fn description(&self) -> &'static str {
-        "Schedule a wake-up call for yourself in the future. Use this to set reminders or check back on tasks."
+        "Agenda um despertar futuro para si mesmo. Use para lembretes ou para verificar tarefas posteriormente."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -40,11 +40,11 @@ impl Tool for ScheduleHeartbeat {
             "properties": {
                 "delay_seconds": {
                     "type": "integer",
-                    "description": "Number of seconds to wait before waking up (min 1, max 2592000 = 30 days)"
+                    "description": "Número de segundos para aguardar antes de acordar (mín 1, máx 2592000 = 30 dias)"
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Context/reason for the wake-up call (e.g. 'Check if deployment finished')"
+                    "description": "Motivo/contexto do despertar (ex: 'Verificar se o deploy terminou')"
                 }
             },
             "required": ["delay_seconds", "reason"]
@@ -52,28 +52,31 @@ impl Tool for ScheduleHeartbeat {
     }
 
     async fn execute(&self, context: &ToolContext, args: serde_json::Value) -> Result<ToolOutput> {
-        // Prevent recursive scheduling from within heartbeat execution
+        // Impede agendamento recursivo dentro de um heartbeat
         if context.is_heartbeat {
             return Err(Error::Agent(
-                "cannot schedule a heartbeat from within a heartbeat execution".to_string(),
+                "não é possível agendar um heartbeat durante a execução de outro heartbeat"
+                    .to_string(),
             ));
         }
 
         let delay = args["delay_seconds"].as_i64().ok_or_else(|| {
-            Error::Agent("missing or invalid 'delay_seconds' argument".to_string())
+            Error::Agent("argumento 'delay_seconds' ausente ou inválido".to_string())
         })?;
 
         let reason = args["reason"]
             .as_str()
-            .ok_or_else(|| Error::Agent("missing or invalid 'reason' argument".to_string()))?;
+            .ok_or_else(|| Error::Agent("argumento 'reason' ausente ou inválido".to_string()))?;
 
         if delay <= 0 {
-            return Err(Error::Agent("delay_seconds must be positive".to_string()));
+            return Err(Error::Agent(
+                "delay_seconds deve ser positivo".to_string(),
+            ));
         }
 
         if delay > MAX_DELAY_SECONDS {
             return Err(Error::Agent(format!(
-                "delay_seconds cannot exceed {} (30 days)",
+                "delay_seconds não pode exceder {} (30 dias)",
                 MAX_DELAY_SECONDS
             )));
         }
@@ -85,20 +88,22 @@ impl Tool for ScheduleHeartbeat {
 
         let store = self.store.lock().await;
 
-        // Enforce per-session pending task limit
+        // Limite de tarefas pendentes por sessão
         let pending = store.count_pending_tasks_for_session(&context.session_id)?;
         if pending >= MAX_PENDING_PER_SESSION {
             return Err(Error::Agent(format!(
-                "session already has {} pending heartbeats (max {})",
+                "a sessão já possui {} heartbeats pendentes (máximo {})",
                 pending, MAX_PENDING_PER_SESSION
             )));
         }
 
         let execute_at = chrono::Utc::now() + chrono::Duration::seconds(delay);
-        let task_id = store.schedule_task(&context.session_id, &user_id, execute_at, reason)?;
+
+        let task_id =
+            store.schedule_task(&context.session_id, &user_id, execute_at, reason)?;
 
         Ok(ToolOutput::success(format!(
-            "Heartbeat scheduled for {} (in {} seconds). Task ID: {}",
+            "Heartbeat agendado para {} (em {} segundos). ID da tarefa: {}",
             execute_at.to_rfc3339(),
             delay,
             task_id
@@ -110,7 +115,7 @@ impl Tool for ScheduleHeartbeat {
 mod tests {
     use super::*;
 
-    fn test_context(session_id: &str) -> ToolContext {
+    fn contexto_teste(session_id: &str) -> ToolContext {
         ToolContext {
             session_id: session_id.to_string(),
             user_id: Some("u-1".to_string()),
@@ -119,71 +124,74 @@ mod tests {
     }
 
     async fn setup_store(session_id: &str) -> Arc<Mutex<SessionStore>> {
-        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let store = SessionStore::in_memory().expect("store em memória deve abrir");
         let store = Arc::new(Mutex::new(store));
         {
             let guard = store.lock().await;
             guard
                 .upsert_session(session_id, "web", "u-1", &serde_json::json!({}))
-                .expect("session upsert should succeed");
+                .expect("upsert da sessão deve funcionar");
         }
         store
     }
 
     #[tokio::test]
-    async fn schedules_task_in_store() {
+    async fn agenda_tarefa_no_store() {
         let store = setup_store("sess-1").await;
         let tool = ScheduleHeartbeat::new(Arc::clone(&store));
 
         let out = tool
             .execute(
-                &test_context("sess-1"),
+                &contexto_teste("sess-1"),
                 serde_json::json!({
                     "delay_seconds": 1,
-                    "reason": "ping me later"
+                    "reason": "ping depois"
                 }),
             )
             .await
-            .expect("tool execution should succeed");
+            .expect("execução deve funcionar");
 
         assert!(!out.is_error);
-        assert!(out.content.contains("Task ID:"));
+        assert!(out.content.contains("ID da tarefa:"));
     }
 
     #[tokio::test]
-    async fn rejects_negative_delay() {
+    async fn rejeita_delay_negativo() {
         let store = setup_store("sess-1").await;
         let tool = ScheduleHeartbeat::new(store);
 
         let err = tool
             .execute(
-                &test_context("sess-1"),
-                serde_json::json!({ "delay_seconds": -5, "reason": "bad" }),
+                &contexto_teste("sess-1"),
+                serde_json::json!({ "delay_seconds": -5, "reason": "erro" }),
             )
             .await;
 
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("must be positive"));
+        assert!(err.unwrap_err().to_string().contains("positivo"));
     }
 
     #[tokio::test]
-    async fn rejects_excessive_delay() {
+    async fn rejeita_delay_excessivo() {
         let store = setup_store("sess-1").await;
         let tool = ScheduleHeartbeat::new(store);
 
         let err = tool
             .execute(
-                &test_context("sess-1"),
-                serde_json::json!({ "delay_seconds": MAX_DELAY_SECONDS + 1, "reason": "way too long" }),
+                &contexto_teste("sess-1"),
+                serde_json::json!({
+                    "delay_seconds": MAX_DELAY_SECONDS + 1,
+                    "reason": "muito longo"
+                }),
             )
             .await;
 
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("30 days"));
+        assert!(err.unwrap_err().to_string().contains("30 dias"));
     }
 
     #[tokio::test]
-    async fn rejects_scheduling_from_heartbeat_context() {
+    async fn rejeita_agendamento_dentro_de_heartbeat() {
         let store = setup_store("sess-1").await;
         let tool = ScheduleHeartbeat::new(store);
 
@@ -196,7 +204,7 @@ mod tests {
         let err = tool
             .execute(
                 &context,
-                serde_json::json!({ "delay_seconds": 60, "reason": "recursive" }),
+                serde_json::json!({ "delay_seconds": 60, "reason": "recursivo" }),
             )
             .await;
 
@@ -204,41 +212,46 @@ mod tests {
         assert!(
             err.unwrap_err()
                 .to_string()
-                .contains("cannot schedule a heartbeat from within")
+                .contains("não é possível agendar")
         );
     }
 
     #[tokio::test]
-    async fn rejects_when_too_many_pending() {
+    async fn rejeita_quando_excede_limite_pendentes() {
         let store = setup_store("sess-1").await;
         let tool = ScheduleHeartbeat::new(Arc::clone(&store));
 
-        // Fill up to the limit
         for i in 0..MAX_PENDING_PER_SESSION {
             tool.execute(
-                &test_context("sess-1"),
-                serde_json::json!({ "delay_seconds": 3600, "reason": format!("task {}", i) }),
+                &contexto_teste("sess-1"),
+                serde_json::json!({
+                    "delay_seconds": 3600,
+                    "reason": format!("task {}", i)
+                }),
             )
             .await
-            .expect("should succeed under limit");
+            .expect("deve funcionar dentro do limite");
         }
 
-        // One more should fail
         let err = tool
             .execute(
-                &test_context("sess-1"),
-                serde_json::json!({ "delay_seconds": 3600, "reason": "one too many" }),
+                &contexto_teste("sess-1"),
+                serde_json::json!({
+                    "delay_seconds": 3600,
+                    "reason": "excedente"
+                }),
             )
             .await;
 
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("pending heartbeats"));
+        assert!(err.unwrap_err().to_string().contains("pendentes"));
     }
 
     #[tokio::test]
-    async fn pending_limit_is_per_session() {
-        let store = SessionStore::in_memory().expect("in-memory store should open");
+    async fn limite_eh_por_sessao() {
+        let store = SessionStore::in_memory().expect("store em memória deve abrir");
         let store = Arc::new(Mutex::new(store));
+
         {
             let guard = store.lock().await;
             guard
@@ -251,17 +264,18 @@ mod tests {
 
         let tool = ScheduleHeartbeat::new(Arc::clone(&store));
 
-        // Fill s1 to the limit
         for i in 0..MAX_PENDING_PER_SESSION {
             tool.execute(
-                &test_context("s1"),
-                serde_json::json!({ "delay_seconds": 3600, "reason": format!("s1-{}", i) }),
+                &contexto_teste("s1"),
+                serde_json::json!({
+                    "delay_seconds": 3600,
+                    "reason": format!("s1-{}", i)
+                }),
             )
             .await
             .unwrap();
         }
 
-        // s2 should still work
         let out = tool
             .execute(
                 &ToolContext {
@@ -269,7 +283,10 @@ mod tests {
                     user_id: Some("u2".to_string()),
                     is_heartbeat: false,
                 },
-                serde_json::json!({ "delay_seconds": 60, "reason": "s2 ok" }),
+                serde_json::json!({
+                    "delay_seconds": 60,
+                    "reason": "s2 ok"
+                }),
             )
             .await
             .unwrap();

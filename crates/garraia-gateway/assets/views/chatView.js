@@ -211,6 +211,9 @@ export function sendMessage() {
   if (GarraState.selectedProvider) {
     msg.provider = GarraState.selectedProvider;
   }
+  if (dom.providerModelInput && dom.providerModelInput.value.trim()) {
+    msg.model = dom.providerModelInput.value.trim();
+  }
   socket.send(JSON.stringify(msg));
   
   dom.inputEl.value = "";

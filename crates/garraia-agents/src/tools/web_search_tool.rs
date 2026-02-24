@@ -9,7 +9,7 @@ const SEARCH_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_COUNT: u64 = 5;
 const MAX_COUNT: u64 = 10;
 
-/// Search the web using the Brave Search API.
+/// Realiza buscas na web utilizando a API do Brave Search.
 pub struct WebSearchTool {
     client: reqwest::Client,
     api_key: String,
@@ -50,7 +50,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web for a query and return top results with title, snippet, and URL."
+        "Realiza uma busca na web e retorna os principais resultados com título, URL e descrição."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -59,11 +59,11 @@ impl Tool for WebSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query"
+                    "description": "Consulta de busca"
                 },
                 "count": {
                     "type": "number",
-                    "description": "Number of results to return (1-10, default 5)"
+                    "description": "Quantidade de resultados (1-10, padrão 5)"
                 }
             },
             "required": ["query"]
@@ -78,7 +78,7 @@ impl Tool for WebSearchTool {
         let query = input
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("missing 'query' parameter".into()))?;
+            .ok_or_else(|| Error::Agent("parâmetro 'query' ausente".into()))?;
 
         let count = input
             .get("count")
@@ -94,23 +94,23 @@ impl Tool for WebSearchTool {
             .query(&[("q", query), ("count", &count.to_string())])
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("web search request failed: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha na requisição de busca: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {
             return Ok(ToolOutput::error(format!(
-                "Brave Search API error: HTTP {status}"
+                "Erro na API Brave Search: HTTP {status}"
             )));
         }
 
         let body: BraveSearchResponse = response
             .json()
             .await
-            .map_err(|e| Error::Agent(format!("failed to parse search response: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha ao interpretar resposta da busca: {e}")))?;
 
         let results = match body.web {
             Some(web) if !web.results.is_empty() => web.results,
-            _ => return Ok(ToolOutput::error("No search results found.")),
+            _ => return Ok(ToolOutput::error("Nenhum resultado encontrado.")),
         };
 
         let mut output = String::new();
@@ -132,7 +132,7 @@ impl Tool for WebSearchTool {
 mod tests {
     use super::*;
 
-    fn test_context() -> ToolContext {
+    fn contexto_teste() -> ToolContext {
         ToolContext {
             session_id: "test".into(),
             user_id: None,
@@ -141,38 +141,37 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_on_missing_query() {
+    fn retorna_erro_quando_query_ausente() {
         let tool = WebSearchTool::new("test-key".into());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(&test_context(), serde_json::json!({})));
+        let result = rt.block_on(tool.execute(&contexto_teste(), serde_json::json!({})));
         assert!(result.is_err());
     }
 
     #[test]
-    fn count_clamps_to_max() {
-        // Verify the clamping logic directly
+    fn count_limita_ao_maximo() {
         let count: u64 = 50;
         assert_eq!(count.clamp(1, MAX_COUNT), MAX_COUNT);
     }
 
     #[test]
-    fn count_clamps_to_min() {
+    fn count_limita_ao_minimo() {
         let count: u64 = 0;
         assert_eq!(count.clamp(1, MAX_COUNT), 1);
     }
 
     #[test]
-    fn formats_results_correctly() {
+    fn formata_resultados_corretamente() {
         let results = [
             BraveWebResult {
                 title: "Rust Lang".into(),
                 url: "https://www.rust-lang.org".into(),
-                description: "A systems programming language.".into(),
+                description: "Uma linguagem de programação de sistemas.".into(),
             },
             BraveWebResult {
                 title: "Crates.io".into(),
                 url: "https://crates.io".into(),
-                description: "The Rust package registry.".into(),
+                description: "O repositório de pacotes Rust.".into(),
             },
         ];
 
@@ -191,6 +190,6 @@ mod tests {
         assert!(output.starts_with("1. **Rust Lang**"));
         assert!(output.contains("2. **Crates.io**"));
         assert!(output.contains("https://crates.io"));
-        assert!(output.contains("The Rust package registry."));
+        assert!(output.contains("O repositório de pacotes Rust."));
     }
 }

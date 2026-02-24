@@ -1,73 +1,99 @@
 ---
 name: code-review
-description: Review code for bugs, security issues, performance problems, and style. Works with files or inline snippets.
+description: Revisar código em busca de bugs, falhas de segurança, problemas de performance e questões de estilo. Funciona com arquivos ou trechos inline.
 triggers:
-  - review
+  - revisar
+  - revisão de código
   - code review
-  - audit
-  - check this code
+  - auditoria
+  - verificar este código
 dependencies: []
 ---
 
-# Code Review
+# Revisão de Código
 
-When the user asks you to review code, follow this structured process.
+Quando o usuário pedir para revisar código, siga este processo estruturado.
 
-## Get the code
+---
 
-- **File path**: Use `file_read` to read the file.
-- **Directory**: Use `bash` to run `find` or `ls`, then read the relevant files.
-- **Inline snippet**: Work directly with the code in the message.
+## Obter o código
 
-## Review checklist
+- **Caminho de arquivo**: Use `file_read` para ler o arquivo.
+- **Diretório**: Use `bash` para executar `find` ou `ls`, depois leia os arquivos relevantes.
+- **Trecho inline**: Trabalhe diretamente com o código enviado na mensagem.
 
-Analyze the code in this order:
+---
 
-### 1. Security
-- Hardcoded secrets (API keys, passwords, tokens)
-- SQL injection, XSS, command injection vectors
-- Unsafe deserialization or eval usage
-- Missing input validation on user-facing boundaries
-- Overly permissive file/network access
+## Checklist de revisão
 
-### 2. Correctness
-- Off-by-one errors, boundary conditions
-- Null/undefined handling (missing checks, unwrap in non-test code)
-- Race conditions in concurrent code
-- Error handling gaps (swallowed errors, bare `except:`, missing `.catch()`)
-- Logic errors in conditionals
+Analise o código nesta ordem:
+
+---
+
+### 1. Segurança
+
+- Segredos hardcoded (chaves de API, senhas, tokens)
+- Vetores de SQL injection, XSS ou command injection
+- Desserialização insegura ou uso de `eval`
+- Falta de validação de entrada em fronteiras expostas ao usuário
+- Acesso excessivamente permissivo a arquivos ou rede
+
+---
+
+### 2. Correção (Corretude)
+
+- Erros de off-by-one e condições de limite
+- Tratamento de null/undefined (falta de validações, `unwrap` fora de testes)
+- Condições de corrida em código concorrente
+- Falhas no tratamento de erros (erros ignorados, `except:` genérico, ausência de `.catch()`)
+- Erros lógicos em condicionais
+
+---
 
 ### 3. Performance
-- Unnecessary allocations in hot paths
-- N+1 queries or unbounded iterations
-- Missing pagination on list endpoints
-- Blocking calls in async contexts
 
-### 4. Style and maintainability
-- Dead code or commented-out blocks
-- Functions longer than 50 lines
-- Magic numbers without named constants
-- Missing or misleading names
-- Debug print statements left in production code
+- Alocações desnecessárias em caminhos críticos
+- Queries N+1 ou iterações sem limite
+- Ausência de paginação em endpoints de listagem
+- Chamadas bloqueantes em contextos assíncronos
 
-## Output format
+---
 
-For each finding, report:
+### 4. Estilo e Manutenibilidade
+
+- Código morto ou blocos comentados
+- Funções com mais de 50 linhas
+- Números mágicos sem constantes nomeadas
+- Nomes ausentes, ambíguos ou enganosos
+- Prints de debug deixados em código de produção
+
+---
+
+## Formato de saída
+
+Para cada problema encontrado, reporte no formato:
 
 ```
-[SEVERITY] file:line - description
-  Suggestion: how to fix it
+
+[SEVERIDADE] arquivo:linha - descrição
+Sugestão: como corrigir
+
 ```
 
-Severity levels:
-- **CRITICAL**: Security vulnerability or data loss risk. Fix immediately.
-- **BUG**: Will cause incorrect behavior. Should fix before merge.
-- **WARNING**: Potential problem or code smell. Should address.
-- **NOTE**: Style or minor improvement. Nice to have.
+---
 
-## Rules
+### Níveis de severidade
 
-- Always read the code before reviewing. Never review code you haven't seen.
-- Be specific - reference exact lines and variables, not vague advice.
-- If the code looks good, say so. Don't invent issues.
-- Limit to the top 5-10 most important findings. Don't overwhelm with nitpicks.
+- **CRÍTICO**: Vulnerabilidade de segurança ou risco de perda de dados. Corrigir imediatamente.
+- **BUG**: Causará comportamento incorreto. Deve ser corrigido antes do merge.
+- **AVISO**: Problema potencial ou code smell. Deve ser tratado.
+- **NOTA**: Questão de estilo ou melhoria menor. Desejável corrigir.
+
+---
+
+## Regras
+
+- Sempre leia o código antes de revisar. Nunca revise código que você não viu.
+- Seja específico — referencie linhas e variáveis exatas, não dê conselhos vagos.
+- Se o código estiver bom, diga isso. Não invente problemas.
+- Limite-se aos 5–10 problemas mais importantes. Não sobrecarregue com nitpicks.

@@ -1,47 +1,68 @@
 ---
 name: translate
-description: Translate text between languages. Auto-detects source language.
+description: Traduz textos entre idiomas. Detecta automaticamente o idioma de origem.
 triggers:
+  # Oficiais (PT)
+  - traduzir
+  - tradução
+  - traduzir para
+  - em espanhol
+  - em árabe
+  - em francês
+  - para inglês
+  - para português
+  - para pt-br
+
+  # Aliases opcionais (EN) — compatibilidade (remova se quiser 100% PT-only)
   - translate
+  - translation
+  - to english
   - in spanish
   - in arabic
   - in french
-  - to english
-  - translation
 dependencies: []
 ---
 
-# Translate
+# Traduzir
 
-Translate text between languages when the user asks.
+Traduza textos entre idiomas quando o usuário solicitar.
 
-## How to translate
+---
 
-1. **Detect the source language** from the text (or the user will specify it).
-2. **Determine the target language** from the user's request ("translate to Spanish", "in Arabic", etc.).
-3. **Translate** preserving meaning, tone, and context.
+## Como traduzir
 
-## Output format
+1. **Detecte o idioma de origem** a partir do texto (ou o usuário pode especificá-lo).
+2. **Determine o idioma de destino** com base no pedido do usuário ("traduzir para espanhol", "em árabe", etc.).
+3. **Traduza** preservando significado, tom e contexto.
 
-> **[Source language] → [Target language]**
+---
+
+## Formato de saída
+
+> **[Idioma de origem] → [Idioma de destino]**
 >
-> [Translated text]
+> [Texto traduzido]
 
-If the text is long, preserve paragraph structure. If it contains technical terms, keep them and add a note if the translation is ambiguous.
+Se o texto for longo, preserve a estrutura dos parágrafos.  
+Se contiver termos técnicos, mantenha-os e adicione uma observação se houver ambiguidade relevante.
 
-## Rules
+---
 
-- Preserve the original meaning. Don't paraphrase unnecessarily.
-- Keep formatting (bullet points, headers, code blocks) intact.
-- For ambiguous words, pick the contextually appropriate translation and note the alternative if it matters.
-- If the user provides a file path, use `file_read` to get the content, translate it, and present the result.
-- If the user provides a URL, use `web_fetch` to get the content first.
-- For code comments, translate the comments but leave the code untouched.
-- If you're not confident in a translation (rare language, domain-specific jargon), say so.
+## Regras
 
-## Common requests
+- Preserve o significado original. Não parafraseie desnecessariamente.
+- Mantenha a formatação (listas, títulos, blocos de código) intacta.
+- Para palavras ambíguas, escolha a tradução mais adequada ao contexto e mencione alternativas se isso fizer diferença.
+- Se o usuário fornecer um caminho de arquivo, use `file_read` para obter o conteúdo, traduza e apresente o resultado.
+- Se o usuário fornecer uma URL, use `web_fetch` para obter o conteúdo antes de traduzir.
+- Para comentários em código, traduza apenas os comentários e mantenha o código intacto.
+- Se você não tiver confiança na tradução (idioma raro ou jargão muito específico), informe isso.
 
-- "Translate this to [language]"  - straightforward translation
-- "What does this say?"  - detect language, translate to English (or the user's primary language)
-- "How do you say [phrase] in [language]?"  - provide the translation with pronunciation guidance if helpful
-- "Translate this file"  - read the file, translate the content, present the result
+---
+
+## Solicitações comuns
+
+- "Traduza isso para [idioma]" — tradução direta.
+- "O que isso diz?" — detectar idioma e **traduzir para português** (padrão do GarraIA).
+- "Como se diz [frase] em [idioma]?" — fornecer a tradução e, se útil, orientação de pronúncia.
+- "Traduza este arquivo" — ler o arquivo, traduzir o conteúdo e apresentar o resultado.

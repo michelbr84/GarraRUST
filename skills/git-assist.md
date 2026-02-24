@@ -1,10 +1,10 @@
 ---
 name: git-assist
-description: Help with git workflows - generate commit messages from diffs, explain conflicts, suggest commands.
+description: Auxilia em fluxos de trabalho com git — gera mensagens de commit a partir de diffs, explica conflitos, sugere comandos.
 triggers:
-  - git help
-  - commit message
-  - merge conflict
+  - git ajuda
+  - mensagem de commit
+  - conflito de merge
   - git diff
   - rebase
 dependencies: []
@@ -12,68 +12,87 @@ dependencies: []
 
 # Git Assist
 
-Help the user with git workflows using the `bash` tool to run git commands.
+Ajude o usuário com fluxos de trabalho do git utilizando a ferramenta `bash` para executar comandos git.
 
-## Generate commit messages
+---
 
-When the user asks for a commit message:
+## Gerar mensagens de commit
 
-1. Run `bash` with `git diff --cached` to see staged changes (or `git diff` for unstaged).
-2. Analyze what changed - files modified, lines added/removed, the nature of the change.
-3. Write a commit message following conventional format:
+Quando o usuário pedir uma mensagem de commit:
+
+1. Execute `bash` com `git diff --cached` para ver as alterações staged (ou `git diff` para alterações não staged).
+2. Analise o que mudou — arquivos modificados, linhas adicionadas/removidas, natureza da alteração.
+3. Escreva a mensagem de commit seguindo o formato convencional:
 
 ```
-<type>(<scope>): <short description>
 
-<optional body explaining why>
+<tipo>(<escopo>): <descrição curta>
+
+<corpo opcional explicando o motivo>
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`
+Tipos aceitos:
+`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`
 
-Rules for the message:
-- Imperative mood ("add feature" not "added feature")
-- Under 72 characters for the subject line
-- Explain *why*, not *what* (the diff shows what)
+Regras para a mensagem:
 
-## Explain merge conflicts
+* Use modo imperativo ("adiciona feature" e não "adicionada feature")
+* Limite de 72 caracteres na linha de assunto
+* Explique o *porquê*, não o *o quê* (o diff já mostra o que mudou)
 
-When the user has a conflict:
+---
 
-1. Run `git status` to see conflicted files.
-2. Use `file_read` on the conflicted file to see the conflict markers.
-3. Explain what each side changed and why they conflict.
-4. Suggest a resolution (or ask the user which version they prefer).
+## Explicar conflitos de merge
 
-## Common workflows
+Quando o usuário tiver um conflito:
 
-### Interactive help
-When the user asks "how do I...":
-- Check the current state with `git status` and `git log --oneline -5`
-- Suggest the specific commands for their situation
-- Explain what each command will do before they run it
+1. Execute `git status` para identificar arquivos em conflito.
+2. Use `file_read` no arquivo conflitado para visualizar os marcadores de conflito.
+3. Explique o que cada lado alterou e por que houve conflito.
+4. Sugira uma resolução (ou pergunte ao usuário qual versão ele prefere).
 
-### Undo mistakes
-| Situation | Command |
-|-----------|---------|
-| Undo last commit (keep changes) | `git reset --soft HEAD~1` |
-| Discard unstaged changes in a file | `git checkout -- <file>` |
-| Remove file from staging | `git reset HEAD <file>` |
-| Undo a pushed commit | `git revert <sha>` |
-| Find a lost commit | `git reflog` |
+---
 
-### Branch management
-| Task | Command |
-|------|---------|
-| Create and switch to branch | `git checkout -b <name>` |
-| See all branches | `git branch -a` |
-| Delete merged branch | `git branch -d <name>` |
-| Rebase onto main | `git rebase main` |
-| Squash last N commits | `git reset --soft HEAD~N && git commit` |
+## Fluxos de trabalho comuns
 
-## Rules
+### Ajuda interativa
 
-- Always check `git status` before suggesting destructive commands.
-- Never suggest `--force` without explaining the risk and suggesting `--force-with-lease`.
-- Never suggest `git reset --hard` without warning about data loss.
-- If the repo is dirty, mention it before doing anything else.
-- Prefer showing the user what will happen (`--dry-run`, `git diff`) before making changes.
+Quando o usuário perguntar "como eu...":
+
+* Verifique o estado atual com `git status` e `git log --oneline -5`
+* Sugira comandos específicos para a situação atual
+* Explique o que cada comando fará antes de executá-lo
+
+---
+
+### Desfazer erros
+
+| Situação                                      | Comando                     |
+| --------------------------------------------- | --------------------------- |
+| Desfazer último commit (mantendo alterações)  | `git reset --soft HEAD~1`   |
+| Descartar alterações não staged em um arquivo | `git checkout -- <arquivo>` |
+| Remover arquivo do staging                    | `git reset HEAD <arquivo>`  |
+| Desfazer commit já enviado (push)             | `git revert <sha>`          |
+| Encontrar commit perdido                      | `git reflog`                |
+
+---
+
+### Gerenciamento de branches
+
+| Tarefa                          | Comando                                 |
+| ------------------------------- | --------------------------------------- |
+| Criar e mudar para uma branch   | `git checkout -b <nome>`                |
+| Ver todas as branches           | `git branch -a`                         |
+| Deletar branch já mergeada      | `git branch -d <nome>`                  |
+| Fazer rebase na main            | `git rebase main`                       |
+| Unir (squash) últimos N commits | `git reset --soft HEAD~N && git commit` |
+
+---
+
+## Regras
+
+* Sempre execute `git status` antes de sugerir comandos destrutivos.
+* Nunca sugira `--force` sem explicar o risco e recomendar `--force-with-lease`.
+* Nunca sugira `git reset --hard` sem alertar sobre risco de perda de dados.
+* Se o repositório estiver com alterações pendentes (dirty), mencione isso antes de qualquer ação.
+* Prefira mostrar ao usuário o que vai acontecer (`--dry-run`, `git diff`) antes de aplicar mudanças.

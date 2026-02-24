@@ -16,33 +16,54 @@ use async_trait::async_trait;
 use garraia_common::Result;
 use serde::{Deserialize, Serialize};
 
-/// Context passed to tools during execution.
+/// Contexto passado para as ferramentas durante a execução.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolContext {
+    /// Identificador da sessão atual.
     pub session_id: String,
+
+    /// Identificador opcional do usuário.
     pub user_id: Option<String>,
-    /// When true, this execution is from a scheduled heartbeat.
-    /// Used to prevent recursive self-scheduling.
+
+    /// Quando verdadeiro, indica que a execução veio de um heartbeat agendado.
+    /// Usado para evitar autoagendamento recursivo.
     #[serde(default)]
     pub is_heartbeat: bool,
 }
 
-/// Trait for tools that agents can invoke (bash, browser, file operations, etc.).
+/// Trait para ferramentas que os agentes podem invocar
+/// (bash, navegador, operações de arquivo, etc.).
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Nome único da ferramenta.
     fn name(&self) -> &str;
+
+    /// Descrição textual da ferramenta.
     fn description(&self) -> &str;
+
+    /// JSON Schema que define os parâmetros de entrada.
     fn input_schema(&self) -> serde_json::Value;
-    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput>;
+
+    /// Executa a ferramenta com o contexto e entrada fornecidos.
+    async fn execute(
+        &self,
+        context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput>;
 }
 
+/// Resultado retornado por uma ferramenta.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
+    /// Conteúdo textual retornado pela ferramenta.
     pub content: String,
+
+    /// Indica se a execução resultou em erro.
     pub is_error: bool,
 }
 
 impl ToolOutput {
+    /// Cria um resultado de sucesso.
     pub fn success(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -50,6 +71,7 @@ impl ToolOutput {
         }
     }
 
+    /// Cria um resultado de erro.
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -63,14 +85,14 @@ mod tests {
     use super::ToolOutput;
 
     #[test]
-    fn success_helper_sets_non_error_state() {
+    fn helper_success_define_estado_sem_erro() {
         let output = ToolOutput::success("done");
         assert_eq!(output.content, "done");
         assert!(!output.is_error);
     }
 
     #[test]
-    fn error_helper_sets_error_state() {
+    fn helper_error_define_estado_com_erro() {
         let output = ToolOutput::error("failed");
         assert_eq!(output.content, "failed");
         assert!(output.is_error);

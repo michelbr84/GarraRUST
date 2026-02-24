@@ -16,6 +16,8 @@ export const dom = {
   providerKeySection: document.getElementById("provider-key-section"),
   providerApiKey: document.getElementById("provider-api-key"),
   providerActivateBtn: document.getElementById("provider-activate"),
+  providerModelInput: document.getElementById("provider-model-input"),
+  providerModelOptions: document.getElementById("provider-model-options"),
   authSection: document.getElementById("auth-section"),
   keyGatewayEl: document.getElementById("key-gateway"),
   authConnectBtn: document.getElementById("auth-connect"),

@@ -1,7 +1,18 @@
 ---
 name: web-lookup
-description: Fetch and distill information from URLs. Summarize web pages, extract key facts, answer questions from web content.
+description: Busca e sintetiza informações a partir de URLs. Resume páginas, extrai fatos principais e responde perguntas com base em conteúdo da web.
 triggers:
+  # Oficiais (PT)
+  - pesquisar
+  - buscar
+  - procurar
+  - verificar link
+  - consultar
+  - o que é
+  - veja este link
+  - acessar link
+
+  # Aliases opcionais (EN) — compatibilidade
   - look up
   - search for
   - what is
@@ -10,49 +21,66 @@ triggers:
 dependencies: []
 ---
 
-# Web Lookup
+# Consulta Web
 
-When the user asks you to look something up or provides a URL, fetch and distill the information.
+Quando o usuário pedir para pesquisar algo ou fornecer um link, busque e sintetize a informação.
 
-## How to look up
+---
 
-1. **URL provided**: Use `web_fetch` to retrieve the page content.
-2. **Topic/question provided**: If the user asks "what is X" or "look up Y", explain that you can fetch a specific URL if they provide one, or answer from your knowledge.
+## Como realizar a busca
 
-## Processing the content
+1. **URL fornecida**: Use `web_fetch` para obter o conteúdo da página.
+2. **Tópico ou pergunta fornecida**:
+   - Se o usuário disser "o que é X" ou "pesquise Y", explique que você pode buscar uma URL específica caso ele forneça.
+   - Caso contrário, responda com base no seu conhecimento interno (se aplicável).
 
-After fetching a URL:
+---
 
-1. **Extract the relevant information** - don't dump the entire page. Focus on what the user asked about.
-2. **Structure the response**:
-   - Key facts or findings (bullet points)
-   - Relevant quotes or data points
-   - Source attribution (the URL)
-3. **Answer the user's question** if they asked one specific thing.
+## Processamento do conteúdo
 
-## Output format
+Após buscar uma URL:
 
-For general lookups:
-> **[Page title or topic]** - [source URL]
+1. **Extraia apenas as informações relevantes** — não copie a página inteira.
+2. **Estruture a resposta**:
+   - Principais fatos ou descobertas (bullet points)
+   - Citações ou dados relevantes
+   - Atribuição da fonte (URL)
+3. **Responda diretamente à pergunta do usuário**, se houver uma pergunta específica.
+
+---
+
+## Formato de saída
+
+### Para buscas gerais:
+
+> **[Título da página ou tópico]** — [URL da fonte]
 >
-> [Key findings in 3-5 bullet points]
+> - Principais descobertas (3–5 bullet points)
 
-For specific questions:
-> [Direct answer to the question]
+---
+
+### Para perguntas específicas:
+
+> [Resposta direta à pergunta]
 >
-> Source: [URL]
+> Fonte: [URL]
 
-## Handling multiple URLs
+---
 
-If the user provides multiple URLs or asks you to compare sources:
-1. Fetch each URL separately.
-2. Present findings from each source.
-3. Note agreements and contradictions between sources.
+## Lidando com múltiplas URLs
 
-## Rules
+Se o usuário fornecer múltiplos links ou pedir comparação entre fontes:
 
-- Always cite the source URL.
-- If `web_fetch` fails (timeout, 404, paywall), tell the user and suggest alternatives.
-- Don't fabricate information. If the page doesn't contain what the user is looking for, say so.
-- For very long pages, focus on the most relevant sections rather than summarizing everything.
-- If the content is behind a login or paywall, let the user know you can't access it.
+1. Busque cada URL separadamente.
+2. Apresente os achados de cada fonte.
+3. Destaque concordâncias e contradições entre elas.
+
+---
+
+## Regras
+
+- Sempre cite a URL da fonte.
+- Se `web_fetch` falhar (timeout, 404, paywall), informe o usuário e sugira alternativas.
+- Nunca invente informações. Se a página não contiver o que o usuário procura, diga claramente.
+- Para páginas muito longas, foque nas seções mais relevantes em vez de resumir tudo.
+- Se o conteúdo estiver protegido por login ou paywall, informe que não é possível acessar.
