@@ -362,6 +362,7 @@ fn main() -> Result<()> {
             .with_writer(
                 file_appender.and(RedactingWriter::stderr())
             )
+            .with_ansi(false)
             .init();
     };
 

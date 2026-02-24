@@ -56,6 +56,7 @@ pub fn build_router(
         )
         .route("/api/sessions/{id}/messages", post(api::send_message))
         .route("/api/sessions/{id}/history", get(api::session_history))
+        .route("/api/memory", axum::routing::delete(crate::memory_handler::clear_memory))
         .route("/api/memory/recent", get(crate::memory_handler::get_recent_memory))
         .route("/api/memory/search", get(crate::memory_handler::search_memory))
         .route("/api/logs", get(crate::logs_handler::get_logs))

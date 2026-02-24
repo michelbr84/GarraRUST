@@ -99,6 +99,50 @@ impl GatewayServer {
         state.spawn_session_cleanup();
         state.spawn_config_applier();
 
+        // Spawn log file tailer for WebSocket streaming
+        let log_tx = state.log_tx.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader, AsyncSeekExt};
+            use std::io::SeekFrom;
+            let path = dirs::home_dir().unwrap().join(".garraia").join("garraia.log");
+            
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            if let Ok(mut file) = tokio::fs::File::open(&path).await {
+                let _ = file.seek(SeekFrom::End(0)).await;
+                let mut reader = BufReader::new(file);
+                let mut line = String::new();
+
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            // Clear EOF state to keep reading new lines when appended
+                            let mut f = reader.into_inner();
+                            let _ = f.seek(SeekFrom::Current(0)).await;
+                            reader = BufReader::new(f);
+                        },
+                        Ok(_) => {
+                            let text = line.trim_end();
+                            if !text.is_empty() {
+                                let _ = log_tx.send(serde_json::json!({
+                                    "type": "log",
+                                    "level": "INFO",
+                                    "message": text
+                                }));
+                            }
+                        },
+                        Err(_) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+            }
+        });
+
         // Spawn MCP health monitor for auto-reconnect
         if let Some(ref arc) = mcp_manager_arc {
             arc.spawn_health_monitor();
