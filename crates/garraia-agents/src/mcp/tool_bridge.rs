@@ -3,44 +3,53 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use garraia_common::Result;
+use garraia_common::{Error, Result};
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::service::{Peer, RoleClient};
 use serde_json::Value;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Bridges a single MCP server tool into the garraia `Tool` trait.
+/// Faz a ponte entre uma ferramenta exposta por um servidor MCP
+/// e o trait `Tool` utilizado pelo Garraia.
 pub struct McpTool {
-    /// Namespaced name: "server_name.tool_name"
-    namespaced_name: String,
-    /// Original tool name as registered on the MCP server
-    original_name: String,
-    /// Tool description from the MCP server
-    tool_description: String,
-    /// JSON Schema for tool input
-    schema: Value,
-    /// Shared handle to the MCP server peer
+    /// Nome com namespace: "nome_servidor.nome_ferramenta"
+    nome_completo: String,
+
+    /// Nome original da ferramenta registrada no servidor MCP
+    nome_original: String,
+
+    /// Descrição da ferramenta (vinda do servidor MCP)
+    descricao: String,
+
+    /// JSON Schema de entrada da ferramenta
+    schema_entrada: Value,
+
+    /// Referência compartilhada para o peer MCP
     peer: Arc<Peer<RoleClient>>,
-    /// Timeout for tool execution
+
+    /// Timeout máximo para execução da ferramenta
     timeout: Duration,
 }
 
 impl McpTool {
     pub fn new(
-        server_name: &str,
-        original_name: String,
-        description: Option<String>,
-        input_schema: Value,
+        nome_servidor: &str,
+        nome_original: String,
+        descricao: Option<String>,
+        schema_entrada: Value,
         peer: Arc<Peer<RoleClient>>,
         timeout: Duration,
     ) -> Self {
         Self {
-            namespaced_name: format!("{server_name}.{original_name}"),
-            tool_description: description
-                .unwrap_or_else(|| format!("MCP tool {original_name} from {server_name}")),
-            original_name,
-            schema: input_schema,
+            nome_completo: format!("{nome_servidor}.{nome_original}"),
+            descricao: descricao.unwrap_or_else(|| {
+                format!(
+                    "Ferramenta MCP {nome_original} do servidor {nome_servidor}"
+                )
+            }),
+            nome_original,
+            schema_entrada,
             peer,
             timeout,
         }
@@ -50,66 +59,68 @@ impl McpTool {
 #[async_trait]
 impl Tool for McpTool {
     fn name(&self) -> &str {
-        &self.namespaced_name
+        &self.nome_completo
     }
 
     fn description(&self) -> &str {
-        &self.tool_description
+        &self.descricao
     }
 
     fn input_schema(&self) -> Value {
-        self.schema.clone()
+        self.schema_entrada.clone()
     }
 
     async fn execute(&self, _context: &ToolContext, input: Value) -> Result<ToolOutput> {
-        let arguments = match input {
+        // Converte a entrada para o formato esperado pelo MCP
+        let argumentos = match input {
             Value::Object(map) => Some(map),
             Value::Null => None,
-            other => {
+            outro => {
                 let mut map = serde_json::Map::new();
-                map.insert("input".to_string(), other);
+                map.insert("input".to_string(), outro);
                 Some(map)
             }
         };
 
         let params = CallToolRequestParams {
-            name: Cow::Owned(self.original_name.clone()),
-            arguments,
+            name: Cow::Owned(self.nome_original.clone()),
+            arguments: argumentos,
             meta: None,
             task: None,
         };
 
-        let result = tokio::time::timeout(self.timeout, self.peer.call_tool(params))
+        // Executa com timeout
+        let resultado = tokio::time::timeout(self.timeout, self.peer.call_tool(params))
             .await
             .map_err(|_| {
-                garraia_common::Error::Mcp(format!(
-                    "tool {} timed out after {:?}",
-                    self.namespaced_name, self.timeout
+                Error::Mcp(format!(
+                    "ferramenta {} excedeu o tempo limite após {:?}",
+                    self.nome_completo, self.timeout
                 ))
             })?
-            .map_err(|e| garraia_common::Error::Mcp(format!("call_tool failed: {e}")))?;
+            .map_err(|e| Error::Mcp(format!("falha ao chamar call_tool: {e}")))?;
 
-        // Convert MCP Content items to a single text output
-        let mut text_parts = Vec::new();
-        for content in &result.content {
+        // Converte conteúdos retornados pelo MCP em texto único
+        let mut partes_texto = Vec::new();
+        for content in &resultado.content {
             match &content.raw {
                 RawContent::Text(text_content) => {
-                    text_parts.push(text_content.text.to_string());
+                    partes_texto.push(text_content.text.to_string());
                 }
                 _ => {
-                    // For non-text content, include a placeholder
-                    text_parts.push("[non-text content]".to_string());
+                    // Conteúdo não textual recebe placeholder
+                    partes_texto.push("[conteúdo não textual]".to_string());
                 }
             }
         }
 
-        let output_text = text_parts.join("\n");
-        let is_error = result.is_error.unwrap_or(false);
+        let texto_saida = partes_texto.join("\n");
+        let eh_erro = resultado.is_error.unwrap_or(false);
 
-        if is_error {
-            Ok(ToolOutput::error(output_text))
+        if eh_erro {
+            Ok(ToolOutput::error(texto_saida))
         } else {
-            Ok(ToolOutput::success(output_text))
+            Ok(ToolOutput::success(texto_saida))
         }
     }
 }

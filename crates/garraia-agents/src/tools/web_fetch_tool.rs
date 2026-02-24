@@ -7,14 +7,14 @@ use super::{Tool, ToolContext, ToolOutput};
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1MB
 
-/// Fetch content from a URL with timeout, size limits, and domain blocking.
+/// Busca conteúdo de uma URL com timeout, limite de tamanho e bloqueio de domínios.
 pub struct WebFetchTool {
     client: reqwest::Client,
-    blocked_domains: Vec<String>,
+    dominios_bloqueados: Vec<String>,
 }
 
 impl WebFetchTool {
-    pub fn new(blocked_domains: Option<Vec<String>>) -> Self {
+    pub fn new(dominios_bloqueados: Option<Vec<String>>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
@@ -22,14 +22,14 @@ impl WebFetchTool {
 
         Self {
             client,
-            blocked_domains: blocked_domains.unwrap_or_default(),
+            dominios_bloqueados: dominios_bloqueados.unwrap_or_default(),
         }
     }
 
-    fn is_blocked(&self, url: &str) -> bool {
-        self.blocked_domains
+    fn esta_bloqueado(&self, url: &str) -> bool {
+        self.dominios_bloqueados
             .iter()
-            .any(|domain| url.contains(domain))
+            .any(|dominio| url.contains(dominio))
     }
 }
 
@@ -40,7 +40,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch the content of a web page at the given URL. Returns the response body as text."
+        "Busca o conteúdo de uma página web na URL informada. Retorna o corpo da resposta como texto."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -49,7 +49,7 @@ impl Tool for WebFetchTool {
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The URL to fetch"
+                    "description": "A URL a ser buscada"
                 }
             },
             "required": ["url"]
@@ -64,10 +64,10 @@ impl Tool for WebFetchTool {
         let url = input
             .get("url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("missing 'url' parameter".into()))?;
+            .ok_or_else(|| Error::Agent("parâmetro 'url' ausente".into()))?;
 
-        if self.is_blocked(url) {
-            return Ok(ToolOutput::error("domain is blocked".to_string()));
+        if self.esta_bloqueado(url) {
+            return Ok(ToolOutput::error("domínio bloqueado".to_string()));
         }
 
         let response = self
@@ -75,7 +75,7 @@ impl Tool for WebFetchTool {
             .get(url)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("fetch failed: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha ao buscar URL: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -85,18 +85,18 @@ impl Tool for WebFetchTool {
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| Error::Agent(format!("failed to read response body: {e}")))?;
+            .map_err(|e| Error::Agent(format!("falha ao ler corpo da resposta: {e}")))?;
 
         if bytes.len() > MAX_RESPONSE_BYTES {
-            let truncated = String::from_utf8_lossy(&bytes[..MAX_RESPONSE_BYTES]);
+            let truncado = String::from_utf8_lossy(&bytes[..MAX_RESPONSE_BYTES]);
             return Ok(ToolOutput::success(format!(
-                "{}\n... (response truncated at {} bytes)",
-                truncated, MAX_RESPONSE_BYTES
+                "{}\n... (resposta truncada em {} bytes)",
+                truncado, MAX_RESPONSE_BYTES
             )));
         }
 
-        let text = String::from_utf8_lossy(&bytes);
-        Ok(ToolOutput::success(text.into_owned()))
+        let texto = String::from_utf8_lossy(&bytes);
+        Ok(ToolOutput::success(texto.into_owned()))
     }
 }
 
@@ -105,14 +105,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blocks_domains() {
+    fn bloqueia_dominios() {
         let tool = WebFetchTool::new(Some(vec!["evil.com".to_string()]));
-        assert!(tool.is_blocked("https://evil.com/path"));
-        assert!(!tool.is_blocked("https://good.com/path"));
+        assert!(tool.esta_bloqueado("https://evil.com/path"));
+        assert!(!tool.esta_bloqueado("https://good.com/path"));
     }
 
     #[test]
-    fn returns_error_on_missing_url() {
+    fn retorna_erro_quando_url_ausente() {
         let tool = WebFetchTool::new(None);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let ctx = ToolContext {

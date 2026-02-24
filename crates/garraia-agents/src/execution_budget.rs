@@ -1,59 +1,60 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+
 use serde_json::Value;
 
-/// Window size for loop detection.
-/// Only triggers if the last N calls have the SAME signature (tool + args).
+/// Tamanho da janela para detecção de loop.
+/// Só dispara se as últimas N chamadas tiverem a MESMA assinatura (ferramenta + argumentos).
 const JANELA_LOOP: usize = 3;
 
-/// Signature of a tool call: tool name + hash of its arguments.
-/// Two calls are considered "the same" only if both name AND args match.
+/// Assinatura de uma chamada de ferramenta: nome + hash dos argumentos.
+/// Duas chamadas são consideradas "iguais" apenas se nome E argumentos forem idênticos.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AssinaturaFerramenta {
     nome: String,
     hash_args: u64,
 }
 
-/// Compute a deterministic hash of the tool arguments (JSON payload).
+/// Calcula um hash determinístico dos argumentos da ferramenta (payload JSON).
 fn calcular_hash_args(payload: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     payload.to_string().hash(&mut hasher);
     hasher.finish()
 }
 
-/// Execution budget for controlling tool execution in agent runtime.
-/// Prevents infinite loops while allowing legitimate long-running tasks.
+/// Orçamento de execução para controlar chamadas de ferramentas no runtime do agente.
+/// Evita loops infinitos, mas permite tarefas legítimas de longa duração.
 ///
-/// Loop detection uses a **signature-based** approach:
-/// - A "signature" = tool name + hash of arguments
-/// - Only blocks when the last `JANELA_LOOP` calls have the **exact same** signature
-/// - Different arguments to the same tool (e.g. `bash("ls")` then `bash("cat file")`)
-///   are NOT considered a loop
+/// A detecção de loop utiliza abordagem baseada em **assinatura**:
+/// - Uma "assinatura" = nome da ferramenta + hash dos argumentos
+/// - Só bloqueia quando as últimas `JANELA_LOOP` chamadas têm a MESMA assinatura
+/// - Argumentos diferentes para a mesma ferramenta (ex: `bash("ls")` e `bash("cat file")`)
+///   NÃO são considerados loop
 pub struct ExecutionBudget {
-    /// Max tool calls per turn (conversation turn)
+    /// Máximo de chamadas de ferramenta por turno (um turno da conversa)
     max_per_turn: usize,
-    /// Max tool calls per task (entire execution)
+    /// Máximo de chamadas de ferramenta por tarefa (execução completa)
     max_per_task: usize,
-    /// Timeout for each tool execution in seconds
+    /// Timeout de cada execução de ferramenta em segundos
     tool_timeout_secs: u64,
-    /// Current tool calls this turn
+    /// Quantidade atual de chamadas neste turno
     current_turn_calls: usize,
-    /// Current tool calls this task
+    /// Quantidade atual de chamadas nesta tarefa
     current_task_calls: usize,
-    /// Sliding window of recent tool call signatures for loop detection
+    /// Janela deslizante com assinaturas recentes para detecção de loop
     historico_assinaturas: VecDeque<AssinaturaFerramenta>,
 }
 
 impl ExecutionBudget {
-    /// Create a budget with default values:
-    /// - 50 calls per turn (allows multi-turn agent loops)
-    /// - 100 calls per task (allows long-running tasks)
-    /// - 30 second timeout per tool
+    /// Cria um orçamento com valores padrão:
+    /// - 10 chamadas por turno
+    /// - 30 chamadas por tarefa
+    /// - 30 segundos de timeout por ferramenta
     pub fn padrao() -> Self {
         Self {
-            max_per_turn: 50,
-            max_per_task: 100,
+            max_per_turn: 10,
+            max_per_task: 30,
             tool_timeout_secs: 30,
             current_turn_calls: 0,
             current_task_calls: 0,
@@ -61,20 +62,21 @@ impl ExecutionBudget {
         }
     }
 
-    /// Check if turn limit was reached (but task limit not)
-    /// Used for auto-reset strategy
+    /// Verifica se o limite por turno foi atingido (mas não o limite total da tarefa).
+    /// Usado para estratégia de auto-reset entre turnos.
     pub fn atingiu_limite_turno(&self) -> bool {
         self.current_turn_calls >= self.max_per_turn
             && self.current_task_calls < self.max_per_task
     }
 
-    /// Check if we can call another tool
+    /// Verifica se ainda é permitido chamar outra ferramenta.
     pub fn pode_chamar_ferramenta(&self) -> bool {
         self.current_turn_calls < self.max_per_turn
             && self.current_task_calls < self.max_per_task
     }
 
-    /// Register a tool call with its payload for signature-based loop detection
+    /// Registra uma chamada de ferramenta com seu payload,
+    /// para controle de orçamento e detecção de loop por assinatura.
     pub fn registrar_chamada(&mut self, tool_name: &str, payload: &Value) {
         self.current_turn_calls += 1;
         self.current_task_calls += 1;
@@ -91,15 +93,15 @@ impl ExecutionBudget {
         self.historico_assinaturas.push_back(assinatura);
     }
 
-    /// Detect if a tool is being called in a loop.
+    /// Detecta se uma ferramenta está sendo chamada em loop.
     ///
-    /// Returns `true` only when the last `JANELA_LOOP` calls have the
-    /// **exact same signature** (same tool name AND same arguments).
+    /// Retorna `true` apenas quando as últimas `JANELA_LOOP` chamadas
+    /// possuem exatamente a MESMA assinatura (mesmo nome E mesmos argumentos).
     ///
-    /// Examples:
-    /// - bash("ls"), bash("cat f"), bash("pwd")       → false ✅ (different args)
-    /// - bash("cargo check") x3                       → true  ❌ (real loop)
-    /// - bash("ls"), file_read("x"), bash("ls")       → false ✅ (different tools in between)
+    /// Exemplos:
+    /// - bash("ls"), bash("cat f"), bash("pwd")  → false (argumentos diferentes)
+    /// - bash("cargo check") x3                  → true  (loop real)
+    /// - bash("ls"), file_read("x"), bash("ls")  → false (ferramentas diferentes no meio)
     pub fn detectar_loop_ferramenta(&self) -> bool {
         if self.historico_assinaturas.len() < JANELA_LOOP {
             return false;
@@ -112,30 +114,32 @@ impl ExecutionBudget {
             .all(|sig| sig.nome == primeira.nome && sig.hash_args == primeira.hash_args)
     }
 
-    /// Get the tool timeout duration
+    /// Retorna a duração de timeout configurada para execução de ferramentas.
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.tool_timeout_secs)
     }
 
-    /// Reset for a new turn (after assistant responds)
+    /// Reseta o orçamento para um novo turno (após resposta do assistente).
     pub fn resetar_turno(&mut self) {
         self.current_turn_calls = 0;
         self.historico_assinaturas.clear();
     }
 
-    /// Full reset for a new task (new user message)
+    /// Reseta completamente o orçamento para uma nova tarefa (nova mensagem do usuário).
     pub fn resetar_tarefa(&mut self) {
         self.current_turn_calls = 0;
         self.current_task_calls = 0;
         self.historico_assinaturas.clear();
     }
 
-    /// Get current status as string
+    /// Retorna o status atual do orçamento em formato textual.
     pub fn status(&self) -> String {
         format!(
             "turn={}/{} task={}/{}",
-            self.current_turn_calls, self.max_per_turn,
-            self.current_task_calls, self.max_per_task
+            self.current_turn_calls,
+            self.max_per_turn,
+            self.current_task_calls,
+            self.max_per_task
         )
     }
 }
@@ -165,7 +169,7 @@ mod tests {
     fn test_no_loop_different_args() {
         let mut budget = ExecutionBudget::padrao();
 
-        // 3 bash calls with DIFFERENT arguments — should NOT be a loop
+        // 3 chamadas bash com argumentos DIFERENTES — não deve ser loop
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
         budget.registrar_chamada("bash", &json!({"command": "cat file.txt"}));
         budget.registrar_chamada("bash", &json!({"command": "pwd"}));
@@ -177,7 +181,7 @@ mod tests {
     fn test_loop_same_args() {
         let mut budget = ExecutionBudget::padrao();
 
-        // 3 bash calls with IDENTICAL arguments — IS a loop
+        // 3 chamadas bash com argumentos IDÊNTICOS — é loop
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
@@ -189,7 +193,7 @@ mod tests {
     fn test_no_loop_under_window() {
         let mut budget = ExecutionBudget::padrao();
 
-        // Only 2 identical calls — below JANELA_LOOP threshold
+        // Apenas 2 chamadas idênticas — abaixo do limite da janela
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
 
@@ -200,7 +204,7 @@ mod tests {
     fn test_no_loop_mixed_tools() {
         let mut budget = ExecutionBudget::padrao();
 
-        // Different tools interleaved — not a loop
+        // Ferramentas diferentes intercaladas — não é loop
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
         budget.registrar_chamada("file_read", &json!({"path": "test.txt"}));
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
@@ -212,11 +216,11 @@ mod tests {
     fn test_loop_breaks_after_different_call() {
         let mut budget = ExecutionBudget::padrao();
 
-        // Start repeating...
+        // Começa repetindo...
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
 
-        // Then a different call breaks the pattern
+        // Uma chamada diferente quebra o padrão
         budget.registrar_chamada("bash", &json!({"command": "cat Cargo.toml"}));
 
         assert!(!budget.detectar_loop_ferramenta());
@@ -231,7 +235,7 @@ mod tests {
         budget.resetar_turno();
 
         assert_eq!(budget.current_turn_calls, 0);
-        assert_eq!(budget.current_task_calls, 2); // Task calls should NOT reset
+        assert_eq!(budget.current_task_calls, 2); // Chamadas da tarefa NÃO são resetadas
         assert!(budget.historico_assinaturas.is_empty());
     }
 
@@ -251,7 +255,7 @@ mod tests {
     fn test_exceeds_max_per_turn() {
         let mut budget = ExecutionBudget::padrao();
 
-        // Default is 10 per turn
+        // Padrão é 10 por turno
         for i in 0..10 {
             budget.registrar_chamada("bash", &json!({"command": format!("cmd_{}", i)}));
         }
@@ -272,20 +276,20 @@ mod tests {
     fn test_sliding_window_eviction() {
         let mut budget = ExecutionBudget::padrao();
 
-        // Fill window with identical calls
+        // Preenche a janela com chamadas idênticas
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
         budget.registrar_chamada("bash", &json!({"command": "cargo check"}));
 
-        // Third call is different — pushes out the oldest, window is now mixed
+        // Terceira chamada diferente — remove a mais antiga, janela fica mista
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
 
         assert!(!budget.detectar_loop_ferramenta());
 
-        // Now fill again with the new command
+        // Agora preenche novamente com o novo comando
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
 
-        // Window is now [ls, ls, ls] — loop detected
+        // Janela agora é [ls, ls, ls] — loop detectado
         assert!(budget.detectar_loop_ferramenta());
     }
 }
