@@ -1012,3 +1012,7 @@
 .text-secondary {
   color: var(--text-secondary);
 }
+
+[data-theme="brasil"] .nav-item svg, [data-theme="dark"] .nav-item svg {
+  stroke: var(--ink);
+}

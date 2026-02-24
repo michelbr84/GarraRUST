@@ -8,6 +8,7 @@
   "status.unavailable": "unavailable",
 
   "system.status": "System Status",
+  "memory": "Memory",
 
   "gateway": "Gateway",
   "server": "Server",

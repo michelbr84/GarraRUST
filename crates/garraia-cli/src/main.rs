@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use garraia_security::RedactingWriter;
+use tracing_appender::rolling;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -346,11 +348,20 @@ fn main() -> Result<()> {
 
     // Init tracing for non-daemon mode (daemon reconfigures after fork)
     let init_tracing = |level: &str| {
+        let log_dir = dirs::home_dir().unwrap().join(".garraia");
+        std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to create log directory: {}", e);
+        });
+
+        let file_appender = rolling::never(&log_dir, "garraia.log");
+
         tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
             )
-            .with_writer(RedactingWriter::stderr())
+            .with_writer(
+                file_appender.and(RedactingWriter::stderr())
+            )
             .init();
     };
 
@@ -874,10 +885,14 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
         Ok(()) => {
             // We are now in the child (daemon) process.
             // Re-init tracing to write to the log file.
+            let log_dir = dirs::home_dir().unwrap().join(".garraia");
+            let file_appender = rolling::never(&log_dir, "garraia.log");
+
             tracing_subscriber::fmt()
                 .with_env_filter(EnvFilter::new(
                     config.log_level.as_deref().unwrap_or("info"),
                 ))
+                .with_writer(file_appender)
                 .with_ansi(false)
                 .init();
 

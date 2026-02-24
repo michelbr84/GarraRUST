@@ -33,6 +33,7 @@ serde = { workspace = true }
 dirs = "6"
 regex = { workspace = true }
 ring = { workspace = true }
+tracing-appender = "0.2.4"
 
 [features]
 default = []
