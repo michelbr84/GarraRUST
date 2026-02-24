@@ -29,6 +29,7 @@ export const dom = {
   memoryExportBtn: document.getElementById("memory-export-btn"),
   memoryClearBtn: document.getElementById("memory-clear-btn"),
   logsRefreshBtn: document.getElementById("logs-refresh-btn"),
+  logsPauseBtn: document.getElementById("logs-pause-btn"),
   logsView: document.getElementById("logs-view"),
   nanoAgentsWidget: document.getElementById("nano-agents"),
   nanoTimeEl: document.getElementById("nano-time"),

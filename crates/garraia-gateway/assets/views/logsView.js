@@ -22,10 +22,14 @@ export async function loadLogs() {
   }
 }
 
+let isPaused = false;
+
 EventBus.on("state:logs", (logs) => {
   if (!dom.logsView) return;
   dom.logsView.textContent = logs;
-  dom.logsView.scrollTop = dom.logsView.scrollHeight;
+  if (!isPaused) {
+    dom.logsView.scrollTop = dom.logsView.scrollHeight;
+  }
 });
 
 EventBus.on("state:view", (viewName) => {
@@ -38,4 +42,12 @@ export function initLogs() {
   if (dom.logsRefreshBtn) {
     dom.logsRefreshBtn.addEventListener("click", loadLogs);
   }
+  if (dom.logsPauseBtn) {
+    dom.logsPauseBtn.addEventListener("click", () => {
+      isPaused = !isPaused;
+      dom.logsPauseBtn.textContent = isPaused ? "Retomar Scroll" : "Pausar Scroll";
+      dom.logsPauseBtn.classList.toggle("primary", isPaused);
+    });
+  }
 }
+

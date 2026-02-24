@@ -85,8 +85,18 @@ export function initMemory() {
     });
   }
   if (dom.memorySearchInput) {
+    let debounceTimer;
+    dom.memorySearchInput.addEventListener("input", (e) => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        loadMemory(e.target.value.trim());
+      }, 300);
+    });
     dom.memorySearchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") loadMemory(e.target.value.trim());
+      if (e.key === "Enter") {
+        clearTimeout(debounceTimer);
+        loadMemory(e.target.value.trim());
+      }
     });
   }
   if (dom.memoryExportBtn) {

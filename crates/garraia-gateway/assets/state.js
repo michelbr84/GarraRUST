@@ -61,12 +61,16 @@ export const GarraState = {
     }
   },
   setLogs(logs) {
-    this.logs = logs;
-    EventBus.emit("state:logs", logs);
+    this.logs = this.stripAnsi(logs);
+    EventBus.emit("state:logs", this.logs);
   },
   appendLog(line) {
-    this.logs += (this.logs ? "\n" : "") + line;
+    this.logs += (this.logs ? "\n" : "") + this.stripAnsi(line);
     EventBus.emit("state:logs", this.logs);
+  },
+  stripAnsi(s) {
+    if (!s) return "";
+    return String(s).replace(/\x1b\[[0-9;]*m/g, "");
   },
   setMemories(memories) {
     this.memories = memories;
