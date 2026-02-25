@@ -46,12 +46,16 @@ impl SessionStore {
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     channel_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     metadata TEXT DEFAULT '{}'
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_tenant
+                    ON sessions(tenant_id);
 
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -81,6 +85,11 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
+        // Migration: add tenant_id column to pre-existing sessions tables.
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
+        );
+
         Ok(())
     }
 
@@ -96,16 +105,29 @@ impl SessionStore {
         user_id: &str,
         metadata: &serde_json::Value,
     ) -> Result<()> {
+        self.upsert_session_with_tenant(session_id, "default", channel_id, user_id, metadata)
+    }
+
+    /// Create or update a session row with an explicit tenant_id.
+    pub fn upsert_session_with_tenant(
+        &self,
+        session_id: &str,
+        tenant_id: &str,
+        channel_id: &str,
+        user_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO sessions (id, channel_id, user_id, metadata)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO sessions (id, tenant_id, channel_id, user_id, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
+                   tenant_id = excluded.tenant_id,
                    channel_id = excluded.channel_id,
                    user_id = excluded.user_id,
                    metadata = excluded.metadata,
                    updated_at = datetime('now')",
-                params![session_id, channel_id, user_id, metadata.to_string()],
+                params![session_id, tenant_id, channel_id, user_id, metadata.to_string()],
             )
             .map_err(|e| Error::Database(format!("failed to upsert session: {e}")))?;
         Ok(())

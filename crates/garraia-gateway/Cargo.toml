@@ -26,9 +26,13 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 chrono = { workspace = true }
+rusqlite = { workspace = true }
+base64 = { workspace = true }
 dirs = "6"
 governor = "0.8"
 tower_governor = "0.8"
+async-trait = { workspace = true }
+anyhow = { workspace = true }
 
 [features]
 default = []

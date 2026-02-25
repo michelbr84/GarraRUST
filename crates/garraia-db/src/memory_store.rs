@@ -19,6 +19,7 @@ const MAX_RECALL_LIMIT: usize = 200;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
+    pub tenant_id: String,
     pub session_id: String,
     pub channel_id: Option<String>,
     pub user_id: Option<String>,
@@ -36,6 +37,7 @@ pub struct MemoryEntry {
 /// Insert shape for new memory records before persistence assigns ID/timestamps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewMemoryEntry {
+    pub tenant_id: String,
     pub session_id: String,
     pub channel_id: Option<String>,
     pub user_id: Option<String>,
@@ -79,6 +81,7 @@ impl MemoryRole {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallQuery {
+    pub tenant_id: Option<String>,
     pub query_text: Option<String>,
     pub query_embedding: Option<Vec<f32>>,
     pub session_id: Option<String>,
@@ -166,6 +169,11 @@ impl MemoryStore {
         conn.execute_batch(MEMORY_SCHEMA_V1.sql)
             .map_err(|e| Error::Database(format!("memory migration failed: {e}")))?;
 
+        // Migration: add tenant_id column to pre-existing memory_entries tables.
+        let _ = conn.execute_batch(
+            "ALTER TABLE memory_entries ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
+        );
+
         Ok(())
     }
 
@@ -242,11 +250,12 @@ impl MemoryStore {
         let conn = self.connection()?;
         conn.execute(
             "INSERT INTO memory_entries (
-                id, session_id, channel_id, user_id, continuity_key, role, content,
+                id, tenant_id, session_id, channel_id, user_id, continuity_key, role, content,
                 embedding, embedding_model, embedding_dimensions, metadata, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
+                entry.tenant_id,
                 entry.session_id,
                 entry.channel_id,
                 entry.user_id,
@@ -298,7 +307,8 @@ impl MemoryStore {
             // Fall through to SQL-based retrieval if KNN returned nothing
         }
 
-        let candidates = self.query_candidates_sync(
+        let candidates = self.query_candidates_with_tenant_sync(
+            query.tenant_id.as_deref(),
             query.session_id.as_deref(),
             query.continuity_key.as_deref(),
             query.query_text.as_deref(),
@@ -357,7 +367,7 @@ impl MemoryStore {
         let conn = self.connection()?;
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, session_id, channel_id, user_id, continuity_key, role, content,
+            "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role, content,
                     embedding, embedding_model, embedding_dimensions, metadata, created_at
              FROM memory_entries
              WHERE id IN ({placeholders})"
@@ -391,25 +401,37 @@ impl MemoryStore {
         query_text: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>> {
+        self.query_candidates_with_tenant_sync(None, session_id, continuity_key, query_text, limit)
+    }
+
+    fn query_candidates_with_tenant_sync(
+        &self,
+        tenant_id: Option<&str>,
+        session_id: Option<&str>,
+        continuity_key: Option<&str>,
+        query_text: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>> {
         let query_limit = clamp_limit(limit).min(MAX_RECALL_LIMIT) as i64;
         let conn = self.connection()?;
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, session_id, channel_id, user_id, continuity_key, role, content,
+                "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role, content,
                         embedding, embedding_model, embedding_dimensions, metadata, created_at
                  FROM memory_entries
-                 WHERE (?1 IS NULL OR session_id = ?1)
-                   AND (?2 IS NULL OR continuity_key = ?2)
-                   AND (?3 IS NULL OR lower(content) LIKE '%' || lower(?3) || '%')
+                 WHERE (?1 IS NULL OR tenant_id = ?1)
+                   AND (?2 IS NULL OR session_id = ?2)
+                   AND (?3 IS NULL OR continuity_key = ?3)
+                   AND (?4 IS NULL OR lower(content) LIKE '%' || lower(?4) || '%')
                  ORDER BY datetime(created_at) DESC
-                 LIMIT ?4",
+                 LIMIT ?5",
             )
             .map_err(|e| Error::Database(format!("failed to prepare recall query: {e}")))?;
 
         let rows = stmt
             .query_map(
-                params![session_id, continuity_key, query_text, query_limit],
+                params![tenant_id, session_id, continuity_key, query_text, query_limit],
                 row_to_entry,
             )
             .map_err(|e| Error::Database(format!("failed to execute recall query: {e}")))?;
@@ -452,12 +474,12 @@ impl MemoryProvider for MemoryStore {
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
-    let role_str: String = row.get(5)?;
+    let role_str: String = row.get(6)?;
     let role = MemoryRole::from_db(&role_str).map_err(|e| {
         rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e.to_string())))
     })?;
 
-    let embedding_blob: Option<Vec<u8>> = row.get(7)?;
+    let embedding_blob: Option<Vec<u8>> = row.get(8)?;
     let embedding = embedding_blob
         .as_deref()
         .map(blob_to_embedding)
@@ -466,25 +488,26 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
             rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e.to_string())))
         })?;
 
-    let metadata_str: String = row.get(10)?;
+    let metadata_str: String = row.get(11)?;
     let metadata = serde_json::from_str(&metadata_str).unwrap_or(serde_json::Value::Null);
 
-    let created_at_str: String = row.get(11)?;
+    let created_at_str: String = row.get(12)?;
     let created_at = parse_timestamp(&created_at_str).map_err(|e| {
         rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e.to_string())))
     })?;
 
     Ok(MemoryEntry {
         id: row.get(0)?,
-        session_id: row.get(1)?,
-        channel_id: row.get(2)?,
-        user_id: row.get(3)?,
-        continuity_key: row.get(4)?,
+        tenant_id: row.get(1)?,
+        session_id: row.get(2)?,
+        channel_id: row.get(3)?,
+        user_id: row.get(4)?,
+        continuity_key: row.get(5)?,
         role,
-        content: row.get(6)?,
+        content: row.get(7)?,
         embedding,
-        embedding_model: row.get(8)?,
-        embedding_dimensions: row.get::<_, Option<i64>>(9)?.map(|d| d as usize),
+        embedding_model: row.get(9)?,
+        embedding_dimensions: row.get::<_, Option<i64>>(10)?.map(|d| d as usize),
         metadata,
         created_at,
     })
@@ -603,6 +626,7 @@ mod tests {
         embedding: Option<Vec<f32>>,
     ) -> NewMemoryEntry {
         NewMemoryEntry {
+            tenant_id: "default".to_string(),
             session_id: session_id.to_string(),
             channel_id: None,
             user_id: Some("user-1".to_string()),
@@ -734,6 +758,7 @@ mod tests {
 
         let recalled = store
             .recall(RecallQuery {
+                tenant_id: None,
                 query_text: None,
                 query_embedding: Some(vec![0.95, 0.05, 0.0]),
                 session_id: Some("session-a".to_string()),

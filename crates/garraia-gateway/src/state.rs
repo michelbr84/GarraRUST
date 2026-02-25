@@ -39,6 +39,7 @@ pub struct AppState {
 /// Per-connection session tracking.
 pub struct SessionState {
     pub id: String,
+    pub tenant_id: String,
     pub user_id: Option<String>,
     pub channel_id: Option<String>,
     pub history: Vec<ChatMessage>,
@@ -95,11 +96,17 @@ impl AppState {
     /// Create a session with a specific ID (used by channels like Telegram
     /// where the external chat ID determines the session key).
     pub fn create_session_with_id(&self, id: String) {
+        self.create_session_for_tenant(id, "default".to_string());
+    }
+
+    /// Create a session with a specific ID scoped to a tenant.
+    pub fn create_session_for_tenant(&self, id: String, tenant_id: String) {
         let now = Instant::now();
         self.sessions.insert(
             id.clone(),
             SessionState {
                 id,
+                tenant_id,
                 user_id: None,
                 channel_id: None,
                 history: Vec::new(),
@@ -160,6 +167,11 @@ impl AppState {
             .map(|s| s.history.is_empty())
             .unwrap_or(false);
 
+        let tenant_id = self
+            .sessions
+            .get(session_id)
+            .map(|s| s.tenant_id.clone())
+            .unwrap_or_else(|| "default".to_string());
         let channel = channel_id.unwrap_or("web");
         let user = user_id.unwrap_or("anonymous");
         let metadata = self
@@ -170,7 +182,7 @@ impl AppState {
         let mut loaded_history = Vec::new();
         {
             let guard = store.lock().await;
-            if let Err(e) = guard.upsert_session(session_id, channel, user, &metadata) {
+            if let Err(e) = guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata) {
                 warn!("failed to upsert session {session_id} in session store: {e}");
             }
 
@@ -242,6 +254,11 @@ impl AppState {
             return;
         };
 
+        let tenant_id = self
+            .sessions
+            .get(session_id)
+            .map(|s| s.tenant_id.clone())
+            .unwrap_or_else(|| "default".to_string());
         let channel = channel_id.unwrap_or("web");
         let user = user_id.unwrap_or("anonymous");
         let metadata = self
@@ -250,7 +267,7 @@ impl AppState {
             .unwrap_or_else(|| serde_json::json!({}));
 
         let guard = store.lock().await;
-        if let Err(e) = guard.upsert_session(session_id, channel, user, &metadata) {
+        if let Err(e) = guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata) {
             warn!("failed to upsert session {session_id}: {e}");
             return;
         }
