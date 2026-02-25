@@ -112,10 +112,9 @@ impl LlmProvider for AnthropicProvider {
             )));
         }
 
-        let api_response: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::Agent(format!("falha ao interpretar resposta da Anthropic: {e}")))?;
+        let api_response: AnthropicResponse = response.json().await.map_err(|e| {
+            Error::Agent(format!("falha ao interpretar resposta da Anthropic: {e}"))
+        })?;
 
         Ok(from_anthropic_response(api_response))
     }

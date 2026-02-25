@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
@@ -65,14 +65,12 @@ impl ExecutionBudget {
     /// Verifica se o limite por turno foi atingido (mas não o limite total da tarefa).
     /// Usado para estratégia de auto-reset entre turnos.
     pub fn atingiu_limite_turno(&self) -> bool {
-        self.current_turn_calls >= self.max_per_turn
-            && self.current_task_calls < self.max_per_task
+        self.current_turn_calls >= self.max_per_turn && self.current_task_calls < self.max_per_task
     }
 
     /// Verifica se ainda é permitido chamar outra ferramenta.
     pub fn pode_chamar_ferramenta(&self) -> bool {
-        self.current_turn_calls < self.max_per_turn
-            && self.current_task_calls < self.max_per_task
+        self.current_turn_calls < self.max_per_turn && self.current_task_calls < self.max_per_task
     }
 
     /// Registra uma chamada de ferramenta com seu payload,
@@ -136,10 +134,7 @@ impl ExecutionBudget {
     pub fn status(&self) -> String {
         format!(
             "turn={}/{} task={}/{}",
-            self.current_turn_calls,
-            self.max_per_turn,
-            self.current_task_calls,
-            self.max_per_task
+            self.current_turn_calls, self.max_per_turn, self.current_task_calls, self.max_per_task
         )
     }
 }

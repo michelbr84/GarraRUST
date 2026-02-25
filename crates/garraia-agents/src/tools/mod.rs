@@ -45,11 +45,7 @@ pub trait Tool: Send + Sync {
     fn input_schema(&self) -> serde_json::Value;
 
     /// Executa a ferramenta com o contexto e entrada fornecidos.
-    async fn execute(
-        &self,
-        context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput>;
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput>;
 }
 
 /// Resultado retornado por uma ferramenta.

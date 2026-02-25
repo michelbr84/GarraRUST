@@ -318,11 +318,7 @@ fn parse_conversation_turns(content: &str) -> Vec<(&str, &str)> {
 }
 
 fn byte_offset_of_line(content: &str, line_num: usize) -> usize {
-    let offset: usize = content
-        .lines()
-        .take(line_num)
-        .map(|l| l.len() + 1)
-        .sum();
+    let offset: usize = content.lines().take(line_num).map(|l| l.len() + 1).sum();
     offset.min(content.len())
 }
 

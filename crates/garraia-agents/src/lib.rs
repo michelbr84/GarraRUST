@@ -18,11 +18,11 @@ pub use embeddings::{CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbedding
 pub use execution_budget::ExecutionBudget;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
+pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, ToolDefinition,
 };
-pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use runtime::AgentRuntime;
 pub use tools::{
     BashTool, FileReadTool, FileWriteTool, ScheduleHeartbeat, Tool, ToolContext, ToolOutput,
