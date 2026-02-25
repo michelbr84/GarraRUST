@@ -121,7 +121,11 @@ mod tests {
             "eco"
         }
 
-        async fn execute(&self, _ctx: &ToolContext, input: ToolInput) -> Result<ToolOutput, ToolError> {
+        async fn execute(
+            &self,
+            _ctx: &ToolContext,
+            input: ToolInput,
+        ) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput {
                 name: input.name,
                 payload: input.payload,
@@ -137,7 +141,11 @@ mod tests {
             "lenta"
         }
 
-        async fn execute(&self, _ctx: &ToolContext, input: ToolInput) -> Result<ToolOutput, ToolError> {
+        async fn execute(
+            &self,
+            _ctx: &ToolContext,
+            input: ToolInput,
+        ) -> Result<ToolOutput, ToolError> {
             tokio::time::sleep(Duration::from_secs(60)).await;
             Ok(ToolOutput {
                 name: input.name,
@@ -182,13 +190,7 @@ mod tests {
             payload: serde_json::json!({}),
         };
 
-        let resultado = execute_with_timeout(
-            &tool,
-            &ctx,
-            input,
-            Duration::from_millis(100),
-        )
-        .await;
+        let resultado = execute_with_timeout(&tool, &ctx, input, Duration::from_millis(100)).await;
 
         assert!(resultado.is_err());
         match resultado.unwrap_err() {
@@ -206,13 +208,7 @@ mod tests {
             payload: serde_json::json!({"ok": true}),
         };
 
-        let resultado = execute_with_timeout(
-            &tool,
-            &ctx,
-            input,
-            Duration::from_secs(5),
-        )
-        .await;
+        let resultado = execute_with_timeout(&tool, &ctx, input, Duration::from_secs(5)).await;
 
         assert!(resultado.is_ok());
     }

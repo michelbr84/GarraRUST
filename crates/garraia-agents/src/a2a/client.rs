@@ -27,21 +27,14 @@ impl A2AClient {
     /// Espera que o agente exponha:
     /// `{base_url}/.well-known/agent.json`
     pub async fn fetch_agent_card(&self, base_url: &str) -> Result<AgentCard> {
-        let url = format!(
-            "{}/.well-known/agent.json",
-            base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/.well-known/agent.json", base_url.trim_end_matches('/'));
 
         let resp = self
             .http
             .get(&url)
             .send()
             .await
-            .map_err(|e| {
-                Error::Agent(format!(
-                    "falha ao buscar agent card em {url}: {e}"
-                ))
-            })?;
+            .map_err(|e| Error::Agent(format!("falha ao buscar agent card em {url}: {e}")))?;
 
         if !resp.status().is_success() {
             return Err(Error::Agent(format!(
@@ -72,11 +65,7 @@ impl A2AClient {
             .json(request)
             .send()
             .await
-            .map_err(|e| {
-                Error::Agent(format!(
-                    "falha ao criar tarefa em {url}: {e}"
-                ))
-            })?;
+            .map_err(|e| Error::Agent(format!("falha ao criar tarefa em {url}: {e}")))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -96,22 +85,14 @@ impl A2AClient {
     /// Endpoint esperado:
     /// `{base_url}/a2a/tasks/{task_id}`
     pub async fn get_task(&self, base_url: &str, task_id: &str) -> Result<A2ATask> {
-        let url = format!(
-            "{}/a2a/tasks/{}",
-            base_url.trim_end_matches('/'),
-            task_id
-        );
+        let url = format!("{}/a2a/tasks/{}", base_url.trim_end_matches('/'), task_id);
 
         let resp = self
             .http
             .get(&url)
             .send()
             .await
-            .map_err(|e| {
-                Error::Agent(format!(
-                    "falha ao consultar tarefa em {url}: {e}"
-                ))
-            })?;
+            .map_err(|e| Error::Agent(format!("falha ao consultar tarefa em {url}: {e}")))?;
 
         if !resp.status().is_success() {
             return Err(Error::Agent(format!(
@@ -141,11 +122,7 @@ impl A2AClient {
             .post(&url)
             .send()
             .await
-            .map_err(|e| {
-                Error::Agent(format!(
-                    "falha ao cancelar tarefa em {url}: {e}"
-                ))
-            })?;
+            .map_err(|e| Error::Agent(format!("falha ao cancelar tarefa em {url}: {e}")))?;
 
         if !resp.status().is_success() {
             return Err(Error::Agent(format!(

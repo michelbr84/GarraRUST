@@ -69,9 +69,7 @@ impl Tool for ScheduleHeartbeat {
             .ok_or_else(|| Error::Agent("argumento 'reason' ausente ou inválido".to_string()))?;
 
         if delay <= 0 {
-            return Err(Error::Agent(
-                "delay_seconds deve ser positivo".to_string(),
-            ));
+            return Err(Error::Agent("delay_seconds deve ser positivo".to_string()));
         }
 
         if delay > MAX_DELAY_SECONDS {
@@ -99,8 +97,7 @@ impl Tool for ScheduleHeartbeat {
 
         let execute_at = chrono::Utc::now() + chrono::Duration::seconds(delay);
 
-        let task_id =
-            store.schedule_task(&context.session_id, &user_id, execute_at, reason)?;
+        let task_id = store.schedule_task(&context.session_id, &user_id, execute_at, reason)?;
 
         Ok(ToolOutput::success(format!(
             "Heartbeat agendado para {} (em {} segundos). ID da tarefa: {}",
