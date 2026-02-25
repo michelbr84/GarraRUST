@@ -22,3 +22,7 @@ Thumbs.db
 credentials/
 
 config.yml
+
+# Testing
+testsprite_tests/
+.testsprite/
