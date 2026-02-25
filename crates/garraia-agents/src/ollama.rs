@@ -37,7 +37,16 @@ impl OllamaProvider {
             request.model.clone()
         };
 
-        let messages: Vec<Value> = request
+        let mut messages: Vec<Value> = Vec::new();
+
+        if let Some(system) = &request.system {
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": system,
+            }));
+        }
+
+        let user_messages: Vec<Value> = request
             .messages
             .iter()
             .map(|msg| {
@@ -105,6 +114,8 @@ impl OllamaProvider {
                 msg_obj
             })
             .collect();
+
+        messages.extend(user_messages);
 
         let mut body = serde_json::json!({
             "model": model,

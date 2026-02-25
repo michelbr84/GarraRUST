@@ -165,13 +165,12 @@ pub fn split_discord_chunks(input: &str) -> Vec<String> {
     let mut current_len = 0usize;
 
     for ch in input.chars() {
-        let ch_len = ch.len_utf8();
-        if current_len + ch_len > DISCORD_MESSAGE_CHAR_LIMIT {
+        if current_len + 1 > DISCORD_MESSAGE_CHAR_LIMIT {
             chunks.push(std::mem::take(&mut current));
             current_len = 0;
         }
         current.push(ch);
-        current_len += ch_len;
+        current_len += 1;
     }
 
     if !current.is_empty() {
@@ -242,7 +241,16 @@ mod tests {
         let long = "a".repeat(DISCORD_MESSAGE_CHAR_LIMIT + 10);
         let chunks = split_discord_chunks(&long);
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), DISCORD_MESSAGE_CHAR_LIMIT);
-        assert_eq!(chunks[1].len(), 10);
+        assert_eq!(chunks[0].chars().count(), DISCORD_MESSAGE_CHAR_LIMIT);
+        assert_eq!(chunks[1].chars().count(), 10);
+    }
+
+    #[test]
+    fn chunking_counts_chars_not_bytes() {
+        let long: String = "\u{1F600}".repeat(DISCORD_MESSAGE_CHAR_LIMIT + 5);
+        let chunks = split_discord_chunks(&long);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chars().count(), DISCORD_MESSAGE_CHAR_LIMIT);
+        assert_eq!(chunks[1].chars().count(), 5);
     }
 }

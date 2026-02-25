@@ -56,7 +56,7 @@ Se não houver fatos relevantes, retorne: []"#.to_string(),
 
         let messages = vec![
             ChatMessage {
-                role: ChatRole::System,
+                role: ChatRole::User,
                 content: MessagePart::Text(prompt),
             }
         ];
