@@ -40,19 +40,36 @@ EventBus.on("state:memories", (memories) => {
     dateStyle: 'short', timeStyle: 'short'
   });
 
-  dom.memoryList.innerHTML = memories.map(m => {
+  dom.memoryList.innerHTML = "";
+  memories.forEach(m => {
     const roleColor = m.role === 'user' ? 'var(--brand)' : m.role === 'assistant' ? 'var(--brand-2)' : 'var(--ink-soft)';
     const dateStr = formatter.format(new Date(m.created_at));
-    return `
-      <div style="background: var(--bg); padding: 12px; border-radius: 8px; border: 1px solid var(--panel-edge); margin-bottom: 8px; border-left: 4px solid ${roleColor};">
-        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 6px; display: flex; justify-content: space-between; font-family: 'Inter', sans-serif;">
-          <span style="font-weight: 600; color: ${roleColor}; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;">${m.role}</span>
-          <span>${dateStr}</span>
-        </div>
-        <div style="color: var(--ink); white-space: pre-wrap; font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; line-height: 1.4;">${m.content}</div>
-      </div>
-    `;
-  }).join("");
+    
+    const wrapper = document.createElement("div");
+    wrapper.style.cssText = `background: var(--bg); padding: 12px; border-radius: 8px; border: 1px solid var(--panel-edge); margin-bottom: 8px; border-left: 4px solid ${roleColor};`;
+    
+    const header = document.createElement("div");
+    header.style.cssText = `font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 6px; display: flex; justify-content: space-between; font-family: 'Inter', sans-serif;`;
+    
+    const roleSpan = document.createElement("span");
+    roleSpan.style.cssText = `font-weight: 600; color: ${roleColor}; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px;`;
+    roleSpan.textContent = m.role;
+    
+    const dateSpan = document.createElement("span");
+    dateSpan.textContent = dateStr;
+    
+    header.appendChild(roleSpan);
+    header.appendChild(dateSpan);
+    
+    const contentDiv = document.createElement("div");
+    contentDiv.style.cssText = `color: var(--ink); white-space: pre-wrap; font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; line-height: 1.4;`;
+    contentDiv.textContent = m.content;
+    
+    wrapper.appendChild(header);
+    wrapper.appendChild(contentDiv);
+    
+    dom.memoryList.appendChild(wrapper);
+  });
 });
 
 EventBus.on("state:view", (viewName) => {
