@@ -3,11 +3,13 @@ use std::sync::Arc;
 use axum::Router;
 use axum::response::Html;
 use axum::routing::{get, post};
+use tokio::sync::Mutex;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::services::ServeDir;
 
 use crate::a2a;
+use crate::admin;
 use crate::api;
 use crate::state::SharedState;
 use crate::ws;
@@ -16,6 +18,7 @@ use crate::ws;
 pub fn build_router(
     state: SharedState,
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
+    admin_store: Arc<Mutex<admin::store::AdminStore>>,
 ) -> Router {
     // Per-IP rate limit from config (default: 1 req/sec, burst 60).
     let rl = &state.config.gateway.rate_limit;
@@ -56,9 +59,18 @@ pub fn build_router(
         )
         .route("/api/sessions/{id}/messages", post(api::send_message))
         .route("/api/sessions/{id}/history", get(api::session_history))
-        .route("/api/memory", axum::routing::delete(crate::memory_handler::clear_memory))
-        .route("/api/memory/recent", get(crate::memory_handler::get_recent_memory))
-        .route("/api/memory/search", get(crate::memory_handler::search_memory))
+        .route(
+            "/api/memory",
+            axum::routing::delete(crate::memory_handler::clear_memory),
+        )
+        .route(
+            "/api/memory/recent",
+            get(crate::memory_handler::get_recent_memory),
+        )
+        .route(
+            "/api/memory/search",
+            get(crate::memory_handler::search_memory),
+        )
         .route("/api/logs", get(crate::logs_handler::get_logs))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
@@ -69,9 +81,16 @@ pub fn build_router(
         .route("/a2a/tasks/{id}/cancel", post(a2a::cancel_task))
         .nest_service("/assets", ServeDir::new("crates/garraia-gateway/assets"))
         .nest_service("/static", ServeDir::new("assets"))
-        .route("/metrics", get(crate::observability::prometheus_metrics_handler))
-        .with_state(state)
+        .route(
+            "/metrics",
+            get(crate::observability::prometheus_metrics_handler),
+        )
+        .with_state(state.clone())
         .merge(whatsapp_routes)
+        .nest(
+            "/admin",
+            admin::routes::build_admin_router(state, admin_store),
+        )
         .layer(governor_layer)
 }
 
@@ -92,7 +111,14 @@ async fn web_chat() -> Html<String> {
 async fn status(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let channels: Vec<String> = state.channels.read().await.list().into_iter().map(|s| s.to_string()).collect();
+    let channels: Vec<String> = state
+        .channels
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
     let llm: serde_json::Value = state
         .config
         .llm
@@ -434,8 +460,8 @@ async fn add_provider(
                 .model
                 .clone()
                 .or_else(|| Some("jais-adapted-70b-chat".to_string()));
-            let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
-                .with_name("jais");
+            let provider =
+                garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("jais");
             state.agents.register_provider(Arc::new(provider));
             persist_api_key("JAIS_API_KEY", key);
         }
@@ -453,8 +479,8 @@ async fn add_provider(
                 Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1".to_string())
             });
             let model = body.model.clone().or_else(|| Some("qwen-plus".to_string()));
-            let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
-                .with_name("qwen");
+            let provider =
+                garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("qwen");
             state.agents.register_provider(Arc::new(provider));
             persist_api_key("QWEN_API_KEY", key);
         }

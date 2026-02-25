@@ -9,6 +9,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use crate::admin;
 #[cfg(target_os = "macos")]
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
@@ -102,13 +103,14 @@ impl GatewayServer {
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();
         tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader, AsyncSeekExt};
             use std::io::SeekFrom;
-            let Some(path) = dirs::home_dir().map(|h| h.join(".garraia").join("garraia.log")) else {
+            use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+            let Some(path) = dirs::home_dir().map(|h| h.join(".garraia").join("garraia.log"))
+            else {
                 tracing::warn!("could not determine home directory; log tailer disabled");
                 return;
             };
-            
+
             while !path.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
@@ -127,7 +129,7 @@ impl GatewayServer {
                             let mut f = reader.into_inner();
                             let _ = f.seek(SeekFrom::Current(0)).await;
                             reader = BufReader::new(f);
-                        },
+                        }
                         Ok(_) => {
                             let text = line.trim_end();
                             if !text.is_empty() {
@@ -137,7 +139,7 @@ impl GatewayServer {
                                     "message": text
                                 }));
                             }
-                        },
+                        }
                         Err(_) => {
                             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         }
@@ -217,8 +219,40 @@ impl GatewayServer {
         let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
             Arc::new(whatsapp_channels);
 
+        // Initialize admin store for the web admin console
+        let admin_db_path = data_dir.join("admin.db");
+        let admin_store = match admin::store::AdminStore::open(&admin_db_path) {
+            Ok(store) => {
+                info!("admin store opened at {}", admin_db_path.display());
+                Arc::new(Mutex::new(store))
+            }
+            Err(e) => {
+                warn!("failed to open admin store, using in-memory: {e}");
+                Arc::new(Mutex::new(
+                    admin::store::AdminStore::in_memory()
+                        .expect("in-memory admin store should work"),
+                ))
+            }
+        };
+
+        // Spawn periodic cleanup of expired admin sessions
+        {
+            let store = Arc::clone(&admin_store);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    interval.tick().await;
+                    let guard = store.lock().await;
+                    let cleaned = guard.cleanup_expired_sessions();
+                    if cleaned > 0 {
+                        tracing::debug!("cleaned {cleaned} expired admin sessions");
+                    }
+                }
+            });
+        }
+
         let state_for_shutdown = Arc::clone(&state);
-        let app = build_router(state, whatsapp_state);
+        let app = build_router(state, whatsapp_state, admin_store);
 
         let listener = TcpListener::bind(&addr).await?;
         info!("GarraIA gateway listening on {}", addr);
@@ -241,7 +275,13 @@ impl GatewayServer {
         }
 
         info!("disconnecting channels...");
-        state_for_shutdown.channels.write().await.disconnect_all().await.ok();
+        state_for_shutdown
+            .channels
+            .write()
+            .await
+            .disconnect_all()
+            .await
+            .ok();
 
         info!("gateway shut down gracefully");
         Ok(())
