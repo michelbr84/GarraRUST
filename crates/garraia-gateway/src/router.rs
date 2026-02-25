@@ -91,9 +91,7 @@ async fn web_chat() -> Html<String> {
 async fn status(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let channels = state.channels.list();
-
-    // Gather LLM provider info from config
+    let channels: Vec<String> = state.channels.read().await.list().into_iter().map(|s| s.to_string()).collect();
     let llm: serde_json::Value = state
         .config
         .llm

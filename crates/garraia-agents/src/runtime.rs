@@ -888,15 +888,9 @@ impl AgentRuntime {
 
                     // Some OpenAI-compatible streaming APIs (e.g. OpenRouter via /v1/chat/completions)
                     // don't emit an explicit ContentBlockStop event for tool calls.
-                    // If we ended due to tool use and still have a pending tool, flush it so it executes.
-                    if tool_uses.is_empty() {
-                        if let Some(tool) = current_tool.take() {
-                            if matches!(_stop_reason.as_deref(), Some("tool_use") | Some("tool_calls")) {
-                                tool_uses.push(tool);
-                            } else {
-                                current_tool = Some(tool);
-                            }
-                        }
+                    // If we ended the stream and still have a pending tool, flush it so it executes.
+                    if let Some(tool) = current_tool.take() {
+                        tool_uses.push(tool);
                     }
 
                     tracing::info!(
