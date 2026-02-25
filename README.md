@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD033 MD041 MD060 -->
+
 <p align="center">
   <img src="assets/logo.png" alt="GarraIA" width="280" />
 </p>
@@ -61,6 +63,7 @@ cargo build --release
 # Opcional: incluir suporte a plugins WASM
 cargo build --release --features plugins
 ```
+
 </details>
 
 Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) e Windows (x86_64) estão disponíveis nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
@@ -118,6 +121,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **OpenRouter** - Acesso a +100 LLMs (Anthropic, OpenAI, Meta, etc.) via [openrouter.ai](https://openrouter.ai)
 
 ### Canais
+
 - **Telegram** - respostas streaming, MarkdownV2, comandos do bot, indicadores de digitação, lista de permissões de usuários com códigos de pareamento
 - **Discord** - comandos slash, tratamento de mensagens orientado a eventos, gerenciamento de sessões
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
@@ -125,23 +129,27 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
 
 ### MCP (Protocolo de Contexto de Modelo)
+
 - Conecte qualquer servidor compatível com MCP (sistema de arquivos, GitHub, bancos de dados, busca na web)
 - Ferramentas aparecem como ferramentas nativas do agente com nomes namespaced (`server.tool`)
 - Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop)
 - CLI: `garraia mcp list`, `garraia mcp inspect <name>`
 
 ### Runtime do Agente
+
 - Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat (até 10 iterações)
 - Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
 - Gerenciamento de janela de contexto - aparamento automático de histórico
 - Tarefas agendadas - agendamento cron, intervalo e único
 
 ### Skills
+
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
 - Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
 - CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
 
 ### Infraestrutura
+
 - **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
 - **Daemonização** - `garraia start --daemon` com gerenciamento de PID
 - **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
@@ -156,7 +164,7 @@ O GarraIA possui um sistema completo de memória que permite ao agente aprender 
 
 ### Sistema de Memória Completo
 
-```
+```text
 ~/.garraia/
 ├── memoria/
 │   ├── fatos.json          # Facts extraídos pelo LLM
@@ -320,7 +328,7 @@ Consulte a [referência completa de configuração](docs/) para todas as opçõe
 
 ## Arquitetura
 
-```
+```text
 crates/
   garraia-cli/        # CLI, assistente de init, gerenciamento de daemon
   garraia-gateway/    # Gateway WebSocket, API HTTP, sessões
@@ -356,6 +364,11 @@ crates/
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
 | Sistema de plugins (Sandbox WASM) | 🔶 Esquelético |
 | Processamento de mídia | 🔶 Esquelético |
+
+## Testes Automatizados
+
+O GarraIA utiliza o **TestSprite MCP** para geração e execução automatizada de testes da API do backend.
+Os testes validam os contratos REST e o comportamento do sistema de forma contínua, garantindo estabilidade durante refatorações.
 
 ## Contribuindo
 
