@@ -1,0 +1,41 @@
+name: Telegram Command
+description: Add or modify Telegram commands
+title: "[TELEGRAM] "
+labels: ["telegram", "enhancement"]
+
+body:
+
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: /model
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      placeholder: What this command should do
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected Behavior
+      placeholder: |
+        /model stepfun/step-3.5-flash
+        should switch model
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to modify
+      placeholder: |
+        bootstrap.rs
+        router.rs
+        openai.rs
