@@ -1,0 +1,13 @@
+name: General Issue
+description: General tasks, questions, or discussion
+title: "[GENERAL] "
+labels: ["general"]
+
+body:
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true

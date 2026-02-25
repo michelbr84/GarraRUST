@@ -1,0 +1,39 @@
+name: Provider Issue
+description: Issues related to LLM providers
+title: "[PROVIDER] "
+labels: ["provider"]
+
+body:
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      placeholder: OpenRouter, OpenAI, Local, etc.
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: gpt-4o, step-3.5-flash, etc.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem description
+    validations:
+      required: true
+
+  - type: textarea
+    id: request
+    attributes:
+      label: Request JSON
+      render: json
+
+  - type: textarea
+    id: response
+    attributes:
+      label: Response JSON
+      render: json
