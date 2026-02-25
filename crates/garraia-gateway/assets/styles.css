@@ -244,9 +244,13 @@ body.ready {
 }
 
 .panel-view {
-  display: flex;
+  display: none;
   flex-direction: column;
   height: 100%;
+}
+
+.panel-view.is-active {
+  display: flex;
 }
 
 .panel {
@@ -1040,9 +1044,6 @@ textarea,
   background-color: var(--brand);
 }
 
-.panel-view:not(.is-active):not([id="view-chat"]) {
-  display: none !important;
-}
 .update-banner {
   display: none;
 }
