@@ -9,15 +9,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use garraia_security::RedactingWriter;
 use tracing_appender::rolling;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[derive(Parser)]
-#[command(
-    name = "garraia",
-    version,
-    about = "GarraIA - Personal AI Assistant"
-)]
+#[command(name = "garraia", version, about = "GarraIA - Personal AI Assistant")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -359,9 +355,7 @@ fn main() -> Result<()> {
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
             )
-            .with_writer(
-                file_appender.and(RedactingWriter::stderr())
-            )
+            .with_writer(file_appender.and(RedactingWriter::stderr()))
             .with_ansi(false)
             .init();
     };
@@ -570,14 +564,14 @@ async fn async_main(
                         return Ok(());
                     }
 
-                    let manifest =
-                        match garraia_plugins::PluginManifest::from_file(&manifest_path) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                println!("Invalid manifest: {}", e);
-                                return Ok(());
-                            }
-                        };
+                    let manifest = match garraia_plugins::PluginManifest::from_file(&manifest_path)
+                    {
+                        Ok(m) => m,
+                        Err(e) => {
+                            println!("Invalid manifest: {}", e);
+                            return Ok(());
+                        }
+                    };
 
                     let plugins_dir = config_loader.config_dir().join("plugins");
                     let target_dir = plugins_dir.join(&manifest.plugin.name);

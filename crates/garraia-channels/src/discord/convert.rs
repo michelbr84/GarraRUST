@@ -9,10 +9,7 @@ pub const DISCORD_MESSAGE_CHAR_LIMIT: usize = 2000;
 /// Maps the Discord message content to the appropriate `MessageContent` variant.
 /// Attachments are checked first — if present, the first attachment determines the
 /// content type (image vs file). Otherwise falls back to text content.
-pub fn discord_message_to_garraia(
-    msg: &serenity_model::Message,
-    channel_id_str: &str,
-) -> Message {
+pub fn discord_message_to_garraia(msg: &serenity_model::Message, channel_id_str: &str) -> Message {
     let user_id = UserId::from_string(msg.author.id.to_string());
     let channel_id = ChannelId::from_string(channel_id_str);
     let session_id = SessionId::from_string(format!("discord-{}", msg.channel_id));

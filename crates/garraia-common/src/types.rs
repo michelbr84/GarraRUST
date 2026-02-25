@@ -100,12 +100,12 @@ impl AgentResponse {
             _ => None,
         }
     }
-    
+
     /// Returns true if execution should continue in next turn
     pub fn should_continue(&self) -> bool {
         matches!(self, AgentResponse::ContinueNextTurn)
     }
-    
+
     /// Returns true if execution is complete
     pub fn is_complete(&self) -> bool {
         matches!(self, AgentResponse::Completed(_))

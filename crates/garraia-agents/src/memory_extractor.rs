@@ -1,6 +1,6 @@
-use garraia_common::Result;
 use crate::providers::{ChatMessage, ChatRole, MessagePart};
 use crate::runtime::AgentRuntime;
+use garraia_common::Result;
 
 /// Estrutura de fato estruturado extraído
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -42,24 +42,27 @@ Exemplo de saída:
   {"fact_type": "occupation", "key": "job", "value": "desenvolvedor", "confidence": 0.90}
 ]
 
-Se não houver fatos relevantes, retorne: []"#.to_string(),
+Se não houver fatos relevantes, retorne: []"#
+                .to_string(),
         }
     }
 
     /// Extrai fatos de uma mensagem usando o LLM
-    pub async fn extract_facts(&self, runtime: &AgentRuntime, message: &str) -> Result<Vec<StructuredFact>> {
+    pub async fn extract_facts(
+        &self,
+        runtime: &AgentRuntime,
+        message: &str,
+    ) -> Result<Vec<StructuredFact>> {
         // Chamar o LLM para extrair fatos
         let prompt = format!(
             "{}\n\nMensagem do usuário: \"{}\"\n\nExtraia todos os fatos relevantes sobre o usuário desta mensagem.",
             self.system_prompt, message
         );
 
-        let messages = vec![
-            ChatMessage {
-                role: ChatRole::User,
-                content: MessagePart::Text(prompt),
-            }
-        ];
+        let messages = vec![ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Text(prompt),
+        }];
 
         // Use the runtime's default provider to complete the chat
         let response = runtime
