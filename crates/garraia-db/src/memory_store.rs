@@ -166,13 +166,15 @@ impl MemoryStore {
 
     fn run_migrations(&self) -> Result<()> {
         let conn = self.connection()?;
-        conn.execute_batch(MEMORY_SCHEMA_V1.sql)
-            .map_err(|e| Error::Database(format!("memory migration failed: {e}")))?;
 
         // Migration: add tenant_id column to pre-existing memory_entries tables.
+        // Ignore error if the table doesn't exist yet or the column already exists.
         let _ = conn.execute_batch(
             "ALTER TABLE memory_entries ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
         );
+
+        conn.execute_batch(MEMORY_SCHEMA_V1.sql)
+            .map_err(|e| Error::Database(format!("memory migration failed: {e}")))?;
 
         Ok(())
     }
@@ -284,7 +286,11 @@ impl MemoryStore {
         Ok(id)
     }
 
-    fn recall_sync(&self, query: RecallQuery) -> Result<Vec<MemoryEntry>> {
+    fn recall_sync(&self, mut query: RecallQuery) -> Result<Vec<MemoryEntry>> {
+        if query.tenant_id.is_none() {
+            query.tenant_id = Some("default".to_string());
+        }
+
         let limit = clamp_limit(query.limit);
 
         // If we have a query embedding and sqlite-vec is available, use KNN for
@@ -401,7 +407,7 @@ impl MemoryStore {
         query_text: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>> {
-        self.query_candidates_with_tenant_sync(None, session_id, continuity_key, query_text, limit)
+        self.query_candidates_with_tenant_sync(Some("default"), session_id, continuity_key, query_text, limit)
     }
 
     fn query_candidates_with_tenant_sync(

@@ -1,6 +1,6 @@
 use garraia_common::{Error, Result};
-use rusqlite::Connection;
 use rusqlite::params;
+use rusqlite::Connection;
 use std::path::Path;
 use tracing::info;
 
@@ -42,6 +42,12 @@ impl SessionStore {
     }
 
     fn run_migrations(&self) -> Result<()> {
+        // Migration: add tenant_id column to pre-existing sessions tables.
+        // Ignore error if the table doesn't exist yet or the column already exists.
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
+        );
+
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS sessions (
@@ -85,11 +91,6 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
-        // Migration: add tenant_id column to pre-existing sessions tables.
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
-        );
-
         Ok(())
     }
 
@@ -127,7 +128,13 @@ impl SessionStore {
                    user_id = excluded.user_id,
                    metadata = excluded.metadata,
                    updated_at = datetime('now')",
-                params![session_id, tenant_id, channel_id, user_id, metadata.to_string()],
+                params![
+                    session_id,
+                    tenant_id,
+                    channel_id,
+                    user_id,
+                    metadata.to_string()
+                ],
             )
             .map_err(|e| Error::Database(format!("failed to upsert session: {e}")))?;
         Ok(())
