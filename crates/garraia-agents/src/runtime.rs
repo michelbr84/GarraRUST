@@ -722,9 +722,53 @@ impl AgentRuntime {
         continuity_key: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<String> {
-        let provider: Arc<dyn LlmProvider> = self
-            .default_provider()
-            .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?;
+        self.process_message_streaming_with_agent_config(
+            session_id,
+            user_text,
+            conversation_history,
+            delta_tx,
+            continuity_key,
+            user_id,
+            None,
+            None,
+            None,
+            None,
+        ).await
+    }
+
+    /// Streaming variant with explicit agent config overrides (for multi-agent routing or dynamic models).
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip(self, conversation_history, delta_tx), fields(provider_id, continuity_key = ?continuity_key))]
+    pub async fn process_message_streaming_with_agent_config(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        delta_tx: mpsc::Sender<String>,
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        provider_id: Option<&str>,
+        model_override: Option<&str>,
+        system_prompt_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<String> {
+        let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
+            self.get_provider(pid)
+                .ok_or_else(|| Error::Agent(format!("provider '{pid}' not found")))?
+        } else {
+            self.default_provider()
+                .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+        };
+
+        let effective_system_prompt = system_prompt_override
+            .map(|s| s.to_string())
+            .or_else(|| self.system_prompt.clone());
+        let effective_model = model_override
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(|m| m.to_string())
+            .unwrap_or_default();
+        let effective_max_tokens = max_tokens_override.or(self.max_tokens).unwrap_or(4096);
 
         // Build system message (same as process_message)
         let memory_context = match self
@@ -745,7 +789,7 @@ impl AgentRuntime {
             _ => None,
         };
 
-        let system = match (&self.system_prompt, memory_context) {
+        let system = match (&effective_system_prompt, memory_context) {
             (Some(prompt), Some(ctx)) => Some(format!("{prompt}\n\n{ctx}")),
             (Some(prompt), None) => Some(prompt.clone()),
             (None, Some(ctx)) => Some(ctx),
@@ -786,10 +830,10 @@ impl AgentRuntime {
                 )));
             }
             let request = LlmRequest {
-                model: String::new(),
+                model: effective_model.clone(),
                 messages: messages.clone(),
                 system: system.clone(),
-                max_tokens: Some(self.max_tokens.unwrap_or(4096)),
+                max_tokens: Some(effective_max_tokens),
                 temperature: None,
                 tools: tool_defs.clone(),
             };
