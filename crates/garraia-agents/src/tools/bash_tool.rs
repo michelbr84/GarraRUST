@@ -92,7 +92,11 @@ impl Tool for BashTool {
 
                 // Truncar se exceder limite
                 if combinado.len() > MAX_BYTES_SAIDA {
-                    combinado.truncate(MAX_BYTES_SAIDA);
+                    let mut end = MAX_BYTES_SAIDA;
+                    while end > 0 && !combinado.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    combinado.truncate(end);
                     combinado.push_str("\n... (saída truncada)");
                 }
 

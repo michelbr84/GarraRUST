@@ -348,7 +348,7 @@ fn main() -> Result<()> {
 
     // Init tracing for non-daemon mode (daemon reconfigures after fork)
     let init_tracing = |level: &str| {
-        let log_dir = dirs::home_dir().unwrap().join(".garraia");
+        let log_dir = garraia_dir();
         std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| {
             eprintln!("Warning: failed to create log directory: {}", e);
         });
@@ -886,7 +886,7 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
         Ok(()) => {
             // We are now in the child (daemon) process.
             // Re-init tracing to write to the log file.
-            let log_dir = dirs::home_dir().unwrap().join(".garraia");
+            let log_dir = garraia_dir();
             let file_appender = rolling::never(&log_dir, "garraia.log");
 
             tracing_subscriber::fmt()

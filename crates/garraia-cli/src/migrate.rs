@@ -318,19 +318,21 @@ fn parse_conversation_turns(content: &str) -> Vec<(&str, &str)> {
 }
 
 fn byte_offset_of_line(content: &str, line_num: usize) -> usize {
-    content
+    let offset: usize = content
         .lines()
         .take(line_num)
-        .map(|l| l.len() + 1) // +1 for newline
-        .sum()
+        .map(|l| l.len() + 1)
+        .sum();
+    offset.min(content.len())
 }
 
 fn byte_offset_after_line(content: &str, line_num: usize) -> usize {
-    content
+    let offset: usize = content
         .lines()
         .take(line_num + 1)
         .map(|l| l.len() + 1)
-        .sum()
+        .sum();
+    offset.min(content.len())
 }
 
 fn import_channels(source_dir: &Path, garraia_dir: &Path, report: &mut MigrationReport) {

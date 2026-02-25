@@ -75,7 +75,7 @@ pub fn to_telegram_markdown(input: &str) -> String {
             result.push('*');
             i += 2;
             while i < len && !(i + 1 < len && chars[i] == '*' && chars[i + 1] == '*') {
-                if is_special(chars[i]) && chars[i] != '*' {
+                if is_special(chars[i]) {
                     result.push('\\');
                 }
                 result.push(chars[i]);

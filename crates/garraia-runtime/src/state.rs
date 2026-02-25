@@ -33,7 +33,7 @@ impl TaskState {
     pub fn valid_transitions(&self) -> &[TaskState] {
         match self {
             TaskState::Planning => &[TaskState::Executing, TaskState::Failed],
-            TaskState::Executing => &[TaskState::ToolUse, TaskState::Completed, TaskState::Failed],
+            TaskState::Executing => &[TaskState::ToolUse, TaskState::Completed, TaskState::Waiting, TaskState::Failed],
             TaskState::ToolUse => &[TaskState::Executing, TaskState::Waiting, TaskState::Failed],
             TaskState::Waiting => &[TaskState::Executing, TaskState::Failed],
             TaskState::Completed => &[],

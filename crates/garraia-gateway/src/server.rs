@@ -104,7 +104,10 @@ impl GatewayServer {
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader, AsyncSeekExt};
             use std::io::SeekFrom;
-            let path = dirs::home_dir().unwrap().join(".garraia").join("garraia.log");
+            let Some(path) = dirs::home_dir().map(|h| h.join(".garraia").join("garraia.log")) else {
+                tracing::warn!("could not determine home directory; log tailer disabled");
+                return;
+            };
             
             while !path.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -233,9 +236,6 @@ impl GatewayServer {
 
         // Disconnect MCP servers on shutdown
         if let Some(ref manager) = state_for_shutdown.mcp_manager_arc {
-            info!("disconnecting MCP servers...");
-            manager.disconnect_all().await;
-        } else if let Some(ref manager) = state_for_shutdown.mcp_manager {
             info!("disconnecting MCP servers...");
             manager.disconnect_all().await;
         }
