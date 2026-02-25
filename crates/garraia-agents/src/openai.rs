@@ -761,6 +761,12 @@ fn parse_stream_chunk(data: &str) -> Option<Vec<StreamEvent>> {
             output_tokens: u.completion_tokens,
         });
 
+        // OpenAI-compatible chat-completions streams signal tool calling via `finish_reason: "tool_calls"`,
+        // but do not emit an explicit content-block stop event. Emit one so the runtime can flush the tool call.
+        if reason.as_str() == "tool_calls" {
+            events.push(StreamEvent::ContentBlockStop { index: 0 });
+        }
+
         events.push(StreamEvent::MessageDelta {
             stop_reason: Some(stop_reason),
             usage,
@@ -1055,7 +1061,11 @@ mod tests {
         let data = r#"{"id":"chatcmpl-abc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
         let events = parse_stream_chunk(data).unwrap();
         assert!(
-            matches!(&events[0], StreamEvent::MessageDelta { stop_reason: Some(r), .. } if r == "tool_use")
+            matches!(&events[0], StreamEvent::ContentBlockStop { .. }),
+            "expected a ContentBlockStop event to flush tool calls in streaming mode"
+        );
+        assert!(
+            matches!(&events[1], StreamEvent::MessageDelta { stop_reason: Some(r), .. } if r == "tool_use")
         );
     }
 
