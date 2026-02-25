@@ -4,6 +4,7 @@ pub mod api;
 pub mod bootstrap;
 pub mod logs_handler;
 pub mod memory_handler;
+pub mod observability;
 pub mod router;
 pub mod server;
 pub mod state;
