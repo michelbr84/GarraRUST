@@ -1058,6 +1058,8 @@ textarea,
 }
 .provider-key-section {
   display: none;
+  flex-direction: column;
+  gap: 4px;
 }
 .empty-state {
   display: none;
