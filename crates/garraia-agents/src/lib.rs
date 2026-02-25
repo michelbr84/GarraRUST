@@ -8,6 +8,7 @@ pub mod execution_budget;
 pub mod memory_extractor;
 pub mod ollama;
 pub mod openai;
+pub mod provider_resilience;
 pub mod providers;
 pub mod runtime;
 pub mod tools;
@@ -21,6 +22,7 @@ pub use providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, ToolDefinition,
 };
+pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use runtime::AgentRuntime;
 pub use tools::{
     BashTool, FileReadTool, FileWriteTool, ScheduleHeartbeat, Tool, ToolContext, ToolOutput,
