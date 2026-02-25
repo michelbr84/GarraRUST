@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use rusqlite::Connection;
@@ -110,11 +110,7 @@ impl QuotaTracker {
         );
     }
 
-    pub fn check_and_increment(
-        &self,
-        tenant_id: &str,
-        tokens: u64,
-    ) -> Result<(), QuotaExceeded> {
+    pub fn check_and_increment(&self, tenant_id: &str, tokens: u64) -> Result<(), QuotaExceeded> {
         let map = self.limits.read().unwrap();
         let Some(quota) = map.get(tenant_id) else {
             return Ok(());

@@ -463,12 +463,8 @@ mod tests {
             });
         }
         let lb = LoadBalancer::new(reg);
-        let first = lb
-            .next_instance(LoadBalancerStrategy::RoundRobin)
-            .unwrap();
-        let second = lb
-            .next_instance(LoadBalancerStrategy::RoundRobin)
-            .unwrap();
+        let first = lb.next_instance(LoadBalancerStrategy::RoundRobin).unwrap();
+        let second = lb.next_instance(LoadBalancerStrategy::RoundRobin).unwrap();
         // They should not be identical in a round-robin with 3 instances
         // (unless ordering happens to collide), but counter must advance.
         assert!(lb.counter.load(Ordering::Relaxed) >= 2);
