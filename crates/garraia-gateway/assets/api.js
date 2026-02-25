@@ -85,7 +85,7 @@ export function updateProviderUI() {
     if (dom.providerKeySection) dom.providerKeySection.style.display = "none";
   } else {
     dom.providerStatus.innerHTML = '<span class="status-dot dot-off"></span>' + (window.t ? window.t("provider.not_configured") : "Not Configured");
-    if (dom.providerKeySection) dom.providerKeySection.style.display = p.needs_api_key ? "" : "none";
+    if (dom.providerKeySection) dom.providerKeySection.style.display = p.needs_api_key ? "flex" : "none";
   }
 
   // Handle Model Datalist and Default value
