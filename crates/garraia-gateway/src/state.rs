@@ -182,7 +182,9 @@ impl AppState {
         let mut loaded_history = Vec::new();
         {
             let guard = store.lock().await;
-            if let Err(e) = guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata) {
+            if let Err(e) =
+                guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata)
+            {
                 warn!("failed to upsert session {session_id} in session store: {e}");
             }
 
@@ -267,7 +269,9 @@ impl AppState {
             .unwrap_or_else(|| serde_json::json!({}));
 
         let guard = store.lock().await;
-        if let Err(e) = guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata) {
+        if let Err(e) =
+            guard.upsert_session_with_tenant(session_id, &tenant_id, channel, user, &metadata)
+        {
             warn!("failed to upsert session {session_id}: {e}");
             return;
         }

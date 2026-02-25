@@ -1,8 +1,8 @@
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use garraia_db::RecallQuery;
 use serde::Deserialize;
@@ -37,7 +37,7 @@ pub async fn get_recent_memory(
     };
 
     let limit = params.limit.unwrap_or(50);
-    
+
     let query = RecallQuery {
         tenant_id: None,
         query_text: None,
@@ -122,7 +122,10 @@ pub async fn clear_memory(
         }
     };
 
-    match memory_provider.delete_session_memory(&params.session_id).await {
+    match memory_provider
+        .delete_session_memory(&params.session_id)
+        .await
+    {
         Ok(count) => (
             StatusCode::OK,
             Json(serde_json::json!({ "success": true, "deleted_count": count })),
@@ -135,4 +138,3 @@ pub async fn clear_memory(
             .into_response(),
     }
 }
-

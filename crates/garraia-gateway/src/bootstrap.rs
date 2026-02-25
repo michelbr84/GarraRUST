@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider, FileReadTool,
-    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
+    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider,
+    WebFetchTool, WebSearchTool,
 };
 #[cfg(target_os = "macos")]
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
@@ -396,7 +397,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("openai/gpt-4o".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("openrouter");
+                    let provider =
+                        OpenAiProvider::new(key, model, base_url).with_name("openrouter");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured openrouter provider: {name}");
                 } else {
@@ -449,64 +451,54 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 if let Some(embed_name) = &config.memory.embedding_provider
                     && let Some(embed_config) = config.embeddings.get(embed_name)
                 {
-match embed_config.provider.as_str() {
+                    match embed_config.provider.as_str() {
+                        // =====================================
+                        // COHERE
+                        // =====================================
+                        "cohere" => {
+                            let api_key = resolve_api_key(
+                                embed_config.api_key.as_deref(),
+                                "COHERE_API_KEY",
+                                "COHERE_API_KEY",
+                            );
 
-    // =====================================
-    // COHERE
-    // =====================================
-    "cohere" => {
+                            if let Some(key) = api_key {
+                                let provider = CohereEmbeddingProvider::new(
+                                    key,
+                                    embed_config.model.clone(),
+                                    embed_config.base_url.clone(),
+                                );
 
-        let api_key = resolve_api_key(
-            embed_config.api_key.as_deref(),
-            "COHERE_API_KEY",
-            "COHERE_API_KEY",
-        );
+                                runtime.set_embedding_provider(Arc::new(provider));
 
-        if let Some(key) = api_key {
+                                info!("configured cohere embedding provider: {embed_name}");
+                            } else {
+                                warn!("skipping cohere embedding provider: no API key");
+                            }
+                        }
 
-            let provider = CohereEmbeddingProvider::new(
-                key,
-                embed_config.model.clone(),
-                embed_config.base_url.clone(),
-            );
+                        // =====================================
+                        // OLLAMA (ADICIONE ESTE BLOCO)
+                        // =====================================
+                        "ollama" => {
+                            let provider = OllamaEmbeddingProvider::new(
+                                embed_config.model.clone(),
+                                embed_config.base_url.clone(),
+                            );
 
-            runtime.set_embedding_provider(Arc::new(provider));
+                            runtime.set_embedding_provider(Arc::new(provider));
 
-            info!("configured cohere embedding provider: {embed_name}");
+                            info!("configured ollama embedding provider: {embed_name}");
+                        }
 
-        } else {
-
-            warn!("skipping cohere embedding provider: no API key");
-
-        }
-    }
-
-
-    // =====================================
-    // OLLAMA (ADICIONE ESTE BLOCO)
-    // =====================================
-    "ollama" => {
-
-        let provider = OllamaEmbeddingProvider::new(
-            embed_config.model.clone(),
-            embed_config.base_url.clone()
-        );
-
-        runtime.set_embedding_provider(Arc::new(provider));
-
-        info!("configured ollama embedding provider: {embed_name}");
-    }
-
-
-    // =====================================
-    // UNKNOWN
-    // =====================================
-    other => {
-
-        warn!("unknown embedding provider type: {other}");
-
-    }
-}                }
+                        // =====================================
+                        // UNKNOWN
+                        // =====================================
+                        other => {
+                            warn!("unknown embedding provider type: {other}");
+                        }
+                    }
+                }
             }
             Err(e) => {
                 warn!("failed to open memory store: {e}");
@@ -565,7 +557,7 @@ match embed_config.provider.as_str() {
                 if let Ok(facts) = serde_json::from_str::<serde_json::Value>(&content) {
                     // Build facts context for system prompt
                     let mut facts_context = String::from("\n\n# Fatos do Usuário\n");
-                    
+
                     // Nome
                     if let Some(nome) = facts.get("nome").and_then(|v| v.as_str()) {
                         if !nome.is_empty() {
@@ -600,13 +592,19 @@ match embed_config.provider.as_str() {
                     if let Some(local) = facts.get("localizacao").and_then(|v| v.as_object()) {
                         let mut parts = Vec::new();
                         if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
-                            if !v.is_empty() { parts.push(v.to_string()); }
+                            if !v.is_empty() {
+                                parts.push(v.to_string());
+                            }
                         }
                         if let Some(v) = local.get("estado").and_then(|v| v.as_str()) {
-                            if !v.is_empty() { parts.push(v.to_string()); }
+                            if !v.is_empty() {
+                                parts.push(v.to_string());
+                            }
                         }
                         if let Some(v) = local.get("pais").and_then(|v| v.as_str()) {
-                            if !v.is_empty() { parts.push(v.to_string()); }
+                            if !v.is_empty() {
+                                parts.push(v.to_string());
+                            }
                         }
                         if !parts.is_empty() {
                             facts_context.push_str(&format!("Localização: {}\n", parts.join(", ")));
@@ -616,10 +614,13 @@ match embed_config.provider.as_str() {
                     if let Some(idioma) = facts.get("idioma_principal").and_then(|v| v.as_str()) {
                         facts_context.push_str(&format!("Idioma principal: {}\n", idioma));
                     }
-                    if let Some(idiomas) = facts.get("idiomas_secundarios").and_then(|v| v.as_array()) {
+                    if let Some(idiomas) =
+                        facts.get("idiomas_secundarios").and_then(|v| v.as_array())
+                    {
                         let langs: Vec<&str> = idiomas.iter().filter_map(|v| v.as_str()).collect();
                         if !langs.is_empty() {
-                            facts_context.push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
+                            facts_context
+                                .push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
                         }
                     }
                     // Preferências
@@ -645,25 +646,37 @@ match embed_config.provider.as_str() {
                             facts_context.push_str(&format!("  - SO: {}\n", v));
                         }
                         if let Some(v) = amb.get("usa_ollama").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Usa Ollama: {}\n", if v { "Sim" } else { "Nao" }));
+                            facts_context.push_str(&format!(
+                                "  - Usa Ollama: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
                         if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Usa OpenRouter: {}\n", if v { "Sim" } else { "Nao" }));
+                            facts_context.push_str(&format!(
+                                "  - Usa OpenRouter: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
                         if let Some(v) = amb.get("usa_modelos_locais").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Modelos locais: {}\n", if v { "Sim" } else { "Nao" }));
+                            facts_context.push_str(&format!(
+                                "  - Modelos locais: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
                     }
                     // Interesses
                     if let Some(interesses) = facts.get("interesses").and_then(|v| v.as_array()) {
-                        let interesses: Vec<&str> = interesses.iter().filter_map(|v| v.as_str()).collect();
+                        let interesses: Vec<&str> =
+                            interesses.iter().filter_map(|v| v.as_str()).collect();
                         if !interesses.is_empty() {
-                            facts_context.push_str(&format!("Interesses: {}\n", interesses.join(", ")));
+                            facts_context
+                                .push_str(&format!("Interesses: {}\n", interesses.join(", ")));
                         }
                     }
                     // Projetos
                     if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array()) {
-                        let projetos: Vec<&str> = projetos.iter().filter_map(|v| v.as_str()).collect();
+                        let projetos: Vec<&str> =
+                            projetos.iter().filter_map(|v| v.as_str()).collect();
                         if !projetos.is_empty() {
                             facts_context.push_str(&format!("Projetos: {}\n", projetos.join(", ")));
                         }
@@ -672,13 +685,25 @@ match embed_config.provider.as_str() {
                     if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object()) {
                         facts_context.push_str("Restricoes:\n");
                         if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Nao alucinar: {}\n", if v { "Sim" } else { "Nao" }));
+                            facts_context.push_str(&format!(
+                                "  - Nao alucinar: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
                         if let Some(v) = rest.get("priorizar_precisao").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Priorizar precisao: {}\n", if v { "Sim" } else { "Nao" }));
+                            facts_context.push_str(&format!(
+                                "  - Priorizar precisao: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
-                        if let Some(v) = rest.get("priorizar_respostas_tecnicas").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!("  - Respostas tecnicas: {}\n", if v { "Sim" } else { "Nao" }));
+                        if let Some(v) = rest
+                            .get("priorizar_respostas_tecnicas")
+                            .and_then(|v| v.as_bool())
+                        {
+                            facts_context.push_str(&format!(
+                                "  - Respostas tecnicas: {}\n",
+                                if v { "Sim" } else { "Nao" }
+                            ));
                         }
                     }
                     // Fatos importantes
@@ -692,15 +717,20 @@ match embed_config.provider.as_str() {
                             }
                         }
                     }
-                    
+
                     // Inject facts into system prompt (only if we have content)
-                    if facts_context.len() > 30 {  // Has more than just the header
+                    if facts_context.len() > 30 {
+                        // Has more than just the header
                         let new_prompt = match runtime.system_prompt() {
                             Some(existing) => format!("{}\n{}", existing, facts_context),
                             None => facts_context.clone(),
                         };
                         runtime.set_system_prompt(new_prompt);
-                        info!("loaded user facts from {} (context len: {})", facts_path.display(), facts_context.len());
+                        info!(
+                            "loaded user facts from {} (context len: {})",
+                            facts_path.display(),
+                            facts_context.len()
+                        );
                     } else {
                         warn!("facts.json has insufficient content, skipping injection");
                     }
@@ -1115,7 +1145,10 @@ pub fn build_telegram_channels(
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key(Some(&user_id));
 
-                    let model_override = state.channel_models.get(&session_id).map(|r| r.value().clone());
+                    let model_override = state
+                        .channel_models
+                        .get(&session_id)
+                        .map(|r| r.value().clone());
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state
@@ -1258,7 +1291,9 @@ fn handle_command(
                 }
             } else {
                 let new_model = parts[1].to_string();
-                if new_model.eq_ignore_ascii_case("clear") || new_model.eq_ignore_ascii_case("default") {
+                if new_model.eq_ignore_ascii_case("clear")
+                    || new_model.eq_ignore_ascii_case("default")
+                {
                     state.channel_models.remove(&session_id);
                     Ok("Model override cleared. Using default.".to_string())
                 } else {

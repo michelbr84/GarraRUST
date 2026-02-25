@@ -37,8 +37,10 @@ impl SqliteBackend {
 impl DatabaseBackend for SqliteBackend {
     async fn execute(&self, sql: &str, params: &[&str]) -> Result<u64> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let p: Vec<Box<dyn rusqlite::types::ToSql>> =
-            params.iter().map(|s| Box::new(s.to_string()) as _).collect();
+        let p: Vec<Box<dyn rusqlite::types::ToSql>> = params
+            .iter()
+            .map(|s| Box::new(s.to_string()) as _)
+            .collect();
         let refs: Vec<&dyn rusqlite::types::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let rows = conn.execute(sql, refs.as_slice())?;
         Ok(rows as u64)
@@ -51,8 +53,10 @@ impl DatabaseBackend for SqliteBackend {
 
     async fn query_all(&self, sql: &str, params: &[&str]) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let p: Vec<Box<dyn rusqlite::types::ToSql>> =
-            params.iter().map(|s| Box::new(s.to_string()) as _).collect();
+        let p: Vec<Box<dyn rusqlite::types::ToSql>> = params
+            .iter()
+            .map(|s| Box::new(s.to_string()) as _)
+            .collect();
         let refs: Vec<&dyn rusqlite::types::ToSql> = p.iter().map(|b| b.as_ref()).collect();
 
         let mut stmt = conn.prepare(sql)?;
@@ -160,12 +164,7 @@ impl MigrationRunner {
 
 #[async_trait]
 pub trait VectorBackend: Send + Sync {
-    async fn upsert(
-        &self,
-        id: &str,
-        embedding: &[f32],
-        metadata: serde_json::Value,
-    ) -> Result<()>;
+    async fn upsert(&self, id: &str, embedding: &[f32], metadata: serde_json::Value) -> Result<()>;
     async fn search(&self, query: &[f32], limit: usize) -> Result<Vec<(String, f64)>>;
     fn backend_name(&self) -> &str;
 }
@@ -374,12 +373,9 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_backend_execute_and_query() {
         let db = sqlite_backend();
-        db.execute(
-            "CREATE TABLE t (id TEXT PRIMARY KEY, val TEXT)",
-            &[],
-        )
-        .await
-        .unwrap();
+        db.execute("CREATE TABLE t (id TEXT PRIMARY KEY, val TEXT)", &[])
+            .await
+            .unwrap();
 
         let changed = db
             .execute("INSERT INTO t (id, val) VALUES (?1, ?2)", &["1", "hello"])
