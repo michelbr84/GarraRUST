@@ -838,6 +838,13 @@ impl AgentRuntime {
                 tools: tool_defs.clone(),
             };
 
+            tracing::info!(
+                "Sending LlmRequest to provider={}, model={}, tools_count={}",
+                provider.provider_id(),
+                request.model,
+                request.tools.len()
+            );
+
             // Try streaming; fall back to non-streaming if not supported
             let stream_result = provider.stream_complete(&request).await;
 
@@ -848,6 +855,7 @@ impl AgentRuntime {
                     let mut tool_uses: Vec<(String, String, String)> = Vec::new(); // (id, name, input_json)
                     let mut current_tool: Option<(String, String, String)> = None;
                     let mut _stop_reason: Option<String> = None;
+                    let mut debug_event_count = 0;
 
                     while let Some(event) = stream.next().await {
                         match event? {
@@ -875,7 +883,28 @@ impl AgentRuntime {
                             }
                             StreamEvent::MessageStop => break,
                         }
+                        debug_event_count += 1;
                     }
+
+                    // Some OpenAI-compatible streaming APIs (e.g. OpenRouter via /v1/chat/completions)
+                    // don't emit an explicit ContentBlockStop event for tool calls.
+                    // If we ended due to tool use and still have a pending tool, flush it so it executes.
+                    if tool_uses.is_empty() {
+                        if let Some(tool) = current_tool.take() {
+                            if matches!(_stop_reason.as_deref(), Some("tool_use") | Some("tool_calls")) {
+                                tool_uses.push(tool);
+                            } else {
+                                current_tool = Some(tool);
+                            }
+                        }
+                    }
+
+                    tracing::info!(
+                        "Stream finished. events={}, text_len={}, tool_uses={}",
+                        debug_event_count,
+                        response_text.len(),
+                        tool_uses.len()
+                    );
 
                     if tool_uses.is_empty() {
                         full_response.push_str(&response_text);
@@ -983,10 +1012,19 @@ impl AgentRuntime {
                     // Streaming not supported — fall back to non-streaming
                     let response = provider.complete(&request).await?;
 
-                    let has_tool_use = response
+                    let tool_calls_count = response
                         .content
                         .iter()
-                        .any(|block| matches!(block, ContentBlock::ToolUse { .. }));
+                        .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                        .count();
+
+                    tracing::info!(
+                        "Batch fallback finished. text_len={}, tool_uses={}",
+                        extract_text(&response.content).len(),
+                        tool_calls_count
+                    );
+
+                    let has_tool_use = tool_calls_count > 0;
 
                     if !has_tool_use {
                         let final_text = extract_text(&response.content);
@@ -1208,12 +1246,18 @@ fn trim_messages_to_budget(
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
-    content
+    let text = content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    if text.trim().is_empty() {
+        return "[no textual response provided by the model]".to_string();
+    }
+
+    text
 }
