@@ -39,6 +39,7 @@ pub async fn get_recent_memory(
     let limit = params.limit.unwrap_or(50);
     
     let query = RecallQuery {
+        tenant_id: None,
         query_text: None,
         query_embedding: None,
         session_id: None,
@@ -78,8 +79,9 @@ pub async fn search_memory(
 
     let limit = params.limit.unwrap_or(20);
     let query = RecallQuery {
+        tenant_id: None,
         query_text: Some(params.q),
-        query_embedding: None, 
+        query_embedding: None,
         session_id: None,
         continuity_key: None,
         limit,
