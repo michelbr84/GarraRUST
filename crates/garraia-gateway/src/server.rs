@@ -151,14 +151,11 @@ impl GatewayServer {
         // Start configured Discord channels
         let discord_channels = build_discord_channels(&state.config, &state);
         for mut channel in discord_channels {
-            tokio::spawn(async move {
-                if let Err(e) = channel.connect().await {
-                    warn!("discord channel failed to connect: {e}");
-                    return;
-                }
-                shutdown_signal().await;
-                channel.disconnect().await.ok();
-            });
+            if let Err(e) = channel.connect().await {
+                warn!("discord channel failed to connect: {e}");
+            } else {
+                state.channels.write().await.register(channel);
+            }
         }
 
         // Start background scheduler loop
@@ -176,27 +173,21 @@ impl GatewayServer {
         // Start configured Telegram channels
         let telegram_channels = build_telegram_channels(&state.config, &state);
         for mut channel in telegram_channels {
-            tokio::spawn(async move {
-                if let Err(e) = channel.connect().await {
-                    warn!("telegram channel failed to connect: {e}");
-                    return;
-                }
-                shutdown_signal().await;
-                channel.disconnect().await.ok();
-            });
+            if let Err(e) = channel.connect().await {
+                warn!("telegram channel failed to connect: {e}");
+            } else {
+                state.channels.write().await.register(channel);
+            }
         }
 
         // Start configured Slack channels
         let slack_channels = build_slack_channels(&state.config, &state);
         for mut channel in slack_channels {
-            tokio::spawn(async move {
-                if let Err(e) = channel.connect().await {
-                    warn!("slack channel failed to connect: {e}");
-                    return;
-                }
-                shutdown_signal().await;
-                channel.disconnect().await.ok();
-            });
+            if let Err(e) = channel.connect().await {
+                warn!("slack channel failed to connect: {e}");
+            } else {
+                state.channels.write().await.register(channel);
+            }
         }
 
         // Start configured iMessage channels (macOS only)
@@ -204,14 +195,11 @@ impl GatewayServer {
         {
             let imessage_channels = build_imessage_channels(&state.config, &state);
             for mut channel in imessage_channels {
-                tokio::spawn(async move {
-                    if let Err(e) = channel.connect().await {
-                        warn!("imessage channel failed to connect: {e}");
-                        return;
-                    }
-                    shutdown_signal().await;
-                    channel.disconnect().await.ok();
-                });
+                if let Err(e) = channel.connect().await {
+                    warn!("imessage channel failed to connect: {e}");
+                } else {
+                    state.channels.write().await.register(channel);
+                }
             }
         }
 
@@ -251,6 +239,9 @@ impl GatewayServer {
             info!("disconnecting MCP servers...");
             manager.disconnect_all().await;
         }
+
+        info!("disconnecting channels...");
+        state_for_shutdown.channels.write().await.disconnect_all().await.ok();
 
         info!("gateway shut down gracefully");
         Ok(())
@@ -388,7 +379,7 @@ async fn execute_scheduled_task(
     }
 
     // 4. Best-effort delivery to channel adapter.
-    if let Some(channel) = state.channels.get(channel_type.as_str()) {
+    if let Some(channel) = state.channels.read().await.get(channel_type.as_str()) {
         if let Err(e) = channel.send_message(&response_msg).await {
             tracing::error!("Failed to send scheduled response: {e}");
         }

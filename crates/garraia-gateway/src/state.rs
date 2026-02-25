@@ -18,7 +18,7 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
-    pub channels: ChannelRegistry,
+    pub channels: tokio::sync::RwLock<ChannelRegistry>,
     pub agents: AgentRuntime,
     pub sessions: DashMap<String, SessionState>,
     /// Model overrides per channel (e.g. "telegram-123456" -> "openai/gpt-4o")
@@ -54,7 +54,7 @@ impl AppState {
     pub fn new(config: AppConfig, agents: AgentRuntime, channels: ChannelRegistry) -> Self {
         Self {
             config,
-            channels,
+            channels: tokio::sync::RwLock::new(channels),
             agents,
             sessions: DashMap::new(),
             channel_models: DashMap::new(),
