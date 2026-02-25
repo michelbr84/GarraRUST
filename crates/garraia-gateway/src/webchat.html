@@ -977,6 +977,8 @@
         flex-direction: column;
         gap: 16px;
         overflow-y: auto;
+        flex: 1;
+        min-height: 0;
       }
 
       .card {
@@ -1154,6 +1156,123 @@
         .nano-pixel {
           transition: none;
         }
+      }
+
+      /* Memory & Logs Views */
+      .memory-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .memory-search-input {
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--panel-edge);
+        background: var(--panel);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", Consolas, monospace;
+        font-size: 0.82rem;
+        transition:
+          border-color 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      .memory-search-input:focus {
+        outline: none;
+        border-color: var(--brand);
+        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
+      }
+
+      .memory-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .logs-box {
+        overflow: auto;
+        padding: 12px;
+        border: 1px solid var(--panel-edge);
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+          Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        border-radius: 10px;
+        white-space: pre-wrap;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .text-secondary {
+        color: var(--ink-soft);
+      }
+
+      /* Custom scrollbars */
+      .logs-box::-webkit-scrollbar,
+      .memory-list::-webkit-scrollbar,
+      .settings-body::-webkit-scrollbar,
+      .chat::-webkit-scrollbar,
+      .main-wrapper::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      .logs-box::-webkit-scrollbar-track,
+      .memory-list::-webkit-scrollbar-track,
+      .settings-body::-webkit-scrollbar-track,
+      .chat::-webkit-scrollbar-track,
+      .main-wrapper::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .logs-box::-webkit-scrollbar-thumb,
+      .memory-list::-webkit-scrollbar-thumb,
+      .settings-body::-webkit-scrollbar-thumb,
+      .chat::-webkit-scrollbar-thumb,
+      .main-wrapper::-webkit-scrollbar-thumb {
+        background-color: var(--panel-edge);
+        border-radius: 10px;
+      }
+
+      .logs-box::-webkit-scrollbar-thumb:hover,
+      .memory-list::-webkit-scrollbar-thumb:hover,
+      .settings-body::-webkit-scrollbar-thumb:hover,
+      .chat::-webkit-scrollbar-thumb:hover,
+      .main-wrapper::-webkit-scrollbar-thumb:hover {
+        background-color: var(--brand);
+      }
+
+      /* Nav icon styles */
+      .nav-item > svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2px;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+
+      [data-theme="brasil"] .nav-item svg,
+      [data-theme="dark"] .nav-item svg {
+        stroke: var(--ink);
+      }
+
+      /* Hide initially inactive elements */
+      .update-banner {
+        display: none;
+      }
+
+      .gateway-key-section {
+        display: none;
+      }
+
+      .provider-key-section {
+        display: none;
       }
     </style>
   </head>

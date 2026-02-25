@@ -720,6 +720,8 @@ textarea:focus {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .card {
@@ -993,11 +995,8 @@ textarea,
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: calc(100vh - 220px);
-  overflow-y: auto;
 }
 .logs-box {
-  height: calc(100vh - 220px);
   overflow: auto;
   padding: 12px;
   border: 1px solid var(--panel-edge);
@@ -1009,6 +1008,8 @@ textarea,
   font-size: 12px;
   border-radius: 10px;
   white-space: pre-wrap;
+  flex: 1;
+  min-height: 0;
 }
 
 /* Custom WebKit Scrollbars for logs and memories */
