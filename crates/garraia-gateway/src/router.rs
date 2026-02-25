@@ -85,6 +85,7 @@ pub fn build_router(
             "/metrics",
             get(crate::observability::prometheus_metrics_handler),
         )
+        .route("/admin", get(admin_page))
         .with_state(state.clone())
         .merge(whatsapp_routes)
         .nest(
@@ -98,13 +99,17 @@ async fn health() -> &'static str {
     "ok"
 }
 
+async fn admin_page() -> Html<String> {
+    if let Ok(content) = std::fs::read_to_string("crates/garraia-gateway/src/admin.html") {
+        return Html(content);
+    }
+    Html(include_str!("admin.html").to_string())
+}
+
 async fn web_chat() -> Html<String> {
-    // Hot-reload during local development if the source file is present
     if let Ok(content) = std::fs::read_to_string("crates/garraia-gateway/src/webchat.html") {
         return Html(content);
     }
-
-    // Fall back to the statically compiled version for release binaries
     Html(include_str!("webchat.html").to_string())
 }
 
