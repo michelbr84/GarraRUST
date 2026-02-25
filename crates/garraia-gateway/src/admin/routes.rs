@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::middleware as axum_mw;
+use axum::response::Html;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::Mutex;
 
@@ -137,4 +138,16 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
         .merge(public_routes)
         .merge(auth_routes)
         .layer(axum_mw::from_fn(security_headers))
+}
+
+/// Serve the admin SPA. Called both from nested router (/) and top-level (/admin).
+pub async fn admin_page_handler() -> Html<String> {
+    admin_page().await
+}
+
+async fn admin_page() -> Html<String> {
+    if let Ok(content) = std::fs::read_to_string("crates/garraia-gateway/src/admin.html") {
+        return Html(content);
+    }
+    Html(include_str!("../admin.html").to_string())
 }
