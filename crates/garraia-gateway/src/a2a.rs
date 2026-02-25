@@ -135,20 +135,40 @@ pub async fn create_task(
                 });
             }
 
-            let task = state.a2a_tasks.get(&task_id).unwrap().clone();
-            (StatusCode::OK, Json(serde_json::json!(task))).into_response()
+            match state.a2a_tasks.get(&task_id) {
+                Some(task) => {
+                    (StatusCode::OK, Json(serde_json::json!(task.clone()))).into_response()
+                }
+                None => {
+                    warn!("A2A task {task_id} vanished after completion");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "task state lost" })),
+                    )
+                        .into_response()
+                }
+            }
         }
         Err(e) => {
             warn!("A2A task {task_id} failed: {e}");
             if let Some(mut task) = state.a2a_tasks.get_mut(&task_id) {
                 task.status = TaskStatus::Failed;
             }
-            let task = state.a2a_tasks.get(&task_id).unwrap().clone();
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(task)),
-            )
-                .into_response()
+            match state.a2a_tasks.get(&task_id) {
+                Some(task) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!(task.clone())),
+                )
+                    .into_response(),
+                None => {
+                    warn!("A2A task {task_id} vanished after failure");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": format!("task failed: {e}") })),
+                    )
+                        .into_response()
+                }
+            }
         }
     }
 }
