@@ -6,7 +6,13 @@ export const EventBus = {
   },
   emit(event, data) {
     if (this.events[event]) {
-      this.events[event].forEach((listener) => listener(data));
+      this.events[event].forEach((listener) => {
+        try {
+          listener(data);
+        } catch (e) {
+          console.error(`Error in EventBus listener for ${event}:`, e);
+        }
+      });
     }
   },
 };
