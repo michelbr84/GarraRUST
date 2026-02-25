@@ -352,9 +352,13 @@
       }
 
       .panel-view {
-        display: flex;
+        display: none;
         flex-direction: column;
         height: 100%;
+      }
+
+      .panel-view.is-active {
+        display: flex;
       }
 
       .panel {
@@ -1374,7 +1378,7 @@
         </div>
 
         <div class="workspace">
-          <section class="panel panel-view" id="view-chat" data-view-panel="chat">
+          <section class="panel panel-view is-active" id="view-chat" data-view-panel="chat">
             <div class="chat-top">
               <div class="chat-meta">
                 <span>Chat</span>

@@ -1,7 +1,7 @@
 import { EventBus } from './eventBus.js';
 
 export const GarraState = {
-  currentView: "chat",
+  currentView: null,
   memories: [],
   logs: "",
   session: localStorage.getItem("garraia.session_id") || "",
