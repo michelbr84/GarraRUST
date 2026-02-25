@@ -26,14 +26,22 @@ pub enum TaskState {
 impl TaskState {
     /// Verifica se o estado é terminal (não precisa mais transitar).
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskState::Completed | TaskState::Failed | TaskState::Waiting)
+        matches!(
+            self,
+            TaskState::Completed | TaskState::Failed | TaskState::Waiting
+        )
     }
 
     /// Retorna as transições válidas a partir deste estado.
     pub fn valid_transitions(&self) -> &[TaskState] {
         match self {
             TaskState::Planning => &[TaskState::Executing, TaskState::Failed],
-            TaskState::Executing => &[TaskState::ToolUse, TaskState::Completed, TaskState::Waiting, TaskState::Failed],
+            TaskState::Executing => &[
+                TaskState::ToolUse,
+                TaskState::Completed,
+                TaskState::Waiting,
+                TaskState::Failed,
+            ],
             TaskState::ToolUse => &[TaskState::Executing, TaskState::Waiting, TaskState::Failed],
             TaskState::Waiting => &[TaskState::Executing, TaskState::Failed],
             TaskState::Completed => &[],

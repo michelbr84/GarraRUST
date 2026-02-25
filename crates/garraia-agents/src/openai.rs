@@ -67,10 +67,7 @@ impl OpenAiProvider {
         } else {
             base
         };
-        format!(
-            "{}/v1/chat/completions",
-            base
-        )
+        format!("{}/v1/chat/completions", base)
     }
 
     /// List models available from OpenRouter API
@@ -125,11 +122,7 @@ impl OpenAiProvider {
             .await
             .map_err(|e| Error::Agent(format!("failed to parse models response: {e}")))?;
 
-        let all_models: Vec<String> = models_response
-            .data
-            .into_iter()
-            .map(|m| m.id)
-            .collect();
+        let all_models: Vec<String> = models_response.data.into_iter().map(|m| m.id).collect();
 
         tracing::info!("OpenRouter total models: {}", all_models.len());
 
@@ -1008,10 +1001,7 @@ mod tests {
             "endpoint should not have /v1/v1/ duplication: {}",
             endpoint
         );
-        assert_eq!(
-            endpoint,
-            "https://openrouter.ai/api/v1/chat/completions"
-        );
+        assert_eq!(endpoint, "https://openrouter.ai/api/v1/chat/completions");
     }
 
     #[test]

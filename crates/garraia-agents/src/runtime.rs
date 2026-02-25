@@ -129,6 +129,14 @@ impl AgentRuntime {
         self.memory.clone()
     }
 
+    /// Return (name, description) pairs for all registered tools.
+    pub fn list_tool_info(&self) -> Vec<(&str, &str)> {
+        self.tools
+            .iter()
+            .map(|t| (t.name(), t.description()))
+            .collect()
+    }
+
     pub fn set_embedding_provider(&mut self, embeddings: Arc<dyn EmbeddingProvider>) {
         self.embeddings = Some(embeddings);
         info!("embedding provider attached to agent runtime");
@@ -378,7 +386,7 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         let mut budget = ExecutionBudget::padrao();
-        
+
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
 
@@ -389,7 +397,7 @@ impl AgentRuntime {
                 budget.resetar_turno();
                 info!("auto-reset turn budget, continuing agent loop");
             }
-            
+
             // Check if task limit is reached (hard limit)
             if !budget.pode_chamar_ferramenta() {
                 return Err(Error::Agent(format!(
@@ -438,34 +446,25 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat: false,
                     };
-                    
+
                     // registra chamada com payload para detecção de loop por assinatura
                     budget.registrar_chamada(name, input);
-                    
+
                     // detecta loop
                     if budget.detectar_loop_ferramenta() {
-                        return Err(Error::Agent(format!(
-                            "tool loop detected: {}",
-                            name
-                        )));
+                        return Err(Error::Agent(format!("tool loop detected: {}", name)));
                     }
-                    
+
                     // executa com timeout
                     let output = match self.find_tool(name) {
                         Some(tool) => {
-                            match timeout(
-                                budget.timeout(),
-                                tool.execute(&context, input.clone())
-                            ).await {
+                            match timeout(budget.timeout(), tool.execute(&context, input.clone()))
+                                .await
+                            {
                                 Ok(result) => {
                                     result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
                                 }
-                                Err(_) => {
-                                    ToolOutput::error(format!(
-                                        "tool timeout: {}",
-                                        name
-                                    ))
-                                }
+                                Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
                             }
                         }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
@@ -547,7 +546,7 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         let mut budget = ExecutionBudget::padrao();
-        
+
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
 
@@ -559,7 +558,7 @@ impl AgentRuntime {
                     budget.status()
                 )));
             }
-            
+
             // Check if task limit is reached (hard limit)
             if !budget.pode_chamar_ferramenta() {
                 return Err(Error::Agent(format!(
@@ -600,9 +599,9 @@ impl AgentRuntime {
                 if let Ok(facts) = facts_result {
                     for fact in facts {
                         // Validar que o fato tem valores não vazios
-                        if fact.confidence >= 0.80 
-                            && !fact.key.trim().is_empty() 
-                            && !fact.value.trim().is_empty() 
+                        if fact.confidence >= 0.80
+                            && !fact.key.trim().is_empty()
+                            && !fact.value.trim().is_empty()
                         {
                             let content = format!(
                                 "[FACT] type={} key={} value={} confidence={:.2}",
@@ -611,18 +610,20 @@ impl AgentRuntime {
                             if let Some(memory) = &self.memory {
                                 // Store fact in memory with embedding
                                 let embedding = self.embed_document(&content).await;
-                                let _ = memory.remember(NewMemoryEntry {
-                                    tenant_id: "default".to_string(),
-                                    session_id: session_id.to_string(),
-                                    channel_id: None,
-                                    user_id: user_id.map(|s| s.to_string()),
-                                    continuity_key: continuity_key.map(|s| s.to_string()),
-                                    role: MemoryRole::User,
-                                    content,
-                                    embedding,
-                                    embedding_model: self.embedding_model(),
-                                    metadata: serde_json::json!({ "kind": "learned_fact" }),
-                                }).await;
+                                let _ = memory
+                                    .remember(NewMemoryEntry {
+                                        tenant_id: "default".to_string(),
+                                        session_id: session_id.to_string(),
+                                        channel_id: None,
+                                        user_id: user_id.map(|s| s.to_string()),
+                                        continuity_key: continuity_key.map(|s| s.to_string()),
+                                        role: MemoryRole::User,
+                                        content,
+                                        embedding,
+                                        embedding_model: self.embedding_model(),
+                                        metadata: serde_json::json!({ "kind": "learned_fact" }),
+                                    })
+                                    .await;
                                 info!("stored learned fact: {}={}", fact.key, fact.value);
                             }
                         }
@@ -648,34 +649,25 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat,
                     };
-                    
+
                     // registra chamada com payload para detecção de loop por assinatura
                     budget.registrar_chamada(name, input);
-                    
+
                     // detecta loop
                     if budget.detectar_loop_ferramenta() {
-                        return Err(Error::Agent(format!(
-                            "tool loop detected: {}",
-                            name
-                        )));
+                        return Err(Error::Agent(format!("tool loop detected: {}", name)));
                     }
-                    
+
                     // executa com timeout
                     let output = match self.find_tool(name) {
                         Some(tool) => {
-                            match timeout(
-                                budget.timeout(),
-                                tool.execute(&context, input.clone())
-                            ).await {
+                            match timeout(budget.timeout(), tool.execute(&context, input.clone()))
+                                .await
+                            {
                                 Ok(result) => {
                                     result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
                                 }
-                                Err(_) => {
-                                    ToolOutput::error(format!(
-                                        "tool timeout: {}",
-                                        name
-                                    ))
-                                }
+                                Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
                             }
                         }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
@@ -737,7 +729,8 @@ impl AgentRuntime {
             None,
             None,
             None,
-        ).await
+        )
+        .await
     }
 
     /// Streaming variant with explicit agent config overrides (for multi-agent routing or dynamic models).
@@ -814,7 +807,7 @@ impl AgentRuntime {
         let mut full_response = String::new();
 
         let mut budget = ExecutionBudget::padrao();
-        
+
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
 
@@ -825,7 +818,7 @@ impl AgentRuntime {
                 budget.resetar_turno();
                 info!("auto-reset turn budget, continuing agent loop");
             }
-            
+
             // Check if task limit is reached (hard limit)
             if !budget.pode_chamar_ferramenta() {
                 return Err(Error::Agent(format!(
@@ -957,34 +950,24 @@ impl AgentRuntime {
                             user_id: user_id.map(|s| s.to_string()),
                             is_heartbeat: false,
                         };
-                        
+
                         // registra chamada com payload para detecção de loop por assinatura
                         budget.registrar_chamada(name, &input);
-                        
+
                         // detecta loop
                         if budget.detectar_loop_ferramenta() {
-                            return Err(Error::Agent(format!(
-                                "tool loop detected: {}",
-                                name
-                            )));
+                            return Err(Error::Agent(format!("tool loop detected: {}", name)));
                         }
-                        
+
                         // executa com timeout
                         let output = match self.find_tool(name) {
                             Some(tool) => {
-                                match timeout(
-                                    budget.timeout(),
-                                    tool.execute(&context, input)
-                                ).await {
+                                match timeout(budget.timeout(), tool.execute(&context, input)).await
+                                {
                                     Ok(result) => {
                                         result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
                                     }
-                                    Err(_) => {
-                                        ToolOutput::error(format!(
-                                            "tool timeout: {}",
-                                            name
-                                        ))
-                                    }
+                                    Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
                                 }
                             }
                             None => ToolOutput::error(format!("unknown tool: {}", name)),
@@ -1058,33 +1041,28 @@ impl AgentRuntime {
                                 user_id: user_id.map(|s| s.to_string()),
                                 is_heartbeat: false,
                             };
-                            
+
                             // registra chamada com payload para detecção de loop por assinatura
                             budget.registrar_chamada(name, input);
-                            
+
                             // detecta loop
                             if budget.detectar_loop_ferramenta() {
-                                return Err(Error::Agent(format!(
-                                    "tool loop detected: {}",
-                                    name
-                                )));
+                                return Err(Error::Agent(format!("tool loop detected: {}", name)));
                             }
-                            
+
                             // executa com timeout
                             let output = match self.find_tool(name) {
                                 Some(tool) => {
                                     match timeout(
                                         budget.timeout(),
-                                        tool.execute(&context, input.clone())
-                                    ).await {
-                                        Ok(result) => {
-                                            result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
-                                        }
+                                        tool.execute(&context, input.clone()),
+                                    )
+                                    .await
+                                    {
+                                        Ok(result) => result
+                                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
                                         Err(_) => {
-                                            ToolOutput::error(format!(
-                                                "tool timeout: {}",
-                                                name
-                                            ))
+                                            ToolOutput::error(format!("tool timeout: {}", name))
                                         }
                                     }
                                 }

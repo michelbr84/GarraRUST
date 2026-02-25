@@ -407,7 +407,13 @@ impl MemoryStore {
         query_text: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>> {
-        self.query_candidates_with_tenant_sync(Some("default"), session_id, continuity_key, query_text, limit)
+        self.query_candidates_with_tenant_sync(
+            Some("default"),
+            session_id,
+            continuity_key,
+            query_text,
+            limit,
+        )
     }
 
     fn query_candidates_with_tenant_sync(
@@ -437,7 +443,13 @@ impl MemoryStore {
 
         let rows = stmt
             .query_map(
-                params![tenant_id, session_id, continuity_key, query_text, query_limit],
+                params![
+                    tenant_id,
+                    session_id,
+                    continuity_key,
+                    query_text,
+                    query_limit
+                ],
                 row_to_entry,
             )
             .map_err(|e| Error::Database(format!("failed to execute recall query: {e}")))?;

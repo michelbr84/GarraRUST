@@ -101,10 +101,8 @@ impl Tool for BashTool {
                 }
 
                 if combinado.is_empty() {
-                    combinado = format!(
-                        "(código de saída: {})",
-                        output.status.code().unwrap_or(-1)
-                    );
+                    combinado =
+                        format!("(código de saída: {})", output.status.code().unwrap_or(-1));
                 }
 
                 if output.status.success() {
@@ -117,9 +115,7 @@ impl Tool for BashTool {
                     )))
                 }
             }
-            Ok(Err(e)) => Ok(ToolOutput::error(format!(
-                "falha ao executar comando: {e}"
-            ))),
+            Ok(Err(e)) => Ok(ToolOutput::error(format!("falha ao executar comando: {e}"))),
             Err(_) => Ok(ToolOutput::error(format!(
                 "comando excedeu o tempo limite após {}s",
                 self.timeout.as_secs()
