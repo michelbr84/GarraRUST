@@ -281,7 +281,7 @@ async fn process_text_message(
     state: &SharedState,
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
 ) -> Option<serde_json::Value> {
-    let (user_text, provider_id, model_override) = parse_user_message(text);
+    let (user_text, provider_id, model_override, _tenant_id) = parse_user_message(text);
 
     // Input validation
     let user_text = garraia_security::InputValidator::sanitize(&user_text);
@@ -366,9 +366,9 @@ fn text_message_too_large(len: usize) -> bool {
     len > MAX_WS_TEXT_BYTES
 }
 
-/// Try to extract `"content"` plus optional `"provider"` and `"model"` from JSON,
+/// Try to extract `"content"` plus optional `"provider"`, `"model"`, and `"tenant_id"` from JSON,
 /// otherwise use the raw text as content with no overrides.
-fn parse_user_message(raw: &str) -> (String, Option<String>, Option<String>) {
+fn parse_user_message(raw: &str) -> (String, Option<String>, Option<String>, Option<String>) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
         && let Some(text) = v.get("content").and_then(|c| c.as_str())
     {
@@ -383,9 +383,14 @@ fn parse_user_message(raw: &str) -> (String, Option<String>, Option<String>) {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        return (text.to_string(), provider, model);
+        let tenant_id = v
+            .get("tenant_id")
+            .and_then(|t| t.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        return (text.to_string(), provider, model, tenant_id);
     }
-    (raw.to_string(), None, None)
+    (raw.to_string(), None, None, None)
 }
 
 #[cfg(test)]
@@ -418,16 +423,17 @@ mod tests {
     #[test]
     fn parse_user_message_extracts_provider() {
         let json = r#"{"content": "hello", "provider": "anthropic"}"#;
-        let (text, provider, model) = parse_user_message(json);
+        let (text, provider, model, tenant) = parse_user_message(json);
         assert_eq!(text, "hello");
         assert_eq!(provider, Some("anthropic".to_string()));
         assert_eq!(model, None);
+        assert_eq!(tenant, None);
     }
 
     #[test]
     fn parse_user_message_extracts_provider_and_model() {
         let json = r#"{"content": "hello", "provider": "ollama", "model": "kimi"}"#;
-        let (text, provider, model) = parse_user_message(json);
+        let (text, provider, model, _tenant) = parse_user_message(json);
         assert_eq!(text, "hello");
         assert_eq!(provider, Some("ollama".to_string()));
         assert_eq!(model, Some("kimi".to_string()));
@@ -436,7 +442,7 @@ mod tests {
     #[test]
     fn parse_user_message_no_provider() {
         let json = r#"{"content": "hello"}"#;
-        let (text, provider, model) = parse_user_message(json);
+        let (text, provider, model, _tenant) = parse_user_message(json);
         assert_eq!(text, "hello");
         assert_eq!(provider, None);
         assert_eq!(model, None);
@@ -444,7 +450,7 @@ mod tests {
 
     #[test]
     fn parse_user_message_plain_text() {
-        let (text, provider, model) = parse_user_message("just plain text");
+        let (text, provider, model, _tenant) = parse_user_message("just plain text");
         assert_eq!(text, "just plain text");
         assert_eq!(provider, None);
         assert_eq!(model, None);

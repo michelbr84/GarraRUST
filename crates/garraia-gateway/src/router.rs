@@ -69,6 +69,7 @@ pub fn build_router(
         .route("/a2a/tasks/{id}/cancel", post(a2a::cancel_task))
         .nest_service("/assets", ServeDir::new("crates/garraia-gateway/assets"))
         .nest_service("/static", ServeDir::new("assets"))
+        .route("/metrics", get(crate::observability::prometheus_metrics_handler))
         .with_state(state)
         .merge(whatsapp_routes)
         .layer(governor_layer)

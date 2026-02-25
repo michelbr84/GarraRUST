@@ -11,6 +11,7 @@ pub struct Migration {
 pub const MEMORY_SCHEMA_V1_SQL: &str = "
 CREATE TABLE IF NOT EXISTS memory_entries (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
     session_id TEXT NOT NULL,
     channel_id TEXT,
     user_id TEXT,
@@ -32,6 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_continuity_created_at
 
 CREATE INDEX IF NOT EXISTS idx_memory_role
     ON memory_entries(role, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_tenant
+    ON memory_entries(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_tenant_session
+    ON memory_entries(tenant_id, session_id, created_at);
 ";
 
 pub const MEMORY_SCHEMA_V1: Migration = Migration {
