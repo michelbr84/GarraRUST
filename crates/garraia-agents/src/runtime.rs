@@ -178,6 +178,7 @@ impl AgentRuntime {
 
         memory
             .remember(NewMemoryEntry {
+                tenant_id: "default".to_string(),
                 session_id: session_id.to_string(),
                 channel_id: None,
                 user_id: user_id.map(|s| s.to_string()),
@@ -192,6 +193,7 @@ impl AgentRuntime {
 
         memory
             .remember(NewMemoryEntry {
+                tenant_id: "default".to_string(),
                 session_id: session_id.to_string(),
                 channel_id: None,
                 user_id: user_id.map(|s| s.to_string()),
@@ -222,6 +224,7 @@ impl AgentRuntime {
 
         memory
             .recall(RecallQuery {
+                tenant_id: None,
                 query_text: Some(query_text.to_string()),
                 query_embedding,
                 session_id: session_id.map(|s| s.to_string()),
@@ -609,6 +612,7 @@ impl AgentRuntime {
                                 // Store fact in memory with embedding
                                 let embedding = self.embed_document(&content).await;
                                 let _ = memory.remember(NewMemoryEntry {
+                                    tenant_id: "default".to_string(),
                                     session_id: session_id.to_string(),
                                     channel_id: None,
                                     user_id: user_id.map(|s| s.to_string()),
@@ -1126,6 +1130,7 @@ impl AgentRuntime {
 
         memory
             .remember(NewMemoryEntry {
+                tenant_id: "default".to_string(),
                 session_id: session_id.to_string(),
                 channel_id: None,
                 user_id: None,
