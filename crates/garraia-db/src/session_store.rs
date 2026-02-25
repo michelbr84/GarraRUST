@@ -1,6 +1,6 @@
 use garraia_common::{Error, Result};
-use rusqlite::params;
 use rusqlite::Connection;
+use rusqlite::params;
 use std::path::Path;
 use tracing::info;
 

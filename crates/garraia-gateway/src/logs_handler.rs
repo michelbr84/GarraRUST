@@ -1,8 +1,4 @@
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 
 /// GET /api/logs
 pub async fn get_logs() -> impl IntoResponse {
@@ -39,7 +35,11 @@ pub async fn get_logs() -> impl IntoResponse {
         }
 
         let lines: Vec<&str> = buf.lines().collect();
-        let start = if lines.len() > 1000 { lines.len() - 1000 } else { 0 };
+        let start = if lines.len() > 1000 {
+            lines.len() - 1000
+        } else {
+            0
+        };
         Ok(lines[start..].join("\n"))
     })();
 

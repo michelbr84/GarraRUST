@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
@@ -214,9 +214,7 @@ impl ResilienceManager {
         let mut breakers = self.circuit_breakers.write().await;
         let cb = breakers
             .entry(provider_id.to_string())
-            .or_insert_with(|| {
-                Arc::new(CircuitBreaker::new(5, Duration::from_secs(60)))
-            });
+            .or_insert_with(|| Arc::new(CircuitBreaker::new(5, Duration::from_secs(60))));
         Arc::clone(cb)
     }
 
@@ -239,12 +237,7 @@ impl ResilienceManager {
     }
 
     /// Update the health status for a provider.
-    pub async fn update_health(
-        &self,
-        provider_id: &str,
-        healthy: bool,
-        latency_ms: Option<u64>,
-    ) {
+    pub async fn update_health(&self, provider_id: &str, healthy: bool, latency_ms: Option<u64>) {
         let mut statuses = self.health_status.write().await;
         statuses.insert(
             provider_id.to_string(),
@@ -400,12 +393,8 @@ mod tests {
     #[tokio::test]
     async fn resilience_manager_fallback_skips_unavailable() {
         let mgr = ResilienceManager::new();
-        mgr.set_fallback_order(vec![
-            "anthropic".into(),
-            "openai".into(),
-            "ollama".into(),
-        ])
-        .await;
+        mgr.set_fallback_order(vec!["anthropic".into(), "openai".into(), "ollama".into()])
+            .await;
 
         // Open anthropic circuit breaker
         let cb = mgr.circuit_breaker("anthropic").await;

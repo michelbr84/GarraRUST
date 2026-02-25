@@ -44,9 +44,7 @@ impl McpTool {
         Self {
             nome_completo: format!("{nome_servidor}.{nome_original}"),
             descricao: descricao.unwrap_or_else(|| {
-                format!(
-                    "Ferramenta MCP {nome_original} do servidor {nome_servidor}"
-                )
+                format!("Ferramenta MCP {nome_original} do servidor {nome_servidor}")
             }),
             nome_original,
             schema_entrada,

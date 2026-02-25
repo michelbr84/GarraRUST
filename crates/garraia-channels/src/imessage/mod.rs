@@ -62,9 +62,8 @@ impl Channel for IMessageChannel {
 
     async fn connect(&mut self) -> Result<()> {
         let db_path = chatdb::default_chat_db_path();
-        let mut db = chatdb::ChatDb::open(&db_path).map_err(|e| {
-            garraia_common::Error::Channel(format!("imessage connect failed: {e}"))
-        })?;
+        let mut db = chatdb::ChatDb::open(&db_path)
+            .map_err(|e| garraia_common::Error::Channel(format!("imessage connect failed: {e}")))?;
 
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);

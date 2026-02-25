@@ -14,7 +14,9 @@ pub struct FileWriteTool {
 
 impl FileWriteTool {
     pub fn new(allowed_directories: Option<Vec<PathBuf>>) -> Self {
-        Self { allowed_directories }
+        Self {
+            allowed_directories,
+        }
     }
 
     fn validate_path(&self, path: &std::path::Path) -> Result<()> {
@@ -32,11 +34,9 @@ impl FileWriteTool {
                 .parent()
                 .ok_or_else(|| Error::Agent("caminho inválido".into()))?;
 
-            let canonical = parent
-                .canonicalize()
-                .map_err(|e| {
-                    Error::Agent(format!("não foi possível resolver diretório pai: {e}"))
-                })?;
+            let canonical = parent.canonicalize().map_err(|e| {
+                Error::Agent(format!("não foi possível resolver diretório pai: {e}"))
+            })?;
 
             if !allowed.iter().any(|dir| canonical.starts_with(dir)) {
                 return Err(Error::Security(

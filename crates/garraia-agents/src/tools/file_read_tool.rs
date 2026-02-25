@@ -13,7 +13,9 @@ pub struct FileReadTool {
 
 impl FileReadTool {
     pub fn new(allowed_directories: Option<Vec<PathBuf>>) -> Self {
-        Self { allowed_directories }
+        Self {
+            allowed_directories,
+        }
     }
 
     fn validate_path(&self, path: &std::path::Path) -> Result<()> {

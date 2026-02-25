@@ -100,9 +100,10 @@ pub async fn run_turn(
 
         if iterations > settings.max_llm_iterations {
             transition(&mut state, TaskState::Failed)?;
-            return Err(RuntimeError::Failed(
-                format!("limite de {} iterações excedido", settings.max_llm_iterations),
-            ));
+            return Err(RuntimeError::Failed(format!(
+                "limite de {} iterações excedido",
+                settings.max_llm_iterations
+            )));
         }
 
         // Chamar o agente/LLM para decidir ação
@@ -140,9 +141,10 @@ pub async fn run_turn(
                 meta.record_tool_call(&name);
                 if meta.detect_loop() {
                     transition(&mut state, TaskState::Failed)?;
-                    return Err(RuntimeError::Failed(
-                        format!("loop detectado: ferramenta '{}' chamada repetidamente", name),
-                    ));
+                    return Err(RuntimeError::Failed(format!(
+                        "loop detectado: ferramenta '{}' chamada repetidamente",
+                        name
+                    )));
                 }
 
                 // Buscar ferramenta
@@ -194,7 +196,7 @@ fn transition(current: &mut TaskState, target: TaskState) -> Result<(), RuntimeE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use garraia_tools::{ToolOutput, ToolContext};
+    use garraia_tools::{ToolContext, ToolOutput};
 
     fn criar_settings() -> RuntimeSettings {
         RuntimeSettings {
