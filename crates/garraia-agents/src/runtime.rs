@@ -1165,23 +1165,23 @@ impl AgentRuntime {
     pub async fn chat_completion(
         &self,
         messages: Vec<ChatMessage>,
-        _system: Option<String>,
-        _model: Option<String>,
-        _max_tokens: Option<u32>,
-        _temperature: Option<f32>,
-        _tools: Option<Vec<ToolDefinition>>,
+        system: Option<String>,
+        model: Option<String>,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> Result<String> {
         let provider = self
             .default_provider()
             .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?;
 
         let request = LlmRequest {
-            model: String::new(),
+            model: model.unwrap_or_default(),
             messages,
-            system: None,
-            max_tokens: Some(4096),
-            temperature: None,
-            tools: Vec::new(),
+            system,
+            max_tokens: Some(max_tokens.unwrap_or(4096)),
+            temperature: temperature.map(|t| t as f64),
+            tools: tools.unwrap_or_default(),
         };
 
         let response = provider.complete(&request).await?;
@@ -1228,6 +1228,8 @@ fn estimate_tokens(
 
 /// Drop the oldest messages until the estimated token count fits the budget.
 /// Always keeps at least the last message (the current user input).
+/// Removes messages in pairs (assistant + tool-result) to avoid breaking
+/// the conversation protocol required by LLM APIs.
 fn trim_messages_to_budget(
     messages: &mut Vec<ChatMessage>,
     system: &Option<String>,
@@ -1235,7 +1237,22 @@ fn trim_messages_to_budget(
     max_tokens: usize,
 ) {
     while messages.len() > 1 && estimate_tokens(messages, system, tools) > max_tokens {
+        let has_tool_use = matches!(
+            &messages[0].content,
+            MessagePart::Parts(parts) if parts.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        );
+
         messages.remove(0);
+
+        if has_tool_use && messages.len() > 1 {
+            let is_tool_result = matches!(
+                &messages[0].content,
+                MessagePart::Parts(parts) if parts.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            );
+            if is_tool_result {
+                messages.remove(0);
+            }
+        }
     }
 }
 
