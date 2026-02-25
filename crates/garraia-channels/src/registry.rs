@@ -44,11 +44,20 @@ impl ChannelRegistry {
     }
 
     pub async fn disconnect_all(&mut self) -> Result<()> {
+        let mut first_error: Option<garraia_common::Error> = None;
         for (name, channel) in &mut self.channels {
             info!("disconnecting channel: {}", name);
-            channel.disconnect().await?;
+            if let Err(e) = channel.disconnect().await {
+                tracing::error!("failed to disconnect channel {}: {}", name, e);
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
         }
-        Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
