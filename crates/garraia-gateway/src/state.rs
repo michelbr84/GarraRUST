@@ -21,6 +21,8 @@ pub struct AppState {
     pub channels: ChannelRegistry,
     pub agents: AgentRuntime,
     pub sessions: DashMap<String, SessionState>,
+    /// Model overrides per channel (e.g. "telegram-123456" -> "openai/gpt-4o")
+    pub channel_models: DashMap<String, String>,
     /// In-flight A2A tasks keyed by task ID.
     pub a2a_tasks: DashMap<String, garraia_agents::a2a::A2ATask>,
     /// MCP server connection manager (legacy, for backward compat).
@@ -55,6 +57,7 @@ impl AppState {
             channels,
             agents,
             sessions: DashMap::new(),
+            channel_models: DashMap::new(),
             a2a_tasks: DashMap::new(),
             mcp_manager: None,
             mcp_manager_arc: None,

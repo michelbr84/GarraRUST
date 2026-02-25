@@ -1115,27 +1115,37 @@ pub fn build_telegram_channels(
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key(Some(&user_id));
 
+                    let model_override = state.channel_models.get(&session_id).map(|r| r.value().clone());
+
                     let response = if let Some(delta_sender) = delta_tx {
                         state
                             .agents
-                            .process_message_streaming_with_context(
+                            .process_message_streaming_with_agent_config(
                                 &session_id,
                                 &text,
                                 &history,
                                 delta_sender,
                                 continuity_key.as_deref(),
                                 Some(&user_id),
+                                None,
+                                model_override.as_deref(),
+                                None,
+                                None,
                             )
                             .await
                     } else {
                         state
                             .agents
-                            .process_message_with_context(
+                            .process_message_with_agent_config(
                                 &session_id,
                                 &text,
                                 &history,
                                 continuity_key.as_deref(),
                                 Some(&user_id),
+                                None,
+                                model_override.as_deref(),
+                                None,
+                                None,
                             )
                             .await
                     }
@@ -1167,7 +1177,7 @@ pub fn build_telegram_channels(
 #[allow(clippy::too_many_arguments)]
 fn handle_command(
     cmd: &str,
-    _full_text: &str,
+    full_text: &str,
     user_id: &str,
     user_name: &str,
     chat_id: i64,
@@ -1188,6 +1198,7 @@ fn handle_command(
                     Commands:\n\
                     /help - show this help\n\
                     /clear - reset conversation history\n\
+                    /model [name] - get or set the LLM model\n\
                     /pair - generate invite code (owner only)"
                         .to_string(),
                 )
@@ -1212,7 +1223,8 @@ fn handle_command(
             }
             let mut help = "GarraIA Commands:\n\
                 /help - show this help\n\
-                /clear - reset conversation history"
+                /clear - reset conversation history\n\
+                /model [name] - get or set the LLM model"
                 .to_string();
             if is_owner {
                 help.push_str(
@@ -1230,6 +1242,30 @@ fn handle_command(
                 session.history.clear();
             }
             Ok("Conversation history cleared.".to_string())
+        }
+        "model" => {
+            if !is_allowed {
+                return Err("__blocked__".to_string());
+            }
+            let session_id = format!("telegram-{chat_id}");
+            let parts: Vec<&str> = full_text.split_whitespace().collect();
+            if parts.len() == 1 {
+                let current = state.channel_models.get(&session_id);
+                if let Some(m) = current {
+                    Ok(format!("Current model: {}", m.value()))
+                } else {
+                    Ok("No model override set. Using default.".to_string())
+                }
+            } else {
+                let new_model = parts[1].to_string();
+                if new_model.eq_ignore_ascii_case("clear") || new_model.eq_ignore_ascii_case("default") {
+                    state.channel_models.remove(&session_id);
+                    Ok("Model override cleared. Using default.".to_string())
+                } else {
+                    state.channel_models.insert(session_id, new_model.clone());
+                    Ok(format!("Model set to: {}", new_model))
+                }
+            }
         }
         "pair" => {
             if !is_owner {
