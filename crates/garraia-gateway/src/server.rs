@@ -123,11 +123,35 @@ impl GatewayServer {
             state.mcp_manager_arc = Some(Arc::clone(arc));
         }
 
+        // Initialize health cache before wrapping state in Arc
+        let health_cache = crate::health::new_health_cache();
+        state.health_cache = Some(health_cache.clone());
+
         let state = Arc::new(state);
 
         // Spawn background tasks
         state.spawn_session_cleanup();
         state.spawn_config_applier();
+
+        // ── Boot-time health checks ──────────────────────────────────────
+        {
+            let boot_results = crate::health::run_all_checks(&state).await;
+            crate::health::format_boot_table(&boot_results);
+
+            // Seed cache with boot results
+            {
+                let mut w = health_cache.write().await;
+                *w = boot_results;
+            }
+
+            // Start periodic background health checks (every 60s)
+            crate::health::spawn_periodic_checks(Arc::clone(&state), health_cache);
+        }
+
+        // Spawn MCP health monitor for auto-reconnect
+        if let Some(ref arc) = mcp_manager_arc {
+            arc.spawn_health_monitor();
+        }
 
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();

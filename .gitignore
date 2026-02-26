@@ -29,3 +29,11 @@ testsprite_tests/
 
 # GitHub Templates
 .github/ISSUE_TEMPLATE/
+
+# Logs
+*.log
+logs/
+
+# Local data (runtime-generated)
+*.db
+*.db-journal

@@ -6,6 +6,7 @@ pub mod billing;
 pub mod bootstrap;
 pub mod cluster;
 pub mod externalization;
+pub mod health;
 pub mod logs_handler;
 pub mod memory_handler;
 pub mod observability;

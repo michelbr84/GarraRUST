@@ -128,6 +128,14 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
 
+### Voice Mode (TTS/STT)
+
+- **Chatterbox TTS** - síntese de voz multilíngue local (pt, en, es, fr, de, it, hi) via GPU
+- **Endpoint REST** - `POST /api/tts` para síntese sob demanda
+- **Ativação** - `garraia start --with-voice` habilita o modo de voz
+- **Health check automático** - verificação HTTP do Chatterbox no boot
+- **Integração Telegram** - resposta por áudio automática no pipeline voice
+
 ### MCP (Protocolo de Contexto de Modelo)
 
 - Conecte qualquer servidor compatível com MCP (sistema de arquivos, GitHub, bancos de dados, busca na web)
@@ -148,6 +156,14 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
 - CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
 
+### Health Checks Centralizados
+
+- **Boot** - tabela visual no terminal com ✅/❌ e latência por provider
+- **Endpoint** - `GET /api/health` retorna JSON com status de todos os providers
+- **Background** - verificação periódica (60s) com detecção de mudança de status
+- **Providers** - Ollama, OpenRouter, OpenAI, Anthropic, Chatterbox TTS
+- **Cache** - resultados cacheados para respostas instantâneas no endpoint
+
 ### Infraestrutura
 
 - **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
@@ -155,6 +171,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
 - **Reinicialização** - `garraia restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
+- **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
 - **Ferramenta de migração** - `garraia migrate openclaw` importa skills, canais e credenciais
 - **Configuração interativa** - `garraia init` wizard para configuração de provedor e chave de API
 
@@ -322,9 +339,26 @@ mcp:
   filesystem:
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# Voice mode (TTS)
+voice:
+  enabled: true
+  tts_endpoint: "http://127.0.0.1:7860"
+  language: "pt"
+
+# Timeouts configuráveis por tipo (valores em segundos)
+timeouts:
+  llm:
+    default_secs: 30
+  tts:
+    default_secs: 120
+  mcp:
+    default_secs: 60
+  health:
+    default_secs: 5
 ```
 
-Consulte a [referência completa de configuração](docs/) para todas as opções, incluindo Discord, Slack, WhatsApp, iMessage, embeddings e configuração de servidor MCP.
+Consulte a [referência completa de configuração](docs/) para todas as opções, incluindo Discord, Slack, WhatsApp, iMessage, voice mode, embeddings e configuração de servidor MCP.
 
 ## Arquitetura
 
@@ -335,6 +369,7 @@ crates/
   garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
   garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
   garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
+  garraia-voice/      # Chatterbox TTS client, síntese multilíngue
   garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec)
   garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
   garraia-media/     # Processamento de mídia (esquelético)
@@ -361,6 +396,9 @@ crates/
 | Embeddings locais (Ollama) | ✅ Funcionando |
 | Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
 | Agendamento (cron, intervalo, único) | ✅ Funcionando |
+| Voice Mode (Chatterbox TTS, multilíngue) | ✅ Funcionando |
+| Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
+| Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
 | Sistema de plugins (Sandbox WASM) | 🔶 Esquelético |
 | Processamento de mídia | 🔶 Esquelético |
