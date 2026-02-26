@@ -34,6 +34,8 @@ pub struct AppState {
     config_rx: Option<watch::Receiver<AppConfig>>,
     /// Broadcast channel for tailing logs to WebSocket clients.
     pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Chatterbox TTS client (available when `--with-voice` is used).
+    pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
 }
 
 /// Per-connection session tracking.
@@ -65,6 +67,7 @@ impl AppState {
             session_store: None,
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
+            voice_client: None,
         }
     }
 

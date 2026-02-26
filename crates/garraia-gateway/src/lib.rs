@@ -12,6 +12,7 @@ pub mod observability;
 pub mod router;
 pub mod server;
 pub mod state;
+pub mod voice_handler;
 pub mod ws;
 
 pub use server::GatewayServer;

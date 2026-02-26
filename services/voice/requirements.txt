@@ -1,0 +1,28 @@
+# ===== GarraIA Voice Services - Dependencies =====
+
+# GPU / PyTorch (CUDA 12.x)
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# Hugging Face
+huggingface-hub>=0.21.0
+safetensors>=0.4.0
+transformers>=4.40.0
+
+# STT - Whisper
+faster-whisper>=1.0.1
+openai-whisper>=20231117
+
+# Audio processing
+soundfile>=0.12.1
+numpy>=1.26.0
+librosa>=0.10.1
+
+# HTTP server
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# GPU monitoring
+pynvml>=11.5.0
+psutil>=5.9.0

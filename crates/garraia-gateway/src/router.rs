@@ -72,6 +72,7 @@ pub fn build_router(
             get(crate::memory_handler::search_memory),
         )
         .route("/api/logs", get(crate::logs_handler::get_logs))
+        .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
         // A2A protocol endpoints
