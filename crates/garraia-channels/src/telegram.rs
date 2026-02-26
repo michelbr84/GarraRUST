@@ -32,11 +32,27 @@ pub type OnMessageFn = Arc<
         + Sync,
 >;
 
+/// Callback invoked when the bot receives a voice message.
+///
+/// Arguments: `(bot, message)`.
+/// The callback is responsible for downloading the voice file, processing it
+/// through the voice pipeline (STT → LLM → TTS), and sending the response
+/// back to the chat. This keeps the heavy voice logic out of the channel crate.
+pub type OnVoiceFn = Arc<
+    dyn Fn(
+            Bot,
+            teloxide::types::Message,
+        ) -> Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct TelegramChannel {
     bot_token: String,
     display: String,
     status: ChannelStatus,
     on_message: OnMessageFn,
+    on_voice: Option<OnVoiceFn>,
     bot: Option<Bot>,
     shutdown_tx: Option<watch::Sender<bool>>,
 }
@@ -48,9 +64,19 @@ impl TelegramChannel {
             display: "Telegram".to_string(),
             status: ChannelStatus::Disconnected,
             on_message,
+            on_voice: None,
             bot: None,
             shutdown_tx: None,
         }
+    }
+
+    /// Set an optional voice message handler.
+    ///
+    /// When set, incoming voice messages will be routed to this callback
+    /// instead of being silently dropped.
+    pub fn with_voice_handler(mut self, handler: OnVoiceFn) -> Self {
+        self.on_voice = Some(handler);
+        self
     }
 }
 
@@ -111,20 +137,64 @@ impl Channel for TelegramChannel {
         self.shutdown_tx = Some(shutdown_tx);
 
         let on_message = Arc::clone(&self.on_message);
+        let on_voice = self.on_voice.clone();
 
         tokio::spawn(async move {
             let handler = Update::filter_message()
-                .filter_map(|msg: teloxide::types::Message| {
-                    let text = msg.text()?.to_string();
-                    Some((msg, text))
-                })
                 .endpoint(
-                    move |bot: Bot, (msg, text): (teloxide::types::Message, String)| {
+                    move |bot: Bot, msg: teloxide::types::Message| {
                         let on_message = Arc::clone(&on_message);
+                        let on_voice = on_voice.clone();
                         async move {
                             let (chat_id_raw, user_id, user_name) = match extract_message_info(&msg) {
                                 Some(info) => info,
                                 None => return respond(()),
+                            };
+
+                            // ── Voice message handling ──────────────────────────
+                            if msg.voice().is_some() {
+                                if let Some(ref voice_handler) = on_voice {
+                                    info!(
+                                        "telegram voice message from {} [uid={}] (chat {})",
+                                        user_name, user_id, chat_id_raw
+                                    );
+                                    if let Err(e) = voice_handler(bot.clone(), msg).await {
+                                        if e != "__blocked__" {
+                                            warn!("voice handler error for chat {}: {e}", chat_id_raw);
+                                            let _ = bot
+                                                .send_message(
+                                                    ChatId(chat_id_raw),
+                                                    format!("Sorry, an error occurred processing voice: {e}"),
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                } else {
+                                    info!(
+                                        "telegram: voice message from {} ignored (voice handler not configured)",
+                                        user_name
+                                    );
+                                    let _ = bot
+                                        .send_message(
+                                            ChatId(chat_id_raw),
+                                            "Voice messages are not enabled. Start the server with --with-voice.",
+                                        )
+                                        .await;
+                                }
+                                return respond(());
+                            }
+
+                            // ── Text message handling ──────────────────────────
+                            let text = match msg.text() {
+                                Some(t) => t.to_string(),
+                                None => {
+                                    // Other message types (photos, stickers, etc.) — ignore
+                                    tracing::trace!(
+                                        "telegram: non-text, non-voice message from {} ignored",
+                                        user_name
+                                    );
+                                    return respond(());
+                                }
                             };
 
                             // ChatId wrapper for teloxide calls

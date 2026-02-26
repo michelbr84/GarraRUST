@@ -30,9 +30,20 @@ impl ChatterboxClient {
     }
 
     /// Check if the Chatterbox server is reachable.
+    ///
+    /// Tries root endpoint first (works on custom Chatterbox builds like multilingual),
+    /// then falls back to `/gradio_api/config` (standard Gradio app).
     pub async fn health_check(&self) -> Result<bool, VoiceError> {
-        let url = format!("{}/gradio_api/config", self.endpoint);
-        match self.client.get(&url).send().await {
+        // Try root endpoint first (custom Chatterbox multilingual returns 200 here)
+        let root_url = format!("{}/", self.endpoint);
+        match self.client.get(&root_url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(true),
+            _ => {}
+        }
+
+        // Fallback: standard Gradio config endpoint
+        let config_url = format!("{}/gradio_api/config", self.endpoint);
+        match self.client.get(&config_url).send().await {
             Ok(resp) => Ok(resp.status().is_success()),
             Err(e) => {
                 tracing::warn!("Chatterbox health check failed: {e}");
