@@ -36,6 +36,7 @@ governor = "0.8"
 tower_governor = "0.8"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 [features]
 default = []

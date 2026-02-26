@@ -50,6 +50,7 @@ pub fn build_router(
     Router::new()
         .route("/", get(web_chat))
         .route("/health", get(health))
+        .route("/api/health", get(crate::health::health_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/api/status", get(status))
         .route("/api/auth-check", get(auth_check))

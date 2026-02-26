@@ -36,6 +36,8 @@ pub struct AppState {
     pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// Chatterbox TTS client (available when `--with-voice` is used).
     pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
+    /// Cached health check results (updated by background task).
+    pub health_cache: Option<crate::health::HealthCache>,
 }
 
 /// Per-connection session tracking.
@@ -68,6 +70,7 @@ impl AppState {
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
             voice_client: None,
+            health_cache: None,
         }
     }
 

@@ -39,6 +39,10 @@ pub struct AppConfig {
     /// Voice (TTS/STT) configuration.
     #[serde(default)]
     pub voice: VoiceConfig,
+
+    /// Per-type timeout configuration.
+    #[serde(default)]
+    pub timeouts: TimeoutConfig,
 }
 
 impl Default for AppConfig {
@@ -55,6 +59,7 @@ impl Default for AppConfig {
             mcp: HashMap::new(),
             agents: HashMap::new(),
             voice: VoiceConfig::default(),
+            timeouts: TimeoutConfig::default(),
         }
     }
 }
@@ -202,6 +207,78 @@ pub struct NamedAgentConfig {
 
 fn default_memory_enabled() -> bool {
     true
+}
+
+// ─── Timeout Config ────────────────────────────────────────────────────────
+
+fn default_llm_timeout() -> u64 {
+    30
+}
+fn default_tts_timeout() -> u64 {
+    120
+}
+fn default_mcp_timeout() -> u64 {
+    60
+}
+fn default_health_timeout() -> u64 {
+    5
+}
+
+/// Per-type timeout configuration.
+///
+/// ```yaml
+/// timeouts:
+///   llm:
+///     default_secs: 30
+///   tts:
+///     default_secs: 120
+///   mcp:
+///     default_secs: 60
+///   health:
+///     default_secs: 5
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeoutConfig {
+    #[serde(default)]
+    pub llm: TypeTimeout,
+    #[serde(default)]
+    pub tts: TypeTimeout,
+    #[serde(default)]
+    pub mcp: TypeTimeout,
+    #[serde(default)]
+    pub health: TypeTimeout,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            llm: TypeTimeout {
+                default_secs: default_llm_timeout(),
+            },
+            tts: TypeTimeout {
+                default_secs: default_tts_timeout(),
+            },
+            mcp: TypeTimeout {
+                default_secs: default_mcp_timeout(),
+            },
+            health: TypeTimeout {
+                default_secs: default_health_timeout(),
+            },
+        }
+    }
+}
+
+/// Timeout for a specific type of operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeTimeout {
+    #[serde(default = "default_llm_timeout")]
+    pub default_secs: u64,
+}
+
+impl Default for TypeTimeout {
+    fn default() -> Self {
+        Self { default_secs: 30 }
+    }
 }
 
 // ─── Voice Config ──────────────────────────────────────────────────────────
