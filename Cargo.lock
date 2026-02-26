@@ -1491,6 +1491,7 @@ dependencies = [
  "garraia-db",
  "garraia-security",
  "garraia-skills",
+ "garraia-voice",
  "governor 0.8.1",
  "reqwest 0.12.28",
  "ring",
@@ -1590,6 +1591,18 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "garraia-voice"
+version = "0.1.11"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

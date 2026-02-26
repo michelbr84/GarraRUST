@@ -1,0 +1,15 @@
+[package]
+name = "garraia-voice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Voice system for GarraIA — Whisper STT + Hibiki-Zero TTS"
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"], default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

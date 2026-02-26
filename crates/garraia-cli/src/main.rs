@@ -38,6 +38,10 @@ enum Commands {
         /// Run as a background daemon
         #[arg(long, short = 'd')]
         daemon: bool,
+
+        /// Enable voice mode (Chatterbox TTS)
+        #[arg(long)]
+        with_voice: bool,
     },
 
     /// Stop the running daemon
@@ -56,6 +60,10 @@ enum Commands {
         /// Run as a background daemon
         #[arg(long, short = 'd')]
         daemon: bool,
+
+        /// Enable voice mode (Chatterbox TTS)
+        #[arg(long)]
+        with_voice: bool,
     },
 
     /// Show current status
@@ -403,10 +411,13 @@ async fn async_main(
     init_tracing: impl Fn(&str),
 ) -> Result<()> {
     match cli.command {
-        Commands::Start { host, port, .. } => {
+        Commands::Start { host, port, with_voice, .. } => {
             let mut config = config;
             config.gateway.host = host;
             config.gateway.port = port;
+            if with_voice {
+                config.voice.enabled = true;
+            }
             init_tracing(&cli.log_level);
             banner::print_banner(
                 &config.gateway.host,
@@ -422,12 +433,15 @@ async fn async_main(
             init_tracing(&cli.log_level);
             stop_daemon(config.gateway.port)?;
         }
-        Commands::Restart { host, port, .. } => {
+        Commands::Restart { host, port, with_voice, .. } => {
             init_tracing(&cli.log_level);
             try_stop_daemon(port);
             let mut config = config;
             config.gateway.host = host;
             config.gateway.port = port;
+            if with_voice {
+                config.voice.enabled = true;
+            }
             banner::print_banner(
                 &config.gateway.host,
                 config.gateway.port,

@@ -44,6 +44,35 @@ impl GatewayServer {
         let mut state = AppState::new(self.config, agents, channels);
         state.mcp_manager = Some(mcp_manager);
 
+        // Initialize Chatterbox TTS client if voice is enabled
+        if state.config.voice.enabled {
+            let voice_client = garraia_voice::ChatterboxClient::new(
+                &state.config.voice.tts_endpoint,
+                &state.config.voice.language,
+            );
+            match voice_client.health_check().await {
+                Ok(true) => {
+                    info!(
+                        "🔊 Voice mode enabled — Chatterbox TTS at {}",
+                        state.config.voice.tts_endpoint
+                    );
+                    state.voice_client = Some(Arc::new(voice_client));
+                }
+                Ok(false) => {
+                    warn!(
+                        "⚠️  Voice mode requested but Chatterbox is not reachable at {}",
+                        state.config.voice.tts_endpoint
+                    );
+                    // Still store the client so it can be used once server comes up
+                    state.voice_client = Some(Arc::new(voice_client));
+                }
+                Err(e) => {
+                    warn!("⚠️  Voice mode health check failed: {e}");
+                    state.voice_client = Some(Arc::new(voice_client));
+                }
+            }
+        }
+
         // Initialize persistent session storage used by channel memory bus hydration.
         let data_dir = state
             .config

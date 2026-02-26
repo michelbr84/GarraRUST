@@ -13,6 +13,7 @@ garraia-agents = { workspace = true, features = ["mcp"] }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
+garraia-voice = { workspace = true }
 
 tokio = { workspace = true }
 dotenvy = { workspace = true }

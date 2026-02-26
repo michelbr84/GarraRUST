@@ -35,6 +35,10 @@ pub struct AppConfig {
     /// If empty, the single `agent:` block is used as "default".
     #[serde(default)]
     pub agents: HashMap<String, NamedAgentConfig>,
+
+    /// Voice (TTS/STT) configuration.
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 impl Default for AppConfig {
@@ -50,6 +54,7 @@ impl Default for AppConfig {
             log_level: Some("info".to_string()),
             mcp: HashMap::new(),
             agents: HashMap::new(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -197,6 +202,42 @@ pub struct NamedAgentConfig {
 
 fn default_memory_enabled() -> bool {
     true
+}
+
+// ─── Voice Config ──────────────────────────────────────────────────────────
+
+fn default_tts_endpoint() -> String {
+    "http://127.0.0.1:7860".to_string()
+}
+
+fn default_voice_language() -> String {
+    "pt".to_string()
+}
+
+/// Voice / TTS configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    /// Whether voice mode is enabled (set at runtime via `--with-voice`).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Base URL of the Chatterbox Multilingual TTS server.
+    #[serde(default = "default_tts_endpoint")]
+    pub tts_endpoint: String,
+
+    /// Default language for TTS synthesis.
+    #[serde(default = "default_voice_language")]
+    pub language: String,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tts_endpoint: default_tts_endpoint(),
+            language: default_voice_language(),
+        }
+    }
 }
 
 fn default_transport() -> String {
