@@ -1,0 +1,88 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "GarraIA Facts Schema",
+    "description": "Schema oficial do facts.json — informações pessoais do usuário injetadas no system prompt",
+    "type": "object",
+    "properties": {
+        "nome": {
+            "type": "string",
+            "description": "Nome completo do usuário"
+        },
+        "apelido": {
+            "type": "string",
+            "description": "Como o usuário prefere ser chamado"
+        },
+        "sobre": {
+            "type": "string",
+            "description": "Breve descrição sobre o usuário"
+        },
+        "empresa": {
+            "type": "string",
+            "description": "Nome da empresa"
+        },
+        "cargo": {
+            "type": "string",
+            "description": "Cargo ou função"
+        },
+        "localizacao": {
+            "type": "object",
+            "properties": {
+                "cidade": { "type": "string" },
+                "estado": { "type": "string" },
+                "pais": { "type": "string" }
+            }
+        },
+        "idioma_principal": {
+            "type": "string",
+            "description": "Idioma principal (ex: pt-BR)"
+        },
+        "idiomas_secundarios": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Idiomas adicionais"
+        },
+        "preferencias": {
+            "type": "object",
+            "properties": {
+                "idioma": { "type": "string", "description": "Idioma de resposta preferido" },
+                "tom": { "type": "string", "enum": ["formal", "informal", "tecnico", "casual"] },
+                "nivel_detalhe": { "type": "string", "enum": ["resumido", "normal", "detalhado"] },
+                "formato_resposta": { "type": "string", "enum": ["markdown", "texto", "codigo"] }
+            }
+        },
+        "ambiente": {
+            "type": "object",
+            "properties": {
+                "sistema_operacional": { "type": "string" },
+                "usa_ollama": { "type": "boolean" },
+                "usa_openrouter": { "type": "boolean" },
+                "usa_modelos_locais": { "type": "boolean" }
+            }
+        },
+        "interesses": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Áreas de interesse do usuário"
+        },
+        "projetos": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Projetos atuais do usuário"
+        },
+        "restricoes": {
+            "type": "object",
+            "properties": {
+                "nao_alucinar": { "type": "boolean", "default": true },
+                "priorizar_precisao": { "type": "boolean", "default": true },
+                "priorizar_respostas_tecnicas": { "type": "boolean", "default": false }
+            }
+        },
+        "fatos_importantes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Lista de fatos que a IA deve sempre lembrar"
+        }
+    },
+    "required": ["nome"],
+    "additionalProperties": true
+}

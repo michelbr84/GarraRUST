@@ -106,6 +106,37 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 }
             }
             "ollama" => {
+                let base_url = llm_config.base_url.clone()
+                    .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+                // Health check: quick TCP connectivity test to Ollama
+                let addr = base_url
+                    .trim_start_matches("http://")
+                    .trim_start_matches("https://")
+                    .trim_end_matches('/');
+                let sock_addr = if addr.contains(':') {
+                    addr.to_string()
+                } else {
+                    format!("{}:11434", addr)
+                };
+                match std::net::TcpStream::connect_timeout(
+                    &sock_addr.parse().unwrap_or_else(|_| {
+                        std::net::SocketAddr::from(([127, 0, 0, 1], 11434))
+                    }),
+                    std::time::Duration::from_secs(2),
+                ) {
+                    Ok(_) => {
+                        info!("✅ Ollama reachable at {} — registering provider: {name}", base_url);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️  Ollama not reachable at {} — provider registered but will fail until Ollama starts. \
+                             Error: {}. Run: ollama serve",
+                            base_url, e
+                        );
+                    }
+                }
+
                 let provider =
                     OllamaProvider::new(llm_config.model.clone(), llm_config.base_url.clone());
                 runtime.register_provider(Arc::new(provider));
@@ -413,6 +444,33 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         }
     }
 
+    // --- Provider Status Summary ---
+    {
+        let providers = runtime.provider_ids();
+        let configured_count = config.llm.len();
+        let active_count = providers.len();
+        let skipped_count = configured_count.saturating_sub(active_count);
+
+        info!("╔══════════════════════════════════════╗");
+        info!("║       Provider Status Summary        ║");
+        info!("╠══════════════════════════════════════╣");
+        for (name, llm_config) in &config.llm {
+            let provider_type = &llm_config.provider;
+            let is_active = providers.iter().any(|p| p == name || p == provider_type);
+            if is_active {
+                info!("║  ✅ {:<15} ({:<12}) ║", name, provider_type);
+            } else {
+                info!("║  ⚠️  {:<15} DISABLED       ║", name);
+            }
+        }
+        info!("╠══════════════════════════════════════╣");
+        info!("║  Total: {} active / {} configured     ║", active_count, configured_count);
+        if skipped_count > 0 {
+            info!("║  ⚠️  {} provider(s) skipped          ║", skipped_count);
+        }
+        info!("╚══════════════════════════════════════╝");
+    }
+
     // --- Tools ---
     runtime.register_tool(Box::new(BashTool::new(None)));
     runtime.register_tool(Box::new(FileReadTool::new(None)));
@@ -554,185 +612,203 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     if facts_path.exists() {
         match std::fs::read_to_string(&facts_path) {
             Ok(content) => {
-                if let Ok(facts) = serde_json::from_str::<serde_json::Value>(&content) {
-                    // Build facts context for system prompt
-                    let mut facts_context = String::from("\n\n# Fatos do Usuário\n");
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(facts) => {
+                        // Validate: must be a JSON object with at least one key
+                        if !facts.is_object() {
+                            warn!(
+                                path = %facts_path.display(),
+                                "facts.json is not a JSON object, skipping — expected {{ \"nome\": ..., \"sobre\": ... }}"
+                            );
+                        } else if facts.as_object().map_or(true, |o| o.is_empty()) {
+                            warn!(
+                                path = %facts_path.display(),
+                                "facts.json is an empty object {{}}, skipping injection"
+                            );
+                        } else {
+                            // Build facts context for system prompt
+                            let mut facts_context = String::from("\n\n# Fatos do Usuário\n");
 
-                    // Nome
-                    if let Some(nome) = facts.get("nome").and_then(|v| v.as_str()) {
-                        if !nome.is_empty() {
-                            facts_context.push_str(&format!("Nome: {}\n", nome));
-                        }
-                    }
-                    // Apelido
-                    if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str()) {
-                        if !apelido.is_empty() {
-                            facts_context.push_str(&format!("Apelido: {}\n", apelido));
-                        }
-                    }
-                    // Sobre
-                    if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str()) {
-                        if !sobre.is_empty() {
-                            facts_context.push_str(&format!("Sobre: {}\n", sobre));
-                        }
-                    }
-                    // Empresa
-                    if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str()) {
-                        if !empresa.is_empty() {
-                            facts_context.push_str(&format!("Empresa: {}\n", empresa));
-                        }
-                    }
-                    // Cargo
-                    if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str()) {
-                        if !cargo.is_empty() {
-                            facts_context.push_str(&format!("Cargo: {}\n", cargo));
-                        }
-                    }
-                    // Localização
-                    if let Some(local) = facts.get("localizacao").and_then(|v| v.as_object()) {
-                        let mut parts = Vec::new();
-                        if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
-                            if !v.is_empty() {
-                                parts.push(v.to_string());
-                            }
-                        }
-                        if let Some(v) = local.get("estado").and_then(|v| v.as_str()) {
-                            if !v.is_empty() {
-                                parts.push(v.to_string());
-                            }
-                        }
-                        if let Some(v) = local.get("pais").and_then(|v| v.as_str()) {
-                            if !v.is_empty() {
-                                parts.push(v.to_string());
-                            }
-                        }
-                        if !parts.is_empty() {
-                            facts_context.push_str(&format!("Localização: {}\n", parts.join(", ")));
-                        }
-                    }
-                    // Idiomas
-                    if let Some(idioma) = facts.get("idioma_principal").and_then(|v| v.as_str()) {
-                        facts_context.push_str(&format!("Idioma principal: {}\n", idioma));
-                    }
-                    if let Some(idiomas) =
-                        facts.get("idiomas_secundarios").and_then(|v| v.as_array())
-                    {
-                        let langs: Vec<&str> = idiomas.iter().filter_map(|v| v.as_str()).collect();
-                        if !langs.is_empty() {
-                            facts_context
-                                .push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
-                        }
-                    }
-                    // Preferências
-                    if let Some(prefs) = facts.get("preferencias").and_then(|v| v.as_object()) {
-                        facts_context.push_str("Preferências:\n");
-                        if let Some(v) = prefs.get("idioma").and_then(|v| v.as_str()) {
-                            facts_context.push_str(&format!("  - Idioma: {}\n", v));
-                        }
-                        if let Some(v) = prefs.get("tom").and_then(|v| v.as_str()) {
-                            facts_context.push_str(&format!("  - Tom: {}\n", v));
-                        }
-                        if let Some(v) = prefs.get("nivel_detalhe").and_then(|v| v.as_str()) {
-                            facts_context.push_str(&format!("  - Nivel de detalhe: {}\n", v));
-                        }
-                        if let Some(v) = prefs.get("formato_resposta").and_then(|v| v.as_str()) {
-                            facts_context.push_str(&format!("  - Formato: {}\n", v));
-                        }
-                    }
-                    // Ambiente
-                    if let Some(amb) = facts.get("ambiente").and_then(|v| v.as_object()) {
-                        facts_context.push_str("Ambiente:\n");
-                        if let Some(v) = amb.get("sistema_operacional").and_then(|v| v.as_str()) {
-                            facts_context.push_str(&format!("  - SO: {}\n", v));
-                        }
-                        if let Some(v) = amb.get("usa_ollama").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!(
-                                "  - Usa Ollama: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                        if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!(
-                                "  - Usa OpenRouter: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                        if let Some(v) = amb.get("usa_modelos_locais").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!(
-                                "  - Modelos locais: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                    }
-                    // Interesses
-                    if let Some(interesses) = facts.get("interesses").and_then(|v| v.as_array()) {
-                        let interesses: Vec<&str> =
-                            interesses.iter().filter_map(|v| v.as_str()).collect();
-                        if !interesses.is_empty() {
-                            facts_context
-                                .push_str(&format!("Interesses: {}\n", interesses.join(", ")));
-                        }
-                    }
-                    // Projetos
-                    if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array()) {
-                        let projetos: Vec<&str> =
-                            projetos.iter().filter_map(|v| v.as_str()).collect();
-                        if !projetos.is_empty() {
-                            facts_context.push_str(&format!("Projetos: {}\n", projetos.join(", ")));
-                        }
-                    }
-                    // Restrições
-                    if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object()) {
-                        facts_context.push_str("Restricoes:\n");
-                        if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!(
-                                "  - Nao alucinar: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                        if let Some(v) = rest.get("priorizar_precisao").and_then(|v| v.as_bool()) {
-                            facts_context.push_str(&format!(
-                                "  - Priorizar precisao: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                        if let Some(v) = rest
-                            .get("priorizar_respostas_tecnicas")
-                            .and_then(|v| v.as_bool())
-                        {
-                            facts_context.push_str(&format!(
-                                "  - Respostas tecnicas: {}\n",
-                                if v { "Sim" } else { "Nao" }
-                            ));
-                        }
-                    }
-                    // Fatos importantes
-                    if let Some(fatos) = facts.get("fatos_importantes").and_then(|v| v.as_array()) {
-                        if !fatos.is_empty() {
-                            facts_context.push_str("Fatos importantes:\n");
-                            for fato in fatos {
-                                if let Some(f) = fato.as_str() {
-                                    facts_context.push_str(&format!("- {}\n", f));
+                            // Nome
+                            if let Some(nome) = facts.get("nome").and_then(|v| v.as_str()) {
+                                if !nome.is_empty() {
+                                    facts_context.push_str(&format!("Nome: {}\n", nome));
                                 }
                             }
+                            // Apelido
+                            if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str()) {
+                                if !apelido.is_empty() {
+                                    facts_context.push_str(&format!("Apelido: {}\n", apelido));
+                                }
+                            }
+                            // Sobre
+                            if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str()) {
+                                if !sobre.is_empty() {
+                                    facts_context.push_str(&format!("Sobre: {}\n", sobre));
+                                }
+                            }
+                            // Empresa
+                            if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str()) {
+                                if !empresa.is_empty() {
+                                    facts_context.push_str(&format!("Empresa: {}\n", empresa));
+                                }
+                            }
+                            // Cargo
+                            if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str()) {
+                                if !cargo.is_empty() {
+                                    facts_context.push_str(&format!("Cargo: {}\n", cargo));
+                                }
+                            }
+                            // Localização
+                            if let Some(local) = facts.get("localizacao").and_then(|v| v.as_object()) {
+                                let mut parts = Vec::new();
+                                if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
+                                    if !v.is_empty() {
+                                        parts.push(v.to_string());
+                                    }
+                                }
+                                if let Some(v) = local.get("estado").and_then(|v| v.as_str()) {
+                                    if !v.is_empty() {
+                                        parts.push(v.to_string());
+                                    }
+                                }
+                                if let Some(v) = local.get("pais").and_then(|v| v.as_str()) {
+                                    if !v.is_empty() {
+                                        parts.push(v.to_string());
+                                    }
+                                }
+                                if !parts.is_empty() {
+                                    facts_context.push_str(&format!("Localização: {}\n", parts.join(", ")));
+                                }
+                            }
+                            // Idiomas
+                            if let Some(idioma) = facts.get("idioma_principal").and_then(|v| v.as_str()) {
+                                facts_context.push_str(&format!("Idioma principal: {}\n", idioma));
+                            }
+                            if let Some(idiomas) =
+                                facts.get("idiomas_secundarios").and_then(|v| v.as_array())
+                            {
+                                let langs: Vec<&str> = idiomas.iter().filter_map(|v| v.as_str()).collect();
+                                if !langs.is_empty() {
+                                    facts_context
+                                        .push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
+                                }
+                            }
+                            // Preferências
+                            if let Some(prefs) = facts.get("preferencias").and_then(|v| v.as_object()) {
+                                facts_context.push_str("Preferências:\n");
+                                if let Some(v) = prefs.get("idioma").and_then(|v| v.as_str()) {
+                                    facts_context.push_str(&format!("  - Idioma: {}\n", v));
+                                }
+                                if let Some(v) = prefs.get("tom").and_then(|v| v.as_str()) {
+                                    facts_context.push_str(&format!("  - Tom: {}\n", v));
+                                }
+                                if let Some(v) = prefs.get("nivel_detalhe").and_then(|v| v.as_str()) {
+                                    facts_context.push_str(&format!("  - Nivel de detalhe: {}\n", v));
+                                }
+                                if let Some(v) = prefs.get("formato_resposta").and_then(|v| v.as_str()) {
+                                    facts_context.push_str(&format!("  - Formato: {}\n", v));
+                                }
+                            }
+                            // Ambiente
+                            if let Some(amb) = facts.get("ambiente").and_then(|v| v.as_object()) {
+                                facts_context.push_str("Ambiente:\n");
+                                if let Some(v) = amb.get("sistema_operacional").and_then(|v| v.as_str()) {
+                                    facts_context.push_str(&format!("  - SO: {}\n", v));
+                                }
+                                if let Some(v) = amb.get("usa_ollama").and_then(|v| v.as_bool()) {
+                                    facts_context.push_str(&format!(
+                                        "  - Usa Ollama: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                                if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool()) {
+                                    facts_context.push_str(&format!(
+                                        "  - Usa OpenRouter: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                                if let Some(v) = amb.get("usa_modelos_locais").and_then(|v| v.as_bool()) {
+                                    facts_context.push_str(&format!(
+                                        "  - Modelos locais: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                            }
+                            // Interesses
+                            if let Some(interesses) = facts.get("interesses").and_then(|v| v.as_array()) {
+                                let interesses: Vec<&str> =
+                                    interesses.iter().filter_map(|v| v.as_str()).collect();
+                                if !interesses.is_empty() {
+                                    facts_context
+                                        .push_str(&format!("Interesses: {}\n", interesses.join(", ")));
+                                }
+                            }
+                            // Projetos
+                            if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array()) {
+                                let projetos: Vec<&str> =
+                                    projetos.iter().filter_map(|v| v.as_str()).collect();
+                                if !projetos.is_empty() {
+                                    facts_context.push_str(&format!("Projetos: {}\n", projetos.join(", ")));
+                                }
+                            }
+                            // Restrições
+                            if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object()) {
+                                facts_context.push_str("Restricoes:\n");
+                                if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool()) {
+                                    facts_context.push_str(&format!(
+                                        "  - Nao alucinar: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                                if let Some(v) = rest.get("priorizar_precisao").and_then(|v| v.as_bool()) {
+                                    facts_context.push_str(&format!(
+                                        "  - Priorizar precisao: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                                if let Some(v) = rest
+                                    .get("priorizar_respostas_tecnicas")
+                                    .and_then(|v| v.as_bool())
+                                {
+                                    facts_context.push_str(&format!(
+                                        "  - Respostas tecnicas: {}\n",
+                                        if v { "Sim" } else { "Nao" }
+                                    ));
+                                }
+                            }
+                            // Fatos importantes
+                            if let Some(fatos) = facts.get("fatos_importantes").and_then(|v| v.as_array()) {
+                                if !fatos.is_empty() {
+                                    facts_context.push_str("Fatos importantes:\n");
+                                    for fato in fatos {
+                                        if let Some(f) = fato.as_str() {
+                                            facts_context.push_str(&format!("- {}\n", f));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Inject facts into system prompt
+                            let new_prompt = match runtime.system_prompt() {
+                                Some(existing) => format!("{}\n{}", existing, facts_context),
+                                None => facts_context.clone(),
+                            };
+                            runtime.set_system_prompt(new_prompt);
+                            info!(
+                                "loaded user facts from {} ({} keys, context len: {})",
+                                facts_path.display(),
+                                facts.as_object().map_or(0, |o| o.len()),
+                                facts_context.len()
+                            );
                         }
                     }
-
-                    // Inject facts into system prompt (only if we have content)
-                    if facts_context.len() > 30 {
-                        // Has more than just the header
-                        let new_prompt = match runtime.system_prompt() {
-                            Some(existing) => format!("{}\n{}", existing, facts_context),
-                            None => facts_context.clone(),
-                        };
-                        runtime.set_system_prompt(new_prompt);
-                        info!(
-                            "loaded user facts from {} (context len: {})",
-                            facts_path.display(),
-                            facts_context.len()
+                    Err(e) => {
+                        warn!(
+                            path = %facts_path.display(),
+                            error = %e,
+                            "facts.json contains invalid JSON, skipping — boot continues normally"
                         );
-                    } else {
-                        warn!("facts.json has insufficient content, skipping injection");
                     }
                 }
             }

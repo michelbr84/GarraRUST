@@ -3,6 +3,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
+use tracing::{info, warn, error};
 
 use crate::state::SharedState;
 
@@ -19,11 +20,17 @@ pub struct TtsRequest {
 ///
 /// Returns WAV audio bytes with `Content-Type: audio/wav`.
 /// Only available when the server is started with `--with-voice`.
+#[tracing::instrument(skip(state, body), fields(text_len, lang))]
 pub async fn synthesize(
     State(state): State<SharedState>,
     Json(body): Json<TtsRequest>,
 ) -> impl IntoResponse {
+    let lang = body.language.as_deref().unwrap_or("default");
+    tracing::Span::current().record("text_len", body.text.len());
+    tracing::Span::current().record("lang", lang);
+
     let Some(voice_client) = &state.voice_client else {
+        warn!("TTS request rejected: voice mode not enabled");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -34,6 +41,7 @@ pub async fn synthesize(
     };
 
     if body.text.trim().is_empty() {
+        warn!("TTS request rejected: empty text");
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -43,18 +51,35 @@ pub async fn synthesize(
             .into_response();
     }
 
+    info!(
+        text_preview = %&body.text[..body.text.len().min(80)],
+        "🔊 TTS synthesis started"
+    );
+    let start = std::time::Instant::now();
+
     match voice_client
         .synthesize(&body.text, body.language.as_deref())
         .await
     {
         Ok(audio_bytes) => {
+            let elapsed = start.elapsed();
+            info!(
+                audio_bytes = audio_bytes.len(),
+                duration_ms = elapsed.as_millis() as u64,
+                "✅ TTS synthesis complete — WAV generated"
+            );
             let headers = [
                 (axum::http::header::CONTENT_TYPE, "audio/wav"),
             ];
             (headers, audio_bytes).into_response()
         }
         Err(e) => {
-            tracing::error!("TTS synthesis failed: {e}");
+            let elapsed = start.elapsed();
+            error!(
+                error = %e,
+                duration_ms = elapsed.as_millis() as u64,
+                "❌ TTS synthesis failed"
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

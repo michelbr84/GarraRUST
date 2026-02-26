@@ -21,6 +21,10 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
+
+    /// Enable debug mode (shortcut for --log-level debug with verbose output)
+    #[arg(long, global = true)]
+    debug: bool,
 }
 
 #[derive(Subcommand)]
@@ -359,6 +363,10 @@ fn main() -> Result<()> {
 
         let file_appender = rolling::never(&log_dir, "garraia.log");
 
+        // Support granular log levels via RUST_LOG env var (GAR-138)
+        // Examples:
+        //   RUST_LOG=garraia_gateway=debug,garraia_voice=trace
+        //   RUST_LOG=garraia_agents::tools=debug
         tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
@@ -410,6 +418,9 @@ async fn async_main(
     config_loader: garraia_config::ConfigLoader,
     init_tracing: impl Fn(&str),
 ) -> Result<()> {
+    // GAR-137: --debug flag overrides log level to "debug"
+    let effective_level = if cli.debug { "debug".to_string() } else { cli.log_level.clone() };
+
     match cli.command {
         Commands::Start { host, port, with_voice, .. } => {
             let mut config = config;
@@ -418,7 +429,7 @@ async fn async_main(
             if with_voice {
                 config.voice.enabled = true;
             }
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             banner::print_banner(
                 &config.gateway.host,
                 config.gateway.port,
@@ -430,11 +441,11 @@ async fn async_main(
             server.run().await?;
         }
         Commands::Stop => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             stop_daemon(config.gateway.port)?;
         }
         Commands::Restart { host, port, with_voice, .. } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             try_stop_daemon(port);
             let mut config = config;
             config.gateway.host = host;
@@ -453,7 +464,7 @@ async fn async_main(
             server.run().await?;
         }
         Commands::Status => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
 
             // Check PID file first
             if let Some(pid) = read_pid() {
@@ -493,11 +504,11 @@ async fn async_main(
             }
         }
         Commands::Init => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             wizard::run_wizard(config_loader.config_dir())?;
         }
         Commands::Channel { action } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             match action {
                 ChannelCommands::List => {
                     println!("Configured channels:");
@@ -523,7 +534,7 @@ async fn async_main(
         }
         #[cfg(feature = "plugins")]
         Commands::Plugin { action } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             match action {
                 PluginCommands::List => {
                     let loader = garraia_plugins::PluginLoader::new(
@@ -650,7 +661,7 @@ async fn async_main(
             }
         }
         Commands::Skill { action } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             let skills_dir = config_loader.config_dir().join("skills");
             match action {
                 SkillCommands::List => {
@@ -694,7 +705,7 @@ async fn async_main(
             }
         }
         Commands::Mcp { action } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             let loader = garraia_config::ConfigLoader::new()?;
             let mcp_configs = loader.merged_mcp_config(&config);
             match action {
@@ -840,7 +851,7 @@ async fn async_main(
             }
         }
         Commands::Migrate { action } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             match action {
                 MigrateCommands::Openclaw { dry_run, source } => {
                     let garraia_dir = config_loader.config_dir().to_path_buf();
@@ -852,14 +863,14 @@ async fn async_main(
             }
         }
         Commands::Update { yes } => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             match update::run_update(yes).await {
                 Ok(_) => {}
                 Err(e) => println!("update failed: {}", e),
             }
         }
         Commands::Rollback => {
-            init_tracing(&cli.log_level);
+            init_tracing(&effective_level);
             match update::run_rollback() {
                 Ok(()) => {}
                 Err(e) => println!("rollback failed: {}", e),

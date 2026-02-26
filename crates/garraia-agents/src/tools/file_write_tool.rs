@@ -91,6 +91,11 @@ impl Tool for FileWriteTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Agent("parâmetro 'content' ausente".into()))?;
 
+        // Validate UTF-8 (content from JSON is always valid UTF-8, but log it for clarity)
+        if content.is_empty() {
+            tracing::debug!(path = path_str, "file_write: writing empty file");
+        }
+
         if content.len() > MAX_BYTES_ESCRITA {
             return Ok(ToolOutput::error(format!(
                 "conteúdo muito grande: {} bytes (limite: {} bytes)",
@@ -99,6 +104,7 @@ impl Tool for FileWriteTool {
             )));
         }
 
+        // Normalize path cross-platform using PathBuf (handles / vs \ on Windows)
         let path = PathBuf::from(path_str);
         self.validate_path(&path)?;
 
@@ -109,9 +115,74 @@ impl Tool for FileWriteTool {
                 .map_err(|e| Error::Agent(format!("falha ao criar diretórios: {e}")))?;
         }
 
-        tokio::fs::write(&path, content)
+        // Check if file exists and is readonly before attempting write
+        if path.exists() {
+            match tokio::fs::metadata(&path).await {
+                Ok(metadata) => {
+                    if metadata.permissions().readonly() {
+                        tracing::warn!(
+                            path = path_str,
+                            "file_write: arquivo é somente-leitura (readonly)"
+                        );
+                        return Ok(ToolOutput::error(format!(
+                            "arquivo '{}' é somente-leitura (readonly). \
+                             Remova a proteção com: attrib -R \"{}\" (Windows) ou chmod u+w \"{}\" (Linux)",
+                            path_str, path_str, path_str
+                        )));
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        path = path_str,
+                        error = %e,
+                        "file_write: não foi possível ler metadados (arquivo pode não existir ainda)"
+                    );
+                }
+            }
+        }
+        // GAR-133: Safe Code Patch — create backup before overwriting existing files
+        if path.exists() {
+            let backup_path = path.with_extension(
+                format!("{}.bak",
+                    path.extension().map_or("".to_string(), |e| e.to_string_lossy().to_string())
+                )
+            );
+            match tokio::fs::copy(&path, &backup_path).await {
+                Ok(bytes) => {
+                    tracing::debug!(
+                        original = path_str,
+                        backup = %backup_path.display(),
+                        bytes,
+                        "file_write: backup created before overwrite"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = path_str,
+                        error = %e,
+                        "file_write: could not create backup (continuing anyway)"
+                    );
+                }
+            }
+        }
+
+        // Write content as UTF-8
+        tokio::fs::write(&path, content.as_bytes())
             .await
-            .map_err(|e| Error::Agent(format!("falha ao escrever arquivo: {e}")))?;
+            .map_err(|e| {
+                tracing::error!(
+                    path = path_str,
+                    error = %e,
+                    "file_write: falha ao escrever arquivo"
+                );
+                Error::Agent(format!("falha ao escrever arquivo '{}': {}", path_str, e))
+            })?;
+
+        tracing::info!(
+            path = path_str,
+            bytes = content.len(),
+            "file_write: arquivo escrito com sucesso"
+        );
 
         Ok(ToolOutput::success(format!(
             "escreveu {} bytes em {}",
