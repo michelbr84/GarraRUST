@@ -56,5 +56,8 @@ venv/
 dist/
 release/
 
+# Planning / drafts (internal)
+plans/
+
 # Cargo
 Cargo.lock.bak
