@@ -1,0 +1,1707 @@
+[
+  {
+    "id": "42a9a869-78eb-45b2-a0b9-81df84541e9e",
+    "identifier": "GAR-196",
+    "title": "Documentacao Tecnica",
+    "description": "Escrever docs completas em [garraia.org](<http://garraia.org>) com API reference, guides e troubleshooting",
+    "priority": 3,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:52.436Z",
+    "updatedAt": "2026-02-27T13:45:52.436Z"
+  },
+  {
+    "id": "7f0c09d4-b90c-40bf-82d3-e8d3c23b354f",
+    "identifier": "GAR-195",
+    "title": "Binario Windows Installer",
+    "description": "Criar instalador Windows (.exe) com NSIS e configuracao automatica",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:51.082Z",
+    "updatedAt": "2026-02-27T14:38:16.837Z"
+  },
+  {
+    "id": "abd5d689-35bd-419a-945a-0593d318d568",
+    "identifier": "GAR-194",
+    "title": "Docker Oficial",
+    "description": "Publicar imagem Docker oficial no [ghcr.io](<http://ghcr.io>) com Multi-arch (amd64/arm64)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:50.686Z",
+    "updatedAt": "2026-02-27T14:38:16.663Z"
+  },
+  {
+    "id": "e5f5c718-be0d-443f-837e-4f78c4b901c9",
+    "identifier": "GAR-193",
+    "title": "WebSocket Dashboard",
+    "description": "Adicionar WebSocket para updates em tempo real no admin console",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:50.527Z",
+    "updatedAt": "2026-02-27T14:38:16.501Z"
+  },
+  {
+    "id": "10004280-f86a-4fad-92de-73781aaef9ca",
+    "identifier": "GAR-192",
+    "title": "Admin Web Console Real",
+    "description": "Implementar dashboard admin funcional com estatisticas em tempo real",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:50.332Z",
+    "updatedAt": "2026-02-27T14:38:16.317Z"
+  },
+  {
+    "id": "9be481cc-093c-4440-bbc6-5e573e483b88",
+    "identifier": "GAR-191",
+    "title": "Slash Help Melhorado",
+    "description": "Criar /help dinamico com exemplos,docs e busca de comandos",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:50.142Z",
+    "updatedAt": "2026-02-27T14:39:56.876Z"
+  },
+  {
+    "id": "c09a9c19-c520-44f0-8550-dc940b85e4d5",
+    "identifier": "GAR-190",
+    "title": "Seguranca MCP",
+    "description": "Auditar e hardening de seguranca para execucao de tools MCP com sandboxing",
+    "priority": 2,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:49.986Z",
+    "updatedAt": "2026-02-27T13:45:49.986Z"
+  },
+  {
+    "id": "72707b91-d57c-405d-8802-b13b3fa9845d",
+    "identifier": "GAR-189",
+    "title": "Rate Limiting",
+    "description": "Adicionar rate limiting por tenant com token bucket e configuracao por provider",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:49.822Z",
+    "updatedAt": "2026-02-27T14:38:15.886Z"
+  },
+  {
+    "id": "2772efaf-c671-459f-9ca8-2d936b7ef02d",
+    "identifier": "GAR-188",
+    "title": "Provider Resilience",
+    "description": "Implementar circuit breaker, retry com backoff e failover automatico entre providers",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:49.646Z",
+    "updatedAt": "2026-02-27T14:38:15.704Z"
+  },
+  {
+    "id": "42d98f7a-87f1-49bc-bbf1-702f9e1ce89b",
+    "identifier": "GAR-187",
+    "title": "Agent Tool Escalation",
+    "description": "Implementar escalacao de tools entre agents com contexto compartilhado",
+    "priority": 2,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:49.488Z",
+    "updatedAt": "2026-02-27T13:45:49.488Z"
+  },
+  {
+    "id": "150e6123-a962-495e-bdb4-a33c8aa8ac8d",
+    "identifier": "GAR-186",
+    "title": "Agent State Persistente",
+    "description": "Criar persistencia de estado de agents em SQLite com session management",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:49.248Z",
+    "updatedAt": "2026-02-27T14:39:56.709Z"
+  },
+  {
+    "id": "a0dfc01a-ef8c-4276-9e24-fdcc22c91def",
+    "identifier": "GAR-185",
+    "title": "Agent Router Consolidado",
+    "description": "Implementar router que distribui requests para agents baseados em contexto e capacidade",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:48.94Z",
+    "updatedAt": "2026-02-27T14:39:56.547Z"
+  },
+  {
+    "id": "7c7d6914-3b2b-4fef-8339-699c6e3f5abe",
+    "identifier": "GAR-184",
+    "title": "Slash Commands Dinamicos via MCP",
+    "description": "Auto-registrar ferramentas MCP como slash commands no Telegram dinamicamente",
+    "priority": 2,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:48.769Z",
+    "updatedAt": "2026-02-27T13:45:48.769Z"
+  },
+  {
+    "id": "5dfa5fce-cee5-4a34-827a-59d9b13dd197",
+    "identifier": "GAR-183",
+    "title": "MCP Tool Health",
+    "description": "Adicionar health check para tools MCP, verificando disponibilidade e latencia",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:48.366Z",
+    "updatedAt": "2026-02-27T14:38:15.544Z"
+  },
+  {
+    "id": "1a542b95-3803-4650-8cbb-d098d26610d6",
+    "identifier": "GAR-182",
+    "title": "MCP Spawn Correto",
+    "description": "Implementar spawn correto de processos MCP com lifecycle management e cleanup",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:48.044Z",
+    "updatedAt": "2026-02-27T14:38:15.361Z"
+  },
+  {
+    "id": "1c816a72-5385-48e7-bee2-f1456321c411",
+    "identifier": "GAR-181",
+    "title": "Voice E2E Telegram",
+    "description": "Validar fluxo completo: Telegram audio -> STT -> LLM -> TTS -> Telegram audio",
+    "priority": 1,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:47.873Z",
+    "updatedAt": "2026-02-27T13:45:47.873Z"
+  },
+  {
+    "id": "7fdb8094-032a-4fc4-94d6-d5c893ba3eac",
+    "identifier": "GAR-180",
+    "title": "Voice Handler Real",
+    "description": "Criar VoiceHandler que integra STT -> LLM -> TTS com pipeline completo",
+    "priority": 1,
+    "state": {
+      "name": "Todo"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:47.527Z",
+    "updatedAt": "2026-02-27T13:45:47.527Z"
+  },
+  {
+    "id": "ef0a22ea-dfd6-479d-9929-88cc4782635a",
+    "identifier": "GAR-179",
+    "title": "Whisper STT Estavel",
+    "description": "Implementar reconhecimento de voz com Whisper via Ollama ou API, com fallback e tratamento de erros",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:47.349Z",
+    "updatedAt": "2026-02-27T14:55:44.237Z"
+  },
+  {
+    "id": "f5d417f7-5884-4178-9976-46a350a4c049",
+    "identifier": "GAR-178",
+    "title": "Observabilidade Estruturada",
+    "description": "Adicionar logging estruturado com tracing, metricas Prometheus e integracao com OpenTelemetry",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:47.157Z",
+    "updatedAt": "2026-02-27T14:38:15.204Z"
+  },
+  {
+    "id": "f6fd66a5-01c0-4b02-a54f-9e2ff35521e1",
+    "identifier": "GAR-177",
+    "title": "Versionamento Semantico (v0.2.0)",
+    "description": "Implementar versionamento semantico para release v0.2.0 com changelog automatico e tags",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T13:45:46.944Z",
+    "updatedAt": "2026-02-27T14:42:30.527Z"
+  },
+  {
+    "id": "bce428ee-60a6-4d7b-9760-aeecfd557cd2",
+    "identifier": "GAR-176",
+    "title": "Create garraia.org website",
+    "description": "## Problem\\\\nThe [garraia.org](<http://garraia.org>) website (#104) doesn't exist yet. Needed for public documentation, downloads, and community.\\\\n\\\\n## Solution\\\\n- Create a static site (e.g., Astro, Hugo, or simple HTML/CSS)\\\\n- Include: landing page, features, quick start guide, documentation links\\\\n- Host on GitHub Pages or Vercel\\\\n- Link from README\\\\n\\\\n## References\\\\n- README issue #104",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:23.952Z",
+    "updatedAt": "2026-02-27T12:40:13.148Z"
+  },
+  {
+    "id": "e7fe1edd-4934-43dc-91c9-68e54e90b1f5",
+    "identifier": "GAR-175",
+    "title": "Publish pre-compiled binaries for all platforms",
+    "description": "## Problem\\\\nPre-compiled binaries are only available for some platforms. Need Linux x86_64, Linux aarch64, macOS Intel, macOS Apple Silicon, and Windows x86_64.\\\\n\\\\n## Solution\\\\n- Set up GitHub Actions release workflow with cross-compilation\\\\n- Use cross or cargo-zigbuild for cross-platform builds\\\\n- Create GitHub release with all binaries + SHA-256 checksums\\\\n- Test `garraia update` flow with the new release artifacts\\\\n- Update [install.sh](<http://install.sh>) to download from releases\\\\n\\\\n## References\\\\n- README issue #110",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:23.238Z",
+    "updatedAt": "2026-02-27T12:40:12.983Z"
+  },
+  {
+    "id": "6a0bc292-fbdf-4520-916d-a3ce546d4866",
+    "identifier": "GAR-174",
+    "title": "Update CHANGELOG.md with v0.1.11 entries",
+    "description": "## Problem\\\\nNo CHANGELOG entry for recent work: CommandRegistry integration, voice pipeline, health checks, etc.\\\\n\\\\n## Solution\\\\n- Add v0.1.11 section with:\\\\n  - feat: CommandRegistry with 12 builtin commands + dynamic dispatch\\\\n  - feat: Telegram setMyCommands on boot\\\\n  - feat: Voice pipeline (Whisper STT + Hibiki/Chatterbox TTS)\\\\n  - fix: handle_command now routes through registry\\\\n  - feat: Centralized health checks with boot table\\\\n  - refactor: Voice handler with proper error handling\\\\n\\\\n## Files\\\\n- `CHANGELOG.md`",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:19.525Z",
+    "updatedAt": "2026-02-27T12:40:12.316Z"
+  },
+  {
+    "id": "0fdb28fc-96ea-4c2a-b519-d98e9ef8cfcf",
+    "identifier": "GAR-173",
+    "title": "Update README.md with current architecture and commands",
+    "description": "## Problem\\\\nREADME references outdated GitHub issues (#103-#110) in priorities section. Architecture section doesn't fully reflect 14 crates. Voice mode section needs update. Commands section is missing.\\\\n\\\\n## Solution\\\\n- Update architecture table with all 14 crates and current status\\\\n- Add Slash Commands section documenting all 12 commands\\\\n- Update priorities table to reference Linear project\\\\n- Update Voice Mode section with Whisper STT + Hibiki addition\\\\n- Add Command Registry documentation\\\\n- Update version to current (0.1.11)\\\\n\\\\n## Files\\\\n- `README.md`",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:14.939Z",
+    "updatedAt": "2026-02-27T12:40:12.176Z"
+  },
+  {
+    "id": "77cb745e-803c-47d3-be36-4e768f24e16c",
+    "identifier": "GAR-172",
+    "title": "Implement multi-agent routing (agentId-based)",
+    "description": "## Problem\\\\nCurrently only single-agent mode is supported. Multi-agent routing (#108 from README) is planned but not yet implemented.\\\\n\\\\n## Solution\\\\n- Design agent routing protocol (agentId-based routing)\\\\n- Implement `agent_router.rs` with route matching logic (file exists but is basic)\\\\n- Support routing strategies: by topic, by capability, round-robin, manual selection\\\\n- Add `/agent` command for switching between agents in Telegram\\\\n- Add session-level agent binding\\\\n\\\\n## Files\\\\n- `crates/garraia-gateway/src/agent_router.rs` (extend)\\\\n- `crates/garraia-agents/src/runtime.rs`",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:10.84Z",
+    "updatedAt": "2026-02-27T12:40:11.854Z"
+  },
+  {
+    "id": "3db25d81-4db2-454c-8ed1-933414f99e04",
+    "identifier": "GAR-171",
+    "title": "Implement garraia-media processing (images, PDFs, documents)",
+    "description": "## Problem\\\\n`garraia-media` crate has only types and a skeletal processing module. No real media processing capability exists.\\\\n\\\\n## Solution\\\\n- Implement image processing: resize, thumbnail generation, format conversion\\\\n- Add PDF text extraction for document understanding\\\\n- Add document support (DOCX, TXT) for content extraction\\\\n- Integrate with agent runtime for multimodal LLM inputs\\\\n- Use image crate for processing, pdf-extract or similar for PDFs\\\\n\\\\n## Files\\\\n- `crates/garraia-media/src/processing.rs`\\\\n- `crates/garraia-media/src/types.rs`",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:41:05.62Z",
+    "updatedAt": "2026-02-27T12:40:11.636Z"
+  },
+  {
+    "id": "e69bff84-3000-4d85-924b-2db3bb4ce22a",
+    "identifier": "GAR-170",
+    "title": "Wire AppState into CommandContext for stateful commands",
+    "description": "## Problem\\\\nThe `CommandContext::state` field is `Option<Box<dyn Any>>` but is always `None`. Commands like `/health`, `/stats`, `/providers`, `/config` need access to `AppState` to query real data.\\\\n\\\\n## Solution\\\\n- Pass a reference to relevant state data through `CommandContext::state`\\\\n- Create a `CommandState` struct with typed access to: health cache, session count, provider list, config reader\\\\n- Update dispatch code in `bootstrap.rs` to populate `ctx.state`\\\\n- Update commands to downcast and use state\\\\n\\\\n## Files\\\\n- `crates/garraia-channels/src/commands/mod.rs`\\\\n- `crates/garraia-gateway/src/bootstrap.rs`",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:39.793Z",
+    "updatedAt": "2026-02-27T12:40:08.945Z"
+  },
+  {
+    "id": "b6277fd0-8dc6-43e2-81b9-b1ff4508905d",
+    "identifier": "GAR-169",
+    "title": "Create /mcp command for MCP server management",
+    "description": "## Problem\\\\nNo command exists for managing MCP servers from Telegram. CLI has `garraia mcp list` and `garraia mcp inspect` but no Telegram equivalent.\\\\n\\\\n## Solution\\\\n- Create `/mcp` command (Admin-only)\\\\n- `/mcp` — list connected MCP servers with status\\\\n- `/mcp list` — list all configured MCP servers\\\\n- `/mcp tools` — list all available MCP tools\\\\n- `/mcp inspect <server>` — show details of a specific MCP server\\\\n\\\\n## Files\\\\n- Create `crates/garraia-channels/src/commands/builtins/mcp.rs`\\\\n- Register in `builtins/mod.rs`",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:38.708Z",
+    "updatedAt": "2026-02-27T12:40:10.09Z"
+  },
+  {
+    "id": "47b6cbe0-4078-406c-aa6b-6b57594daecd",
+    "identifier": "GAR-168",
+    "title": "Implement /config command with real config read/write",
+    "description": "## Problem\\\\n`/config` command exists (Owner-only) but returns placeholder text. Should allow viewing and basic editing of configuration.\\\\n\\\\n## Solution\\\\n- `/config` — show current config summary (safe view, no secrets)\\\\n- `/config get <key>` — get specific config value\\\\n- `/config set <key> <value>` — set config value (triggers hot-reload)\\\\n- `/config reload` — force config reload\\\\n- All mutations are Owner-only, logged in audit\\\\n\\\\n## Files\\\\n- `crates/garraia-channels/src/commands/builtins/config.rs`\\\\n- `crates/garraia-config/src/` (for config access)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:33.329Z",
+    "updatedAt": "2026-02-27T12:40:09.949Z"
+  },
+  {
+    "id": "0ac5366b-96d8-4e1b-81ca-cd2deb35dd88",
+    "identifier": "GAR-167",
+    "title": "Implement /providers command with real provider listing",
+    "description": "## Problem\\\\n`/providers` currently returns placeholder. Needs to show actual configured providers and their status.\\\\n\\\\n## Solution\\\\n- List all configured LLM providers from config\\\\n- Show: provider name, model, status (enabled/disabled), health (if available)\\\\n- Show current default provider and active model\\\\n- Owner-only: show API key status (configured ✅ / missing ❌, never show actual keys)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:29.216Z",
+    "updatedAt": "2026-02-27T12:40:09.397Z"
+  },
+  {
+    "id": "d54eb966-1f96-4317-8f81-beb48407ac52",
+    "identifier": "GAR-166",
+    "title": "Implement /stats command with real usage counters",
+    "description": "## Problem\\\\n`/stats` currently returns placeholder. Needs real usage counters.\\\\n\\\\n## Solution\\\\n- Track: total messages processed, total commands executed, uptime, active sessions, token usage\\\\n- Store counters in `AppState` (atomic counters)\\\\n- Format output with emojis for Telegram readability\\\\n- Include uptime since last restart",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:25.568Z",
+    "updatedAt": "2026-02-27T12:40:09.249Z"
+  },
+  {
+    "id": "202034b3-01ab-4a7d-81bc-7716117caa5e",
+    "identifier": "GAR-165",
+    "title": "Implement /health command with real provider health data",
+    "description": "## Problem\\\\nCurrently `/health` command returns a placeholder string. It should query actual provider health statuses.\\\\n\\\\n## Solution\\\\n- Import health check results from `garraia-gateway/src/health.rs`\\\\n- Query cached health results and format as a clean status table\\\\n- Show: provider name, status (✅/❌), latency, last checked time\\\\n- Format for Telegram (MarkdownV2 or plain text)\\\\n\\\\n## Files\\\\n- `crates/garraia-channels/src/commands/builtins/health.rs`\\\\n- `crates/garraia-gateway/src/health.rs` (for reference)",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:21.45Z",
+    "updatedAt": "2026-02-27T12:40:09.1Z"
+  },
+  {
+    "id": "6381dc02-a682-4a5f-9153-f1bacc49d7b8",
+    "identifier": "GAR-164",
+    "title": "Add Whisper STT and Hibiki TTS to boot health checks",
+    "description": "## Problem\\\\nVoice pipeline uses WhisperClient and HibikiClient, but connectivity is not validated at boot time. Boot health checks cover Chatterbox but not Whisper or Hibiki.\\\\n\\\\n## Solution\\\\n- Add Whisper STT to the boot health check table\\\\n- Add Hibiki TTS to the boot health check table\\\\n- Ensure `GET /api/health` includes voice subsystems\\\\n- Add ffmpeg availability check at boot\\\\n\\\\n## Files\\\\n- `crates/garraia-gateway/src/health.rs`\\\\n- `crates/garraia-voice/src/stt/whisper_client.rs`\\\\n- `crates/garraia-voice/src/tts/hibiki_client.rs`",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:18.601Z",
+    "updatedAt": "2026-02-27T12:40:10.816Z"
+  },
+  {
+    "id": "4328c620-c38f-4989-b304-fc72194b903d",
+    "identifier": "GAR-163",
+    "title": "Add voice fallback to text when TTS/STT fails",
+    "description": "## Problem\\\\nIf voice synthesis fails (Chatterbox down, ffmpeg missing, etc.), the user gets nothing. Needs graceful degradation.\\\\n\\\\n## Solution\\\\n- If TTS fails, send the LLM text response as a regular text message\\\\n- If STT fails, reply with \"Não consegui processar seu áudio. Tente enviar como texto.\"\\\\n- Log voice errors with full metrics for debugging\\\\n- Add retry logic with exponential backoff for transient failures",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:13.159Z",
+    "updatedAt": "2026-02-27T12:40:10.522Z"
+  },
+  {
+    "id": "b35c713b-2395-4ca8-b470-345f76b631e5",
+    "identifier": "GAR-162",
+    "title": "Test complete voice E2E flow: Telegram audio → STT → LLM → TTS → audio response",
+    "description": "## Problem\\\\nThe voice pipeline code exists (`garraia-voice/src/pipeline.rs`) with full ogg→wav→whisper→LLM→hibiki→ogg flow, and the telegram handler accepts voice messages via `OnVoiceFn`. However, the complete end-to-end flow (user sends audio in Telegram → bot responds with audio) has never been tested in production.\\\\n\\\\n## Solution\\\\n1. Start the bot with `--with-voice` and Chatterbox running\\\\n2. Send a voice message in Telegram\\\\n3. Verify: audio is received → STT transcribes → LLM responds → TTS synthesizes → audio sent back\\\\n4. Fix any integration issues found\\\\n\\\\n## Dependencies\\\\n- Chatterbox TTS server running on GPU\\\\n- Whisper STT endpoint available\\\\n- ffmpeg installed for audio conversion",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:40:08.556Z",
+    "updatedAt": "2026-02-27T12:40:10.371Z"
+  },
+  {
+    "id": "9eb22fc1-324f-48d4-b3cd-84856fd18d6c",
+    "identifier": "GAR-161",
+    "title": "Validate and fix CI/CD GitHub Actions workflow",
+    "description": "## Problem\\\\nGitHub Actions CI badge exists in README but workflow may not reflect current crate structure (14 crates). Need to validate it runs `cargo test --workspace` and all checks pass.\\\\n\\\\n## Solution\\\\n- Review `.github/workflows/ci.yml`\\\\n- Ensure it runs: `cargo check`, `cargo test`, `cargo clippy`, `cargo fmt`\\\\n- Add caching for Cargo registry/target\\\\n- Ensure CI is green after test fix\\\\n\\\\n## Files\\\\n- `.github/workflows/ci.yml`",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:39:46.514Z",
+    "updatedAt": "2026-02-27T12:40:11.125Z"
+  },
+  {
+    "id": "47148c79-6c3f-4ce7-b5c5-6ef7ee498ec9",
+    "identifier": "GAR-160",
+    "title": "Wire garraia-runtime executor into gateway agent loop",
+    "description": "## Problem\\\\n`garraia-runtime` has a fully-implemented `run_turn()` executor with state machine (Planning → Executing → ToolUse → Completed/Waiting/Failed) but the gateway's `bootstrap.rs` uses its own inline agent loop.\\\\n\\\\n## Solution\\\\n- Evaluate whether `garraia-runtime::run_turn()` can replace the gateway's inline loop\\\\n- If yes: migrate incrementally, keeping backward compatibility\\\\n- If no: document why and ensure both paths are tested\\\\n- Add integration tests for the runtime executor\\\\n\\\\n## Files\\\\n- `crates/garraia-runtime/src/executor.rs`\\\\n- `crates/garraia-gateway/src/bootstrap.rs`",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:39:45.834Z",
+    "updatedAt": "2026-02-27T12:40:10.218Z"
+  },
+  {
+    "id": "16a35a4e-ba68-4aae-b561-a25d1af89de9",
+    "identifier": "GAR-159",
+    "title": "Unify garraia-tools::Tool trait with garraia-agents tools",
+    "description": "## Problem\\\\n`garraia-tools` defines a `Tool` trait + `ToolRegistry` (216 lines) but `garraia-agents/src/tools/` has its own independent implementations (bash, file_read, file_write, web_fetch, web_search, schedule) that don't use this trait.\\\\n\\\\n## Solution\\\\n- Decide: either migrate agents tools to implement `garraia_tools::Tool` trait, or deprecate the `garraia-tools` crate\\\\n- If migrating: implement the trait for all 6 tools, wire the `ToolRegistry` into the agent runtime\\\\n- If deprecating: merge useful types into `garraia-agents` and remove the crate\\\\n\\\\n## Impact\\\\nUnifies the architecture, eliminates dead code, enables future tool plugins",
+    "priority": 2,
+    "state": {
+      "name": "Backlog"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:39:41.35Z",
+    "updatedAt": "2026-02-27T01:39:41.35Z"
+  },
+  {
+    "id": "fcb76c1b-70e3-4053-8371-a016d9fa34a6",
+    "identifier": "GAR-158",
+    "title": "Fix pre-existing test failure: build_agent_runtime_empty_config_no_crash",
+    "description": "## Problem\\\\nThe test `build_agent_runtime_empty_config_no_crash` fails with:\\\\n`\\nassertion failed: runtime.system_prompt().is_none()\\n`\\\\n\\\\nThis is a pre-existing failure unrelated to recent command work but it means CI is red.\\\\n\\\\n## Solution\\\\n- Investigate why `system_prompt()` returns `Some` when config is empty\\\\n- Fix the default initialization or update the test assertion\\\\n- Ensure all 83 gateway tests pass green\\\\n\\\\n## Files\\\\n- `crates/garraia-gateway/src/bootstrap.rs` (line \\~2052)",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-27T01:39:35.672Z",
+    "updatedAt": "2026-02-27T12:40:10.673Z"
+  },
+  {
+    "id": "3925ee51-f41a-4f9a-b366-d3fd8f1134cd",
+    "identifier": "GAR-157",
+    "title": "MCP Tools → Slash Commands automáticos",
+    "description": "## Problema\n\nMCP tools não são acessíveis como slash commands — user precisa saber usar linguagem natural.\n\n## Solução\n\nFuturo: MCP tools automaticamente registradas como slash commands:\n\n```rust\n// No boot, para cada MCP tool:\nfor tool in mcp_manager.list_tools() {\n    registry.register(Box::new(McpToolCommand::new(tool)));\n}\n```\n\nExemplo: MCP tool `create_reminder` → vira `/reminder` automaticamente.\n\n### Considerações:\n\n* Namespace para evitar conflitos (/mcp_reminder ou /reminder)\n* Rate limiting para tools externas\n* Tipos de output (texto, arquivo, etc)\n\n## Critérios de Aceite\n\n- [ ] MCP tools registradas como commands automaticamente\n- [ ] Namespace configurável\n- [ ] Documentação do mecanismo",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:24.591Z",
+    "updatedAt": "2026-02-27T12:40:11.987Z"
+  },
+  {
+    "id": "e4db0137-70e5-4205-91f2-baba97ba4e40",
+    "identifier": "GAR-156",
+    "title": "Testes unitários e integração do sistema de commands",
+    "description": "## Problema\n\nSem testes automatizados para o sistema de comandos.\n\n## Solução\n\nCriar testes em `tests/commands/`:\n\n### Testes unitários:\n\n- [ ] Registry: register, get, list, unknown\n- [ ] Permissões: user vs admin vs owner\n- [ ] CommandContext: parse args correto\n- [ ] VozCommand: com/sem args\n- [ ] HelpCommand: lista dinâmica\n\n### Testes de integração:\n\n- [ ] Handler recebe \"/\" e despacha correto\n- [ ] Comando inexistente retorna mensagem\n- [ ] Permissão negada retorna erro\n\n## Critérios de Aceite\n\n- [ ] Coverage mínimo de 80% no módulo commands\n- [ ] Testes passam no CI",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:23.896Z",
+    "updatedAt": "2026-02-27T00:01:29.542Z"
+  },
+  {
+    "id": "514ecf66-f999-4575-91fd-259cad238f66",
+    "identifier": "GAR-155",
+    "title": "Mensagens de erro amigáveis e usage hints",
+    "description": "## Problema\n\nSe user usa comando errado ou sem argumentos, recebe erro genérico.\n\n## Solução\n\nCada comando define `usage()` no trait. Se execute falha por args insuficientes:\n\n```\n❌ Uso incorreto\nUso: /voz <texto>\nExemplo: /voz Olá mundo\n```\n\nSe comando não existe:\n\n```\n❓ Comando desconhecido: /xyz\nDigite /help para ver comandos disponíveis.\n```\n\n## Critérios de Aceite\n\n- [ ] Erro de args mostra usage do comando\n- [ ] Comando inexistente sugere /help\n- [ ] Mensagens em pt-BR",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:17.626Z",
+    "updatedAt": "2026-02-27T00:01:26.739Z"
+  },
+  {
+    "id": "802d2750-74a2-443d-be81-45c1e238d369",
+    "identifier": "GAR-154",
+    "title": "Auto Help dinâmico baseado no registry",
+    "description": "## Problema\n\n/help é hardcoded e não reflete comandos novos.\n\n## Solução\n\nRefatorar HelpCommand para gerar lista automaticamente do registry:\n\n```\n📋 GarraIA Commands\n/help - Show this help\n/voz <text> - Convert text to speech\n/model [name] - Get or set model\n/health - Show system health\n/providers - Show provider status\n/mcp - List MCP tools\n/stats - System statistics\n/config - Show active config\n/clear - Reset conversation\n/pair - Generate invite code\n/users - List allowed users\n```\n\nFiltrar baseado no role do user (não mostrar comandos que não pode usar).\n\n## Critérios de Aceite\n\n- [ ] /help gerado automaticamente do registry\n- [ ] Filtra por role do user\n- [ ] Formato alinhado e legível",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:12.492Z",
+    "updatedAt": "2026-02-27T00:01:25.681Z"
+  },
+  {
+    "id": "e795aedb-469e-4b44-bc41-f379ab716b4c",
+    "identifier": "GAR-153",
+    "title": "Bloqueio de comandos sensíveis com mensagem",
+    "description": "## Problema\n\nSe user sem permissão usar comando sensível, deve receber mensagem clara.\n\n## Solução\n\nNo handler, antes de executar:\n\n```rust\nif ctx.user_role < cmd.required_role() {\n    return Err(CommandError::Unauthorized(\n        format!(\"⛔ Permissão insuficiente. Necessário: {:?}\", cmd.required_role())\n    ));\n}\n```\n\n## Critérios de Aceite\n\n- [ ] User sem permissão recebe mensagem clara\n- [ ] Log registra tentativa de acesso não autorizado\n- [ ] Owner sempre tem acesso a tudo",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:07.926Z",
+    "updatedAt": "2026-02-27T00:01:24.917Z"
+  },
+  {
+    "id": "31be8581-82eb-465f-8e0d-be214c5a71fc",
+    "identifier": "GAR-152",
+    "title": "Implementar permissões por comando (Role-based)",
+    "description": "## Problema\n\nQualquer user pode executar qualquer comando, incluindo sensíveis como /users e /config.\n\n## Solução\n\nAdicionar sistema de roles no trait:\n\n```rust\npub enum Role { Owner, Admin, User }\n\npub trait SlashCommand: Send + Sync {\n    fn name(&self) -> &'static str;\n    fn description(&self) -> &'static str;\n    fn usage(&self) -> &'static str;\n    fn required_role(&self) -> Role { Role::User } // default\n    async fn execute(&self, ctx: CommandContext) -> CommandResult;\n}\n```\n\n### Mapeamento\n\n* /help, /voz, /model, /clear → User\n* /health, /providers, /stats → Admin\n* /users, /config, /pair → Owner\n\n## Critérios de Aceite\n\n- [ ] Trait tem método `required_role()` com default User\n- [ ] CommandContext inclui role do user\n- [ ] Permissão verificada antes de execute()",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:11:02.67Z",
+    "updatedAt": "2026-02-27T00:01:17.953Z"
+  },
+  {
+    "id": "33f78d20-eac8-4564-80c1-fad98eebf034",
+    "identifier": "GAR-151",
+    "title": "Criar alias /voice → /voz",
+    "description": "## Problema\n\nAlias `/voice` para internacionalização futura.\n\n## Solução\n\nCriar alias: `/voice` → redireciona para VozCommand\n\n```rust\npub struct VoiceCommand; // alias for VozCommand\nimpl SlashCommand for VoiceCommand {\n    fn name(&self) -> &'static str { \"voice\" }\n    fn description(&self) -> &'static str { \"Convert text to speech (alias for /voz)\" }\n    // delegate to VozCommand\n}\n```\n\n## Critérios de Aceite\n\n- [ ] `/voice` funciona exatamente como `/voz`\n- [ ] Ambos aparecem no menu de comandos",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:42.208Z",
+    "updatedAt": "2026-02-27T00:01:17.184Z"
+  },
+  {
+    "id": "887008a1-5f23-4491-a909-969eeca004d1",
+    "identifier": "GAR-150",
+    "title": "Criar comando /config",
+    "description": "## Problema\n\nUser quer ver config ativa sem acessar arquivos.\n\n## Solução\n\nCriar `commands/config.rs`:\n\n* Mostra config ativa redacted (sem secrets/keys)\n* Formata YAML simplificado\n\n### Output:\n\n```\n⚙️ Active Config\n• model: openrouter/deepseek-r1\n• voice: enabled (chatterbox)\n• mcp_servers: 2\n• allowed_users: 3\n• timeouts: llm=30s, tts=120s\n```\n\n## Critérios de Aceite\n\n- [ ] Mostra config sem expor secrets\n- [ ] Formato legível",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:40.97Z",
+    "updatedAt": "2026-02-27T00:01:16.115Z"
+  },
+  {
+    "id": "bcb99295-74df-4886-a191-0f82196e4e16",
+    "identifier": "GAR-149",
+    "title": "Criar comando /stats",
+    "description": "## Problema\n\nSem visibilidade de recursos e uptime do sistema.\n\n## Solução\n\nCriar `commands/stats.rs`:\n\n### Output:\n\n```\n📊 System Stats\n• Uptime: 2h 34m\n• Memory: 128MB / 2GB\n• Active sessions: 3\n• Total requests: 1,247\n• Version: 0.1.0\n• Model: openrouter/deepseek-r1\n```\n\n## Critérios de Aceite\n\n- [ ] Mostra uptime, memória, sessões ativas\n- [ ] Mostra versão e modelo ativo",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:37.268Z",
+    "updatedAt": "2026-02-27T00:01:15.31Z"
+  },
+  {
+    "id": "a9ee0406-de63-4257-bfc9-f81b2916fd10",
+    "identifier": "GAR-148",
+    "title": "Criar comando /mcp",
+    "description": "## Problema\n\nUser quer ver tools MCP disponíveis diretamente no Telegram.\n\n## Solução\n\nCriar `commands/mcp.rs`:\n\n* Lista MCP servers ativos\n* Lista tools registradas por cada server\n* Conta total de tools\n\n### Output:\n\n```\n🔧 MCP Tools\nServer: filesystem (4 tools)\n  • read_file, write_file, list_dir, search\n\nServer: browser (2 tools)\n  • navigate, screenshot\n\nTotal: 6 tools across 2 servers\n```\n\n## Critérios de Aceite\n\n- [ ] Lista servers e tools\n- [ ] Mostra contagem total",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:31.945Z",
+    "updatedAt": "2026-02-27T00:01:14.143Z"
+  },
+  {
+    "id": "fa8cc92a-f45d-41e8-8e6e-bdf8abc7cb5d",
+    "identifier": "GAR-147",
+    "title": "Criar comando /providers",
+    "description": "## Problema\n\nUser não tem visibilidade dos providers configurados.\n\n## Solução\n\nCriar `commands/providers.rs`:\n\n* Lista providers: openrouter, ollama, anthropic, openai\n* Mostra status ativo/inativo\n* Indica qual é o fallback\n\n### Output:\n\n```\n📡 Providers\n• OpenRouter: ✅ Active (primary)\n• Ollama: ❌ Not running\n• Anthropic: ⚠️ No API key\n• Chatterbox TTS: ✅ Active\n```\n\n## Critérios de Aceite\n\n- [ ] Lista todos os providers configurados\n- [ ] Indica status e role (primary/fallback)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:28.37Z",
+    "updatedAt": "2026-02-27T00:01:06.49Z"
+  },
+  {
+    "id": "065ce474-1c3c-4b51-9ee1-9e467cdbefd9",
+    "identifier": "GAR-146",
+    "title": "Criar comando /health",
+    "description": "## Problema\n\nNão há como consultar status dos providers via Telegram.\n\n## Solução\n\nCriar `commands/health.rs`:\n\n* Chama `health::run_all_checks()` do módulo centralizado\n* Formata como tabela legível no Telegram\n\n### Output exemplo:\n\n```\n🏥 System Health\n┌──────────────┬────────┬────────┐\n│ Provider     │ Status │ Ping   │\n├──────────────┼────────┼────────┤\n│ OpenRouter   │ ✅ OK  │ 120ms  │\n│ Ollama       │ ❌ OFF │ -      │\n│ Chatterbox   │ ✅ OK  │ 45ms   │\n└──────────────┴────────┴────────┘\n```\n\n## Critérios de Aceite\n\n- [ ] `/health` mostra tabela de providers\n- [ ] Usa [health.rs](<http://health.rs>) existente\n- [ ] Formato legível no Telegram (monospace)",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:25.213Z",
+    "updatedAt": "2026-02-27T00:01:05.903Z"
+  },
+  {
+    "id": "2428e822-45ea-4128-b597-e4cdf32e2ff9",
+    "identifier": "GAR-145",
+    "title": "Modo permanente /voz on|off",
+    "description": "## Problema\n\nUser quer que todas as respostas sejam em áudio sem ter que usar /voz sempre.\n\n## Solução\n\nSuporte a:\n\n```\n/voz on   → Ativa modo permanente (todas respostas em áudio)\n/voz off  → Desativa modo permanente\n/voz      → Mostra status atual\n```\n\nEstado salvo na sessão do usuário.\n\nQuando ativo, toda resposta do LLM é automaticamente convertida em áudio via TTS antes de enviar.\n\n## Critérios de Aceite\n\n- [ ] `/voz on` ativa modo permanente\n- [ ] `/voz off` desativa\n- [ ] Status persistido na sessão\n- [ ] Respostas LLM convertidas em áudio automaticamente quando on",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:04.986Z",
+    "updatedAt": "2026-02-27T00:01:04.107Z"
+  },
+  {
+    "id": "f85743ee-db1b-4304-96a1-b7371db608c5",
+    "identifier": "GAR-144",
+    "title": "Criar comando /voz com TTS",
+    "description": "## Problema\n\nNão existe comando de voz via slash — o áudio só funciona se o user mandar mensagem de voz nativa.\n\n## Solução\n\nCriar `commands/voz.rs`:\n\n```rust\npub struct VozCommand;\n\nimpl SlashCommand for VozCommand {\n    fn name(&self) -> &'static str { \"voz\" }\n    fn description(&self) -> &'static str { \"Converter texto em áudio\" }\n    fn usage(&self) -> &'static str { \"/voz <texto>\" }\n    \n    async fn execute(&self, ctx: CommandContext) -> CommandResult {\n        let text = ctx.args.join(\" \");\n        // 1. Chamar TTS (ChatterboxClient ou MCP)\n        // 2. Salvar WAV temporário\n        // 3. Enviar via sendVoice\n    }\n}\n```\n\n## Critérios de Aceite\n\n- [ ] `/voz Olá mundo` gera áudio e envia no chat\n- [ ] Sem args retorna usage amigável\n- [ ] Funciona com Chatterbox TTS",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:10:03.785Z",
+    "updatedAt": "2026-02-27T00:01:02.812Z"
+  },
+  {
+    "id": "d331b9b7-43b6-4c6a-ac1b-22fb5c67cab6",
+    "identifier": "GAR-143",
+    "title": "Auto-sync comandos Telegram no boot",
+    "description": "## Problema\n\nSe novos comandos forem adicionados, o Telegram não saberá até o próximo restart.\n\n## Solução\n\n* Chamar `setMyCommands` no boot automaticamente\n* Se registry mudar dinamicamente (ex: MCP tools), re-sincronizar\n* Idempotente: mesma lista = sem chamada extra\n\n## Critérios de Aceite\n\n- [ ] Comandos sincronizados automaticamente no boot\n- [ ] Log indicando \"✅ Telegram commands synced (N commands)\"\n- [ ] Se lista não mudou, skip a chamada",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:09:58.912Z",
+    "updatedAt": "2026-02-27T00:01:01.106Z"
+  },
+  {
+    "id": "9571ef5f-5d5e-4b38-928b-83df0219e016",
+    "identifier": "GAR-142",
+    "title": "Implementar setMyCommands via Bot API",
+    "description": "## Problema\n\nAo digitar `/` no Telegram, nenhum comando aparece como sugestão. Apenas bots que registram via Bot API têm autocomplete.\n\n## Solução\n\nImplementar chamada a `setMyCommands` via Bot API no bootstrap do Telegram:\n\n```rust\n// No startup do TelegramChannel\nlet commands = registry.to_telegram_commands();\nbot.set_my_commands(commands).await?;\n```\n\n### Endpoint\n\n```\nPOST https://api.telegram.org/bot<TOKEN>/setMyCommands\n```\n\n### Payload\n\n```json\n{\n  \"commands\": [\n    { \"command\": \"help\", \"description\": \"Show help information\" },\n    { \"command\": \"voz\", \"description\": \"Converter texto em áudio\" },\n    { \"command\": \"model\", \"description\": \"Get or set LLM model\" },\n    { \"command\": \"health\", \"description\": \"Show system health status\" }\n  ]\n}\n```\n\n## Critérios de Aceite\n\n- [ ] Ao digitar `/` no Telegram, lista de comandos aparece\n- [ ] Cada comando tem descrição legível\n- [ ] Chamada executada no boot sem erro",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:09:52.085Z",
+    "updatedAt": "2026-02-27T00:01:00.513Z"
+  },
+  {
+    "id": "025c3907-3824-427f-90ba-cfd855638638",
+    "identifier": "GAR-141",
+    "title": "Integrar CommandRegistry ao Telegram Handler",
+    "description": "## Problema\n\nO Telegram handler usa `match` hardcoded para processar comandos. Não é extensível.\n\n## Solução\n\nModificar `telegram/handlers.rs`:\n\n```\nSe mensagem começa com \"/\"\n    ↓\nExtrair nome do comando + args\n    ↓\nBuscar no CommandRegistry\n    ↓\nExecutar command.execute(ctx)\n    ↓\nRetornar resposta ao chat\n```\n\n### Migrar comandos existentes:\n\n* /help → HelpCommand\n* /clear → ClearCommand\n* /model → ModelCommand\n* /pair → PairCommand\n* /users → UsersCommand\n\n## Critérios de Aceite\n\n- [ ] Handler usa registry em vez de match\n- [ ] Todos os 5 comandos existentes migrados\n- [ ] Comando inexistente retorna mensagem amigável\n- [ ] Sem regressão nos comandos atuais",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:09:34.265Z",
+    "updatedAt": "2026-02-27T00:00:59.791Z"
+  },
+  {
+    "id": "48c87f7a-e9c1-45f1-9af6-1ce3eec90aaf",
+    "identifier": "GAR-140",
+    "title": "Implementar CommandRegistry com register/get/list",
+    "description": "## Problema\n\nO CommandRegistry precisa gerenciar ciclo de vida dos comandos.\n\n## Solução\n\nImplementar `CommandRegistry` com:\n\n```rust\npub struct CommandRegistry {\n    commands: HashMap<String, Box<dyn SlashCommand>>,\n}\n\nimpl CommandRegistry {\n    pub fn new() -> Self;\n    pub fn register(&mut self, cmd: Box<dyn SlashCommand>);\n    pub fn get(&self, name: &str) -> Option<&dyn SlashCommand>;\n    pub fn list(&self) -> Vec<(&str, &str)>; // (name, description)\n    pub fn to_telegram_commands(&self) -> Vec<BotCommand>;\n}\n```\n\n## Critérios de Aceite\n\n- [ ] Registro e busca funcional\n- [ ] Gera lista formatada para /help\n- [ ] Gera Vec<BotCommand> para setMyCommands",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:09:32.615Z",
+    "updatedAt": "2026-02-27T00:00:58.265Z"
+  },
+  {
+    "id": "abc59f86-59fb-4aa6-8490-29f4210b4030",
+    "identifier": "GAR-139",
+    "title": "Criar SlashCommand Trait + CommandRegistry",
+    "description": "## Problema\n\nComandos no GarraIA atualmente usam `match` hardcoded no handler, sem extensibilidade.\n\n## Solução\n\nCriar sistema central de registro de comandos em `crates/garraia-channels/src/commands/`:\n\n### Arquivos\n\n* `mod.rs` — módulo público\n* `registry.rs` — CommandRegistry (register, get, list)\n* `command_trait.rs` — trait SlashCommand\n\n### Trait base\n\n```rust\npub trait SlashCommand: Send + Sync {\n    fn name(&self) -> &'static str;\n    fn description(&self) -> &'static str;\n    fn usage(&self) -> &'static str;\n    async fn execute(&self, ctx: CommandContext) -> CommandResult;\n}\n```\n\n### CommandContext\n\n```rust\npub struct CommandContext {\n    pub user_id: String,\n    pub chat_id: i64,\n    pub args: Vec<String>,\n    pub runtime: Arc<AgentRuntime>,\n}\n```\n\n## Critérios de Aceite\n\n- [ ] Trait compilável e extensível\n- [ ] Registry funcional com register/get/list\n- [ ] Testes unitários para registry",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T23:09:26.592Z",
+    "updatedAt": "2026-02-27T00:00:57.182Z"
+  },
+  {
+    "id": "9299e53e-443d-423a-8aa0-4707aac84099",
+    "identifier": "GAR-138",
+    "title": "🟡 7.2 — Criar Log Level Granular por Subsistema",
+    "description": "## Problema\n\nNão há como configurar log levels granulares por subsistema.\n\n> ✅ **Resolvido** — `RUST_LOG` env var já é suportado via `EnvFilter::try_from_default_env()`.\n\n## Implementação\n\nO `init_tracing` já usa:\n\n```rust\nEnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level))\n```\n\nExemplos de uso:\n\n```bash\nRUST_LOG=garraia_gateway=debug,garraia_voice=trace garraia start\nRUST_LOG=garraia_agents::tools=debug garraia start\nRUST_LOG=debug garraia start\n```\n\n## Critérios de Aceite\n\n- [X] RUST_LOG suportado\n- [X] Granular por módulo/crate\n- [X] Documentado em código",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Observability"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:56.205Z",
+    "updatedAt": "2026-02-26T17:54:03.107Z"
+  },
+  {
+    "id": "731c4c0b-faf4-47d7-af5f-88d7ad215636",
+    "identifier": "GAR-137",
+    "title": "🟡 7.1 — Criar --debug Flag Global",
+    "description": "## Problema\n\nNão existe flag `--debug` para ativar modo debug globalmente.\n\n> ✅ **Resolvido** — Adicionado `--debug` global flag ao CLI.\n\n## Implementação\n\n* `main.rs` CLI struct: `#[arg(long, global = true)] debug: bool`\n* `async_main`: `let effective_level = if cli.debug { \"debug\" } else { cli.log_level }`\n* Todos os `init_tracing(&cli.log_level)` substituídos por `init_tracing(&effective_level)`\n* Funciona em todos subcomandos: `garraia start --debug`, `garraia status --debug`, etc.\n\n## Critérios de Aceite\n\n- [X] `--debug` flag global\n- [X] Overrides log level para \"debug\"\n- [X] Funciona em todos subcomandos",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Observability"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:55.491Z",
+    "updatedAt": "2026-02-26T17:53:50.077Z"
+  },
+  {
+    "id": "88896d7a-d3c4-4092-967c-3cd0edebb48b",
+    "identifier": "GAR-136",
+    "title": "🟡 6.2 — Centralizar Health Checks em Módulo Modular",
+    "description": "## Problema\n\nHealth checks estão espalhados em locais diferentes — deveria ser centralizado.\n\n> ✅ **Resolvido** — Módulo `health.rs` implementado com trait, cache, endpoint HTTP e monitoring periódico.\n\n## Solução Implementada\n\nNovo módulo: `crates/garraia-gateway/src/health.rs` (\\~295 linhas)\n\n### Componentes\n\n* `HealthStatus`: struct com `name`, `ok`, `latency_ms`, `error`\n* `HealthResponse`: struct para JSON do endpoint (`status` + `checks[]`)\n* `HealthCache`: `Arc<RwLock<Vec<HealthStatus>>>` para cache compartilhado\n* `check_http()`: verificação HTTP genérica com timeout configurável\n* `run_all_checks()`: execução concorrente para todos os providers\n* `format_boot_table()`: tabela visual no terminal com ✅/❌ + latência\n* `spawn_periodic_checks()`: background task (60s) com detecção de mudança de status\n* `health_handler()`: `GET /api/health` retorna JSON\n\n### Providers Verificados\n\n* Ollama (`/api/tags`)\n* OpenRouter (`/api/v1/models`)\n* OpenAI (`/v1/models`)\n* Anthropic (key check only)\n* Chatterbox TTS (`/`)\n\n### Arquivos Modificados\n\n* `health.rs` — **NOVO**\n* `lib.rs` — `pub mod health`\n* `state.rs` — `health_cache` field\n* `router.rs` — `GET /api/health` route\n* `server.rs` — boot checks + background task\n* `Cargo.toml` — `reqwest` dependency\n\n## Verificação\n\n* `cargo build --release` ✅ (exit 0)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Gateway"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:51.189Z",
+    "updatedAt": "2026-02-26T22:56:56.497Z"
+  },
+  {
+    "id": "9104086b-36e3-4adf-b5a7-d7e2ff7b4a8b",
+    "identifier": "GAR-135",
+    "title": "🟡 6.1 — Timeout Configurável via config.yml",
+    "description": "## Problema\n\nTimeouts hardcoded em vários locais — deveria ser configurável via config.yml.\n\n> ✅ **Resolvido** — `TimeoutConfig` implementado em `garraia-config` com valores por tipo.\n\n## Solução Implementada\n\n* Nova struct `TimeoutConfig` em `crates/garraia-config/src/model.rs`\n* Configuração por tipo: `llm` (30s), `tts` (120s), `mcp` (60s), `health` (5s)\n* Struct `TypeTimeout` com campo `default_secs`\n* Wired into `AppConfig` com `#[serde(default)]`\n* Re-exportado em `garraia-config/lib.rs`\n* Health checks usam `config.timeouts.health.default_secs`\n\n## Exemplo config.yml\n\n```yaml\ntimeouts:\n  llm:\n    default_secs: 30\n  tts:\n    default_secs: 120\n  mcp:\n    default_secs: 60\n  health:\n    default_secs: 5\n```\n\n## Verificação\n\n* `cargo build --release` ✅ (exit 0)",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Gateway"
+        },
+        {
+          "name": "Improvement"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:47.367Z",
+    "updatedAt": "2026-02-26T22:56:55.121Z"
+  },
+  {
+    "id": "edc092a0-7b0b-4b20-9f68-3c44284ded39",
+    "identifier": "GAR-134",
+    "title": "🔴 5.1 — Flag --with-voice Não Registrada no CLI",
+    "description": "## 🔴 Problema\n\nFlag `--with-voice` não aparecia no `--help` anteriormente.\n\n> ✅ **Resolvido** — Flag implementada e verificada em `garraia start --help` e `garraia restart --help`.\n\n## Ações Realizadas\n\n* Flag adicionada ao `Start` e `Restart` commands em `crates/garraia-cli/src/main.rs`\n* `VoiceConfig` adicionado a `AppConfig` em `garraia-config`\n* `ChatterboxClient` criado em `garraia-voice`\n* Endpoint `POST /api/tts` criado em `garraia-gateway`\n\n## Critérios de Aceite\n\n- [X] `garraia start --help` mostra flag\n- [X] Flag ativa Voice Mode\n- [X] Não quebra daemon",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: CLI"
+        },
+        {
+          "name": "Bug"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:43.362Z",
+    "updatedAt": "2026-02-26T17:17:16.262Z"
+  },
+  {
+    "id": "ae3ec56e-b230-4c3e-8f26-97f08f3ef690",
+    "identifier": "GAR-133",
+    "title": "🟡 4.2 — Implementar Safe Code Patch Mode",
+    "description": "## Problema\n\nfile_write sobrescreve arquivos sem backup — sem possibilidade de rollback.\n\n> ✅ **Resolvido** — Backup automático `.bak` antes de cada overwrite.\n\n## Implementação\n\n* `file_write_tool.rs` cria `arquivo.ext.bak` antes de sobrescrever\n* Usa `tokio::fs::copy()` para backup assíncrono\n* Debug log com tamanho e path do backup\n* Se backup falha, warning é emitido mas escrita continua (non-blocking)\n* Backup é local (mesmo diretório) para facilitar rollback\n\n## Critérios de Aceite\n\n- [X] Backup automático antes de overwrite\n- [X] Preserva conteúdo original\n- [X] Non-blocking (falha no backup não impede escrita)\n- [X] Log de backup criado",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Dev Mode"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:40.061Z",
+    "updatedAt": "2026-02-26T18:27:46.562Z"
+  },
+  {
+    "id": "170da32d-bd03-46a5-b4b0-f1adc6120f7d",
+    "identifier": "GAR-132",
+    "title": "🔴 4.1 — Corrigir Permissões Windows para file_write",
+    "description": "## Problema\n\nfile_write falha silenciosamente em arquivos readonly no Windows.\n\n> ✅ **Resolvido** — Adicionada detecção de readonly, escrita explícita como UTF-8 bytes, logging estruturado.\n\n## Implementação\n\n* `file_write_tool.rs` agora verifica `metadata.permissions().readonly()` antes de escrever\n* Retorna mensagem de erro clara com instruções: `attrib -R` (Windows) ou `chmod u+w` (Linux)\n* Escrita via `content.as_bytes()` garante UTF-8\n* `tracing::info` ao sucesso, `tracing::error` com path e erro ao falhar\n* Path normalization via `PathBuf::from()` (cross-platform)\n\n## Critérios de Aceite\n\n- [X] Detectar arquivos readonly\n- [X] Mensagem de erro com instruções\n- [X] UTF-8 explícito\n- [X] Logs estruturados",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Dev Mode"
+        },
+        {
+          "name": "Bug"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:35.702Z",
+    "updatedAt": "2026-02-26T17:49:51.472Z"
+  },
+  {
+    "id": "1ed7ad62-f6d4-452e-8f87-18fbf223f10c",
+    "identifier": "GAR-131",
+    "title": "🟡 3.3 — Criar Provider Status Table no Startup",
+    "description": "## Problema\n\nNão há visualização consolidada de quais providers estão ativos no startup.\n\n> ✅ **Resolvido** — Adicionada tabela visual de status dos providers no boot.\n\n## Implementação\n\n* `bootstrap.rs` exibe tabela ASCII após registro de providers:\n\n```\n╔══════════════════════════════════════╗\n║       Provider Status Summary        ║\n╠══════════════════════════════════════╣\n║  ✅ openai          (openai      )   ║\n║  ⚠️  ollama          DISABLED        ║\n╠══════════════════════════════════════╣\n║  Total: 1 active / 2 configured     ║\n║  ⚠️  1 provider(s) skipped           ║\n╚══════════════════════════════════════╝\n```\n\n## Critérios de Aceite\n\n- [X] Tabela visual no startup\n- [X] Mostra ONLINE/DISABLED por provider\n- [X] Conta total ativo vs configurado",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Providers"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:32.293Z",
+    "updatedAt": "2026-02-26T17:49:50.315Z"
+  },
+  {
+    "id": "81282825-9de3-497f-b544-29a5611923b3",
+    "identifier": "GAR-130",
+    "title": "🟡 3.2 — Detectar Falta de OPENAI_API_KEY no Boot",
+    "description": "## Problema\n\nOpenAI provider falha silenciosamente quando `OPENAI_API_KEY` não está definida.\n\n> ✅ **Já implementado** — O [bootstrap.rs](<http://bootstrap.rs>) já exibe warning claro quando a key está ausente.\n\n## Implementação Existente\n\nEm `bootstrap.rs:102-106`:\n\n```rust\nwarn!(\"skipping openai provider {name}: no API key (set api_key in config or OPENAI_API_KEY env var)\");\n```\n\nEste padrão já é aplicado a **todos** os providers que requerem API key (OpenAI, Anthropic, DeepSeek, Mistral, etc.).\n\n## Critérios de Aceite\n\n- [X] Warning exibido no startup\n- [X] Provider não é registrado sem key\n- [X] Não causa crash",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Providers"
+        },
+        {
+          "name": "Improvement"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:26.028Z",
+    "updatedAt": "2026-02-26T17:40:12.908Z"
+  },
+  {
+    "id": "3879412d-8205-4d0f-a315-d9c8933455bb",
+    "identifier": "GAR-129",
+    "title": "🟡 3.1 — Health Check Ollama com Retry e Fallback",
+    "description": "## Problema\n\nOllama não tem health check no boot — se não estiver rodando, erros aparecem só em runtime.\n\n> ✅ **Resolvido** — Health check TCP implementado no boot.\n\n## Implementação\n\n* `bootstrap.rs` executa `TcpStream::connect_timeout()` com 2s de timeout\n* Log `✅ Ollama reachable at {url}` quando online\n* Log `⚠️ Ollama not reachable... Run: ollama serve` quando offline\n* Provider é registrado mesmo offline (lazy connectivity — tentará em runtime)\n* Extrai host:port do base_url automaticamente\n\n## Critérios de Aceite\n\n- [X] Health check no boot\n- [X] Warning claro se offline\n- [X] Provider registrado para reconexão lazy\n- [X] Timeout de 2s para não bloquear boot",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Providers"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:22.186Z",
+    "updatedAt": "2026-02-26T18:27:40.949Z"
+  },
+  {
+    "id": "8484e840-17c8-4e22-8b80-76505a4eea0b",
+    "identifier": "GAR-128",
+    "title": "🟡 2.2 — Estruturar Schema Oficial para facts.json",
+    "description": "## Problema\n\nNão existe schema formal para facts.json — validação era ad-hoc.\n\n> ✅ **Resolvido** — Schema JSON criado em `schemas/facts.schema.json`.\n\n## Implementação\n\n* Criado `schemas/facts.schema.json` com JSON Schema Draft-07\n* Define todos os campos: nome, apelido, sobre, empresa, cargo, localização, idiomas, preferências, ambiente, interesses, projetos, restrições, fatos_importantes\n* Tipos validados: string, boolean, array, object\n* Enums definidos: tom (formal/informal/tecnico/casual), nivel_detalhe (resumido/normal/detalhado)\n* Required: somente `nome`\n* `additionalProperties: true` para extensibilidade\n\n## Critérios de Aceite\n\n- [X] Schema JSON criado\n- [X] Todos campos tipados\n- [X] Validação de enums\n- [X] Extensível",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Facts/Prompt"
+        },
+        {
+          "name": "Feature"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:04.361Z",
+    "updatedAt": "2026-02-26T17:54:19.952Z"
+  },
+  {
+    "id": "0dbdd0c5-8dd6-47ff-a6a4-a91b6d85d72f",
+    "identifier": "GAR-127",
+    "title": "🟡 2.1 — Corrigir Validação Arbitrária de 50 Caracteres no facts.json",
+    "description": "## Problema\n\nValidação usava `len() > 30` no content — arbitrário e impedia injeção de facts pequenos.\n\n> ✅ **Resolvido** — Substituído por validação JSON real: verifica se é objeto, se tem ao menos 1 key, logs warnings estruturados sem crash.\n\n## Implementação\n\n* `bootstrap.rs` agora usa `match serde_json::from_str` com tratamento de `Err(e)`\n* Validação: `facts.is_object()` + `o.is_empty()`\n* Warning explícito para JSON inválido, não-objeto ou vazio\n* Nunca crashea — boot continua normalmente\n* Info log: `loaded user facts from {path} ({N} keys, context len: {len})`\n\n## Critérios de Aceite\n\n- [X] Remover limite arbitrário\n- [X] Validar JSON real (objeto com keys)\n- [X] Warning claro para JSON inválido\n- [X] Boot nunca crasheia",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Facts/Prompt"
+        },
+        {
+          "name": "Bug"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:16:03.155Z",
+    "updatedAt": "2026-02-26T17:49:44.978Z"
+  },
+  {
+    "id": "bf7b90dc-fc0f-432b-80d4-8669da430199",
+    "identifier": "GAR-126",
+    "title": "🟡 1.3 — Melhorar Logs do Voice Handler",
+    "description": "## Problema\n\nLogs do voice handler são genéricos e não incluem informações estruturadas.\n\n> ✅ **Resolvido** — Adicionado tracing estruturado com `#[tracing::instrument]`, timing via `Instant`, e campos `text_len`, `lang`, `audio_bytes`, `duration_ms`.\n\n## Implementação\n\n* `voice_handler.rs` agora usa `#[tracing::instrument(skip(state, body), fields(text_len, lang))]`\n* Log de início: `🔊 TTS synthesis started` com `text_preview`\n* Log de sucesso: `✅ TTS synthesis complete — WAV generated` com `audio_bytes`, `duration_ms`\n* Log de erro: `❌ TTS synthesis failed` com `error`, `duration_ms`\n* Logs de rejeição: `TTS request rejected: voice mode not enabled` / `empty text`\n\n## Critérios de Aceite\n\n- [X] Log inicio TTS com texto truncado\n- [X] Log WAV gerado com tamanho/tempo\n- [X] Falhas com erro estruturado",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Voice Mode"
+        },
+        {
+          "name": "Improvement"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:15:59.67Z",
+    "updatedAt": "2026-02-26T17:49:39.909Z"
+  },
+  {
+    "id": "23f39dca-780f-41f7-90aa-bab1920bb973",
+    "identifier": "GAR-125",
+    "title": "🟡 1.2 — Validar Endpoint MCP do Chatterbox",
+    "description": "## 🟡 Problema\n\nPode estar retornando 200 mas endpoint incorreto `/gradio_api/mcp/`.\n\n> ✅ **Resolvido** — Endpoint confirmado como `/gradio_api/config` (Gradio standard). Não usamos `/gradio_api/mcp/`.\n\n## Validação\n\n* Endpoint correto: `GET /gradio_api/config` — retorna JSON config do Gradio app\n* Retorno HTTP 200 validado via `resp.status().is_success()`\n* Timeout configurável via `reqwest::Client::builder().timeout(Duration::from_secs(120))`\n\n## Critérios de Aceite\n\n- [X] Endpoint confirmado (`/gradio_api/config`)\n- [X] Retorno HTTP 200 validado\n- [X] Timeout configurável (120s default)",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Voice Mode"
+        },
+        {
+          "name": "Improvement"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:15:54.555Z",
+    "updatedAt": "2026-02-26T17:40:12.176Z"
+  },
+  {
+    "id": "668c2acd-ab40-4b15-8666-84f48b07e7fa",
+    "identifier": "GAR-124",
+    "title": "🔴 1.1 — Corrigir Health Check do Chatterbox",
+    "description": "## 🔴 Problema\n\nUso de `TcpStream::connect_timeout` falha no Windows para detectar serviço Gradio.\n\n> ✅ **Resolvido** — Health check agora usa HTTP GET via `reqwest` para `/gradio_api/config`.\n\n## Solução Implementada\n\n* `ChatterboxClient::health_check()` em `crates/garraia-voice/src/tts/chatterbox_client.rs` usa `reqwest::Client::get()` para HTTP health check\n* `server.rs` inicializa o client e verifica saúde no boot\n* Log exibe: `🔊 Voice mode enabled — Chatterbox TTS at {endpoint}` quando online\n* Log exibe: `⚠️ Voice mode requested but Chatterbox is not reachable` quando offline\n* Funciona no Windows (reqwest é cross-platform)\n\n## Critérios de Aceite\n\n- [X] Health check usa HTTP GET\n- [X] Voice ativa quando 7860 está respondendo\n- [X] Log exibe claramente: `Chatterbox: ONLINE`\n- [X] Funciona no Windows",
+    "priority": 1,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "Epic: Voice Mode"
+        },
+        {
+          "name": "Bug"
+        }
+      ]
+    },
+    "assignee": null,
+    "createdAt": "2026-02-26T17:15:50.733Z",
+    "updatedAt": "2026-02-26T17:39:51.568Z"
+  },
+  {
+    "id": "cca7f96a-b30d-4d8d-8db1-cd813ae00304",
+    "identifier": "GAR-123",
+    "title": "WEB-44 “About / Build info”",
+    "description": "Commit hash, versão, uptime.",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:12.228Z",
+    "updatedAt": "2026-02-25T23:44:16.271Z"
+  },
+  {
+    "id": "9c127dc9-b8f3-463e-b4c9-b10454d07a78",
+    "identifier": "GAR-122",
+    "title": "WEB-43 Templates (prompts/personas)",
+    "description": "Templates para uso interno.",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:11.504Z",
+    "updatedAt": "2026-02-25T23:44:15.118Z"
+  },
+  {
+    "id": "7ffd3d4d-c513-4c7b-831d-31bf66bc64fe",
+    "identifier": "GAR-121",
+    "title": "WEB-42 UI Layout preferences",
+    "description": "Sidebar compacta, densidade, atalhos.",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:09.842Z",
+    "updatedAt": "2026-02-25T23:44:13.825Z"
+  },
+  {
+    "id": "80350f25-bdf4-4dbb-9826-4a1785c7a948",
+    "identifier": "GAR-120",
+    "title": "WEB-41 UI Themes (dark/light/accent)",
+    "description": "Temas visuais para a UI, dark, light, accent colors.",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:08.344Z",
+    "updatedAt": "2026-02-25T23:44:03.933Z"
+  },
+  {
+    "id": "364048f6-00bb-46b0-8589-08a3f142a423",
+    "identifier": "GAR-119",
+    "title": "WEB-40 Alerts rules (básico)",
+    "description": "Provider down, error rate alto.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:06.909Z",
+    "updatedAt": "2026-02-25T23:44:03.009Z"
+  },
+  {
+    "id": "1d7b77ec-ae61-4ac4-9a81-c6a7575a18ae",
+    "identifier": "GAR-118",
+    "title": "WEB-39 Prometheus endpoint toggle + config",
+    "description": "Habilitar endpoint e configurar Prometheus.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:05.429Z",
+    "updatedAt": "2026-02-25T23:44:02.107Z"
+  },
+  {
+    "id": "2496aecc-715e-4b59-9a70-d2a8c6aff4bb",
+    "identifier": "GAR-117",
+    "title": "WEB-38 Metrics dashboard",
+    "description": "Provider latency, errors, tool calls, memory recall errors.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:03.992Z",
+    "updatedAt": "2026-02-25T23:44:00.24Z"
+  },
+  {
+    "id": "fb16fdd3-7aa5-4d36-9cec-9a50c412530e",
+    "identifier": "GAR-116",
+    "title": "WEB-37 Logs viewer",
+    "description": "Viewer de logs com filtros request_id/tenant.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:02.715Z",
+    "updatedAt": "2026-02-25T23:43:50.093Z"
+  },
+  {
+    "id": "a7b554e9-18d6-4bce-9159-184a5ef79232",
+    "identifier": "GAR-115",
+    "title": "WEB-36 Sessions viewer",
+    "description": "Sessões ativas, disconnect, maintenance mode.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:51:01.588Z",
+    "updatedAt": "2026-02-25T23:43:49.049Z"
+  },
+  {
+    "id": "da1c49c7-cd1e-4cb5-a0c6-dfc79391cd64",
+    "identifier": "GAR-114",
+    "title": "WEB-35 Telegram settings UI",
+    "description": "Telegram Settings: allowlist, token, test ping.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:51.61Z",
+    "updatedAt": "2026-02-25T23:43:46.757Z"
+  },
+  {
+    "id": "af810423-366f-46d4-b406-44c44a872f21",
+    "identifier": "GAR-113",
+    "title": "WEB-34 Quotas por tool/tenant",
+    "description": "Quotas de uso de tools por tenant.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:50.898Z",
+    "updatedAt": "2026-02-25T23:43:45.181Z"
+  },
+  {
+    "id": "7620f242-0219-417b-85e0-f594578bdd73",
+    "identifier": "GAR-112",
+    "title": "WEB-33 Tool execution logs",
+    "description": "Logs de execução por tool.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:49.95Z",
+    "updatedAt": "2026-02-25T23:43:33.791Z"
+  },
+  {
+    "id": "82615271-ff47-40ad-85b1-ae5cc6e54ab5",
+    "identifier": "GAR-111",
+    "title": "WEB-32 Tool policy editor",
+    "description": "Allowlist paths, disable bash for non-admin.",
+    "priority": 2,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:47.847Z",
+    "updatedAt": "2026-02-25T23:43:32.548Z"
+  },
+  {
+    "id": "545742f4-da9a-4c28-af32-a7d76c25fe51",
+    "identifier": "GAR-110",
+    "title": "WEB-31 Tools list + enable/disable",
+    "description": "Listar e ativar/desativar tools.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:46.692Z",
+    "updatedAt": "2026-02-25T23:43:31.343Z"
+  },
+  {
+    "id": "41538f48-8a9a-4a27-9362-99aa54ecdc3a",
+    "identifier": "GAR-109",
+    "title": "WEB-30 Memory health + errors viewer",
+    "description": "Viewer de errors e health de memória.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:44.975Z",
+    "updatedAt": "2026-02-25T23:43:29.786Z"
+  },
+  {
+    "id": "5674dd17-226c-404a-9b6f-1ed30bd30e57",
+    "identifier": "GAR-108",
+    "title": "WEB-29 Import/export memory (backup)",
+    "description": "Backup de memória (import/export).",
+    "priority": 4,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:43.542Z",
+    "updatedAt": "2026-02-25T23:43:18.815Z"
+  },
+  {
+    "id": "8782ff3e-9cf1-4a6d-ae3d-3c67359eb175",
+    "identifier": "GAR-107",
+    "title": "WEB-28 Reindex embeddings / rebuild",
+    "description": "Reindex embeddings / rebuild memórias.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:42.329Z",
+    "updatedAt": "2026-02-25T23:43:17.943Z"
+  },
+  {
+    "id": "5caf5da2-3ca0-438d-9d8d-2677292e2bd6",
+    "identifier": "GAR-106",
+    "title": "WEB-27 Memory CRUD (admin)",
+    "description": "Apagar entradas, pin, tags.",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:40.932Z",
+    "updatedAt": "2026-02-25T23:43:16.216Z"
+  },
+  {
+    "id": "b701902a-4615-4b31-94c2-f0b59443fffb",
+    "identifier": "GAR-105",
+    "title": "WEB-26 Memory browser + search",
+    "description": "Listar + buscar memórias por tenant",
+    "priority": 3,
+    "state": {
+      "name": "Done"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:39.559Z",
+    "updatedAt": "2026-02-25T23:43:14.717Z"
+  },
+  {
+    "id": "3a67d5af-1134-46cd-a833-4137d957ee60",
+    "identifier": "GAR-104",
+    "title": "ADM-25 — Release checklist + docs",
+    "description": "Documentar endpoints admin\nDocumentar threat model\nDocumentar backup/restore (config + secrets metadata + audit)",
+    "priority": 3,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:26.04Z",
+    "updatedAt": "2026-02-27T02:06:26.628Z"
+  },
+  {
+    "id": "14ddfe85-025c-4449-b654-b5eeeca24f35",
+    "identifier": "GAR-103",
+    "title": "ADM-24 — “Golden paths” QA checklist",
+    "description": "Windows local\nDocker\nProd-like config\nTeste com dados “maliciosos” em memórias/logs",
+    "priority": 3,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:25.509Z",
+    "updatedAt": "2026-02-27T02:06:26.059Z"
+  },
+  {
+    "id": "36de3e23-0553-4f03-baa5-ca19343d07bf",
+    "identifier": "GAR-102",
+    "title": "ADM-23 — Testes E2E (Playwright)",
+    "description": "Setup → login → CSRF → secrets CRUD → audit → providers toggle → logout\nTeste de permissões por role",
+    "priority": 2,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:23.981Z",
+    "updatedAt": "2026-02-27T02:06:25.36Z"
+  },
+  {
+    "id": "ef3ad294-0e48-4c9e-9300-06d149a77048",
+    "identifier": "GAR-101",
+    "title": "ADM-22 — Security headers hardening",
+    "description": "X-Frame-Options / frame-ancestors\nReferrer-Policy\nPermissions-Policy\netc.",
+    "priority": 2,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:22.198Z",
+    "updatedAt": "2026-02-27T02:06:24.861Z"
+  },
+  {
+    "id": "d169e770-090e-47ff-b1ca-87aa9a0d1aae",
+    "identifier": "GAR-100",
+    "title": "ADM-21 — CSP “strict” com nonce (para /admin)",
+    "description": "Content-Security-Policy com script-src 'nonce-…'\nEvitar inline handlers / eval\nobject-src 'none'\nSe precisar: strict-dynamic para scripts carregados pelo bundle principal",
+    "priority": 2,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:20.729Z",
+    "updatedAt": "2026-02-27T02:06:23.452Z"
+  },
+  {
+    "id": "bf5dd969-bd91-4464-8253-24e5ce96c7be",
+    "identifier": "GAR-99",
+    "title": "ADM-20 — Sessions console",
+    "description": "Sessões ativas\n“Disconnect session”\nMaintenance mode",
+    "priority": 3,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:19.263Z",
+    "updatedAt": "2026-02-27T02:06:15.437Z"
+  },
+  {
+    "id": "8b22e9ef-557b-4100-96fb-9273bbcb4652",
+    "identifier": "GAR-98",
+    "title": "ADM-19 — Channels console",
+    "description": "Telegram: allowlist UI, status, test ping\nOutros: status, reconnect",
+    "priority": 3,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:17.585Z",
+    "updatedAt": "2026-02-27T02:06:14.795Z"
+  },
+  {
+    "id": "3074de87-e663-4d0c-9b57-7fc803bf58a5",
+    "identifier": "GAR-97",
+    "title": "ADM-18 — Tools console",
+    "description": "Lista tools\nEnable/disable por role/tenant\nPolicy editor (paths permitidos, etc.)\nLogs de execução",
+    "priority": 3,
+    "state": {
+      "name": "Canceled"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "assignee": null,
+    "createdAt": "2026-02-25T22:50:16.526Z",
+    "updatedAt": "2026-02-27T02:06:14.18Z"
+  }
+]
