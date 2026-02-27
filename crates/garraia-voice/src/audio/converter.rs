@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use crate::pipeline::VoiceError;
+use std::path::{Path, PathBuf};
 
 /// Converte áudio entre formatos usando ffmpeg.
 pub struct AudioConverter;
@@ -12,19 +12,25 @@ impl AudioConverter {
         let status = tokio::process::Command::new("ffmpeg")
             .args([
                 "-y",
-                "-i", &input.to_string_lossy(),
-                "-ar", "16000",
-                "-ac", "1",
-                "-f", "wav",
+                "-i",
+                &input.to_string_lossy(),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-f",
+                "wav",
                 &output.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .await
-            .map_err(|e| VoiceError::AudioConversion(format!(
-                "Failed to run ffmpeg (ogg→wav): {e}. Is ffmpeg installed?"
-            )))?;
+            .map_err(|e| {
+                VoiceError::AudioConversion(format!(
+                    "Failed to run ffmpeg (ogg→wav): {e}. Is ffmpeg installed?"
+                ))
+            })?;
 
         if !status.success() {
             return Err(VoiceError::AudioConversion(format!(
@@ -48,21 +54,29 @@ impl AudioConverter {
         let status = tokio::process::Command::new("ffmpeg")
             .args([
                 "-y",
-                "-i", &input.to_string_lossy(),
-                "-c:a", "libopus",
-                "-b:a", "128k",
-                "-ar", "48000",
-                "-ac", "1",
-                "-f", "ogg",
+                "-i",
+                &input.to_string_lossy(),
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "128k",
+                "-ar",
+                "48000",
+                "-ac",
+                "1",
+                "-f",
+                "ogg",
                 &output.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .await
-            .map_err(|e| VoiceError::AudioConversion(format!(
-                "Failed to run ffmpeg (wav→ogg): {e}. Is ffmpeg installed?"
-            )))?;
+            .map_err(|e| {
+                VoiceError::AudioConversion(format!(
+                    "Failed to run ffmpeg (wav→ogg): {e}. Is ffmpeg installed?"
+                ))
+            })?;
 
         if !status.success() {
             return Err(VoiceError::AudioConversion(format!(

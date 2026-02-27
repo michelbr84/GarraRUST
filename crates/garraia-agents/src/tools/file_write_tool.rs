@@ -142,11 +142,11 @@ impl Tool for FileWriteTool {
         }
         // GAR-133: Safe Code Patch — create backup before overwriting existing files
         if path.exists() {
-            let backup_path = path.with_extension(
-                format!("{}.bak",
-                    path.extension().map_or("".to_string(), |e| e.to_string_lossy().to_string())
-                )
-            );
+            let backup_path = path.with_extension(format!(
+                "{}.bak",
+                path.extension()
+                    .map_or("".to_string(), |e| e.to_string_lossy().to_string())
+            ));
             match tokio::fs::copy(&path, &backup_path).await {
                 Ok(bytes) => {
                     tracing::debug!(

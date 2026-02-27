@@ -378,27 +378,109 @@ Consulte a [referência completa de configuração](docs/) para todas as opçõe
 
 ## Arquitetura
 
+GarraIA é um workspace Rust com **14 crates** de alta qualidade, cada um com responsabilidade única:
+
 ```text
 crates/
-  garraia-cli/        # CLI, assistente de init, gerenciamento de daemon
-  garraia-gateway/    # Gateway WebSocket, API HTTP, sessões
-  garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
-  garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
-  garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
-  garraia-voice/      # Pipeline de voz: Whisper STT + Hibiki/Chatterbox TTS, conversão ffmpeg
-  garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
-  garraia-runtime/    # Executor com máquina de estados (run_turn)
-  garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec)
-  garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
-  garraia-media/     # Processamento de mídia (esquelético)
-  garraia-security/  # Cofre de credenciais, listas de permissões, pareamento, validação
-  garraia-skills/    # Parser de SKILL.md, scanner, instalador
-  garraia-common/    # Tipos compartilhados, erros, utilitários
+├── garraia-cli/        # CLI, assistente de init, gerenciamento de daemon
+├── garraia-gateway/    # Gateway WebSocket, API HTTP, admin console
+├── garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
+├── garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
+├── garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
+├── garraia-voice/      # Pipeline de voz: Whisper STT → LLM → Chatterbox/Hibiki TTS
+├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
+├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
+├── garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec), sessões
+├── garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
+├── garraia-media/     # Processamento de mídia: PDF, imagens
+├── garraia-security/  # Cofre de credenciais, listas de permissões, pareamento, validação
+├── garraia-skills/    # Parser de SKILL.md, scanner, instalador
+├── garraia-common/    # Tipos compartilhados, erros, utilitários
 ```
+
+### Fluxo de Execução do Runtime
+
+O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vida completo da execução do agente:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GARRAIA RUNTIME FLOW                          │
+├─────────────────────────────────────────────────────────────────┤
+│  1. STATE MACHINE                                               │
+│     ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+│     │  IDLE    │───▶│ RUNNING  │───▶│  DONE    │             │
+│     └──────────┘    └──────────┘    └──────────┘             │
+│         ▲               │                │                      │
+│         └───────────────┴────────────────┘                      │
+│                                                                 │
+│  2. TURN EXECUTION                                              │
+│     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│     │  RECEIVE    │─▶│   EXECUTE   │─▶│   RESPOND   │        │
+│     │  MESSAGE    │  │   TOOLS     │  │   STREAM    │        │
+│     └─────────────┘  └─────────────┘  └─────────────┘        │
+│                                                                 │
+│  3. META CONTROLLER                                             │
+│     - Gerenciamento de estado com history                       │
+│     - Budget de execução (max_turns, timeouts)                  │
+│     - Retry com backoff exponencial                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Pipeline de Voz (STT → LLM → TTS)
+
+O [`garraia-voice`](crates/garraia-voice/src/lib.rs) implementa o pipeline de voz end-to-end:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    VOICE PIPELINE                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐   │
+│  │  AUDIO  │───▶│   STT   │───▶│   LLM   │───▶│   TTS   │   │
+│  │  INPUT  │    │ Whisper │    │ Provider│    │Chatterbox│   │
+│  └─────────┘    └─────────┘    └─────────┘    │  Hibiki  │   │
+│                                                └─────────┘   │
+│                                                                 │
+│  STT Providers:          TTS Providers:                        │
+│  - Whisper (local)       - Chatterbox (GPU, multilíngue)       │
+│  - OpenAI Whisper API    - Hibiki (GPU)                        │
+│                          - OpenAI TTS API                       │
+│                                                                 │
+│  Features:                                                      │
+│  - Conversão de formato via ffmpeg                             │
+│  - Streaming de áudio em tempo real                            │
+│  - Suporte multilíngue (pt, en, es, fr, de, it, hi)           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Arquitetura Multi-Agente
+
+O GarraIA suporta múltiplos agentes com roteamento inteligente:
+
+| Recurso | Descrição |
+|---------|-----------|
+| **Agent Registry** | Múltiplos agentes nomeados com configurações independentes |
+| **Priority Router** | Roteamento baseado em prioridade (1-100) |
+| **Session Continuity** | Sessões persistentes entre canais |
+| **A2A Protocol** | Comunicação agent-to-agent via JSON-RPC 2.0 |
+| **Agent Cards** | Auto-descoberta via `/.well-known/agent.json` |
+
+### Suporte MCP (Model Context Protocol)
+
+O GarraIA implementa o protocolo MCP com:
+
+- **Transporte stdio** - Servidores MCP locais
+- **Transporte HTTP** - Servidores MCP remotos (`mcp-http` feature)
+- **Tool Bridging** - Ferramentas aparecem como `server.tool` namespaced
+- **Resource API** - Arquivos, prompts, e custom resources
+- **Health Monitor** - Auto-reconexão com verificação periódica
+- **CLI Commands** - `garraia mcp list`, `mcp inspect`, `mcp resources`, `mcp prompts`
+
+Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop).
 
 | Componente | Status |
 |-----------|--------|
-| Gateway (WebSocket, HTTP, sessões) | ✅ Funcionando |
+| Gateway (WebSocket, HTTP, admin console) | ✅ Funcionando |
 | Telegram (streaming, comandos, pareamento) | ✅ Funcionando |
 | Discord (comandos slash, sessões) | ✅ Funcionando |
 | Slack (Socket Mode, streaming) | ✅ Funcionando |
@@ -414,12 +496,12 @@ crates/
 | Embeddings locais (Ollama) | ✅ Funcionando |
 | Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
 | Agendamento (cron, intervalo, único) | ✅ Funcionando |
-| Voice Mode (Chatterbox TTS, multilíngue) | ✅ Funcionando |
+| Voice Mode (Chatterbox TTS, Hibiki TTS, Whisper STT) | ✅ Funcionando |
 | Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
 | Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
-| Sistema de plugins (Sandbox WASM) | 🔶 Esquelético |
-| Processamento de mídia | 🔶 Esquelético |
+| Sistema de plugins (Sandbox WASM) | ✅ Funcionando |
+| Processamento de mídia (PDF, imagens) | ✅ Funcionando |
 
 ## Testes Automatizados
 
@@ -434,12 +516,15 @@ O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://disc
 
 Acompanhe as próximas entregas e contribua através do nosso **[Board Oficial no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)**.
 
+Fases completadas:
+
+- **✅ Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
+- **✅ Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
+- **✅ Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
+- **✅ Fase 4: Admin Console** - Projeto unificado ao Admin Console principal.
+
 Fases em andamento:
 
-- **Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
-- **Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
-- **Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
-- **Fase 4: Admin Console Separate App** - Projeto unificado ao Admin Console principal.
 - **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
 - **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
 

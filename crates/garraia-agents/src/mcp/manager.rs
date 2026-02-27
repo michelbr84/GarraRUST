@@ -409,6 +409,73 @@ impl McpManager {
         });
     }
 
+    /// Call a specific tool on a specific MCP server.
+    ///
+    /// # Arguments
+    /// * `server_name` - Name of the MCP server
+    /// * `tool_name` - Name of the tool to call
+    /// * `arguments` - Arguments to pass to the tool
+    ///
+    /// # Returns
+    /// The tool's output as a string, or an error
+    pub async fn call_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: std::collections::HashMap<String, serde_json::Value>,
+    ) -> std::result::Result<String, String> {
+        use crate::tools::{Tool, ToolContext};
+
+        let conns = self.connections.read().await;
+        let conn = match conns.get(server_name) {
+            Some(c) => c,
+            None => return Err(format!("MCP server '{}' not found", server_name)),
+        };
+
+        // Find the tool in the connection's tool list
+        let tool_info = match conn
+            .tools
+            .iter()
+            .find(|t| t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name))
+        {
+            Some(t) => t,
+            None => {
+                return Err(format!(
+                    "Tool '{}' not found on server '{}'",
+                    tool_name, server_name
+                ));
+            }
+        };
+
+        // Create a peer reference
+        let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
+
+        // Create the tool
+        let tool = McpTool::new(
+            server_name,
+            tool_info.name.clone(),
+            tool_info.description.clone(),
+            tool_info.input_schema.clone(),
+            peer,
+            Duration::from_secs(60),
+        );
+
+        // Execute the tool
+        let context = ToolContext {
+            session_id: "mcp_command".to_string(),
+            user_id: None,
+            is_heartbeat: false,
+        };
+
+        let input = serde_json::Value::Object(arguments.into_iter().collect());
+        let output = tool
+            .execute(&context, input)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(output.content)
+    }
+
     /// Check all connections and attempt to reconnect any that are closed.
     async fn check_and_reconnect(&self) {
         let to_reconnect: Vec<(String, ConnectionParams)> = {

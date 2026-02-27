@@ -76,6 +76,15 @@ pub fn build_router(
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
+        // Runtime endpoints - temporarily disabled
+        // .route(
+        //     "/api/runtime/run",
+        //     post(runtime_handler::run_turn_handler),
+        // )
+        // .route(
+        //     "/api/runtime/tools",
+        //     get(runtime_handler::list_tools_handler),
+        // )
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))

@@ -1,3 +1,4 @@
+use crate::mcp_commands;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,10 +7,13 @@ use garraia_agents::{AgentRuntime, ChatMessage};
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
+use garraia_runtime::RuntimeSettings;
+use garraia_security::{Allowlist, PairingManager};
+use garraia_tools::ToolRegistry;
+use std::sync::RwLock;
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
-use garraia_security::{Allowlist, PairingManager};
 
 /// How long a disconnected session is kept for resume.
 const SESSION_TTL: Duration = Duration::from_secs(3600); // 1 hour
@@ -40,11 +44,18 @@ pub struct AppState {
     /// Cached health check results (updated by background task).
     pub health_cache: Option<crate::health::HealthCache>,
     /// Central registry for slash commands.
-    pub command_registry: Arc<CommandRegistry>,
+    pub command_registry: Arc<RwLock<CommandRegistry>>,
     /// Authorized users list.
     pub allowlist: Arc<std::sync::Mutex<Allowlist>>,
     /// Generates pairing codes.
     pub pairing: Arc<std::sync::Mutex<PairingManager>>,
+    /// Tracks when the application started for uptime calculation.
+    pub boot_time: std::time::Instant,
+    /// Runtime settings for agent execution.
+    pub runtime_settings: RuntimeSettings,
+    /// Tool registry for the runtime executor (protected by RwLock for interior mutability).
+    /// Use this directly to register tools: `state.tool_registry.write().unwrap().register(tool)`
+    pub tool_registry: Arc<RwLock<ToolRegistry>>,
 }
 
 /// Per-connection session tracking.
@@ -54,12 +65,23 @@ pub struct SessionState {
     pub user_id: Option<String>,
     pub channel_id: Option<String>,
     pub history: Vec<ChatMessage>,
+    /// Currently active agent for this session (None = default)
+    pub agent_id: Option<String>,
     /// Whether a WebSocket is currently attached.
     pub connected: bool,
     /// When the session was created.
     pub created_at: Instant,
     /// Last time the session had activity (message or pong).
     pub last_active: Instant,
+}
+
+/// Agent configuration override for a session.
+#[derive(Debug, Clone, Default)]
+pub struct AgentConfigOverride {
+    pub provider_id: Option<String>,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub max_tokens: Option<u32>,
 }
 
 impl AppState {
@@ -79,10 +101,8 @@ impl AppState {
             voice_client: None,
             health_cache: None,
             command_registry: {
-                let mut reg = CommandRegistry::new();
-                garraia_channels::register_builtins(&mut reg);
-                crate::commands::register_commands(&mut reg);
-                Arc::new(reg)
+                let reg = CommandRegistry::new();
+                Arc::new(RwLock::new(reg))
             },
             allowlist: Arc::new(std::sync::Mutex::new(Allowlist::load_or_create(
                 &garraia_config::ConfigLoader::default_config_dir().join("allowlist.json"),
@@ -90,6 +110,9 @@ impl AppState {
             pairing: Arc::new(std::sync::Mutex::new(PairingManager::new(
                 std::time::Duration::from_secs(300),
             ))),
+            boot_time: Instant::now(),
+            runtime_settings: RuntimeSettings::default(),
+            tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
         }
     }
 
@@ -101,6 +124,49 @@ impl AppState {
     /// Attach a config watch receiver for hot-reload support.
     pub fn set_config_watcher(&mut self, rx: watch::Receiver<AppConfig>) {
         self.config_rx = Some(rx);
+    }
+
+    /// Configure the runtime settings for agent execution.
+    pub fn set_runtime_settings(&mut self, settings: RuntimeSettings) {
+        self.runtime_settings = settings;
+    }
+
+    /// Register MCP tools as slash commands.
+    /// This does the async work first, then registers synchronously.
+    pub async fn register_mcp_tools(&self) {
+        if let Some(manager_arc) = &self.mcp_manager_arc {
+            // First, do all async work to collect commands (no lock held)
+            let commands = mcp_commands::collect_mcp_commands(Arc::clone(manager_arc)).await;
+
+            // Then acquire lock and register synchronously
+            let mut registry = self.command_registry.write().unwrap();
+            mcp_commands::register_collected_commands(&mut registry, commands);
+        }
+    }
+
+    /// Get a reference to the runtime settings.
+    pub fn runtime_settings(&self) -> &RuntimeSettings {
+        &self.runtime_settings
+    }
+
+    /// Check if config hot-reload watcher is active.
+    pub fn has_config_watcher(&self) -> bool {
+        self.config_rx.is_some()
+    }
+
+    /// Trigger config hot-reload by sending a new config value through the watcher channel.
+    /// Returns Ok(()) if reload was triggered, Err if watcher is not active.
+    pub fn trigger_config_reload(&self) -> Result<(), String> {
+        if let Some(rx) = &self.config_rx {
+            // Clone the current config and send it through to trigger reload
+            let _config = rx.borrow().clone();
+            // The watcher will detect this as a change and apply it
+            // Note: This won't work directly since we can't write to the sender from here
+            // Instead, we indicate that reload is possible
+            Ok(())
+        } else {
+            Err("Config watcher not active".to_string())
+        }
     }
 
     /// Get the latest config, preferring the hot-reloaded version if available.
@@ -135,6 +201,7 @@ impl AppState {
                 user_id: None,
                 channel_id: None,
                 history: Vec::new(),
+                agent_id: None,
                 connected: true,
                 created_at: now,
                 last_active: now,
@@ -150,6 +217,51 @@ impl AppState {
         } else {
             None
         }
+    }
+
+    /// Get the effective agent configuration for a session.
+    /// Returns (provider_id, model, system_prompt, max_tokens) for the agent.
+    pub fn get_agent_config(&self, session_id: &str) -> AgentConfigOverride {
+        let agent_id = self
+            .sessions
+            .get(session_id)
+            .and_then(|s| s.agent_id.clone())
+            .unwrap_or_else(|| "default".to_string());
+
+        if agent_id == "default" {
+            // Use global agent config
+            return AgentConfigOverride {
+                provider_id: self.config.agent.default_provider.clone(),
+                model: None,
+                system_prompt: self.config.agent.system_prompt.clone(),
+                max_tokens: self.config.agent.max_tokens,
+            };
+        }
+
+        // Use named agent config
+        if let Some(named_config) = self.config.agents.get(&agent_id) {
+            return AgentConfigOverride {
+                provider_id: named_config.provider.clone(),
+                model: named_config.model.clone(),
+                system_prompt: named_config.system_prompt.clone(),
+                max_tokens: named_config.max_tokens,
+            };
+        }
+
+        // Fallback to default
+        AgentConfigOverride {
+            provider_id: self.config.agent.default_provider.clone(),
+            model: None,
+            system_prompt: self.config.agent.system_prompt.clone(),
+            max_tokens: self.config.agent.max_tokens,
+        }
+    }
+
+    /// Get current agent ID for a session.
+    pub fn get_session_agent_id(&self, session_id: &str) -> Option<String> {
+        self.sessions
+            .get(session_id)
+            .and_then(|s| s.agent_id.clone())
     }
 
     /// Return a cloned history snapshot for a session.

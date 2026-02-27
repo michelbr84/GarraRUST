@@ -131,7 +131,11 @@ impl VoicePipeline {
         let t = Instant::now();
         let transcribed_text = self.whisper.transcribe(&input_wav).await?;
         let stt_ms = t.elapsed().as_millis();
-        tracing::info!(stt_ms, text_len = transcribed_text.len(), "Step 2/5: wav → text (Whisper)");
+        tracing::info!(
+            stt_ms,
+            text_len = transcribed_text.len(),
+            "Step 2/5: wav → text (Whisper)"
+        );
 
         if transcribed_text.trim().is_empty() {
             return Err(VoiceError::Stt(
@@ -143,12 +147,14 @@ impl VoicePipeline {
         let t = Instant::now();
         let llm_response = llm_callback(transcribed_text.clone()).await?;
         let llm_ms = t.elapsed().as_millis();
-        tracing::info!(llm_ms, response_len = llm_response.len(), "Step 3/5: text → LLM → response");
+        tracing::info!(
+            llm_ms,
+            response_len = llm_response.len(),
+            "Step 3/5: text → LLM → response"
+        );
 
         if llm_response.trim().is_empty() {
-            return Err(VoiceError::Llm(
-                "LLM returned empty response".to_string(),
-            ));
+            return Err(VoiceError::Llm("LLM returned empty response".to_string()));
         }
 
         // ── 4. Resposta → WAV (Hibiki TTS) ──────────────────────────────
@@ -178,10 +184,7 @@ impl VoicePipeline {
             total_ms,
         };
 
-        tracing::info!(
-            total_ms,
-            "Voice pipeline complete"
-        );
+        tracing::info!(total_ms, "Voice pipeline complete");
 
         // ── Limpeza de arquivos intermediários ──────────────────────────
         let _ = tokio::fs::remove_file(&input_ogg).await;

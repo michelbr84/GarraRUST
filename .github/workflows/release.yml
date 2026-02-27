@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.12)'
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Build for Linux x86_64
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release --package garraia-cli
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/release/garraia release/garraia-linux-x86_64
+          chmod +x release/garraia-linux-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: garraia-linux-x86_64
+          path: release/garraia-linux-x86_64
+
+  # Build for Linux ARM64
+  build-linux-arm64:
+    name: Build Linux ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ARM64 binary
+        uses: docker://rust:1.85-bookworm
+        with:
+          args: |
+            rustup target add aarch64-unknown-linux-gnu
+            cargo build --release --target aarch64-unknown-linux-gnu --package garraia-cli
+
+      - name: Install cross
+        run: cargo install cross
+
+      - name: Build with cross
+        run: cross build --release --target aarch64-unknown-linux-gnu --package garraia-cli
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/aarch64-unknown-linux-gnu/release/garraia release/garraia-linux-arm64
+          chmod +x release/garraia-linux-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: garraia-linux-arm64
+          path: release/garraia-linux-arm64
+
+  # Build for Windows x86_64
+  build-windows-x86_64:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release --package garraia-cli
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/release/garraia.exe release/garraia-windows-x86_64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: garraia-windows-x86_64
+          path: release/garraia-windows-x86_64.exe
+
+  # Build for macOS x86_64
+  build-macos-x86_64:
+    name: Build macOS x86_64
+    runs-on: macos-13
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release --package garraia-cli
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/release/garraia release/garraia-macos-x86_64
+          chmod +x release/garraia-macos-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: garraia-macos-x86_64
+          path: release/garraia-macos-x86_64
+
+  # Build for macOS ARM64 (Apple Silicon)
+  build-macos-arm64:
+    name: Build macOS ARM64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release --package garraia-cli
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/release/garraia release/garraia-macos-arm64
+          chmod +x release/garraia-macos-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: garraia-macos-arm64
+          path: release/garraia-macos-arm64
+
+  # Create release
+  release:
+    name: Create Release
+    needs: [build-linux-x86_64, build-linux-arm64, build-windows-x86_64, build-macos-x86_64, build-macos-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Prepare binaries
+        run: |
+          mkdir -p release
+          # Linux x86_64
+          cp artifacts/garraia-linux-x86_64/garraia-linux-x86_64 release/
+          # Linux ARM64
+          cp artifacts/garraia-linux-arm64/garraia-linux-arm64 release/
+          # Windows x86_64
+          cp artifacts/garraia-windows-x86_64/garraia-windows-x86_64.exe release/
+          # macOS x86_64
+          cp artifacts/garraia-macos-x86_64/garraia-macos-x86_64 release/
+          # macOS ARM64
+          cp artifacts/garraia-macos-arm64/garraia-macos-arm64 release/
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.version }}" != "" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION: $VERSION"
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') }}
+          generate_release_notes: true
+          files: |
+            release/garraia-linux-x86_64
+            release/garraia-linux-arm64
+            release/garraia-windows-x86_64.exe
+            release/garraia-macos-x86_64
+            release/garraia-macos-arm64
+            release/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -44,6 +44,9 @@ impl GatewayServer {
         let mut state = AppState::new(self.config, agents, channels);
         state.mcp_manager = Some(mcp_manager);
 
+        // Register MCP tools as slash commands (must be done before Arc-wrapping)
+        state.register_mcp_tools().await;
+
         // Initialize Chatterbox TTS client if voice is enabled
         if state.config.voice.enabled {
             let voice_client = garraia_voice::ChatterboxClient::new(

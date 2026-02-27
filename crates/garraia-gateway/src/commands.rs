@@ -46,7 +46,8 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap()
                 .downcast_ref::<AppState>()
                 .unwrap();
-            let cmds = state.command_registry.list_for_role(ctx.user_role);
+            let registry = state.command_registry.read().unwrap();
+            let cmds = registry.list_for_role(ctx.user_role);
             let mut help = String::from("📋 GarraIA Commands\n\n");
             for (name, desc) in &cmds {
                 help.push_str(&format!("/{name} — {desc}\n"));
@@ -269,7 +270,6 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap()
                 .downcast_ref::<AppState>()
                 .unwrap();
-            
             let channels = if state.config.channels.is_empty() { "None".to_string() } else { state.config.channels.keys().cloned().collect::<Vec<_>>().join(", ") };
             let llms = if state.config.llm.is_empty() { "None".to_string() } else { state.config.llm.keys().cloned().collect::<Vec<_>>().join(", ") };
             let agents = if state.config.agents.is_empty() { "None".to_string() } else { state.config.agents.keys().cloned().collect::<Vec<_>>().join(", ") };
@@ -302,7 +302,10 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             if servers.is_empty() {
                 Ok("🔌 No MCP servers configured.".to_string())
             } else {
-                Ok(format!("🔌 **Configured MCP Servers**\n\n- {}", servers.join("\n- ")))
+                Ok(format!(
+                    "🔌 **Configured MCP Servers**\n\n- {}",
+                    servers.join("\n- ")
+                ))
             }
         },
     )));

@@ -10,6 +10,8 @@ garraia-common = { workspace = true }
 garraia-config = { workspace = true }
 garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
+garraia-runtime = { workspace = true }
+garraia-tools = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
@@ -37,6 +39,7 @@ tower_governor = "0.8"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+filetime = "0.2"
 
 [features]
 default = []

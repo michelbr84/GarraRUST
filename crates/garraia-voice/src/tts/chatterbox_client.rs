@@ -93,10 +93,9 @@ impl ChatterboxClient {
             event_id: String,
         }
 
-        let submit_result: SubmitResponse = resp
-            .json()
-            .await
-            .map_err(|e| VoiceError::Tts(format!("Failed to parse Chatterbox submit response: {e}")))?;
+        let submit_result: SubmitResponse = resp.json().await.map_err(|e| {
+            VoiceError::Tts(format!("Failed to parse Chatterbox submit response: {e}"))
+        })?;
 
         // Step 2: Poll for the result using the event_id
         let result_url = format!(
@@ -139,9 +138,7 @@ impl ChatterboxClient {
 
         if !audio_resp.status().is_success() {
             let status = audio_resp.status();
-            return Err(VoiceError::Tts(format!(
-                "Audio download returned {status}"
-            )));
+            return Err(VoiceError::Tts(format!("Audio download returned {status}")));
         }
 
         let audio_bytes = audio_resp

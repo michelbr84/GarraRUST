@@ -3,7 +3,7 @@ name = "garraia-media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Media processing (image, audio, video) for GarraIA"
+description = "Media processing (image, audio, video, PDF, OCR) for GarraIA"
 
 [dependencies]
 garraia-common = { workspace = true }
@@ -13,3 +13,19 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 reqwest = { workspace = true }
+
+# PDF processing
+lopdf = "0.34"
+
+# Image processing
+image = "0.25"
+imageproc = "0.25"
+
+# Base64 encoding for image data
+base64 = "0.22"
+
+# Iterator utilities
+itertools = "0.14"
+
+[dev-dependencies]
+tempfile = "3"
