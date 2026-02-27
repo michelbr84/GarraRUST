@@ -37,6 +37,11 @@ impl AnthropicProvider {
         }
     }
 
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     fn endpoint(&self) -> String {
         format!("{}/v1/messages", self.base_url.trim_end_matches('/'))
     }

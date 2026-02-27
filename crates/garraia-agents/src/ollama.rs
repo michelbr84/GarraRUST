@@ -30,6 +30,11 @@ impl OllamaProvider {
         }
     }
 
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = client;
+        self
+    }
+
     fn build_request_body(&self, request: &LlmRequest, stream: bool) -> Value {
         let model = if request.model.is_empty() {
             self.model.clone()

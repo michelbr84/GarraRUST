@@ -27,6 +27,11 @@ impl OllamaEmbeddingProvider {
         }
     }
 
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     fn endpoint(&self) -> String {
         format!("{}/api/embeddings", self.base_url.trim_end_matches('/'))
     }
@@ -110,6 +115,11 @@ impl CohereEmbeddingProvider {
             model: model.unwrap_or_else(|| "embed-english-v3.0".to_string()),
             base_url: base_url.unwrap_or_else(|| "https://api.cohere.com".to_string()),
         }
+    }
+
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     fn endpoint(&self) -> String {

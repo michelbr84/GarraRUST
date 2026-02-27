@@ -196,7 +196,7 @@ fn transition(current: &mut TaskState, target: TaskState) -> Result<(), RuntimeE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use garraia_tools::{ToolContext, ToolOutput};
+    use garraia_tools::ToolContext;
 
     fn criar_settings() -> RuntimeSettings {
         RuntimeSettings {

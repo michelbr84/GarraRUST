@@ -8,6 +8,62 @@ use super::{CommandContext, CommandError, CommandResult, Role, SlashCommand};
 ///
 /// Commands are registered once at startup and looked up by name
 /// when a user sends a message starting with `/`.
+
+pub struct ClosureCommand<F> {
+    name: &'static str,
+    desc: &'static str,
+    usage: &'static str,
+    role: Role,
+    show_in_menu: bool,
+    f: F,
+}
+
+impl<F> ClosureCommand<F>
+where
+    F: Fn(&CommandContext) -> CommandResult + Send + Sync + 'static,
+{
+    pub fn new(
+        name: &'static str,
+        desc: &'static str,
+        usage: &'static str,
+        role: Role,
+        show_in_menu: bool,
+        f: F,
+    ) -> Self {
+        Self {
+            name,
+            desc,
+            usage,
+            role,
+            show_in_menu,
+            f,
+        }
+    }
+}
+
+impl<F> SlashCommand for ClosureCommand<F>
+where
+    F: Fn(&CommandContext) -> CommandResult + Send + Sync + 'static,
+{
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn description(&self) -> &'static str {
+        self.desc
+    }
+    fn usage(&self) -> &'static str {
+        self.usage
+    }
+    fn required_role(&self) -> Role {
+        self.role
+    }
+    fn show_in_menu(&self) -> bool {
+        self.show_in_menu
+    }
+    fn execute(&self, ctx: &CommandContext) -> CommandResult {
+        (self.f)(ctx)
+    }
+}
 pub struct CommandRegistry {
     commands: HashMap<String, Box<dyn SlashCommand>>,
 }
