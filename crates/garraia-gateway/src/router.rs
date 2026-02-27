@@ -74,6 +74,7 @@ pub fn build_router(
         )
         .route("/api/logs", get(crate::logs_handler::get_logs))
         .route("/api/tts", post(crate::voice_handler::synthesize))
+        .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
         // Runtime endpoints - temporarily disabled

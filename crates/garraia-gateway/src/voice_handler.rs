@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{State, Multipart};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -154,6 +154,154 @@ pub async fn synthesize(
                 )
                     .into_response()
             }
+        }
+    }
+}
+
+/// Response for STT transcription
+#[derive(serde::Serialize)]
+pub struct SttResponse {
+    pub text: String,
+    pub error: Option<String>,
+}
+
+/// POST /api/stt — transcribe audio using Whisper STT.
+/// 
+/// Accepts multipart form data with an audio file (WAV, OGG, MP3, etc.).
+/// Returns JSON with transcribed text on success.
+/// Only available when the server is started with `--with-voice`.
+#[tracing::instrument(skip(state), fields(filename))]
+pub async fn transcribe(
+    State(state): State<SharedState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let Some(stt_client) = &state.stt_client else {
+        warn!("STT request rejected: voice mode not enabled");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SttResponse {
+                text: String::new(),
+                error: Some(
+                    "Voice mode is not enabled. Start the server with --with-voice.".to_string(),
+                ),
+            }),
+        );
+    };
+
+    // Extract audio file from multipart
+    let mut audio_data: Option<(String, Vec<u8>)> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let field_name = field.name().unwrap_or("").to_string();
+        
+        if field_name == "file" {
+            let filename = field
+                .file_name()
+                .map(|s: &str| s.to_string())
+                .unwrap_or_else(|| "audio.wav".to_string());
+            
+            // Record filename for tracing before moving
+            tracing::Span::current().record("filename", &filename);
+            
+            let data: Vec<u8> = match field.bytes().await {
+                Ok(bytes) => bytes.to_vec(),
+                Err(e) => {
+                    error!("Failed to read file data: {}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(SttResponse {
+                            text: String::new(),
+                            error: Some(format!("Failed to read file: {}", e)),
+                        }),
+                    );
+                }
+            };
+            audio_data = Some((filename, data));
+        }
+    }
+
+    let (filename, audio_bytes) = match audio_data {
+        Some(data) => data,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SttResponse {
+                    text: String::new(),
+                    error: Some("No audio file provided".to_string()),
+                }),
+            );
+        }
+    };
+
+    if audio_bytes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SttResponse {
+                text: String::new(),
+                error: Some("Audio file is empty".to_string()),
+            }),
+        );
+    }
+
+    info!(
+        filename = %filename,
+        audio_size = audio_bytes.len(),
+        "🎙️ STT transcription started"
+    );
+    let start = std::time::Instant::now();
+
+    // Create temp file for Whisper (it expects a file path)
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("garraia_stt_{}.wav", uuid::Uuid::new_v4()));
+    
+    // Write audio to temp file
+    if let Err(e) = tokio::fs::write(&temp_path, &audio_bytes).await {
+        error!("Failed to write temp audio file: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(SttResponse {
+                text: String::new(),
+                error: Some(format!("Failed to process audio: {}", e)),
+            }),
+        );
+    }
+
+    // Transcribe using Whisper
+    let result = stt_client.transcribe(&temp_path).await;
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    match result {
+        Ok(text) => {
+            let elapsed = start.elapsed();
+            info!(
+                text_len = text.len(),
+                duration_ms = elapsed.as_millis() as u64,
+                "✅ STT transcription complete"
+            );
+            (
+                StatusCode::OK,
+                Json(SttResponse {
+                    text,
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => {
+            let elapsed = start.elapsed();
+            error!(
+                error = %e,
+                duration_ms = elapsed.as_millis() as u64,
+                "❌ STT transcription failed"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SttResponse {
+                    text: String::new(),
+                    error: Some(format!("Transcription failed: {}", e)),
+                }),
+            )
         }
     }
 }

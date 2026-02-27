@@ -11,11 +11,14 @@ use garraia_agents::{
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
 use garraia_channels::{
     SlackChannel, SlackOnMessageFn, TelegramChannel, WhatsAppChannel, WhatsAppOnMessageFn,
+    OnVoiceFn,
 };
 use garraia_config::AppConfig;
 use garraia_db::MemoryStore;
 use garraia_security::{Allowlist, PairingManager};
-use tracing::{info, warn};
+use teloxide::net::Download;
+use teloxide::prelude::Requester;
+use tracing::{info, warn, error};
 
 use crate::state::SharedState;
 
@@ -1192,6 +1195,162 @@ pub fn build_discord_channels(
     channels
 }
 
+/// Build a voice handler for Telegram that processes voice messages.
+/// Returns None if voice mode is not enabled (no STT/TTS clients).
+pub fn build_telegram_voice_handler(
+    state: &SharedState,
+) -> Option<OnVoiceFn> {
+    // Check if voice clients are available
+    let stt_client = state.stt_client.clone()?;
+    let voice_client = state.voice_client.clone()?;
+
+    let state_for_handler = Arc::clone(state);
+
+    Some(Arc::new(move |bot: teloxide::Bot, msg: teloxide::types::Message| {
+        let stt = Arc::clone(&stt_client);
+        let tts = Arc::clone(&voice_client);
+        let state = Arc::clone(&state_for_handler);
+
+        Box::pin(async move {
+            // Extract required data from message
+            let chat_id = msg.chat.id.0;
+            let user = msg.from.as_ref().ok_or("missing user info")?;
+            let user_id = user.id.0.to_string();
+            let user_name = user.first_name.clone();
+
+            // Get the voice file ID
+            let voice = msg.voice().ok_or("no voice in message")?;
+            let file_id = voice.file.id.clone();
+
+            info!(
+                "telegram voice: processing voice from {} [uid={}] in chat {}",
+                user_name, user_id, chat_id
+            );
+
+            // Download the voice file
+            let voice_file = bot.get_file(file_id).await.map_err(|e| {
+                error!("failed to get voice file: {}", e);
+                e.to_string()
+            })?;
+
+            // Download to a temporary file
+            let temp_dir = std::env::temp_dir();
+            let temp_path = temp_dir.join(format!("garraia_voice_{}.ogg", uuid::Uuid::new_v4()));
+
+            let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                error!("failed to create temp file: {}", e);
+                e.to_string()
+            })?;
+
+            bot.download_file(&voice_file.path, &mut file).await.map_err(|e| {
+                error!("failed to download voice: {}", e);
+                e.to_string()
+            })?;
+
+            // Transcribe with Whisper
+            let text = stt.transcribe(&temp_path).await.map_err(|e| {
+                error!("STT failed: {}", e);
+                e.to_string()
+            })?;
+
+            info!("telegram voice: transcribed: {}", text);
+
+            // Clean up temp file
+            let _ = tokio::fs::remove_file(&temp_path).await;
+
+            // Check allowlist
+            {
+                let allowlist = state.allowlist.lock().unwrap();
+                if !allowlist.is_allowed(&user_id) && !allowlist.is_owner(&user_id) {
+                    warn!(
+                        "telegram voice: unauthorized user {} in chat {}",
+                        user_id, chat_id
+                    );
+                    return Err("__blocked__".to_string());
+                }
+            }
+
+            // Hydrate session and get history
+            let session_id = format!("telegram-{chat_id}");
+            state
+                .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
+                .await;
+            let history: Vec<ChatMessage> = state.session_history(&session_id);
+            let continuity_key = state.continuity_key(Some(&user_id));
+
+            // Send typing indicator
+            let _ = bot.send_chat_action(teloxide::types::ChatId(chat_id), teloxide::types::ChatAction::Typing).await;
+
+            // Process with LLM
+            let response = state
+                .agents
+                .process_message_with_agent_config(
+                    &session_id,
+                    &text,
+                    &history,
+                    continuity_key.as_deref(),
+                    Some(&user_id),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|e| {
+                    error!("LLM processing failed: {}", e);
+                    e.to_string()
+                })?;
+
+            info!(
+                "telegram voice: LLM response ({} chars) for user {}",
+                response.len(), user_id
+            );
+
+            // Persist the turn
+            state
+                .persist_turn(
+                    &session_id,
+                    Some("telegram"),
+                    Some(&user_id),
+                    &text,
+                    &response,
+                )
+                .await;
+
+            // Try to synthesize voice response
+            match tts.synthesize(&response, None).await {
+                Ok(audio_data) => {
+                    // Save audio to temp file
+                    let audio_path = temp_dir.join(format!("garraia_response_{}.wav", uuid::Uuid::new_v4()));
+                    if let Err(e) = tokio::fs::write(&audio_path, &audio_data).await {
+                        error!("failed to write audio file: {}", e);
+                        // Fallback to text
+                        let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
+                    } else {
+                        // Send voice message
+                        let input_file = teloxide::types::InputFile::file(&audio_path);
+                        if let Err(e) = bot.send_voice(teloxide::types::ChatId(chat_id), input_file).await {
+                            error!("failed to send voice: {}", e);
+                            // Fallback to text
+                            let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
+                        }
+                        // Clean up audio file
+                        let _ = tokio::fs::remove_file(&audio_path).await;
+                    }
+                }
+                Err(e) => {
+                    error!("TTS failed: {}", e);
+                    // Fallback to text if TTS fails
+                    let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
+                }
+            }
+
+            info!("telegram voice: successfully processed voice from {}", user_name);
+            Ok(())
+        })
+    }))
+}
+
 /// Build Telegram channels from config. Must be called after state is
 /// wrapped in `Arc` so the message callback can capture a `SharedState`.
 pub fn build_telegram_channels(
@@ -1357,6 +1516,15 @@ pub fn build_telegram_channels(
         );
 
         let channel = TelegramChannel::new(bot_token, on_message);
+
+        // Add voice handler if voice mode is enabled
+        let voice_handler = build_telegram_voice_handler(state);
+        let channel = if let Some(handler) = voice_handler {
+            info!("telegram: voice handler enabled for channel {}", name);
+            channel.with_voice_handler(handler)
+        } else {
+            channel
+        };
 
         // Build commands for Telegram menu from the registry
         let menu_commands: Vec<(String, String)> = state
