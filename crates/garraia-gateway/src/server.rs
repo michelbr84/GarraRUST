@@ -47,6 +47,9 @@ impl GatewayServer {
         // Register MCP tools as slash commands (must be done before Arc-wrapping)
         state.register_mcp_tools().await;
 
+        // Register built-in commands (must be done before Telegram channels are created)
+        crate::commands::register_commands(&mut state.command_registry.write().unwrap());
+
         // Initialize Chatterbox TTS client if voice is enabled
         if state.config.voice.enabled {
             let voice_client = garraia_voice::ChatterboxClient::new(
