@@ -61,7 +61,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     let mut runtime = AgentRuntime::new();
 
     let llm_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(config.timeouts.llm.default_secs))
+        .timeout(std::time::Duration::from_secs(
+            config.timeouts.llm.default_secs,
+        ))
         .build()
         .unwrap_or_default();
 
@@ -113,7 +115,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 }
             }
             "ollama" => {
-                let base_url = llm_config.base_url.clone()
+                let base_url = llm_config
+                    .base_url
+                    .clone()
                     .unwrap_or_else(|| "http://localhost:11434".to_string());
 
                 // Health check: quick TCP connectivity test to Ollama
@@ -127,13 +131,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     format!("{}:11434", addr)
                 };
                 match std::net::TcpStream::connect_timeout(
-                    &sock_addr.parse().unwrap_or_else(|_| {
-                        std::net::SocketAddr::from(([127, 0, 0, 1], 11434))
-                    }),
+                    &sock_addr
+                        .parse()
+                        .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 11434))),
                     std::time::Duration::from_secs(2),
                 ) {
                     Ok(_) => {
-                        info!("✅ Ollama reachable at {} — registering provider: {name}", base_url);
+                        info!(
+                            "✅ Ollama reachable at {} — registering provider: {name}",
+                            base_url
+                        );
                     }
                     Err(e) => {
                         warn!(
@@ -166,7 +173,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("sansa-auto".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("sansa");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("sansa");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured sansa provider: {name}");
                 } else {
@@ -191,7 +200,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("deepseek-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("deepseek");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("deepseek");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured deepseek provider: {name}");
                 } else {
@@ -216,7 +227,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("mistral-large-latest".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("mistral");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("mistral");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured mistral provider: {name}");
                 } else {
@@ -240,7 +253,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("gemini-2.5-flash".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("gemini");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("gemini");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured gemini provider: {name}");
                 } else {
@@ -265,7 +280,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("falcon");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("falcon");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured falcon provider: {name}");
                 } else {
@@ -290,7 +307,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("jais-adapted-70b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("jais");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("jais");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured jais provider: {name}");
                 } else {
@@ -314,7 +333,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("qwen-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("qwen");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("qwen");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured qwen provider: {name}");
                 } else {
@@ -336,7 +357,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("yi-large".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("yi");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("yi");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured yi provider: {name}");
                 } else {
@@ -361,7 +384,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("command-r-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("cohere");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("cohere");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured cohere provider: {name}");
                 } else {
@@ -386,7 +411,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("MiniMax-Text-01".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("minimax");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("minimax");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured minimax provider: {name}");
                 } else {
@@ -411,7 +438,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("kimi-k2-0711-preview".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("moonshot");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("moonshot");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured moonshot provider: {name}");
                 } else {
@@ -436,8 +465,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("openai/gpt-4o".to_string()));
-                    let provider =
-                        OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("openrouter");
+                    let provider = OpenAiProvider::new(key, model, base_url)
+                        .with_client(llm_client.clone())
+                        .with_name("openrouter");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured openrouter provider: {name}");
                 } else {
@@ -472,7 +502,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
             }
         }
         info!("╠══════════════════════════════════════╣");
-        info!("║  Total: {} active / {} configured     ║", active_count, configured_count);
+        info!(
+            "║  Total: {} active / {} configured     ║",
+            active_count, configured_count
+        );
         if skipped_count > 0 {
             info!("║  ⚠️  {} provider(s) skipped          ║", skipped_count);
         }
@@ -518,7 +551,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     && let Some(embed_config) = config.embeddings.get(embed_name)
                 {
                     let embed_client = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(config.timeouts.llm.default_secs)) // Reuse llm timeout for embeddings
+                        .timeout(std::time::Duration::from_secs(
+                            config.timeouts.llm.default_secs,
+                        )) // Reuse llm timeout for embeddings
                         .build()
                         .unwrap_or_default();
 
@@ -675,7 +710,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                 }
                             }
                             // Localização
-                            if let Some(local) = facts.get("localizacao").and_then(|v| v.as_object()) {
+                            if let Some(local) =
+                                facts.get("localizacao").and_then(|v| v.as_object())
+                            {
                                 let mut parts = Vec::new();
                                 if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
                                     if !v.is_empty() {
@@ -693,24 +730,32 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                     }
                                 }
                                 if !parts.is_empty() {
-                                    facts_context.push_str(&format!("Localização: {}\n", parts.join(", ")));
+                                    facts_context
+                                        .push_str(&format!("Localização: {}\n", parts.join(", ")));
                                 }
                             }
                             // Idiomas
-                            if let Some(idioma) = facts.get("idioma_principal").and_then(|v| v.as_str()) {
+                            if let Some(idioma) =
+                                facts.get("idioma_principal").and_then(|v| v.as_str())
+                            {
                                 facts_context.push_str(&format!("Idioma principal: {}\n", idioma));
                             }
                             if let Some(idiomas) =
                                 facts.get("idiomas_secundarios").and_then(|v| v.as_array())
                             {
-                                let langs: Vec<&str> = idiomas.iter().filter_map(|v| v.as_str()).collect();
+                                let langs: Vec<&str> =
+                                    idiomas.iter().filter_map(|v| v.as_str()).collect();
                                 if !langs.is_empty() {
-                                    facts_context
-                                        .push_str(&format!("Idiomas secundarios: {}\n", langs.join(", ")));
+                                    facts_context.push_str(&format!(
+                                        "Idiomas secundarios: {}\n",
+                                        langs.join(", ")
+                                    ));
                                 }
                             }
                             // Preferências
-                            if let Some(prefs) = facts.get("preferencias").and_then(|v| v.as_object()) {
+                            if let Some(prefs) =
+                                facts.get("preferencias").and_then(|v| v.as_object())
+                            {
                                 facts_context.push_str("Preferências:\n");
                                 if let Some(v) = prefs.get("idioma").and_then(|v| v.as_str()) {
                                     facts_context.push_str(&format!("  - Idioma: {}\n", v));
@@ -718,17 +763,23 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                 if let Some(v) = prefs.get("tom").and_then(|v| v.as_str()) {
                                     facts_context.push_str(&format!("  - Tom: {}\n", v));
                                 }
-                                if let Some(v) = prefs.get("nivel_detalhe").and_then(|v| v.as_str()) {
-                                    facts_context.push_str(&format!("  - Nivel de detalhe: {}\n", v));
+                                if let Some(v) = prefs.get("nivel_detalhe").and_then(|v| v.as_str())
+                                {
+                                    facts_context
+                                        .push_str(&format!("  - Nivel de detalhe: {}\n", v));
                                 }
-                                if let Some(v) = prefs.get("formato_resposta").and_then(|v| v.as_str()) {
+                                if let Some(v) =
+                                    prefs.get("formato_resposta").and_then(|v| v.as_str())
+                                {
                                     facts_context.push_str(&format!("  - Formato: {}\n", v));
                                 }
                             }
                             // Ambiente
                             if let Some(amb) = facts.get("ambiente").and_then(|v| v.as_object()) {
                                 facts_context.push_str("Ambiente:\n");
-                                if let Some(v) = amb.get("sistema_operacional").and_then(|v| v.as_str()) {
+                                if let Some(v) =
+                                    amb.get("sistema_operacional").and_then(|v| v.as_str())
+                                {
                                     facts_context.push_str(&format!("  - SO: {}\n", v));
                                 }
                                 if let Some(v) = amb.get("usa_ollama").and_then(|v| v.as_bool()) {
@@ -737,13 +788,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                         if v { "Sim" } else { "Nao" }
                                     ));
                                 }
-                                if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool()) {
+                                if let Some(v) = amb.get("usa_openrouter").and_then(|v| v.as_bool())
+                                {
                                     facts_context.push_str(&format!(
                                         "  - Usa OpenRouter: {}\n",
                                         if v { "Sim" } else { "Nao" }
                                     ));
                                 }
-                                if let Some(v) = amb.get("usa_modelos_locais").and_then(|v| v.as_bool()) {
+                                if let Some(v) =
+                                    amb.get("usa_modelos_locais").and_then(|v| v.as_bool())
+                                {
                                     facts_context.push_str(&format!(
                                         "  - Modelos locais: {}\n",
                                         if v { "Sim" } else { "Nao" }
@@ -751,32 +805,42 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                 }
                             }
                             // Interesses
-                            if let Some(interesses) = facts.get("interesses").and_then(|v| v.as_array()) {
+                            if let Some(interesses) =
+                                facts.get("interesses").and_then(|v| v.as_array())
+                            {
                                 let interesses: Vec<&str> =
                                     interesses.iter().filter_map(|v| v.as_str()).collect();
                                 if !interesses.is_empty() {
-                                    facts_context
-                                        .push_str(&format!("Interesses: {}\n", interesses.join(", ")));
+                                    facts_context.push_str(&format!(
+                                        "Interesses: {}\n",
+                                        interesses.join(", ")
+                                    ));
                                 }
                             }
                             // Projetos
-                            if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array()) {
+                            if let Some(projetos) = facts.get("projetos").and_then(|v| v.as_array())
+                            {
                                 let projetos: Vec<&str> =
                                     projetos.iter().filter_map(|v| v.as_str()).collect();
                                 if !projetos.is_empty() {
-                                    facts_context.push_str(&format!("Projetos: {}\n", projetos.join(", ")));
+                                    facts_context
+                                        .push_str(&format!("Projetos: {}\n", projetos.join(", ")));
                                 }
                             }
                             // Restrições
-                            if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object()) {
+                            if let Some(rest) = facts.get("restricoes").and_then(|v| v.as_object())
+                            {
                                 facts_context.push_str("Restricoes:\n");
-                                if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool()) {
+                                if let Some(v) = rest.get("nao_alucinar").and_then(|v| v.as_bool())
+                                {
                                     facts_context.push_str(&format!(
                                         "  - Nao alucinar: {}\n",
                                         if v { "Sim" } else { "Nao" }
                                     ));
                                 }
-                                if let Some(v) = rest.get("priorizar_precisao").and_then(|v| v.as_bool()) {
+                                if let Some(v) =
+                                    rest.get("priorizar_precisao").and_then(|v| v.as_bool())
+                                {
                                     facts_context.push_str(&format!(
                                         "  - Priorizar precisao: {}\n",
                                         if v { "Sim" } else { "Nao" }
@@ -793,7 +857,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                 }
                             }
                             // Fatos importantes
-                            if let Some(fatos) = facts.get("fatos_importantes").and_then(|v| v.as_array()) {
+                            if let Some(fatos) =
+                                facts.get("fatos_importantes").and_then(|v| v.as_array())
+                            {
                                 if !fatos.is_empty() {
                                     facts_context.push_str("Fatos importantes:\n");
                                     for fato in fatos {
@@ -1180,9 +1246,7 @@ pub fn build_telegram_channels(
                 Box::pin(async move {
                     if let Some(cmd) = text.strip_prefix('/') {
                         let _cmd = cmd.split_whitespace().next().unwrap_or("");
-                        return handle_command(
-                            &text, &user_id, &user_name, chat_id, &state,
-                        );
+                        return handle_command(&text, &user_id, &user_name, chat_id, &state);
                     }
 
                     {
@@ -1297,6 +1361,8 @@ pub fn build_telegram_channels(
         // Build commands for Telegram menu from the registry
         let menu_commands: Vec<(String, String)> = state
             .command_registry
+            .read()
+            .unwrap()
             .telegram_commands()
             .into_iter()
             .map(|(name, desc)| (name.to_string(), desc.to_string()))
@@ -1343,20 +1409,14 @@ fn handle_command(
         state: Some(Arc::clone(state) as Arc<dyn std::any::Any + Send + Sync>),
     };
 
-    match state.command_registry.dispatch(&ctx) {
+    match state.command_registry.read().unwrap().dispatch(&ctx) {
         Ok(response) => Ok(response),
-        Err(garraia_channels::CommandError::Unauthorized(msg)) => {
-            Ok(format!("⛔ {msg}"))
-        }
-        Err(garraia_channels::CommandError::InvalidArgs(msg)) => {
-            Ok(format!("❌ {msg}"))
-        }
+        Err(garraia_channels::CommandError::Unauthorized(msg)) => Ok(format!("⛔ {msg}")),
+        Err(garraia_channels::CommandError::InvalidArgs(msg)) => Ok(format!("❌ {msg}")),
         Err(garraia_channels::CommandError::Internal(msg)) => {
             Ok(format!("💥 Internal error: {msg}"))
         }
-        Err(garraia_channels::CommandError::Blocked) => {
-            Err("__blocked__".to_string())
-        }
+        Err(garraia_channels::CommandError::Blocked) => Err("__blocked__".to_string()),
     }
 }
 
@@ -1948,7 +2008,7 @@ mod tests {
         let config = AppConfig::default();
         let _runtime = build_agent_runtime(&config);
         // Should succeed with no providers or tools crashing.
-        // We do not assert `_runtime.system_prompt().is_none()` because 
+        // We do not assert `_runtime.system_prompt().is_none()` because
         // local skills in ~/.garraia/skills could be injected automatically.
     }
 

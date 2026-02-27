@@ -140,6 +140,24 @@ impl ConfigLoader {
 
         Ok(())
     }
+
+    /// Save the given AppConfig to config.yml in the config directory.
+    pub fn save(&self, config: &AppConfig) -> Result<()> {
+        let yaml_path = self.config_dir.join("config.yml");
+
+        let contents = serde_yaml::to_string(config)
+            .map_err(|e| Error::Config(format!("failed to serialize config: {e}")))?;
+
+        std::fs::write(&yaml_path, contents).map_err(|e| {
+            garraia_common::Error::Config(format!(
+                "failed to write config to {}: {e}",
+                yaml_path.display()
+            ))
+        })?;
+
+        info!("saved updated config to {}", yaml_path.display());
+        Ok(())
+    }
 }
 
 #[cfg(test)]

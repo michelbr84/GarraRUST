@@ -217,6 +217,9 @@ fn default_llm_timeout() -> u64 {
 fn default_tts_timeout() -> u64 {
     120
 }
+fn default_stt_timeout() -> u64 {
+    30
+}
 fn default_mcp_timeout() -> u64 {
     60
 }
@@ -232,6 +235,8 @@ fn default_health_timeout() -> u64 {
 ///     default_secs: 30
 ///   tts:
 ///     default_secs: 120
+///   stt:
+///     default_secs: 30
 ///   mcp:
 ///     default_secs: 60
 ///   health:
@@ -243,6 +248,8 @@ pub struct TimeoutConfig {
     pub llm: TypeTimeout,
     #[serde(default)]
     pub tts: TypeTimeout,
+    #[serde(default)]
+    pub stt: TypeTimeout,
     #[serde(default)]
     pub mcp: TypeTimeout,
     #[serde(default)]
@@ -257,6 +264,9 @@ impl Default for TimeoutConfig {
             },
             tts: TypeTimeout {
                 default_secs: default_tts_timeout(),
+            },
+            stt: TypeTimeout {
+                default_secs: default_stt_timeout(),
             },
             mcp: TypeTimeout {
                 default_secs: default_mcp_timeout(),
@@ -287,11 +297,15 @@ fn default_tts_endpoint() -> String {
     "http://127.0.0.1:7860".to_string()
 }
 
+fn default_stt_endpoint() -> String {
+    "http://127.0.0.1:9090".to_string()
+}
+
 fn default_voice_language() -> String {
     "pt".to_string()
 }
 
-/// Voice / TTS configuration.
+/// Voice / TTS/STT configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceConfig {
     /// Whether voice mode is enabled (set at runtime via `--with-voice`).
@@ -301,6 +315,14 @@ pub struct VoiceConfig {
     /// Base URL of the Chatterbox Multilingual TTS server.
     #[serde(default = "default_tts_endpoint")]
     pub tts_endpoint: String,
+
+    /// Base URL of the Whisper STT server.
+    #[serde(default = "default_stt_endpoint")]
+    pub stt_endpoint: String,
+
+    /// Base URL of the Hibiki TTS server (alternative to Chatterbox).
+    #[serde(default = "default_tts_endpoint")]
+    pub hibiki_endpoint: String,
 
     /// Default language for TTS synthesis.
     #[serde(default = "default_voice_language")]
@@ -312,6 +334,8 @@ impl Default for VoiceConfig {
         Self {
             enabled: false,
             tts_endpoint: default_tts_endpoint(),
+            stt_endpoint: default_stt_endpoint(),
+            hibiki_endpoint: default_tts_endpoint(),
             language: default_voice_language(),
         }
     }

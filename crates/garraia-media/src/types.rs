@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MediaType {
     Image,
     Audio,
@@ -8,7 +8,7 @@ pub enum MediaType {
     Document,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MediaFormat {
     Png,
     Jpeg,
@@ -20,6 +20,9 @@ pub enum MediaFormat {
     Mp4,
     Webm,
     Pdf,
+    Doc,
+    Docx,
+    Text,
     Other(String),
 }
 
@@ -36,6 +39,9 @@ impl MediaFormat {
             "mp4" => Self::Mp4,
             "webm" => Self::Webm,
             "pdf" => Self::Pdf,
+            "doc" => Self::Doc,
+            "docx" => Self::Docx,
+            "txt" | "md" | "json" | "xml" | "html" | "htm" => Self::Text,
             other => Self::Other(other.to_string()),
         }
     }
@@ -52,7 +58,53 @@ impl MediaFormat {
             Self::Mp4 => "video/mp4",
             Self::Webm => "video/webm",
             Self::Pdf => "application/pdf",
+            Self::Doc => "application/msword",
+            Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Text => "text/plain",
             Self::Other(_) => "application/octet-stream",
         }
     }
+
+    /// Returns true if this format is a supported document format
+    pub fn is_document(&self) -> bool {
+        matches!(
+            self,
+            Self::Pdf | Self::Doc | Self::Docx | Self::Text | Self::Other(_)
+        )
+    }
+
+    /// Returns true if this format is a supported image format
+    pub fn is_image(&self) -> bool {
+        matches!(self, Self::Png | Self::Jpeg | Self::Gif | Self::Webp)
+    }
+}
+
+/// Result of document parsing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedDocument {
+    pub text: String,
+    pub page_count: usize,
+    pub metadata: DocumentMetadata,
+}
+
+/// Document metadata
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DocumentMetadata {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub subject: Option<String>,
+    pub creator: Option<String>,
+    pub producer: Option<String>,
+    pub creation_date: Option<String>,
+    pub modification_date: Option<String>,
+}
+
+/// Result of image analysis (OCR/description)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAnalysis {
+    pub text: Option<String>,
+    pub description: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
 }

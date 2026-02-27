@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use crate::pipeline::VoiceError;
+use std::path::{Path, PathBuf};
 
 /// Cliente HTTP assíncrono para o serviço Hibiki-Zero-3B (TTS).
 #[derive(Clone)]
@@ -39,9 +39,7 @@ impl HibikiClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::Tts(format!(
-                "Hibiki returned {status}: {body}"
-            )));
+            return Err(VoiceError::Tts(format!("Hibiki returned {status}: {body}")));
         }
 
         let audio_bytes = resp

@@ -51,11 +51,7 @@ pub fn new_health_cache() -> HealthCache {
 // ─── Health Check Implementations ──────────────────────────────────────────
 
 /// Check an HTTP endpoint's health by hitting a URL and measuring latency.
-async fn check_http(
-    name: &str,
-    url: &str,
-    timeout_secs: u64,
-) -> HealthStatus {
+async fn check_http(name: &str, url: &str, timeout_secs: u64) -> HealthStatus {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
         .build()
@@ -65,7 +61,10 @@ async fn check_http(
     match client.get(url).send().await {
         Ok(resp) => {
             let latency = start.elapsed().as_millis();
-            if resp.status().is_success() || resp.status().as_u16() == 405 || resp.status().as_u16() == 406 {
+            if resp.status().is_success()
+                || resp.status().as_u16() == 405
+                || resp.status().as_u16() == 406
+            {
                 // 405/406 = endpoint exists but wrong method — still reachable
                 HealthStatus {
                     name: name.to_string(),
@@ -114,8 +113,8 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
             }
             "openrouter" => {
                 // Check if API key is configured first
-                let has_key = llm_config.api_key.is_some()
-                    || std::env::var("OPENROUTER_API_KEY").is_ok();
+                let has_key =
+                    llm_config.api_key.is_some() || std::env::var("OPENROUTER_API_KEY").is_ok();
                 if has_key {
                     Some("https://openrouter.ai/api/v1/models".to_string())
                 } else {
@@ -132,8 +131,8 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
                 }
             }
             "openai" => {
-                let has_key = llm_config.api_key.is_some()
-                    || std::env::var("OPENAI_API_KEY").is_ok();
+                let has_key =
+                    llm_config.api_key.is_some() || std::env::var("OPENAI_API_KEY").is_ok();
                 if has_key {
                     let base = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
                     Some(format!("{}/v1/models", base))
@@ -150,8 +149,8 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
                 }
             }
             "anthropic" => {
-                let has_key = llm_config.api_key.is_some()
-                    || std::env::var("ANTHROPIC_API_KEY").is_ok();
+                let has_key =
+                    llm_config.api_key.is_some() || std::env::var("ANTHROPIC_API_KEY").is_ok();
                 if !has_key {
                     handles.push(tokio::spawn(async move {
                         HealthStatus {
@@ -179,9 +178,9 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
 
         if let Some(url) = check_url {
             let t = timeout;
-            handles.push(tokio::spawn(async move {
-                check_http(&name, &url, t).await
-            }));
+            handles.push(tokio::spawn(
+                async move { check_http(&name, &url, t).await },
+            ));
         }
     }
 
@@ -191,6 +190,24 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
         let t = timeout;
         handles.push(tokio::spawn(async move {
             check_http("chatterbox", &format!("{}/", endpoint), t).await
+        }));
+    }
+
+    // Check Whisper STT if stt_endpoint is configured
+    let stt_endpoint = state.config.voice.stt_endpoint.clone();
+    if !stt_endpoint.is_empty() {
+        let t = state.config.timeouts.stt.default_secs;
+        handles.push(tokio::spawn(async move {
+            check_http("whisper-stt", &format!("{}/health", stt_endpoint), t).await
+        }));
+    }
+
+    // Check Hibiki TTS if hibiki_endpoint is configured
+    let hibiki_endpoint = state.config.voice.hibiki_endpoint.clone();
+    if !hibiki_endpoint.is_empty() {
+        let t = state.config.timeouts.tts.default_secs;
+        handles.push(tokio::spawn(async move {
+            check_http("hibiki-tts", &format!("{}/", hibiki_endpoint), t).await
         }));
     }
 
@@ -221,10 +238,7 @@ pub fn format_boot_table(results: &[HealthStatus]) {
 
     for r in results {
         let icon = if r.ok { "✅" } else { "❌" };
-        let latency = r
-            .latency_ms
-            .map(|ms| format!("{ms}ms"))
-            .unwrap_or_default();
+        let latency = r.latency_ms.map(|ms| format!("{ms}ms")).unwrap_or_default();
         let detail = if let Some(err) = &r.error {
             err.clone()
         } else {
@@ -249,9 +263,7 @@ pub fn format_boot_table(results: &[HealthStatus]) {
     };
 
     info!("╠══════════════════════════════════════════╣");
-    info!(
-        "║  Status: {overall:<10} ({healthy}/{total} online)        ║",
-    );
+    info!("║  Status: {overall:<10} ({healthy}/{total} online)        ║",);
     info!("╚══════════════════════════════════════════╝");
 }
 
@@ -306,9 +318,7 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
 ///   ]
 /// }
 /// ```
-pub async fn health_handler(
-    State(state): State<SharedState>,
-) -> Json<HealthResponse> {
+pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResponse> {
     // Try to read from cache first
     if let Some(cache) = &state.health_cache {
         let cached = cache.read().await;

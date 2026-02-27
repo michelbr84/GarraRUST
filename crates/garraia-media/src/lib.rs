@@ -1,4 +1,9 @@
+pub mod image_processor;
+pub mod pdf;
 pub mod processing;
 pub mod types;
 
-pub use types::{MediaFormat, MediaType};
+pub use image_processor::ImageProcessor;
+pub use pdf::PdfProcessor;
+pub use processing::MediaProcessor;
+pub use types::{DocumentMetadata, ImageAnalysis, MediaFormat, MediaType, ParsedDocument};

@@ -17,13 +17,13 @@ pub mod slack;
 pub mod whatsapp;
 
 pub use commands::{
-    builtins::register_builtins, CommandContext, CommandError, CommandRegistry, CommandResult,
-    Role, SlashCommand,
+    CommandContext, CommandError, CommandRegistry, CommandResult, Role, SlashCommand,
+    builtins::register_builtins,
 };
 #[cfg(all(target_os = "macos", feature = "imessage"))]
 pub use imessage::{IMessageChannel, IMessageOnMessageFn};
 pub use protocol::{
-    ConnectorCapability, ConnectorFrame, ConnectorHandshake, CONNECTOR_PROTOCOL_VERSION,
+    CONNECTOR_PROTOCOL_VERSION, ConnectorCapability, ConnectorFrame, ConnectorHandshake,
     MAX_CONNECTOR_FRAME_BYTES,
 };
 pub use registry::ChannelRegistry;

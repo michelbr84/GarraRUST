@@ -419,10 +419,19 @@ async fn async_main(
     init_tracing: impl Fn(&str),
 ) -> Result<()> {
     // GAR-137: --debug flag overrides log level to "debug"
-    let effective_level = if cli.debug { "debug".to_string() } else { cli.log_level.clone() };
+    let effective_level = if cli.debug {
+        "debug".to_string()
+    } else {
+        cli.log_level.clone()
+    };
 
     match cli.command {
-        Commands::Start { host, port, with_voice, .. } => {
+        Commands::Start {
+            host,
+            port,
+            with_voice,
+            ..
+        } => {
             let mut config = config;
             config.gateway.host = host;
             config.gateway.port = port;
@@ -444,7 +453,12 @@ async fn async_main(
             init_tracing(&effective_level);
             stop_daemon(config.gateway.port)?;
         }
-        Commands::Restart { host, port, with_voice, .. } => {
+        Commands::Restart {
+            host,
+            port,
+            with_voice,
+            ..
+        } => {
             init_tracing(&effective_level);
             try_stop_daemon(port);
             let mut config = config;

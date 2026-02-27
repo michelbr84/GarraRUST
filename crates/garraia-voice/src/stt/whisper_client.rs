@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::pipeline::VoiceError;
+use std::path::Path;
 
 /// Cliente HTTP assíncrono para o serviço Whisper (STT).
 #[derive(Clone)]

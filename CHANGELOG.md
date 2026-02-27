@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-02-27
+
+### Fase 5: Delivery and Ecosystem
+
+#### Added
+- **README overhaul** - Updated architecture documentation with 14-crate workspace, runtime flow diagrams, voice pipeline (STT→LLM→TTS), multi-agent architecture, and MCP support
+- **GitHub Actions release workflow** - Multi-platform binary builds for Linux (x86_64, ARM64), Windows (x86_64), macOS (x86_64, ARM64)
+- **Website structure** - Initial documentation site with technical documentation, architecture overview, and integration guides
+
+### Fase 4: Advanced Integrations
+
+#### Added
+- **Admin Console** - Full-featured web admin panel with user management, RBAC, audit logs, and billing
+- **A2A Protocol** - Agent-to-agent communication with agent cards (`/.well-known/agent.json`) and task endpoints
+- **Multi-agent routing** - Named agent registry with priority-based routing and session continuity
+- **Media processing** - PDF extraction and image processing capabilities
+- **Runtime state machine** - Executor with state management, meta-controller, and turn-based execution
+- **Voice E2E pipeline** - Complete STT→LLM→TTS voice pipeline with Whisper, Chatterbox, and Hibiki support
+- **Stateful commands** - Command registry with state management and persistent command state
+
+#### Fixed
+- Various stability improvements and bug fixes across all crates
+
+### Fase 3: Runtime Integration & Voice E2E
+
+#### Added
+- **garraia-runtime crate** - State machine executor with IDLE→RUNNING→DONE transitions
+- **Meta controller** - Execution budget management, max turns, retry with exponential backoff
+- **Turn execution** - Complete message receive → tool execute → stream response flow
+- **Voice pipeline E2E** - Full end-to-end voice processing from audio input to TTS output
+- **Whisper STT** - Local and API-based speech-to-text
+- **Chatterbox TTS** - GPU-accelerated multilingual text-to-speech
+- **Hibiki TTS** - Additional GPU TTS option
+- **Audio conversion** - FFmpeg-based audio format conversion
+
+#### Changed
+- Improved voice mode activation and health checks
+
+### Fase 2: Stateful Commands
+
+#### Added
+- **Command registry** - Dynamic command registration with stateful support
+- **Built-in commands** - /help, /clear, /model, /pair, /users, /voz, /health, /providers, /stats, /config, /mcp
+- **Channel command integration** - Unified command system across Telegram, Discord, Slack, WhatsApp
+- **Command aliases** - Multi-language aliases (e.g., /voz and /voice)
+- **Command state** - Persistent command state across sessions
+
+### Fase 1: Stabilization Fixes
+
+#### Fixed
+- Daemon mode stability and PID management
+- Hot-reload configuration issues
+- Memory leaks in long-running sessions
+- WebSocket connection handling
+- Health check timeouts
+
+#### Changed
+- Improved error handling and logging
+- Optimized memory usage
+- Better error messages for debugging
+
 ## [0.1.11] - 2026-02-23
 
 ### Fixed

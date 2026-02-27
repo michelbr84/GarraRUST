@@ -1178,6 +1178,61 @@ impl Default for AgentRuntime {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that AgentRuntime can be created with an empty/default config without crashing.
+    /// This test verifies the "empty config" scenario is handled safely.
+    #[test]
+    fn build_agent_runtime_empty_config_no_crash() {
+        // Create a runtime with default/empty configuration
+        let runtime = AgentRuntime::new();
+
+        // Verify basic state is correct for empty config
+        assert!(runtime.providers.read().unwrap().is_empty());
+        assert!(runtime.default_provider.read().unwrap().is_none());
+        assert!(runtime.memory.is_none());
+        assert!(runtime.embeddings.is_none());
+        assert!(runtime.tools.is_empty());
+        assert!(runtime.system_prompt.is_none());
+        assert!(runtime.max_tokens.is_none());
+        assert!(runtime.max_context_tokens.is_none());
+
+        // Verify methods that could crash with empty config don't panic
+        let _ = runtime.provider_ids();
+        let _ = runtime.default_provider_id();
+        let _ = runtime.has_memory_provider();
+        let _ = runtime.has_embedding_provider();
+        let _ = runtime.list_tool_info();
+        let _ = runtime.system_prompt();
+
+        // Verify getting a non-existent provider returns None, not a crash
+        let _ = runtime.get_provider("nonexistent");
+        let _ = runtime.default_provider();
+
+        // Test setting values on empty runtime doesn't panic
+        let mut runtime = runtime;
+        runtime.set_system_prompt("test prompt".to_string());
+        runtime.set_max_tokens(1000);
+        runtime.set_max_context_tokens(8000);
+
+        assert_eq!(runtime.system_prompt(), Some("test prompt"));
+        assert_eq!(runtime.max_tokens, Some(1000));
+        assert_eq!(runtime.max_context_tokens, Some(8000));
+    }
+
+    /// Test that AgentRuntime Default trait works correctly.
+    #[test]
+    fn agent_runtime_default_is_empty() {
+        let runtime = AgentRuntime::default();
+
+        // Same checks as above but using Default
+        assert!(runtime.providers.read().unwrap().is_empty());
+        assert!(runtime.default_provider.read().unwrap().is_none());
+    }
+}
+
 /// Rough token estimate: ~4 characters per token.
 fn estimate_tokens(
     messages: &[ChatMessage],

@@ -449,14 +449,14 @@ mod tests {
     #[test]
     fn absolute_path_blocked() {
         let root = temp_root("absolute");
-        
+
         // Use a platform-specific absolute path to ensure `is_absolute()` returns true
         let abs_path = if cfg!(windows) {
             "C:\\Windows\\System32"
         } else {
             "/etc/passwd"
         };
-        
+
         let result = normalize_scoped_path(&root, abs_path, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
