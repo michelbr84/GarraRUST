@@ -1276,6 +1276,16 @@ pub fn build_telegram_channels(
         );
 
         let channel = TelegramChannel::new(bot_token, on_message);
+
+        // Build commands for Telegram menu from the registry
+        let menu_commands: Vec<(String, String)> = state
+            .command_registry
+            .telegram_commands()
+            .into_iter()
+            .map(|(name, desc)| (name.to_string(), desc.to_string()))
+            .collect();
+        let channel = channel.with_commands(menu_commands);
+
         channels.push(Box::new(channel) as Box<dyn garraia_channels::Channel>);
         info!("configured telegram channel: {name}");
     }
@@ -1304,11 +1314,7 @@ fn handle_command(
             if is_allowed {
                 Ok(
                     "Welcome to GarraIA! Send me a message and I will respond.\n\n\
-                    Commands:\n\
-                    /help - show this help\n\
-                    /clear - reset conversation history\n\
-                    /model [name] - get or set the LLM model\n\
-                    /pair - generate invite code (owner only)"
+                    Type /help to see available commands."
                         .to_string(),
                 )
             } else {
@@ -1330,15 +1336,16 @@ fn handle_command(
             if !is_allowed {
                 return Err("__blocked__".to_string());
             }
-            let mut help = "GarraIA Commands:\n\
-                /help - show this help\n\
-                /clear - reset conversation history\n\
-                /model [name] - get or set the LLM model"
-                .to_string();
-            if is_owner {
-                help.push_str(
-                    "\n/pair - generate a 6-digit invite code\n/users - list allowed users",
-                );
+            // Dynamic help generated from the CommandRegistry
+            let role = if is_owner {
+                garraia_channels::Role::Owner
+            } else {
+                garraia_channels::Role::User
+            };
+            let cmds = state.command_registry.list_for_role(role);
+            let mut help = String::from("📋 GarraIA Commands\n\n");
+            for (name, desc) in &cmds {
+                help.push_str(&format!("/{name} — {desc}\n"));
             }
             Ok(help)
         }
@@ -1350,7 +1357,7 @@ fn handle_command(
             if let Some(mut session) = state.sessions.get_mut(&session_id) {
                 session.history.clear();
             }
-            Ok("Conversation history cleared.".to_string())
+            Ok("🗑️ Conversation history cleared.".to_string())
         }
         "model" => {
             if !is_allowed {
@@ -1361,9 +1368,9 @@ fn handle_command(
             if parts.len() == 1 {
                 let current = state.channel_models.get(&session_id);
                 if let Some(m) = current {
-                    Ok(format!("Current model: {}", m.value()))
+                    Ok(format!("🤖 Current model: {}", m.value()))
                 } else {
-                    Ok("No model override set. Using default.".to_string())
+                    Ok("🤖 No model override set. Using default.".to_string())
                 }
             } else {
                 let new_model = parts[1].to_string();
@@ -1371,10 +1378,10 @@ fn handle_command(
                     || new_model.eq_ignore_ascii_case("default")
                 {
                     state.channel_models.remove(&session_id);
-                    Ok("Model override cleared. Using default.".to_string())
+                    Ok("🤖 Model override cleared. Using default.".to_string())
                 } else {
                     state.channel_models.insert(session_id, new_model.clone());
-                    Ok(format!("Model set to: {}", new_model))
+                    Ok(format!("🤖 Model set to: {}", new_model))
                 }
             }
         }
@@ -1383,11 +1390,11 @@ fn handle_command(
                 if !is_allowed {
                     return Err("__blocked__".to_string());
                 }
-                return Ok("Only the bot owner can generate pairing codes.".to_string());
+                return Ok("⛔ Only the bot owner can generate pairing codes.".to_string());
             }
             let code = pairing.lock().unwrap().generate("telegram");
             Ok(format!(
-                "Pairing code: {code}\n\n\
+                "🔗 Pairing code: {code}\n\n\
                  Share this with the person you want to invite. \
                  They should send this code to the bot within 5 minutes."
             ))
@@ -1397,24 +1404,59 @@ fn handle_command(
                 if !is_allowed {
                     return Err("__blocked__".to_string());
                 }
-                return Ok("Only the bot owner can list users.".to_string());
+                return Ok("⛔ Only the bot owner can list users.".to_string());
             }
             let list = allowlist.lock().unwrap();
             let users = list.list_users();
             let owner = list.owner().unwrap_or("none");
             Ok(format!(
-                "Owner: {owner}\nAllowed users ({}):\n{}",
+                "👥 Owner: {owner}\nAllowed users ({}):\n{}",
                 users.len(),
                 users.join("\n")
             ))
         }
+        // ── All other commands: dispatch through the CommandRegistry ──
         _ => {
             if !is_allowed {
                 return Err("__blocked__".to_string());
             }
-            Ok(format!(
-                "Unknown command: /{cmd}\nUse /help for available commands."
-            ))
+
+            // Build a CommandContext and dispatch via the registry
+            let role = if is_owner {
+                garraia_channels::Role::Owner
+            } else {
+                garraia_channels::Role::User
+            };
+            let args: Vec<String> = full_text
+                .split_whitespace()
+                .skip(1)
+                .map(|s| s.to_string())
+                .collect();
+            let ctx = garraia_channels::CommandContext {
+                user_id: user_id.to_string(),
+                user_name: user_name.to_string(),
+                chat_id,
+                full_text: full_text.to_string(),
+                args,
+                user_role: role,
+                state: None,
+            };
+
+            match state.command_registry.dispatch(&ctx) {
+                Ok(response) => Ok(response),
+                Err(garraia_channels::CommandError::Unauthorized(msg)) => {
+                    Ok(format!("⛔ {msg}"))
+                }
+                Err(garraia_channels::CommandError::InvalidArgs(msg)) => {
+                    Ok(format!("❌ {msg}"))
+                }
+                Err(garraia_channels::CommandError::Internal(msg)) => {
+                    Ok(format!("💥 Internal error: {msg}"))
+                }
+                Err(garraia_channels::CommandError::Blocked) => {
+                    Err("__blocked__".to_string())
+                }
+            }
         }
     }
 }

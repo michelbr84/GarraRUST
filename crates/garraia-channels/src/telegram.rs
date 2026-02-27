@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::*;
-use teloxide::types::{ChatAction, ParseMode};
+use teloxide::types::{BotCommand, ChatAction, ParseMode};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
@@ -55,6 +55,8 @@ pub struct TelegramChannel {
     on_voice: Option<OnVoiceFn>,
     bot: Option<Bot>,
     shutdown_tx: Option<watch::Sender<bool>>,
+    /// Commands to register via `setMyCommands` on boot.
+    commands_for_menu: Vec<(String, String)>,
 }
 
 impl TelegramChannel {
@@ -67,6 +69,7 @@ impl TelegramChannel {
             on_voice: None,
             bot: None,
             shutdown_tx: None,
+            commands_for_menu: Vec::new(),
         }
     }
 
@@ -76,6 +79,15 @@ impl TelegramChannel {
     /// instead of being silently dropped.
     pub fn with_voice_handler(mut self, handler: OnVoiceFn) -> Self {
         self.on_voice = Some(handler);
+        self
+    }
+
+    /// Set commands to register via Telegram's `setMyCommands` on boot.
+    ///
+    /// Each entry is `(command_name, description)`. These appear in the
+    /// autocomplete menu when users type `/` in the chat.
+    pub fn with_commands(mut self, commands: Vec<(String, String)>) -> Self {
+        self.commands_for_menu = commands;
         self
     }
 }
@@ -132,6 +144,20 @@ impl Channel for TelegramChannel {
         );
 
         self.bot = Some(bot.clone());
+
+        // ── Register commands via setMyCommands ─────────────────────
+        if !self.commands_for_menu.is_empty() {
+            let bot_commands: Vec<BotCommand> = self
+                .commands_for_menu
+                .iter()
+                .map(|(name, desc)| BotCommand::new(name.clone(), desc.clone()))
+                .collect();
+            let count = bot_commands.len();
+            match bot.set_my_commands(bot_commands).await {
+                Ok(_) => info!("telegram: registered {count} commands via setMyCommands"),
+                Err(e) => warn!("telegram: failed to set commands: {e}"),
+            }
+        }
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
