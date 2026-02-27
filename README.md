@@ -128,6 +128,21 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
 
+### Comandos e Aliases (Slash Commands)
+
+O GarraIA possui um sistema unificado de comandos interativos disponíveis no chat (integrado nativamente ao menu do Telegram):
+
+- `/help` - Exibe os comandos disponíveis dinamicamente
+- `/clear` - Limpa o histórico da conversa atual
+- `/model [nome]` - Visualiza ou altera o modelo LLM em uso
+- `/pair` - Gera um código de convite para pareamento
+- `/users` - Lista os usuários permitidos no sistema
+- `/voz` (ou `/voice`) - Alterna o envio de respostas em áudio na sessão
+- `/health` - Exibe o status de saúde dos serviços (LLMs, TTS, BD, MCP)
+- `/providers` - Lista os provedores LLM configurados
+- `/stats` - Exibe métricas de uso e uptime do servidor
+- `/config` - Gerencia definições em runtime (apenas administradores)
+
 ### Voice Mode (TTS/STT)
 
 - **Chatterbox TTS** - síntese de voz multilíngue local (pt, en, es, fr, de, it, hi) via GPU
@@ -369,7 +384,9 @@ crates/
   garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
   garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
   garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
-  garraia-voice/      # Chatterbox TTS client, síntese multilíngue
+  garraia-voice/      # Pipeline de voz: Whisper STT + Hibiki/Chatterbox TTS, conversão ffmpeg
+  garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
+  garraia-runtime/    # Executor com máquina de estados (run_turn)
   garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec)
   garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
   garraia-media/     # Processamento de mídia (esquelético)
@@ -412,21 +429,19 @@ Os testes validam os contratos REST e o comportamento do sistema de forma contí
 
 O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://discord.gg/aEXGq5cS) para conversar com contribuidores, fazer perguntas ou compartilhar o que você está construindo. Consulte [CONTRIBUTING.md](CONTRIBUTING.md) para instruções de configuração, diretrizes de código e visão geral dos crates.
 
-### Prioridades atuais
+### Roteiro de Desenvolvimento (Roadmap)
 
-| Prioridade | Issue | Descrição |
-|----------|-------|-------------|
-| **P0** | [#103](https://github.com/michelbr84/GarraRUST/issues/103) | README e posicionamento |
-| **P0** | [#104](https://github.com/michelbr84/GarraRUST/issues/104) | Website: garraia.org |
-| **P0** | [#105](https://github.com/michelbr84/GarraRUST/issues/105) | Comunidade Discord |
-| **P1** | [#106](https://github.com/michelbr84/GarraRUST/issues/106) | Skills iniciais incluídas |
-| **P1** | [#107](https://github.com/michelbr84/GarraRUST/issues/107) | Reforço de agendamento |
-| **P1** | [#108](https://github.com/michelbr84/GarraRUST/issues/108) | Roteamento multi-agente |
-| **P1** | [#109](https://github.com/michelbr84/GarraRUST/issues/109) | Script de instalação |
-| **P1** | [#110](https://github.com/michelbr84/GarraRUST/issues/110) | Releases Linux aarch64 + Windows |
-| **P1** | [#80](https://github.com/michelbr84/GarraRUST/issues/80) | MCP: transporte HTTP, recursos, prompts |
+Acompanhe as próximas entregas e contribua através do nosso **[Board Oficial no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)**. 
 
-Navegue por todas as [issues abertas](https://github.com/michelbr84/GarraRUST/issues) ou filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) para encontrar um lugar para começar.
+Fases em andamento:
+* **Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
+* **Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
+* **Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
+* **Fase 4: Admin Console Separate App** - Dashboard web independente para gestão.
+* **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
+* **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
+
+Navegue por todas as [issues abertas no Linear](https://linear.app/) ou filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
 
 ## Licença
 

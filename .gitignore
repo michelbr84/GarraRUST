@@ -37,3 +37,24 @@ logs/
 # Local data (runtime-generated)
 *.db
 *.db-journal
+
+# Voice / audio temp files
+voice_temp/
+*.input.ogg
+*.output.ogg
+
+# Python (voice services)
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# WASM build artifacts
+*.wasm
+
+# Release artifacts
+dist/
+release/
+
+# Cargo
+Cargo.lock.bak
