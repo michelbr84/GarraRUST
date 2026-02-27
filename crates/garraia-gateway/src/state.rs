@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use garraia_agents::{AgentRuntime, ChatMessage};
-use garraia_channels::ChannelRegistry;
+use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
 use tokio::sync::{Mutex, watch};
@@ -38,6 +38,8 @@ pub struct AppState {
     pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
     /// Cached health check results (updated by background task).
     pub health_cache: Option<crate::health::HealthCache>,
+    /// Central registry for slash commands.
+    pub command_registry: Arc<CommandRegistry>,
 }
 
 /// Per-connection session tracking.
@@ -71,6 +73,11 @@ impl AppState {
             log_tx: tokio::sync::broadcast::channel(100).0,
             voice_client: None,
             health_cache: None,
+            command_registry: {
+                let mut reg = CommandRegistry::new();
+                garraia_channels::register_builtins(&mut reg);
+                Arc::new(reg)
+            },
         }
     }
 

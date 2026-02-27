@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod protocol;
 pub mod registry;
 #[cfg(feature = "telegram")]
@@ -15,10 +16,14 @@ pub mod slack;
 #[cfg(feature = "whatsapp")]
 pub mod whatsapp;
 
+pub use commands::{
+    builtins::register_builtins, CommandContext, CommandError, CommandRegistry, CommandResult,
+    Role, SlashCommand,
+};
 #[cfg(all(target_os = "macos", feature = "imessage"))]
 pub use imessage::{IMessageChannel, IMessageOnMessageFn};
 pub use protocol::{
-    CONNECTOR_PROTOCOL_VERSION, ConnectorCapability, ConnectorFrame, ConnectorHandshake,
+    ConnectorCapability, ConnectorFrame, ConnectorHandshake, CONNECTOR_PROTOCOL_VERSION,
     MAX_CONNECTOR_FRAME_BYTES,
 };
 pub use registry::ChannelRegistry;
