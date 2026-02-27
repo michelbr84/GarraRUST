@@ -323,6 +323,8 @@ llm:
     provider: openrouter
     model: openai/gpt-4o  # modelos: openai/gpt-4o, anthropic/claude-3.5-sonnet, meta-llama/llama-3.1-70b-instruct, etc.
     # api_key resolvido de: vault > config > variável de ambiente OPENROUTER_API_KEY
+    # O GarraIA envia automaticamente os headers HTTP-Referer e X-Title para o OpenRouter
+    # Isso faz o app aparecer como "GarraIA" no dashboard do OpenRouter (não "Unknown")
 
   ollama-local:
     provider: ollama

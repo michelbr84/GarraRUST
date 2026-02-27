@@ -94,7 +94,9 @@ impl OpenAiProvider {
             .header("content-type", "application/json");
 
         if self.is_openrouter {
-            req = req.header("Referer", "https://garraia.dev");
+            req = req
+                .header("HTTP-Referer", "https://garraia.org")
+                .header("X-Title", "GarraIA");
         }
 
         let response = req
@@ -345,7 +347,9 @@ impl LlmProvider for OpenAiProvider {
 
         // OpenRouter requires Referer header
         if self.is_openrouter {
-            req = req.header("Referer", "https://garraia.dev");
+            req = req
+                .header("HTTP-Referer", "https://garraia.org")
+                .header("X-Title", "GarraIA");
         }
 
         let response = req
@@ -400,7 +404,9 @@ impl LlmProvider for OpenAiProvider {
 
         // OpenRouter requires Referer header
         if self.is_openrouter {
-            req = req.header("Referer", "https://garraia.dev");
+            req = req
+                .header("HTTP-Referer", "https://garraia.org")
+                .header("X-Title", "GarraIA");
         }
 
         let response = req
