@@ -45,6 +45,11 @@ impl OpenAiProvider {
         }
     }
 
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     /// Override the provider ID returned by `provider_id()`.
     /// Useful for OpenAI-compatible APIs (e.g. Sansa) that should register
     /// under a distinct name.

@@ -142,6 +142,7 @@ O GarraIA possui um sistema unificado de comandos interativos disponíveis no ch
 - `/providers` - Lista os provedores LLM configurados
 - `/stats` - Exibe métricas de uso e uptime do servidor
 - `/config` - Gerencia definições em runtime (apenas administradores)
+- `/mcp` - Gerencia servidores e recursos MCP acoplados
 
 ### Voice Mode (TTS/STT)
 
@@ -431,15 +432,16 @@ O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://disc
 
 ### Roteiro de Desenvolvimento (Roadmap)
 
-Acompanhe as próximas entregas e contribua através do nosso **[Board Oficial no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)**. 
+Acompanhe as próximas entregas e contribua através do nosso **[Board Oficial no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)**.
 
 Fases em andamento:
-* **Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
-* **Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
-* **Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
-* **Fase 4: Admin Console Separate App** - Dashboard web independente para gestão.
-* **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
-* **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
+
+- **Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
+- **Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
+- **Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
+- **Fase 4: Admin Console Separate App** - Projeto unificado ao Admin Console principal.
+- **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
+- **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
 
 Navegue por todas as [issues abertas no Linear](https://linear.app/) ou filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
 

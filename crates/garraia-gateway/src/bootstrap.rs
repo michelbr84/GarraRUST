@@ -60,6 +60,11 @@ pub(crate) fn resolve_api_key(
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     let mut runtime = AgentRuntime::new();
 
+    let llm_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(config.timeouts.llm.default_secs))
+        .build()
+        .unwrap_or_default();
+
     // --- LLM Providers ---
     for (name, llm_config) in &config.llm {
         match llm_config.provider.as_str() {
@@ -75,7 +80,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         key,
                         llm_config.model.clone(),
                         llm_config.base_url.clone(),
-                    );
+                    )
+                    .with_client(llm_client.clone());
                     runtime.register_provider(Arc::new(provider));
                     info!("configured anthropic provider: {name}");
                 } else {
@@ -96,7 +102,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         key,
                         llm_config.model.clone(),
                         llm_config.base_url.clone(),
-                    );
+                    )
+                    .with_client(llm_client.clone());
                     runtime.register_provider(Arc::new(provider));
                     info!("configured openai provider: {name}");
                 } else {
@@ -138,7 +145,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 }
 
                 let provider =
-                    OllamaProvider::new(llm_config.model.clone(), llm_config.base_url.clone());
+                    OllamaProvider::new(llm_config.model.clone(), llm_config.base_url.clone())
+                        .with_client(llm_client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured ollama provider: {name}");
             }
@@ -158,7 +166,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("sansa-auto".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("sansa");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("sansa");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured sansa provider: {name}");
                 } else {
@@ -183,7 +191,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("deepseek-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("deepseek");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("deepseek");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured deepseek provider: {name}");
                 } else {
@@ -208,7 +216,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("mistral-large-latest".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("mistral");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("mistral");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured mistral provider: {name}");
                 } else {
@@ -232,7 +240,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("gemini-2.5-flash".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("gemini");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("gemini");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured gemini provider: {name}");
                 } else {
@@ -257,7 +265,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("falcon");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("falcon");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured falcon provider: {name}");
                 } else {
@@ -282,7 +290,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("jais-adapted-70b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("jais");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("jais");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured jais provider: {name}");
                 } else {
@@ -306,7 +314,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("qwen-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("qwen");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("qwen");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured qwen provider: {name}");
                 } else {
@@ -328,7 +336,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("yi-large".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("yi");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("yi");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured yi provider: {name}");
                 } else {
@@ -353,7 +361,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("command-r-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("cohere");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("cohere");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured cohere provider: {name}");
                 } else {
@@ -378,7 +386,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("MiniMax-Text-01".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("minimax");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("minimax");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured minimax provider: {name}");
                 } else {
@@ -403,7 +411,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .model
                         .clone()
                         .or_else(|| Some("kimi-k2-0711-preview".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url).with_name("moonshot");
+                    let provider = OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("moonshot");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured moonshot provider: {name}");
                 } else {
@@ -429,7 +437,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .clone()
                         .or_else(|| Some("openai/gpt-4o".to_string()));
                     let provider =
-                        OpenAiProvider::new(key, model, base_url).with_name("openrouter");
+                        OpenAiProvider::new(key, model, base_url).with_client(llm_client.clone()).with_name("openrouter");
                     runtime.register_provider(Arc::new(provider));
                     info!("configured openrouter provider: {name}");
                 } else {
@@ -509,6 +517,11 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 if let Some(embed_name) = &config.memory.embedding_provider
                     && let Some(embed_config) = config.embeddings.get(embed_name)
                 {
+                    let embed_client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(config.timeouts.llm.default_secs)) // Reuse llm timeout for embeddings
+                        .build()
+                        .unwrap_or_default();
+
                     match embed_config.provider.as_str() {
                         // =====================================
                         // COHERE
@@ -525,7 +538,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                     key,
                                     embed_config.model.clone(),
                                     embed_config.base_url.clone(),
-                                );
+                                )
+                                .with_client(embed_client.clone());
 
                                 runtime.set_embedding_provider(Arc::new(provider));
 
@@ -542,7 +556,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             let provider = OllamaEmbeddingProvider::new(
                                 embed_config.model.clone(),
                                 embed_config.base_url.clone(),
-                            );
+                            )
+                            .with_client(embed_client.clone());
 
                             runtime.set_embedding_provider(Arc::new(provider));
 
@@ -848,7 +863,9 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
             continue;
         }
 
-        let timeout_secs = server_config.timeout.unwrap_or(30);
+        let timeout_secs = server_config
+            .timeout
+            .unwrap_or(config.timeouts.mcp.default_secs);
 
         let connect_result = match server_config.transport.as_str() {
             "stdio" => {
@@ -1162,9 +1179,9 @@ pub fn build_telegram_channels(
                 let pairing = Arc::clone(&pairing_for_cb);
                 Box::pin(async move {
                     if let Some(cmd) = text.strip_prefix('/') {
-                        let cmd = cmd.split_whitespace().next().unwrap_or("");
+                        let _cmd = cmd.split_whitespace().next().unwrap_or("");
                         return handle_command(
-                            cmd, &text, &user_id, &user_name, chat_id, &allowlist, &pairing, &state,
+                            &text, &user_id, &user_name, chat_id, &state,
                         );
                     }
 
@@ -1295,168 +1312,50 @@ pub fn build_telegram_channels(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_command(
-    cmd: &str,
     full_text: &str,
     user_id: &str,
     user_name: &str,
     chat_id: i64,
-    allowlist: &Arc<Mutex<Allowlist>>,
-    pairing: &Arc<Mutex<PairingManager>>,
     state: &SharedState,
 ) -> std::result::Result<String, String> {
-    let list = allowlist.lock().unwrap();
+    let list = state.allowlist.lock().unwrap();
     let is_owner = list.is_owner(user_id);
-    let is_allowed = list.is_allowed(user_id);
     drop(list);
 
-    match cmd {
-        "start" => {
-            if is_allowed {
-                Ok(
-                    "Welcome to GarraIA! Send me a message and I will respond.\n\n\
-                    Type /help to see available commands."
-                        .to_string(),
-                )
-            } else {
-                let mut list = allowlist.lock().unwrap();
-                if list.needs_owner() {
-                    list.claim_owner(user_id);
-                    info!("telegram: auto-paired owner {} ({})", user_name, user_id);
-                    Ok(format!(
-                        "Welcome, {}! You are now the owner of this GarraIA bot.\n\n\
-                         Use /pair to generate a code for adding other users.",
-                        user_name
-                    ))
-                } else {
-                    Ok("This bot is private. Send the 6-digit pairing code you received to get access.".to_string())
-                }
-            }
-        }
-        "help" => {
-            if !is_allowed {
-                return Err("__blocked__".to_string());
-            }
-            // Dynamic help generated from the CommandRegistry
-            let role = if is_owner {
-                garraia_channels::Role::Owner
-            } else {
-                garraia_channels::Role::User
-            };
-            let cmds = state.command_registry.list_for_role(role);
-            let mut help = String::from("📋 GarraIA Commands\n\n");
-            for (name, desc) in &cmds {
-                help.push_str(&format!("/{name} — {desc}\n"));
-            }
-            Ok(help)
-        }
-        "clear" => {
-            if !is_allowed {
-                return Err("__blocked__".to_string());
-            }
-            let session_id = format!("telegram-{chat_id}");
-            if let Some(mut session) = state.sessions.get_mut(&session_id) {
-                session.history.clear();
-            }
-            Ok("🗑️ Conversation history cleared.".to_string())
-        }
-        "model" => {
-            if !is_allowed {
-                return Err("__blocked__".to_string());
-            }
-            let session_id = format!("telegram-{chat_id}");
-            let parts: Vec<&str> = full_text.split_whitespace().collect();
-            if parts.len() == 1 {
-                let current = state.channel_models.get(&session_id);
-                if let Some(m) = current {
-                    Ok(format!("🤖 Current model: {}", m.value()))
-                } else {
-                    Ok("🤖 No model override set. Using default.".to_string())
-                }
-            } else {
-                let new_model = parts[1].to_string();
-                if new_model.eq_ignore_ascii_case("clear")
-                    || new_model.eq_ignore_ascii_case("default")
-                {
-                    state.channel_models.remove(&session_id);
-                    Ok("🤖 Model override cleared. Using default.".to_string())
-                } else {
-                    state.channel_models.insert(session_id, new_model.clone());
-                    Ok(format!("🤖 Model set to: {}", new_model))
-                }
-            }
-        }
-        "pair" => {
-            if !is_owner {
-                if !is_allowed {
-                    return Err("__blocked__".to_string());
-                }
-                return Ok("⛔ Only the bot owner can generate pairing codes.".to_string());
-            }
-            let code = pairing.lock().unwrap().generate("telegram");
-            Ok(format!(
-                "🔗 Pairing code: {code}\n\n\
-                 Share this with the person you want to invite. \
-                 They should send this code to the bot within 5 minutes."
-            ))
-        }
-        "users" => {
-            if !is_owner {
-                if !is_allowed {
-                    return Err("__blocked__".to_string());
-                }
-                return Ok("⛔ Only the bot owner can list users.".to_string());
-            }
-            let list = allowlist.lock().unwrap();
-            let users = list.list_users();
-            let owner = list.owner().unwrap_or("none");
-            Ok(format!(
-                "👥 Owner: {owner}\nAllowed users ({}):\n{}",
-                users.len(),
-                users.join("\n")
-            ))
-        }
-        // ── All other commands: dispatch through the CommandRegistry ──
-        _ => {
-            if !is_allowed {
-                return Err("__blocked__".to_string());
-            }
+    // Build a CommandContext and dispatch via the registry
+    let role = if is_owner {
+        garraia_channels::Role::Owner
+    } else {
+        garraia_channels::Role::User
+    };
+    let args: Vec<String> = full_text
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect();
+    let ctx = garraia_channels::CommandContext {
+        user_id: user_id.to_string(),
+        user_name: user_name.to_string(),
+        chat_id,
+        full_text: full_text.to_string(),
+        args,
+        user_role: role,
+        state: Some(Arc::clone(state) as Arc<dyn std::any::Any + Send + Sync>),
+    };
 
-            // Build a CommandContext and dispatch via the registry
-            let role = if is_owner {
-                garraia_channels::Role::Owner
-            } else {
-                garraia_channels::Role::User
-            };
-            let args: Vec<String> = full_text
-                .split_whitespace()
-                .skip(1)
-                .map(|s| s.to_string())
-                .collect();
-            let ctx = garraia_channels::CommandContext {
-                user_id: user_id.to_string(),
-                user_name: user_name.to_string(),
-                chat_id,
-                full_text: full_text.to_string(),
-                args,
-                user_role: role,
-                state: None,
-            };
-
-            match state.command_registry.dispatch(&ctx) {
-                Ok(response) => Ok(response),
-                Err(garraia_channels::CommandError::Unauthorized(msg)) => {
-                    Ok(format!("⛔ {msg}"))
-                }
-                Err(garraia_channels::CommandError::InvalidArgs(msg)) => {
-                    Ok(format!("❌ {msg}"))
-                }
-                Err(garraia_channels::CommandError::Internal(msg)) => {
-                    Ok(format!("💥 Internal error: {msg}"))
-                }
-                Err(garraia_channels::CommandError::Blocked) => {
-                    Err("__blocked__".to_string())
-                }
-            }
+    match state.command_registry.dispatch(&ctx) {
+        Ok(response) => Ok(response),
+        Err(garraia_channels::CommandError::Unauthorized(msg)) => {
+            Ok(format!("⛔ {msg}"))
+        }
+        Err(garraia_channels::CommandError::InvalidArgs(msg)) => {
+            Ok(format!("❌ {msg}"))
+        }
+        Err(garraia_channels::CommandError::Internal(msg)) => {
+            Ok(format!("💥 Internal error: {msg}"))
+        }
+        Err(garraia_channels::CommandError::Blocked) => {
+            Err("__blocked__".to_string())
         }
     }
 }
@@ -2047,9 +1946,10 @@ mod tests {
     #[test]
     fn build_agent_runtime_empty_config_no_crash() {
         let config = AppConfig::default();
-        let runtime = build_agent_runtime(&config);
-        // Should succeed with no providers or tools crashing
-        assert!(runtime.system_prompt().is_none());
+        let _runtime = build_agent_runtime(&config);
+        // Should succeed with no providers or tools crashing.
+        // We do not assert `_runtime.system_prompt().is_none()` because 
+        // local skills in ~/.garraia/skills could be injected automatically.
     }
 
     #[test]

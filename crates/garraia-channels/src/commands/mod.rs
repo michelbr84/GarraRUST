@@ -8,7 +8,7 @@ mod registry;
 
 pub mod builtins;
 
-pub use registry::CommandRegistry;
+pub use registry::{ClosureCommand, CommandRegistry};
 
 use std::fmt;
 use std::sync::Arc;

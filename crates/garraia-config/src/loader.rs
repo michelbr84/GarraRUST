@@ -17,6 +17,10 @@ impl ConfigLoader {
     }
 
     pub fn default_config_dir() -> PathBuf {
+        if let Ok(env_dir) = std::env::var("GARRAIA_CONFIG_DIR") {
+            return PathBuf::from(env_dir);
+        }
+
         let home_config = dirs::home_dir().map(|h| h.join(".garraia"));
         let xdg_config = dirs::config_dir().map(|c| c.join("garraia"));
 

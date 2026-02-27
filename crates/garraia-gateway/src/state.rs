@@ -9,6 +9,7 @@ use garraia_db::SessionStore;
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
+use garraia_security::{Allowlist, PairingManager};
 
 /// How long a disconnected session is kept for resume.
 const SESSION_TTL: Duration = Duration::from_secs(3600); // 1 hour
@@ -40,6 +41,10 @@ pub struct AppState {
     pub health_cache: Option<crate::health::HealthCache>,
     /// Central registry for slash commands.
     pub command_registry: Arc<CommandRegistry>,
+    /// Authorized users list.
+    pub allowlist: Arc<std::sync::Mutex<Allowlist>>,
+    /// Generates pairing codes.
+    pub pairing: Arc<std::sync::Mutex<PairingManager>>,
 }
 
 /// Per-connection session tracking.
@@ -76,8 +81,15 @@ impl AppState {
             command_registry: {
                 let mut reg = CommandRegistry::new();
                 garraia_channels::register_builtins(&mut reg);
+                crate::commands::register_commands(&mut reg);
                 Arc::new(reg)
             },
+            allowlist: Arc::new(std::sync::Mutex::new(Allowlist::load_or_create(
+                &garraia_config::ConfigLoader::default_config_dir().join("allowlist.json"),
+            ))),
+            pairing: Arc::new(std::sync::Mutex::new(PairingManager::new(
+                std::time::Duration::from_secs(300),
+            ))),
         }
     }
 

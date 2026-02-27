@@ -5,6 +5,7 @@ pub mod api;
 pub mod billing;
 pub mod bootstrap;
 pub mod cluster;
+pub mod commands;
 pub mod externalization;
 pub mod health;
 pub mod logs_handler;
