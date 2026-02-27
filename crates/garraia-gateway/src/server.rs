@@ -77,6 +77,17 @@ impl GatewayServer {
                     state.voice_client = Some(Arc::new(voice_client));
                 }
             }
+
+            // Initialize Whisper STT client
+            let stt_client = garraia_voice::WhisperClient::new(
+                &state.config.voice.stt_endpoint,
+                &state.config.voice.language,
+            );
+            info!(
+                "🎙️  STT initialized — Whisper at {}",
+                state.config.voice.stt_endpoint
+            );
+            state.stt_client = Some(Arc::new(stt_client));
         }
 
         // Initialize persistent session storage used by channel memory bus hydration.

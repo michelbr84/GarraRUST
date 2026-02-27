@@ -312,6 +312,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
@@ -1566,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "garraia"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1598,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-agents"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1621,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-channels"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1644,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-common"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1658,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-config"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "dirs 6.0.0",
  "garraia-common",
@@ -1674,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-db"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1691,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-gateway"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1720,6 +1721,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "teloxide",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower",
@@ -1732,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-media"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1751,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-plugins"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1782,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-security"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "garraia-common",
@@ -1798,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-skills"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "garraia-common",
  "reqwest 0.12.28",
@@ -1822,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-voice"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -2862,6 +2864,23 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin",
+ "version_check",
 ]
 
 [[package]]
@@ -4437,6 +4456,12 @@ dependencies = [
  "libc",
  "windows-sys 0.60.2",
 ]
+
+[[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spinning_top"

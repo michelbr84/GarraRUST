@@ -41,6 +41,8 @@ pub struct AppState {
     pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// Chatterbox TTS client (available when `--with-voice` is used).
     pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
+    /// Whisper STT client (available when `--with-voice` is used).
+    pub stt_client: Option<Arc<garraia_voice::WhisperClient>>,
     /// Cached health check results (updated by background task).
     pub health_cache: Option<crate::health::HealthCache>,
     /// Central registry for slash commands.
@@ -99,6 +101,7 @@ impl AppState {
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
             voice_client: None,
+            stt_client: None,
             health_cache: None,
             command_registry: {
                 let reg = CommandRegistry::new();

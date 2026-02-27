@@ -17,6 +17,9 @@ garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
 garraia-voice = { workspace = true }
 
+# Telegram (for voice handler)
+teloxide = { workspace = true }
+
 tokio = { workspace = true }
 dotenvy = { workspace = true }
 axum = { workspace = true }
