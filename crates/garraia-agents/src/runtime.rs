@@ -17,6 +17,41 @@ use crate::providers::{
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
+/// Resolve provider ID from model override.
+/// Models like "openrouter/auto", "openai/gpt-4o" have the provider as prefix.
+fn resolve_provider_from_model(model: &str) -> Option<String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    
+    // Check for provider prefix (e.g., "openrouter/auto", "anthropic/claude-3")
+    if let Some((provider, _)) = model.split_once('/') {
+        let provider = provider.to_lowercase();
+        // Map common provider names to registered provider IDs
+        match provider.as_str() {
+            "openrouter" => Some("openrouter".to_string()),
+            "openai" => Some("openai".to_string()),
+            "anthropic" => Some("anthropic".to_string()),
+            "ollama" => Some("ollama".to_string()),
+            "deepseek" => Some("deepseek".to_string()),
+            "mistral" => Some("mistral".to_string()),
+            "gemini" => Some("gemini".to_string()),
+            "cohere" => Some("cohere".to_string()),
+            "jais" => Some("jais".to_string()),
+            "qwen" => Some("qwen".to_string()),
+            "yi" => Some("yi".to_string()),
+            "moonshot" | "kimi" => Some("moonshot".to_string()),
+            "minimax" => Some("minimax".to_string()),
+            "sansa" => Some("sansa".to_string()),
+            "falcon" => Some("falcon".to_string()),
+            _ => Some(provider), // Use as-is for unknown providers
+        }
+    } else {
+        None
+    }
+}
+
 /// Manages agent sessions, tool execution, and LLM provider routing.
 pub struct AgentRuntime {
     providers: RwLock<Vec<Arc<dyn LlmProvider>>>,
@@ -285,13 +320,16 @@ impl AgentRuntime {
         continuity_key: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<String> {
-        self.process_message_impl(
+        self.process_message_with_agent_config(
             session_id,
             user_text,
             conversation_history,
             continuity_key,
             user_id,
-            false,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -331,9 +369,26 @@ impl AgentRuntime {
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
     ) -> Result<String> {
+        // Resolve provider: first try explicit provider_id, then try deriving from model_override
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
             self.get_provider(pid)
                 .ok_or_else(|| Error::Agent(format!("provider '{pid}' not found")))?
+        } else if let Some(model) = model_override {
+            if let Some(resolved_provider_id) = resolve_provider_from_model(model) {
+                if let Some(provider) = self.get_provider(&resolved_provider_id) {
+                    info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
+                    provider
+                } else {
+                    // Provider not found, fall back to default
+                    warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                    self.default_provider()
+                        .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                }
+            } else {
+                // No provider prefix in model, use default
+                self.default_provider()
+                    .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+            }
         } else {
             self.default_provider()
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
@@ -695,6 +750,7 @@ impl AgentRuntime {
         user_text: &str,
         conversation_history: &[ChatMessage],
         delta_tx: mpsc::Sender<String>,
+        model_override: Option<&str>,
     ) -> Result<String> {
         self.process_message_streaming_with_context(
             session_id,
@@ -703,6 +759,7 @@ impl AgentRuntime {
             delta_tx,
             None,
             None,
+            model_override,
         )
         .await
     }
@@ -717,6 +774,7 @@ impl AgentRuntime {
         delta_tx: mpsc::Sender<String>,
         continuity_key: Option<&str>,
         user_id: Option<&str>,
+        model_override: Option<&str>,
     ) -> Result<String> {
         self.process_message_streaming_with_agent_config(
             session_id,
@@ -726,7 +784,7 @@ impl AgentRuntime {
             continuity_key,
             user_id,
             None,
-            None,
+            model_override,
             None,
             None,
         )
@@ -749,9 +807,26 @@ impl AgentRuntime {
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
     ) -> Result<String> {
+        // Resolve provider: first try explicit provider_id, then try deriving from model_override
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
             self.get_provider(pid)
                 .ok_or_else(|| Error::Agent(format!("provider '{pid}' not found")))?
+        } else if let Some(model) = model_override {
+            if let Some(resolved_provider_id) = resolve_provider_from_model(model) {
+                if let Some(provider) = self.get_provider(&resolved_provider_id) {
+                    info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
+                    provider
+                } else {
+                    // Provider not found, fall back to default
+                    warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                    self.default_provider()
+                        .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                }
+            } else {
+                // No provider prefix in model, use default
+                self.default_provider()
+                    .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+            }
         } else {
             self.default_provider()
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?

@@ -1148,6 +1148,7 @@ pub fn build_discord_channels(
                                 delta_sender,
                                 continuity_key.as_deref(),
                                 Some(&user_id),
+                                None,
                             )
                             .await
                     } else {
@@ -1828,6 +1829,7 @@ pub fn build_slack_channels(
                                 delta_sender,
                                 continuity_key.as_deref(),
                                 Some(&user_id),
+                                None,
                             )
                             .await
                     } else {
@@ -1999,6 +2001,7 @@ pub fn build_whatsapp_channels(
                                 delta_sender,
                                 continuity_key.as_deref(),
                                 Some(&from_number),
+                                None,
                             )
                             .await
                     } else {
