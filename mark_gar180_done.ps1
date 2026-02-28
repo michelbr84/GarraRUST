@@ -1,16 +1,17 @@
 # Mark GAR-180 as Done in Linear
-# First, get the issue ID and the "done" state ID
+# Uses Linear GraphQL API
 
 $headers = @{
-    "Authorization" = "Bearer $env:LINEAR_API_KEY"
+    "Authorization" = "$env:LINEAR_API_KEY"
     "Content-Type" = "application/json"
 }
 
-# First, get issue details to find the issueId (numeric)
+# First, get issue details using the issue ID directly
 $query = @"
 query {
-  issue(identifier: "GAR-180") {
+  issue(id: "GAR-180") {
     id
+    identifier
     state {
       name
       id
@@ -26,7 +27,38 @@ $body = @{
 Write-Host "Fetching GAR-180 details..."
 $response = Invoke-RestMethod -Uri "https://api.linear.app/graphql" -Method POST -Headers $headers -Body $body
 $issue = $response.data.issue
-Write-Host "Issue ID: $($issue.id), State: $($issue.state.name)"
+
+if ($null -eq $issue) {
+    Write-Host "Issue not found. Trying alternative query..."
+    # Try fetching by identifier
+    $altQuery = @"
+query {
+  issues(filter: { identifier: { eq: "GAR-180" } }) {
+    nodes {
+      id
+      identifier
+      state {
+        name
+        id
+      }
+    }
+  }
+}
+"@
+    $altBody = @{
+        "query" = $altQuery
+    } | ConvertTo-Json
+    
+    $altResponse = Invoke-RestMethod -Uri "https://api.linear.app/graphql" -Method POST -Headers $headers -Body $altBody
+    $issue = $altResponse.data.issues.nodes[0]
+}
+
+if ($null -eq $issue) {
+    Write-Host "ERROR: Could not find issue GAR-180"
+    exit 1
+}
+
+Write-Host "Issue ID: $($issue.id), Identifier: $($issue.identifier), State: $($issue.state.name)"
 
 # Get the state ID for "Done"
 $statesQuery = @"
@@ -45,14 +77,13 @@ $statesBody = @{
 } | ConvertTo-Json
 
 $statesResponse = Invoke-RestMethod -Uri "https://api.linear.app/graphql" -Method POST -Headers $headers -Body $statesBody
-$doneState = $statesResponse.data.workflowStates.nodes | Where-Object { $_.name -eq "Done" }
+$doneState = $statesResponse.data.workflowStates.nodes | Where-Object { $_.name -eq "Done" } | Select-Object -First 1
 Write-Host "Done state ID: $($doneState.id)"
 
-# Now update the issue
+# Now update the issue - use correct mutation with id as direct argument
 $updateQuery = @"
 mutation {
-  issueUpdate(input: {
-    id: "$($issue.id)"
+  issueUpdate(id: "$($issue.id)", input: {
     stateId: "$($doneState.id)"
   }) {
     success
