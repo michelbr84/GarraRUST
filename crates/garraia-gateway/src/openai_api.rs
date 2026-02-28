@@ -2,17 +2,24 @@
 //!
 //! This module provides `/v1/chat/completions` endpoint that is compatible
 //! with the OpenAI API format, enabling VS Code extensions to connect.
+//! Supports both streaming (SSE) and non-streaming modes.
+
+use std::convert::Infallible;
 
 use axum::{
+    body::Body,
     extract::State,
-    http::HeaderMap,
-    response::Json,
+    http::{HeaderMap, Response},
+    response::{sse::{Event, Sse}, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
+use futures::stream::{self, StreamExt};
 use garraia_agents::{ChatMessage, ChatRole, MessagePart};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tracing::{error, info};
+use uuid::Uuid;
 
 use crate::state::SharedState;
 
@@ -97,25 +104,65 @@ pub struct Usage {
 }
 
 // ============================================================================
+// Streaming Response Types (SSE)
+// ============================================================================
+
+/// Chunk sent during streaming (OpenAI format)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatCompletionChunk {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChunkChoice>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkChoice {
+    pub index: i32,
+    pub delta: DeltaContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+// ============================================================================
 // Request Handlers
 // ============================================================================
 
 /// POST /v1/chat/completions
-/// OpenAI-compatible chat completions endpoint
+/// OpenAI-compatible chat completions endpoint with streaming support
 pub async fn chat_completions(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Json(body): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>, (axum::http::StatusCode, String)> {
+) -> Response<Body> {
     // Extract session ID from headers or create new one
-    let session_id = resolve_session_id(&headers).await?;
+    let session_id = resolve_session_id(&headers).await.unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let is_streaming = body.stream.unwrap_or(false);
 
+    // Resolve user identity from Authorization header
+    let user_id = resolve_user_id(&headers, &state);
     info!(
-        "OpenAI API request: session_id={}, model={:?}, stream={}",
+        "OpenAI API request: session_id={}, user_id={:?}, model={:?}, stream={}",
         session_id,
+        user_id,
         body.model,
-        body.stream.unwrap_or(false)
+        is_streaming
     );
+
+    // Get model name
+    let model = body.model.clone().unwrap_or_else(|| "gpt-4".to_string());
 
     // Convert messages to garraia format
     let messages: Vec<ChatMessage> = body
@@ -127,85 +174,218 @@ pub async fn chat_completions(
         })
         .collect();
 
-    // Get continuity key (default if not available)
-    let continuity_key = state.continuity_key(None).unwrap_or_else(|| "default".to_string());
+    // Get continuity key based on user_id
+    let continuity_key = state.continuity_key(user_id.as_deref()).unwrap_or_else(|| "default".to_string());
 
-    // Call the agent using process_message_with_context
-    let response = state
-        .agents
-        .process_message_with_context(
-            &session_id,
-            &continuity_key,
-            &messages,
-            None,
-            None,
-        )
-        .await
-        .map_err(|e| {
-            error!("Agent error: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Agent error: {}", e),
+    if is_streaming {
+        // Handle streaming mode
+        handle_streaming(state, session_id, model, messages, continuity_key, user_id).await
+    } else {
+        // Handle non-streaming mode (original behavior)
+        handle_non_streaming(state, session_id, model, messages, continuity_key, body, user_id).await
+    }
+}
+
+/// Handle streaming request - connects internal streaming to SSE
+async fn handle_streaming(
+    state: SharedState,
+    session_id: String,
+    model: String,
+    messages: Vec<ChatMessage>,
+    continuity_key: String,
+    user_id: Option<String>,
+) -> Response<Body> {
+    // Create channel for streaming deltas
+    let (delta_tx, delta_rx) = mpsc::channel::<String>(100);
+
+    // Get the user message (last message)
+    let user_message = messages
+        .last()
+        .map(|m| {
+            if let MessagePart::Text(t) = &m.content {
+                t.clone()
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
+
+    // Clone what we need for the spawned task
+    let state_clone = state.clone();
+    let session_id_clone = session_id.clone();
+    let continuity_key_clone = continuity_key.clone();
+    let user_msg_clone = user_message.clone();
+    let messages_clone = messages.clone();
+    let model_clone = model.clone();
+    let user_id_clone = user_id.clone();
+
+    // Spawn task to process streaming
+    tokio::spawn(async move {
+        let _ = state_clone
+            .agents
+            .process_message_streaming_with_context(
+                &session_id_clone,
+                &user_msg_clone,
+                &messages_clone,
+                delta_tx,
+                Some(&continuity_key_clone),
+                user_id_clone.as_deref(),
+                Some(model_clone.as_str()),
             )
-        })?;
+            .await;
+    });
 
-    // Build response
-    let response_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
-    let now = std::time::SystemTime::now()
+    // Prepare SSE streaming response
+    let chunk_id = format!("chatcmpl-{}", Uuid::new_v4());
+    let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let usage = Usage {
-        prompt_tokens: 0, // Would need to track this from the provider
-        completion_tokens: 0,
-        total_tokens: 0,
-    };
+    // Create the content stream from delta_rx
+    let stream = stream::unfold(
+        (delta_rx, chunk_id, created, model),
+        |(mut rx, chunk_id, created, model)| async move {
+            match rx.recv().await {
+                Some(text) => {
+                    let chunk = ChatCompletionChunk {
+                        id: chunk_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![ChunkChoice {
+                            index: 0,
+                            delta: DeltaContent {
+                                role: None,
+                                content: Some(text),
+                            },
+                            finish_reason: None,
+                        }],
+                    };
+                    
+                    let event = Event::default()
+                        .data(serde_json::to_string(&chunk).unwrap_or_default());
+                    
+                    Some((event, (rx, chunk_id, created, model)))
+                }
+                None => None,
+            }
+        },
+    );
 
-    let model = body.model.unwrap_or_else(|| "gpt-4".to_string());
+    // Convert to Result stream for Sse
+    let result_stream = stream.map(Ok::<_, Infallible>);
 
-    let resp = ChatCompletionResponse {
-        id: response_id,
-        object: "chat.completion".to_string(),
-        created: now,
-        model: model.clone(),
-        choices: vec![Choice {
-            index: 0,
-            message: ResponseMessage {
-                role: "assistant".to_string(),
-                content: response.clone(),
-            },
-            finish_reason: "stop".to_string(),
-        }],
-        usage,
-    };
+    Sse::new(result_stream).into_response()
+}
 
-    // Persist the turn to database if session store is available
-    if let Some(ref session_store) = state.session_store {
-        let store = session_store.lock().await;
-        let user_content = body
-            .messages
-            .last()
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        
-        let _ = store.append_message(
+/// Handle non-streaming request (original behavior)
+async fn handle_non_streaming(
+    state: SharedState,
+    session_id: String,
+    model: String,
+    messages: Vec<ChatMessage>,
+    continuity_key: String,
+    body: ChatCompletionRequest,
+    user_id: Option<String>,
+) -> Response<Body> {
+    // Get the user message (last message)
+    let user_text = messages
+        .last()
+        .map(|m| {
+            if let MessagePart::Text(t) = &m.content {
+                t.clone()
+            } else {
+                String::new()
+            }
+        })
+        .unwrap_or_default();
+
+    // Get conversation history (all messages except the last one)
+    let conversation_history = &messages[..messages.len().saturating_sub(1)];
+
+    // Call the agent using process_message_with_agent_config to pass model_override
+    let result = state
+        .agents
+        .process_message_with_agent_config(
             &session_id,
-            "user",
-            &user_content,
-            chrono::Utc::now(),
-            &serde_json::json!({ "source": "vscode", "model": model }),
-        );
-        let _ = store.append_message(
-            &session_id,
-            "assistant",
-            &response,
-            chrono::Utc::now(),
-            &serde_json::json!({ "source": "vscode", "model": model }),
-        );
+            &user_text,
+            conversation_history,
+            Some(continuity_key.as_str()),
+            user_id.as_deref(),
+            None,
+            Some(model.as_str()),
+            None,
+            None,
+        )
+        .await;
+
+    match result {
+        Ok(response) => {
+            // Build response
+            let response_id = format!("chatcmpl-{}", Uuid::new_v4());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            let usage = Usage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+            };
+
+            let resp = ChatCompletionResponse {
+                id: response_id,
+                object: "chat.completion".to_string(),
+                created: now,
+                model: model.clone(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: ResponseMessage {
+                        role: "assistant".to_string(),
+                        content: response.clone(),
+                    },
+                    finish_reason: "stop".to_string(),
+                }],
+                usage,
+            };
+
+            // Persist the turn to database if session store is available
+            if let Some(ref session_store) = state.session_store {
+                let store = session_store.lock().await;
+                let user_content = body
+                    .messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                
+                let _ = store.append_message(
+                    &session_id,
+                    "user",
+                    &user_content,
+                    chrono::Utc::now(),
+                    &serde_json::json!({ "source": "vscode", "model": model }),
+                );
+                let _ = store.append_message(
+                    &session_id,
+                    "assistant",
+                    &response,
+                    chrono::Utc::now(),
+                    &serde_json::json!({ "source": "vscode", "model": model }),
+                );
+            }
+
+            Json(resp).into_response()
+        }
+        Err(e) => {
+            error!("Agent error: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Agent error: {}", e),
+            ).into_response()
+        }
     }
-
-    Ok(Json(resp))
 }
 
 /// Resolve session ID from headers or create new one
@@ -218,7 +398,7 @@ async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::
     }
 
     // Create new session
-    Ok(uuid::Uuid::new_v4().to_string())
+    Ok(Uuid::new_v4().to_string())
 }
 
 /// Parse role string to ChatRole
@@ -232,8 +412,50 @@ fn parse_role(role: &str) -> ChatRole {
     }
 }
 
+/// Resolve user identity from Authorization header.
+/// Maps API key to user_id for authenticated access.
+fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
+    // Try Authorization header first
+    if let Some(auth_header) = headers.get("authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            // Handle "Bearer <token>" format
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                let token = token.trim();
+                
+                // Check if it's a valid API key from the config
+                // The token "garra-local" maps to the local owner
+                if token == "garra-local" {
+                    // Get the owner from allowlist
+                    if let Ok(list) = state.allowlist.lock() {
+                        if let Some(owner) = list.owner() {
+                            info!("Resolved user_id={} from 'garra-local' token", owner);
+                            return Some(owner.to_string());
+                        }
+                    }
+                }
+                
+                // For other tokens, use the token itself as user_id
+                // This allows custom API keys to identify users
+                if !token.is_empty() {
+                    info!("Resolved user_id={} from API token", token);
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+    
+    // Try X-User-Id header
+    if let Some(user_id_header) = headers.get("x-user-id") {
+        if let Ok(user_id) = user_id_header.to_str() {
+            return Some(user_id.to_string());
+        }
+    }
+    
+    None
+}
+
 /// GET /v1/models - List available models
-pub async fn list_models() -> Json<serde_json::Value> {
+pub async fn list_models() -> Response<Body> {
     Json(serde_json::json!({
         "object": "list",
         "data": [
@@ -254,9 +476,21 @@ pub async fn list_models() -> Json<serde_json::Value> {
                 "object": "model",
                 "created": 1677649963,
                 "owned_by": "openai"
+            },
+            {
+                "id": "claude-3-opus",
+                "object": "model",
+                "created": 1709596800,
+                "owned_by": "anthropic"
+            },
+            {
+                "id": "claude-3-sonnet",
+                "object": "model",
+                "created": 1709596800,
+                "owned_by": "anthropic"
             }
         ]
-    }))
+    })).into_response()
 }
 
 #[cfg(test)]
