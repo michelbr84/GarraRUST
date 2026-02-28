@@ -127,6 +127,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
+- **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 
 ### Comandos e Aliases (Slash Commands)
 
@@ -151,6 +152,92 @@ O GarraIA possui um sistema unificado de comandos interativos disponíveis no ch
 - **Ativação** - `garraia start --with-voice` habilita o modo de voz
 - **Health check automático** - verificação HTTP do Chatterbox no boot
 - **Integração Telegram** - resposta por áudio automática no pipeline voice
+
+### VS Code Integration (API OpenAI-Compatible)
+
+O GarraIA agora oferece uma **API OpenAI-compatible** que permite integração com o VS Code e outras ferramentas que suportam endpoints estilo OpenAI.
+
+#### Endpoints Disponíveis
+
+| Endpoint | Método | Descrição |
+|----------|--------|----------|
+| `/v1/chat/completions` | POST | Enviar mensagens e receber respostas do agente |
+| `/v1/models` | GET | Listar modelos disponíveis |
+
+#### Cabeçalhos Personalizados
+
+| Cabeçalho | Descrição |
+|-----------|-----------|
+| `X-Session-Id` | ID de sessão para continuidade de conversa |
+| `Authorization` | Chave de API (Bearer token) |
+| `X-Source` | Fonte da requisição (ex: "vscode", "telegram") |
+
+#### Exemplo de Uso
+
+```bash
+# Listar modelos disponíveis
+curl -X GET http://127.0.0.1:3888/v1/models \
+  -H "Authorization: Bearer sua-api-key"
+
+# Enviar mensagem (sem sessão - cria nova)
+curl -X POST http://127.0.0.1:3888/v1/chat/completions \
+  -H "Authorization: Bearer sua-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Olá, como você está?"}
+    ]
+  }'
+
+# Enviar mensagem (com sessão existente)
+curl -X POST http://127.0.0.1:3888/v1/chat/completions \
+  -H "Authorization: Bearer sua-api-key" \
+  -H "X-Session-Id: sessao-123-abc" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Continue a conversa anterior"}
+    ]
+  }'
+```
+
+#### Configuração no VS Code
+
+Use extensões como **Continue** ou **Watt** que suportam endpoints OpenAI customizados:
+
+```json
+// settings.json do VS Code (exemplo para Continue)
+{
+  "continue.serverEndpoint": "http://127.0.0.1:3888/v1",
+  "continue.apiKey": "sua-api-key",
+  "continue.selectedModel": "gpt-4o"
+}
+```
+
+#### Continuidade de Conversa
+
+O GarraIA mantém **histórico unificado** entre todos os canais:
+
+- **Mesma sessão** = mesmo histórico, mesma memória
+- Telegram ↔ VS Code ↔ Web Chat compartilham o contexto
+- Sessões são persistidas em SQLite automaticamente
+
+#### Session ID Strategy
+
+| Método | Descrição |
+|--------|-----------|
+| `X-Session-Id` header | Recomendado: passe o ID de sessão explicitamente |
+| Gerar novo | Se nenhum ID for fornecido, uma nova sessão é criada |
+| Recuperação | Use `/v1/models` para verificar a conexão, depois inicie com `X-Session-Id` vazio para nova sessão |
+
+#### Segurança
+
+- Requer autenticação via `Authorization: Bearer <api_key>`
+- O endpoint é binding em `127.0.0.1` por padrão (local only)
+- Para produção, configure TLS/reverse proxy
+- Use o sistema de whitelist do GarraIA para controlar acesso
 
 ### MCP (Protocolo de Contexto de Modelo)
 

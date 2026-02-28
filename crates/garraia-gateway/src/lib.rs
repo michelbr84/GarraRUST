@@ -12,6 +12,7 @@ pub mod logs_handler;
 pub mod mcp_commands;
 pub mod memory_handler;
 pub mod observability;
+pub mod openai_api;
 pub mod router;
 pub mod runtime_handler;
 pub mod server;

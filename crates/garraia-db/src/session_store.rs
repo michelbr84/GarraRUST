@@ -11,6 +11,16 @@ pub struct StoredMessage {
     pub content: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub metadata: serde_json::Value,
+    /// Source channel: "telegram", "vscode", "web", "discord", etc.
+    pub source: Option<String>,
+    /// LLM provider used for this message
+    pub provider: Option<String>,
+    /// Model used for this message
+    pub model: Option<String>,
+    /// Input tokens (if available)
+    pub tokens_in: Option<i32>,
+    /// Output tokens (if available)
+    pub tokens_out: Option<i32>,
 }
 
 /// Persistent storage for conversation sessions and message history.
@@ -48,6 +58,23 @@ impl SessionStore {
             "ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
         );
 
+        // Migration: add source column to messages (for Chat Sync)
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN source TEXT;",
+        );
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN provider TEXT;",
+        );
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN model TEXT;",
+        );
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN tokens_in INTEGER;",
+        );
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN tokens_out INTEGER;",
+        );
+
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS sessions (
@@ -70,11 +97,20 @@ impl SessionStore {
                     content TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
                     metadata TEXT DEFAULT '{}',
+                    source TEXT,
+                    provider TEXT,
+                    model TEXT,
+                    tokens_in INTEGER,
+                    tokens_out INTEGER,
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, timestamp);
+
+                -- Index for Chat Sync: query by source
+                CREATE INDEX IF NOT EXISTS idx_messages_source
+                    ON messages(session_id, source, timestamp);
 
                 CREATE TABLE IF NOT EXISTS scheduled_tasks (
                     id TEXT PRIMARY KEY,
@@ -87,7 +123,35 @@ impl SessionStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_execute_at
-                    ON scheduled_tasks(execute_at) WHERE status = 'pending';",
+                    ON scheduled_tasks(execute_at) WHERE status = 'pending';
+
+                -- Chat Sync: Session keys table for mapping external IDs to session_id
+                CREATE TABLE IF NOT EXISTS chat_session_keys (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    source TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_session_keys_source_external
+                    ON chat_session_keys(source, external_id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_keys_session
+                    ON chat_session_keys(session_id);
+
+                -- Chat Sync: Summaries for long conversations
+                CREATE TABLE IF NOT EXISTS chat_summaries (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    summary_text TEXT NOT NULL,
+                    message_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_summaries_session
+                    ON chat_summaries(session_id, created_at);",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
@@ -149,18 +213,41 @@ impl SessionStore {
         timestamp: chrono::DateTime<chrono::Utc>,
         metadata: &serde_json::Value,
     ) -> Result<()> {
+        self.append_message_with_details(session_id, direction, content, timestamp, metadata, None, None, None, None, None)
+    }
+
+    /// Append a single message to a session with full details (for Chat Sync).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_message_with_details(
+        &self,
+        session_id: &str,
+        direction: &str,
+        content: &str,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        metadata: &serde_json::Value,
+        source: Option<&str>,
+        provider: Option<&str>,
+        model: Option<&str>,
+        tokens_in: Option<i32>,
+        tokens_out: Option<i32>,
+    ) -> Result<()> {
         let message_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
-                "INSERT INTO messages (id, session_id, direction, content, timestamp, metadata)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO messages (id, session_id, direction, content, timestamp, metadata, source, provider, model, tokens_in, tokens_out)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     message_id,
                     session_id,
                     direction,
                     content,
                     timestamp.to_rfc3339(),
-                    metadata.to_string()
+                    metadata.to_string(),
+                    source,
+                    provider,
+                    model,
+                    tokens_in,
+                    tokens_out
                 ],
             )
             .map_err(|e| Error::Database(format!("failed to append message: {e}")))?;
@@ -176,7 +263,7 @@ impl SessionStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT direction, content, timestamp, metadata
+                "SELECT direction, content, timestamp, metadata, source, provider, model, tokens_in, tokens_out
                  FROM messages
                  WHERE session_id = ?1
                  ORDER BY rowid DESC
@@ -194,6 +281,11 @@ impl SessionStore {
                     timestamp: parse_timestamp(&timestamp_raw),
                     metadata: serde_json::from_str(&metadata_raw)
                         .unwrap_or(serde_json::Value::Null),
+                    source: row.get(4)?,
+                    provider: row.get(5)?,
+                    model: row.get(6)?,
+                    tokens_in: row.get(7)?,
+                    tokens_out: row.get(8)?,
                 })
             })
             .map_err(|e| Error::Database(format!("failed to load messages: {e}")))?;
@@ -208,6 +300,115 @@ impl SessionStore {
         // Query is DESC for efficient tail fetch; return in chronological order.
         messages.reverse();
         Ok(messages)
+    }
+
+    // ============================================================================
+    // Chat Sync: Session Key Management
+    // ============================================================================
+
+    /// Map an external ID (e.g., Telegram chat_id) to a session_id.
+    pub fn upsert_session_key(
+        &self,
+        session_id: &str,
+        source: &str,
+        external_id: &str,
+    ) -> Result<()> {
+        let key_id = uuid::Uuid::new_v4().to_string();
+        self.conn
+            .execute(
+                "INSERT INTO chat_session_keys (id, session_id, source, external_id)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(source, external_id) DO UPDATE SET
+                   session_id = excluded.session_id,
+                   updated_at = datetime('now')",
+                params![key_id, session_id, source, external_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to upsert session key: {e}")))?;
+        Ok(())
+    }
+
+    /// Get session_id by external ID and source.
+    pub fn get_session_by_external_key(
+        &self,
+        source: &str,
+        external_id: &str,
+    ) -> Result<Option<String>> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT session_id FROM chat_session_keys WHERE source = ?1 AND external_id = ?2"
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare session key query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![source, external_id], |row| row.get(0))
+            .ok();
+
+        Ok(result)
+    }
+
+    /// Delete a session key mapping.
+    pub fn delete_session_key(&self, source: &str, external_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM chat_session_keys WHERE source = ?1 AND external_id = ?2",
+                params![source, external_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to delete session key: {e}")))?;
+        Ok(())
+    }
+
+    // ============================================================================
+    // Chat Sync: Session Summaries
+    // ============================================================================
+
+    /// Save a summary for a session.
+    pub fn save_session_summary(
+        &self,
+        session_id: &str,
+        summary_text: &str,
+        message_count: i32,
+    ) -> Result<()> {
+        let summary_id = uuid::Uuid::new_v4().to_string();
+        self.conn
+            .execute(
+                "INSERT INTO chat_summaries (id, session_id, summary_text, message_count)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![summary_id, session_id, summary_text, message_count],
+            )
+            .map_err(|e| Error::Database(format!("failed to save summary: {e}")))?;
+        Ok(())
+    }
+
+    /// Get the latest summary for a session.
+    pub fn get_latest_session_summary(&self, session_id: &str) -> Result<Option<(String, i32)>> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT summary_text, message_count FROM chat_summaries
+                 WHERE session_id = ?1
+                 ORDER BY created_at DESC
+                 LIMIT 1"
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare summary query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![session_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+            })
+            .ok();
+
+        Ok(result)
+    }
+
+    /// Get total message count for a session.
+    pub fn get_message_count(&self, session_id: &str) -> Result<i32> {
+        let count: i32 = self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("failed to count messages: {e}")))?;
+        Ok(count)
     }
 
     /// Schedule a task for future execution.
