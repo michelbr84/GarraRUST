@@ -246,6 +246,71 @@ O GarraIA mantém **histórico unificado** entre todos os canais:
 - Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop)
 - CLI: `garraia mcp list`, `garraia mcp inspect <name>`
 
+### Modos de Execução (Agent Modes)
+
+O GarraIA possui um sistema avançado de **Modos de Execução** que permite selecionar diferentes estratégias de comportamento do agente:
+
+| Modo | Descrição | Políticas de Ferramentas |
+|------|-----------|--------------------------|
+| **Auto** | Roteamento inteligente automático baseado no conteúdo da mensagem | Herda do modo resolvido |
+| **Ask** | Modo de pergunta/resposta, foco em explicações | Leitura apenas |
+| **Search** | Busca e inspeção de código sem modificar arquivos | `repo_search`, `list_dir`, `file_read` |
+| **Architect** | Design e planejamento de arquitetura | Ferramentas de leitura |
+| **Code** | Implementação e refatoração de código | `file_read`, `file_write`, `bash` |
+| **Debug** | Análise de erros e troubleshooting | `repo_search`, `file_read`, `bash` (read-only) |
+| **Orchestrator** | Execução multi-etapas com validação | Todas com guardrails |
+| **Review** | Revisão de código e análise de diffs | `git_diff`, `file_read` |
+| **Edit** | Edição direcionada de arquivos | `file_read`, `file_write` |
+
+#### Precedência de Modo
+
+O modo é resolvido nesta ordem:
+1. **Header** `X-Agent-Mode` (maior prioridade)
+2. **Comando** `/mode <nome>` no chat
+3. **Preferência por canal** (Telegram = `ask`, Web/API = `auto`)
+4. **Preferência por usuário**
+5. **Default** do sistema
+
+#### Comandos de Modo
+
+- `/mode` - Mostra o modo atual
+- `/mode <nome>` - Altera o modo (ex: `/mode code`)
+- `/modes` - Lista todos os modos disponíveis
+
+#### Auto Mode Router
+
+O modo `auto` usa heurísticas determinísticas para selecionar o modo correto:
+
+- Contém caminho de arquivo (`C:\`, `G:\`, `/home/`) → `search` ou `debug`
+- "refatorar", "implementar", "criar arquivo" → `code`
+- "explique", "o que é", "conceito" → `ask`
+- "erro", "stacktrace", "panic", "log" → `debug`
+- "roadmap", "design", "arquitetura" → `architect`
+- "faça review", "analise diff" → `review`
+
+#### Integração com Continue/VS Code
+
+Configure o Continue para usar o GarraIA com o modo desejado:
+
+```json
+// settings.json do VS Code
+{
+  "continue.serverEndpoint": "http://127.0.0.1:3888/v1",
+  "continue.apiKey": "sua-api-key",
+  "continue.selectedModel": "gpt-4o"
+}
+```
+
+Para usar modo específico, adicione o header `X-Agent-Mode` na requisição ou use o comando `/mode` no chat.
+
+#### API de Modos
+
+| Endpoint | Método | Descrição |
+|----------|--------|----------|
+| `/api/modes` | GET | Lista todos os modos disponíveis |
+| `/api/mode/select` | POST | Seleciona modo para sessão |
+| `/api/mode/current` | GET | Retorna modo atual da sessão |
+
 ### Runtime do Agente
 
 - Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat (até 10 iterações)
