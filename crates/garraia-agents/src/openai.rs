@@ -358,8 +358,9 @@ impl LlmProvider for OpenAiProvider {
             .await
             .map_err(|e| Error::Agent(format!("openai request failed: {e}")))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             // Log more details for debugging
             tracing::warn!(
@@ -373,12 +374,93 @@ impl LlmProvider for OpenAiProvider {
             )));
         }
 
-        let api_response: OpenAiResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::Agent(format!("failed to parse openai response: {e}")))?;
+        // Get status code before consuming the response
+        let status_code = status;
 
-        Ok(from_openai_response(api_response))
+        // Check Content-Type to handle SSE vs JSON responses
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| Error::Agent(format!("failed to read response body: {e}")))?;
+
+        let body_str = String::from_utf8_lossy(&body_bytes);
+
+        // If Content-Type indicates SSE but we expected JSON, this might be an error
+        // Some providers return text/event-stream even for non-streaming requests
+        // OpenRouter can also send comment payloads like ": OPENROUTER PROCESSING"
+        if content_type.contains("text/event-stream") {
+            // First check for comment payloads (lines starting with colon)
+            let has_only_comments = body_str.lines()
+                .all(|line| line.trim().is_empty() || line.trim().starts_with(':'));
+            
+            if has_only_comments {
+                // All lines are comments - this is likely a processing message, not an error
+                tracing::debug!(
+                    "openai response contains only SSE comments, treating as empty response: endpoint={}",
+                    self.endpoint()
+                );
+            } else if body_str.starts_with("data: ") {
+                // Parse SSE to extract potential error
+                for line in body_str.lines() {
+                    // Skip comment lines (OpenRouter can send ": OPENROUTER PROCESSING")
+                    let trimmed = line.trim();
+                    if trimmed.starts_with(':') {
+                        continue;
+                    }
+                    
+                    if let Some(data) = trimmed.strip_prefix("data: ") {
+                        if !data.is_empty() && data != "[DONE]" {
+                            // Try to extract error message from JSON
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
+                                let err = json_val.get("error")
+                                    .or_else(|| json_val.get("message"))
+                                    .and_then(|e| e.as_str())
+                                    .map(|s| s.to_string());
+                                if let Some(err_msg) = err {
+                                    tracing::warn!(
+                                        "openai API returned SSE error: status={}, error={}, endpoint={}",
+                                        status_code,
+                                        &err_msg[..err_msg.len().min(200)],
+                                        self.endpoint()
+                                    );
+                                    return Err(Error::Agent(format!(
+                                        "openai API error (SSE): status={}, error={}",
+                                        status_code, err_msg
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try to parse as JSON, with detailed error logging
+        match serde_json::from_slice::<OpenAiResponse>(&body_bytes) {
+            Ok(resp) => Ok(from_openai_response(resp)),
+            Err(e) => {
+                // Log detailed diagnostic info
+                let truncated_body = &body_str[..body_str.len().min(1000)];
+                tracing::warn!(
+                    "failed to parse openai response: {}\nstatus={}, content-type={}, body_preview={}",
+                    e,
+                    status_code,
+                    content_type,
+                    truncated_body
+                );
+                Err(Error::Agent(format!(
+                    "failed to parse openai response: {}",
+                    e
+                )))
+            }
+        }
     }
 
     #[instrument(skip(self, request), fields(model))]
@@ -437,9 +519,15 @@ impl LlmProvider for OpenAiProvider {
                         buffer = buffer[pos + 2..].to_string();
 
                         // Extract the data: line
+                        // Skip comment lines (OpenRouter can send ": OPENROUTER PROCESSING")
                         let mut data_line = None;
                         for line in event_str.lines() {
-                            if let Some(d) = line.strip_prefix("data: ") {
+                            let trimmed = line.trim();
+                            // Skip empty lines and comment lines (starting with colon)
+                            if trimmed.is_empty() || trimmed.starts_with(':') {
+                                continue;
+                            }
+                            if let Some(d) = trimmed.strip_prefix("data: ") {
                                 data_line = Some(d.to_string());
                             }
                         }
