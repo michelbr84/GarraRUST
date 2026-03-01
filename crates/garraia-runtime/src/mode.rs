@@ -552,4 +552,179 @@ mod tests {
         let mode = engine.resolve_mode(None, None, "web");
         assert_eq!(mode, AgentMode::Auto);
     }
+    
+    // GAR-239: Testes de políticas de tools por modo
+    #[test]
+    fn test_tool_policy_search_mode() {
+        let engine = ModeEngine::new();
+        let profile = engine.get_profile(AgentMode::Search);
+        
+        // Search mode: allowed tools
+        assert!(profile.tool_policy.allowed.contains(&"file_read".to_string()));
+        assert!(profile.tool_policy.allowed.contains(&"repo_search".to_string()));
+        
+        // Search mode: denied tools
+        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
+        
+        // Search mode: read-only bash
+        assert!(profile.tool_policy.read_only.contains(&"bash".to_string()));
+    }
+    
+    #[test]
+    fn test_tool_policy_code_mode() {
+        let engine = ModeEngine::new();
+        let profile = engine.get_profile(AgentMode::Code);
+        
+        // Code mode: allows file_write
+        assert!(profile.tool_policy.allowed.contains(&"file_write".to_string()));
+        assert!(profile.tool_policy.allowed.contains(&"bash".to_string()));
+        
+        // Code mode: no denied tools
+        assert!(profile.tool_policy.denied.is_empty());
+    }
+    
+    #[test]
+    fn test_tool_policy_ask_mode() {
+        let engine = ModeEngine::new();
+        let profile = engine.get_profile(AgentMode::Ask);
+        
+        // Ask mode: minimal tools
+        assert!(profile.tool_policy.allowed.is_empty());
+        assert!(profile.tool_policy.denied.is_empty());
+    }
+    
+    #[test]
+    fn test_tool_policy_debug_mode() {
+        let engine = ModeEngine::new();
+        let profile = engine.get_profile(AgentMode::Debug);
+        
+        // Debug mode: denies file_write
+        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
+        assert!(profile.tool_policy.allowed.contains(&"bash".to_string()));
+    }
+    
+    #[test]
+    fn test_tool_policy_review_mode() {
+        let engine = ModeEngine::new();
+        let profile = engine.get_profile(AgentMode::Review);
+        
+        // Review mode: denies write operations
+        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
+        assert!(profile.tool_policy.denied.contains(&"bash".to_string()));
+    }
+    
+    // GAR-239: Testes de auto mode resolution
+    #[test]
+    fn test_auto_mode_debug_patterns() {
+        let engine = ModeEngine::new();
+        
+        assert_eq!(engine.resolve_auto_mode("tenho um erro no código"), AgentMode::Debug);
+        assert_eq!(engine.resolve_auto_mode("debug this panic"), AgentMode::Debug);
+        assert_eq!(engine.resolve_auto_mode("não está funcionando"), AgentMode::Debug);
+    }
+    
+    #[test]
+    fn test_auto_mode_code_patterns() {
+        let engine = ModeEngine::new();
+        
+        assert_eq!(engine.resolve_auto_mode("criar um novo arquivo.rs"), AgentMode::Code);
+        assert_eq!(engine.resolve_auto_mode("implementar função"), AgentMode::Code);
+        assert_eq!(engine.resolve_auto_mode("refatorar o código"), AgentMode::Code);
+    }
+    
+    #[test]
+    fn test_auto_mode_search_patterns() {
+        let engine = ModeEngine::new();
+        
+        // Test search patterns - usando frases específicas que não capturam código
+        assert_eq!(engine.resolve_auto_mode("procurar occurrences de função"), AgentMode::Search);
+        assert_eq!(engine.resolve_auto_mode("onde fica a variável"), AgentMode::Search);
+    }
+    
+    #[test]
+    fn test_auto_mode_architect_patterns() {
+        let engine = ModeEngine::new();
+        
+        // Test patterns que só capturam architecture
+        assert_eq!(engine.resolve_auto_mode("qual a arquitetura do sistema"), AgentMode::Architect);
+        assert_eq!(engine.resolve_auto_mode("desenhar a estrutura"), AgentMode::Architect);
+    }
+    
+    #[test]
+    fn test_auto_mode_review_patterns() {
+        let engine = ModeEngine::new();
+        
+        assert_eq!(engine.resolve_auto_mode("revisar o código"), AgentMode::Review);
+        assert_eq!(engine.resolve_auto_mode("analisar diff"), AgentMode::Review);
+        assert_eq!(engine.resolve_auto_mode("code review"), AgentMode::Review);
+    }
+    
+    #[test]
+    fn test_auto_mode_ask_patterns() {
+        let engine = ModeEngine::new();
+        
+        assert_eq!(engine.resolve_auto_mode("o que é async"), AgentMode::Ask);
+        assert_eq!(engine.resolve_auto_mode("explique o conceito"), AgentMode::Ask);
+    }
+    
+    #[test]
+    fn test_auto_mode_default_ask() {
+        let engine = ModeEngine::new();
+        
+        // Unknown patterns fall back to Ask
+        assert_eq!(engine.resolve_auto_mode("hello world"), AgentMode::Ask);
+    }
+    
+    // GAR-239: Testes de channel defaults
+    #[test]
+    fn test_channel_defaults_telegram() {
+        let engine = ModeEngine::new();
+        assert_eq!(engine.get_channel_default("telegram"), AgentMode::Ask);
+    }
+    
+    #[test]
+    fn test_channel_defaults_web() {
+        let engine = ModeEngine::new();
+        assert_eq!(engine.get_channel_default("web"), AgentMode::Auto);
+    }
+    
+    #[test]
+    fn test_channel_defaults_api() {
+        let engine = ModeEngine::new();
+        assert_eq!(engine.get_channel_default("api"), AgentMode::Auto);
+    }
+    
+    #[test]
+    fn test_channel_defaults_continue() {
+        let engine = ModeEngine::new();
+        assert_eq!(engine.get_channel_default("continue"), AgentMode::Auto);
+    }
+    
+    // GAR-239: Testes de precedência de modo
+    #[test]
+    fn test_mode_precedence_header_over_channel() {
+        let engine = ModeEngine::new();
+        
+        // Header takes precedence over channel default
+        let mode = engine.resolve_mode(Some("code"), None, "telegram");
+        assert_eq!(mode, AgentMode::Code);
+    }
+    
+    #[test]
+    fn test_mode_precedence_command_over_channel() {
+        let engine = ModeEngine::new();
+        
+        // Command takes precedence over channel default
+        let mode = engine.resolve_mode(None, Some("debug"), "web");
+        assert_eq!(mode, AgentMode::Debug);
+    }
+    
+    #[test]
+    fn test_mode_precedence_header_over_command() {
+        let engine = ModeEngine::new();
+        
+        // Header takes precedence over command
+        let mode = engine.resolve_mode(Some("architect"), Some("code"), "web");
+        assert_eq!(mode, AgentMode::Architect);
+    }
 }

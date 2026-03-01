@@ -50,6 +50,7 @@ pub struct ChatCompletionRequest {
     /// Model to use (e.g., "gpt-4", "claude-3-opus")
     pub model: Option<String>,
     /// List of messages
+    #[serde(default)]
     pub messages: Vec<ChatMessageInput>,
     /// Temperature (0.0 - 2.0)
     pub temperature: Option<f32>,
@@ -67,6 +68,86 @@ pub struct ChatCompletionRequest {
     pub frequency_penalty: Option<f32>,
     /// Optional: user identifier
     pub user: Option<String>,
+    /// GAR-225: Optional - tools available for the model
+    #[serde(default)]
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// GAR-225: Optional - controls which tool to use (none/auto/required/named)
+    /// When not specified, defaults to auto behavior
+    /// Accepts: "none", "auto", "required", or {"type": "function", "function": {"name": "..."}}
+    #[serde(default, rename = "tool_choice")]
+    pub tool_choice: serde_json::Value,
+}
+
+/// Tool definition for OpenAI-compatible API
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDefinition {
+    /// Tool type (currently only "function" is supported)
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// Function definition
+    pub function: Option<FunctionDefinition>,
+}
+
+/// Function definition within a tool
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionDefinition {
+    /// Function name
+    pub name: String,
+    /// Function description
+    pub description: Option<String>,
+    /// JSON schema for function parameters
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// Tool choice string value (none/auto/required)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoiceString {
+    /// Unknown value (must be last in untagged enum)
+    Unknown(String),
+    /// Don't use any tools
+    None,
+    /// Let the model decide
+    Auto,
+    /// Force at least one tool call
+    Required,
+}
+
+/// Tool choice with auto default - simplifies parsing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoiceAuto {
+    /// Force a specific tool by name (must be checked first due to untagged)
+    Function(FunctionChoice),
+    /// Not specified - use default behavior
+    StringChoice(ToolChoiceString),
+}
+
+impl Default for ToolChoiceAuto {
+    fn default() -> Self {
+        ToolChoiceAuto::StringChoice(ToolChoiceString::Unknown(String::new()))
+    }
+}
+
+/// Force a specific function to be called
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionChoice {
+    /// The type (always "function")
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// The name of the function to force
+    pub function: FunctionNameOnly,
+}
+
+/// Function name only
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionNameOnly {
+    /// The function name
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,12 +234,36 @@ pub async fn chat_completions(
 
     // Resolve user identity from Authorization header
     let user_id = resolve_user_id(&headers, &state);
+    
+    // GAR-238: Extract mode from header for standardized logging
+    let agent_mode = headers
+        .get("x-agent-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    
+    // GAR-225: Extract tool_choice for standardized logging
+    let tool_choice_str = if body.tool_choice.is_null() {
+        None
+    } else if let Some(s) = body.tool_choice.as_str() {
+        Some(s.to_string())
+    } else if let Some(obj) = body.tool_choice.as_object() {
+        if let Some(name) = obj.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+            Some(format!("function:{}", name))
+        } else {
+            Some(body.tool_choice.to_string())
+        }
+    } else {
+        Some(body.tool_choice.to_string())
+    };
+    
     info!(
-        "OpenAI API request: session_id={}, user_id={:?}, model={:?}, stream={}",
+        "OpenAI API request: session_id={}, user_id={:?}, model={:?}, stream={}, mode={:?}, tool_choice={:?}",
         session_id,
         user_id,
         body.model,
-        is_streaming
+        is_streaming,
+        agent_mode,
+        tool_choice_str
     );
 
     // Get model name
@@ -503,5 +608,69 @@ mod tests {
         assert!(matches!(parse_role("user"), ChatRole::User));
         assert!(matches!(parse_role("assistant"), ChatRole::Assistant));
         assert!(matches!(parse_role("SYSTEM"), ChatRole::System));
+    }
+    
+    // GAR-225: Testes de tool_choice parsing
+    #[test]
+    fn test_tool_choice_none() {
+        let json = r#"{"tool_choice": "none"}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        println!("Parsed tool_choice: {:?}", req.tool_choice);
+        assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
+        assert!(req.tool_choice.is_string(), "tool_choice should be string");
+    }
+    
+    #[test]
+    fn test_tool_choice_auto() {
+        let json = r#"{"tool_choice": "auto"}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        println!("Parsed tool_choice: {:?}", req.tool_choice);
+        assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
+    }
+    
+    #[test]
+    fn test_tool_choice_required() {
+        let json = r#"{"tool_choice": "required"}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        println!("Parsed tool_choice: {:?}", req.tool_choice);
+        assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
+    }
+    
+    #[test]
+    fn test_tool_choice_function() {
+        let json = r#"{"tool_choice": {"type": "function", "function": {"name": "my_function"}}}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        println!("Parsed tool_choice: {:?}", req.tool_choice);
+        assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
+        assert!(req.tool_choice.is_object(), "tool_choice should be object");
+    }
+    
+    #[test]
+    fn test_tool_choice_default() {
+        let json = r#"{}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        // When not specified, should be null (default for Value)
+        assert!(req.tool_choice.is_null(), "tool_choice should be null when not specified");
+    }
+    
+    #[test]
+    fn test_tools_parsing() {
+        let json = r#"{
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_repo",
+                        "description": "Search in repository",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(req.tools.is_some());
+        let tools = req.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function.as_ref().unwrap().name, "search_repo");
     }
 }

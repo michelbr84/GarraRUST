@@ -5,6 +5,7 @@ mod config;
 mod health;
 mod help;
 mod model;
+mod mode;
 mod pair;
 mod providers;
 mod start;
@@ -18,6 +19,7 @@ pub use config::ConfigCommand;
 pub use health::HealthCommand;
 pub use help::HelpCommand;
 pub use model::ModelCommand;
+pub use mode::{ModeCommand, ModesListCommand};
 pub use pair::PairCommand;
 pub use providers::ProvidersCommand;
 pub use start::StartCommand;
@@ -45,4 +47,8 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     registry.register(Box::new(ProvidersCommand));
     registry.register(Box::new(StatsCommand));
     registry.register(Box::new(ConfigCommand));
+
+    // GAR-223: Mode commands
+    registry.register(Box::new(ModeCommand));
+    registry.register(Box::new(ModesListCommand));
 }
