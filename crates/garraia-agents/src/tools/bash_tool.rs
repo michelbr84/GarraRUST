@@ -8,17 +8,111 @@ use super::{Tool, ToolContext, ToolOutput};
 const TIMEOUT_PADRAO_SEGS: u64 = 30;
 const MAX_BYTES_SAIDA: usize = 32 * 1024;
 
+/// Deny list of dangerous commands - GAR-236
+const DENY_LIST: &[&str] = &[
+    "rm -rf",
+    "rm -r /",
+    "rm -f /",
+    "del ",
+    "format",
+    "fdisk",
+    "mkfs",
+    "dd if=",
+    "> /dev/sd",
+    "chmod 777 /",
+    "chown -R",
+    ":wq!",
+    "exit!",
+    "curl | sh",
+    "wget | sh",
+    "sh -c",
+    "bash -c",
+    "python -m http",
+    "nc -",
+    "netcat",
+    "nmap",
+    "ssh root@",
+    "sudo su",
+    "kill -9 -1",
+    "killall",
+    "pkill -9",
+    "reboot",
+    "shutdown",
+    "init 0",
+    "init 6",
+    "halt",
+    "poweroff",
+];
+
+/// Allow list of safe commands for read-only mode - GAR-236
+const ALLOW_LIST_READONLY: &[&str] = &[
+    "ls",
+    "dir",
+    "pwd",
+    "cd",
+    "cat",
+    "type",
+    "head",
+    "tail",
+    "grep",
+    "find",
+    "git status",
+    "git log",
+    "git diff",
+    "git branch",
+    "cargo",
+    "rustc",
+];
+
 /// Executa comandos de shell com timeout configurável e limite de saída.
 /// No Windows utiliza PowerShell. Em sistemas Unix-like utiliza Bash.
 pub struct BashTool {
     timeout: Duration,
+    allow_readonly: bool,
 }
 
 impl BashTool {
     pub fn new(timeout_secs: Option<u64>) -> Self {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
+            allow_readonly: false,
         }
+    }
+
+    /// Create a read-only BashTool that only allows safe commands
+    pub fn new_readonly(timeout_secs: Option<u64>) -> Self {
+        Self {
+            timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
+            allow_readonly: true,
+        }
+    }
+
+    /// Check if command is in deny list
+    fn is_dangerous(&self, command: &str) -> bool {
+        let cmd_lower = command.to_lowercase();
+        for pattern in DENY_LIST {
+            if cmd_lower.contains(&pattern.to_lowercase()) {
+                tracing::warn!("Blocked dangerous command pattern: {}", pattern);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if command is in allow list (for read-only mode)
+    fn is_allowed(&self, command: &str) -> bool {
+        if !self.allow_readonly {
+            return true; // Not in readonly mode, allow all (except deny list)
+        }
+
+        let cmd_lower = command.to_lowercase().trim().to_string();
+        for pattern in ALLOW_LIST_READONLY {
+            if cmd_lower.starts_with(&pattern.to_lowercase())
+                || cmd_lower.contains(&pattern.to_lowercase()) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -58,6 +152,22 @@ impl Tool for BashTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Agent("parâmetro 'command' ausente".into()))?;
+
+        // GAR-236: Security check - deny list
+        if self.is_dangerous(comando) {
+            tracing::error!("Blocked dangerous command: {}", comando);
+            return Ok(ToolOutput::error(
+                "Comando bloqueado por segurança: padrão perigoso detectado".to_string(),
+            ));
+        }
+
+        // GAR-236: Security check - read-only allow list
+        if !self.is_allowed(comando) {
+            tracing::warn!("Command not in allow list for read-only mode: {}", comando);
+            return Ok(ToolOutput::error(
+                "Comando não permitido no modo read-only. Use: ls, dir, cat, git, cargo, etc.".to_string(),
+            ));
+        }
 
         let (shell, arg) = if cfg!(target_os = "windows") {
             ("powershell", "-Command")

@@ -1,0 +1,1808 @@
+﻿{
+    "data":  {
+                 "issues":  {
+                                "nodes":  [
+                                              {
+                                                  "id":  "a6caf8ba-ee3d-41a2-b316-8e81b1601dd4",
+                                                  "identifier":  "GAR-270",
+                                                  "title":  "6.1.2 - Migration guide",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "42190c39-26a8-4680-b480-837996c4ea73",
+                                                  "identifier":  "GAR-269",
+                                                  "title":  "6.1.1 - Pagina Globs no Garra",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cd68ad2e-a32e-4955-82e1-7754418a17a4",
+                                                  "identifier":  "GAR-268",
+                                                  "title":  "5.3.1 - Protecoes anti pattern bombs",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "860539f3-c5b3-4bee-9fd9-d97171eed170",
+                                                  "identifier":  "GAR-267",
+                                                  "title":  "5.2.2 - Benchmark de traversal",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b8eb54ff-5944-4583-bf3d-3c70a98443e8",
+                                                  "identifier":  "GAR-266",
+                                                  "title":  "5.2.1 - Benchmark de matching",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "afb3e84b-34df-4406-a524-1c5b1337a205",
+                                                  "identifier":  "GAR-265",
+                                                  "title":  "5.1.1 - Test vectors baseados em casos conhecidos",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "c1db8c90-d873-40be-9d7c-113befc485f4",
+                                                  "identifier":  "GAR-264",
+                                                  "title":  "4.4.1 - Tela de settings File Matching",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "608795b3-2dc1-4a54-ad2d-d3ed155983fb",
+                                                  "identifier":  "GAR-263",
+                                                  "title":  "4.3.3 - Comando test glob",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "95563926-c551-4817-90ab-da2d2f6c359a",
+                                                  "identifier":  "GAR-262",
+                                                  "title":  "4.3.2 - Flags CLI",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "eec2348e-6cb6-4ee5-84b9-8bff0f566afe",
+                                                  "identifier":  "GAR-261",
+                                                  "title":  "4.3.1 - Config em config.basic.yml",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e9f5de4e-c068-4511-b019-4a4c10a6e49f",
+                                                  "identifier":  "GAR-260",
+                                                  "title":  "4.2.2 - Debounce inteligente por glob group",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6e34be48-1304-4c8f-8ddc-7d1d550c76e0",
+                                                  "identifier":  "GAR-259",
+                                                  "title":  "4.2.1 - Filtro de eventos do watcher",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2bfad702-90af-430c-a921-274ca1d7d266",
+                                                  "identifier":  "GAR-258",
+                                                  "title":  "4.1.2 - Log de cobertura",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "158d8f12-2e44-4a69-9ac8-292ef0149e14",
+                                                  "identifier":  "GAR-257",
+                                                  "title":  "4.1.1 - Scanner do repo respeitando ignore + glob_mode",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "58e80267-6fa6-484c-95f1-05c754f00e19",
+                                                  "identifier":  "GAR-256",
+                                                  "title":  "3.2.2 - Testes de precedencia",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "aec977c3-5b1b-4b93-b949-6c4a9f6f650f",
+                                                  "identifier":  "GAR-255",
+                                                  "title":  "3.2.1 - Definir como .garraignore interpreta patterns",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cdc9817f-6924-4523-88d6-74198b08be45",
+                                                  "identifier":  "GAR-254",
+                                                  "title":  "3.1.2 - Explain ignore",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "4c971007-b902-4f07-9eee-b92786c79548",
+                                                  "identifier":  "GAR-253",
+                                                  "title":  "3.1.1 - Implementar leitor de .garraignore",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "18db9d3e-e4d5-4ae6-99b0-a77c9217f766",
+                                                  "identifier":  "GAR-252",
+                                                  "title":  "2.3.3 - Suite de testes do modo Bash",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e9f6b5c6-8206-4282-9b98-2b59daae18a8",
+                                                  "identifier":  "GAR-251",
+                                                  "title":  "2.3.2 - Politica de backtracking",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3ccd4655-8cc3-4895-af6e-0a990c202235",
+                                                  "identifier":  "GAR-250",
+                                                  "title":  "2.3.1 - Implementar extglob completo Bash-style",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "abb83abb-bd97-4ef7-be2b-28f46158ef25",
+                                                  "identifier":  "GAR-249",
+                                                  "title":  "2.2.3 - Suite de testes do modo Picomatch",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "55f7f302-fc4c-47f7-b639-0e6b76bddfd0",
+                                                  "identifier":  "GAR-248",
+                                                  "title":  "2.2.2 - Extglob sem backtracking caro",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "00a02874-2e76-4cac-a1f2-9ceff2d37866",
+                                                  "identifier":  "GAR-247",
+                                                  "title":  "2.2.1 - Matching de * vs **",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "21c618fe-2e6a-4f13-9d3b-863c07ee9196",
+                                                  "identifier":  "GAR-246",
+                                                  "title":  "2.1.3 - Safe-guards de performance",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cd44ded3-55a1-4115-8f42-683aac313af7",
+                                                  "identifier":  "GAR-245",
+                                                  "title":  "2.1.2 - Normalizacao de paths",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "09bf8a5f-2711-44d5-a31f-873be2b74501",
+                                                  "identifier":  "GAR-244",
+                                                  "title":  "2.1.1 - Criar API publica garraia-glob",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "826a0d5e-28c2-4d4f-9391-df012e39a788",
+                                                  "identifier":  "GAR-243",
+                                                  "title":  "1.1.3 - Matriz de compatibilidade",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "10ccece3-915d-49b1-8b4a-7e334cc98c6f",
+                                                  "identifier":  "GAR-242",
+                                                  "title":  "1.1.2 - Definir modo padrao do Garra",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bb778b75-9121-473f-8c98-c2afe68f1298",
+                                                  "identifier":  "GAR-241",
+                                                  "title":  "1.1.1 - Documento Glob Semantics for GarraRUST",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "4bf121d7-23be-49ba-9df2-61737cf57ed9",
+                                                  "identifier":  "GAR-240",
+                                                  "title":  "M9-3: Documentacao completa",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "31c82b70-18c3-4ed3-bafa-2a5b40518724",
+                                                  "identifier":  "GAR-239",
+                                                  "title":  "M9-2: Testes modos e politicas",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9bed89d8-f732-4330-b27f-c1012cbf33d6",
+                                                  "identifier":  "GAR-238",
+                                                  "title":  "M9-1: Logs padronizados por request",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cb94ebb1-7aa3-4dea-b331-314de55d9396",
+                                                  "identifier":  "GAR-237",
+                                                  "title":  "M8-1: Tool git_diff",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f74fa4b0-ade4-463f-993e-e627e4ffa7a4",
+                                                  "identifier":  "GAR-236",
+                                                  "title":  "M7-2: Checklist de seguranca para bash",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0954588f-95fd-44a9-96e2-53efb0099d20",
+                                                  "identifier":  "GAR-235",
+                                                  "title":  "M7-1: Execucao multi-etapas com planos",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2dc79d17-580f-4abf-a449-8b002acd5f0d",
+                                                  "identifier":  "GAR-234",
+                                                  "title":  "M6-2: Suporte a headers no Continue via config",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bf74598c-77a1-4cd4-b3c1-9aaef5a2763d",
+                                                  "identifier":  "GAR-233",
+                                                  "title":  "M6-1: Templates de continue config.yaml",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "5e40cf36-21d4-479f-8d18-4fcf8f8c02b6",
+                                                  "identifier":  "GAR-232",
+                                                  "title":  "M5-3: UI Edit Mode",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "45ac2276-d7b8-427b-815c-522f2b73f58e",
+                                                  "identifier":  "GAR-231",
+                                                  "title":  "M5-2: UI Mode Sidebar",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "261e3037-e347-403f-9008-8893ca3e6195",
+                                                  "identifier":  "GAR-230",
+                                                  "title":  "M5-1: API HTTP para modos",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "72f4f092-38e5-4d96-a170-fbb35ae9e3e0",
+                                                  "identifier":  "GAR-229",
+                                                  "title":  "M4-2: Tool nativa list_dir",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0190ea38-8524-47f7-ae4d-58809a721761",
+                                                  "identifier":  "GAR-228",
+                                                  "title":  "M4-1: Tool nativa repo_search",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f12ca57e-c9f3-410b-8060-1744680854c1",
+                                                  "identifier":  "GAR-227",
+                                                  "title":  "M3-2: Auto por micro-LMM router opcional",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1cd763d8-56e9-4010-99d9-d54eb9be1293",
+                                                  "identifier":  "GAR-226",
+                                                  "title":  "M3-1: Heuristicas deterministicas",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "45362714-200a-42af-b02d-04d0d936aebd",
+                                                  "identifier":  "GAR-225",
+                                                  "title":  "M2-2: Suporte a tool_choice no OpenAI request",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a87ce38d-05b5-4957-b7d0-f24b17f3fcc9",
+                                                  "identifier":  "GAR-224",
+                                                  "title":  "M2-1: ToolPolicyEngine",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "70ebd1c3-2bff-44d3-be74-d49994622eae",
+                                                  "identifier":  "GAR-223",
+                                                  "title":  "M1-3: Comandos universais /mode e /modes",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "be20203c-921b-4344-983b-b078bdb4738e",
+                                                  "identifier":  "GAR-222",
+                                                  "title":  "M1-2: Persistencia por sessao e por canal",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0cdde0e2-1a52-486d-8403-3472c6271d72",
+                                                  "identifier":  "GAR-221",
+                                                  "title":  "M1-1: AgentMode enum + ModeProfile struct",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e1e45143-d481-4d84-ad0b-0d7260b66064",
+                                                  "identifier":  "GAR-220",
+                                                  "title":  "M0-2: Compatibilidade OpenAI streaming + tool calling",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "65813b92-e41d-40d4-b017-cef30906341d",
+                                                  "identifier":  "GAR-219",
+                                                  "title":  "M0-1: Definir contrato de Modo (runtime vs UI)",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "56dbc348-c243-43a4-9792-323c5c5ea8b2",
+                                                  "identifier":  "GAR-218",
+                                                  "title":  "[P2] Runbook producao (Cloudflare Tunnel / VPS / etc.)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1fee4027-b7e9-4fdc-9651-4327fbff271b",
+                                                  "identifier":  "GAR-217",
+                                                  "title":  "[P1] Docker compose: Garra + Postgres (ou Supabase local)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0f613862-652c-4330-97b4-bce74e759d38",
+                                                  "identifier":  "GAR-216",
+                                                  "title":  "[P2] Testes end-to-end Telegram \u003c-\u003e VS Code",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "d93dce6a-d54d-4160-962b-2b40aa99e3bd",
+                                                  "identifier":  "GAR-215",
+                                                  "title":  "[P2] Rate limit e abuse protection",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "73064d0c-d5ce-49ea-8268-121617d58ee9",
+                                                  "identifier":  "GAR-214",
+                                                  "title":  "[P1] Logs estruturados + trace ids",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1b417cbf-7a13-448d-b8ec-e27599e80bcb",
+                                                  "identifier":  "GAR-213",
+                                                  "title":  "[P3] Plano B (opcional): Extensao propria Garra Chat",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2a3294b8-b054-4b82-b4bc-872b32d4c192",
+                                                  "identifier":  "GAR-212",
+                                                  "title":  "[P0] Plano A: Configurar VS Code com extensao OpenAI-compatible",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2be184bf-2a10-4a39-8c28-b8893e3df661",
+                                                  "identifier":  "GAR-211",
+                                                  "title":  "[P1] Config: config.basic.yml + env",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "67eba44f-e91c-4823-86de-580c6511905c",
+                                                  "identifier":  "GAR-210",
+                                                  "title":  "[P1] Router unificado de providers (OpenRouter / OpenAI / outros)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "21c57a02-1882-4b00-9434-4d3fbf4132f4",
+                                                  "identifier":  "GAR-209",
+                                                  "title":  "[P2] Normalizacao e sanitizacao de conteudo",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b4bb702f-913b-4158-bb12-443891cc367e",
+                                                  "identifier":  "GAR-208",
+                                                  "title":  "[P1] Policy de contexto (janela + resumo)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "071a5ee0-bef4-470c-a138-be155ee1b170",
+                                                  "identifier":  "GAR-207",
+                                                  "title":  "[P1] Comandos e controle de sessao",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "4ddda5bb-ba34-40df-bd24-bf658a73083d",
+                                                  "identifier":  "GAR-206",
+                                                  "title":  "[P0] Bot Telegram: handler de updates -\u003e Garra Core",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1647abf7-a3d3-4485-96ec-aacbf14bb178",
+                                                  "identifier":  "GAR-205",
+                                                  "title":  "[P2] Streaming SSE para /v1/chat/completions",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cdfcb5c2-dffd-4e47-8914-fd09e00e68b7",
+                                                  "identifier":  "GAR-204",
+                                                  "title":  "[P0] Unificacao de historico: server is source of truth",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "668c3eb6-78d1-49bd-9c2c-190eff945d35",
+                                                  "identifier":  "GAR-203",
+                                                  "title":  "[P0] Criar endpoint /v1/chat/completions",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "fafbfec7-451d-4a18-b984-4410699f427f",
+                                                  "identifier":  "GAR-202",
+                                                  "title":  "[P1] Estrategia de session key",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "d7e3bf7a-460b-4172-adb1-9b15cf7490c1",
+                                                  "identifier":  "GAR-201",
+                                                  "title":  "[P0] Implementar Session Manager (state machine)",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f9db6d65-a12f-4a29-abf8-f6186f7d051b",
+                                                  "identifier":  "GAR-200",
+                                                  "title":  "[P2] RLS e seguranca no Supabase",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "94c2c6a3-1f23-4a8c-9161-ff9fc5502578",
+                                                  "identifier":  "GAR-199",
+                                                  "title":  "[P0] Implementar camada DB no Garra (repo/db crate ou module)",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "8b0dd673-ca04-4458-9a46-2480c608eebb",
+                                                  "identifier":  "GAR-198",
+                                                  "title":  "[P0] Criar schema de banco para sessoes e mensagens",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6fdc62f2-0234-40c5-b750-6ebbf2b86a3a",
+                                                  "identifier":  "GAR-197",
+                                                  "title":  "[P1] Definir escopo Garra Core Chat Sync",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "42a9a869-78eb-45b2-a0b9-81df84541e9e",
+                                                  "identifier":  "GAR-196",
+                                                  "title":  "Documentacao Tecnica",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "7f0c09d4-b90c-40bf-82d3-e8d3c23b354f",
+                                                  "identifier":  "GAR-195",
+                                                  "title":  "Binario Windows Installer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "abd5d689-35bd-419a-945a-0593d318d568",
+                                                  "identifier":  "GAR-194",
+                                                  "title":  "Docker Oficial",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e5f5c718-be0d-443f-837e-4f78c4b901c9",
+                                                  "identifier":  "GAR-193",
+                                                  "title":  "WebSocket Dashboard",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "10004280-f86a-4fad-92de-73781aaef9ca",
+                                                  "identifier":  "GAR-192",
+                                                  "title":  "Admin Web Console Real",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9be481cc-093c-4440-bbc6-5e573e483b88",
+                                                  "identifier":  "GAR-191",
+                                                  "title":  "Slash Help Melhorado",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "c09a9c19-c520-44f0-8550-dc940b85e4d5",
+                                                  "identifier":  "GAR-190",
+                                                  "title":  "Seguranca MCP",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "72707b91-d57c-405d-8802-b13b3fa9845d",
+                                                  "identifier":  "GAR-189",
+                                                  "title":  "Rate Limiting",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2772efaf-c671-459f-9ca8-2d936b7ef02d",
+                                                  "identifier":  "GAR-188",
+                                                  "title":  "Provider Resilience",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "42d98f7a-87f1-49bc-bbf1-702f9e1ce89b",
+                                                  "identifier":  "GAR-187",
+                                                  "title":  "Agent Tool Escalation",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "150e6123-a962-495e-bdb4-a33c8aa8ac8d",
+                                                  "identifier":  "GAR-186",
+                                                  "title":  "Agent State Persistente",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a0dfc01a-ef8c-4276-9e24-fdcc22c91def",
+                                                  "identifier":  "GAR-185",
+                                                  "title":  "Agent Router Consolidado",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "7c7d6914-3b2b-4fef-8339-699c6e3f5abe",
+                                                  "identifier":  "GAR-184",
+                                                  "title":  "Slash Commands Dinamicos via MCP",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Todo"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "5dfa5fce-cee5-4a34-827a-59d9b13dd197",
+                                                  "identifier":  "GAR-183",
+                                                  "title":  "MCP Tool Health",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1a542b95-3803-4650-8cbb-d098d26610d6",
+                                                  "identifier":  "GAR-182",
+                                                  "title":  "MCP Spawn Correto",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1c816a72-5385-48e7-bee2-f1456321c411",
+                                                  "identifier":  "GAR-181",
+                                                  "title":  "Voice E2E Telegram",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "7fdb8094-032a-4fc4-94d6-d5c893ba3eac",
+                                                  "identifier":  "GAR-180",
+                                                  "title":  "Voice Handler Real",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "ef0a22ea-dfd6-479d-9929-88cc4782635a",
+                                                  "identifier":  "GAR-179",
+                                                  "title":  "Whisper STT Estavel",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f5d417f7-5884-4178-9976-46a350a4c049",
+                                                  "identifier":  "GAR-178",
+                                                  "title":  "Observabilidade Estruturada",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f6fd66a5-01c0-4b02-a54f-9e2ff35521e1",
+                                                  "identifier":  "GAR-177",
+                                                  "title":  "Versionamento Semantico (v0.2.0)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bce428ee-60a6-4d7b-9760-aeecfd557cd2",
+                                                  "identifier":  "GAR-176",
+                                                  "title":  "Create garraia.org website",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e7fe1edd-4934-43dc-91c9-68e54e90b1f5",
+                                                  "identifier":  "GAR-175",
+                                                  "title":  "Publish pre-compiled binaries for all platforms",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6a0bc292-fbdf-4520-916d-a3ce546d4866",
+                                                  "identifier":  "GAR-174",
+                                                  "title":  "Update CHANGELOG.md with v0.1.11 entries",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0fdb28fc-96ea-4c2a-b519-d98e9ef8cfcf",
+                                                  "identifier":  "GAR-173",
+                                                  "title":  "Update README.md with current architecture and commands",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "77cb745e-803c-47d3-be36-4e768f24e16c",
+                                                  "identifier":  "GAR-172",
+                                                  "title":  "Implement multi-agent routing (agentId-based)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3db25d81-4db2-454c-8ed1-933414f99e04",
+                                                  "identifier":  "GAR-171",
+                                                  "title":  "Implement garraia-media processing (images, PDFs, documents)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e69bff84-3000-4d85-924b-2db3bb4ce22a",
+                                                  "identifier":  "GAR-170",
+                                                  "title":  "Wire AppState into CommandContext for stateful commands",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b6277fd0-8dc6-43e2-81b9-b1ff4508905d",
+                                                  "identifier":  "GAR-169",
+                                                  "title":  "Create /mcp command for MCP server management",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "47b6cbe0-4078-406c-aa6b-6b57594daecd",
+                                                  "identifier":  "GAR-168",
+                                                  "title":  "Implement /config command with real config read/write",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0ac5366b-96d8-4e1b-81ca-cd2deb35dd88",
+                                                  "identifier":  "GAR-167",
+                                                  "title":  "Implement /providers command with real provider listing",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "d54eb966-1f96-4317-8f81-beb48407ac52",
+                                                  "identifier":  "GAR-166",
+                                                  "title":  "Implement /stats command with real usage counters",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "202034b3-01ab-4a7d-81bc-7716117caa5e",
+                                                  "identifier":  "GAR-165",
+                                                  "title":  "Implement /health command with real provider health data",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6381dc02-a682-4a5f-9153-f1bacc49d7b8",
+                                                  "identifier":  "GAR-164",
+                                                  "title":  "Add Whisper STT and Hibiki TTS to boot health checks",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "4328c620-c38f-4989-b304-fc72194b903d",
+                                                  "identifier":  "GAR-163",
+                                                  "title":  "Add voice fallback to text when TTS/STT fails",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b35c713b-2395-4ca8-b470-345f76b631e5",
+                                                  "identifier":  "GAR-162",
+                                                  "title":  "Test complete voice E2E flow: Telegram audio → STT → LLM → TTS → audio response",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9eb22fc1-324f-48d4-b3cd-84856fd18d6c",
+                                                  "identifier":  "GAR-161",
+                                                  "title":  "Validate and fix CI/CD GitHub Actions workflow",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "47148c79-6c3f-4ce7-b5c5-6ef7ee498ec9",
+                                                  "identifier":  "GAR-160",
+                                                  "title":  "Wire garraia-runtime executor into gateway agent loop",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "16a35a4e-ba68-4aae-b561-a25d1af89de9",
+                                                  "identifier":  "GAR-159",
+                                                  "title":  "Unify garraia-tools::Tool trait with garraia-agents tools",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Backlog"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "fcb76c1b-70e3-4053-8371-a016d9fa34a6",
+                                                  "identifier":  "GAR-158",
+                                                  "title":  "Fix pre-existing test failure: build_agent_runtime_empty_config_no_crash",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3925ee51-f41a-4f9a-b366-d3fd8f1134cd",
+                                                  "identifier":  "GAR-157",
+                                                  "title":  "MCP Tools → Slash Commands automáticos",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e4db0137-70e5-4205-91f2-baba97ba4e40",
+                                                  "identifier":  "GAR-156",
+                                                  "title":  "Testes unitários e integração do sistema de commands",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "514ecf66-f999-4575-91fd-259cad238f66",
+                                                  "identifier":  "GAR-155",
+                                                  "title":  "Mensagens de erro amigáveis e usage hints",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "802d2750-74a2-443d-be81-45c1e238d369",
+                                                  "identifier":  "GAR-154",
+                                                  "title":  "Auto Help dinâmico baseado no registry",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e795aedb-469e-4b44-bc41-f379ab716b4c",
+                                                  "identifier":  "GAR-153",
+                                                  "title":  "Bloqueio de comandos sensíveis com mensagem",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "31be8581-82eb-465f-8e0d-be214c5a71fc",
+                                                  "identifier":  "GAR-152",
+                                                  "title":  "Implementar permissões por comando (Role-based)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "33f78d20-eac8-4564-80c1-fad98eebf034",
+                                                  "identifier":  "GAR-151",
+                                                  "title":  "Criar alias /voice → /voz",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "887008a1-5f23-4491-a909-969eeca004d1",
+                                                  "identifier":  "GAR-150",
+                                                  "title":  "Criar comando /config",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bcb99295-74df-4886-a191-0f82196e4e16",
+                                                  "identifier":  "GAR-149",
+                                                  "title":  "Criar comando /stats",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a9ee0406-de63-4257-bfc9-f81b2916fd10",
+                                                  "identifier":  "GAR-148",
+                                                  "title":  "Criar comando /mcp",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "fa8cc92a-f45d-41e8-8e6e-bdf8abc7cb5d",
+                                                  "identifier":  "GAR-147",
+                                                  "title":  "Criar comando /providers",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "065ce474-1c3c-4b51-9ee1-9e467cdbefd9",
+                                                  "identifier":  "GAR-146",
+                                                  "title":  "Criar comando /health",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2428e822-45ea-4128-b597-e4cdf32e2ff9",
+                                                  "identifier":  "GAR-145",
+                                                  "title":  "Modo permanente /voz on|off",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "f85743ee-db1b-4304-96a1-b7371db608c5",
+                                                  "identifier":  "GAR-144",
+                                                  "title":  "Criar comando /voz com TTS",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "d331b9b7-43b6-4c6a-ac1b-22fb5c67cab6",
+                                                  "identifier":  "GAR-143",
+                                                  "title":  "Auto-sync comandos Telegram no boot",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9571ef5f-5d5e-4b38-928b-83df0219e016",
+                                                  "identifier":  "GAR-142",
+                                                  "title":  "Implementar setMyCommands via Bot API",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "025c3907-3824-427f-90ba-cfd855638638",
+                                                  "identifier":  "GAR-141",
+                                                  "title":  "Integrar CommandRegistry ao Telegram Handler",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "48c87f7a-e9c1-45f1-9af6-1ce3eec90aaf",
+                                                  "identifier":  "GAR-140",
+                                                  "title":  "Implementar CommandRegistry com register/get/list",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "abc59f86-59fb-4aa6-8490-29f4210b4030",
+                                                  "identifier":  "GAR-139",
+                                                  "title":  "Criar SlashCommand Trait + CommandRegistry",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9299e53e-443d-423a-8aa0-4707aac84099",
+                                                  "identifier":  "GAR-138",
+                                                  "title":  "🟡 7.2 — Criar Log Level Granular por Subsistema",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "731c4c0b-faf4-47d7-af5f-88d7ad215636",
+                                                  "identifier":  "GAR-137",
+                                                  "title":  "🟡 7.1 — Criar --debug Flag Global",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "88896d7a-d3c4-4092-967c-3cd0edebb48b",
+                                                  "identifier":  "GAR-136",
+                                                  "title":  "🟡 6.2 — Centralizar Health Checks em Módulo Modular",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9104086b-36e3-4adf-b5a7-d7e2ff7b4a8b",
+                                                  "identifier":  "GAR-135",
+                                                  "title":  "🟡 6.1 — Timeout Configurável via config.yml",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "edc092a0-7b0b-4b20-9f68-3c44284ded39",
+                                                  "identifier":  "GAR-134",
+                                                  "title":  "🔴 5.1 — Flag --with-voice Não Registrada no CLI",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "ae3ec56e-b230-4c3e-8f26-97f08f3ef690",
+                                                  "identifier":  "GAR-133",
+                                                  "title":  "🟡 4.2 — Implementar Safe Code Patch Mode",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "170da32d-bd03-46a5-b4b0-f1adc6120f7d",
+                                                  "identifier":  "GAR-132",
+                                                  "title":  "🔴 4.1 — Corrigir Permissões Windows para file_write",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1ed7ad62-f6d4-452e-8f87-18fbf223f10c",
+                                                  "identifier":  "GAR-131",
+                                                  "title":  "🟡 3.3 — Criar Provider Status Table no Startup",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "81282825-9de3-497f-b544-29a5611923b3",
+                                                  "identifier":  "GAR-130",
+                                                  "title":  "🟡 3.2 — Detectar Falta de OPENAI_API_KEY no Boot",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3879412d-8205-4d0f-a315-d9c8933455bb",
+                                                  "identifier":  "GAR-129",
+                                                  "title":  "🟡 3.1 — Health Check Ollama com Retry e Fallback",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "8484e840-17c8-4e22-8b80-76505a4eea0b",
+                                                  "identifier":  "GAR-128",
+                                                  "title":  "🟡 2.2 — Estruturar Schema Oficial para facts.json",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "0dbdd0c5-8dd6-47ff-a6a4-a91b6d85d72f",
+                                                  "identifier":  "GAR-127",
+                                                  "title":  "🟡 2.1 — Corrigir Validação Arbitrária de 50 Caracteres no facts.json",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bf7b90dc-fc0f-432b-80d4-8669da430199",
+                                                  "identifier":  "GAR-126",
+                                                  "title":  "🟡 1.3 — Melhorar Logs do Voice Handler",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "23f39dca-780f-41f7-90aa-bab1920bb973",
+                                                  "identifier":  "GAR-125",
+                                                  "title":  "🟡 1.2 — Validar Endpoint MCP do Chatterbox",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "668c2acd-ab40-4b15-8666-84f48b07e7fa",
+                                                  "identifier":  "GAR-124",
+                                                  "title":  "🔴 1.1 — Corrigir Health Check do Chatterbox",
+                                                  "priority":  1,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cca7f96a-b30d-4d8d-8db1-cd813ae00304",
+                                                  "identifier":  "GAR-123",
+                                                  "title":  "WEB-44 “About / Build info”",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9c127dc9-b8f3-463e-b4c9-b10454d07a78",
+                                                  "identifier":  "GAR-122",
+                                                  "title":  "WEB-43 Templates (prompts/personas)",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "7ffd3d4d-c513-4c7b-831d-31bf66bc64fe",
+                                                  "identifier":  "GAR-121",
+                                                  "title":  "WEB-42 UI Layout preferences",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "80350f25-bdf4-4dbb-9826-4a1785c7a948",
+                                                  "identifier":  "GAR-120",
+                                                  "title":  "WEB-41 UI Themes (dark/light/accent)",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "364048f6-00bb-46b0-8589-08a3f142a423",
+                                                  "identifier":  "GAR-119",
+                                                  "title":  "WEB-40 Alerts rules (básico)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "1d7b77ec-ae61-4ac4-9a81-c6a7575a18ae",
+                                                  "identifier":  "GAR-118",
+                                                  "title":  "WEB-39 Prometheus endpoint toggle + config",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2496aecc-715e-4b59-9a70-d2a8c6aff4bb",
+                                                  "identifier":  "GAR-117",
+                                                  "title":  "WEB-38 Metrics dashboard",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "fb16fdd3-7aa5-4d36-9cec-9a50c412530e",
+                                                  "identifier":  "GAR-116",
+                                                  "title":  "WEB-37 Logs viewer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a7b554e9-18d6-4bce-9159-184a5ef79232",
+                                                  "identifier":  "GAR-115",
+                                                  "title":  "WEB-36 Sessions viewer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "da1c49c7-cd1e-4cb5-a0c6-dfc79391cd64",
+                                                  "identifier":  "GAR-114",
+                                                  "title":  "WEB-35 Telegram settings UI",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "af810423-366f-46d4-b406-44c44a872f21",
+                                                  "identifier":  "GAR-113",
+                                                  "title":  "WEB-34 Quotas por tool/tenant",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "7620f242-0219-417b-85e0-f594578bdd73",
+                                                  "identifier":  "GAR-112",
+                                                  "title":  "WEB-33 Tool execution logs",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "82615271-ff47-40ad-85b1-ae5cc6e54ab5",
+                                                  "identifier":  "GAR-111",
+                                                  "title":  "WEB-32 Tool policy editor",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "545742f4-da9a-4c28-af32-a7d76c25fe51",
+                                                  "identifier":  "GAR-110",
+                                                  "title":  "WEB-31 Tools list + enable/disable",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "41538f48-8a9a-4a27-9362-99aa54ecdc3a",
+                                                  "identifier":  "GAR-109",
+                                                  "title":  "WEB-30 Memory health + errors viewer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "5674dd17-226c-404a-9b6f-1ed30bd30e57",
+                                                  "identifier":  "GAR-108",
+                                                  "title":  "WEB-29 Import/export memory (backup)",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "8782ff3e-9cf1-4a6d-ae3d-3c67359eb175",
+                                                  "identifier":  "GAR-107",
+                                                  "title":  "WEB-28 Reindex embeddings / rebuild",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "5caf5da2-3ca0-438d-9d8d-2677292e2bd6",
+                                                  "identifier":  "GAR-106",
+                                                  "title":  "WEB-27 Memory CRUD (admin)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b701902a-4615-4b31-94c2-f0b59443fffb",
+                                                  "identifier":  "GAR-105",
+                                                  "title":  "WEB-26 Memory browser + search",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3a67d5af-1134-46cd-a833-4137d957ee60",
+                                                  "identifier":  "GAR-104",
+                                                  "title":  "ADM-25 — Release checklist + docs",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "14ddfe85-025c-4449-b654-b5eeeca24f35",
+                                                  "identifier":  "GAR-103",
+                                                  "title":  "ADM-24 — “Golden paths” QA checklist",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "36de3e23-0553-4f03-baa5-ca19343d07bf",
+                                                  "identifier":  "GAR-102",
+                                                  "title":  "ADM-23 — Testes E2E (Playwright)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "ef3ad294-0e48-4c9e-9300-06d149a77048",
+                                                  "identifier":  "GAR-101",
+                                                  "title":  "ADM-22 — Security headers hardening",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "d169e770-090e-47ff-b1ca-87aa9a0d1aae",
+                                                  "identifier":  "GAR-100",
+                                                  "title":  "ADM-21 — CSP “strict” com nonce (para /admin)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "bf5dd969-bd91-4464-8253-24e5ce96c7be",
+                                                  "identifier":  "GAR-99",
+                                                  "title":  "ADM-20 — Sessions console",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "8b22e9ef-557b-4100-96fb-9273bbcb4652",
+                                                  "identifier":  "GAR-98",
+                                                  "title":  "ADM-19 — Channels console",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "3074de87-e663-4d0c-9b57-7fc803bf58a5",
+                                                  "identifier":  "GAR-97",
+                                                  "title":  "ADM-18 — Tools console",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b5491029-452f-41a2-b5ca-0ca8f2af9de6",
+                                                  "identifier":  "GAR-96",
+                                                  "title":  "ADM-17 — Reindex/rebuild embeddings (com progress)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "5eb975cf-30f8-48a3-b5de-04158d3a59b4",
+                                                  "identifier":  "GAR-95",
+                                                  "title":  "ADM-16 — Memory browser + search",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9add7fb3-01d7-4b22-a628-aab683438a5d",
+                                                  "identifier":  "GAR-94",
+                                                  "title":  "ADM-15 — Apply com “requires restart”",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "cd73847c-6ece-4075-bfcf-0990524b3a01",
+                                                  "identifier":  "GAR-93",
+                                                  "title":  "ADM-14 — Versionamento + diff + rollback",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "e4c4d8bd-3a0a-4bda-ad51-1091cb633f9c",
+                                                  "identifier":  "GAR-92",
+                                                  "title":  "ADM-13 — Editor de config com validação",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "60459788-91b5-456a-8a30-68788dadb0ba",
+                                                  "identifier":  "GAR-91",
+                                                  "title":  "ADM-12 — Failover policy UI",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "9624303d-441b-4ce4-a1cf-6c61e2028f1a",
+                                                  "identifier":  "GAR-90",
+                                                  "title":  "ADM-11 — Providers Console UI",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a355b1a5-e0a9-4cd9-9e8c-155c08f212df",
+                                                  "identifier":  "GAR-89",
+                                                  "title":  "ADM-10 — Secrets set/edit UI (nunca reexibir)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "58b72978-b527-4128-9ded-b7741b2b7ecf",
+                                                  "identifier":  "GAR-88",
+                                                  "title":  "ADM-9 — Secrets list UI (metadata only)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "96f696e2-5b75-40f0-926c-087f9475d26e",
+                                                  "identifier":  "GAR-87",
+                                                  "title":  "ADM-8 — Audit log viewer (/admin/audit)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6871f1de-ce17-4ac0-8112-b46ea6918c1d",
+                                                  "identifier":  "GAR-86",
+                                                  "title":  "ADM-7 — RBAC enforcement na UI (não só no backend)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "a5f59337-c91b-4fc9-babd-5a69c9df3707",
+                                                  "identifier":  "GAR-85",
+                                                  "title":  "ADM-6 — CSRF robusto (UI + middleware)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "995e7ad1-09eb-4055-9875-4ef3ae0def04",
+                                                  "identifier":  "GAR-84",
+                                                  "title":  "ADM-5 — Login UI + sessão segura",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "770c61a7-9bba-4f7b-81f2-ec10f0d66025",
+                                                  "identifier":  "GAR-83",
+                                                  "title":  "ADM-4 — Hardening de render (no innerHTML)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "56d23a57-ad8b-4d86-9112-a365a824e18f",
+                                                  "identifier":  "GAR-82",
+                                                  "title":  "ADM-3 — Layout base do /admin",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "2ac3a469-17f5-4f98-808a-ff9c93be3abf",
+                                                  "identifier":  "GAR-81",
+                                                  "title":  "ADM-2 — Build pipeline de assets (sem framework pesado)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "57a47545-09bc-4257-856b-2f432ff4a693",
+                                                  "identifier":  "GAR-80",
+                                                  "title":  "ADM-1 — Criar app /admin separado (rotas + static serving)",
+                                                  "priority":  2,
+                                                  "state":  {
+                                                                "name":  "Canceled"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "b2645d67-0834-4991-8893-88b8051ca436",
+                                                  "identifier":  "GAR-79",
+                                                  "title":  "WEB-44 About / Build info",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "c25b2531-95d1-438b-904a-94cca1a6ca6f",
+                                                  "identifier":  "GAR-78",
+                                                  "title":  "WEB-43 Templates (prompts/personas)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "47aef884-48e6-42c4-921d-337cb1d2f36f",
+                                                  "identifier":  "GAR-77",
+                                                  "title":  "WEB-42 UI Layout preferences",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "60be6c5f-db69-4b80-ba3f-f96676742753",
+                                                  "identifier":  "GAR-76",
+                                                  "title":  "WEB-41 UI Themes (dark/light/accent)",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "eb095956-198e-452c-a2d2-87dd57a6654d",
+                                                  "identifier":  "GAR-75",
+                                                  "title":  "WEB-40 Alerts rules (básico)",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "6dcb5fe8-ecc8-4d14-9d44-6498d8040c60",
+                                                  "identifier":  "GAR-74",
+                                                  "title":  "WEB-39 Prometheus endpoint toggle + config",
+                                                  "priority":  4,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "179e5d38-01ba-4f4e-b433-5c4f8bbbf9e7",
+                                                  "identifier":  "GAR-73",
+                                                  "title":  "WEB-38 Metrics dashboard",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "60a01b50-64c8-4d6a-93b5-472d9b3ee3ec",
+                                                  "identifier":  "GAR-72",
+                                                  "title":  "WEB-37 Logs viewer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              },
+                                              {
+                                                  "id":  "df8272aa-b56b-492e-8e0b-ffc558f2c12c",
+                                                  "identifier":  "GAR-71",
+                                                  "title":  "WEB-36 Sessions viewer",
+                                                  "priority":  3,
+                                                  "state":  {
+                                                                "name":  "Done"
+                                                            }
+                                              }
+                                          ]
+                            }
+             }
+}

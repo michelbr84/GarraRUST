@@ -15,6 +15,7 @@ members = [
     "crates/garraia-tools",
     "crates/garraia-runtime",
     "crates/garraia-voice",
+    "crates/garraia-glob",
 ]
 
 [workspace.package]
@@ -103,6 +104,7 @@ garraia-skills = { path = "crates/garraia-skills" }
 garraia-tools = { path = "crates/garraia-tools" }
 garraia-runtime = { path = "crates/garraia-runtime" }
 garraia-voice = { path = "crates/garraia-voice" }
+garraia-glob = { path = "crates/garraia-glob" }
 
 [profile.release]
 lto = true

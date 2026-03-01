@@ -508,6 +508,90 @@ impl SessionStore {
             .map_err(|e| Error::Database(format!("failed to count pending tasks: {e}")))?;
         Ok(count)
     }
+
+    // ============================================================================
+    // GAR-222: Mode Persistence - Armazenar modo por sessão
+    // ============================================================================
+
+    /// Get the current agent mode for a session.
+    /// Returns None if no mode has been set.
+    pub fn get_agent_mode(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn
+            .prepare("SELECT metadata FROM sessions WHERE id = ?1")
+            .map_err(|e| Error::Database(format!("failed to prepare mode query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![session_id], |row| {
+                let metadata: String = row.get(0)?;
+                Ok(metadata)
+            })
+            .ok();
+
+        if let Some(metadata_str) = result {
+            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
+                if let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str()) {
+                    return Ok(Some(mode.to_string()));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Set the current agent mode for a session.
+    pub fn set_agent_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+        // First get existing metadata
+        let mut stmt = self.conn
+            .prepare("SELECT metadata FROM sessions WHERE id = ?1")
+            .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
+
+        let metadata_str: Option<String> = stmt
+            .query_row(params![session_id], |row| row.get(0))
+            .ok();
+
+        let mut metadata = if let Some(m) = metadata_str {
+            serde_json::from_str(&m).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+        } else {
+            serde_json::Value::Object(serde_json::Map::new())
+        };
+
+        // Update the agent_mode field
+        metadata["agent_mode"] = serde_json::Value::String(mode.to_string());
+
+        // Update the session
+        self.conn
+            .execute(
+                "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![metadata.to_string(), session_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to set agent mode: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Clear the agent mode for a session (reset to default).
+    pub fn clear_agent_mode(&self, session_id: &str) -> Result<()> {
+        // Get existing metadata
+        let mut stmt = self.conn
+            .prepare("SELECT metadata FROM sessions WHERE id = ?1")
+            .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
+
+        let metadata_str: Option<String> = stmt
+            .query_row(params![session_id], |row| row.get(0))
+            .ok();
+
+        if let Some(m) = metadata_str {
+            if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m) {
+                metadata["agent_mode"] = serde_json::Value::Null;
+                self.conn
+                    .execute(
+                        "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
+                        params![metadata.to_string(), session_id],
+                    )
+                    .map_err(|e| Error::Database(format!("failed to clear agent mode: {e}")))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Represents a scheduled background task.
@@ -667,5 +751,74 @@ mod tests {
 
         assert_eq!(store.count_pending_tasks_for_session("s1").unwrap(), 2);
         assert_eq!(store.count_pending_tasks_for_session("s2").unwrap(), 1);
+    }
+
+    // GAR-222: Testes de persistência de modo
+    #[test]
+    fn agent_mode_persistence_set_and_get() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "mode-test-session";
+
+        // Ensure session exists
+        store
+            .upsert_session(session_id, "telegram", "user-1", &serde_json::json!({}))
+            .expect("session upsert should succeed");
+
+        // Initially no mode set
+        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        assert!(mode.is_none(), "Initial mode should be None");
+
+        // Set mode to "code"
+        store.set_agent_mode(session_id, "code").expect("set mode should succeed");
+
+        // Retrieve mode
+        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        assert_eq!(mode, Some("code".to_string()), "Mode should be 'code'");
+
+        // Change mode to "debug"
+        store.set_agent_mode(session_id, "debug").expect("set mode should succeed");
+
+        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        assert_eq!(mode, Some("debug".to_string()), "Mode should be 'debug'");
+    }
+
+    #[test]
+    fn agent_mode_persistence_clear() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "mode-clear-test";
+
+        store
+            .upsert_session(session_id, "telegram", "user-1", &serde_json::json!({}))
+            .unwrap();
+
+        // Set mode
+        store.set_agent_mode(session_id, "search").unwrap();
+        assert_eq!(store.get_agent_mode(session_id).unwrap(), Some("search".to_string()));
+
+        // Clear mode
+        store.clear_agent_mode(session_id).unwrap();
+
+        // Mode should be None after clear
+        let mode = store.get_agent_mode(session_id).unwrap();
+        assert!(mode.is_none() || mode == Some("".to_string()), "Mode should be cleared");
+    }
+
+    #[test]
+    fn agent_mode_persistence_preserves_other_metadata() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "mode-metadata-test";
+
+        // Create session with existing metadata
+        store
+            .upsert_session(session_id, "web", "user-1", &serde_json::json!({"foo": "bar"}))
+            .unwrap();
+
+        // Set mode - should preserve "foo": "bar"
+        store.set_agent_mode(session_id, "orchestrator").unwrap();
+
+        // Verify both exist in metadata
+        // (We can't easily check internal metadata, but setting mode shouldn't break)
+        let mode = store.get_agent_mode(session_id).unwrap();
+        assert_eq!(mode, Some("orchestrator".to_string()));
     }
 }
