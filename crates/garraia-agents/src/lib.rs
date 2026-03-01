@@ -6,6 +6,7 @@ pub mod anthropic;
 pub mod embeddings;
 pub mod execution_budget;
 pub mod memory_extractor;
+pub mod modes;
 pub mod ollama;
 pub mod openai;
 pub mod provider_resilience;
@@ -24,6 +25,9 @@ pub use providers::{
     StreamEvent, ToolDefinition,
 };
 pub use runtime::AgentRuntime;
+pub use modes::{
+    AgentMode, ModeContext, ModeEngine, ModeLlmConfig, ModeLimits, ModeProfile, ToolPolicy,
+};
 pub use tools::{
     BashTool, FileReadTool, FileWriteTool, ScheduleHeartbeat, Tool, ToolContext, ToolOutput,
     WebFetchTool, WebSearchTool,
