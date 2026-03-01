@@ -1,7 +1,9 @@
 use crate::state::AppState;
+use garraia_agents::AgentMode;
 use garraia_channels::commands::{
     ClosureCommand, CommandContext, CommandRegistry, CommandResult, Role,
 };
+use tokio::runtime::Handle;
 pub fn register_commands(registry: &mut CommandRegistry) {
     // Overwrite the placeholders with actual logic that accesses AppState
 
@@ -307,6 +309,92 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                     servers.join("\n- ")
                 ))
             }
+        },
+    )));
+
+    // GAR-223: /mode - Get or set agent mode
+    registry.register(Box::new(ClosureCommand::new(
+        "mode",
+        "Get or set the agent mode",
+        "/mode [name|clear]",
+        Role::User,
+        true,
+        |ctx: &CommandContext| -> CommandResult {
+            let state = ctx
+                .state
+                .as_ref()
+                .unwrap()
+                .downcast_ref::<AppState>()
+                .unwrap();
+            let session_id = format!("telegram-{}", ctx.chat_id);
+
+            if ctx.args.is_empty() {
+                // Show current mode
+                if let Some(store) = &state.session_store {
+                    let handle = Handle::current();
+                    let store = handle.block_on(async { store.lock().await });
+                    match store.get_agent_mode(&session_id) {
+                        Ok(Some(mode)) => Ok(format!("🎯 Current mode: {}", mode)),
+                        Ok(None) => Ok("🎯 Current mode: ask (default)".to_string()),
+                        Err(_) => Ok("🎯 Current mode: ask (default)".to_string()),
+                    }
+                } else {
+                    Ok("🎯 Current mode: ask (default)".to_string())
+                }
+            } else {
+                let new_mode = ctx.args[0].to_string();
+                if new_mode.eq_ignore_ascii_case("clear") {
+                    // Clear mode (reset to default)
+                    if let Some(store) = &state.session_store {
+                        let handle = Handle::current();
+                        let store = handle.block_on(async { store.lock().await });
+                        let _ = store.clear_agent_mode(&session_id);
+                    }
+                    Ok("🎯 Mode cleared. Using default (ask).".to_string())
+                } else if AgentMode::from_str(&new_mode).is_some() {
+                    // Set mode
+                    if let Some(store) = &state.session_store {
+                        let handle = Handle::current();
+                        let store = handle.block_on(async { store.lock().await });
+                        let _ = store.set_agent_mode(&session_id, &new_mode.to_lowercase());
+                    }
+                    Ok(format!("🎯 Mode set to: {}", new_mode.to_lowercase()))
+                } else {
+                    Ok(format!(
+                        "❌ Unknown mode: {}\nUse /modes to see available modes.",
+                        new_mode
+                    ))
+                }
+            }
+        },
+    )));
+
+    // GAR-223: /modes - List available modes
+    registry.register(Box::new(ClosureCommand::new(
+        "modes",
+        "List available agent modes",
+        "/modes",
+        Role::User,
+        true,
+        |_ctx: &CommandContext| -> CommandResult {
+            let modes = vec![
+                ("auto", "Decides automatically based on content"),
+                ("search", "Search and inspection (read-only)"),
+                ("architect", "Design and planning"),
+                ("code", "Active implementation (allows file writes)"),
+                ("ask", "Questions only (Telegram default)"),
+                ("debug", "Debug errors and stack traces"),
+                ("orchestrator", "Multi-step execution"),
+                ("review", "Code review and analysis"),
+                ("edit", "Precise file editing"),
+            ];
+
+            let mut output = String::from("🎯 **Available Modes**\n\n");
+            for (name, desc) in modes {
+                output.push_str(&format!("• **{}** — {}\n", name, desc));
+            }
+            output.push_str("\nUse /mode <name> to change mode.");
+            Ok(output)
         },
     )));
 }
