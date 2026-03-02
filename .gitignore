@@ -59,8 +59,8 @@ release/
 # Planning / drafts (internal)
 plans/
 
-# Roadmap scripts (internal)
-*.ps1
+# Roadmap scripts (internal - keep for Linear automation)
+# *.ps1
 
 # Cargo
 Cargo.lock.bak
