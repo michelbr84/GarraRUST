@@ -81,6 +81,13 @@ pub fn build_router(
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
+        // GAR-230: Mode API endpoints
+        .route("/api/modes", get(api::list_modes))
+        .route("/api/mode/select", post(api::select_mode))
+        .route("/api/mode/current", get(api::current_mode))
+        // GAR-232: Custom Mode API endpoints
+        .route("/api/modes/custom", get(api::list_custom_modes).post(api::create_custom_mode))
+        .route("/api/modes/custom/{id}", get(api::get_custom_mode).patch(api::update_custom_mode).delete(api::delete_custom_mode))
         // Runtime endpoints - temporarily disabled
         // .route(
         //     "/api/runtime/run",

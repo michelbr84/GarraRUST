@@ -439,9 +439,21 @@ impl ModeProfile {
             name: "orchestrator".to_string(),
             description: "Execução multi-etapas com planejamento".to_string(),
             system_prompt_template: Some(
-                "You are an orchestrator agent. Break down complex tasks into steps, execute them, validate results, and provide summaries. Coordinate multiple operations while maintaining security.".to_string(),
+                "You are an orchestrator agent. Break down complex tasks into steps, execute them, validate results, and provide summaries. Coordinate multiple operations while maintaining security.\n\nAvailable tools: bash, file_read, file_write, repo_search, web_search, web_fetch.\n\nFor each task:\n1. Generate a plan with specific steps\n2. Execute steps sequentially\n3. Validate each result\n4. Retry if needed (max 2 retries per step)\n5. Provide final summary".to_string(),
             ),
-            tool_policy: ToolPolicy::default(),
+            tool_policy: ToolPolicy {
+                allowed: vec![
+                    "bash".to_string(),
+                    "file_read".to_string(),
+                    "file_write".to_string(),
+                    "repo_search".to_string(),
+                    "web_search".to_string(),
+                    "web_fetch".to_string(),
+                ],
+                denied: vec![],
+                required: vec![],
+                whitelist_mode: false,
+            },
             llm_config: ModeLlmConfig {
                 temperature: 0.5,
                 max_tokens: 8192,

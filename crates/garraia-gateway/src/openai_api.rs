@@ -228,6 +228,9 @@ pub async fn chat_completions(
     headers: HeaderMap,
     Json(body): Json<ChatCompletionRequest>,
 ) -> Response<Body> {
+    // Extract request ID for tracing (GAR-234)
+    let request_id = resolve_request_id(&headers);
+    
     // Extract session ID from headers or create new one
     let session_id = resolve_session_id(&headers).await.unwrap_or_else(|_| Uuid::new_v4().to_string());
     let is_streaming = body.stream.unwrap_or(false);
@@ -235,11 +238,38 @@ pub async fn chat_completions(
     // Resolve user identity from Authorization header
     let user_id = resolve_user_id(&headers, &state);
     
-    // GAR-238: Extract mode from header for standardized logging
+    // GAR-234/238: Extract mode from header for logging and apply to session
     let agent_mode = headers
         .get("x-agent-mode")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    
+    // GAR-234: Also check for mode prefix in user message (fallback: "mode: debug")
+    let message_mode = body
+        .messages
+        .last()
+        .and_then(|m| {
+            let content = m.content.to_lowercase();
+            // Check for "mode: <mode>" or "/mode <mode>" patterns
+            if content.starts_with("mode: ") {
+                Some(content.strip_prefix("mode: ").unwrap_or("").trim().to_string())
+            } else if content.starts_with("/mode ") {
+                Some(content.strip_prefix("/mode ").unwrap_or("").trim().to_string())
+            } else {
+                None
+            }
+        });
+    
+    // Use header mode first, then fall back to message mode
+    let final_mode = agent_mode.or(message_mode);
+    
+    // Apply X-Agent-Mode header to session if provided (GAR-234)
+    if let Some(ref mode) = final_mode {
+        if let Some(ref session_store) = state.session_store {
+            let store = session_store.lock().await;
+            let _ = store.set_agent_mode(&session_id, mode);
+        }
+    }
     
     // GAR-225: Extract tool_choice for standardized logging
     let tool_choice_str = if body.tool_choice.is_null() {
@@ -257,12 +287,13 @@ pub async fn chat_completions(
     };
     
     info!(
-        "OpenAI API request: session_id={}, user_id={:?}, model={:?}, stream={}, mode={:?}, tool_choice={:?}",
+        "OpenAI API request: request_id={}, session_id={}, user_id={:?}, model={:?}, stream={}, mode={:?}, tool_choice={:?}",
+        request_id,
         session_id,
         user_id,
         body.model,
         is_streaming,
-        agent_mode,
+        final_mode,
         tool_choice_str
     );
 
@@ -504,6 +535,18 @@ async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::
 
     // Create new session
     Ok(Uuid::new_v4().to_string())
+}
+
+/// GAR-234: Resolve request ID from headers for tracing
+/// Returns the X-Request-Id if provided, otherwise generates a new one
+fn resolve_request_id(headers: &HeaderMap) -> String {
+    if let Some(request_id) = headers.get("x-request-id") {
+        if let Ok(s) = request_id.to_str() {
+            return s.to_string();
+        }
+    }
+    // Generate new request ID if not provided
+    Uuid::new_v4().to_string()
 }
 
 /// Parse role string to ChatRole

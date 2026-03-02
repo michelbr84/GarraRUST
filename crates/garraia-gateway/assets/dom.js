@@ -35,4 +35,10 @@ export const dom = {
   logsView: document.getElementById("logs-view"),
   nanoAgentsWidget: document.getElementById("nano-agents"),
   nanoTimeEl: document.getElementById("nano-time"),
+  // Mode Sidebar elements
+  modeSidebarEl: document.getElementById("mode-sidebar"),
+  modeSearchInput: document.getElementById("mode-search-input"),
+  modeListEl: document.getElementById("mode-list"),
+  modeBadge: document.getElementById("mode-badge"),
+  modeTrigger: document.getElementById("mode-trigger"),
 };

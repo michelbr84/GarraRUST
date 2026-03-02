@@ -12,6 +12,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 - [Voice Mode](./voice.md)
 - [Memory System](./memory.md)
 - [Security](./security.md)
+- [Continue Integration](./src/continue-modes.md)
 
 ## Features
 

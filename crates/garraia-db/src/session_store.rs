@@ -28,6 +28,22 @@ pub struct SessionStore {
     conn: Connection,
 }
 
+/// Struct representing a custom mode (GAR-232)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CustomMode {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub base_mode: String,
+    pub tool_policy_overrides: serde_json::Value,
+    pub prompt_override: Option<String>,
+    pub defaults: serde_json::Value,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl SessionStore {
     pub fn open(db_path: &Path) -> Result<Self> {
         info!("opening session store at {}", db_path.display());
@@ -151,7 +167,25 @@ impl SessionStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_summaries_session
-                    ON chat_summaries(session_id, created_at);",
+                    ON chat_summaries(session_id, created_at);
+
+                -- GAR-232: Custom Modes table for user-created modes
+                CREATE TABLE IF NOT EXISTS custom_modes (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    base_mode TEXT NOT NULL,
+                    tool_policy_overrides TEXT DEFAULT '{}',
+                    prompt_override TEXT,
+                    defaults TEXT DEFAULT '{}',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_custom_modes_user
+                    ON custom_modes(user_id);",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
@@ -591,6 +625,196 @@ impl SessionStore {
             }
         }
         Ok(())
+    }
+
+    // ============================================================================
+    // GAR-232: Custom Modes CRUD
+    // ============================================================================
+
+    /// Create a new custom mode
+    pub fn create_custom_mode(
+        &self,
+        user_id: &str,
+        name: &str,
+        description: Option<&str>,
+        base_mode: &str,
+        tool_policy_overrides: &serde_json::Value,
+        prompt_override: Option<&str>,
+        defaults: &serde_json::Value,
+    ) -> Result<CustomMode> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        self.conn
+            .execute(
+                "INSERT INTO custom_modes (id, user_id, name, description, base_mode, tool_policy_overrides, prompt_override, defaults, is_active, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9)",
+                params![
+                    id,
+                    user_id,
+                    name,
+                    description,
+                    base_mode,
+                    tool_policy_overrides.to_string(),
+                    prompt_override,
+                    defaults.to_string(),
+                    now
+                ],
+            )
+            .map_err(|e| Error::Database(format!("failed to create custom mode: {e}")))?;
+
+        Ok(CustomMode {
+            id,
+            user_id: user_id.to_string(),
+            name: name.to_string(),
+            description: description.map(String::from),
+            base_mode: base_mode.to_string(),
+            tool_policy_overrides: tool_policy_overrides.clone(),
+            prompt_override: prompt_override.map(String::from),
+            defaults: defaults.clone(),
+            is_active: true,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    /// Get all custom modes for a user
+    pub fn get_custom_modes(&self, user_id: &str) -> Result<Vec<CustomMode>> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT id, user_id, name, description, base_mode, tool_policy_overrides, prompt_override, defaults, is_active, created_at, updated_at
+                 FROM custom_modes WHERE user_id = ?1 AND is_active = 1 ORDER BY name"
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare custom modes query: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                let tool_policy_raw: String = row.get(5)?;
+                let defaults_raw: String = row.get(7)?;
+                Ok(CustomMode {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    base_mode: row.get(4)?,
+                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    prompt_override: row.get(6)?,
+                    defaults: serde_json::from_str(&defaults_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    is_active: row.get::<_, i32>(8)? == 1,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to load custom modes: {e}")))?;
+
+        let mut modes = Vec::new();
+        for row in rows {
+            let mode = row.map_err(|e| Error::Database(format!("failed to read custom mode row: {}", e)))?;
+            modes.push(mode);
+        }
+        Ok(modes)
+    }
+
+    /// Get a custom mode by ID
+    pub fn get_custom_mode(&self, mode_id: &str) -> Result<Option<CustomMode>> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT id, user_id, name, description, base_mode, tool_policy_overrides, prompt_override, defaults, is_active, created_at, updated_at
+                 FROM custom_modes WHERE id = ?1 AND is_active = 1"
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare custom mode query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![mode_id], |row| {
+                let tool_policy_raw: String = row.get(5)?;
+                let defaults_raw: String = row.get(7)?;
+                Ok(CustomMode {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    base_mode: row.get(4)?,
+                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    prompt_override: row.get(6)?,
+                    defaults: serde_json::from_str(&defaults_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    is_active: row.get::<_, i32>(8)? == 1,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })
+            .ok();
+
+        Ok(result)
+    }
+
+    /// Update a custom mode
+    pub fn update_custom_mode(
+        &self,
+        mode_id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        tool_policy_overrides: Option<&serde_json::Value>,
+        prompt_override: Option<&str>,
+        defaults: Option<&serde_json::Value>,
+    ) -> Result<Option<CustomMode>> {
+        // Build dynamic update query
+        let mut updates = vec!["updated_at = datetime('now')".to_string()];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+
+        if let Some(n) = name {
+            updates.push("name = ?".to_string());
+            params_vec.push(Box::new(n.to_string()));
+        }
+        if let Some(d) = description {
+            updates.push("description = ?".to_string());
+            params_vec.push(Box::new(d.to_string()));
+        }
+        if let Some(t) = tool_policy_overrides {
+            updates.push("tool_policy_overrides = ?".to_string());
+            params_vec.push(Box::new(t.to_string()));
+        }
+        if let Some(p) = prompt_override {
+            updates.push("prompt_override = ?".to_string());
+            params_vec.push(Box::new(p.to_string()));
+        }
+        if let Some(def) = defaults {
+            updates.push("defaults = ?".to_string());
+            params_vec.push(Box::new(def.to_string()));
+        }
+
+        if updates.len() == 1 {
+            // Only updated_at, no changes
+            return self.get_custom_mode(mode_id);
+        }
+
+        // Add mode_id as last param
+        params_vec.push(Box::new(mode_id.to_string()));
+
+        let query = format!(
+            "UPDATE custom_modes SET {} WHERE id = ?",
+            updates.join(", ")
+        );
+
+        // Convert params_vec to slice
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+        self.conn
+            .execute(&query, params_refs.as_slice())
+            .map_err(|e| Error::Database(format!("failed to update custom mode: {e}")))?;
+
+        self.get_custom_mode(mode_id)
+    }
+
+    /// Delete (soft delete) a custom mode
+    pub fn delete_custom_mode(&self, mode_id: &str) -> Result<bool> {
+        let rows_affected = self.conn
+            .execute(
+                "UPDATE custom_modes SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
+                params![mode_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to delete custom mode: {e}")))?;
+
+        Ok(rows_affected > 0)
     }
 }
 
