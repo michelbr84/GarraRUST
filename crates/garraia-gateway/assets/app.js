@@ -7,6 +7,7 @@ import { connect, initChat, initNanoAgents, appendMessage } from './views/chatVi
 import { initApiView, refreshStatus } from './api.js';
 import { initMemory } from './views/memoryView.js';
 import { initLogs } from './views/logsView.js';
+import { initModeSidebar } from './modeSidebar.js';
 
 async function boot() {
   initTheme();
@@ -16,6 +17,7 @@ async function boot() {
   initChat();
   initApiView();
   initNanoAgents();
+  initModeSidebar();
   
   // Set initial state from DOM / Storage
   EventBus.emit("state:session", GarraState.session);

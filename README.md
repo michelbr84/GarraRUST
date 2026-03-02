@@ -261,6 +261,7 @@ O GarraIA possui um sistema avançado de **Modos de Execução** que permite sel
 | **Orchestrator** | Execução multi-etapas com validação | Todas com guardrails |
 | **Review** | Revisão de código e análise de diffs | `git_diff`, `file_read` |
 | **Edit** | Edição direcionada de arquivos | `file_read`, `file_write` |
+| **Custom** | Modos criados pelo usuário | Herda do base_mode com overrides |
 
 #### Precedência de Modo
 
@@ -276,6 +277,43 @@ O modo é resolvido nesta ordem:
 - `/mode` - Mostra o modo atual
 - `/mode <nome>` - Altera o modo (ex: `/mode code`)
 - `/modes` - Lista todos os modos disponíveis
+
+#### Modos Customizados
+
+Crie seus próprios modos baseados em um modo existente:
+
+```bash
+# Via API
+curl -X POST http://127.0.0.1:3888/api/modes/custom \
+  -H "Authorization: Bearer sua-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Rust Strict",
+    "description": "Modo rigoroso para Rust",
+    "base_mode": "code",
+    "prompt_override": "Você é um especialista em Rust...",
+    "tool_policy_overrides": {
+      "allow": ["file_read", "file_write", "bash"],
+      "deny": ["web_fetch"]
+    },
+    "defaults": {
+      "temperature": 0.3,
+      "max_tokens": 8192
+    }
+  }'
+```
+
+Ou use a UI WebChat para criar/editar modos via interface visual.
+
+#### Ferramentas do Modo Orchestrator
+
+O modo Orchestrator executa tarefas multi-etapas com:
+
+- **Planejamento** - Gera lista de steps automaticamente
+- **Validação** - Verifica resultado de cada step
+- **Retry** - Tenta novamente em caso de falha (máx 2x)
+- **Segurança** - Checklist de comandos bash perigosos bloqueados
+- **Limites** - max_loops: 10, timeout: 30s por step
 
 #### Auto Mode Router
 
@@ -303,6 +341,23 @@ Configure o Continue para usar o GarraIA com o modo desejado:
 
 Para usar modo específico, adicione o header `X-Agent-Mode` na requisição ou use o comando `/mode` no chat.
 
+##### Headers Suportados
+
+| Header | Descrição |
+|--------|-----------|
+| `X-Agent-Mode` | Override de modo (auto, code, debug, ask, etc.) |
+| `X-Request-Id` | ID de request para tracing |
+| `X-Session-Id` | ID de sessão para continuidade |
+| `X-User-Id` | ID do usuário |
+
+##### Modo Prefix (Fallback)
+
+Se o header não for suportado, use prefix no início da mensagem:
+- `mode: debug` → muda para modo debug
+- `/mode ask` → muda para modo ask
+
+Consulte a [documentação completa de integração com Continue](docs/continue-modes.md).
+
 #### API de Modos
 
 | Endpoint | Método | Descrição |
@@ -310,10 +365,12 @@ Para usar modo específico, adicione o header `X-Agent-Mode` na requisição ou 
 | `/api/modes` | GET | Lista todos os modos disponíveis |
 | `/api/mode/select` | POST | Seleciona modo para sessão |
 | `/api/mode/current` | GET | Retorna modo atual da sessão |
+| `/api/modes/custom` | GET/POST | Lista/cria modos customizados |
+| `/api/modes/custom/:id` | PATCH/DELETE | Edita/remove modo custom |
 
 ### Runtime do Agente
 
-- Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat (até 10 iterações)
+- Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, repo_search, list_dir, git_diff, schedule_heartbeat (até 10 iterações)
 - Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
 - Gerenciamento de janela de contexto - aparamento automático de histórico
 - Tarefas agendadas - agendamento cron, intervalo e único

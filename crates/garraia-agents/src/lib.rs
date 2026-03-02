@@ -9,6 +9,7 @@ pub mod memory_extractor;
 pub mod modes;
 pub mod ollama;
 pub mod openai;
+pub mod orchestrator;
 pub mod provider_resilience;
 pub mod providers;
 pub mod runtime;
@@ -27,6 +28,10 @@ pub use providers::{
 pub use runtime::AgentRuntime;
 pub use modes::{
     AgentMode, ModeContext, ModeEngine, ModeLlmConfig, ModeLimits, ModeProfile, ToolPolicy,
+};
+pub use orchestrator::{
+    Orchestrator, OrchestratorLimits, OrchestratorPlan, OrchestratorStep, OrchestratorSummary,
+    StepDetail, StepStatus, ValidationResult,
 };
 pub use tools::{
     BashTool, FileReadTool, FileWriteTool, ScheduleHeartbeat, Tool, ToolContext, ToolOutput,

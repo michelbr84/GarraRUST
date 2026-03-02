@@ -62,5 +62,8 @@ plans/
 # Roadmap scripts (internal - keep for Linear automation)
 # *.ps1
 
+# Temporary automation scripts (can be kept if useful)
+mark_modos_done*.ps1
+
 # Cargo
 Cargo.lock.bak
