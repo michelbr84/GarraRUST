@@ -456,7 +456,10 @@ impl AppState {
 
     /// Remove sessions that have been disconnected longer than the TTL.
     pub fn cleanup_expired_sessions(&self) -> usize {
-        let now = Instant::now();
+        self.cleanup_expired_sessions_at(Instant::now())
+    }
+
+    fn cleanup_expired_sessions_at(&self, now: Instant) -> usize {
         let mut removed = 0;
 
         self.sessions.retain(|_id, session| {
@@ -569,17 +572,18 @@ mod tests {
     fn cleanup_expired_sessions_removes_only_disconnected_expired() {
         let state = test_state();
 
-        // Create two sessions
+        // Create two sessions; record their last_active timestamps
         let active_id = state.create_session();
         let expired_id = state.create_session();
 
-        // Disconnect the expired session and backdate its last_active
+        // Disconnect the expired session. Its last_active is set to Instant::now()
+        // at creation time. We simulate expiry by running cleanup with a "now"
+        // 2 hours in the future, which avoids subtracting from Instant (UB on
+        // systems that have been running < 2 h).
         state.disconnect_session(&expired_id);
-        if let Some(mut session) = state.sessions.get_mut(&expired_id) {
-            session.last_active = Instant::now() - Duration::from_secs(7200);
-        }
+        let future_now = Instant::now() + Duration::from_secs(7200);
 
-        let removed = state.cleanup_expired_sessions();
+        let removed = state.cleanup_expired_sessions_at(future_now);
         assert_eq!(removed, 1);
         assert!(state.sessions.contains_key(&active_id));
         assert!(!state.sessions.contains_key(&expired_id));
@@ -590,12 +594,11 @@ mod tests {
         let state = test_state();
         let id = state.create_session();
 
-        // Backdate but keep connected
-        if let Some(mut session) = state.sessions.get_mut(&id) {
-            session.last_active = Instant::now() - Duration::from_secs(7200);
-        }
+        // Session is still connected. Even with a "now" 2 hours in the future
+        // the connected session must NOT be removed.
+        let future_now = Instant::now() + Duration::from_secs(7200);
 
-        let removed = state.cleanup_expired_sessions();
+        let removed = state.cleanup_expired_sessions_at(future_now);
         assert_eq!(removed, 0);
         assert!(state.sessions.contains_key(&id));
     }

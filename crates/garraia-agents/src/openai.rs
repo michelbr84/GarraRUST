@@ -442,11 +442,36 @@ impl LlmProvider for OpenAiProvider {
             }
         }
 
+        // Some providers (e.g. OpenRouter) return 200 OK with Content-Type:
+        // application/json but send an error object instead of a completion.
+        // The body may also have leading whitespace/newlines (leftover SSE
+        // keep-alive events). Detect this before attempting full parse.
+        let trimmed_body = body_str.trim();
+        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_body) {
+            if let Some(error) = json_val.get("error") {
+                let msg = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                let code = error
+                    .get("code")
+                    .and_then(|c| c.as_u64())
+                    .map(|c| format!(", code={c}"))
+                    .unwrap_or_default();
+                tracing::warn!(
+                    "openai API returned error body with 200 status: {}{}, endpoint={}",
+                    msg,
+                    code,
+                    self.endpoint()
+                );
+                return Err(Error::Agent(format!("openai API error: {msg}")));
+            }
+        }
+
         // Try to parse as JSON, with detailed error logging
         match serde_json::from_slice::<OpenAiResponse>(&body_bytes) {
             Ok(resp) => Ok(from_openai_response(resp)),
             Err(e) => {
-                // Log detailed diagnostic info
                 let truncated_body = &body_str[..body_str.len().min(1000)];
                 tracing::warn!(
                     "failed to parse openai response: {}\nstatus={}, content-type={}, body_preview={}",
@@ -1188,5 +1213,29 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].function.name, "bash");
         assert_eq!(tools[0].r#type, "function");
+    }
+
+    #[test]
+    fn error_body_json_is_detected_before_choices_parse() {
+        // Reproduces the OpenRouter case: 200 OK but body is an error object,
+        // possibly preceded by SSE keep-alive newlines.
+        let bodies = [
+            r#"{"error":{"message":"Internal Server Error","code":500}}"#,
+            "\n\n\n{\"error\":{\"message\":\"rate limited\",\"code\":429}}",
+            "   \n{\"error\":{\"message\":\"model not found\"}}  ",
+        ];
+        for raw in &bodies {
+            let trimmed = raw.trim();
+            let val: serde_json::Value = serde_json::from_str(trimmed).unwrap();
+            assert!(
+                val.get("error").is_some(),
+                "body should contain error field: {raw}"
+            );
+            let msg = val["error"]
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            assert!(!msg.is_empty(), "error message should not be empty");
+        }
     }
 }
