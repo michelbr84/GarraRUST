@@ -127,6 +127,11 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
         .route("/api/metrics", get(handlers::admin_metrics))
         .route("/api/metrics/prometheus", get(handlers::admin_prometheus))
         .route("/api/alerts", get(handlers::admin_alerts))
+        // ── MCP server management ──
+        .route(
+            "/api/mcp",
+            get(handlers::admin_list_mcp).post(handlers::admin_create_mcp),
+        )
         // ── Phase 6: Templates ──
         .route("/api/templates", get(handlers::list_templates))
         .layer(axum_mw::from_fn(require_csrf))

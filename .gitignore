@@ -18,6 +18,13 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Claude Code session data (memory, project state, conversation history)
+.claude/
+
+# MCP server configs at repo root — may contain API tokens / bearer tokens.
+# Use mcp.json.example (committed, no secrets) as reference.
+mcp.json
+
 # Config (local secrets)
 credentials/
 

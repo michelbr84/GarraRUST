@@ -82,7 +82,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 | | **Agendamento** | Cron, intervalo, único | Sim | Não |
 | | **Roteamento multi-agente** | Planejado (#108) | Sim (agentId) | Não |
 | | **Orquestração de sessões** | Planejado (#108) | Sim | Não |
-| | **Suporte MCP** | Stdio | Stdio + HTTP | Stdio |
+| | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
 | | **Canais** | 5 | 6+ | 4 |
 | | **Provedores de LLM** | 14 | 10+ | 22+ |
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
@@ -550,6 +550,7 @@ agent:
   system_prompt: "Você é um assistente útil."
   max_tokens: 4096
   max_context_tokens: 100000
+  max_tool_calls: 50        # limite de tool calls por tarefa (padrão: 50)
 
 memory:
   enabled: true
@@ -589,7 +590,7 @@ Consulte a [referência completa de configuração](docs/) para todas as opçõe
 
 ## Arquitetura
 
-GarraIA é um workspace Rust com **14 crates** de alta qualidade, cada um com responsabilidade única:
+GarraIA é um workspace Rust com **15 crates** de alta qualidade, cada um com responsabilidade única:
 
 ```text
 crates/
@@ -602,11 +603,12 @@ crates/
 ├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
 ├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
 ├── garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec), sessões
+├── garraia-glob/       # Glob pattern matching, .garraignore, scanner de arquivos
 ├── garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
-├── garraia-media/     # Processamento de mídia: PDF, imagens
-├── garraia-security/  # Cofre de credenciais, listas de permissões, pareamento, validação
-├── garraia-skills/    # Parser de SKILL.md, scanner, instalador
-├── garraia-common/    # Tipos compartilhados, erros, utilitários
+├── garraia-media/      # Processamento de mídia: PDF, imagens
+├── garraia-security/   # Cofre de credenciais, listas de permissões, pareamento, validação
+├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
+├── garraia-common/     # Tipos compartilhados, erros, utilitários
 ```
 
 ### Fluxo de Execução do Runtime
@@ -680,14 +682,15 @@ O GarraIA suporta múltiplos agentes com roteamento inteligente:
 
 O GarraIA implementa o protocolo MCP com:
 
-- **Transporte stdio** - Servidores MCP locais
-- **Transporte HTTP** - Servidores MCP remotos (`mcp-http` feature)
+- **Transporte stdio** - Servidores MCP locais (processo filho)
+- **Transporte HTTP / SSE / StreamableHttp** - Servidores MCP remotos (`mcp-http` feature)
 - **Tool Bridging** - Ferramentas aparecem como `server.tool` namespaced
 - **Resource API** - Arquivos, prompts, e custom resources
-- **Health Monitor** - Auto-reconexão com verificação periódica
+- **Health Monitor** - Auto-reconexão com verificação periódica (30s)
+- **Admin API** - `GET /admin/api/mcp` lista servidores com status em tempo real; `POST /admin/api/mcp` adiciona novos servidores sem reiniciar
 - **CLI Commands** - `garraia mcp list`, `mcp inspect`, `mcp resources`, `mcp prompts`
 
-Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop).
+Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.
 
 | Componente | Status |
 |-----------|--------|
@@ -699,7 +702,7 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | iMessage (macOS, grupos) | ✅ Funcionando |
 | Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
 | Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
-| Cliente MCP (stdio, bridge de ferramentas) | ✅ Funcionando |
+| Cliente MCP (stdio, HTTP/SSE/StreamableHttp, bridge de ferramentas, admin API) | ✅ Funcionando |
 | Skills (SKILL.md, auto-descoberta) | ✅ Funcionando |
 | Configuração (YAML/TOML, hot-reload) | ✅ Funcionando |
 | Memória (SQLite, busca vetorial, facts.json) | ✅ Funcionando |

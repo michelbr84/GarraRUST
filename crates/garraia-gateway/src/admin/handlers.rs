@@ -2589,6 +2589,126 @@ pub async fn about(State(state): State<AdminState>) -> Json<serde_json::Value> {
     }))
 }
 
+// ── MCP server management ─────────────────────────────────────────────────────
+
+/// GET /admin/api/mcp — list all configured MCP servers with live status.
+pub async fn admin_list_mcp(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+) -> impl IntoResponse {
+    use super::rbac::{Action, Resource};
+    if !check_permission(admin.role, Resource::McpServers, Action::Read) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    let servers = state.app_state.mcp_registry.list().await;
+    let list: Vec<serde_json::Value> = servers
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "transport": s.config.infer_transport(),
+                "command": s.config.command,
+                "args": s.config.args,
+                "url": s.config.url,
+                "timeout_secs": s.config.timeout_secs,
+                "status": s.status,
+                "tool_count": s.tool_count,
+            })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(serde_json::json!({"servers": list})))
+}
+
+/// Request body for POST /admin/api/mcp.
+#[derive(serde::Deserialize)]
+pub struct CreateMcpRequest {
+    /// Unique name for the server (e.g. "my-tool").
+    pub name: String,
+    /// Shell command to launch (stdio transport).
+    pub command: Option<String>,
+    /// Arguments for `command`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// URL for HTTP/SSE/StreamableHttp transports.
+    pub url: Option<String>,
+    /// Explicit transport override.
+    pub transport: Option<crate::mcp::McpTransportType>,
+    /// Handshake timeout in seconds (default: 30).
+    pub timeout_secs: Option<u64>,
+}
+
+/// POST /admin/api/mcp — add a new MCP server configuration.
+///
+/// Adds the server to the in-memory registry and persists it to `mcp.json`.
+/// The server starts in `Stopped` state; use the restart endpoint (GAR-287)
+/// to connect it without restarting the gateway.
+pub async fn admin_create_mcp(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Json(body): Json<CreateMcpRequest>,
+) -> impl IntoResponse {
+    use super::rbac::{Action, Resource};
+    use crate::mcp::{McpPersistenceService, McpServerConfig};
+
+    if !check_permission(admin.role, Resource::McpServers, Action::Create) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "name must not be empty"})),
+        );
+    }
+
+    if body.command.is_none() && body.url.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "either command or url is required"})),
+        );
+    }
+
+    let config = McpServerConfig {
+        command: body.command,
+        args: body.args,
+        env: body.env,
+        url: body.url,
+        transport: body.transport,
+        timeout_secs: body.timeout_secs.unwrap_or(30),
+    };
+
+    // Add to registry
+    state.app_state.mcp_registry.add_server(name.clone(), config).await;
+
+    // Persist to mcp.json
+    let svc = McpPersistenceService::with_default_path();
+    if let Err(e) = svc.save_from_registry(&state.app_state.mcp_registry).await {
+        tracing::warn!("admin_create_mcp: failed to persist mcp.json: {e}");
+    }
+
+    let server = state.app_state.mcp_registry.get(&name).await;
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "ok": true,
+            "name": name,
+            "status": server.map(|s| s.status),
+        })),
+    )
+}
+
 fn memory_entry_to_json(entry: &garraia_db::MemoryEntry) -> serde_json::Value {
     serde_json::json!({
         "id": entry.id,
