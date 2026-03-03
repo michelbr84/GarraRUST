@@ -185,6 +185,9 @@ pub struct AgentConfig {
     pub default_provider: Option<String>,
     pub max_tokens: Option<u32>,
     pub max_context_tokens: Option<usize>,
+    /// Maximum total tool calls per task (default: 50).
+    /// Increase for complex agentic workflows.
+    pub max_tool_calls: Option<usize>,
 }
 
 /// A named agent configuration for multi-agent routing.

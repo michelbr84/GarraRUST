@@ -624,6 +624,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     if let Some(max_tokens) = config.agent.max_tokens {
         runtime.set_max_tokens(max_tokens);
     }
+    if let Some(max_tool_calls) = config.agent.max_tool_calls {
+        runtime.set_max_tool_calls(max_tool_calls);
+    }
 
     // --- Skills ---
     let skills_dir = garraia_config::ConfigLoader::default_config_dir().join("skills");
