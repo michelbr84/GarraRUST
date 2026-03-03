@@ -44,3 +44,11 @@ channels:
     type: discord
     enabled: true
     # bot_token e application_id são resolvidos automaticamente a partir das variáveis de ambiente
+
+# GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
+fs:
+  glob:
+    mode: picomatch   # picomatch (padrão) | bash
+    dot: false        # se true, * e ? casam dotfiles (ex: .hidden)
+  ignore:
+    use_gitignore: true  # respeita .gitignore durante varredura de diretórios

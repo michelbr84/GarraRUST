@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::Result;
 
 /// Represents a .garraignore or .gitignore file
+#[derive(Clone)]
 pub struct IgnoreFile {
     patterns: Vec<String>,
     negated: Vec<String>,
