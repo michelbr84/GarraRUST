@@ -1,6 +1,7 @@
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use futures::future::join_all;
 use garraia_common::{Error, Result};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
@@ -11,11 +12,26 @@ use tracing::{info, instrument, warn};
 use crate::embeddings::EmbeddingProvider;
 use crate::execution_budget::ExecutionBudget;
 use crate::memory_extractor::LlmMemoryExtractor;
+use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
-    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart, StreamEvent,
-    ToolDefinition,
+    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+    StreamEvent, ToolDefinition,
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
+
+/// GAR-210: Returns true for errors that warrant a retry or provider fallback.
+/// Detects rate-limit (429) and transient server errors (502/503/529).
+fn is_retryable_error(err: &Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("429")
+        || msg.contains("rate limit")
+        || msg.contains("rate_limit")
+        || msg.contains("too many requests")
+        || msg.contains("status=502")
+        || msg.contains("status=503")
+        || msg.contains("status=529")
+        || msg.contains("upstream")
+}
 
 /// Resolve provider ID from model override.
 /// Models like "openrouter/auto", "openai/gpt-4o" have the provider as prefix.
@@ -64,6 +80,10 @@ pub struct AgentRuntime {
     max_context_tokens: Option<usize>,
     max_tool_calls: Option<usize>,
     memory_extractor: LlmMemoryExtractor,
+    /// GAR-210: Circuit breaker + model cache manager.
+    resilience: Arc<ResilienceManager>,
+    /// GAR-210: Ordered fallback provider IDs (tried when primary fails with 429/5xx).
+    fallback_providers_list: RwLock<Vec<String>>,
 }
 
 impl AgentRuntime {
@@ -79,7 +99,19 @@ impl AgentRuntime {
             max_context_tokens: None,
             max_tool_calls: None,
             memory_extractor: LlmMemoryExtractor::new(),
+            resilience: Arc::new(ResilienceManager::new()),
+            fallback_providers_list: RwLock::new(Vec::new()),
         }
+    }
+
+    /// GAR-210: Set the ordered fallback provider list (tried on 429/5xx).
+    pub fn set_fallback_providers(&self, providers: Vec<String>) {
+        *self.fallback_providers_list.write().unwrap() = providers;
+    }
+
+    /// GAR-210: Return the configured fallback provider IDs.
+    pub fn fallback_providers(&self) -> Vec<String> {
+        self.fallback_providers_list.read().unwrap().clone()
     }
 
     pub fn system_prompt(&self) -> Option<&str> {
@@ -288,6 +320,11 @@ impl AgentRuntime {
         self.tools.push(tool);
     }
 
+    /// GAR-159: List names of all registered tools (for API endpoints and diagnostics).
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.tools.iter().map(|t| t.name()).collect()
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .iter()
@@ -436,6 +473,12 @@ impl AgentRuntime {
         };
 
         let tool_defs = self.tool_definitions();
+        info!(
+            "agent starting: provider={}, tools={}, history_msgs={}",
+            provider.provider_id(),
+            tool_defs.len(),
+            conversation_history.len()
+        );
 
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
@@ -479,7 +522,7 @@ impl AgentRuntime {
                 tools: tool_defs.clone(),
             };
 
-            let response = provider.complete(&request).await?;
+            let response = self.complete_with_fallback(&provider, &request).await?;
 
             let has_tool_use = response
                 .content
@@ -488,6 +531,11 @@ impl AgentRuntime {
 
             if !has_tool_use {
                 let final_text = extract_text(&response.content);
+                info!(
+                    "agent finished without tool calls (stop_reason={:?}, response_len={})",
+                    response.stop_reason,
+                    final_text.len()
+                );
                 if let Err(e) = self
                     .remember_turn(session_id, continuity_key, user_id, user_text, &final_text)
                     .await
@@ -496,6 +544,12 @@ impl AgentRuntime {
                 }
                 return Ok(final_text);
             }
+
+            // Agent chose to call tools — log which ones
+            let tool_names: Vec<&str> = response.content.iter()
+                .filter_map(|b| if let ContentBlock::ToolUse { name, .. } = b { Some(name.as_str()) } else { None })
+                .collect();
+            info!("agent calling tools: {:?}", tool_names);
 
             messages.push(ChatMessage {
                 role: ChatRole::Assistant,
@@ -533,6 +587,7 @@ impl AgentRuntime {
                         }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
                     };
+                    info!("tool '{}' result: is_error={}", name, output.is_error);
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: output.content,
@@ -881,6 +936,12 @@ impl AgentRuntime {
         };
 
         let tool_defs = self.tool_definitions();
+        info!(
+            "agent streaming: provider={}, tools={}, history_msgs={}",
+            provider.provider_id(),
+            tool_defs.len(),
+            conversation_history.len()
+        );
 
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
@@ -932,8 +993,8 @@ impl AgentRuntime {
                 request.tools.len()
             );
 
-            // Try streaming; fall back to non-streaming if not supported
-            let stream_result = provider.stream_complete(&request).await;
+            // Try streaming with fallback; fall back to non-streaming if unsupported
+            let stream_result = self.stream_complete_with_fallback(&provider, &request).await;
 
             match stream_result {
                 Ok(mut stream) => {
@@ -1080,8 +1141,8 @@ impl AgentRuntime {
                     }
                 }
                 Err(_) => {
-                    // Streaming not supported — fall back to non-streaming
-                    let response = provider.complete(&request).await?;
+                    // Streaming not supported — fall back to non-streaming with retry/fallback
+                    let response = self.complete_with_fallback(&provider, &request).await?;
 
                     let tool_calls_count = response
                         .content
@@ -1172,6 +1233,130 @@ impl AgentRuntime {
                 }
             }
         }
+    }
+
+    // ── GAR-210: Retry + fallback helpers ────────────────────────────────────
+
+    /// Try `primary` provider with exponential-backoff retries, then fall through
+    /// the configured `fallback_providers_list` on retryable errors (429, 5xx).
+    async fn complete_with_fallback(
+        &self,
+        primary: &Arc<dyn LlmProvider>,
+        request: &LlmRequest,
+    ) -> Result<LlmResponse> {
+        let primary_id = primary.provider_id().to_string();
+        let retry_policy = &self.resilience.retry_policy;
+
+        // --- Try primary with retries ---
+        let primary_cb = self.resilience.circuit_breaker(&primary_id).await;
+        if primary_cb.allow_request().await {
+            let mut last_err: Option<Error> = None;
+            for attempt in 0..=retry_policy.max_retries {
+                match primary.complete(request).await {
+                    Ok(resp) => {
+                        primary_cb.record_success().await;
+                        return Ok(resp);
+                    }
+                    Err(e) if is_retryable_error(&e) => {
+                        warn!(
+                            "provider '{}' attempt {} failed (retryable): {}",
+                            primary_id,
+                            attempt + 1,
+                            e
+                        );
+                        primary_cb.record_failure().await;
+                        if attempt < retry_policy.max_retries {
+                            tokio::time::sleep(retry_policy.delay_for_attempt(attempt)).await;
+                        }
+                        last_err = Some(e);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if let Some(e) = last_err {
+                warn!("provider '{}' exhausted retries: {}", primary_id, e);
+            }
+        } else {
+            warn!("provider '{}' circuit open, skipping primary", primary_id);
+        }
+
+        // --- Try fallback providers ---
+        let fallbacks = self.fallback_providers_list.read().unwrap().clone();
+        for fallback_id in &fallbacks {
+            if *fallback_id == primary_id {
+                continue;
+            }
+            let Some(fallback) = self.get_provider(fallback_id) else {
+                continue;
+            };
+            let cb = self.resilience.circuit_breaker(fallback_id).await;
+            if !cb.allow_request().await {
+                warn!("fallback '{}' circuit open, skipping", fallback_id);
+                continue;
+            }
+            info!("provider fallback: trying '{}'", fallback_id);
+            match fallback.complete(request).await {
+                Ok(resp) => {
+                    cb.record_success().await;
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    warn!("fallback '{}' failed: {}", fallback_id, e);
+                    cb.record_failure().await;
+                }
+            }
+        }
+
+        Err(Error::Agent(format!(
+            "all providers failed (primary: {primary_id}, fallbacks: [{}])",
+            fallbacks.join(", ")
+        )))
+    }
+
+    /// Like `complete_with_fallback` but for streaming.
+    /// Tries primary, then fallbacks, returning the first successful stream.
+    async fn stream_complete_with_fallback(
+        &self,
+        primary: &Arc<dyn LlmProvider>,
+        request: &LlmRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        let primary_id = primary.provider_id().to_string();
+
+        match primary.stream_complete(request).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) if is_retryable_error(&e) => {
+                warn!("streaming provider '{}' failed, trying fallbacks: {}", primary_id, e);
+                let cb = self.resilience.circuit_breaker(&primary_id).await;
+                cb.record_failure().await;
+            }
+            Err(e) => return Err(e),
+        }
+
+        let fallbacks = self.fallback_providers_list.read().unwrap().clone();
+        for fallback_id in &fallbacks {
+            if *fallback_id == primary_id {
+                continue;
+            }
+            let Some(fallback) = self.get_provider(fallback_id) else {
+                continue;
+            };
+            let cb = self.resilience.circuit_breaker(fallback_id).await;
+            if !cb.allow_request().await {
+                continue;
+            }
+            info!("streaming fallback: trying '{}'", fallback_id);
+            match fallback.stream_complete(request).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    warn!("streaming fallback '{}' failed: {}", fallback_id, e);
+                    cb.record_failure().await;
+                }
+            }
+        }
+
+        Err(Error::Agent(format!(
+            "all streaming providers failed (primary: {primary_id})"
+        )))
     }
 
     pub async fn health_check_all(&self) -> Result<Vec<(String, bool)>> {

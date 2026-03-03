@@ -37,8 +37,9 @@ pub fn build_runtime_router() -> Router<SharedState> {
 }
 
 /// Handler for GET /api/runtime/tools - List available tools in the registry.
+/// GAR-159: Uses AgentRuntime as the single source of truth for registered tools.
 pub async fn list_tools_handler(State(state): State<SharedState>) -> impl IntoResponse {
-    let tools = state.tool_registry.read().unwrap().list_names();
+    let tools = state.agents.tool_names();
     Json(serde_json::json!({
         "tools": tools,
         "count": tools.len(),

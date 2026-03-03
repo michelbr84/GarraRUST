@@ -367,13 +367,22 @@ fn main() -> Result<()> {
         // Examples:
         //   RUST_LOG=garraia_gateway=debug,garraia_voice=trace
         //   RUST_LOG=garraia_agents::tools=debug
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level)),
-            )
-            .with_writer(file_appender.and(RedactingWriter::stderr()))
-            .with_ansi(false)
-            .init();
+        // GAR-214: GARRAIA_LOG_FORMAT=json emits structured JSON lines (stdout/file)
+        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+        if std::env::var("GARRAIA_LOG_FORMAT").as_deref() == Ok("json") {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .with_writer(file_appender.and(RedactingWriter::stderr()))
+                .with_ansi(false)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(file_appender.and(RedactingWriter::stderr()))
+                .with_ansi(false)
+                .init();
+        }
     };
 
     let config_loader = garraia_config::ConfigLoader::new()?;

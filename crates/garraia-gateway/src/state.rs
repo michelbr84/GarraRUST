@@ -6,10 +6,9 @@ use dashmap::DashMap;
 use garraia_agents::{AgentRuntime, ChatMessage};
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::AppConfig;
-use garraia_db::SessionStore;
+use garraia_db::{ChatSessionManager, SessionStore};
 use garraia_runtime::RuntimeSettings;
 use garraia_security::{Allowlist, PairingManager};
-use garraia_tools::ToolRegistry;
 use std::sync::RwLock;
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
@@ -37,6 +36,8 @@ pub struct AppState {
     /// Live registry of MCP server configs and statuses (source of truth for admin API).
     pub mcp_registry: crate::mcp::McpRuntimeRegistry,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
+    /// GAR-201: Unified session manager for multi-channel external-ID → session-ID mapping.
+    pub chat_session_manager: Option<Arc<ChatSessionManager>>,
     /// Receives hot-reloaded config updates. `None` if watcher is not active.
     config_rx: Option<watch::Receiver<AppConfig>>,
     /// Broadcast channel for tailing logs to WebSocket clients.
@@ -57,9 +58,6 @@ pub struct AppState {
     pub boot_time: std::time::Instant,
     /// Runtime settings for agent execution.
     pub runtime_settings: RuntimeSettings,
-    /// Tool registry for the runtime executor (protected by RwLock for interior mutability).
-    /// Use this directly to register tools: `state.tool_registry.write().unwrap().register(tool)`
-    pub tool_registry: Arc<RwLock<ToolRegistry>>,
 }
 
 /// Per-connection session tracking.
@@ -101,6 +99,7 @@ impl AppState {
             mcp_manager_arc: None,
             mcp_registry: crate::mcp::McpPersistenceService::with_default_path().load_registry(),
             session_store: None,
+            chat_session_manager: None,
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
             voice_client: None,
@@ -118,13 +117,17 @@ impl AppState {
             ))),
             boot_time: Instant::now(),
             runtime_settings: RuntimeSettings::default(),
-            tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
         }
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.
     pub fn set_session_store(&mut self, store: Arc<Mutex<SessionStore>>) {
         self.session_store = Some(store);
+    }
+
+    /// Attach the GAR-201 ChatSessionManager for multi-channel session resolution.
+    pub fn set_chat_session_manager(&mut self, manager: Arc<ChatSessionManager>) {
+        self.chat_session_manager = Some(manager);
     }
 
     /// Attach a config watch receiver for hot-reload support.

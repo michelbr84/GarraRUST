@@ -188,6 +188,10 @@ pub struct AgentConfig {
     /// Maximum total tool calls per task (default: 50).
     /// Increase for complex agentic workflows.
     pub max_tool_calls: Option<usize>,
+    /// GAR-210: Ordered list of fallback provider keys to try when the primary fails
+    /// with a retryable error (429, 502, 503). Example: ["openrouter", "anthropic"]
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
 }
 
 /// A named agent configuration for multi-agent routing.
