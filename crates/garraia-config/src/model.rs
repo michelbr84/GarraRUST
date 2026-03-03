@@ -43,6 +43,10 @@ pub struct AppConfig {
     /// Per-type timeout configuration.
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+
+    /// GAR-261: File-system glob and ignore configuration.
+    #[serde(default)]
+    pub fs: FsConfig,
 }
 
 impl Default for AppConfig {
@@ -60,6 +64,7 @@ impl Default for AppConfig {
             agents: HashMap::new(),
             voice: VoiceConfig::default(),
             timeouts: TimeoutConfig::default(),
+            fs: FsConfig::default(),
         }
     }
 }
@@ -295,6 +300,72 @@ pub struct TypeTimeout {
 impl Default for TypeTimeout {
     fn default() -> Self {
         Self { default_secs: 30 }
+    }
+}
+
+// ─── FsConfig — GAR-261 ────────────────────────────────────────────────────
+
+/// File-system glob and ignore configuration.
+///
+/// ```yaml
+/// fs:
+///   glob:
+///     mode: picomatch   # picomatch | bash
+///     dot: false        # match dotfiles with * ?
+///   ignore:
+///     use_gitignore: true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsConfig {
+    #[serde(default)]
+    pub glob: FsGlobConfig,
+    #[serde(default)]
+    pub ignore: FsIgnoreConfig,
+}
+
+impl Default for FsConfig {
+    fn default() -> Self {
+        Self {
+            glob: FsGlobConfig::default(),
+            ignore: FsIgnoreConfig::default(),
+        }
+    }
+}
+
+/// Glob matching configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsGlobConfig {
+    /// Matching mode: `"picomatch"` (default) or `"bash"`.
+    #[serde(default = "default_glob_mode")]
+    pub mode: String,
+    /// If `true`, `*` and `?` will match dotfiles. Default: `false`.
+    #[serde(default)]
+    pub dot: bool,
+}
+
+fn default_glob_mode() -> String {
+    "picomatch".to_string()
+}
+
+impl Default for FsGlobConfig {
+    fn default() -> Self {
+        Self { mode: default_glob_mode(), dot: false }
+    }
+}
+
+/// Ignore-file configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsIgnoreConfig {
+    /// Respect `.gitignore` files during traversal. Default: `true`.
+    #[serde(default = "default_true")]
+    pub use_gitignore: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for FsIgnoreConfig {
+    fn default() -> Self {
+        Self { use_gitignore: true }
     }
 }
 
