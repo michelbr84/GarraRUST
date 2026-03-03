@@ -7,21 +7,30 @@ gateway:
   port: 3888
 
 llm:
-  # Anthropic Claude (requer variável de ambiente ANTHROPIC_API_KEY)
+  # Anthropic Claude (requer ANTHROPIC_API_KEY)
   claude:
     provider: anthropic
-    # Use um ID de modelo válido (ex: claude-3-5-sonnet-20240620)
-    model: claude-3-5-sonnet-20240620
-    # api_key é resolvida automaticamente a partir da variável de ambiente ANTHROPIC_API_KEY
+    model: claude-sonnet-4-6
+    # api_key resolvida automaticamente via ANTHROPIC_API_KEY
 
-  # OpenAI (requer variável de ambiente OPENAI_API_KEY)
-  # openai-gpt4:
+  # OpenRouter — acesso a múltiplos modelos com um único token (requer OPENROUTER_API_KEY)
+  # Útil como fallback pois agrega vários providers internamente.
+  openrouter:
+    provider: openrouter
+    model: anthropic/claude-3.5-sonnet
+    # api_key resolvida via OPENROUTER_API_KEY
+
+  # OpenAI (requer OPENAI_API_KEY)
+  # openai:
   #   provider: openai
   #   model: gpt-4o
 
 agent:
   system_prompt: "Você é o GarraIA, um assistente de inteligência artificial útil executando dentro de um container Docker."
   default_provider: claude
+  # GAR-210: fallback automático — se 'claude' retornar 429/5xx, tenta 'openrouter' na ordem.
+  fallback_providers:
+    - openrouter
 
 channels:
   # Telegram (requer variável de ambiente TELEGRAM_BOT_TOKEN)

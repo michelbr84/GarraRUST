@@ -627,6 +627,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     if let Some(max_tool_calls) = config.agent.max_tool_calls {
         runtime.set_max_tool_calls(max_tool_calls);
     }
+    // GAR-210: wire fallback provider list from config
+    if !config.agent.fallback_providers.is_empty() {
+        runtime.set_fallback_providers(config.agent.fallback_providers.clone());
+        info!(
+            "provider fallback order: {:?}",
+            config.agent.fallback_providers
+        );
+    }
 
     // --- Skills ---
     let skills_dir = garraia_config::ConfigLoader::default_config_dir().join("skills");

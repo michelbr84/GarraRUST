@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use uuid::Uuid;
+use std::time::Instant;
 
 use crate::state::SharedState;
 
@@ -228,6 +229,7 @@ pub async fn chat_completions(
     headers: HeaderMap,
     Json(body): Json<ChatCompletionRequest>,
 ) -> Response<Body> {
+    let started_at = Instant::now();
     // Extract request ID for tracing (GAR-234)
     let request_id = resolve_request_id(&headers);
     
@@ -272,7 +274,7 @@ pub async fn chat_completions(
     }
     
     // GAR-225: Extract tool_choice for standardized logging
-    let tool_choice_str = if body.tool_choice.is_null() {
+    let _tool_choice_str = if body.tool_choice.is_null() {
         None
     } else if let Some(s) = body.tool_choice.as_str() {
         Some(s.to_string())
@@ -286,40 +288,89 @@ pub async fn chat_completions(
         Some(body.tool_choice.to_string())
     };
     
+    // GAR-214: Detect request source from User-Agent or X-Source header
+    let source = headers
+        .get("x-source")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|ua| {
+                if ua.contains("vscode") || ua.contains("continue") || ua.contains("VSCode") {
+                    "vscode".to_string()
+                } else if ua.contains("Telegram") {
+                    "telegram".to_string()
+                } else {
+                    "http".to_string()
+                }
+            })
+        })
+        .unwrap_or_else(|| "http".to_string());
+
+    // GAR-214: Structured log fields for end-to-end tracing
     info!(
-        "OpenAI API request: request_id={}, session_id={}, user_id={:?}, model={:?}, stream={}, mode={:?}, tool_choice={:?}",
-        request_id,
-        session_id,
-        user_id,
-        body.model,
-        is_streaming,
-        final_mode,
-        tool_choice_str
+        request_id = %request_id,
+        session_id = %session_id,
+        source = %source,
+        model = %body.model.as_deref().unwrap_or("default"),
+        streaming = is_streaming,
+        mode = ?final_mode,
+        "chat.request.started"
     );
 
     // Get model name
     let model = body.model.clone().unwrap_or_else(|| "gpt-4".to_string());
 
-    // Convert messages to garraia format
-    let messages: Vec<ChatMessage> = body
-        .messages
-        .iter()
-        .map(|m| ChatMessage {
-            role: parse_role(&m.role),
-            content: MessagePart::Text(m.content.clone()),
-        })
-        .collect();
+    // GAR-204: Hydrate session history from DB so the server is the source of truth.
+    // This is a no-op for brand-new sessions (no-op if no session_store).
+    state.hydrate_session_history(&session_id, Some("vscode"), user_id.as_deref()).await;
+
+    // Extract the new user message from the client request (the last message is the current input)
+    let new_user_text = body.messages.last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    // Build conversation history: prefer DB history (source of truth) over client-sent messages.
+    // If the DB has no history yet (first message), fall back to client-provided messages[].
+    let db_history = state.session_history(&session_id);
+    let mut messages: Vec<ChatMessage> = if db_history.is_empty() {
+        // No DB history: use client's messages[] (minus the last user message) as seed context
+        body.messages[..body.messages.len().saturating_sub(1)]
+            .iter()
+            .map(|m| ChatMessage {
+                role: parse_role(&m.role),
+                content: MessagePart::Text(m.content.clone()),
+            })
+            .collect()
+    } else {
+        db_history
+    };
+    // Append the new user message at the end so handlers can extract it as `messages.last()`
+    messages.push(ChatMessage {
+        role: ChatRole::User,
+        content: MessagePart::Text(new_user_text),
+    });
 
     // Get continuity key based on user_id
     let continuity_key = state.continuity_key(user_id.as_deref()).unwrap_or_else(|| "default".to_string());
 
-    if is_streaming {
-        // Handle streaming mode
-        handle_streaming(state, session_id, model, messages, continuity_key, user_id).await
+    let response = if is_streaming {
+        // Handle streaming mode (latency = setup time; LLM latency logged separately)
+        handle_streaming(state, session_id.clone(), model, messages, continuity_key, user_id).await
     } else {
-        // Handle non-streaming mode (original behavior)
-        handle_non_streaming(state, session_id, model, messages, continuity_key, body, user_id).await
-    }
+        handle_non_streaming(state, session_id.clone(), model, messages, continuity_key, user_id).await
+    };
+
+    // GAR-214: Log request completion with latency
+    info!(
+        request_id = %request_id,
+        session_id = %session_id,
+        source = %source,
+        streaming = is_streaming,
+        latency_ms = started_at.elapsed().as_millis(),
+        "chat.request.completed"
+    );
+
+    response
 }
 
 /// Handle streaming request - connects internal streaming to SSE
@@ -346,29 +397,46 @@ async fn handle_streaming(
         })
         .unwrap_or_default();
 
+    // Conversation history = all messages except the last user message
+    let conversation_history: Vec<ChatMessage> = messages[..messages.len().saturating_sub(1)].to_vec();
+
     // Clone what we need for the spawned task
     let state_clone = state.clone();
     let session_id_clone = session_id.clone();
     let continuity_key_clone = continuity_key.clone();
     let user_msg_clone = user_message.clone();
-    let messages_clone = messages.clone();
     let model_clone = model.clone();
     let user_id_clone = user_id.clone();
 
-    // Spawn task to process streaming
+    // Spawn task to process streaming and persist the turn when done (GAR-204)
     tokio::spawn(async move {
-        let _ = state_clone
+        if let Ok(response_text) = state_clone
             .agents
-            .process_message_streaming_with_context(
+            .process_message_streaming_with_agent_config(
                 &session_id_clone,
                 &user_msg_clone,
-                &messages_clone,
+                &conversation_history,
                 delta_tx,
-                Some(&continuity_key_clone),
+                Some(continuity_key_clone.as_str()),
                 user_id_clone.as_deref(),
+                None,
                 Some(model_clone.as_str()),
+                None,
+                None,
             )
-            .await;
+            .await
+        {
+            // GAR-204: Persist the turn to DB after streaming completes
+            state_clone
+                .persist_turn(
+                    &session_id_clone,
+                    Some("vscode"),
+                    user_id_clone.as_deref(),
+                    &user_msg_clone,
+                    &response_text,
+                )
+                .await;
+        }
     });
 
     // Prepare SSE streaming response
@@ -378,12 +446,18 @@ async fn handle_streaming(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    // Create the content stream from delta_rx
+    // GAR-205: Full OpenAI-compatible SSE stream.
+    // Phase 0 → initial role chunk
+    // Phase 1 → content delta chunks from the mpsc receiver
+    // Phase 2 → final finish_reason="stop" chunk
+    // Phase 3 → data: [DONE] sentinel
+    // Phase 4 → stream ends
     let stream = stream::unfold(
-        (delta_rx, chunk_id, created, model),
-        |(mut rx, chunk_id, created, model)| async move {
-            match rx.recv().await {
-                Some(text) => {
+        (0u8, Some(delta_rx), chunk_id, created, model),
+        |(phase, mut rx_opt, chunk_id, created, model)| async move {
+            match phase {
+                // Phase 0: emit initial chunk establishing role
+                0 => {
                     let chunk = ChatCompletionChunk {
                         id: chunk_id.clone(),
                         object: "chat.completion.chunk".to_string(),
@@ -392,19 +466,62 @@ async fn handle_streaming(
                         choices: vec![ChunkChoice {
                             index: 0,
                             delta: DeltaContent {
-                                role: None,
-                                content: Some(text),
+                                role: Some("assistant".to_string()),
+                                content: Some(String::new()),
                             },
                             finish_reason: None,
                         }],
                     };
-                    
                     let event = Event::default()
                         .data(serde_json::to_string(&chunk).unwrap_or_default());
-                    
-                    Some((event, (rx, chunk_id, created, model)))
+                    Some((event, (1, rx_opt, chunk_id, created, model)))
                 }
-                None => None,
+                // Phase 1: stream content deltas; on channel close → go to phase 2
+                1 => {
+                    let mut rx = rx_opt.take().unwrap();
+                    match rx.recv().await {
+                        Some(text) => {
+                            let chunk = ChatCompletionChunk {
+                                id: chunk_id.clone(),
+                                object: "chat.completion.chunk".to_string(),
+                                created,
+                                model: model.clone(),
+                                choices: vec![ChunkChoice {
+                                    index: 0,
+                                    delta: DeltaContent { role: None, content: Some(text) },
+                                    finish_reason: None,
+                                }],
+                            };
+                            let event = Event::default()
+                                .data(serde_json::to_string(&chunk).unwrap_or_default());
+                            Some((event, (1, Some(rx), chunk_id, created, model)))
+                        }
+                        None => {
+                            // Channel closed — emit finish chunk
+                            let chunk = ChatCompletionChunk {
+                                id: chunk_id.clone(),
+                                object: "chat.completion.chunk".to_string(),
+                                created,
+                                model: model.clone(),
+                                choices: vec![ChunkChoice {
+                                    index: 0,
+                                    delta: DeltaContent { role: None, content: None },
+                                    finish_reason: Some("stop".to_string()),
+                                }],
+                            };
+                            let event = Event::default()
+                                .data(serde_json::to_string(&chunk).unwrap_or_default());
+                            Some((event, (3, None, chunk_id, created, model)))
+                        }
+                    }
+                }
+                // Phase 3: emit [DONE] sentinel
+                3 => {
+                    let event = Event::default().data("[DONE]");
+                    Some((event, (4, rx_opt, chunk_id, created, model)))
+                }
+                // Phase 4+: stream ended
+                _ => None,
             }
         },
     );
@@ -415,14 +532,13 @@ async fn handle_streaming(
     Sse::new(result_stream).into_response()
 }
 
-/// Handle non-streaming request (original behavior)
+/// Handle non-streaming request
 async fn handle_non_streaming(
     state: SharedState,
     session_id: String,
     model: String,
     messages: Vec<ChatMessage>,
     continuity_key: String,
-    body: ChatCompletionRequest,
     user_id: Option<String>,
 ) -> Response<Body> {
     // Get the user message (last message)
@@ -440,7 +556,7 @@ async fn handle_non_streaming(
     // Get conversation history (all messages except the last one)
     let conversation_history = &messages[..messages.len().saturating_sub(1)];
 
-    // Call the agent using process_message_with_agent_config to pass model_override
+    // Call the agent
     let result = state
         .agents
         .process_message_with_agent_config(
@@ -487,30 +603,14 @@ async fn handle_non_streaming(
                 usage,
             };
 
-            // Persist the turn to database if session store is available
-            if let Some(ref session_store) = state.session_store {
-                let store = session_store.lock().await;
-                let user_content = body
-                    .messages
-                    .last()
-                    .map(|m| m.content.clone())
-                    .unwrap_or_default();
-                
-                let _ = store.append_message(
-                    &session_id,
-                    "user",
-                    &user_content,
-                    chrono::Utc::now(),
-                    &serde_json::json!({ "source": "vscode", "model": model }),
-                );
-                let _ = store.append_message(
-                    &session_id,
-                    "assistant",
-                    &response,
-                    chrono::Utc::now(),
-                    &serde_json::json!({ "source": "vscode", "model": model }),
-                );
-            }
+            // GAR-204: Persist the turn to DB via state (handles both in-memory and persistent storage)
+            state.persist_turn(
+                &session_id,
+                Some("vscode"),
+                user_id.as_deref(),
+                &user_text,
+                &response,
+            ).await;
 
             Json(resp).into_response()
         }

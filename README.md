@@ -216,6 +216,8 @@ Use extensões como **Continue** ou **Watt** que suportam endpoints OpenAI custo
 }
 ```
 
+Consulte o [guia completo de configuração para VS Code](docs/vscode/setup.md) para instruções passo a passo com a extensão Continue.
+
 #### Continuidade de Conversa
 
 O GarraIA mantém **histórico unificado** entre todos os canais:
@@ -396,7 +398,10 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
 - **Reinicialização** - `garraia restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
+- **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
 - **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
+- **Rate limiting por IP** - proteção automática configurável (`per_second`, `burst_size`) via `config.yml`
+- **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
 - **Ferramenta de migração** - `garraia migrate openclaw` importa skills, canais e credenciais
 - **Configuração interativa** - `garraia init` wizard para configuração de provedor e chave de API
 
@@ -688,6 +693,7 @@ O GarraIA implementa o protocolo MCP com:
 - **Resource API** - Arquivos, prompts, e custom resources
 - **Health Monitor** - Auto-reconexão com verificação periódica (30s)
 - **Admin API** - `GET /admin/api/mcp` lista servidores com status em tempo real; `POST /admin/api/mcp` adiciona novos servidores sem reiniciar
+- **Diagnostic API** - `GET /api/mcp/tools` lista todas as tools ativas no AgentRuntime (built-ins + MCP); `GET /api/mcp/health` retorna status por servidor com contagem de tools e indicador `all_connected | partial | all_disconnected`
 - **CLI Commands** - `garraia mcp list`, `mcp inspect`, `mcp resources`, `mcp prompts`
 
 Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.

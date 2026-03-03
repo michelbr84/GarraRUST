@@ -81,6 +81,8 @@ pub fn build_router(
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/mcp", get(list_mcp_servers))
+        .route("/api/mcp/tools", get(list_mcp_runtime_tools))
+        .route("/api/mcp/health", get(mcp_health))
         // GAR-230: Mode API endpoints
         .route("/api/modes", get(api::list_modes))
         .route("/api/mode/select", post(api::select_mode))
@@ -657,6 +659,77 @@ async fn list_mcp_servers(
     };
 
     axum::Json(serde_json::json!({ "servers": servers }))
+}
+
+/// GET /api/mcp/tools — list all tools currently registered in AgentRuntime (includes MCP tools).
+async fn list_mcp_runtime_tools(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+) -> axum::Json<serde_json::Value> {
+    let all_tools = state.agents.tool_names();
+    let mcp_server_tools: Vec<serde_json::Value> = if let Some(mgr) = &state.mcp_manager_arc {
+        mgr.list_servers()
+            .await
+            .into_iter()
+            .map(|(name, tool_count, connected)| {
+                serde_json::json!({
+                    "server": name,
+                    "tool_count": tool_count,
+                    "connected": connected,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    axum::Json(serde_json::json!({
+        "runtime_tools": all_tools,
+        "runtime_tool_count": all_tools.len(),
+        "mcp_servers": mcp_server_tools,
+    }))
+}
+
+/// GET /api/mcp/health — per-server MCP connection status and tool inventory.
+async fn mcp_health(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+) -> axum::Json<serde_json::Value> {
+    let (servers, total_mcp_tools) = if let Some(mgr) = &state.mcp_manager_arc {
+        let list = mgr.list_servers().await;
+        let total: usize = list.iter().map(|(_, count, _)| count).sum();
+        let servers = list
+            .into_iter()
+            .map(|(name, tool_count, connected)| {
+                serde_json::json!({
+                    "name": name,
+                    "connected": connected,
+                    "tool_count": tool_count,
+                    "status": if connected { "ok" } else { "disconnected" },
+                })
+            })
+            .collect::<Vec<_>>();
+        (servers, total)
+    } else {
+        (Vec::new(), 0)
+    };
+
+    let all_runtime_tools = state.agents.tool_names();
+    let overall_status = if servers.is_empty() {
+        "no_mcp_configured"
+    } else if servers.iter().all(|s| s["connected"].as_bool().unwrap_or(false)) {
+        "all_connected"
+    } else if servers.iter().any(|s| s["connected"].as_bool().unwrap_or(false)) {
+        "partial"
+    } else {
+        "all_disconnected"
+    };
+
+    axum::Json(serde_json::json!({
+        "status": overall_status,
+        "servers": servers,
+        "total_mcp_tools_available": total_mcp_tools,
+        "runtime_tool_count": all_runtime_tools.len(),
+        "runtime_tools": all_runtime_tools,
+    }))
 }
 
 /// Read the cached latest version from ~/.garraia/update-check.json.

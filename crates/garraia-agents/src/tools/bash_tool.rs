@@ -9,12 +9,22 @@ const TIMEOUT_PADRAO_SEGS: u64 = 30;
 const MAX_BYTES_SAIDA: usize = 32 * 1024;
 
 /// Deny list of dangerous commands - GAR-236
+///
+/// Rules:
+/// - Patterns use `.contains()` on the lowercased command string.
+/// - Keep patterns specific enough to avoid false positives on common flags.
+///   Example: use "format c:" not "format" (would block PowerShell -Format flag).
 const DENY_LIST: &[&str] = &[
     "rm -rf",
     "rm -r /",
     "rm -f /",
-    "del ",
-    "format",
+    // Windows disk formatting — use explicit drive letters, not bare "format"
+    // which would false-positive on PowerShell's -Format parameter.
+    "format c:",
+    "format d:",
+    "format e:",
+    "format f:",
+    "diskpart",      // Windows disk management tool — genuinely dangerous
     "fdisk",
     "mkfs",
     "dd if=",
@@ -34,7 +44,6 @@ const DENY_LIST: &[&str] = &[
     "ssh root@",
     "sudo su",
     "kill -9 -1",
-    "killall",
     "pkill -9",
     "reboot",
     "shutdown",
@@ -56,6 +65,8 @@ const ALLOW_LIST_READONLY: &[&str] = &[
     "tail",
     "grep",
     "find",
+    "date",       // Unix: get current date/time
+    "get-date",   // PowerShell: get current date/time
     "git status",
     "git log",
     "git diff",
@@ -294,6 +305,43 @@ mod tests {
         let result = tool.execute(&ctx, serde_json::json!({})).await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn powershell_format_flag_nao_e_bloqueado() {
+        let tool = BashTool::new(None);
+        // PowerShell -Format parameter must NOT be blocked
+        assert!(!tool.is_dangerous("Get-Date -Format \"HH:mm:ss\""));
+        assert!(!tool.is_dangerous("get-date -format 'yyyy-MM-dd'"));
+        assert!(!tool.is_dangerous("Select-Object -Property Name, Format"));
+    }
+
+    #[test]
+    fn format_disco_e_bloqueado() {
+        let tool = BashTool::new(None);
+        assert!(tool.is_dangerous("format c:"));
+        assert!(tool.is_dangerous("FORMAT C: /Q"));
+        assert!(tool.is_dangerous("format d: /fs:ntfs"));
+        assert!(tool.is_dangerous("diskpart"));
+    }
+
+    #[test]
+    fn comandos_perigosos_sao_bloqueados() {
+        let tool = BashTool::new(None);
+        assert!(tool.is_dangerous("rm -rf /"));
+        assert!(tool.is_dangerous("mkfs.ext4 /dev/sda"));
+        assert!(tool.is_dangerous("dd if=/dev/zero of=/dev/sda"));
+        assert!(tool.is_dangerous("shutdown -h now"));
+    }
+
+    #[test]
+    fn comandos_seguros_nao_sao_bloqueados() {
+        let tool = BashTool::new(None);
+        assert!(!tool.is_dangerous("date"));
+        assert!(!tool.is_dangerous("echo hello world"));
+        assert!(!tool.is_dangerous("ls -la"));
+        assert!(!tool.is_dangerous("cargo build"));
+        assert!(!tool.is_dangerous("git log --oneline"));
     }
 
     #[tokio::test]

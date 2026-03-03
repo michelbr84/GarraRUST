@@ -4,7 +4,7 @@ use garraia_common::{
     ChannelId, Message, MessageContent, MessageDirection, Result, SessionId, UserId,
 };
 use garraia_config::{AppConfig, ConfigWatcher};
-use garraia_db::SessionStore;
+use garraia_db::{ChatSessionManager, SessionStore};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -36,8 +36,19 @@ impl GatewayServer {
 
         // Connect MCP servers and register their tools
         let (mcp_manager, mcp_tools) = build_mcp_tools(&self.config).await;
+        let mcp_tool_count = mcp_tools.len();
+        let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name().to_string()).collect();
         for tool in mcp_tools {
             agents.register_tool(tool);
+        }
+        if mcp_tool_count > 0 {
+            info!(
+                mcp_tools = mcp_tool_count,
+                tools = ?mcp_tool_names,
+                "MCP tools registered into AgentRuntime"
+            );
+        } else {
+            info!("no MCP tools registered (no MCP servers configured or connected)");
         }
 
         let channels = build_channels(&self.config).await;
@@ -110,6 +121,8 @@ impl GatewayServer {
             Ok(store) => {
                 let store = Arc::new(Mutex::new(store));
                 state.set_session_store(Arc::clone(&store));
+                // GAR-201: Create ChatSessionManager from the same store for multi-channel session resolution
+                state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(&store))));
                 state
                     .agents
                     .register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));

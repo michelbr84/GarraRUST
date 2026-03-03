@@ -1778,7 +1778,6 @@ dependencies = [
  "garraia-runtime",
  "garraia-security",
  "garraia-skills",
- "garraia-tools",
  "garraia-voice",
  "governor 0.8.1",
  "reqwest 0.12.28",

@@ -1,0 +1,19 @@
+{
+  "models": [
+    {
+      "title": "GarraIA (local)",
+      "provider": "openai",
+      "model": "gpt-4o",
+      "apiBase": "http://localhost:3888",
+      "apiKey": "your-garraia-api-key-here"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "GarraIA Autocomplete",
+    "provider": "openai",
+    "model": "gpt-4o",
+    "apiBase": "http://localhost:3888",
+    "apiKey": "your-garraia-api-key-here"
+  },
+  "allowAnonymousTelemetry": false
+}
