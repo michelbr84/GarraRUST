@@ -1788,6 +1788,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "teloxide",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower",

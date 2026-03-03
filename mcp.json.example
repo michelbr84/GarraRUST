@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "gradio-sse": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://your-gradio-app.example.com/gradio_api/mcp/sse",
+        "--transport",
+        "sse-only"
+      ]
+    },
+    "n8n-streamable-http": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "supergateway",
+        "--streamableHttp",
+        "https://your-n8n.example.com/mcp-server/http",
+        "--header",
+        "authorization:Bearer YOUR_JWT_TOKEN_HERE"
+      ]
+    }
+  }
+}

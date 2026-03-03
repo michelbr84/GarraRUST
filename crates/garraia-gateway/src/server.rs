@@ -44,6 +44,11 @@ impl GatewayServer {
         let mut state = AppState::new(self.config, agents, channels);
         state.mcp_manager = Some(mcp_manager);
 
+        // Sync MCP registry with live manager state (populates Running/Stopped statuses).
+        state.mcp_registry.sync_from_manager(
+            state.mcp_manager.as_ref().unwrap()
+        ).await;
+
         // Register MCP tools as slash commands (must be done before Arc-wrapping)
         state.register_mcp_tools().await;
 

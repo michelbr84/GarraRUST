@@ -9,6 +9,7 @@ pub mod commands;
 pub mod externalization;
 pub mod health;
 pub mod logs_handler;
+pub mod mcp;
 pub mod mcp_commands;
 pub mod memory_handler;
 pub mod observability;

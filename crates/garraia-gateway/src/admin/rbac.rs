@@ -50,6 +50,7 @@ pub enum Resource {
     Users,
     Alerts,
     Metrics,
+    McpServers,
 }
 
 /// Actions that can be performed on resources.

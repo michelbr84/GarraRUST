@@ -34,6 +34,8 @@ pub struct AppState {
     pub mcp_manager: Option<garraia_agents::McpManager>,
     /// MCP manager wrapped in Arc for health monitoring.
     pub mcp_manager_arc: Option<Arc<garraia_agents::McpManager>>,
+    /// Live registry of MCP server configs and statuses (source of truth for admin API).
+    pub mcp_registry: crate::mcp::McpRuntimeRegistry,
     pub session_store: Option<Arc<Mutex<SessionStore>>>,
     /// Receives hot-reloaded config updates. `None` if watcher is not active.
     config_rx: Option<watch::Receiver<AppConfig>>,
@@ -97,6 +99,7 @@ impl AppState {
             a2a_tasks: DashMap::new(),
             mcp_manager: None,
             mcp_manager_arc: None,
+            mcp_registry: crate::mcp::McpPersistenceService::with_default_path().load_registry(),
             session_store: None,
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
