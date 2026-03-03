@@ -62,6 +62,7 @@ pub struct AgentRuntime {
     system_prompt: Option<String>,
     max_tokens: Option<u32>,
     max_context_tokens: Option<usize>,
+    max_tool_calls: Option<usize>,
     memory_extractor: LlmMemoryExtractor,
 }
 
@@ -76,6 +77,7 @@ impl AgentRuntime {
             system_prompt: None,
             max_tokens: None,
             max_context_tokens: None,
+            max_tool_calls: None,
             memory_extractor: LlmMemoryExtractor::new(),
         }
     }
@@ -94,6 +96,10 @@ impl AgentRuntime {
 
     pub fn set_max_context_tokens(&mut self, max_context_tokens: usize) {
         self.max_context_tokens = Some(max_context_tokens);
+    }
+
+    pub fn set_max_tool_calls(&mut self, max_tool_calls: usize) {
+        self.max_tool_calls = Some(max_tool_calls);
     }
 
     pub fn register_provider(&self, provider: Arc<dyn LlmProvider>) {
@@ -440,7 +446,10 @@ impl AgentRuntime {
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
-        let mut budget = ExecutionBudget::padrao();
+        let mut budget = match self.max_tool_calls {
+            Some(limit) => ExecutionBudget::com_limite(limit),
+            None => ExecutionBudget::padrao(),
+        };
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
@@ -600,7 +609,10 @@ impl AgentRuntime {
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
-        let mut budget = ExecutionBudget::padrao();
+        let mut budget = match self.max_tool_calls {
+            Some(limit) => ExecutionBudget::com_limite(limit),
+            None => ExecutionBudget::padrao(),
+        };
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
@@ -881,7 +893,10 @@ impl AgentRuntime {
 
         let mut full_response = String::new();
 
-        let mut budget = ExecutionBudget::padrao();
+        let mut budget = match self.max_tool_calls {
+            Some(limit) => ExecutionBudget::com_limite(limit),
+            None => ExecutionBudget::padrao(),
+        };
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();

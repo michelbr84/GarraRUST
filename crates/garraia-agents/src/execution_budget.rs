@@ -49,16 +49,24 @@ pub struct ExecutionBudget {
 impl ExecutionBudget {
     /// Cria um orçamento com valores padrão:
     /// - 10 chamadas por turno
-    /// - 30 chamadas por tarefa
+    /// - 50 chamadas por tarefa
     /// - 30 segundos de timeout por ferramenta
     pub fn padrao() -> Self {
         Self {
             max_per_turn: 10,
-            max_per_task: 30,
+            max_per_task: 50,
             tool_timeout_secs: 30,
             current_turn_calls: 0,
             current_task_calls: 0,
             historico_assinaturas: VecDeque::with_capacity(JANELA_LOOP),
+        }
+    }
+
+    /// Cria um orçamento com limite de tarefa personalizado.
+    pub fn com_limite(max_per_task: usize) -> Self {
+        Self {
+            max_per_task,
+            ..Self::padrao()
         }
     }
 
@@ -149,7 +157,7 @@ mod tests {
         let budget = ExecutionBudget::padrao();
         assert!(budget.pode_chamar_ferramenta());
         assert_eq!(budget.max_per_turn, 10);
-        assert_eq!(budget.max_per_task, 30);
+        assert_eq!(budget.max_per_task, 50);
     }
 
     #[test]
@@ -264,7 +272,7 @@ mod tests {
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
 
         let status = budget.status();
-        assert_eq!(status, "turn=1/10 task=1/30");
+        assert_eq!(status, "turn=1/10 task=1/50");
     }
 
     #[test]
