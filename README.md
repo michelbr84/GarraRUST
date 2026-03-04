@@ -84,7 +84,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 | | **Orquestração de sessões** | Planejado (#108) | Sim | Não |
 | | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
 | | **Canais** | 5 | 6+ | 4 |
-| | **Provedores de LLM** | 14 | 10+ | 22+ |
+| | **Provedores de LLM** | 100+ | 10+ | 22+ |
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
 | | **Recarregamento de config a quente** | Sim | Não | Não |
 | | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
