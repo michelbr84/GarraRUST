@@ -8,6 +8,7 @@ description = "WebSocket gateway and control plane for GarraIA"
 [dependencies]
 garraia-common = { workspace = true }
 garraia-config = { workspace = true }
+garraia-glob = { workspace = true }
 garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
 garraia-runtime = { workspace = true }

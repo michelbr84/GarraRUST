@@ -1750,6 +1750,7 @@ dependencies = [
  "futures",
  "garraia-common",
  "garraia-db",
+ "libc",
  "reqwest 0.12.28",
  "rmcp",
  "serde",
@@ -1820,8 +1821,10 @@ name = "garraia-db"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "garraia-common",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1851,6 +1854,7 @@ dependencies = [
  "garraia-common",
  "garraia-config",
  "garraia-db",
+ "garraia-glob",
  "garraia-runtime",
  "garraia-security",
  "garraia-skills",

@@ -17,3 +17,5 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 sqlite-vec = { workspace = true }
+ring = { workspace = true }
+base64 = { workspace = true }

@@ -107,6 +107,9 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
         .route("/api/config/ports", get(handlers::get_ports))
         .route("/api/config/export", get(handlers::export_config))
         .route("/api/config/import", post(handlers::import_config))
+        // ── GAR-264: Glob settings ──
+        .route("/api/config/glob", get(handlers::admin_glob_config))
+        .route("/api/config/glob/test", post(handlers::admin_glob_test))
         // ── Phase 5: Memory ──
         .route("/api/memory", get(handlers::admin_memory_browse))
         .route("/api/memory/clear", post(handlers::admin_memory_clear))
@@ -132,6 +135,8 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
             "/api/mcp",
             get(handlers::admin_list_mcp).post(handlers::admin_create_mcp),
         )
+        .route("/api/mcp/{id}", delete(handlers::admin_delete_mcp))
+        .route("/api/mcp/{id}/restart", post(handlers::admin_restart_mcp))
         // ── Phase 6: Templates ──
         .route("/api/templates", get(handlers::list_templates))
         .layer(axum_mw::from_fn(require_csrf))

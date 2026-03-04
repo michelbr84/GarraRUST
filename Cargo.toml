@@ -79,6 +79,9 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 # MCP (Model Context Protocol)
 rmcp = { version = "0.16" }
 
+# System / OS interop
+libc = "0.2"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"

@@ -1,188 +1,203 @@
-# Glob Semantics for GarraRUST
+# Glob & File Matching — GarraIA
 
-This document defines the glob matching semantics for the GarraRUST file matching engine.
+O GarraIA usa o crate `garraia-glob` para correspondência de caminhos, varredura de diretórios e regras de ignorar. Este documento descreve a semântica completa dos padrões e apresenta exemplos prontos para uso.
 
-## Overview
+---
 
-GarraRUST uses glob patterns for:
-- File watching (detecting changes)
-- Repository traversal (finding files)
-- Ignore patterns (.garraignore, .gitignore compatibility)
+## Modos de Correspondência
 
-## Default Engine: Picomatch
+| Modo | Flag config | Comportamento |
+|------|------------|---------------|
+| `picomatch` *(padrão)* | `fs.glob.mode: picomatch` | Seguro, sem backtracking, POSIX-compatível |
+| `bash` | `fs.glob.mode: bash` | Extglob completo (`!(...)`, `@(...)`, etc.) |
 
-GarraRUST defaults to **picomatch** for glob matching because:
-- More predictable behavior (no backtracking)
-- Faster performance for complex patterns
-- Better security (avoids ReDoS attacks)
-- POSIX-compliant matching
+Configure em `config.yml`:
 
-## Pattern Reference
-
-### Basic Patterns
-
-| Pattern | Meaning | Example |
-|---------|---------|---------|
-| `*` | Matches anything except `/` | `*.rs` matches `main.rs` but not `src/main.rs` |
-| `**` | Matches anything including `/` | `**/*.rs` matches any Rust file |
-| `?` | Matches single character | `file?.txt` matches `file1.txt` |
-| `[abc]` | Matches character class | `[abc].rs` matches `a.rs`, `b.rs`, `c.rs` |
-| `[!abc]` | Negated character class | `[!abc].rs` matches `x.rs` |
-
-### Special Characters
-
-| Pattern | Meaning |
-|---------|---------|
-| `\` | Escape character |
-| `!` | Negate pattern (at start) |
-
-### Path Separators
-
-- **Unix/Linux/macOS**: `/` (forward slash)
-- **Windows**: Both `/` and `\` are treated as path separators
-
-## .garraignore Syntax
-
-The `.garraignore` file uses the same syntax as `.gitignore` with some additions:
-
-### Basic Rules
-
-```
-# Comment line
-*.log           # Ignore all .log files
-build/          # Ignore build directory
-src/*.tmp       # Ignore .tmp files in src/
-**/.DS_Store   # Ignore all .DS_Store files
+```yaml
+fs:
+  glob:
+    mode: picomatch   # ou "bash"
+    dot: false        # true = * e ? correspondem a dotfiles
+  ignore:
+    use_gitignore: true
 ```
 
-### Pattern Precedence
+---
 
-1. ** negation patterns** (starting with `!`) have highest priority
-2. **More specific patterns** take precedence over less specific
-3. **Order matters** for patterns at the same level
+## Referência de Padrões
 
-### Special Patterns
+### Wildcards básicos
 
-```
-# Ignore everything in node_modules
-node_modules/
+| Padrão | Corresponde | Não corresponde |
+|--------|-------------|-----------------|
+| `*` | `main.rs`, `lib.rs` | `src/main.rs` *(barra não atravessa)* |
+| `**` | tudo, inclusive `/` | — |
+| `**/*.rs` | `src/main.rs`, `crates/foo/src/lib.rs` | `README.md` |
+| `?` | qualquer 1 caractere *(exceto `/`)* | — |
+| `[abc]` | `a.rs`, `b.rs`, `c.rs` | `d.rs` |
+| `[!abc]` | `d.rs`, `x.rs` | `a.rs` |
 
-# But not the package.json
-!node_modules/package.json
-
-# Ignore all log files except error.log
-*.log
-!error.log
-
-# Ignore all .env files in any directory
-**/.env
-```
-
-## Compatibility
-
-### .gitignore Compatibility
-
-GarraRUST's `.garraignore` is designed to be compatible with `.gitignore`:
-
-- Same basic pattern syntax
-- Same precedence rules
-- Same special patterns (`**`, `?`, `[]`)
-
-### Additions for GarraRUST
-
-| Pattern | Description |
-|---------|-------------|
-| `# glob: <pattern>` | Explicit glob mode |
-| `# regex: <pattern>` | Regex mode (advanced) |
-
-## Performance Considerations
-
-### Guardrails
-
-To prevent performance issues:
-
-1. **Max depth**: Default 20 directory levels
-2. **Max files**: Default 10,000 files per traversal
-3. **Timeout**: Default 30 seconds per operation
-4. **Pattern complexity limit**: Max 100 pattern terms
-
-### Security
-
-- **ReDoS protection**: Picomatch prevents catastrophic backtracking
-- **Path traversal**: Block `../` patterns that escape workspace
-- **Symlink loops**: Detect and skip circular symlinks
-
-## API Usage
-
-```rust
-use garraia_glob::{GlobMatcher, MatchOptions};
-
-// Create matcher
-let matcher = GlobMatcher::new(
-    vec!["*.rs".to_string(), "src/**".to_string()],
-    MatchOptions::default(),
-)?;
-
-// Check if path matches
-if matcher.matches("src/main.rs") {
-    println!("Matched!");
-}
-
-// Iterate matches
-for path in matcher.iter_walk(".")? {
-    println!("{}", path.display());
-}
-```
-
-## Examples
-
-### Common Patterns
+### Diferença entre `*` e `**`
 
 ```
-# Rust project
+src/
+  main.rs
+  utils/
+    parser.rs
+```
+
+| Padrão | Resultado |
+|--------|-----------|
+| `*.rs` | `main.rs` apenas |
+| `**/*.rs` | `main.rs` + `utils/parser.rs` |
+| `src/*.rs` | `src/main.rs` apenas |
+| `src/**/*.rs` | `src/main.rs` + `src/utils/parser.rs` |
+
+### Expansão de chaves
+
+| Padrão | Corresponde |
+|--------|-------------|
+| `**/*.{ts,tsx}` | qualquer `.ts` ou `.tsx` em qualquer nível |
+| `src/**/*.{js,mjs,cjs}` | todo JS no diretório `src/` |
+| `**/{test,spec}/**` | diretórios `test/` ou `spec/` em qualquer lugar |
+
+### Extglob (modo `bash` ou `.garraignore`)
+
+| Padrão | Significado |
+|--------|-------------|
+| `!(pattern)` | Qualquer coisa que **não** corresponde ao padrão |
+| `@(a\|b)` | Exatamente `a` ou `b` |
+| `*(pattern)` | Zero ou mais ocorrências |
+| `+(pattern)` | Uma ou mais ocorrências |
+| `?(pattern)` | Zero ou uma ocorrência |
+
+Exemplo:
+```
+# .garraignore — ignorar todo JS exceto index.js
+!(index).js
+```
+
+---
+
+## Exemplos por Linguagem
+
+### Projeto Rust
+
+```
+# Ignorar artefatos de build
 target/
-*.rs.bk
-Cargo.lock
+**/*.rs.bk
+Cargo.lock.bak
 
-# Node project
+# Manter apenas fontes
+include:
+  - src/**/*.rs
+  - crates/**/*.rs
+  - tests/**/*.rs
+
+exclude:
+  - target/
+  - **/*.rs.bk
+```
+
+### Projeto TypeScript/Node
+
+```
+# Ignorar
 node_modules/
 dist/
-*.log
+build/
+**/*.d.ts.map
 
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
-.DS_Store
-Thumbs.db
+# Incluir
+src/**/*.{ts,tsx}
+tests/**/*.spec.ts
 ```
 
-### Complex Patterns
+### Excluir `target/` e `node_modules/` globalmente
 
-```
-# Ignore all .txt except README
-*.txt
-!README.txt
-
-# Ignore all in vendor except specific
-vendor/*
-!vendor/special/
-
-# Ignore all log files in any subdirectory
-**/*.log
+```yaml
+# .garraignore
+target/
+node_modules/
+.git/
+**/__pycache__/
+**/*.pyc
 ```
 
-## Testing
+---
 
-Run tests with:
+## Regras de Prioridade
+
+1. **Padrões de negação** (`!pattern`) têm prioridade mais alta
+2. **Padrões mais específicos** ganham de menos específicos
+3. **Última linha** de mesmo nível de especificidade vence
+4. **`.garraignore`** pode sobrescrever `.gitignore` (não o contrário)
+
+```
+# Exemplo de precedência
+*.log           # ignora tudo .log
+!error.log      # mas mantém error.log
+build/*.log     # ignora .log dentro de build/
+!build/keep.log # mas mantém build/keep.log
+```
+
+---
+
+## CLI — Testar Padrões
 
 ```bash
-cargo test -p garraia-glob
+# Testar um padrão contra um diretório
+garraia glob test "**/*.rs" --dir ./src
+
+# Modo bash (extglob)
+garraia glob test "!(target)/**/*.rs" --mode bash
+
+# Incluir dotfiles
+garraia glob test "**/.env*" --dot
+
+# Saída JSON para scripts
+garraia glob test "src/**/*.{ts,tsx}" --json
+
+# Mostrar regex gerado (debug)
+garraia glob test "!(*.min).js" --debug-regex
 ```
 
-## References
+---
 
-- [picomatch](https://github.com/micromatch/picomatch) - The underlying matcher
-- [gitignore man page](https://git-scm.com/docs/gitignore) - Pattern reference
+## Dotfiles
+
+Por padrão `*` e `?` **não** correspondem a arquivos ou diretórios cujo nome começa com `.`:
+
+| Padrão | `dot: false` | `dot: true` |
+|--------|-------------|------------|
+| `*` | ignora `.env` | inclui `.env` |
+| `**/*` | ignora `src/.hidden` | inclui `src/.hidden` |
+| `.*` | sempre corresponde | sempre corresponde |
+
+Configure globalmente com `fs.glob.dot: true` ou por chamada no `garraia glob test --dot`.
+
+---
+
+## API HTTP — Live Tester
+
+```http
+POST /admin/api/config/glob/test
+Content-Type: application/json
+
+{
+  "pattern": "**/*.rs",
+  "paths": ["src/main.rs", "README.md", "crates/foo/lib.rs"],
+  "mode": "picomatch",
+  "dot": false
+}
+```
+
+Resposta:
+```json
+{
+  "matches": ["src/main.rs", "crates/foo/lib.rs"],
+  "total": 3,
+  "matched": 2
+}
+```

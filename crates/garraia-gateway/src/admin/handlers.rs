@@ -2687,6 +2687,9 @@ pub async fn admin_create_mcp(
         url: body.url,
         transport: body.transport,
         timeout_secs: body.timeout_secs.unwrap_or(30),
+        memory_limit_mb: None,
+        max_restarts: None,
+        restart_delay_secs: None,
     };
 
     // Add to registry
@@ -2710,6 +2713,295 @@ pub async fn admin_create_mcp(
             "ok": true,
             "name": name,
             "status": server.map(|s| s.status),
+        })),
+    )
+}
+
+/// POST /admin/api/mcp/:id/restart — hot-reload an individual MCP server (GAR-287).
+///
+/// Disconnects the current process (if any), re-connects it using the stored
+/// config, and updates the registry status. Returns 404 if the server is not
+/// registered, 503 if no MCP manager is wired, or 502 if the reconnect fails.
+///
+/// Note: AgentRuntime tool list is updated at startup and is not patched here;
+/// the restarted server's tools are available immediately through the McpManager
+/// for calls made via the tool-call path.
+pub async fn admin_restart_mcp(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    axum::extract::Path(server_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use super::rbac::{Action, Resource};
+    use crate::mcp::McpTransportType;
+
+    if !check_permission(admin.role, Resource::McpServers, Action::Update) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    // Verify the server exists in the registry.
+    let server = state.app_state.mcp_registry.get(&server_name).await;
+    let Some(server) = server else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("MCP server '{}' not found", server_name)})),
+        );
+    };
+
+    let Some(manager) = state.app_state.mcp_manager_arc.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "MCP manager not available"})),
+        );
+    };
+
+    let config = &server.config;
+    let transport = config.infer_transport();
+
+    tracing::info!(
+        server = %server_name,
+        admin = %admin.username,
+        transport = ?transport,
+        "admin: restarting MCP server"
+    );
+
+    // Disconnect existing connection (no-op if not connected).
+    manager.disconnect(&server_name).await;
+    // GAR-293: reset the crash counter so the server gets a fresh restart budget.
+    manager.reset_restart_state(&server_name).await;
+    state.app_state.mcp_registry.set_status(&server_name, crate::mcp::McpStatus::Stopped, 0).await;
+
+    // GAR-293: read resource limits from config.
+    let memory_limit_mb = config.memory_limit_mb;
+    let max_restarts = config.max_restarts.unwrap_or(5);
+    let restart_delay_secs = config.restart_delay_secs.unwrap_or(5);
+
+    // Reconnect based on transport type.
+    let result = match transport {
+        McpTransportType::Stdio => {
+            let command = match config.command.as_deref() {
+                Some(c) => c.to_string(),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "stdio transport requires 'command'"})),
+                    );
+                }
+            };
+            manager
+                .connect(&server_name, &command, &config.args, &config.env, config.timeout_secs, vec![], memory_limit_mb, max_restarts, restart_delay_secs)
+                .await
+        }
+        #[cfg(feature = "mcp-http")]
+        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
+            let url = match config.url.as_deref() {
+                Some(u) => u.to_string(),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "HTTP transport requires 'url'"})),
+                    );
+                }
+            };
+            manager.connect_http(&server_name, &url, config.timeout_secs, vec![], max_restarts, restart_delay_secs).await
+        }
+        #[cfg(not(feature = "mcp-http"))]
+        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
+            Err(garraia_common::Error::Mcp(
+                "HTTP/SSE MCP transports require the 'mcp-http' feature".into(),
+            ))
+        }
+    };
+
+    match result {
+        Ok(()) => {
+            // Count discovered tools and sync registry status.
+            let tool_count = manager.tool_info(&server_name).await.len();
+            state
+                .app_state
+                .mcp_registry
+                .set_status(&server_name, crate::mcp::McpStatus::Running, tool_count)
+                .await;
+
+            tracing::info!(
+                server = %server_name,
+                tool_count,
+                "admin: MCP server restarted successfully"
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "name": server_name,
+                    "status": "Running",
+                    "tool_count": tool_count,
+                })),
+            )
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            tracing::error!(server = %server_name, error = %msg, "admin: MCP server restart failed");
+            state.app_state.mcp_registry.mark_error(&server_name, &msg).await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("failed to restart '{}': {}", server_name, msg)})),
+            )
+        }
+    }
+}
+
+/// DELETE /admin/api/mcp/:id — remove a configured MCP server.
+///
+/// Removes the server from the in-memory registry, deletes its entry from
+/// `mcp.json`, and purges any associated vault credentials (GAR-291).
+/// Returns 404 if the server is not found.
+pub async fn admin_delete_mcp(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    axum::extract::Path(server_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    use super::rbac::{Action, Resource};
+    use crate::mcp::McpPersistenceService;
+
+    if !check_permission(admin.role, Resource::McpServers, Action::Delete) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    let removed = state.app_state.mcp_registry.remove_server(&server_name).await;
+    if !removed {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("MCP server '{}' not found", server_name)})),
+        );
+    }
+
+    // Persist updated config (server is already gone from registry).
+    let svc = McpPersistenceService::with_default_path();
+    let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
+        svc.with_vault(vp)
+    } else {
+        svc
+    };
+
+    // Clean up vault credentials for this server.
+    svc.delete_server_vault_entries(&server_name);
+
+    if let Err(e) = svc.save_from_registry(&state.app_state.mcp_registry).await {
+        tracing::warn!("admin_delete_mcp: failed to persist mcp.json: {e}");
+    }
+
+    tracing::info!(
+        server = %server_name,
+        admin = %admin.username,
+        "admin: deleted MCP server"
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "deleted": server_name})),
+    )
+}
+
+// ── Glob config (GAR-264) ────────────────────────────────────────────────────
+
+/// GET /admin/api/config/glob — return current FsConfig (glob + ignore settings).
+pub async fn admin_glob_config(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+) -> impl IntoResponse {
+    if !check_permission(admin.role, Resource::Config, Action::Read) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    let config = state.app_state.current_config();
+    let fs = &config.fs;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "glob": {
+                "mode": fs.glob.mode,
+                "dot": fs.glob.dot,
+            },
+            "ignore": {
+                "use_gitignore": fs.ignore.use_gitignore,
+            }
+        })),
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub struct GlobTestRequest {
+    /// Glob pattern to test (e.g. `**/*.rs`).
+    pub pattern: String,
+    /// List of relative paths to match against.
+    pub paths: Vec<String>,
+    /// Override dot option (defaults to config value).
+    pub dot: Option<bool>,
+}
+
+/// POST /admin/api/config/glob/test — live glob pattern tester.
+///
+/// Tests a single glob pattern against a list of paths using the current
+/// FsGlobConfig mode and returns which paths matched.
+pub async fn admin_glob_test(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Json(body): Json<GlobTestRequest>,
+) -> impl IntoResponse {
+    if !check_permission(admin.role, Resource::Config, Action::Read) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    let config = state.app_state.current_config();
+    let fs = &config.fs;
+    let dot = body.dot.unwrap_or(fs.glob.dot);
+
+    let options = garraia_glob::MatchOptions {
+        case_sensitive: true,
+        dot,
+        ..Default::default()
+    };
+
+    let matcher = match garraia_glob::GlobMatcher::new(vec![body.pattern.clone()], options) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": format!("invalid pattern: {e}")})),
+            );
+        }
+    };
+
+    let matches: Vec<&str> = body.paths.iter()
+        .filter(|p| matcher.matches(p))
+        .map(String::as_str)
+        .collect();
+
+    let total = body.paths.len();
+    let matched = matches.len();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "pattern": body.pattern,
+            "mode": fs.glob.mode,
+            "dot": dot,
+            "total": total,
+            "matched": matched,
+            "matches": matches,
         })),
     )
 }

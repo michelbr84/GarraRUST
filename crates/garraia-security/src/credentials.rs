@@ -236,6 +236,45 @@ pub fn try_vault_set(vault_path: &Path, key: &str, value: &str) -> bool {
     }
 }
 
+/// Try to remove all vault credentials whose key starts with `prefix`.
+/// Returns the number of keys removed, or `0` on any error.
+pub fn try_vault_delete_prefix(vault_path: &Path, prefix: &str) -> usize {
+    let passphrase = match std::env::var("GARRAIA_VAULT_PASSPHRASE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return 0,
+    };
+    if !CredentialVault::exists(vault_path) {
+        return 0;
+    }
+    let mut vault = match CredentialVault::open(vault_path, &passphrase) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("try_vault_delete_prefix: could not open vault: {e}");
+            return 0;
+        }
+    };
+    let keys: Vec<String> = vault
+        .list_keys()
+        .into_iter()
+        .filter(|k| k.starts_with(prefix))
+        .map(|k| k.to_string())
+        .collect();
+    let count = keys.len();
+    for k in &keys {
+        vault.remove(k);
+    }
+    if count > 0 {
+        match vault.save() {
+            Ok(()) => info!("removed {count} credential(s) with prefix '{prefix}' from vault"),
+            Err(e) => {
+                warn!("try_vault_delete_prefix: failed to save vault: {e}");
+                return 0;
+            }
+        }
+    }
+    count
+}
+
 fn derive_key(passphrase: &str, salt: &[u8]) -> Vec<u8> {
     let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
     let mut key = vec![0u8; KEY_LEN];

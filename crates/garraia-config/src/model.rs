@@ -82,7 +82,24 @@ pub struct GatewayConfig {
 
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+
+    /// GAR-202: LLM session token absolute TTL in seconds (default: 86400 = 24 h).
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: i64,
+
+    /// GAR-202: LLM session idle timeout in seconds (default: 3600 = 1 h).
+    /// Token is revoked if no message arrives within this window. 0 = disabled.
+    #[serde(default = "default_session_idle_secs")]
+    pub session_idle_secs: i64,
+
+    /// GAR-202: Require a valid session token for LLM API endpoints.
+    /// When false (default) the global api_key still works without a session token.
+    #[serde(default)]
+    pub session_tokens_required: bool,
 }
+
+fn default_session_ttl_secs() -> i64 { 86_400 }
+fn default_session_idle_secs() -> i64 { 3_600 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
@@ -91,6 +108,9 @@ impl Default for GatewayConfig {
             port: default_port(),
             api_key: None,
             rate_limit: RateLimitConfig::default(),
+            session_ttl_secs: default_session_ttl_secs(),
+            session_idle_secs: default_session_idle_secs(),
+            session_tokens_required: false,
         }
     }
 }
@@ -202,6 +222,26 @@ pub struct AgentConfig {
     /// Default: false (opt-in).
     #[serde(default)]
     pub tool_confirmation_enabled: bool,
+    /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode
+    /// (code/debug/review/search/architect/ask) when the keyword heuristic is ambiguous.
+    /// Requires a working LLM provider. Default: false (opt-in).
+    #[serde(default)]
+    pub auto_router_llm_enabled: bool,
+    /// GAR-227: Model to use for the micro-router classify call (e.g. "openrouter/free").
+    /// Defaults to the runtime's default provider model when absent.
+    #[serde(default)]
+    pub auto_router_model: Option<String>,
+    /// GAR-208: Sliding window — keep only the last N messages sent to the LLM.
+    /// Does not affect DB storage; only trims the in-memory slice passed to the provider.
+    /// When absent, all hydrated history is forwarded (bounded by max_context_tokens).
+    pub max_history_messages: Option<usize>,
+    /// GAR-208: Trigger auto-summarization after this many new messages since the last summary.
+    /// E.g. `20` means: when (total_db_messages - last_summarized_message_count) >= 20, summarize.
+    /// When absent, auto-summarization is disabled.
+    pub summarize_threshold: Option<usize>,
+    /// GAR-208: Provider model to use for summarization calls (e.g. "openrouter/mistral-7b-instruct").
+    /// Defaults to the runtime's default provider when absent.
+    pub summarizer_model: Option<String>,
 }
 
 /// A named agent configuration for multi-agent routing.
@@ -462,6 +502,21 @@ pub struct McpServerConfig {
     /// ```
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+
+    /// GAR-293: Maximum virtual-memory limit for the child process (Unix only).
+    /// Applied via `setrlimit(RLIMIT_AS)` before exec. No effect on Windows.
+    /// Default: `None` (no limit).
+    pub memory_limit_mb: Option<u64>,
+
+    /// GAR-293: Maximum number of automatic restart attempts after a crash.
+    /// When exceeded, the server stays offline until manually restarted via the admin API.
+    /// Default: `5`.
+    pub max_restarts: Option<u32>,
+
+    /// GAR-293: Base delay in seconds before the first restart attempt.
+    /// Each subsequent attempt doubles the delay (exponential backoff), capped at 300s.
+    /// Default: `5`.
+    pub restart_delay_secs: Option<u64>,
 }
 
 #[cfg(test)]

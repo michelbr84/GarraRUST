@@ -126,6 +126,21 @@ impl McpPersistenceService {
         self.save(&config)
     }
 
+    /// Remove all vault credentials whose key starts with `mcp.<server_name>.`.
+    ///
+    /// Called by the DELETE endpoint (GAR-286) so that removing a server also
+    /// cleans up its encrypted credentials. No-op if no vault is configured or
+    /// `GARRAIA_VAULT_PASSPHRASE` is not set.
+    pub fn delete_server_vault_entries(&self, server_name: &str) {
+        if let Some(vault_path) = &self.vault_path {
+            let prefix = format!("mcp.{server_name}.");
+            let removed = garraia_security::try_vault_delete_prefix(vault_path, &prefix);
+            if removed > 0 {
+                info!(server = %server_name, "mcp: removed {removed} vault credential(s)");
+            }
+        }
+    }
+
     // ── Vault helpers (GAR-291) ───────────────────────────────────────────────
 
     /// Resolve `vault:` references in env values using the configured vault.
@@ -237,10 +252,7 @@ mod tests {
                     McpServerConfig {
                         command: Some("npx".into()),
                         args: vec![n.into()],
-                        env: HashMap::new(),
-                        url: None,
-                        transport: None,
-                        timeout_secs: 30,
+                        ..Default::default()
                     },
                 )
             })

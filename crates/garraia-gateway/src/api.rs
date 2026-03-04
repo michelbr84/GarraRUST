@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -47,8 +47,11 @@ pub struct SessionInfo {
 }
 
 /// POST /api/sessions — create a new session.
+///
+/// GAR-202: Issues a session token and sets it as `garraia_session` cookie.
 pub async fn create_session(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let session_id = state.create_session();
@@ -60,12 +63,70 @@ pub async fn create_session(
         session.channel_id = Some(format!("api:{agent_id}"));
     }
 
+    // GAR-202: Issue a session token and set cookie.
+    let mut response_headers = HeaderMap::new();
+    let cfg = state.current_config();
+    if let Some(manager) = &state.chat_session_manager {
+        let ip = headers.get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+        let ua = headers.get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        if let Ok(token) = manager
+            .create_token(&session_id, "api", cfg.gateway.session_ttl_secs,
+                          ip.as_deref(), ua.as_deref())
+            .await
+        {
+            let secure = cfg.gateway.api_key.is_some(); // use Secure only if TLS implied
+            let cookie = crate::session_auth::session_cookie(&token, cfg.gateway.session_ttl_secs, secure);
+            if let Ok(val) = HeaderValue::from_str(&cookie) {
+                response_headers.insert("set-cookie", val);
+            }
+        }
+    }
+
     (
         StatusCode::CREATED,
+        response_headers,
         Json(CreateSessionResponse {
             session_id,
             agent_id: body.agent_id,
         }),
+    )
+}
+
+/// DELETE /api/sessions/:id — logout / revoke all tokens for a session.
+///
+/// GAR-202: Revokes all session tokens and clears the cookie.
+pub async fn delete_session(
+    State(state): State<SharedState>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    if !state.sessions.contains_key(&session_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            HeaderMap::new(),
+            Json(serde_json::json!({"error": "session not found"})),
+        );
+    }
+
+    // Revoke tokens
+    if let Some(manager) = &state.chat_session_manager {
+        let _ = manager.revoke_all_tokens(&session_id).await;
+    }
+    state.disconnect_session(&session_id);
+
+    let mut headers = HeaderMap::new();
+    if let Ok(val) = HeaderValue::from_str(&crate::session_auth::clear_session_cookie()) {
+        headers.insert("set-cookie", val);
+    }
+
+    (
+        StatusCode::OK,
+        headers,
+        Json(serde_json::json!({"ok": true, "session_id": session_id})),
     )
 }
 

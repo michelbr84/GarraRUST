@@ -344,9 +344,20 @@ impl AppState {
             }
 
             if should_load {
+                // GAR-208: prepend latest summary (if any) as a System message so the
+                // LLM has context about turns that fall outside the sliding window.
+                if let Ok(Some((summary_text, _))) = guard.get_latest_session_summary(session_id) {
+                    loaded_history.push(ChatMessage {
+                        role: garraia_agents::ChatRole::System,
+                        content: garraia_agents::MessagePart::Text(format!(
+                            "[Conversation summary up to this point]\n{summary_text}"
+                        )),
+                    });
+                }
+
                 match guard.load_recent_messages(session_id, 100) {
                     Ok(messages) => {
-                        loaded_history = messages
+                        let recent: Vec<ChatMessage> = messages
                             .into_iter()
                             .filter_map(|m| match m.direction.as_str() {
                                 "user" => Some(ChatMessage {
@@ -360,6 +371,7 @@ impl AppState {
                                 _ => None,
                             })
                             .collect();
+                        loaded_history.extend(recent);
                     }
                     Err(e) => {
                         warn!("failed to load session history for {session_id}: {e}");
@@ -500,6 +512,23 @@ impl AppState {
             loop {
                 interval.tick().await;
                 state.cleanup_expired_sessions();
+            }
+        });
+    }
+
+    /// GAR-202: Spawn a background task that cleans up expired session tokens every 5 min.
+    pub fn spawn_token_cleanup(self: &Arc<Self>) {
+        let Some(manager) = self.chat_session_manager.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let n = manager.cleanup_expired_tokens().await;
+                if n > 0 {
+                    info!("cleaned up {n} expired session tokens");
+                }
             }
         });
     }

@@ -376,7 +376,8 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 - Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, repo_search, list_dir, git_diff, schedule_heartbeat (até 10 iterações)
 - Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
-- Gerenciamento de janela de contexto - aparamento automático de histórico
+- **Janela de contexto deslizante** - `max_history_messages` limita quantos turnos são enviados ao LLM sem afetar o armazenamento; `trim_messages_to_budget` apara pelo orçamento de tokens
+- **Sumarização automática de contexto** - quando o número de turnos desde o último resumo atinge `summarize_threshold`, um job background chama um modelo barato para gerar um resumo. O resumo é injetado como mensagem System no início do histórico hidratado — o LLM sempre tem contexto de sessões longas sem estourar a janela
 - Tarefas agendadas - agendamento cron, intervalo e único
 
 ### Skills
@@ -489,10 +490,12 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 
 - **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
 - **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
+- **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
 - **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
 - **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
 - **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
 - **Confirmação de comandos arriscados** - `tool_confirmation_enabled: true` pausa o agente antes de executar comandos bash destrutivos (`rm -r`, `git reset --hard`, `drop database`, etc.) e aguarda aprovação do usuário ("sim"/"yes"). Default: `false` (opt-in).
+- **Sandboxing de processos MCP** - Limites de memória virtual por processo (Unix, via `setrlimit`), timeout de inicialização configurável e restart automático com backoff exponencial (base × 2ⁿ, cap 300s). Após `max_restarts` tentativas, o servidor fica offline até restart manual via API admin.
 - **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
 - **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
 
@@ -524,6 +527,10 @@ O GarraIA procura configuração em `~/.garraia/config.yml`:
 gateway:
   host: "127.0.0.1"
   port: 3888
+  # GAR-202: tokens de sessão — TTL, idle timeout e exigência de autenticação
+  session_ttl_secs: 86400       # validade do token (1 dia). Padrão: 86400
+  session_idle_secs: 3600       # timeout por inatividade (1h). Padrão: 3600
+  session_tokens_required: false # exige token nas rotas /api/* . Padrão: false
 
 llm:
   claude:
@@ -566,6 +573,11 @@ agent:
     - ollama-local
   # GAR-187: confirmação humana antes de comandos bash destrutivos (opt-in)
   tool_confirmation_enabled: false
+  # GAR-208: janela deslizante de contexto — só os últimos N turnos vão ao LLM
+  max_history_messages: 20
+  # GAR-208: sumarização automática — gera resumo a cada N novos turnos desde o último
+  summarize_threshold: 40
+  summarizer_model: "openrouter/mistral-7b-instruct"  # modelo barato para sumarização
 
 memory:
   enabled: true
@@ -582,6 +594,10 @@ mcp:
   filesystem:
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    # GAR-293: limites de recursos e política de restart
+    memory_limit_mb: 512      # máximo de memória virtual (Unix). Padrão: sem limite
+    max_restarts: 5           # tentativas de restart automático após crash. Padrão: 5
+    restart_delay_secs: 5     # delay base do backoff exponencial (máx 300s). Padrão: 5
 
 # Voice mode (TTS)
 voice:

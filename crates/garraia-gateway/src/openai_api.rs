@@ -272,6 +272,27 @@ pub async fn chat_completions(
             let _ = store.set_agent_mode(&session_id, mode);
         }
     }
+
+    // GAR-227: Auto-classify mode when no explicit mode was given.
+    if final_mode.is_none() {
+        let cfg = state.current_config();
+        let user_text_for_router = body.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+        let runtime_ref = state.agents.default_provider().is_some().then_some(&state.agents);
+        let auto_mode = crate::auto_router::auto_classify(
+            &user_text_for_router,
+            cfg.agent.auto_router_llm_enabled,
+            cfg.agent.auto_router_model.as_deref(),
+            runtime_ref,
+        )
+        .await;
+        if let Some(mode) = auto_mode {
+            if let Some(ref session_store) = state.session_store {
+                let store = session_store.lock().await;
+                let _ = store.set_agent_mode(&session_id, mode.as_str());
+            }
+            tracing::debug!(mode = %mode, session = %session_id, "auto_router: mode assigned");
+        }
+    }
     
     // GAR-225: Extract tool_choice for standardized logging
     let _tool_choice_str = if body.tool_choice.is_null() {
@@ -452,6 +473,12 @@ async fn handle_streaming(
                     &response_text,
                 )
                 .await;
+            // GAR-208: background summarization (fire-and-forget)
+            let summ_state = state_clone.clone();
+            let summ_session = session_id_clone.clone();
+            tokio::spawn(async move {
+                crate::context_summarizer::maybe_trigger_summarization(summ_state, summ_session).await;
+            });
         }
     });
 
@@ -627,6 +654,14 @@ async fn handle_non_streaming(
                 &user_text,
                 &response,
             ).await;
+            // GAR-208: background summarization (fire-and-forget)
+            {
+                let summ_state = state.clone();
+                let summ_session = session_id.clone();
+                tokio::spawn(async move {
+                    crate::context_summarizer::maybe_trigger_summarization(summ_state, summ_session).await;
+                });
+            }
 
             Json(resp).into_response()
         }
