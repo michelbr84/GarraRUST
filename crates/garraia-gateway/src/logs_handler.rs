@@ -6,9 +6,17 @@ pub async fn get_logs() -> impl IntoResponse {
     let log_path = garraia_dir.join("garraia.log");
 
     if !log_path.exists() {
+        // Return 200 with a hint — 404 causes the frontend to show a generic "server unavailable" error.
         return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": format!("Log file not found at {}", log_path.display()) })),
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "logs": format!(
+                    "Nenhum arquivo de log encontrado em {}.\n\
+                     Para habilitar logs em arquivo, configure RUST_LOG e redirecione a saída:\n\
+                     RUST_LOG=garraia=info garraia start 2>&1 | tee ~/.garraia/garraia.log",
+                    log_path.display()
+                )
+            })),
         )
             .into_response();
     }

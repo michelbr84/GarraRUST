@@ -3,7 +3,6 @@ use garraia_agents::AgentMode;
 use garraia_channels::commands::{
     ClosureCommand, CommandContext, CommandRegistry, CommandResult, Role,
 };
-use tokio::runtime::Handle;
 pub fn register_commands(registry: &mut CommandRegistry) {
     // Overwrite the placeholders with actual logic that accesses AppState
 
@@ -331,8 +330,9 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             if ctx.args.is_empty() {
                 // Show current mode
                 if let Some(store) = &state.session_store {
-                    let handle = Handle::current();
-                    let store = handle.block_on(async { store.lock().await });
+                    let store = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async { store.lock().await })
+                    });
                     match store.get_agent_mode(&session_id) {
                         Ok(Some(mode)) => Ok(format!("🎯 Current mode: {}", mode)),
                         Ok(None) => Ok("🎯 Current mode: ask (default)".to_string()),
@@ -346,16 +346,20 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 if new_mode.eq_ignore_ascii_case("clear") {
                     // Clear mode (reset to default)
                     if let Some(store) = &state.session_store {
-                        let handle = Handle::current();
-                        let store = handle.block_on(async { store.lock().await });
+                        let store = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(async { store.lock().await })
+                        });
                         let _ = store.clear_agent_mode(&session_id);
                     }
                     Ok("🎯 Mode cleared. Using default (ask).".to_string())
                 } else if AgentMode::from_str(&new_mode).is_some() {
                     // Set mode
                     if let Some(store) = &state.session_store {
-                        let handle = Handle::current();
-                        let store = handle.block_on(async { store.lock().await });
+                        let store = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(async { store.lock().await })
+                        });
                         let _ = store.set_agent_mode(&session_id, &new_mode.to_lowercase());
                     }
                     Ok(format!("🎯 Mode set to: {}", new_mode.to_lowercase()))

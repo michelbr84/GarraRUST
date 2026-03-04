@@ -434,6 +434,10 @@ tr:hover { background: var(--bg-hover); }
       </div>
       <div class="nav-section">
         <div class="nav-section-title">Resources</div>
+        <div class="nav-item" data-page="mcp">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="12" cy="10" r="2"/><path d="M8 10h1M15 10h1"/></svg>
+          <span class="nav-label">MCP Servers</span>
+        </div>
         <div class="nav-item" data-page="providers">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           <span class="nav-label">Providers</span>
@@ -691,9 +695,13 @@ function updateSidebarVisibility() {
   });
 }
 
+// ─── MCP auto-refresh handle ─────────────────────────────────────────
+var mcpRefreshTimer = null;
+
 // ─── Router ──────────────────────────────────────────────────────────
 var pages = {
   dashboard: pageDashboard,
+  mcp: pageMcp,
   providers: pageProviders,
   secrets: pageSecrets,
   config: pageConfig,
@@ -711,6 +719,7 @@ var pages = {
 };
 
 function navigate(page) {
+  if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
   if (!pages[page]) page = 'dashboard';
   currentPage = page;
   location.hash = '#' + page;
@@ -724,7 +733,7 @@ function navigate(page) {
 
 function pageTitle(page) {
   var titles = {
-    dashboard: 'Dashboard', providers: 'Providers', secrets: 'Secrets',
+    dashboard: 'Dashboard', mcp: 'MCP Servers', providers: 'Providers', secrets: 'Secrets',
     config: 'Configuration', memory: 'Memory', tools: 'Tools',
     channels: 'Channels', sessions: 'Sessions', logs: 'Logs',
     metrics: 'Metrics', alerts: 'Alerts', templates: 'Templates',
@@ -1286,6 +1295,276 @@ async function pageTools() {
   } catch(e) {
     renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
   }
+}
+
+// ─── MCP Manager (GAR-288/289/290) ───────────────────────────────────
+function mcpStatusBadge(status) {
+  if (!status) return el('span', { className: 'badge badge-neutral', textContent: 'Unknown' });
+  var state = (typeof status === 'object') ? status.state : status;
+  var map = {
+    running: ['badge-success', '● Running'],
+    stopped: ['badge-neutral', '○ Stopped'],
+    error:   ['badge-error',   '✕ Error'],
+    starting:['badge-warning', '◌ Starting']
+  };
+  var info = map[state] || ['badge-neutral', state || 'Unknown'];
+  var badge = el('span', { className: 'badge ' + info[0], textContent: info[1] });
+  if (state === 'error' && status.message) badge.title = status.message;
+  return badge;
+}
+
+async function pageMcp() {
+  await renderMcpPage();
+  // GAR-290: auto-refresh every 10s
+  if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
+  mcpRefreshTimer = setInterval(function() {
+    if (currentPage !== 'mcp') { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; return; }
+    renderMcpTable(true);
+  }, 10000);
+}
+
+// Renders the full MCP page: toolbar + servers table + template gallery
+async function renderMcpPage() {
+  try {
+    var [serversData, templatesData] = await Promise.all([
+      apiGet('/mcp'),
+      apiGet('/mcp/templates').catch(function() { return { templates: [] }; })
+    ]);
+    var servers = serversData.servers || [];
+    var templates = templatesData.templates || [];
+
+    var frag = document.createDocumentFragment();
+
+    // ── Toolbar ──
+    var toolbar = el('div', { className: 'toolbar' });
+    if (can('mcp_servers', 'create')) {
+      toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add MCP', onClick: function() { showMcpForm(null); } }));
+    }
+    var refreshedAt = el('span', { style: 'margin-left:auto;font-size:11px;color:var(--text-muted)' });
+    refreshedAt.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    toolbar.appendChild(refreshedAt);
+    frag.appendChild(toolbar);
+
+    // ── Servers table ──
+    var card = el('div', { className: 'card', style: 'margin-bottom:20px' });
+    if (servers.length === 0) {
+      card.appendChild(el('div', { className: 'empty-state', textContent: 'No MCP servers configured. Add one below or use a template.' }));
+    } else {
+      var tbl = el('table');
+      tbl.appendChild(el('thead', null, [el('tr', null, [
+        el('th', { textContent: 'Name' }),
+        el('th', { textContent: 'Transport' }),
+        el('th', { textContent: 'Status' }),
+        el('th', { textContent: 'Tools' }),
+        el('th', { textContent: 'Actions' })
+      ])]));
+      var tbody = el('tbody');
+      servers.forEach(function(s) {
+        var actions = el('td', { style: 'white-space:nowrap' });
+        if (can('mcp_servers', 'update')) {
+          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Edit', onClick: function() { showMcpForm(s); } }));
+          actions.appendChild(document.createTextNode(' '));
+          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Restart', onClick: function() { mcpRestart(s.name); } }));
+          actions.appendChild(document.createTextNode(' '));
+        }
+        if (can('mcp_servers', 'delete')) {
+          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: function() { mcpDelete(s.name); } }));
+        }
+        tbody.appendChild(el('tr', null, [
+          el('td', null, [el('strong', { textContent: s.name })]),
+          el('td', null, [el('span', { className: 'badge badge-info', textContent: s.transport || '-' })]),
+          el('td', null, [mcpStatusBadge(s.status)]),
+          el('td', { textContent: s.tool_count != null ? String(s.tool_count) : '-' }),
+          actions
+        ]));
+      });
+      tbl.appendChild(tbody);
+      card.appendChild(tbl);
+    }
+    frag.appendChild(card);
+
+    // ── Template gallery (GAR-296/297) ──
+    if (templates.length > 0 && can('mcp_servers', 'create')) {
+      var gallerySection = el('div');
+      gallerySection.appendChild(el('div', { className: 'card-header', style: 'margin-bottom:12px' }, [
+        el('h3', { textContent: 'Templates' }),
+      ]));
+      var gallery = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px' });
+      templates.forEach(function(t) {
+        var card2 = el('div', { style: 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:8px' });
+        var hdr = el('div', { style: 'display:flex;align-items:center;justify-content:space-between' });
+        hdr.appendChild(el('span', { style: 'font-weight:600;font-size:13px', textContent: t.name }));
+        if (t.builtin) {
+          hdr.appendChild(el('span', { className: 'badge badge-neutral', style: 'font-size:10px', textContent: 'built-in' }));
+        } else {
+          var delBtn = el('button', { className: 'btn-icon', style: 'color:var(--error);font-size:18px;line-height:1', textContent: '×',
+            title: 'Delete template',
+            onClick: function() { deleteMcpTemplate(t.id); }
+          });
+          hdr.appendChild(delBtn);
+        }
+        card2.appendChild(hdr);
+        card2.appendChild(el('div', { style: 'font-size:12px;color:var(--text-secondary);flex:1', textContent: t.description }));
+        card2.appendChild(el('div', { style: 'display:flex;gap:6px;align-items:center' }, [
+          el('span', { className: 'badge badge-info', style: 'font-size:10px', textContent: t.transport }),
+          el('button', { className: 'btn-primary btn-sm', style: 'margin-left:auto;font-size:11px', textContent: 'Use',
+            onClick: function() { showMcpForm(null, t); }
+          })
+        ]));
+        gallery.appendChild(card2);
+      });
+      gallerySection.appendChild(gallery);
+      frag.appendChild(gallerySection);
+    }
+
+    renderContent(frag);
+  } catch(e) {
+    renderContent(el('div', { className: 'card', textContent: 'Failed to load MCP page: ' + e.message }));
+  }
+}
+
+// Silent refresh: only updates the servers table portion (used by auto-refresh timer)
+async function renderMcpTable(silent) {
+  if (!silent) { await renderMcpPage(); return; }
+  try {
+    var data = await apiGet('/mcp');
+    var area = document.getElementById('content-area');
+    var hasForm = area.querySelector && area.querySelector('input:not([disabled]),select');
+    if (hasForm) return; // form is open, don't overwrite
+    await renderMcpPage();
+  } catch(e) { /* silent failure on background refresh */ }
+}
+
+// GAR-289/297: form for add, edit, or from template
+// server = existing server (edit mode) | null
+// tpl    = template to pre-fill (add from template) | null
+function showMcpForm(server, tpl) {
+  var isEdit = !!server;
+  var src = server || tpl || {};
+  var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
+  var title = isEdit ? 'Edit MCP Server: ' + server.name : (tpl ? 'New MCP from template: ' + tpl.name : 'Add MCP Server');
+  overlay.appendChild(el('h3', { textContent: title, style: 'margin-bottom:16px' }));
+
+  var nameInput  = el('input', { type: 'text', placeholder: 'e.g. my-tool', value: isEdit ? server.name : (tpl ? tpl.id : '') });
+  if (isEdit) nameInput.disabled = true;
+  var transportSel = el('select');
+  ['stdio','http','sse','streamableHttp'].forEach(function(t) {
+    var opt = el('option', { value: t, textContent: t });
+    if ((src.transport || '') === t) opt.selected = true;
+    transportSel.appendChild(opt);
+  });
+  var cmdInput   = el('input', { type: 'text', placeholder: 'e.g. npx -y my-mcp-server', value: src.command || '' });
+  var argsInput  = el('textarea', { rows: '2', placeholder: 'One arg per line', style: 'width:100%' });
+  if (src.args && src.args.length) argsInput.value = src.args.join('\n');
+  var urlInput   = el('input', { type: 'text', placeholder: 'https://...  (for http/sse/streamableHttp)', value: src.url || '' });
+  var tokenInput = el('input', { type: 'password', placeholder: isEdit ? '(leave blank to keep existing)' : 'API token / bearer (optional)' });
+  var timeoutInput = el('input', { type: 'number', min: '5', max: '300', placeholder: '30', value: String(src.timeout_secs || 30) });
+
+  overlay.appendChild(el('div', { className: 'form-row' }, [
+    el('div', { className: 'form-group' }, [el('label', { textContent: 'Name *' }), nameInput]),
+    el('div', { className: 'form-group' }, [el('label', { textContent: 'Transport *' }), transportSel])
+  ]));
+  overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Command (stdio)' }), cmdInput]));
+  overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Args (one per line)' }), argsInput]));
+  overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'URL (http/sse)' }), urlInput]));
+  overlay.appendChild(el('div', { className: 'form-row' }, [
+    el('div', { className: 'form-group' }, [el('label', { textContent: 'API Token (masked)' }), tokenInput]),
+    el('div', { className: 'form-group', style: 'max-width:120px' }, [el('label', { textContent: 'Timeout (s)' }), timeoutInput])
+  ]));
+
+  var errMsg = el('div', { style: 'color:var(--error);font-size:12px;margin-bottom:8px;display:none' });
+  overlay.appendChild(errMsg);
+
+  function buildBody() {
+    var argsVal = argsInput.value.split('\n').map(function(a){ return a.trim(); }).filter(Boolean);
+    var env = {};
+    if (tokenInput.value) { env['API_KEY'] = tokenInput.value; }
+    return {
+      name: nameInput.value.trim(),
+      transport: transportSel.value,
+      command: cmdInput.value.trim() || undefined,
+      args: argsVal,
+      url: urlInput.value.trim() || undefined,
+      env: env,
+      timeout_secs: parseInt(timeoutInput.value) || 30
+    };
+  }
+
+  var btns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' });
+
+  btns.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: isEdit ? 'Save Changes' : 'Add Server', onClick: async function() {
+    var name = nameInput.value.trim();
+    if (!name) { errMsg.textContent = 'Name is required.'; errMsg.style.display = ''; return; }
+    var body = buildBody();
+    try {
+      if (isEdit) {
+        await apiDelete('/mcp/' + encodeURIComponent(server.name));
+        await apiPost('/mcp', body);
+        toast('MCP server updated', 'success');
+      } else {
+        await apiPost('/mcp', body);
+        toast('MCP server added', 'success');
+      }
+      pageMcp();
+    } catch(e) { errMsg.textContent = e.message; errMsg.style.display = ''; }
+  }}));
+
+  // GAR-297: Save as Template button (only on Add / add-from-template)
+  if (!isEdit && can('mcp_servers', 'create')) {
+    btns.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: '⊞ Save as Template', onClick: async function() {
+      var name = nameInput.value.trim();
+      if (!name) { errMsg.textContent = 'Fill in the name first.'; errMsg.style.display = ''; return; }
+      var b = buildBody();
+      var tplBody = {
+        id: name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+        name: name,
+        description: 'Custom template: ' + name,
+        transport: b.transport,
+        command: b.command || null,
+        args: b.args,
+        url: b.url || null,
+        env: b.env,
+        timeout_secs: b.timeout_secs,
+        builtin: false
+      };
+      try {
+        await apiPost('/mcp/templates', tplBody);
+        toast('Template "' + name + '" saved', 'success');
+      } catch(e) { toast('Failed to save template: ' + e.message, 'error'); }
+    }}));
+  }
+
+  btns.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: function() { pageMcp(); } }));
+  overlay.appendChild(btns);
+
+  var area = document.getElementById('content-area');
+  area.insertBefore(overlay, area.firstChild);
+}
+
+async function deleteMcpTemplate(id) {
+  if (!confirm('Delete template "' + id + '"?')) return;
+  try {
+    await apiDelete('/mcp/templates/' + encodeURIComponent(id));
+    toast('Template deleted', 'success');
+    pageMcp();
+  } catch(e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+async function mcpRestart(name) {
+  try {
+    await apiPost('/mcp/' + encodeURIComponent(name) + '/restart', {});
+    toast('Restarting ' + name + '…', 'info');
+    setTimeout(function() { if (currentPage === 'mcp') renderMcpTable(true); }, 2000);
+  } catch(e) { toast('Restart failed: ' + e.message, 'error'); }
+}
+
+async function mcpDelete(name) {
+  if (!confirm('Delete MCP server "' + name + '"? This cannot be undone.')) return;
+  try {
+    await apiDelete('/mcp/' + encodeURIComponent(name));
+    toast('MCP server deleted', 'success');
+    pageMcp();
+  } catch(e) { toast('Delete failed: ' + e.message, 'error'); }
 }
 
 // ─── Channels ────────────────────────────────────────────────────────

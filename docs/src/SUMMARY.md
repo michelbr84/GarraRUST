@@ -24,3 +24,5 @@
   - [Checklist de Segurança](./security/checklist.md)
 
 - [Plugins](./plugins.md)
+
+- [Runbook de Produção](./production-runbook.md)
