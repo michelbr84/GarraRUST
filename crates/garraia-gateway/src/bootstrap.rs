@@ -641,6 +641,23 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
             config.agent.fallback_providers
         );
     }
+    // GAR-208: wire context window / summarization policy
+    {
+        use garraia_agents::context_policy::ContextPolicy;
+        let policy = ContextPolicy::new(
+            config.agent.max_history_messages,
+            config.agent.summarize_threshold,
+        );
+        if policy.max_history_messages.is_some() || policy.summarize_threshold.is_some() {
+            info!(
+                window = ?policy.max_history_messages,
+                threshold = ?policy.summarize_threshold,
+                summarizer_model = ?config.agent.summarizer_model,
+                "context policy configured"
+            );
+        }
+        runtime.set_context_policy(policy);
+    }
 
     // --- Skills ---
     let skills_dir = garraia_config::ConfigLoader::default_config_dir().join("skills");
@@ -952,6 +969,10 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
         let timeout_secs = server_config
             .timeout
             .unwrap_or(config.timeouts.mcp.default_secs);
+        // GAR-293: resource limit config (with defaults).
+        let memory_limit_mb = server_config.memory_limit_mb;
+        let max_restarts = server_config.max_restarts.unwrap_or(5);
+        let restart_delay_secs = server_config.restart_delay_secs.unwrap_or(5);
 
         let connect_result = match server_config.transport.as_str() {
             "stdio" => {
@@ -963,6 +984,9 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
                         &server_config.env,
                         timeout_secs,
                         server_config.allowed_tools.clone(),
+                        memory_limit_mb,
+                        max_restarts,
+                        restart_delay_secs,
                     )
                     .await
             }
@@ -974,7 +998,7 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
                     );
                     continue;
                 };
-                manager.connect_http(name, url, timeout_secs, server_config.allowed_tools.clone()).await
+                manager.connect_http(name, url, timeout_secs, server_config.allowed_tools.clone(), max_restarts, restart_delay_secs).await
             }
             other => {
                 warn!("MCP server '{name}' uses unsupported transport '{other}', skipping");
@@ -1289,8 +1313,13 @@ pub fn build_telegram_voice_handler(
                 }
             }
 
-            // Hydrate session and get history
-            let session_id = format!("telegram-{chat_id}");
+            // GAR-202: Resolve session via UUID-based key (replaces guessable telegram-{chat_id})
+            let session_id = if let Some(mgr) = &state.chat_session_manager {
+                let hints = garraia_db::SessionHints::from_telegram(chat_id, None);
+                mgr.resolve_session(&hints).await.unwrap_or_else(|_| format!("telegram-{chat_id}"))
+            } else {
+                format!("telegram-{chat_id}")
+            };
             state
                 .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                 .await;
@@ -1465,7 +1494,14 @@ pub fn build_telegram_channels(
                         }
                     }
 
-                    let session_id = format!("telegram-{chat_id}");
+                    // GAR-202: UUID-based session ID (replaces guessable telegram-{chat_id})
+                    let session_id = if let Some(mgr) = &state.chat_session_manager {
+                        let uid_i64 = user_id.parse::<i64>().ok();
+                        let hints = garraia_db::SessionHints::from_telegram(chat_id, uid_i64);
+                        mgr.resolve_session(&hints).await.unwrap_or_else(|_| format!("telegram-{chat_id}"))
+                    } else {
+                        format!("telegram-{chat_id}")
+                    };
 
                     let text = garraia_security::InputValidator::sanitize(&text);
                     if garraia_security::InputValidator::check_prompt_injection(&text) {

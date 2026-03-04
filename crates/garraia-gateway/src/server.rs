@@ -166,6 +166,7 @@ impl GatewayServer {
 
         // Spawn background tasks
         state.spawn_session_cleanup();
+        state.spawn_token_cleanup(); // GAR-202
         state.spawn_config_applier();
 
         // ── Boot-time health checks ──────────────────────────────────────

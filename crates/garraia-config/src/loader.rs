@@ -287,6 +287,9 @@ mod tests {
                 enabled: None,
                 timeout: None,
                 allowed_tools: vec![],
+                memory_limit_mb: None,
+                max_restarts: None,
+                restart_delay_secs: None,
             },
         );
 

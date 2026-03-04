@@ -77,10 +77,14 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 // Client is requesting a fresh session (no resume)
                 let id = state.create_session();
                 info!("new WebSocket connection (init): session={}", id);
-                let welcome = serde_json::json!({
+                let token = ws_issue_token(&state, &id).await;
+                let mut welcome = serde_json::json!({
                     "type": "connected",
                     "session_id": id,
                 });
+                if let Some(ref t) = token {
+                    welcome["session_token"] = serde_json::Value::String(t.clone());
+                }
                 if sender
                     .send(Message::Text(welcome.to_string().into()))
                     .await
@@ -89,8 +93,21 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     return;
                 }
                 id
-            } else if let Some(resume_id) = try_parse_resume(&text) {
-                if state.resume_session(&resume_id) {
+            } else if let Some((resume_id, resume_token)) = try_parse_resume_with_token(&text) {
+                // GAR-202: If a token is provided, validate it before resuming.
+                let token_ok = if let (Some(t), Some(manager)) =
+                    (&resume_token, state.chat_session_manager.as_ref())
+                {
+                    let idle = state.current_config().gateway.session_idle_secs;
+                    manager.validate_token(t, idle).await
+                        .ok()
+                        .flatten()
+                        .as_deref() == Some(resume_id.as_str())
+                } else {
+                    true // no token provided — fall through to session existence check
+                };
+
+                if token_ok && state.resume_session(&resume_id) {
                     info!("resumed WebSocket session: {}", resume_id);
 
                     // Send resume-ack with history length
@@ -99,11 +116,22 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         .get(&resume_id)
                         .map(|s| s.history.len())
                         .unwrap_or(0);
-                    let ack = serde_json::json!({
+                    // Issue a fresh token on successful resume
+                    let new_token = ws_issue_token(&state, &resume_id).await;
+                    // Revoke old token (best-effort)
+                    if let (Some(old_t), Some(manager)) =
+                        (&resume_token, state.chat_session_manager.as_ref())
+                    {
+                        let _ = manager.revoke_token(old_t).await;
+                    }
+                    let mut ack = serde_json::json!({
                         "type": "resumed",
                         "session_id": resume_id,
                         "history_length": history_len,
                     });
+                    if let Some(ref t) = new_token {
+                        ack["session_token"] = serde_json::Value::String(t.clone());
+                    }
                     if sender
                         .send(Message::Text(ack.to_string().into()))
                         .await
@@ -113,14 +141,18 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     }
                     resume_id
                 } else {
-                    // Session expired or doesn't exist — create fresh
+                    // Session expired, doesn't exist, or token invalid — create fresh
                     let id = state.create_session();
-                    info!("resume failed (expired), new session: {}", id);
-                    let welcome = serde_json::json!({
+                    info!("resume failed (expired/invalid), new session: {}", id);
+                    let token = ws_issue_token(&state, &id).await;
+                    let mut welcome = serde_json::json!({
                         "type": "connected",
                         "session_id": id,
                         "note": "previous session expired",
                     });
+                    if let Some(ref t) = token {
+                        welcome["session_token"] = serde_json::Value::String(t.clone());
+                    }
                     if sender
                         .send(Message::Text(welcome.to_string().into()))
                         .await
@@ -134,10 +166,14 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 // First message is a regular chat message — create session, process it
                 let id = state.create_session();
                 info!("new WebSocket connection: session={}", id);
-                let welcome = serde_json::json!({
+                let token = ws_issue_token(&state, &id).await;
+                let mut welcome = serde_json::json!({
                     "type": "connected",
                     "session_id": id,
                 });
+                if let Some(ref t) = token {
+                    welcome["session_token"] = serde_json::Value::String(t.clone());
+                }
                 if sender
                     .send(Message::Text(welcome.to_string().into()))
                     .await
@@ -163,10 +199,14 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
             // Timeout or error reading first message — create session anyway
             let id = state.create_session();
             info!("new WebSocket connection: session={}", id);
-            let welcome = serde_json::json!({
+            let token = ws_issue_token(&state, &id).await;
+            let mut welcome = serde_json::json!({
                 "type": "connected",
                 "session_id": id,
             });
+            if let Some(ref t) = token {
+                welcome["session_token"] = serde_json::Value::String(t.clone());
+            }
             let _ = sender.send(Message::Text(welcome.to_string().into())).await;
             id
         }
@@ -359,6 +399,36 @@ fn try_parse_resume(raw: &str) -> Option<String> {
         v.get("session_id")?.as_str().map(|s| s.to_string())
     } else {
         None
+    }
+}
+
+/// Parse a resume message and return (session_id, optional_token).
+fn try_parse_resume_with_token(raw: &str) -> Option<(String, Option<String>)> {
+    let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    if v.get("type")?.as_str()? != "resume" {
+        return None;
+    }
+    let session_id = v.get("session_id")?.as_str()?.to_string();
+    let token = v
+        .get("session_token")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+    Some((session_id, token))
+}
+
+/// Issue a GAR-202 session token. Returns `None` if no manager is available.
+async fn ws_issue_token(state: &crate::state::SharedState, session_id: &str) -> Option<String> {
+    let manager = state.chat_session_manager.as_ref()?;
+    let cfg = state.current_config();
+    match manager
+        .create_token(session_id, "web", cfg.gateway.session_ttl_secs, None, None)
+        .await
+    {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(error = %e, "ws: failed to issue session token");
+            None
+        }
     }
 }
 

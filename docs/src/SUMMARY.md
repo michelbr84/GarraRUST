@@ -15,6 +15,9 @@
 
 - [MCP (Model Context Protocol)](./mcp.md)
 
+- [File Matching (Glob)](./glob-semantics.md)
+  - [Guia de Migração](./glob-migration-guide.md)
+
 - [Segurança](./security.md)
   - [Arquitetura de Segurança](./security/architecture.md)
   - [Superfícies de Ataque](./security/attack-surfaces.md)

@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{info, instrument, warn};
 
+use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
 use crate::execution_budget::ExecutionBudget;
 use crate::memory_extractor::LlmMemoryExtractor;
@@ -114,6 +115,8 @@ pub struct AgentRuntime {
     resilience: Arc<ResilienceManager>,
     /// GAR-210: Ordered fallback provider IDs (tried when primary fails with 429/5xx).
     fallback_providers_list: RwLock<Vec<String>>,
+    /// GAR-208: Sliding window + summarization policy.
+    context_policy: ContextPolicy,
 }
 
 impl AgentRuntime {
@@ -131,7 +134,18 @@ impl AgentRuntime {
             memory_extractor: LlmMemoryExtractor::new(),
             resilience: Arc::new(ResilienceManager::new()),
             fallback_providers_list: RwLock::new(Vec::new()),
+            context_policy: ContextPolicy::default(),
         }
+    }
+
+    /// GAR-208: Set the context window / summarization policy.
+    pub fn set_context_policy(&mut self, policy: ContextPolicy) {
+        self.context_policy = policy;
+    }
+
+    /// GAR-208: Return a reference to the current context policy.
+    pub fn context_policy(&self) -> &ContextPolicy {
+        &self.context_policy
     }
 
     /// GAR-210: Set the ordered fallback provider list (tried on 429/5xx).
@@ -174,6 +188,11 @@ impl AgentRuntime {
             }
         }
         self.providers.write().unwrap().push(provider);
+    }
+
+    /// GAR-208: Return all registered providers (cloned Arc handles).
+    pub fn list_providers(&self) -> Vec<Arc<dyn LlmProvider>> {
+        self.providers.read().unwrap().clone()
     }
 
     pub fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmProvider>> {
@@ -513,7 +532,9 @@ impl AgentRuntime {
         // GAR-187: detect if the user approved a pending tool confirmation
         let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
 
-        let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
+        // GAR-208: apply sliding window before building the message list
+        let windowed = self.context_policy.apply_window(conversation_history);
+        let mut messages: Vec<ChatMessage> = windowed.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
             content: MessagePart::Text(user_text.to_string()),
@@ -703,7 +724,9 @@ impl AgentRuntime {
 
         let tool_defs = self.tool_definitions();
 
-        let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
+        // GAR-208: apply sliding window before building the message list
+        let windowed = self.context_policy.apply_window(conversation_history);
+        let mut messages: Vec<ChatMessage> = windowed.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
             content: MessagePart::Text(user_text.to_string()),
@@ -1017,7 +1040,9 @@ impl AgentRuntime {
         // GAR-187: detect if the user approved a pending tool confirmation
         let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
 
-        let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
+        // GAR-208: apply sliding window before building the message list
+        let windowed = self.context_policy.apply_window(conversation_history);
+        let mut messages: Vec<ChatMessage> = windowed.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
             content: MessagePart::Text(user_text.to_string()),

@@ -224,6 +224,59 @@ impl ChatSessionManager {
         Ok(())
     }
 
+    // ── GAR-202: Session token API ─────────────────────────────────────────────
+
+    /// Issue a new session token for `session_id`.
+    ///
+    /// `ttl_secs`: absolute lifetime (e.g. 86400 = 24h).
+    /// Returns the opaque bearer token to hand to the client.
+    pub async fn create_token(
+        &self,
+        session_id: &str,
+        source: &str,
+        ttl_secs: i64,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<String> {
+        let store = self.store.lock().await;
+        store.create_session_token(session_id, source, ttl_secs, ip_address, user_agent)
+    }
+
+    /// Validate a bearer token and return the `session_id`.
+    ///
+    /// Also updates `last_active` (idle-timeout reset) on success.
+    /// `idle_timeout_secs = 0` disables idle checking.
+    pub async fn validate_token(
+        &self,
+        token: &str,
+        idle_timeout_secs: i64,
+    ) -> Result<Option<String>> {
+        let store = self.store.lock().await;
+        let session_id = store.validate_session_token(token, idle_timeout_secs)?;
+        if session_id.is_some() {
+            store.touch_session_token(token)?;
+        }
+        Ok(session_id)
+    }
+
+    /// Revoke a single session token (logout).
+    pub async fn revoke_token(&self, token: &str) -> Result<()> {
+        let store = self.store.lock().await;
+        store.revoke_session_token(token)
+    }
+
+    /// Revoke all tokens for a session (privilege change / forced re-auth).
+    pub async fn revoke_all_tokens(&self, session_id: &str) -> Result<usize> {
+        let store = self.store.lock().await;
+        store.revoke_all_session_tokens(session_id)
+    }
+
+    /// Delete expired tokens. Safe to call from a background cleanup task.
+    pub async fn cleanup_expired_tokens(&self) -> usize {
+        let store = self.store.lock().await;
+        store.cleanup_expired_session_tokens()
+    }
+
     /// Get message count for a session
     pub async fn get_message_count(&self, session_id: &str) -> Result<i32> {
         let store = self.store.lock().await;

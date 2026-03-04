@@ -168,6 +168,9 @@ impl McpRuntimeRegistry {
                     url: None,
                     transport: None,
                     timeout_secs: 30,
+                    memory_limit_mb: None,
+                    max_restarts: None,
+                    restart_delay_secs: None,
                 };
                 let mut server = McpServer::stopped(name.clone(), config);
                 if is_connected {
@@ -200,11 +203,7 @@ mod tests {
     fn make_stdio_config(cmd: &str) -> McpServerConfig {
         McpServerConfig {
             command: Some(cmd.into()),
-            args: vec![],
-            env: Default::default(),
-            url: None,
-            transport: None,
-            timeout_secs: 30,
+            ..Default::default()
         }
     }
 
@@ -325,10 +324,9 @@ mod tests {
         let cfg = McpServerConfig {
             command: Some("npx".into()),
             args: vec!["-y".into(), "mcp-server".into()],
-            env: Default::default(),
-            url: None,
             transport: Some(McpTransportType::Sse),
             timeout_secs: 60,
+            ..Default::default()
         };
         reg.add_server("sse-server", cfg).await;
 

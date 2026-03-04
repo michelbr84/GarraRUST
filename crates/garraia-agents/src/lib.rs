@@ -2,6 +2,7 @@
 pub mod mcp;
 
 pub mod a2a;
+pub mod context_policy;
 pub mod anthropic;
 pub mod embeddings;
 pub mod execution_budget;

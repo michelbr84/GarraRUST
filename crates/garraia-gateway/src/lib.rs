@@ -1,6 +1,9 @@
 pub mod a2a;
 pub mod admin;
 pub mod agent_router;
+pub mod auto_router;
+pub mod context_summarizer;
+pub mod session_auth;
 pub mod api;
 pub mod billing;
 pub mod bootstrap;

@@ -1,6 +1,5 @@
 use garraia_common::{Error, Result};
-use rusqlite::Connection;
-use rusqlite::params;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use tracing::info;
 
@@ -185,9 +184,35 @@ impl SessionStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_custom_modes_user
-                    ON custom_modes(user_id);",
+                    ON custom_modes(user_id);
+
+                -- GAR-202: Session tokens for LLM conversation plane
+                CREATE TABLE IF NOT EXISTS session_tokens (
+                    token        TEXT PRIMARY KEY,
+                    session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    source       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at   TEXT NOT NULL,
+                    last_active  TEXT NOT NULL DEFAULT (datetime('now')),
+                    user_agent   TEXT,
+                    ip_address   TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_session_tokens_session
+                    ON session_tokens(session_id);
+
+                CREATE INDEX IF NOT EXISTS idx_session_tokens_expires
+                    ON session_tokens(expires_at);",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
+
+        // GAR-202: Migrate legacy telegram-{chat_id} session IDs to chat_session_keys.
+        let _ = self.conn.execute_batch(
+            "INSERT OR IGNORE INTO chat_session_keys (id, session_id, source, external_id)
+             SELECT lower(hex(randomblob(16))), id, 'telegram', substr(id, 10)
+             FROM sessions
+             WHERE id LIKE 'telegram-%';",
+        );
 
         Ok(())
     }
@@ -333,6 +358,54 @@ impl SessionStore {
 
         // Query is DESC for efficient tail fetch; return in chronological order.
         messages.reverse();
+        Ok(messages)
+    }
+
+    /// GAR-208: Load the oldest `limit` messages for a session, starting after
+    /// `offset` rows from the beginning (chronological order).
+    /// Used to feed older turns to the summarization LLM.
+    pub fn load_older_messages(
+        &self,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<StoredMessage>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT direction, content, timestamp, metadata, source, provider, model, tokens_in, tokens_out
+                 FROM messages
+                 WHERE session_id = ?1
+                 ORDER BY rowid ASC
+                 LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare older-messages query: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![session_id, limit as i64, offset as i64], |row| {
+                let timestamp_raw: String = row.get(2)?;
+                let metadata_raw: String = row.get(3)?;
+                Ok(StoredMessage {
+                    direction: row.get(0)?,
+                    content: row.get(1)?,
+                    timestamp: parse_timestamp(&timestamp_raw),
+                    metadata: serde_json::from_str(&metadata_raw)
+                        .unwrap_or(serde_json::Value::Null),
+                    source: row.get(4)?,
+                    provider: row.get(5)?,
+                    model: row.get(6)?,
+                    tokens_in: row.get(7)?,
+                    tokens_out: row.get(8)?,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to load older messages: {e}")))?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(
+                row.map_err(|e| Error::Database(format!("failed to read message row: {e}")))?,
+            );
+        }
         Ok(messages)
     }
 
@@ -828,6 +901,126 @@ pub struct ScheduledTask {
     pub execute_at: chrono::DateTime<chrono::Utc>,
     pub payload: String,
     pub session_metadata: serde_json::Value,
+}
+
+// ── GAR-202: Session token CRUD ───────────────────────────────────────────────
+
+/// Generate a cryptographically random URL-safe base64 token (256 bits).
+fn generate_session_token() -> Result<String> {
+    use base64::Engine as _;
+    use ring::rand::{SecureRandom, SystemRandom};
+    let rng = SystemRandom::new();
+    let mut buf = [0u8; 32];
+    rng.fill(&mut buf)
+        .map_err(|_| Error::Database("session token rng failure".into()))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf))
+}
+
+impl SessionStore {
+    /// Create a new session token for `session_id`.
+    ///
+    /// Returns the opaque token string. The caller must deliver it to the client.
+    pub fn create_session_token(
+        &self,
+        session_id: &str,
+        source: &str,
+        ttl_secs: i64,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<String> {
+        let token = generate_session_token()?;
+        self.conn
+            .execute(
+                "INSERT INTO session_tokens
+                    (token, session_id, source, expires_at, last_active, ip_address, user_agent)
+                 VALUES
+                    (?1, ?2, ?3,
+                     datetime('now', '+' || ?4 || ' seconds'),
+                     datetime('now'),
+                     ?5, ?6)",
+                params![token, session_id, source, ttl_secs, ip_address, user_agent],
+            )
+            .map_err(|e| Error::Database(format!("create_session_token: {e}")))?;
+        Ok(token)
+    }
+
+    /// Validate a token and return the associated `session_id`.
+    ///
+    /// Returns `None` if the token is unknown, expired, or idle-timed-out.
+    /// `idle_timeout_secs = 0` disables idle checking.
+    pub fn validate_session_token(
+        &self,
+        token: &str,
+        idle_timeout_secs: i64,
+    ) -> Result<Option<String>> {
+        let idle_clause = if idle_timeout_secs > 0 {
+            format!(
+                "AND datetime(last_active, '+{idle_timeout_secs} seconds') > datetime('now')"
+            )
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT session_id FROM session_tokens
+             WHERE token = ?1
+               AND expires_at > datetime('now')
+               {idle_clause}
+             LIMIT 1"
+        );
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| Error::Database(format!("validate_session_token prepare: {e}")))?;
+        let session_id: Option<String> = stmt
+            .query_row(params![token], |row| row.get(0))
+            .optional()
+            .map_err(|e| Error::Database(format!("validate_session_token: {e}")))?;
+        Ok(session_id)
+    }
+
+    /// Update `last_active` timestamp (idle-timeout reset).
+    pub fn touch_session_token(&self, token: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE session_tokens SET last_active = datetime('now') WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| Error::Database(format!("touch_session_token: {e}")))?;
+        Ok(())
+    }
+
+    /// Revoke a single session token.
+    pub fn revoke_session_token(&self, token: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM session_tokens WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| Error::Database(format!("revoke_session_token: {e}")))?;
+        Ok(())
+    }
+
+    /// Revoke all tokens for a given session (logout / privilege change).
+    pub fn revoke_all_session_tokens(&self, session_id: &str) -> Result<usize> {
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM session_tokens WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|e| Error::Database(format!("revoke_all_session_tokens: {e}")))?;
+        Ok(n)
+    }
+
+    /// Delete expired tokens. Returns the number of rows deleted.
+    pub fn cleanup_expired_session_tokens(&self) -> usize {
+        self.conn
+            .execute(
+                "DELETE FROM session_tokens WHERE expires_at <= datetime('now')",
+                [],
+            )
+            .unwrap_or(0)
+    }
 }
 
 fn parse_timestamp(value: &str) -> chrono::DateTime<chrono::Utc> {

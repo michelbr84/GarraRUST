@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use libc;
 
 use garraia_common::{Error, Result};
 use rmcp::ServiceExt;
@@ -8,7 +11,7 @@ use rmcp::service::{Peer, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::tool_bridge::McpTool;
 use crate::tools::Tool;
@@ -54,9 +57,69 @@ enum ConnectionParams {
         args: Vec<String>,
         env: HashMap<String, String>,
         timeout_secs: u64,
+        /// GAR-293: virtual memory cap in MB (Unix only).
+        memory_limit_mb: Option<u64>,
     },
     #[cfg(feature = "mcp-http")]
     Http { url: String, timeout_secs: u64 },
+}
+
+/// GAR-293: Tracks auto-restart history for one MCP server.
+#[derive(Clone, Debug)]
+struct RestartState {
+    /// How many automatic restarts have been attempted since last successful connect.
+    count: u32,
+    /// When the last restart was attempted.
+    last_attempt: Option<Instant>,
+    /// Maximum number of restarts before giving up.
+    max_restarts: u32,
+    /// Base delay (seconds). Actual delay = base * 2^count, capped at 300s.
+    base_delay_secs: u64,
+}
+
+impl RestartState {
+    fn new(max_restarts: u32, base_delay_secs: u64) -> Self {
+        Self {
+            count: 0,
+            last_attempt: None,
+            max_restarts,
+            base_delay_secs,
+        }
+    }
+
+    /// Returns `true` when the backoff delay has elapsed and we should retry.
+    fn should_retry_now(&self) -> bool {
+        if self.count >= self.max_restarts {
+            return false;
+        }
+        match self.last_attempt {
+            None => true,
+            Some(t) => {
+                let delay = self.current_delay_secs();
+                t.elapsed() >= Duration::from_secs(delay)
+            }
+        }
+    }
+
+    /// `base * 2^count`, capped at 300s.
+    fn current_delay_secs(&self) -> u64 {
+        let shift = self.count.min(8); // 2^8 = 256, × 5 = 1280 > 300 → will be capped
+        (self.base_delay_secs << shift).min(300)
+    }
+
+    fn record_attempt(&mut self) {
+        self.last_attempt = Some(Instant::now());
+        self.count += 1;
+    }
+
+    fn reset(&mut self) {
+        self.count = 0;
+        self.last_attempt = None;
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.count >= self.max_restarts
+    }
 }
 
 /// A live connection to one MCP server.
@@ -72,6 +135,8 @@ struct McpConnection {
 /// Manages the lifecycle of MCP server connections.
 pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
+    /// GAR-293: per-server restart state (survives connection removal).
+    restart_states: Arc<RwLock<HashMap<String, RestartState>>>,
 }
 
 impl Default for McpManager {
@@ -84,12 +149,16 @@ impl McpManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
+            restart_states: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Connect to an MCP server by spawning a child process.
     ///
     /// `allowed_tools`: GAR-190 tool allowlist. Pass an empty `Vec` to allow all tools.
+    /// `memory_limit_mb`: GAR-293 — max virtual memory in MB (Unix only). `None` = no limit.
+    /// `max_restarts` / `restart_delay_secs`: GAR-293 backoff config.
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         &self,
         name: &str,
@@ -98,11 +167,20 @@ impl McpManager {
         env: &HashMap<String, String>,
         timeout_secs: u64,
         allowed_tools: Vec<String>,
+        memory_limit_mb: Option<u64>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
     ) -> Result<()> {
         let mut cmd = Command::new(command);
         cmd.args(args);
         for (k, v) in env {
             cmd.env(k, v);
+        }
+
+        // GAR-293: apply memory limit on Unix via setrlimit(RLIMIT_AS).
+        #[cfg(unix)]
+        if let Some(limit_mb) = memory_limit_mb {
+            apply_memory_limit(&mut cmd, limit_mb);
         }
 
         let transport = TokioChildProcess::new(cmd)
@@ -165,6 +243,7 @@ impl McpManager {
                 args: args.to_vec(),
                 env: env.clone(),
                 timeout_secs,
+                memory_limit_mb,
             },
             allowed_tools,
         };
@@ -173,12 +252,21 @@ impl McpManager {
             .write()
             .await
             .insert(name.to_string(), conn);
+
+        // GAR-293: reset restart state on successful connect.
+        self.restart_states
+            .write()
+            .await
+            .entry(name.to_string())
+            .and_modify(|s| s.reset())
+            .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
+
         Ok(())
     }
 
     /// Connect to an MCP server via HTTP (Streamable HTTP transport).
     #[cfg(feature = "mcp-http")]
-    pub async fn connect_http(&self, name: &str, url: &str, timeout_secs: u64, allowed_tools: Vec<String>) -> Result<()> {
+    pub async fn connect_http(&self, name: &str, url: &str, timeout_secs: u64, allowed_tools: Vec<String>, max_restarts: u32, restart_delay_secs: u64) -> Result<()> {
         use rmcp::transport::StreamableHttpClientTransport;
 
         let transport = StreamableHttpClientTransport::from_uri(url);
@@ -226,7 +314,24 @@ impl McpManager {
             .write()
             .await
             .insert(name.to_string(), conn);
+
+        // GAR-293: reset restart state on successful HTTP connect.
+        self.restart_states
+            .write()
+            .await
+            .entry(name.to_string())
+            .and_modify(|s| s.reset())
+            .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
+
         Ok(())
+    }
+
+    /// GAR-293: Reset the restart counter for a server (called on manual admin restart).
+    pub async fn reset_restart_state(&self, name: &str) {
+        if let Some(state) = self.restart_states.write().await.get_mut(name) {
+            state.reset();
+            info!("MCP server '{name}' restart counter reset (manual restart)");
+        }
     }
 
     /// Disconnect a specific MCP server.
@@ -526,7 +631,7 @@ impl McpManager {
         Ok(output.content)
     }
 
-    /// Check all connections and attempt to reconnect any that are closed.
+    /// GAR-293: Check all connections and attempt reconnect with exponential backoff.
     async fn check_and_reconnect(&self) {
         let to_reconnect: Vec<(String, ConnectionParams, Vec<String>)> = {
             let conns = self.connections.read().await;
@@ -538,28 +643,103 @@ impl McpManager {
         };
 
         for (name, params, allowed_tools) in to_reconnect {
-            info!("MCP server '{name}' connection lost, attempting reconnect...");
-            // Remove stale connection
+            // Check restart state before attempting reconnect.
+            let (should_retry, attempt_num, max_restarts) = {
+                let mut states = self.restart_states.write().await;
+                let state = states.entry(name.clone()).or_insert_with(|| {
+                    RestartState::new(5, 5) // safe defaults if missing
+                });
+
+                if state.is_exhausted() {
+                    error!(
+                        "MCP server '{name}' has crashed {} time(s) — max restarts ({}) reached. \
+                         Use the admin API to restart manually.",
+                        state.count, state.max_restarts
+                    );
+                    (false, state.count, state.max_restarts)
+                } else if !state.should_retry_now() {
+                    let delay = state.current_delay_secs();
+                    info!(
+                        "MCP server '{name}' waiting for backoff delay ({delay}s) before retry \
+                         (attempt {}/{})",
+                        state.count + 1, state.max_restarts
+                    );
+                    (false, state.count, state.max_restarts)
+                } else {
+                    let attempt = state.count + 1;
+                    let max = state.max_restarts;
+                    state.record_attempt();
+                    (true, attempt, max)
+                }
+            };
+
+            if !should_retry {
+                continue;
+            }
+
+            info!(
+                "MCP server '{name}' connection lost — restart attempt {attempt_num}/{max_restarts}"
+            );
+
+            // Remove stale connection before reconnecting.
             self.connections.write().await.remove(&name);
 
-            let result = match params {
+            let result = match &params {
                 ConnectionParams::Stdio {
-                    ref command,
-                    ref args,
-                    ref env,
+                    command,
+                    args,
+                    env,
                     timeout_secs,
-                } => self.connect(&name, command, args, env, timeout_secs, allowed_tools).await,
+                    memory_limit_mb,
+                } => {
+                    // Fetch max_restarts / restart_delay from saved state.
+                    let (mr, rd) = {
+                        let states = self.restart_states.read().await;
+                        states.get(&name).map(|s| (s.max_restarts, s.base_delay_secs)).unwrap_or((5, 5))
+                    };
+                    self.connect(&name, command, args, env, *timeout_secs, allowed_tools, *memory_limit_mb, mr, rd).await
+                }
                 #[cfg(feature = "mcp-http")]
-                ConnectionParams::Http {
-                    ref url,
-                    timeout_secs,
-                } => self.connect_http(&name, url, timeout_secs, allowed_tools).await,
+                ConnectionParams::Http { url, timeout_secs } => {
+                    let (mr, rd) = {
+                        let states = self.restart_states.read().await;
+                        states.get(&name).map(|s| (s.max_restarts, s.base_delay_secs)).unwrap_or((5, 5))
+                    };
+                    self.connect_http(&name, url, *timeout_secs, allowed_tools, mr, rd).await
+                }
             };
 
             match result {
-                Ok(()) => info!("MCP server '{name}' reconnected successfully"),
-                Err(e) => warn!("MCP server '{name}' reconnect failed: {e}"),
+                Ok(()) => {
+                    info!("MCP server '{name}' reconnected successfully (attempt {attempt_num})");
+                    // reset() is called inside connect() on success.
+                }
+                Err(e) => {
+                    warn!("MCP server '{name}' reconnect attempt {attempt_num} failed: {e}");
+                }
             }
         }
+    }
+}
+
+/// GAR-293: Apply a virtual-memory limit to a child process (Unix only).
+///
+/// Uses `setrlimit(RLIMIT_AS, limit_mb * 1024 * 1024)` before exec.
+/// If the process exceeds the limit the kernel delivers SIGSEGV / ENOMEM.
+#[cfg(unix)]
+fn apply_memory_limit(cmd: &mut Command, limit_mb: u64) {
+    let limit_bytes = limit_mb.saturating_mul(1024 * 1024);
+    // SAFETY: `setrlimit` is async-signal-safe and only affects the child.
+    unsafe {
+        cmd.pre_exec(move || {
+            let rlim = libc::rlimit {
+                rlim_cur: limit_bytes,
+                rlim_max: limit_bytes,
+            };
+            // Ignore errors — we don't want the spawn to fail just because
+            // the limit couldn't be set (e.g. already above hard limit).
+            let _ = libc::setrlimit(libc::RLIMIT_AS, &rlim);
+            Ok(())
+        });
     }
 }

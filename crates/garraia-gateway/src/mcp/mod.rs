@@ -78,6 +78,19 @@ pub struct McpServerConfig {
     /// Seconds to wait for the initial handshake (default: 30).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// GAR-293: Maximum virtual-memory for the child process in MB (Unix only).
+    /// `None` = no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mb: Option<u64>,
+
+    /// GAR-293: Maximum automatic restart attempts after a crash. Default: 5.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+
+    /// GAR-293: Base backoff delay (seconds) before the first restart. Default: 5.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_delay_secs: Option<u64>,
 }
 
 fn default_timeout_secs() -> u64 {
@@ -94,6 +107,22 @@ pub fn is_sensitive_key(k: &str) -> bool {
     ["key", "token", "secret", "password", "auth", "credential", "pass"]
         .iter()
         .any(|s| lower.contains(s))
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            url: None,
+            transport: None,
+            timeout_secs: 30,
+            memory_limit_mb: None,
+            max_restarts: None,
+            restart_delay_secs: None,
+        }
+    }
 }
 
 impl McpServerConfig {
@@ -254,10 +283,7 @@ mod tests {
         let cfg = McpServerConfig {
             command: Some("npx".into()),
             args: vec!["-y".into(), "mcp-server".into()],
-            env: Default::default(),
-            url: None,
-            transport: None,
-            timeout_secs: 30,
+            ..Default::default()
         };
         assert_eq!(cfg.infer_transport(), McpTransportType::Stdio);
     }
@@ -266,11 +292,8 @@ mod tests {
     fn infer_transport_explicit_wins() {
         let cfg = McpServerConfig {
             command: Some("npx".into()),
-            args: vec![],
-            env: Default::default(),
-            url: None,
             transport: Some(McpTransportType::Sse),
-            timeout_secs: 30,
+            ..Default::default()
         };
         assert_eq!(cfg.infer_transport(), McpTransportType::Sse);
     }
@@ -278,12 +301,8 @@ mod tests {
     #[test]
     fn infer_transport_url_defaults_to_streamable_http() {
         let cfg = McpServerConfig {
-            command: None,
-            args: vec![],
-            env: Default::default(),
             url: Some("https://example.com/mcp".into()),
-            transport: None,
-            timeout_secs: 30,
+            ..Default::default()
         };
         assert_eq!(cfg.infer_transport(), McpTransportType::StreamableHttp);
     }
@@ -330,10 +349,7 @@ mod tests {
         let config = McpServerConfig {
             command: Some("uvx".into()),
             args: vec!["my-tool".into()],
-            env: Default::default(),
-            url: None,
-            transport: None,
-            timeout_secs: 30,
+            ..Default::default()
         };
         let server = McpServer::stopped("my-server", config);
         assert_eq!(server.name, "my-server");
