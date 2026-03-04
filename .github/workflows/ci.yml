@@ -91,6 +91,121 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --release
 
+  # E2E integration test (GAR-216)
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    env:
+      # Use a mock/echo LLM — no real API key required for E2E structure tests
+      ANTHROPIC_API_KEY: "sk-ant-test-key-for-ci"
+      GARRAIA_API_KEY: "ci-test-bearer-token"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+
+      - name: Build gateway (release)
+        run: cargo build -p garraia-gateway --release
+
+      - name: Start gateway in background
+        run: |
+          ./target/release/garraia-gateway &
+          echo $! > /tmp/garraia.pid
+          # Wait up to 15s for health endpoint to respond
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:3888/health && break || sleep 1
+          done
+
+      - name: Run E2E tests
+        run: |
+          chmod +x tests/e2e_telegram_api.sh
+          GARRAIA_BASE_URL=http://localhost:3888 \
+          GARRAIA_API_KEY=ci-test-bearer-token \
+          bash tests/e2e_telegram_api.sh
+
+      - name: Stop gateway
+        if: always()
+        run: |
+          if [ -f /tmp/garraia.pid ]; then
+            kill $(cat /tmp/garraia.pid) 2>/dev/null || true
+          fi
+
+  # Playwright E2E Web UI tests (GAR-300)
+  playwright:
+    name: Playwright E2E (MCP UI)
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: "sk-ant-test-key-for-ci"
+      GARRAIA_ADMIN_USER: "admin"
+      GARRAIA_ADMIN_PASS: "admin123ci"
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-playwright-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build gateway
+        working-directory: .
+        run: cargo build -p garraia-gateway --release
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/package.json
+
+      - name: Install Playwright
+        run: npm ci && npx playwright install chromium --with-deps
+
+      - name: Start gateway
+        working-directory: .
+        run: |
+          ./target/release/garraia-gateway &
+          for i in $(seq 1 20); do curl -sf http://localhost:3888/health && break || sleep 1; done
+
+      - name: Run Playwright tests
+        run: |
+          GARRAIA_BASE_URL=http://localhost:3888 \
+          GARRAIA_SKIP_SERVER=1 \
+          npx playwright test
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/playwright-report/
+          retention-days: 7
+
   # Security audit (optional but recommended)
   security:
     name: Security Audit

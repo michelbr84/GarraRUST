@@ -302,39 +302,46 @@ impl AgentRuntime {
         let Some(memory) = &self.memory else {
             return Ok(());
         };
+        // Skip storing empty turns — the memory store rejects blank content.
+        if user_input.trim().is_empty() && assistant_output.trim().is_empty() {
+            return Ok(());
+        }
 
-        let user_embedding = self.embed_document(user_input).await;
-        let assistant_embedding = self.embed_document(assistant_output).await;
+        if !user_input.trim().is_empty() {
+            let user_embedding = self.embed_document(user_input).await;
+            memory
+                .remember(NewMemoryEntry {
+                    tenant_id: "default".to_string(),
+                    session_id: session_id.to_string(),
+                    channel_id: None,
+                    user_id: user_id.map(|s| s.to_string()),
+                    continuity_key: continuity_key.map(|s| s.to_string()),
+                    role: MemoryRole::User,
+                    content: user_input.to_string(),
+                    embedding: user_embedding,
+                    embedding_model: self.embedding_model(),
+                    metadata: serde_json::json!({ "kind": "turn_user" }),
+                })
+                .await?;
+        }
 
-        memory
-            .remember(NewMemoryEntry {
-                tenant_id: "default".to_string(),
-                session_id: session_id.to_string(),
-                channel_id: None,
-                user_id: user_id.map(|s| s.to_string()),
-                continuity_key: continuity_key.map(|s| s.to_string()),
-                role: MemoryRole::User,
-                content: user_input.to_string(),
-                embedding: user_embedding,
-                embedding_model: self.embedding_model(),
-                metadata: serde_json::json!({ "kind": "turn_user" }),
-            })
-            .await?;
-
-        memory
-            .remember(NewMemoryEntry {
-                tenant_id: "default".to_string(),
-                session_id: session_id.to_string(),
-                channel_id: None,
-                user_id: user_id.map(|s| s.to_string()),
-                continuity_key: continuity_key.map(|s| s.to_string()),
-                role: MemoryRole::Assistant,
-                content: assistant_output.to_string(),
-                embedding: assistant_embedding,
-                embedding_model: self.embedding_model(),
-                metadata: serde_json::json!({ "kind": "turn_assistant" }),
-            })
-            .await?;
+        if !assistant_output.trim().is_empty() {
+            let assistant_embedding = self.embed_document(assistant_output).await;
+            memory
+                .remember(NewMemoryEntry {
+                    tenant_id: "default".to_string(),
+                    session_id: session_id.to_string(),
+                    channel_id: None,
+                    user_id: user_id.map(|s| s.to_string()),
+                    continuity_key: continuity_key.map(|s| s.to_string()),
+                    role: MemoryRole::Assistant,
+                    content: assistant_output.to_string(),
+                    embedding: assistant_embedding,
+                    embedding_model: self.embedding_model(),
+                    metadata: serde_json::json!({ "kind": "turn_assistant" }),
+                })
+                .await?;
+        }
 
         Ok(())
     }

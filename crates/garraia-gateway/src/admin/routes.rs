@@ -137,8 +137,14 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
         )
         .route("/api/mcp/{id}", delete(handlers::admin_delete_mcp))
         .route("/api/mcp/{id}/restart", post(handlers::admin_restart_mcp))
-        // ── Phase 6: Templates ──
+        // ── Agent templates (system prompts / named agents from config) ──
         .route("/api/templates", get(handlers::list_templates))
+        // ── Phase 6: MCP Templates (GAR-296/297) ──
+        .route(
+            "/api/mcp/templates",
+            get(handlers::list_mcp_templates).post(handlers::save_mcp_template),
+        )
+        .route("/api/mcp/templates/{id}", delete(handlers::delete_mcp_template))
         .layer(axum_mw::from_fn(require_csrf))
         .layer(axum_mw::from_fn(require_admin_auth))
         .layer(axum::Extension(admin_store))

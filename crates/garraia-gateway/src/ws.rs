@@ -393,15 +393,6 @@ fn is_init_message(raw: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn try_parse_resume(raw: &str) -> Option<String> {
-    let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
-    if v.get("type")?.as_str()? == "resume" {
-        v.get("session_id")?.as_str().map(|s| s.to_string())
-    } else {
-        None
-    }
-}
-
 /// Parse a resume message and return (session_id, optional_token).
 fn try_parse_resume_with_token(raw: &str) -> Option<(String, Option<String>)> {
     let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
@@ -465,29 +456,12 @@ fn parse_user_message(raw: &str) -> (String, Option<String>, Option<String>, Opt
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WS_TEXT_BYTES, parse_user_message, text_message_too_large, try_parse_resume};
+    use super::{MAX_WS_TEXT_BYTES, parse_user_message, text_message_too_large};
 
     #[test]
     fn text_message_size_guard_uses_strict_upper_bound() {
         assert!(!text_message_too_large(MAX_WS_TEXT_BYTES));
         assert!(text_message_too_large(MAX_WS_TEXT_BYTES + 1));
-    }
-
-    #[test]
-    fn parse_resume_request() {
-        let json = r#"{"type": "resume", "session_id": "abc-123"}"#;
-        assert_eq!(try_parse_resume(json), Some("abc-123".to_string()));
-    }
-
-    #[test]
-    fn parse_non_resume_returns_none() {
-        let json = r#"{"type": "message", "content": "hello"}"#;
-        assert_eq!(try_parse_resume(json), None);
-    }
-
-    #[test]
-    fn parse_invalid_json_returns_none() {
-        assert_eq!(try_parse_resume("not json"), None);
     }
 
     #[test]

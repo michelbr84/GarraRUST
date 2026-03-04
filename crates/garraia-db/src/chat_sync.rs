@@ -239,6 +239,9 @@ impl ChatSessionManager {
         user_agent: Option<&str>,
     ) -> Result<String> {
         let store = self.store.lock().await;
+        // Ensure the session row exists before inserting the FK-constrained token.
+        // No-op if already persisted (upsert semantics).
+        store.upsert_session(session_id, source, session_id, &serde_json::Value::Null)?;
         store.create_session_token(session_id, source, ttl_secs, ip_address, user_agent)
     }
 
