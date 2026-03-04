@@ -83,6 +83,8 @@ pub fn build_router(
         .route("/api/mcp", get(list_mcp_servers))
         .route("/api/mcp/tools", get(list_mcp_runtime_tools))
         .route("/api/mcp/health", get(mcp_health))
+        // GAR-184: Dynamic slash commands
+        .route("/api/slash-commands", get(list_slash_commands))
         // GAR-230: Mode API endpoints
         .route("/api/modes", get(api::list_modes))
         .route("/api/mode/select", post(api::select_mode))
@@ -730,6 +732,17 @@ async fn mcp_health(
         "runtime_tool_count": all_runtime_tools.len(),
         "runtime_tools": all_runtime_tools,
     }))
+}
+
+/// GET /api/slash-commands — list all available slash commands (GAR-184).
+///
+/// Returns built-in commands plus any prompts exposed by connected MCP servers.
+async fn list_slash_commands(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+) -> axum::Json<serde_json::Value> {
+    let commands =
+        crate::slash_commands::list_commands(state.mcp_manager_arc.as_ref()).await;
+    axum::Json(serde_json::json!({ "commands": commands }))
 }
 
 /// Read the cached latest version from ~/.garraia/update-check.json.

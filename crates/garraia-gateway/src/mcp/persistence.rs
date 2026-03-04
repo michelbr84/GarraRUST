@@ -14,24 +14,51 @@ use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
-use super::{McpConfig, McpRuntimeRegistry};
+use super::{McpConfig, McpRuntimeRegistry, is_sensitive_key};
+
+/// Sentinel prefix for vault-referenced env values in `mcp.json`.
+const VAULT_REF_PREFIX: &str = "vault:";
+
+/// Returns the vault key used to store `env_key` for `server_name`.
+fn vault_key(server_name: &str, env_key: &str) -> String {
+    format!("mcp.{server_name}.{env_key}")
+}
 
 /// Loads and saves `mcp.json`, and builds [`McpRuntimeRegistry`] from it.
+///
+/// When a `vault_path` is configured (via [`with_vault`](Self::with_vault)),
+/// sensitive env vars (API keys, tokens, etc.) are stored encrypted in the
+/// vault and replaced by `vault:<key>` references in `mcp.json`. On load,
+/// vault references are resolved back to their plaintext values for use at
+/// runtime. If the vault is unavailable, plaintext values are used as-is.
 #[derive(Clone)]
 pub struct McpPersistenceService {
     path: PathBuf,
+    /// Path to the AES-256-GCM credential vault (see `garraia-security`).
+    /// When `None`, env vars are saved as plaintext (with a warning).
+    vault_path: Option<PathBuf>,
 }
 
 impl McpPersistenceService {
     /// Create a service that reads/writes the file at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self { path: path.into(), vault_path: None }
     }
 
     /// Create a service pointing to the default `mcp.json` location
     /// (`<garraia_config_dir>/mcp.json`).
     pub fn with_default_path() -> Self {
         Self::new(garraia_config::ConfigLoader::default_config_dir().join("mcp.json"))
+    }
+
+    /// Attach an encrypted vault for sensitive env var storage (GAR-291).
+    ///
+    /// When set, [`load_registry`](Self::load_registry) resolves `vault:` refs
+    /// from the vault and [`save_from_registry`](Self::save_from_registry)
+    /// encrypts sensitive values into the vault.
+    pub fn with_vault(mut self, vault_path: impl Into<PathBuf>) -> Self {
+        self.vault_path = Some(vault_path.into());
+        self
     }
 
     /// The path this service manages.
@@ -67,9 +94,16 @@ impl McpPersistenceService {
     ///
     /// Call [`McpRuntimeRegistry::sync_from_manager`] after the agent-layer
     /// connections are established to update the live statuses.
+    ///
+    /// **GAR-291**: If a vault is configured, `vault:` references in env values
+    /// are resolved to their plaintext secrets before the registry is built.
+    /// Servers are never exposed to unresolved `vault:` strings at runtime.
     pub fn load_registry(&self) -> McpRuntimeRegistry {
         match self.load() {
-            Ok(config) => McpRuntimeRegistry::new(&config),
+            Ok(mut config) => {
+                self.resolve_vault_refs(&mut config);
+                McpRuntimeRegistry::new(&config)
+            }
             Err(e) => {
                 warn!(
                     "mcp persistence: failed to load mcp.json ({}), starting with empty registry: {e}",
@@ -81,9 +115,100 @@ impl McpPersistenceService {
     }
 
     /// Snapshot the registry's current config and write it to `mcp.json`.
+    ///
+    /// **GAR-291**: If a vault is configured and `GARRAIA_VAULT_PASSPHRASE` is
+    /// set, sensitive env values are moved to the vault and replaced by
+    /// `vault:<key>` references. If the vault is unavailable, plaintext is
+    /// written with a warning (graceful degradation — never blocks operation).
     pub async fn save_from_registry(&self, registry: &McpRuntimeRegistry) -> anyhow::Result<()> {
-        let config = registry.config_snapshot().await;
+        let mut config = registry.config_snapshot().await;
+        self.encrypt_to_vault(&mut config);
         self.save(&config)
+    }
+
+    // ── Vault helpers (GAR-291) ───────────────────────────────────────────────
+
+    /// Resolve `vault:` references in env values using the configured vault.
+    ///
+    /// Values that are already plaintext (no prefix) are left untouched.
+    /// Unresolvable `vault:` refs emit a warning and remain as-is so the
+    /// server config is still visible for debugging.
+    fn resolve_vault_refs(&self, config: &mut McpConfig) {
+        let vault_path = match &self.vault_path {
+            Some(p) => p.as_path(),
+            None => return, // no vault configured — nothing to resolve
+        };
+
+        for (server_name, server_cfg) in config.mcp_servers.iter_mut() {
+            for (env_key, env_val) in server_cfg.env.iter_mut() {
+                if let Some(vk) = env_val.strip_prefix(VAULT_REF_PREFIX) {
+                    match garraia_security::try_vault_get(vault_path, vk) {
+                        Some(resolved) => *env_val = resolved,
+                        None => warn!(
+                            server = %server_name,
+                            env_key = %env_key,
+                            vault_ref = %vk,
+                            "mcp: vault ref unresolvable — vault missing or GARRAIA_VAULT_PASSPHRASE not set"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Move sensitive plaintext env values into the vault and replace them
+    /// with `vault:` references in `config`.
+    ///
+    /// No-op if no vault is configured or `GARRAIA_VAULT_PASSPHRASE` is absent.
+    fn encrypt_to_vault(&self, config: &mut McpConfig) {
+        let vault_path = match &self.vault_path {
+            Some(p) => p.as_path(),
+            None => {
+                // Check if any server has sensitive keys and warn if so.
+                let has_secrets = config.mcp_servers.values()
+                    .any(|s| s.env.keys().any(|k| is_sensitive_key(k)));
+                if has_secrets {
+                    warn!("mcp: vault not configured — saving sensitive env vars as plaintext; set GARRAIA_VAULT_PASSPHRASE to enable encryption");
+                }
+                return;
+            }
+        };
+
+        if std::env::var("GARRAIA_VAULT_PASSPHRASE").unwrap_or_default().is_empty() {
+            let has_secrets = config.mcp_servers.values()
+                .any(|s| s.env.keys().any(|k| is_sensitive_key(k)));
+            if has_secrets {
+                warn!("mcp: GARRAIA_VAULT_PASSPHRASE not set — sensitive env vars saved as plaintext");
+            }
+            return;
+        }
+
+        for (server_name, server_cfg) in config.mcp_servers.iter_mut() {
+            for (env_key, env_val) in server_cfg.env.iter_mut() {
+                // Skip values already stored as vault references.
+                if env_val.starts_with(VAULT_REF_PREFIX) {
+                    continue;
+                }
+                if !is_sensitive_key(env_key) {
+                    continue;
+                }
+                let vk = vault_key(server_name, env_key);
+                if garraia_security::try_vault_set(vault_path, &vk, env_val) {
+                    info!(
+                        server = %server_name,
+                        env_key = %env_key,
+                        "mcp: stored credential in vault"
+                    );
+                    *env_val = format!("{VAULT_REF_PREFIX}{vk}");
+                } else {
+                    warn!(
+                        server = %server_name,
+                        env_key = %env_key,
+                        "mcp: failed to store credential in vault — saving as plaintext"
+                    );
+                }
+            }
+        }
     }
 }
 

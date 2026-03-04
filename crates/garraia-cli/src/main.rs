@@ -1,4 +1,5 @@
 mod banner;
+mod glob_cmd;
 mod migrate;
 mod update;
 mod wizard;
@@ -116,6 +117,70 @@ enum Commands {
 
     /// Roll back to the previous version
     Rollback,
+
+    /// Test and debug glob patterns
+    Glob {
+        #[command(subcommand)]
+        action: GlobCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum GlobCommands {
+    /// Test a glob pattern against literal paths, a directory tree, or stdin
+    ///
+    /// Examples:
+    ///   garraia glob test "**/*.rs" --dir ./crates
+    ///   garraia glob test "!(*.log)" --mode bash --greedy --dir .
+    ///   echo "main.rs\nCargo.toml" | garraia glob test "*.rs"
+    ///   garraia glob test "*.rs" --debug-regex --json
+    Test {
+        /// The glob pattern to test (e.g. "**/*.rs", "!(*.log)", "@(src|lib)/**")
+        pattern: String,
+
+        /// Literal path strings to test. If omitted and --dir is not set, reads from stdin.
+        paths: Vec<String>,
+
+        /// Scan a directory tree instead of literal paths
+        #[arg(long, short = 'C', value_name = "DIR")]
+        dir: Option<PathBuf>,
+
+        /// Glob mode: picomatch (default) or bash
+        #[arg(long, default_value = "picomatch", value_parser = ["picomatch", "bash"])]
+        mode: String,
+
+        /// Match dotfiles (hidden components) with * and ?
+        #[arg(long)]
+        dot: bool,
+
+        /// Bash mode: allow !(pat) to match across path separators (greedy)
+        #[arg(long)]
+        greedy: bool,
+
+        /// Case-insensitive matching
+        #[arg(long)]
+        ignore_case: bool,
+
+        /// Disable .gitignore loading during directory scan
+        #[arg(long)]
+        no_gitignore: bool,
+
+        /// Disable .garraignore loading during directory scan
+        #[arg(long)]
+        no_garraignore: bool,
+
+        /// Show only matched paths (suppress unmatched lines)
+        #[arg(long, short = 'q')]
+        only_matched: bool,
+
+        /// Print the compiled regex for debugging the pattern compiler
+        #[arg(long)]
+        debug_regex: bool,
+
+        /// Output matched results as a JSON array
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -900,6 +965,40 @@ async fn async_main(
             match update::run_rollback() {
                 Ok(()) => {}
                 Err(e) => println!("rollback failed: {}", e),
+            }
+        }
+        Commands::Glob { action } => {
+            // Glob commands are synchronous — no async runtime needed.
+            match action {
+                GlobCommands::Test {
+                    pattern,
+                    paths,
+                    dir,
+                    mode,
+                    dot,
+                    greedy,
+                    ignore_case,
+                    no_gitignore,
+                    no_garraignore,
+                    only_matched,
+                    debug_regex,
+                    json,
+                } => {
+                    glob_cmd::run_glob_test(
+                        &pattern,
+                        &paths,
+                        dir.as_ref(),
+                        &mode,
+                        dot,
+                        greedy,
+                        ignore_case,
+                        no_gitignore,
+                        no_garraignore,
+                        only_matched,
+                        debug_regex,
+                        json,
+                    )?;
+                }
             }
         }
     }

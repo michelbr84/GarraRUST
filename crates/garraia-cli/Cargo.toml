@@ -19,6 +19,7 @@ garraia-db = { workspace = true }
 garraia-plugins = { workspace = true, optional = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
+garraia-glob = { workspace = true }
 
 tokio = { workspace = true }
 clap = { workspace = true }

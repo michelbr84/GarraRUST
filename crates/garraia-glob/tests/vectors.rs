@@ -298,6 +298,46 @@ fn escaped_dot_is_literal() {
     assert!(!p.matches("fooXrs"));
 }
 
+// ── Regression: cases from Garra agent report (GAR-259 baseline) ──────────
+//
+// These pin the exact 3 behaviours that were incorrectly reported as broken.
+// They call GlobPattern directly — the same engine used by `garraia glob test`
+// and the Scanner — so a false-positive from any other search tool is not
+// a bug here.
+
+#[test]
+fn regression_star_rs_does_not_cross_separator() {
+    // `*.rs` must NOT match a path that contains a `/` — picomatch semantics.
+    let p = pm("*.rs");
+    assert!(p.matches("main.rs"), "*.rs should match bare filename");
+    assert!(p.matches("lib.rs"));
+    assert!(!p.matches("src/main.rs"), "*.rs must NOT cross /");
+    assert!(!p.matches("a/b/c/foo.rs"), "*.rs must NOT cross nested /");
+}
+
+#[test]
+fn regression_brace_expansion_rs_toml() {
+    // `*.{rs,toml}` must match both extensions via brace expansion.
+    let p = pm("*.{rs,toml}");
+    assert!(p.matches("main.rs"), "*.{{rs,toml}} should match .rs");
+    assert!(p.matches("Cargo.toml"), "*.{{rs,toml}} should match .toml");
+    assert!(!p.matches("main.py"), "*.{{rs,toml}} should not match .py");
+    assert!(!p.matches("src/main.rs"), "brace expansion still respects /");
+}
+
+#[test]
+fn regression_star_dotfile_default_and_dot_flag() {
+    // `*` must NOT match `.gitignore` with default config (dot=false),
+    // but MUST match with dot=true.
+    let p_default = pm("*");
+    assert!(p_default.matches("README.md"), "* matches normal file");
+    assert!(!p_default.matches(".gitignore"), "* must not match dotfile by default");
+
+    let p_dot = pm_dot("*");
+    assert!(p_dot.matches(".gitignore"), "* matches dotfile when dot=true");
+    assert!(p_dot.matches("README.md"), "* still matches normal files with dot=true");
+}
+
 // ── Windows path normalisation ────────────────────────────────────────────
 
 #[test]

@@ -2692,8 +2692,13 @@ pub async fn admin_create_mcp(
     // Add to registry
     state.app_state.mcp_registry.add_server(name.clone(), config).await;
 
-    // Persist to mcp.json
+    // Persist to mcp.json (GAR-291: with vault for credential encryption).
     let svc = McpPersistenceService::with_default_path();
+    let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
+        svc.with_vault(vp)
+    } else {
+        svc
+    };
     if let Err(e) = svc.save_from_registry(&state.app_state.mcp_registry).await {
         tracing::warn!("admin_create_mcp: failed to persist mcp.json: {e}");
     }

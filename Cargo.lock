@@ -1721,6 +1721,7 @@ dependencies = [
  "garraia-config",
  "garraia-db",
  "garraia-gateway",
+ "garraia-glob",
  "garraia-plugins",
  "garraia-security",
  "garraia-skills",
@@ -1878,6 +1879,7 @@ name = "garraia-glob"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "notify",
  "regex",
  "serde",
  "serde_json",
