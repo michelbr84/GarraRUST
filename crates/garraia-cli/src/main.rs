@@ -833,6 +833,9 @@ async fn async_main(
                             &server_config.env,
                             timeout_secs,
                             vec![], // CLI: no allowlist — show all tools
+                            server_config.memory_limit_mb,
+                            server_config.max_restarts.unwrap_or(5),
+                            server_config.restart_delay_secs.unwrap_or(5),
                         )
                         .await
                     {
@@ -870,6 +873,9 @@ async fn async_main(
                             &server_config.env,
                             timeout_secs,
                             vec![], // CLI: no allowlist
+                            server_config.memory_limit_mb,
+                            server_config.max_restarts.unwrap_or(5),
+                            server_config.restart_delay_secs.unwrap_or(5),
                         )
                         .await
                     {
@@ -912,6 +918,9 @@ async fn async_main(
                             &server_config.env,
                             timeout_secs,
                             vec![], // CLI: no allowlist
+                            server_config.memory_limit_mb,
+                            server_config.max_restarts.unwrap_or(5),
+                            server_config.restart_delay_secs.unwrap_or(5),
                         )
                         .await
                     {
