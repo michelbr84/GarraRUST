@@ -7,6 +7,7 @@ use garraia_common::{Error, Result};
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::service::{Peer, RoleClient};
 use serde_json::Value;
+use tracing::info;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -68,7 +69,19 @@ impl Tool for McpTool {
         self.schema_entrada.clone()
     }
 
-    async fn execute(&self, _context: &ToolContext, input: Value) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: Value) -> Result<ToolOutput> {
+        // GAR-190: audit log — every MCP tool invocation is recorded.
+        let input_keys: Vec<&str> = match &input {
+            Value::Object(m) => m.keys().map(|k| k.as_str()).collect(),
+            _ => vec![],
+        };
+        info!(
+            tool = %self.nome_completo,
+            session = %context.session_id,
+            input_keys = ?input_keys,
+            "mcp tool call"
+        );
+
         // Converte a entrada para o formato esperado pelo MCP
         let argumentos = match input {
             Value::Object(map) => Some(map),

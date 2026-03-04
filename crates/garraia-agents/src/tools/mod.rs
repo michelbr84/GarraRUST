@@ -31,6 +31,12 @@ pub struct ToolContext {
     /// Usado para evitar autoagendamento recursivo.
     #[serde(default)]
     pub is_heartbeat: bool,
+
+    /// GAR-187: Quando verdadeiro, o usuário já aprovou uma confirmação pendente
+    /// para esta invocação. Ferramentas com `CONFIRM_LIST` podem pular o pedido de
+    /// confirmação neste caso e executar diretamente.
+    #[serde(default)]
+    pub is_confirmation_approved: bool,
 }
 
 /// Trait para ferramentas que os agentes podem invocar
@@ -58,6 +64,11 @@ pub struct ToolOutput {
 
     /// Indica se a execução resultou em erro.
     pub is_error: bool,
+
+    /// GAR-187: Quando verdadeiro, a ferramenta requer confirmação do usuário antes
+    /// de executar. O runtime deve interromper o loop de tools e aguardar aprovação.
+    #[serde(default)]
+    pub requires_confirmation: bool,
 }
 
 impl ToolOutput {
@@ -66,6 +77,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            requires_confirmation: false,
         }
     }
 
@@ -74,6 +86,18 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            requires_confirmation: false,
+        }
+    }
+
+    /// GAR-187: Cria um resultado que requer confirmação do usuário antes de prosseguir.
+    ///
+    /// A mensagem deve explicar o que será executado e como aprovar.
+    pub fn confirmation_request(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            requires_confirmation: true,
         }
     }
 }
@@ -87,6 +111,7 @@ mod tests {
         let output = ToolOutput::success("done");
         assert_eq!(output.content, "done");
         assert!(!output.is_error);
+        assert!(!output.requires_confirmation);
     }
 
     #[test]
@@ -94,5 +119,13 @@ mod tests {
         let output = ToolOutput::error("failed");
         assert_eq!(output.content, "failed");
         assert!(output.is_error);
+        assert!(!output.requires_confirmation);
+    }
+
+    #[test]
+    fn helper_confirmation_request() {
+        let output = ToolOutput::confirmation_request("Confirmar: rm -rf /tmp");
+        assert!(output.is_error);
+        assert!(output.requires_confirmation);
     }
 }

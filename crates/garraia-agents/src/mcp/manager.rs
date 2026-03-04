@@ -65,6 +65,8 @@ struct McpConnection {
     service: RunningService<RoleClient, ()>,
     tools: Vec<McpToolInfo>,
     params: ConnectionParams,
+    /// GAR-190: tool allowlist — empty means all tools are permitted.
+    allowed_tools: Vec<String>,
 }
 
 /// Manages the lifecycle of MCP server connections.
@@ -86,6 +88,8 @@ impl McpManager {
     }
 
     /// Connect to an MCP server by spawning a child process.
+    ///
+    /// `allowed_tools`: GAR-190 tool allowlist. Pass an empty `Vec` to allow all tools.
     pub async fn connect(
         &self,
         name: &str,
@@ -93,6 +97,7 @@ impl McpManager {
         args: &[String],
         env: &HashMap<String, String>,
         timeout_secs: u64,
+        allowed_tools: Vec<String>,
     ) -> Result<()> {
         let mut cmd = Command::new(command);
         cmd.args(args);
@@ -135,6 +140,22 @@ impl McpManager {
             info!("  -> {name}.{}", tool.name);
         }
 
+        // GAR-190: log which tools are blocked by the allowlist
+        if !allowed_tools.is_empty() {
+            let blocked: Vec<&str> = tools
+                .iter()
+                .filter(|t| !allowed_tools.contains(&t.name))
+                .map(|t| t.name.as_str())
+                .collect();
+            if !blocked.is_empty() {
+                info!(
+                    "MCP server '{name}': allowlist active — {} tool(s) blocked: {:?}",
+                    blocked.len(),
+                    blocked
+                );
+            }
+        }
+
         let conn = McpConnection {
             server_name: name.to_string(),
             service,
@@ -145,6 +166,7 @@ impl McpManager {
                 env: env.clone(),
                 timeout_secs,
             },
+            allowed_tools,
         };
 
         self.connections
@@ -156,7 +178,7 @@ impl McpManager {
 
     /// Connect to an MCP server via HTTP (Streamable HTTP transport).
     #[cfg(feature = "mcp-http")]
-    pub async fn connect_http(&self, name: &str, url: &str, timeout_secs: u64) -> Result<()> {
+    pub async fn connect_http(&self, name: &str, url: &str, timeout_secs: u64, allowed_tools: Vec<String>) -> Result<()> {
         use rmcp::transport::StreamableHttpClientTransport;
 
         let transport = StreamableHttpClientTransport::from_uri(url);
@@ -197,6 +219,7 @@ impl McpManager {
                 url: url.to_string(),
                 timeout_secs,
             },
+            allowed_tools,
         };
 
         self.connections
@@ -229,7 +252,10 @@ impl McpManager {
     }
 
     /// Create `Tool` trait objects for all tools from a specific server.
-    /// The tools share a reference to the server's peer handle.
+    ///
+    /// GAR-190: If the connection has a non-empty `allowed_tools` list, only tools
+    /// whose names appear in that list are returned. Unknown names in the allowlist
+    /// are silently ignored (the tool simply wasn't discovered by this server).
     pub async fn take_tools(&self, name: &str, timeout: Duration) -> Vec<Box<dyn Tool>> {
         let conns = self.connections.read().await;
         let Some(conn) = conns.get(name) else {
@@ -240,6 +266,9 @@ impl McpManager {
 
         conn.tools
             .iter()
+            .filter(|t| {
+                conn.allowed_tools.is_empty() || conn.allowed_tools.contains(&t.name)
+            })
             .map(|t| {
                 Box::new(McpTool::new(
                     &conn.server_name,
@@ -465,6 +494,7 @@ impl McpManager {
             session_id: "mcp_command".to_string(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let input = serde_json::Value::Object(arguments.into_iter().collect());
@@ -478,16 +508,16 @@ impl McpManager {
 
     /// Check all connections and attempt to reconnect any that are closed.
     async fn check_and_reconnect(&self) {
-        let to_reconnect: Vec<(String, ConnectionParams)> = {
+        let to_reconnect: Vec<(String, ConnectionParams, Vec<String>)> = {
             let conns = self.connections.read().await;
             conns
                 .iter()
                 .filter(|(_, conn)| conn.service.is_closed())
-                .map(|(name, conn)| (name.clone(), conn.params.clone()))
+                .map(|(name, conn)| (name.clone(), conn.params.clone(), conn.allowed_tools.clone()))
                 .collect()
         };
 
-        for (name, params) in to_reconnect {
+        for (name, params, allowed_tools) in to_reconnect {
             info!("MCP server '{name}' connection lost, attempting reconnect...");
             // Remove stale connection
             self.connections.write().await.remove(&name);
@@ -498,12 +528,12 @@ impl McpManager {
                     ref args,
                     ref env,
                     timeout_secs,
-                } => self.connect(&name, command, args, env, timeout_secs).await,
+                } => self.connect(&name, command, args, env, timeout_secs, allowed_tools).await,
                 #[cfg(feature = "mcp-http")]
                 ConnectionParams::Http {
                     ref url,
                     timeout_secs,
-                } => self.connect_http(&name, url, timeout_secs).await,
+                } => self.connect_http(&name, url, timeout_secs, allowed_tools).await,
             };
 
             match result {

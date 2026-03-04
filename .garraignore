@@ -1,0 +1,64 @@
+# .garraignore — regras de exclusão para o scanner de arquivos do agente GarraIA
+# Sintaxe idêntica ao .gitignore, com suporte a extglob (!(pat), *(pat), +(pat), @(pat), ?(pat))
+# Afeta apenas a varredura do agente (file_read, repo_search, list_dir), NÃO o git.
+
+# ─── Build / artefatos gerados ─────────────────────────────────────────────
+target/
+dist/
+release/
+*.wasm
+
+# ─── Dependências e lock files ──────────────────────────────────────────────
+# Cargo.lock é grande e gerado automaticamente; não útil para análise do agente
+Cargo.lock
+
+# ─── Dados de runtime ───────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ─── Segredos e credenciais ─────────────────────────────────────────────────
+.env
+.env.*
+credentials/
+vault.json
+
+# ─── Scripts de automação temporários (Linear, CI) ──────────────────────────
+# Úteis para humanos mas ruidosos para o agente durante buscas de código
+*.ps1
+
+# ─── Arquivos de sessão do agente (Claude Code) ─────────────────────────────
+.claude/
+
+# ─── Voice / áudio temporário ───────────────────────────────────────────────
+voice_temp/
+*.input.ogg
+*.output.ogg
+
+# ─── Python (serviços de voz) ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# ─── Testes externos / fixtures grandes ─────────────────────────────────────
+testsprite_tests/
+.testsprite/
+
+# ─── Documentação compilada ─────────────────────────────────────────────────
+book/
+docs/book/
+
+# ─── Logs ───────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Planejamento interno ───────────────────────────────────────────────────
+plans/
+
+# ─── OS / IDE ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

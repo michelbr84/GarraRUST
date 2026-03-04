@@ -19,6 +19,36 @@ use crate::providers::{
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
+/// GAR-187: Detect if the user is approving a pending tool confirmation.
+///
+/// Returns `true` when:
+/// 1. The recent conversation history contains a `[CONFIRM_REQUIRED]` marker
+///    (emitted by `BashTool` or other tools that require human-in-the-loop), AND
+/// 2. `user_text` is a simple approval word ("sim", "yes", "confirmar", etc.).
+///
+/// Only scans the last 6 messages to avoid false positives from old confirmations.
+fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> bool {
+    let text = user_text.trim().to_lowercase();
+    let approval_words = ["sim", "yes", "confirmar", "confirma", "proceed", "ok", "approve"];
+    let is_approval = approval_words.iter().any(|w| text == *w);
+    if !is_approval {
+        return false;
+    }
+
+    // Check recent history for the [CONFIRM_REQUIRED] marker
+    history.iter().rev().take(6).any(|msg| {
+        let contains_marker = |s: &str| s.contains("[CONFIRM_REQUIRED]");
+        match &msg.content {
+            MessagePart::Text(t) => contains_marker(t),
+            MessagePart::Parts(parts) => parts.iter().any(|p| match p {
+                ContentBlock::ToolResult { content, .. } => contains_marker(content),
+                ContentBlock::Text { text } => contains_marker(text),
+                _ => false,
+            }),
+        }
+    })
+}
+
 /// GAR-210: Returns true for errors that warrant a retry or provider fallback.
 /// Detects rate-limit (429) and transient server errors (502/503/529).
 fn is_retryable_error(err: &Error) -> bool {
@@ -480,6 +510,9 @@ impl AgentRuntime {
             conversation_history.len()
         );
 
+        // GAR-187: detect if the user approved a pending tool confirmation
+        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
+
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
@@ -563,6 +596,7 @@ impl AgentRuntime {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat: false,
+                        is_confirmation_approved,
                     };
 
                     // registra chamada com payload para detecção de loop por assinatura
@@ -588,6 +622,21 @@ impl AgentRuntime {
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
                     };
                     info!("tool '{}' result: is_error={}", name, output.is_error);
+
+                    // GAR-187: pause agent loop if tool requires user confirmation
+                    if output.requires_confirmation {
+                        tracing::info!(session = %session_id, "agent paused: awaiting user confirmation");
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: output.content.clone(),
+                        });
+                        messages.push(ChatMessage {
+                            role: ChatRole::User,
+                            content: MessagePart::Parts(tool_results),
+                        });
+                        return Ok(output.content);
+                    }
+
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: output.content,
@@ -663,6 +712,9 @@ impl AgentRuntime {
         // Trim conversation history to fit context window
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
+
+        // GAR-187: detect if the user approved a pending tool confirmation
+        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
 
         let mut budget = match self.max_tool_calls {
             Some(limit) => ExecutionBudget::com_limite(limit),
@@ -764,12 +816,14 @@ impl AgentRuntime {
 
             // Execute each tool and collect results
             let mut tool_results = Vec::new();
+            let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     let context = ToolContext {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat,
+                        is_confirmation_approved,
                     };
 
                     // registra chamada com payload para detecção de loop por assinatura
@@ -794,6 +848,18 @@ impl AgentRuntime {
                         }
                         None => ToolOutput::error(format!("unknown tool: {}", name)),
                     };
+
+                    // GAR-187: pause agent loop if tool requires user confirmation
+                    if output.requires_confirmation {
+                        tracing::info!(session = %session_id, "agent paused: awaiting user confirmation");
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: output.content.clone(),
+                        });
+                        confirmation_response = Some(output.content);
+                        break;
+                    }
+
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: output.content,
@@ -806,6 +872,11 @@ impl AgentRuntime {
                 role: ChatRole::User,
                 content: MessagePart::Parts(tool_results),
             });
+
+            // GAR-187: if a confirmation was requested, return the prompt immediately
+            if let Some(confirmation_msg) = confirmation_response {
+                return Ok(confirmation_msg);
+            }
         }
     }
 
@@ -942,6 +1013,9 @@ impl AgentRuntime {
             tool_defs.len(),
             conversation_history.len()
         );
+
+        // GAR-187: detect if the user approved a pending tool confirmation
+        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
 
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
@@ -1093,6 +1167,7 @@ impl AgentRuntime {
 
                     // Execute tools
                     let mut tool_results = Vec::new();
+                    let mut confirmation_response: Option<String> = None;
                     for (id, name, input_json) in &tool_uses {
                         let input: serde_json::Value =
                             serde_json::from_str(input_json).unwrap_or_default();
@@ -1100,6 +1175,7 @@ impl AgentRuntime {
                             session_id: session_id.to_string(),
                             user_id: user_id.map(|s| s.to_string()),
                             is_heartbeat: false,
+                            is_confirmation_approved,
                         };
 
                         // registra chamada com payload para detecção de loop por assinatura
@@ -1123,6 +1199,18 @@ impl AgentRuntime {
                             }
                             None => ToolOutput::error(format!("unknown tool: {}", name)),
                         };
+
+                        // GAR-187: pause agent loop if tool requires user confirmation
+                        if output.requires_confirmation {
+                            tracing::info!(session = %session_id, "agent paused (streaming): awaiting user confirmation");
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: output.content.clone(),
+                            });
+                            confirmation_response = Some(output.content);
+                            break;
+                        }
+
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: output.content,
@@ -1133,6 +1221,13 @@ impl AgentRuntime {
                         role: ChatRole::User,
                         content: MessagePart::Parts(tool_results),
                     });
+
+                    // GAR-187: if confirmation needed, send prompt via stream and return
+                    if let Some(confirmation_msg) = confirmation_response {
+                        let _ = delta_tx.send(confirmation_msg.clone()).await;
+                        full_response.push_str(&confirmation_msg);
+                        return Ok(full_response);
+                    }
 
                     // Add separator between iterations
                     if !full_response.is_empty() {
@@ -1185,12 +1280,14 @@ impl AgentRuntime {
                     });
 
                     let mut tool_results = Vec::new();
+                    let mut confirmation_response: Option<String> = None;
                     for block in &response.content {
                         if let ContentBlock::ToolUse { id, name, input } = block {
                             let context = ToolContext {
                                 session_id: session_id.to_string(),
                                 user_id: user_id.map(|s| s.to_string()),
                                 is_heartbeat: false,
+                                is_confirmation_approved,
                             };
 
                             // registra chamada com payload para detecção de loop por assinatura
@@ -1219,6 +1316,18 @@ impl AgentRuntime {
                                 }
                                 None => ToolOutput::error(format!("unknown tool: {}", name)),
                             };
+
+                            // GAR-187: pause if tool requires user confirmation
+                            if output.requires_confirmation {
+                                tracing::info!(session = %session_id, "agent paused (streaming fallback): awaiting user confirmation");
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: output.content.clone(),
+                                });
+                                confirmation_response = Some(output.content);
+                                break;
+                            }
+
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: output.content,
@@ -1230,6 +1339,13 @@ impl AgentRuntime {
                         role: ChatRole::User,
                         content: MessagePart::Parts(tool_results),
                     });
+
+                    // GAR-187: if confirmation needed, send prompt via stream and return
+                    if let Some(confirmation_msg) = confirmation_response {
+                        let _ = delta_tx.send(confirmation_msg.clone()).await;
+                        full_response.push_str(&confirmation_msg);
+                        return Ok(full_response);
+                    }
                 }
             }
         }

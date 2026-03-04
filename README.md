@@ -489,6 +489,7 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
 - **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
 - **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
+- **Confirmação de comandos arriscados** - `tool_confirmation_enabled: true` pausa o agente antes de executar comandos bash destrutivos (`rm -r`, `git reset --hard`, `drop database`, etc.) e aguarda aprovação do usuário ("sim"/"yes"). Default: `false` (opt-in).
 - **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
 - **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
 
@@ -556,6 +557,12 @@ agent:
   max_tokens: 4096
   max_context_tokens: 100000
   max_tool_calls: 50        # limite de tool calls por tarefa (padrão: 50)
+  # GAR-210: fallback automático quando o provider primário retorna 429/5xx
+  fallback_providers:
+    - openrouter
+    - ollama-local
+  # GAR-187: confirmação humana antes de comandos bash destrutivos (opt-in)
+  tool_confirmation_enabled: false
 
 memory:
   enabled: true
@@ -579,10 +586,18 @@ voice:
   tts_endpoint: "http://127.0.0.1:7860"
   language: "pt"
 
+# GAR-261: glob e ignore para ferramentas de busca de arquivos
+fs:
+  glob:
+    mode: picomatch   # picomatch (padrão) | bash
+    dot: false        # se true, * e ? casam dotfiles (.hidden)
+  ignore:
+    use_gitignore: true  # respeita .gitignore durante varredura
+
 # Timeouts configuráveis por tipo (valores em segundos)
 timeouts:
   llm:
-    default_secs: 30
+    default_secs: 120   # modelos grandes podem demorar; 30s era curto demais
   tts:
     default_secs: 120
   mcp:
@@ -592,6 +607,20 @@ timeouts:
 ```
 
 Consulte a [referência completa de configuração](docs/) para todas as opções, incluindo Discord, Slack, WhatsApp, iMessage, voice mode, embeddings e configuração de servidor MCP.
+
+#### .garraignore
+
+Crie um `.garraignore` na raiz do projeto para controlar quais arquivos o agente ignora durante buscas (`file_read`, `repo_search`, `list_dir`). Sintaxe idêntica ao `.gitignore`, com suporte adicional a extglob (`!(*.txt)`, `*(src)`, etc.):
+
+```gitignore
+# .garraignore — não afeta o git, apenas o scanner do agente
+target/
+Cargo.lock
+*.db
+*.ps1
+.env*
+credentials/
+```
 
 ## Arquitetura
 
@@ -608,7 +637,7 @@ crates/
 ├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
 ├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
 ├── garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec), sessões
-├── garraia-glob/       # Glob pattern matching, .garraignore, scanner de arquivos
+├── garraia-glob/       # Glob pattern matching (picomatch + bash extglob), .garraignore, scanner de arquivos
 ├── garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
 ├── garraia-media/      # Processamento de mídia: PDF, imagens
 ├── garraia-security/   # Cofre de credenciais, listas de permissões, pareamento, validação

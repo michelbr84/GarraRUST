@@ -286,6 +286,7 @@ mod tests {
                 url: None,
                 enabled: None,
                 timeout: None,
+                allowed_tools: vec![],
             },
         );
 

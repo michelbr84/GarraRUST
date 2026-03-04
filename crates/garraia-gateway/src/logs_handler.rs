@@ -25,8 +25,11 @@ pub async fn get_logs() -> impl IntoResponse {
             file.seek(SeekFrom::End(-(MAX_TAIL_BYTES as i64)))?;
         }
 
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
+        // Read as bytes and convert lossily — prevents 500 when the log contains
+        // non-UTF-8 bytes (e.g. from terminal colour codes or binary tool output).
+        let mut raw = Vec::new();
+        file.read_to_end(&mut raw)?;
+        let mut buf = String::from_utf8_lossy(&raw).into_owned();
 
         if file_len > MAX_TAIL_BYTES {
             if let Some(pos) = buf.find('\n') {

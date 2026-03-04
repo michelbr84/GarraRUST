@@ -767,6 +767,7 @@ async fn async_main(
                             &server_config.args,
                             &server_config.env,
                             timeout_secs,
+                            vec![], // CLI: no allowlist — show all tools
                         )
                         .await
                     {
@@ -803,6 +804,7 @@ async fn async_main(
                             &server_config.args,
                             &server_config.env,
                             timeout_secs,
+                            vec![], // CLI: no allowlist
                         )
                         .await
                     {
@@ -844,6 +846,7 @@ async fn async_main(
                             &server_config.args,
                             &server_config.env,
                             timeout_secs,
+                            vec![], // CLI: no allowlist
                         )
                         .await
                     {

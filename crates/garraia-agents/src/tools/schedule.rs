@@ -117,6 +117,7 @@ mod tests {
             session_id: session_id.to_string(),
             user_id: Some("u-1".to_string()),
             is_heartbeat: false,
+            is_confirmation_approved: false,
         }
     }
 
@@ -196,6 +197,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             user_id: Some("u-1".to_string()),
             is_heartbeat: true,
+            is_confirmation_approved: false,
         };
 
         let err = tool
@@ -279,6 +281,7 @@ mod tests {
                     session_id: "s2".to_string(),
                     user_id: Some("u2".to_string()),
                     is_heartbeat: false,
+                    is_confirmation_approved: false,
                 },
                 serde_json::json!({
                     "delay_seconds": 60,

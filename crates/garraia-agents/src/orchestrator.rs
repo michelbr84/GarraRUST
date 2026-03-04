@@ -480,6 +480,7 @@ Apenas retorne o JSON, sem explicações."#,
             session_id: session_id.to_string(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         // Executar com timeout

@@ -53,6 +53,33 @@ const DENY_LIST: &[&str] = &[
     "poweroff",
 ];
 
+/// GAR-187: Confirmation list — risky but not catastrophic commands that require
+/// explicit user approval before execution. Unlike DENY_LIST (hard block), these
+/// are paused and a confirmation prompt is returned to the user.
+///
+/// Patterns use `.contains()` on the lowercased command string.
+const CONFIRM_LIST: &[&str] = &[
+    "rm -r",          // recursive delete (not caught by DENY_LIST which only blocks rm -rf / rm -r /)
+    "del /s",         // Windows recursive delete
+    "del /f",         // Windows force delete
+    "rd /s",          // Windows remove directory recursively
+    "git reset --hard",
+    "git push --force",
+    "git push -f",
+    "git clean -f",
+    "drop table",     // SQL destructive operations
+    "drop database",
+    "drop schema",
+    "truncate table",
+    "truncate ",
+    "delete from",    // unqualified DELETE (no WHERE)
+    "kill ",          // process kill
+    "taskkill",
+    "stop-process",
+    "remove-item -recurse",
+    "remove-item -r",
+];
+
 /// Allow list of safe commands for read-only mode - GAR-236
 const ALLOW_LIST_READONLY: &[&str] = &[
     "ls",
@@ -80,6 +107,9 @@ const ALLOW_LIST_READONLY: &[&str] = &[
 pub struct BashTool {
     timeout: Duration,
     allow_readonly: bool,
+    /// GAR-187: When true, commands matching CONFIRM_LIST require user approval
+    /// before execution. Approval is signalled via ToolContext.is_confirmation_approved.
+    confirmation_enabled: bool,
 }
 
 impl BashTool {
@@ -87,6 +117,16 @@ impl BashTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
             allow_readonly: false,
+            confirmation_enabled: false,
+        }
+    }
+
+    /// GAR-187: Create a BashTool with human-in-the-loop confirmation for risky commands.
+    pub fn new_with_confirmation(timeout_secs: Option<u64>) -> Self {
+        Self {
+            timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
+            allow_readonly: false,
+            confirmation_enabled: true,
         }
     }
 
@@ -95,6 +135,7 @@ impl BashTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
             allow_readonly: true,
+            confirmation_enabled: false,
         }
     }
 
@@ -108,6 +149,12 @@ impl BashTool {
             }
         }
         false
+    }
+
+    /// GAR-187: Check if command matches the risky confirmation tier.
+    fn is_risky(&self, command: &str) -> bool {
+        let cmd_lower = command.to_lowercase();
+        CONFIRM_LIST.iter().any(|p| cmd_lower.contains(&p.to_lowercase()))
     }
 
     /// Check if command is in allow list (for read-only mode)
@@ -156,7 +203,7 @@ impl Tool for BashTool {
 
     async fn execute(
         &self,
-        _context: &ToolContext,
+        context: &ToolContext,
         input: serde_json::Value,
     ) -> Result<ToolOutput> {
         let comando = input
@@ -164,12 +211,27 @@ impl Tool for BashTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Agent("parâmetro 'command' ausente".into()))?;
 
-        // GAR-236: Security check - deny list
+        // GAR-236: Security check - deny list (hard block, never executes)
         if self.is_dangerous(comando) {
             tracing::error!("Blocked dangerous command: {}", comando);
             return Ok(ToolOutput::error(
                 "Comando bloqueado por segurança: padrão perigoso detectado".to_string(),
             ));
+        }
+
+        // GAR-187: Risky tier — requires user confirmation before execution.
+        // Skipped if the user has already approved via ToolContext.is_confirmation_approved.
+        if self.confirmation_enabled && self.is_risky(comando) && !context.is_confirmation_approved {
+            tracing::warn!(
+                command = %comando,
+                session = %context.session_id,
+                "bash: risky command requires user confirmation"
+            );
+            return Ok(ToolOutput::confirmation_request(format!(
+                "[CONFIRM_REQUIRED] O comando a seguir requer confirmação antes de ser executado:\n\
+                 ```\n{comando}\n```\n\
+                 Responda **sim** para executar ou **não** para cancelar."
+            )));
         }
 
         // GAR-236: Security check - read-only allow list
@@ -257,6 +319,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let output = tool
@@ -282,6 +345,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let output = tool
@@ -300,6 +364,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let result = tool.execute(&ctx, serde_json::json!({})).await;
@@ -358,6 +423,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let output = tool

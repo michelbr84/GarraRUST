@@ -1,5 +1,15 @@
 //! GAR-257: Unified repo scanner — walks a directory tree, applies include/exclude
 //! glob patterns and `.gitignore`/`.garraignore` rules.
+//!
+//! ## Coverage logging (GAR-258)
+//!
+//! Set `RUST_LOG=garraia_glob::scanner=debug` to see per-path decisions:
+//!
+//! ```text
+//! DEBUG garraia_glob::scanner  path="secret.key"  pattern="*.key"  source=".gitignore" → ignored
+//! DEBUG garraia_glob::scanner  path="dist/app.js" pattern="dist/**"                    → excluded
+//! DEBUG garraia_glob::scanner  path="src/main.rs" pattern="**/*.rs"                    → included
+//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -101,7 +111,6 @@ impl Scanner {
 
     /// Execute the scan and return all matching [`MatchResult`]s.
     pub fn scan(&self) -> Result<Vec<MatchResult>> {
-        let root_str = self.root.to_string_lossy().replace('\\', "/");
         let mut results = Vec::new();
         let mut count = 0usize;
 
@@ -113,7 +122,8 @@ impl Scanner {
             }
         }
         if self.use_garraignore {
-            if let Ok(ig) = IgnoreFile::from_path(self.root.join(".garraignore")) {
+            // GAR-255: use from_garraignore_path so extglob patterns are enabled.
+            if let Ok(ig) = IgnoreFile::from_garraignore_path(self.root.join(".garraignore")) {
                 root_ignores.push(ig);
             }
         }
@@ -140,7 +150,7 @@ impl Scanner {
                 continue;
             }
 
-            // Load per-directory ignore files (subdirectory .gitignore).
+            // Load per-directory ignore files (subdirectory .gitignore/.garraignore).
             let mut local_ignores = root_ignores.clone();
             if let Some(parent) = abs_path.parent() {
                 if parent != self.root {
@@ -150,19 +160,29 @@ impl Scanner {
                         }
                     }
                     if self.use_garraignore {
-                        if let Ok(ig) = IgnoreFile::from_path(parent.join(".garraignore")) {
+                        if let Ok(ig) =
+                            IgnoreFile::from_garraignore_path(parent.join(".garraignore"))
+                        {
                             local_ignores.push(ig);
                         }
                     }
                 }
             }
 
-            // Check ignore rules.
-            if local_ignores.iter().any(|ig: &IgnoreFile| ig.is_ignored(&rel)) {
+            // ── GAR-258: coverage log — ignore rule with pattern + source attribution ─
+            if let Some(ig) = local_ignores.iter().find(|ig| ig.is_ignored(&rel)) {
+                let pat = ig.matching_pattern(&rel).unwrap_or("<unknown>");
+                let src = ig.source.as_deref().unwrap_or("<pre-loaded>");
+                tracing::debug!(
+                    path = %rel,
+                    pattern = pat,
+                    source = src,
+                    "scanner: path ignored"
+                );
                 continue;
             }
 
-            // Apply include filter (if any patterns are registered).
+            // ── Apply include filter ───────────────────────────────────────────────
             let included = if self.include.is_empty() {
                 true
             } else {
@@ -173,12 +193,27 @@ impl Scanner {
                 continue;
             }
 
-            // Apply exclude filter.
-            if self.exclude.iter().any(|p| p.matches(&rel)) {
+            // ── GAR-258: coverage log — which include pattern matched ──────────────
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                if let Some(pat) = self.include.iter().find(|p| p.matches(&rel)) {
+                    tracing::debug!(
+                        path = %rel,
+                        pattern = pat.source(),
+                        "scanner: path included"
+                    );
+                }
+            }
+
+            // ── Apply exclude filter ───────────────────────────────────────────────
+            if let Some(pat) = self.exclude.iter().find(|p| p.matches(&rel)) {
+                tracing::debug!(
+                    path = %rel,
+                    pattern = pat.source(),
+                    "scanner: path excluded"
+                );
                 continue;
             }
 
-            let _ = &root_str; // keep root_str alive
             results.push(MatchResult {
                 path: rel,
                 is_dir: abs_path.is_dir(),
@@ -206,17 +241,16 @@ pub fn scanner_from_config(
         "bash" => crate::pattern::GlobMode::Bash,
         _ => crate::pattern::GlobMode::Picomatch,
     };
-    let config = GlobConfig {
-        mode,
-        dot,
-        ..GlobConfig::default()
-    };
+    let config = GlobConfig { mode, dot, ..GlobConfig::default() };
     Scanner::new(root, config).use_gitignore(use_gitignore)
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ignore::IgnoreKind;
     use std::fs;
     use tempfile::TempDir;
 
@@ -229,6 +263,8 @@ mod tests {
             fs::write(full, "").unwrap();
         }
     }
+
+    // ── Basic scanner behaviour ────────────────────────────────────────────
 
     #[test]
     fn scan_all_rs_files() {
@@ -292,5 +328,114 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 3);
+    }
+
+    // ── GAR-256: precedence & anchoring tests ─────────────────────────────
+
+    /// Unanchored `*.key` in gitignore must match files at any depth.
+    #[test]
+    fn gitignore_unanchored_matches_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["src/main.rs", "config/prod.key", "config/nested/db.key"]);
+        fs::write(tmp.path().join(".gitignore"), "*.key\n").unwrap();
+
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(true)
+            .use_garraignore(false)
+            .scan_files()
+            .unwrap();
+
+        assert!(!results.iter().any(|p| p.ends_with(".key")));
+        assert!(results.iter().any(|p| p == "src/main.rs"));
+    }
+
+    /// Negation `!keep.log` re-includes within the same ignore file.
+    #[test]
+    fn negation_within_file_re_includes() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["error.log", "keep.log", "src/main.rs"]);
+        fs::write(tmp.path().join(".gitignore"), "*.log\n!keep.log\n").unwrap();
+
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(true)
+            .use_garraignore(false)
+            .scan_files()
+            .unwrap();
+
+        assert!(!results.iter().any(|p| p == "error.log"), "error.log should be ignored");
+        assert!(results.iter().any(|p| p == "keep.log"), "keep.log should be re-included");
+        assert!(results.iter().any(|p| p == "src/main.rs"));
+    }
+
+    /// GAR-256: Negation in `.garraignore` does NOT override a `.gitignore` positive.
+    /// Each ignore file is evaluated independently — additive, not overriding.
+    #[test]
+    fn cross_file_negation_does_not_override() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["secret.key", "src/main.rs"]);
+        fs::write(tmp.path().join(".gitignore"), "*.key\n").unwrap();
+        // garraignore negates — but cannot override another file's positive rule
+        fs::write(tmp.path().join(".garraignore"), "!secret.key\n").unwrap();
+
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(true)
+            .use_garraignore(true)
+            .scan_files()
+            .unwrap();
+
+        assert!(!results.iter().any(|p| p == "secret.key"), "gitignore rule must win");
+    }
+
+    /// Directory pattern `target/` ignores the dir entry AND all contents.
+    #[test]
+    fn directory_pattern_ignores_dir_and_contents() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["src/main.rs", "target/debug/app.exe", "target/release/app.exe"]);
+        fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
+
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(true)
+            .use_garraignore(false)
+            .scan_files()
+            .unwrap();
+
+        assert!(!results.iter().any(|p| p.starts_with("target/")));
+        assert!(results.iter().any(|p| p == "src/main.rs"));
+    }
+
+    /// GAR-255: `.garraignore` supports extglob — `!(*.rs)` ignores non-rs files.
+    #[test]
+    fn garraignore_extglob_ignores_non_rs() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["src/main.rs", "Cargo.toml", "README.md"]);
+        fs::write(tmp.path().join(".garraignore"), "!(*.rs)\n").unwrap();
+
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(false)
+            .use_garraignore(true)
+            .scan_files()
+            .unwrap();
+
+        assert!(results.iter().any(|p| p == "src/main.rs"));
+        assert!(!results.iter().any(|p| p == "Cargo.toml"));
+        assert!(!results.iter().any(|p| p == "README.md"));
+    }
+
+    /// Pre-loaded `IgnoreFile` via `with_ignore` works correctly.
+    #[test]
+    fn with_ignore_preloaded() {
+        let tmp = TempDir::new().unwrap();
+        make_tree(&tmp, &["a.rs", "b.txt"]);
+
+        let ig = IgnoreFile::parse("*.txt\n", IgnoreKind::Git);
+        let results = Scanner::new(tmp.path(), GlobConfig::default())
+            .use_gitignore(false)
+            .use_garraignore(false)
+            .with_ignore(ig)
+            .scan_files()
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], "a.rs");
     }
 }
