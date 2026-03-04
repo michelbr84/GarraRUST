@@ -16,7 +16,7 @@ pub mod pattern;
 pub mod scanner;
 
 pub use matcher::{GlobMatcher, MatchOptions, MatchResult};
-pub use ignore::IgnoreFile;
+pub use ignore::{IgnoreFile, IgnoreKind};
 pub use path::normalize_path;
 pub use pattern::{GlobConfig, GlobMode, GlobPattern};
 pub use scanner::Scanner;

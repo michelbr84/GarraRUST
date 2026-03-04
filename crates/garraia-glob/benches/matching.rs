@@ -107,5 +107,83 @@ fn bench_brace_expansion(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_simple, bench_extglob_bang, bench_brace_expansion);
+// ── Traversal benchmark (GAR-267) ─────────────────────────────────────────
+
+fn bench_traversal(c: &mut Criterion) {
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Build a temporary tree once; `tmp` keeps it alive for all iterations.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+
+    // 1 000 files across 10 directories with mixed extensions.
+    let dirs = [
+        "src", "tests", "benches", "crates/foo/src", "crates/bar/src",
+        "crates/baz/src", "docs", "scripts", "config", "examples",
+    ];
+    let exts = ["rs", "toml", "md", "json", "txt"];
+    let mut total = 0usize;
+    for (di, dir) in dirs.iter().enumerate() {
+        fs::create_dir_all(root.join(dir)).unwrap();
+        for i in 0..100usize {
+            let ext = exts[(di + i) % exts.len()];
+            fs::write(root.join(dir).join(format!("file_{i}.{ext}")), "").unwrap();
+            total += 1;
+        }
+    }
+
+    let mut group = c.benchmark_group("traversal");
+    group.throughput(Throughput::Elements(total as u64));
+
+    // 1. Include filter only — no ignore files.
+    group.bench_function("scan_rs_no_ignore", |b| {
+        b.iter(|| {
+            use garraia_glob::{pattern::GlobConfig, scanner::Scanner};
+            let n = Scanner::new(black_box(&root), GlobConfig::default())
+                .include("**/*.rs").unwrap()
+                .use_gitignore(false)
+                .use_garraignore(false)
+                .scan_files()
+                .unwrap()
+                .len();
+            black_box(n)
+        });
+    });
+
+    // 2. No filters — baseline WalkDir + path normalisation overhead.
+    group.bench_function("scan_all_no_filters", |b| {
+        b.iter(|| {
+            use garraia_glob::{pattern::GlobConfig, scanner::Scanner};
+            let n = Scanner::new(black_box(&root), GlobConfig::default())
+                .use_gitignore(false)
+                .use_garraignore(false)
+                .scan_files()
+                .unwrap()
+                .len();
+            black_box(n)
+        });
+    });
+
+    // 3. Include + exclude — two pattern evaluations per file.
+    group.bench_function("scan_rs_exclude_crates", |b| {
+        b.iter(|| {
+            use garraia_glob::{pattern::GlobConfig, scanner::Scanner};
+            let n = Scanner::new(black_box(&root), GlobConfig::default())
+                .include("**/*.rs").unwrap()
+                .exclude("crates/**").unwrap()
+                .use_gitignore(false)
+                .use_garraignore(false)
+                .scan_files()
+                .unwrap()
+                .len();
+            black_box(n)
+        });
+    });
+
+    group.finish();
+    drop(tmp); // explicit cleanup
+}
+
+criterion_group!(benches, bench_simple, bench_extglob_bang, bench_brace_expansion, bench_traversal);
 criterion_main!(benches);

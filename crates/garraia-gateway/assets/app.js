@@ -8,12 +8,14 @@ import { initApiView, refreshStatus } from './api.js';
 import { initMemory } from './views/memoryView.js';
 import { initLogs } from './views/logsView.js';
 import { initModeSidebar } from './modeSidebar.js';
+import { initMcps } from './views/mcpView.js';
 
 async function boot() {
   initTheme();
   initRouter();
   initMemory();
   initLogs();
+  initMcps();
   initChat();
   initApiView();
   initNanoAgents();

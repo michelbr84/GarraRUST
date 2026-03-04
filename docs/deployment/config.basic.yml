@@ -31,6 +31,12 @@ agent:
   # GAR-210: fallback automático — se 'claude' retornar 429/5xx, tenta 'openrouter' na ordem.
   fallback_providers:
     - openrouter
+  # GAR-187: Human-in-the-loop para comandos bash arriscados.
+  # Quando true, comandos como `git reset --hard`, `rm -r`, `drop database`, etc.
+  # pausam o agente e pedem confirmação ao usuário antes de executar.
+  # O usuário deve responder "sim" (ou "yes", "confirmar", "ok") para prosseguir.
+  # Padrão: false (opt-in).
+  tool_confirmation_enabled: false
 
 channels:
   # Telegram (requer variável de ambiente TELEGRAM_BOT_TOKEN)
@@ -44,6 +50,39 @@ channels:
     type: discord
     enabled: true
     # bot_token e application_id são resolvidos automaticamente a partir das variáveis de ambiente
+
+# Timeouts por tipo de operação (em segundos).
+# O timeout do LLM é o mais crítico — modelos lentos podem ultrapassar 30s facilmente,
+# causando "error decoding response body" (body cortado antes de fechar o stream gzip).
+timeouts:
+  llm:
+    default_secs: 120   # padrão: 120s (suficiente para respostas longas de modelos grandes)
+  tts:
+    default_secs: 120   # síntese de voz pode demorar para textos longos
+  stt:
+    default_secs: 30    # transcrição de áudio curto
+  mcp:
+    default_secs: 60    # tools MCP (bash, web, etc.)
+  health:
+    default_secs: 5     # health check rápido
+
+# GAR-190: Configuração de segurança para servidores MCP.
+# allowed_tools restringe quais ferramentas do servidor podem ser usadas pelo LLM.
+# Se omitido ou vazio, todas as ferramentas descobertas são disponibilizadas.
+#
+# Exemplo:
+# mcp:
+#   meu-servidor:
+#     command: npx
+#     args: ["-y", "my-mcp-server"]
+#     allowed_tools: [web_search, read_file]   # bloqueia todas as outras
+#
+# Com allowed_tools vazio (padrão), nenhuma restrição é aplicada:
+# mcp:
+#   meu-servidor:
+#     command: npx
+#     args: ["-y", "my-mcp-server"]
+#     # allowed_tools: []  <- padrão: todas as tools permitidas
 
 # GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
 fs:

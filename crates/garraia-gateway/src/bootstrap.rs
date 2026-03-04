@@ -516,7 +516,13 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     }
 
     // --- Tools ---
-    runtime.register_tool(Box::new(BashTool::new(None)));
+    // GAR-187: use confirmation-enabled BashTool when config.agent.tool_confirmation_enabled
+    let bash_tool = if config.agent.tool_confirmation_enabled {
+        BashTool::new_with_confirmation(None)
+    } else {
+        BashTool::new(None)
+    };
+    runtime.register_tool(Box::new(bash_tool));
     runtime.register_tool(Box::new(FileReadTool::new(None)));
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
@@ -956,6 +962,7 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
                         &server_config.args,
                         &server_config.env,
                         timeout_secs,
+                        server_config.allowed_tools.clone(),
                     )
                     .await
             }
@@ -967,7 +974,7 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
                     );
                     continue;
                 };
-                manager.connect_http(name, url, timeout_secs).await
+                manager.connect_http(name, url, timeout_secs, server_config.allowed_tools.clone()).await
             }
             other => {
                 warn!("MCP server '{name}' uses unsupported transport '{other}', skipping");

@@ -306,3 +306,126 @@ fn backslash_paths_normalised_to_forward_slash() {
     assert!(p.matches("src\\a\\b\\main.rs"));
     assert!(p.matches("src/a/b/main.rs"));
 }
+
+// ── Bash extglob — extended suite (GAR-252) ───────────────────────────────
+
+/// `*(pat|pat)` — zero or more alternations, Bash safe mode.
+#[test]
+fn bash_star_zero_or_more_alternation() {
+    let p = bash("*(foo|bar)");
+    assert!(p.matches(""));         // zero
+    assert!(p.matches("foo"));      // one
+    assert!(p.matches("bar"));
+    assert!(p.matches("foobar"));   // two
+    assert!(p.matches("barfoo"));
+    assert!(p.matches("foofoo"));
+    assert!(!p.matches("baz"));     // not in alternation
+}
+
+/// `+(pat|pat)` — one or more alternations, Bash safe mode.
+#[test]
+fn bash_plus_one_or_more_alternation() {
+    let p = bash("+(foo|bar).rs");
+    assert!(p.matches("foo.rs"));
+    assert!(p.matches("bar.rs"));
+    assert!(p.matches("foobar.rs"));
+    assert!(p.matches("barfoobar.rs"));
+    assert!(!p.matches(".rs"));       // zero — not allowed
+    assert!(!p.matches("baz.rs"));
+}
+
+/// `@(pat|pat)` — exactly one alternative, Bash safe mode.
+#[test]
+fn bash_at_exactly_one() {
+    let p = bash("@(main|lib).rs");
+    assert!(p.matches("main.rs"));
+    assert!(p.matches("lib.rs"));
+    assert!(!p.matches("mainlib.rs")); // two → not one
+    assert!(!p.matches("util.rs"));
+}
+
+/// `?(pat)` — zero or one occurrence, Bash safe mode.
+#[test]
+fn bash_question_optional_prefix() {
+    let p = bash("src/?(test_)main.rs");
+    assert!(p.matches("src/main.rs"));
+    assert!(p.matches("src/test_main.rs"));
+    assert!(!p.matches("src/test_test_main.rs")); // two — not allowed
+}
+
+/// Bash safe mode: `!(pat)` confined to a single segment (no slash crossing).
+#[test]
+fn bash_safe_bang_does_not_cross_slash() {
+    let p = bash("src/!(generated)");
+    assert!(p.matches("src/main"));
+    assert!(p.matches("src/lib"));
+    assert!(!p.matches("src/generated"));
+    assert!(!p.matches("src/a/main")); // [^/]* stops at /
+}
+
+/// Bash greedy: `!(*.txt)` can span multiple path segments.
+#[test]
+fn bash_greedy_bang_multilevel() {
+    let p = bash_greedy("!(*.txt)");
+    assert!(p.matches("README.md"));
+    assert!(p.matches("src/lib.rs"));
+    assert!(p.matches("a/b/c/main.rs"));
+    assert!(!p.matches("README.txt"));
+    assert!(!p.matches("docs/notes.txt"));
+}
+
+/// Bash greedy: `!(test/*)` excludes paths under test/ only.
+#[test]
+fn bash_greedy_bang_path_prefix() {
+    let p = bash_greedy("!(test/*)");
+    assert!(p.matches("src/main.rs"));
+    assert!(p.matches("benches/perf.rs"));
+    assert!(!p.matches("test/main.rs"));
+    assert!(!p.matches("test/unit/lib.rs"));
+}
+
+/// Combined `@(…)` and plain `*` — exactly-one directory, any file name.
+#[test]
+fn bash_combined_at_and_star() {
+    let p = bash("@(src|lib)/*.rs");
+    assert!(p.matches("src/main.rs"));
+    assert!(p.matches("lib/util.rs"));
+    assert!(!p.matches("bin/main.rs")); // prefix not in @(src|lib)
+    assert!(!p.matches("src/sub/main.rs")); // * doesn't cross /
+}
+
+/// Nested extglob: `+(foo|!(bar))` — one or more of "foo" or "not bar".
+#[test]
+fn bash_nested_plus_with_bang() {
+    let p = bash("+(foo|!(bar)).rs");
+    assert!(p.matches("foo.rs"));
+    assert!(p.matches("baz.rs")); // !(bar) matches "baz"
+    assert!(!p.matches("bar.rs")); // !(bar) rejects "bar", foo doesn't match → no match
+}
+
+/// Case-insensitive Bash mode.
+#[test]
+fn bash_case_insensitive() {
+    let p = GlobPattern::new(
+        "+(FOO|BAR).rs",
+        &GlobConfig {
+            mode: GlobMode::Bash,
+            case_sensitive: false,
+            ..GlobConfig::default()
+        },
+    )
+    .unwrap();
+    assert!(p.matches("foo.rs"));
+    assert!(p.matches("BAR.rs"));
+    assert!(p.matches("fooBAR.rs")); // two alternations
+}
+
+/// `*(*.log)` with wildcard inside — zero or more `.log`-named segments.
+#[test]
+fn bash_star_inner_wildcard() {
+    let p = bash("*(*.log)test");
+    assert!(p.matches("test"));           // zero occurrences
+    assert!(p.matches("error.logtest"));  // one
+    assert!(p.matches("a.logb.logtest")); // two
+    assert!(!p.matches("error.txttest")); // *.log doesn't match error.txt
+}

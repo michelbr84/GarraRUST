@@ -150,11 +150,17 @@ struct Compiler<'a> {
     next_group: usize,
     /// Pending negations: (group_index, inner_re_str).
     negations: Vec<(usize, String)>,
+    /// When `true`, bare `*` compiles to `.*` (matches slashes) instead of `[^/]*`.
+    ///
+    /// Activated while compiling the **inner** pattern of a greedy `!(…)` extglob so
+    /// that `!(*.txt)` correctly rejects paths like `docs/notes.txt` (the inner `*.txt`
+    /// must be able to match across path separators to cover the full captured segment).
+    greedy_star: bool,
 }
 
 impl<'a> Compiler<'a> {
     fn new(config: &'a GlobConfig) -> Self {
-        Compiler { config, next_group: 1, negations: Vec::new() }
+        Compiler { config, next_group: 1, negations: Vec::new(), greedy_star: false }
     }
 
     fn compile(&mut self, pattern: &str) -> Result<String> {
@@ -216,11 +222,19 @@ impl<'a> Compiler<'a> {
             // Strategy: emit a capturing group; record negation for post-match check.
             ('!', Some('(')) => {
                 let (inner, consumed) = parse_extglob(chars, i + 2)?;
-                let inner_re = self.compile_extglob_inner(&inner)?;
 
-                // Capture the segment that !(…) spans.
+                // In greedy bash mode, the inner pattern must also cross `/` so that
+                // e.g. `!(*.txt)` correctly rejects `docs/notes.txt` (the captured `(.*)`
+                // group holds `docs/notes.txt`, and the inner `*.txt` needs `.*\.txt`
+                // rather than `[^/]*\.txt` to match it).
                 let is_greedy = self.config.mode == GlobMode::Bash
                     && self.config.bash_greedy_negated_extglob;
+
+                let saved = self.greedy_star;
+                self.greedy_star = is_greedy;
+                let inner_re = self.compile_extglob_inner(&inner)?;
+                self.greedy_star = saved;
+
                 let segment_re = if is_greedy { "(.*)" } else { "([^/]*)" };
                 let group_idx = self.next_group;
                 self.next_group += 1;
@@ -249,7 +263,8 @@ impl<'a> Compiler<'a> {
 
             // ── Single-star * ────────────────────────────────────────────
             ('*', _) => {
-                out.push_str("[^/]*");
+                // In greedy_star mode (inner of a greedy `!(…)`), * matches slashes.
+                out.push_str(if self.greedy_star { ".*" } else { "[^/]*" });
                 Ok(i + 1)
             }
 

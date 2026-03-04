@@ -197,6 +197,11 @@ pub struct AgentConfig {
     /// with a retryable error (429, 502, 503). Example: ["openrouter", "anthropic"]
     #[serde(default)]
     pub fallback_providers: Vec<String>,
+    /// GAR-187: When true, bash commands matching CONFIRM_LIST require user approval
+    /// before execution. The agent loop pauses and waits for "sim"/"yes" before proceeding.
+    /// Default: false (opt-in).
+    #[serde(default)]
+    pub tool_confirmation_enabled: bool,
 }
 
 /// A named agent configuration for multi-agent routing.
@@ -224,7 +229,7 @@ fn default_memory_enabled() -> bool {
 // ─── Timeout Config ────────────────────────────────────────────────────────
 
 fn default_llm_timeout() -> u64 {
-    30
+    120
 }
 fn default_tts_timeout() -> u64 {
     120
@@ -244,7 +249,7 @@ fn default_health_timeout() -> u64 {
 /// ```yaml
 /// timeouts:
 ///   llm:
-///     default_secs: 30
+///     default_secs: 120  # LLM responses podem demorar; 30s era curto demais
 ///   tts:
 ///     default_secs: 120
 ///   stt:
@@ -299,7 +304,7 @@ pub struct TypeTimeout {
 
 impl Default for TypeTimeout {
     fn default() -> Self {
-        Self { default_secs: 30 }
+        Self { default_secs: default_llm_timeout() }
     }
 }
 
@@ -444,6 +449,19 @@ pub struct McpServerConfig {
 
     /// Connection timeout in seconds (default: 30)
     pub timeout: Option<u64>,
+
+    /// GAR-190: Tool allowlist — only these tool names are registered into the agent runtime.
+    /// If empty (default), all tools discovered from this server are available.
+    /// Use this to restrict which tools an LLM can invoke from a given MCP server.
+    ///
+    /// Example:
+    /// ```yaml
+    /// mcp:
+    ///   my-server:
+    ///     allowed_tools: [web_search, read_file]
+    /// ```
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
 }
 
 #[cfg(test)]

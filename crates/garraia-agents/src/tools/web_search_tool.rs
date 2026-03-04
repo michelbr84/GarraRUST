@@ -137,6 +137,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         }
     }
 

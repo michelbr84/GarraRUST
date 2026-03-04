@@ -208,6 +208,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         let output = tool
@@ -235,6 +236,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
+            is_confirmation_approved: false,
         };
 
         assert!(tool.execute(&ctx, serde_json::json!({})).await.is_err());
