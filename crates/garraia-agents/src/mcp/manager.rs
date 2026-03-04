@@ -426,6 +426,26 @@ impl McpManager {
         Ok(messages)
     }
 
+    /// List all prompts from all connected MCP servers.
+    ///
+    /// Silently skips servers that don't support the prompts capability or return errors.
+    /// Returns `(server_name, prompts)` pairs, omitting servers with no prompts.
+    pub async fn list_all_prompts(&self) -> Vec<(String, Vec<McpPromptInfo>)> {
+        let server_names: Vec<String> = {
+            let conns = self.connections.read().await;
+            conns.keys().cloned().collect()
+        };
+
+        let mut result = Vec::new();
+        for name in server_names {
+            match self.list_prompts(&name).await {
+                Ok(prompts) if !prompts.is_empty() => result.push((name, prompts)),
+                _ => {}
+            }
+        }
+        result
+    }
+
     /// Spawn a background health monitor that pings servers and reconnects on failure.
     pub fn spawn_health_monitor(self: &Arc<Self>) {
         let manager = Arc::clone(self);

@@ -84,7 +84,39 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+/// Returns `true` if the env key name suggests a sensitive credential.
+///
+/// Matches keys that contain: `key`, `token`, `secret`, `password`, `auth`,
+/// `credential`, or `pass` (case-insensitive). Used to decide which env vars
+/// should be stored in the encrypted vault rather than in plaintext `mcp.json`.
+pub fn is_sensitive_key(k: &str) -> bool {
+    let lower = k.to_lowercase();
+    ["key", "token", "secret", "password", "auth", "credential", "pass"]
+        .iter()
+        .any(|s| lower.contains(s))
+}
+
 impl McpServerConfig {
+    /// Returns the `env` map with sensitive values replaced by `"****"`.
+    ///
+    /// Safe for use in API responses — callers must never expose raw credentials
+    /// over HTTP.
+    pub fn masked_env(&self) -> HashMap<String, String> {
+        self.env
+            .iter()
+            .map(|(k, v)| {
+                let val = if is_sensitive_key(k) { "****".to_string() } else { v.clone() };
+                (k.clone(), val)
+            })
+            .collect()
+    }
+
+    /// Returns a clone of this config with the `env` map masked.
+    ///
+    /// Use this when building API responses so credentials are never leaked.
+    pub fn for_api(&self) -> Self {
+        Self { env: self.masked_env(), ..self.clone() }
+    }
     /// Infer the transport from the fields present in the config.
     ///
     /// - Explicit `transport` field wins.

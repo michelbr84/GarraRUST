@@ -347,8 +347,24 @@ pub async fn chat_completions(
     // Append the new user message at the end so handlers can extract it as `messages.last()`
     messages.push(ChatMessage {
         role: ChatRole::User,
-        content: MessagePart::Text(new_user_text),
+        content: MessagePart::Text(new_user_text.clone()),
     });
+
+    // GAR-184: Resolve slash commands (MCP prompts + /help).
+    // /mode is excluded here — it is already handled by the `final_mode` logic above.
+    if new_user_text.starts_with('/') {
+        if let Some(resolved) =
+            crate::slash_commands::resolve(&new_user_text, state.mcp_manager_arc.as_ref()).await
+        {
+            match resolved {
+                crate::slash_commands::ResolvedCommand::McpPrompt(prompt_msgs) => {
+                    // Replace the slash command message with the MCP prompt context.
+                    messages.pop();
+                    messages.extend(prompt_msgs);
+                }
+            }
+        }
+    }
 
     // Get continuity key based on user_id
     let continuity_key = state.continuity_key(user_id.as_deref()).unwrap_or_else(|| "default".to_string());

@@ -12,6 +12,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 regex = "1.10"
+notify = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -24,3 +25,5 @@ harness = false
 [features]
 default = []
 serde = []
+# GAR-259: file watcher with glob filtering
+watcher = ["dep:notify"]

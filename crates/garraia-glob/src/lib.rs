@@ -14,12 +14,20 @@ pub mod ignore;
 pub mod path;
 pub mod pattern;
 pub mod scanner;
+#[cfg(feature = "watcher")]
+pub mod watcher;
+#[cfg(feature = "watcher")]
+pub mod debouncer;
 
 pub use matcher::{GlobMatcher, MatchOptions, MatchResult};
 pub use ignore::{IgnoreFile, IgnoreKind};
 pub use path::normalize_path;
 pub use pattern::{GlobConfig, GlobMode, GlobPattern};
 pub use scanner::Scanner;
+#[cfg(feature = "watcher")]
+pub use watcher::{ActiveWatcher, WatchEvent, WatchEventKind, WatcherBuilder, WatcherGuard};
+#[cfg(feature = "watcher")]
+pub use debouncer::Debouncer;
 
 use thiserror::Error;
 

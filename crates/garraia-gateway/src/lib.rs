@@ -16,6 +16,7 @@ pub mod observability;
 pub mod openai_api;
 pub mod router;
 pub mod runtime_handler;
+pub mod slash_commands;
 pub mod server;
 pub mod state;
 pub mod voice_handler;

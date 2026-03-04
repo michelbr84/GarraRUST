@@ -97,7 +97,16 @@ impl AppState {
             a2a_tasks: DashMap::new(),
             mcp_manager: None,
             mcp_manager_arc: None,
-            mcp_registry: crate::mcp::McpPersistenceService::with_default_path().load_registry(),
+            mcp_registry: {
+                // GAR-291: attach vault so sensitive env vars are resolved on load.
+                let svc = crate::mcp::McpPersistenceService::with_default_path();
+                let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
+                    svc.with_vault(vp)
+                } else {
+                    svc
+                };
+                svc.load_registry()
+            },
             session_store: None,
             chat_session_manager: None,
             config_rx: None,

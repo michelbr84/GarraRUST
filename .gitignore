@@ -75,6 +75,8 @@ mark_modos_done*.ps1
 # Temporary Linear issue-close scripts (gerados por sessão de trabalho)
 close_gar*.ps1
 close_glob*.ps1
+close_bloco*.ps1
+list_linear.ps1
 
 # Cargo
 Cargo.lock.bak
