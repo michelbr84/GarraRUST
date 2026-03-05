@@ -111,7 +111,7 @@ async function setClickThrough(ignore) {
 }
 
 // ── WebSocket to GarraIA ────────────────────────────────────────────────────
-const WS_URL = 'ws://localhost:8080/ws/parrot';
+const WS_URL = 'ws://localhost:3888/ws/parrot';
 let ws = null;
 let reconnectDelay = 2000;
 let streamActive = false;
