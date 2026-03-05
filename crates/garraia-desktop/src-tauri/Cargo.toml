@@ -1,0 +1,29 @@
+[package]
+name = "garraia-desktop"
+version = "0.2.0"
+edition = "2024"
+description = "Garra Desktop — Clippy-style AI assistant overlay"
+license = "MIT"
+rust-version = "1.85"
+
+[lib]
+name = "garraia_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "garraia-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+strip = true

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/garraia-desktop/src-tauri",
     "crates/garraia-cli",
     "crates/garraia-gateway",
     "crates/garraia-config",

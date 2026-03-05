@@ -643,7 +643,7 @@ credentials/
 
 ## Arquitetura
 
-GarraIA é um workspace Rust com **15 crates** de alta qualidade, cada um com responsabilidade única:
+GarraIA é um workspace Rust com **16 crates** de alta qualidade, cada um com responsabilidade única:
 
 ```text
 crates/
@@ -662,6 +662,7 @@ crates/
 ├── garraia-security/   # Cofre de credenciais, listas de permissões, pareamento, validação
 ├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
 ├── garraia-common/     # Tipos compartilhados, erros, utilitários
+└── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay transparente, hotkey Alt+G, sprite animado
 ```
 
 ### Fluxo de Execução do Runtime
@@ -790,9 +791,11 @@ Fases completadas:
 - **✅ Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
 - **✅ Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
 - **✅ Fase 4: Admin Console** - Projeto unificado ao Admin Console principal.
+- **✅ Garra Desktop — Fase 1 & 2 (GAR-303..316)** - Overlay Tauri v2 transparente, hotkey Alt+G, sprite animado (idle/thinking/talking), bolha de fala e barra de input.
 
 Fases em andamento:
 
+- **Garra Desktop — Fase 3 (GAR-317..323)** - Endpoint `/ws/parrot` no gateway, integração bidirecional com GarraIA.
 - **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
 - **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
 

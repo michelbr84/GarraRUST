@@ -80,3 +80,11 @@ list_linear.ps1
 
 # Cargo
 Cargo.lock.bak
+
+# Tauri / garraia-desktop
+crates/garraia-desktop/src-tauri/gen/
+crates/garraia-desktop/src-tauri/target/
+crates/garraia-desktop/src-tauri/WixTools/
+crates/garraia-desktop/node_modules/
+# Sprite sheet is generated — do not commit large binary
+crates/garraia-desktop/ui/assets/parrot-sprite.png
