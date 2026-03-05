@@ -242,6 +242,15 @@ pub struct AgentConfig {
     /// GAR-208: Provider model to use for summarization calls (e.g. "openrouter/mistral-7b-instruct").
     /// Defaults to the runtime's default provider when absent.
     pub summarizer_model: Option<String>,
+    /// Model to use when tool/function calling is required and the default model may not support it.
+    ///
+    /// When set, this model replaces `model_override` (or the provider default) for any request
+    /// that has tools available. Useful when the conversational default is a free-tier model
+    /// that does not guarantee function-calling support (e.g. `openrouter/free`).
+    ///
+    /// Example: `"google/gemini-2.0-flash-exp:free"` (free, supports tools).
+    #[serde(default)]
+    pub tools_model: Option<String>,
 }
 
 /// A named agent configuration for multi-agent routing.

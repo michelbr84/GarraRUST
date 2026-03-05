@@ -66,6 +66,61 @@ impl McpPersistenceService {
         &self.path
     }
 
+    /// Seed `mcp.json` with a Filesystem MCP entry when the file does not exist yet.
+    ///
+    /// This is a first-run convenience: new installations get local filesystem
+    /// access immediately without requiring manual admin-UI configuration.
+    /// Existing installations (file already present) are **never** modified.
+    ///
+    /// The allowed root is the user's home directory (`$HOME` / `%USERPROFILE%`),
+    /// falling back to the parent of `~/.garraia/` if the env var is absent.
+    pub fn provision_filesystem_if_missing(&self) {
+        if self.path.exists() {
+            return;
+        }
+
+        // Resolve the user's home directory in a cross-platform way.
+        let home_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                // Fallback: parent of ~/.garraia/ → ~
+                self.path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
+
+        let mut config = McpConfig::default();
+        config.mcp_servers.insert(
+            "filesystem".to_string(),
+            super::McpServerConfig {
+                command: Some("npx".to_string()),
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-filesystem".to_string(),
+                    home_dir.to_string_lossy().into_owned(),
+                ],
+                env: Default::default(),
+                url: None,
+                transport: None,
+                timeout_secs: 30,
+                memory_limit_mb: None,
+                max_restarts: None,
+                restart_delay_secs: None,
+            },
+        );
+
+        match self.save(&config) {
+            Ok(()) => info!(
+                "mcp: provisioned default mcp.json with filesystem MCP at {}",
+                home_dir.display()
+            ),
+            Err(e) => warn!("mcp: failed to provision default mcp.json: {e}"),
+        }
+    }
+
     /// Load `mcp.json` from disk.
     ///
     /// Returns an empty [`McpConfig`] when the file does not exist yet.

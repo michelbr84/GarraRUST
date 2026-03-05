@@ -171,8 +171,29 @@ impl McpManager {
         max_restarts: u32,
         restart_delay_secs: u64,
     ) -> Result<()> {
-        let mut cmd = Command::new(command);
-        cmd.args(args);
+        // On Windows, script wrappers like `npx`, `uvx`, `yarn`, etc. are `.cmd`
+        // files that cannot be spawned directly by CreateProcess. We wrap them in
+        // `cmd /c <command> [args...]` so the shell resolves the extension.
+        #[cfg(windows)]
+        let mut cmd = {
+            let needs_shell = !command.ends_with(".exe") && !std::path::Path::new(command).is_absolute();
+            if needs_shell {
+                let mut c = Command::new("cmd");
+                c.args(["/c", command]).args(args);
+                c
+            } else {
+                let mut c = Command::new(command);
+                c.args(args);
+                c
+            }
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new(command);
+            c.args(args);
+            c
+        };
+
         for (k, v) in env {
             cmd.env(k, v);
         }
