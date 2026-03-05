@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=220" />
+  <title>Garra</title>
+  <link rel="stylesheet" href="parrot.css" />
+</head>
+<body>
+  <!-- Drag handle: entire parrot div uses data-tauri-drag-region -->
+  <div id="parrot" data-tauri-drag-region></div>
+
+  <!-- Speech bubble (hidden until showBubble() is called) -->
+  <div id="bubble" class="bubble hidden">
+    <div id="bubble-text"></div>
+  </div>
+
+  <!-- Input bar (hidden; shown on Alt+G or window.__garraToggleInput()) -->
+  <div id="input-bar" class="hidden">
+    <input id="query" type="text" placeholder="Pergunte algo..." autocomplete="off" spellcheck="false" />
+  </div>
+
+  <script src="parrot.js"></script>
+
+  <script>
+    // Allow Rust (via Tauri event) to toggle input bar
+    // Tauri v2: listen for custom event emitted by the shortcut handler
+    if (window.__TAURI__?.event) {
+      window.__TAURI__.event.listen('garra-toggle-input', () => {
+        window.__garraToggleInput?.();
+      });
+    }
+  </script>
+</body>
+</html>

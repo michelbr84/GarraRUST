@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the Garra parrot overlay window",
+  "windows": ["parrot"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-is-visible",
+    "core:window:allow-show",
+    "core:window:allow-hide"
+  ]
+}

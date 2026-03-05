@@ -57,6 +57,15 @@ logs/
 # ─── Planejamento interno ───────────────────────────────────────────────────
 plans/
 
+# ─── Tauri / garraia-desktop ────────────────────────────────────────────────
+# Artefatos gerados pelo Tauri build — não são código-fonte útil para o agente
+crates/garraia-desktop/src-tauri/gen/
+crates/garraia-desktop/src-tauri/target/
+crates/garraia-desktop/src-tauri/WixTools/
+crates/garraia-desktop/node_modules/
+# Sprite sheet PNG — binário gerado, não tem valor de busca textual
+crates/garraia-desktop/ui/assets/parrot-sprite.png
+
 # ─── OS / IDE ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
