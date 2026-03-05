@@ -95,6 +95,93 @@ struct OllamaEmbedResponse {
     embedding: Vec<f32>,
 }
 
+/// OpenAI-compatible embeddings provider (works with LM Studio, OpenAI, etc.).
+pub struct OpenAiEmbeddingProvider {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+    base_url: String,
+}
+
+impl OpenAiEmbeddingProvider {
+    pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
+            base_url: base_url
+                .unwrap_or_else(|| "https://api.openai.com".to_string()),
+        }
+    }
+
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    fn endpoint(&self) -> String {
+        format!("{}/v1/embeddings", self.base_url.trim_end_matches('/').trim_end_matches("/v1"))
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiEmbeddingProvider {
+    fn provider_id(&self) -> &str {
+        "openai"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let response = self
+            .client
+            .post(self.endpoint())
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "model": self.model,
+                "input": texts
+            }))
+            .send()
+            .await
+            .map_err(|e| Error::Agent(format!("openai embeddings request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::Agent(format!(
+                "openai embeddings request failed: status={status}, body={body}"
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct OpenAiEmbedData {
+            embedding: Vec<f32>,
+        }
+        #[derive(Deserialize)]
+        struct OpenAiEmbedResponse {
+            data: Vec<OpenAiEmbedData>,
+        }
+
+        let payload: OpenAiEmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::Agent(format!("failed to decode openai embeddings response: {e}")))?;
+
+        Ok(payload.data.into_iter().map(|d| d.embedding).collect())
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        let mut results = self.embed_documents(&[text.to_string()]).await?;
+        results.pop().ok_or_else(|| Error::Agent("empty embedding response".into()))
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        Ok(self.embed_query("health check").await.is_ok())
+    }
+}
+
 /// Cohere embeddings provider.
 pub struct CohereEmbeddingProvider {
     client: reqwest::Client,

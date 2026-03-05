@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider, FileReadTool,
-    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider,
-    WebFetchTool, WebSearchTool,
+    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider,
+    OpenAiProvider, WebFetchTool, WebSearchTool,
 };
 #[cfg(target_os = "macos")]
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
@@ -606,6 +606,26 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             runtime.set_embedding_provider(Arc::new(provider));
 
                             info!("configured ollama embedding provider: {embed_name}");
+                        }
+
+                        // =====================================
+                        // OPENAI-COMPATIBLE (LM Studio, OpenAI, etc.)
+                        // =====================================
+                        "openai" => {
+                            let api_key = embed_config
+                                .api_key
+                                .clone()
+                                .unwrap_or_else(|| "no-key".to_string());
+
+                            let provider = OpenAiEmbeddingProvider::new(
+                                api_key,
+                                embed_config.model.clone(),
+                                embed_config.base_url.clone(),
+                            )
+                            .with_client(embed_client.clone());
+
+                            runtime.set_embedding_provider(Arc::new(provider));
+                            info!("configured openai embedding provider: {embed_name}");
                         }
 
                         // =====================================
