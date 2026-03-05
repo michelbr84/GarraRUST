@@ -182,15 +182,23 @@ function sendMessage(text) {
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
-window.__garra = { setState, showBubble, hideBubble, sendMessage, showInput, hideInput };
+// toggleInput / toggleVoice are called via win.eval() from Rust — no events,
+// no race conditions between the global shortcut and the webview keydown.
+window.__garra = {
+  setState, showBubble, hideBubble, sendMessage, showInput, hideInput,
+  toggleInput: () => { inputVisible ? hideInput() : showInput(); },
+  toggleVoice: () => { showBubble('Voice pipeline coming soon!', 3000); },
+};
 
-// ── Keyboard fallback (in case Tauri event bridge isn't ready yet) ──────────
-window.addEventListener('keydown', e => {
-  if (e.altKey && e.key.toLowerCase() === 'g') {
-    e.preventDefault();
-    window.__garraToggleInput?.();
-  }
-});
+// Keyboard fallback — only active when running outside Tauri (browser testing)
+if (!window.__TAURI__) {
+  window.addEventListener('keydown', e => {
+    if (e.altKey && e.key.toLowerCase() === 'g') {
+      e.preventDefault();
+      window.__garra.toggleInput();
+    }
+  });
+}
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 setState('idle');
