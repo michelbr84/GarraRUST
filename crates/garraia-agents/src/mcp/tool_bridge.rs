@@ -43,7 +43,9 @@ impl McpTool {
         timeout: Duration,
     ) -> Self {
         Self {
-            nome_completo: format!("{nome_servidor}.{nome_original}"),
+            // Use "__" instead of "." — OpenAI/Anthropic APIs reject dots in tool names
+            // (pattern: ^[a-zA-Z0-9_-]+$). The MCP call itself uses `nome_original`.
+            nome_completo: format!("{nome_servidor}__{nome_original}"),
             descricao: descricao.unwrap_or_else(|| {
                 format!("Ferramenta MCP {nome_original} do servidor {nome_servidor}")
             }),
