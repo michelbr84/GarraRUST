@@ -3036,10 +3036,19 @@ fn builtin_templates() -> Vec<McpTemplate> {
         McpTemplate {
             id: "filesystem".into(),
             name: "Filesystem MCP".into(),
-            description: "Acesso a arquivos locais via MCP (ler, escrever, listar diretórios).".into(),
+            description: "Acesso a arquivos locais: ler, escrever e listar diretórios. \
+                          Substitua o último argumento pelo caminho que deseja permitir \
+                          (ex: /home/user ou C:\\Users\\user).".into(),
             transport: "stdio".into(),
             command: Some("npx".into()),
-            args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/".into()],
+            args: vec![
+                "-y".into(),
+                "@modelcontextprotocol/server-filesystem".into(),
+                // Default to the user's home directory; customise before saving.
+                std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/".to_string()),
+            ],
             url: None,
             env: Default::default(),
             timeout_secs: 30,

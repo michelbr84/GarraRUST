@@ -117,6 +117,9 @@ pub struct AgentRuntime {
     fallback_providers_list: RwLock<Vec<String>>,
     /// GAR-208: Sliding window + summarization policy.
     context_policy: ContextPolicy,
+    /// Model to use when tools are available and the default model may not support function calling.
+    /// Overrides model_override for any request that has tools registered.
+    tools_model: RwLock<Option<String>>,
 }
 
 impl AgentRuntime {
@@ -135,7 +138,44 @@ impl AgentRuntime {
             resilience: Arc::new(ResilienceManager::new()),
             fallback_providers_list: RwLock::new(Vec::new()),
             context_policy: ContextPolicy::default(),
+            tools_model: RwLock::new(None),
         }
+    }
+
+    /// Set the model to use when tools are available (overrides model_override for tool-capable requests).
+    pub fn set_tools_model(&self, model: Option<String>) {
+        *self.tools_model.write().unwrap() = model;
+    }
+
+    /// If `tools_model` is configured and there are tools registered, re-resolve
+    /// (provider, model) so that tool-capable requests use a model that supports
+    /// function calling (e.g. when the default is `openrouter/free`).
+    /// Returns the original pair unchanged when no override applies.
+    fn apply_tools_model_override(
+        &self,
+        provider: Arc<dyn LlmProvider>,
+        effective_model: String,
+        tool_count: usize,
+    ) -> (Arc<dyn LlmProvider>, String) {
+        if tool_count == 0 {
+            return (provider, effective_model);
+        }
+        let tm = self.tools_model.read().unwrap().clone();
+        let Some(tools_model) = tm.filter(|s| !s.is_empty()) else {
+            return (provider, effective_model);
+        };
+        // Re-resolve provider: try the prefix (e.g. "google"), then "openrouter", then keep original.
+        let new_provider = resolve_provider_from_model(&tools_model)
+            .and_then(|pid| self.get_provider(&pid))
+            .or_else(|| self.get_provider("openrouter"))
+            .unwrap_or_else(|| provider.clone());
+        info!(
+            "tools_model override: '{}' → '{}' (provider: {})",
+            effective_model,
+            tools_model,
+            new_provider.provider_id()
+        );
+        (new_provider, tools_model)
     }
 
     /// GAR-208: Set the context window / summarization policy.
@@ -478,10 +518,25 @@ impl AgentRuntime {
                     info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
                     provider
                 } else {
-                    // Provider not found, fall back to default
-                    warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
-                    self.default_provider()
-                        .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                    // Provider not registered — if model uses `org/model` format, try openrouter
+                    // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
+                    if model.contains('/') {
+                        if let Some(or_provider) = self.get_provider("openrouter") {
+                            warn!(
+                                "Provider '{}' not registered; routing '{}' via openrouter",
+                                resolved_provider_id, model
+                            );
+                            or_provider
+                        } else {
+                            warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                            self.default_provider()
+                                .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                        }
+                    } else {
+                        warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                        self.default_provider()
+                            .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                    }
                 }
             } else {
                 // No provider prefix in model, use default
@@ -529,6 +584,8 @@ impl AgentRuntime {
         };
 
         let tool_defs = self.tool_definitions();
+        let (provider, effective_model) =
+            self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
             "agent starting: provider={}, tools={}, history_msgs={}",
             provider.provider_id(),
@@ -730,6 +787,8 @@ impl AgentRuntime {
         };
 
         let tool_defs = self.tool_definitions();
+        let (provider, tools_model_override) =
+            self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -772,7 +831,7 @@ impl AgentRuntime {
             }
 
             let request = LlmRequest {
-                model: String::new(),
+                model: tools_model_override.clone(),
                 messages: messages.clone(),
                 system: system.clone(),
                 max_tokens: Some(self.max_tokens.unwrap_or(4096)),
@@ -985,10 +1044,25 @@ impl AgentRuntime {
                     info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
                     provider
                 } else {
-                    // Provider not found, fall back to default
-                    warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
-                    self.default_provider()
-                        .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                    // Provider not registered — if model uses `org/model` format, try openrouter
+                    // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
+                    if model.contains('/') {
+                        if let Some(or_provider) = self.get_provider("openrouter") {
+                            warn!(
+                                "Provider '{}' not registered; routing '{}' via openrouter",
+                                resolved_provider_id, model
+                            );
+                            or_provider
+                        } else {
+                            warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                            self.default_provider()
+                                .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                        }
+                    } else {
+                        warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                        self.default_provider()
+                            .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
+                    }
                 }
             } else {
                 // No provider prefix in model, use default
@@ -1037,6 +1111,8 @@ impl AgentRuntime {
         };
 
         let tool_defs = self.tool_definitions();
+        let (provider, effective_model) =
+            self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
             "agent streaming: provider={}, tools={}, history_msgs={}",
             provider.provider_id(),

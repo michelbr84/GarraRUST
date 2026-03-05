@@ -659,6 +659,13 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         runtime.set_context_policy(policy);
     }
 
+    // Wire tools_model: model override used when tools are present (e.g. avoids openrouter/free
+    // which may not support function calling).
+    if let Some(ref tm) = config.agent.tools_model {
+        runtime.set_tools_model(Some(tm.clone()));
+        info!(tools_model = %tm, "tools_model configured for tool-capable requests");
+    }
+
     // --- Skills ---
     let skills_dir = garraia_config::ConfigLoader::default_config_dir().join("skills");
     let scanner = garraia_skills::SkillScanner::new(&skills_dir);

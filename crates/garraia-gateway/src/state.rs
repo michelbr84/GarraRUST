@@ -99,7 +99,9 @@ impl AppState {
             mcp_manager_arc: None,
             mcp_registry: {
                 // GAR-291: attach vault so sensitive env vars are resolved on load.
+                // Provision filesystem MCP on first boot when mcp.json is absent.
                 let svc = crate::mcp::McpPersistenceService::with_default_path();
+                svc.provision_filesystem_if_missing();
                 let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
                     svc.with_vault(vp)
                 } else {
