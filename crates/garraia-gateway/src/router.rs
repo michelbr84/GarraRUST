@@ -12,6 +12,7 @@ use crate::a2a;
 use crate::admin;
 use crate::api;
 use crate::openai_api;
+use crate::parrot_ws;
 use crate::state::SharedState;
 use crate::ws;
 
@@ -53,6 +54,7 @@ pub fn build_router(
         .route("/health", get(health))
         .route("/api/health", get(crate::health::health_handler))
         .route("/ws", get(ws::ws_handler))
+        .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(openai_api::chat_completions))
         .route("/v1/models", get(openai_api::list_models))
