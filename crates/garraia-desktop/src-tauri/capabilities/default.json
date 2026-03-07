@@ -9,6 +9,8 @@
     "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-is-visible",
     "core:window:allow-show",
-    "core:window:allow-hide"
+    "core:window:allow-hide",
+    "shell:allow-execute",
+    "shell:allow-kill"
   ]
 }

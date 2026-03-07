@@ -6,6 +6,8 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_autostart::ManagerExt;
 
+use crate::gateway::GatewayHandle;
+
 const TRAY_ID: &str = "garra_tray";
 
 fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::Wry>> {
@@ -23,7 +25,7 @@ fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::
     Menu::with_items(app, &[&open, &sep1, &restart, &voice, &logs, &sep2, &autostart, &sep3, &quit])
 }
 
-pub fn setup_tray(app: &AppHandle, visible: Arc<AtomicBool>) -> tauri::Result<()> {
+pub fn setup_tray(app: &AppHandle, visible: Arc<AtomicBool>, gw: GatewayHandle) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let menu = build_menu(app, autostart_on)?;
 
@@ -36,7 +38,7 @@ pub fn setup_tray(app: &AppHandle, visible: Arc<AtomicBool>) -> tauri::Result<()
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => crate::overlay::toggle_overlay(app, &visible_menu),
-            "restart_gateway" => restart_gateway(),
+            "restart_gateway" => crate::gateway::restart(app, &gw),
             "toggle_voice" => {
                 if let Some(win) = app.get_webview_window("parrot") {
                     let _ = win.eval("window.__garra?.toggleVoice()");
@@ -77,12 +79,6 @@ fn toggle_autostart(app: &AppHandle) {
             let _ = tray.set_menu(Some(menu));
         }
     }
-}
-
-fn restart_gateway() {
-    // In a packaged release, `garraia` binary must be in PATH.
-    // During development, run: cargo run -p garraia -- start
-    let _ = std::process::Command::new("garraia").arg("start").spawn();
 }
 
 fn open_log_dir(app: &AppHandle) {
