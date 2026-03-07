@@ -1,0 +1,74 @@
+# ============================================
+# GarraIA Configuration File (padrão)
+# Caminho: %APPDATA%\garraia\config.yml
+# ============================================
+# Este arquivo é copiado automaticamente na primeira execução do Garra Desktop.
+# Edite conforme necessário para configurar seus provedores de LLM.
+
+gateway:
+  host: "127.0.0.1"
+  port: 3888
+
+# ============================================
+# LLM Providers
+# ============================================
+
+llm:
+  # LM Studio (servidor local — recomendado para uso offline)
+  # Certifique-se de que o LM Studio está rodando em http://localhost:1234
+  lmstudio:
+    provider: "openai"
+    model: "local-model"
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+
+  # OpenRouter (provedor em nuvem — requer chave de API)
+  # Obtenha sua chave em https://openrouter.ai
+  # openrouter:
+  #   provider: "openrouter"
+  #   model: "openrouter/auto"
+  #   base_url: "https://openrouter.ai/api/v1"
+  #   api_key: "sk-or-v1-SEU-TOKEN-AQUI"
+
+# ============================================
+# Agent Configuration
+# ============================================
+
+agent:
+  system_prompt: |
+    Voce e o GarraIA, um assistente de IA pessoal avancado, com memoria persistente e consciencia contextual.
+
+    Caracteristicas principais:
+    - Voce possui memoria persistente sobre o usuario
+    - Voce deve usar os fatos carregados automaticamente
+    - Voce deve responder naturalmente em portugues
+    - Voce deve ser util, preciso e tecnico quando necessario
+
+    IMPORTANTE:
+    - NAO use ferramentas sem necessidade
+    - NAO invente informacoes
+    - Para mensagens simples, responda apenas com texto
+
+  default_provider: "lmstudio"
+  max_tokens: 2048
+  max_context_tokens: 12000
+  max_history_messages: 10
+  max_tool_calls: 50
+  tool_confirmation_enabled: false
+
+# ============================================
+# Timeouts (em segundos)
+# ============================================
+
+timeouts:
+  llm:
+    default_secs: 120
+  mcp:
+    default_secs: 60
+
+# ============================================
+# Memory
+# ============================================
+
+memory:
+  enabled: false
