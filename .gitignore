@@ -66,11 +66,9 @@ release/
 # Planning / drafts (internal)
 plans/
 
-# Roadmap scripts (internal - keep for Linear automation)
-# *.ps1
-
-# Temporary automation scripts (can be kept if useful)
-mark_modos_done*.ps1
+# Linear automation scripts (internal tooling — contain hardcoded API keys)
+# scripts/ subdirectory is NOT excluded (contains build-installer.ps1)
+/*.ps1
 
 # Temporary Linear issue-close scripts (gerados por sessão de trabalho)
 close_gar*.ps1
