@@ -15,7 +15,7 @@ pub use memory_store::{
     CompactionReport, MemoryEntry, MemoryProvider, MemoryRole, MemoryStore, NewMemoryEntry,
     RecallQuery, SessionContext,
 };
-pub use session_store::{ScheduledTask, SessionStore};
+pub use session_store::{MobileUser, ScheduledTask, SessionStore, StoredMessage};
 pub use sqlite_db::SqliteDb;
 pub use vector_store::VectorStore;
 

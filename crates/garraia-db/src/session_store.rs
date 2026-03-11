@@ -27,6 +27,16 @@ pub struct SessionStore {
     conn: Connection,
 }
 
+/// Mobile user row (GAR-334: Garra Cloud Alpha auth).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MobileUser {
+    pub id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub salt: String,
+    pub created_at: String,
+}
+
 /// Struct representing a custom mode (GAR-232)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CustomMode {
@@ -202,7 +212,19 @@ impl SessionStore {
                     ON session_tokens(session_id);
 
                 CREATE INDEX IF NOT EXISTS idx_session_tokens_expires
-                    ON session_tokens(expires_at);",
+                    ON session_tokens(expires_at);
+
+                -- GAR-334: Mobile users for Garra Cloud Alpha
+                CREATE TABLE IF NOT EXISTS mobile_users (
+                    id          TEXT PRIMARY KEY,
+                    email       TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    salt        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_users_email
+                    ON mobile_users(email);",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
@@ -1020,6 +1042,77 @@ impl SessionStore {
                 [],
             )
             .unwrap_or(0)
+    }
+
+    // ── GAR-334: Mobile Auth ─────────────────────────────────────────────────
+
+    /// Insert a new mobile user. Returns `Error::Conflict` if email already exists.
+    pub fn create_mobile_user(
+        &self,
+        id: &str,
+        email: &str,
+        password_hash: &str,
+        salt: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO mobile_users (id, email, password_hash, salt)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, email, password_hash, salt],
+            )
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    Error::Database("email already registered".to_string())
+                } else {
+                    Error::Database(format!("create_mobile_user: {e}"))
+                }
+            })?;
+        Ok(())
+    }
+
+    /// Find a mobile user by email. Returns `None` if not found.
+    pub fn find_mobile_user_by_email(
+        &self,
+        email: &str,
+    ) -> Result<Option<MobileUser>> {
+        self.conn
+            .query_row(
+                "SELECT id, email, password_hash, salt, created_at
+                 FROM mobile_users WHERE email = ?1",
+                params![email],
+                |row| {
+                    Ok(MobileUser {
+                        id: row.get(0)?,
+                        email: row.get(1)?,
+                        password_hash: row.get(2)?,
+                        salt: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| Error::Database(format!("find_mobile_user_by_email: {e}")))
+    }
+
+    /// Find a mobile user by their UUID. Returns `None` if not found.
+    pub fn find_mobile_user_by_id(&self, id: &str) -> Result<Option<MobileUser>> {
+        self.conn
+            .query_row(
+                "SELECT id, email, password_hash, salt, created_at
+                 FROM mobile_users WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(MobileUser {
+                        id: row.get(0)?,
+                        email: row.get(1)?,
+                        password_hash: row.get(2)?,
+                        salt: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| Error::Database(format!("find_mobile_user_by_id: {e}")))
     }
 }
 

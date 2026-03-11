@@ -664,6 +664,30 @@ crates/
 └── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay transparente, hotkey Alt+G, sprite animado
 ```
 
+Além dos crates Rust, o repositório inclui o app mobile:
+
+```text
+apps/
+└── garraia-mobile/     # Cliente Android/iOS Flutter — Garra Cloud Alpha
+    ├── lib/
+    │   ├── router/     # GoRouter com redirect JWT
+    │   ├── services/   # Dio + interceptor Bearer
+    │   ├── providers/  # Riverpod: AuthState, ChatMessages, MascotState
+    │   ├── screens/    # Splash, Login, Register, Chat
+    │   └── widgets/    # MascotWidget (4 estados), ChatBubble
+    └── android/ ios/ web/
+```
+
+**Endpoints mobile (GAR-334/335/339):**
+
+| Endpoint | Método | Descrição |
+|----------|--------|-----------|
+| `/auth/register` | POST | Criar conta — PBKDF2-HMAC-SHA256 (600k iter) |
+| `/auth/login` | POST | Autenticar, retorna JWT 30 dias |
+| `/me` | GET | Dados do usuário autenticado |
+| `/chat` | POST | Conversa com Garra (personalidade PT-BR) |
+| `/chat/history` | GET | Histórico dos últimos 50 turnos |
+
 ### Fluxo de Execução do Runtime
 
 O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vida completo da execução do agente:
@@ -770,6 +794,9 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
 | Sistema de plugins (Sandbox WASM) | ✅ Funcionando |
 | Processamento de mídia (PDF, imagens) | ✅ Funcionando |
+| Garra Cloud Alpha — app mobile Flutter (Android/iOS) | ✅ Funcionando |
+| Mobile Auth (register/login/me, JWT, PBKDF2) | ✅ Funcionando |
+| Mobile Chat (`/chat`, `/chat/history`, persona PT-BR) | ✅ Funcionando |
 
 ## Testes Automatizados
 

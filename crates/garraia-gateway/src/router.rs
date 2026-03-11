@@ -6,11 +6,14 @@ use axum::routing::{get, post};
 use tokio::sync::Mutex;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
 use crate::a2a;
 use crate::admin;
 use crate::api;
+use crate::mobile_auth;
+use crate::mobile_chat;
 use crate::openai_api;
 use crate::parrot_ws;
 use crate::state::SharedState;
@@ -104,6 +107,12 @@ pub fn build_router(
         //     "/api/runtime/tools",
         //     get(runtime_handler::list_tools_handler),
         // )
+        // GAR-335/339: Mobile Cloud Alpha — auth + chat endpoints
+        .route("/auth/register", post(mobile_auth::register))
+        .route("/auth/login", post(mobile_auth::login))
+        .route("/me", get(mobile_auth::me))
+        .route("/chat", post(mobile_chat::chat))
+        .route("/chat/history", get(mobile_chat::history))
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))
@@ -123,6 +132,12 @@ pub fn build_router(
             admin::routes::build_admin_router(state, admin_store),
         )
         .layer(governor_layer)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }
 
 async fn health() -> &'static str {

@@ -79,6 +79,19 @@ list_linear.ps1
 # Cargo
 Cargo.lock.bak
 
+# Flutter / garraia-mobile
+apps/garraia-mobile/.dart_tool/
+apps/garraia-mobile/build/
+apps/garraia-mobile/**/*.g.dart
+apps/garraia-mobile/android/.gradle/
+apps/garraia-mobile/android/build/
+apps/garraia-mobile/android/local.properties
+apps/garraia-mobile/android/key.properties
+apps/garraia-mobile/android/app/*.jks
+apps/garraia-mobile/android/app/*.keystore
+apps/garraia-mobile/.flutter-plugins
+apps/garraia-mobile/.flutter-plugins-dependencies
+
 # Tauri / garraia-desktop
 crates/garraia-desktop/src-tauri/gen/
 crates/garraia-desktop/src-tauri/target/
