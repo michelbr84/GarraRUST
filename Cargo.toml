@@ -65,6 +65,7 @@ ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
+jsonwebtoken = "9"
 
 # Plugin system
 wasmtime = "28"

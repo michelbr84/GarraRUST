@@ -14,6 +14,8 @@ pub mod health;
 pub mod logs_handler;
 pub mod mcp;
 pub mod mcp_commands;
+pub mod mobile_auth;
+pub mod mobile_chat;
 pub mod memory_handler;
 pub mod observability;
 pub mod openai_api;

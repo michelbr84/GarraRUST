@@ -1,0 +1,44 @@
+name: garraia_mobile
+description: Garra — Personal AI Assistant Mobile App (Cloud Alpha)
+version: 0.1.0+1
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Navigation
+  go_router: ^14.2.7
+
+  # HTTP
+  dio: ^5.6.0
+
+  # Secure storage (JWT)
+  flutter_secure_storage: ^9.2.2
+
+  # Animation (mascote)
+  rive: ^0.13.14
+
+  # Utilities
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.11
+  riverpod_generator: ^2.6.4
+  custom_lint: ^0.7.6
+  riverpod_lint: ^2.6.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/

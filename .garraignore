@@ -57,6 +57,20 @@ logs/
 # ─── Planejamento interno ───────────────────────────────────────────────────
 plans/
 
+# ─── Flutter / garraia-mobile ───────────────────────────────────────────────
+# Build e artefatos gerados — não têm valor para análise de código-fonte
+apps/garraia-mobile/build/
+apps/garraia-mobile/.dart_tool/
+apps/garraia-mobile/android/.gradle/
+# Código gerado pelo build_runner — derivado das fontes reais
+apps/garraia-mobile/**/*.g.dart
+apps/garraia-mobile/**/*.freezed.dart
+# Metadados locais do Flutter
+apps/garraia-mobile/android/local.properties
+apps/garraia-mobile/android/key.properties
+apps/garraia-mobile/.flutter-plugins
+apps/garraia-mobile/.flutter-plugins-dependencies
+
 # ─── Tauri / garraia-desktop ────────────────────────────────────────────────
 # Artefatos gerados pelo Tauri build — não são código-fonte útil para o agente
 crates/garraia-desktop/src-tauri/gen/
