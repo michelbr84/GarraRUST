@@ -18,8 +18,12 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Claude Code session data (memory, project state, conversation history)
-.claude/
+# Claude Code — arquivos locais e de sessão (não commitar)
+.claude/settings.local.json
+.claude/settings.local.json.bak
+.claude/sessions/
+.claude/audit.log
+# .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
 # MCP server configs at repo root — may contain API tokens / bearer tokens.
 # Use mcp.json.example (committed, no secrets) as reference.
