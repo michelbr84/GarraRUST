@@ -29,7 +29,12 @@ vault.json
 *.ps1
 
 # ─── Arquivos de sessão do agente (Claude Code) ─────────────────────────────
-.claude/
+# Sessões, audit e config local são ruidosos — ignorados pelo scanner
+.claude/sessions/
+.claude/audit.log
+.claude/settings.local.json
+.claude/settings.local.json.bak
+# hooks/, agents/, settings.json e skills/ são código do projeto — visíveis ao agente
 
 # ─── Voice / áudio temporário ───────────────────────────────────────────────
 voice_temp/
