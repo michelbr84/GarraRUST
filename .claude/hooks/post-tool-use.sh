@@ -41,8 +41,19 @@ if echo "$FILE" | grep -q '\.dart$'; then
   done
 
   if [ -n "$FLUTTER_DIR" ]; then
+    # Detectar flutter cross-platform (não hardcodar path)
+    FLUTTER_CMD=$(command -v flutter 2>/dev/null || echo "")
+    if [ -z "$FLUTTER_CMD" ] && [ -f "G:/Projetos/flutter/bin/flutter.bat" ]; then
+      FLUTTER_CMD="G:/Projetos/flutter/bin/flutter.bat"
+    fi
+
+    if [ -z "$FLUTTER_CMD" ]; then
+      echo "→ flutter não encontrado no PATH, pulando analyze"
+      exit 0
+    fi
+
     echo "→ flutter analyze $FLUTTER_DIR"
-    if G:/Projetos/flutter/bin/flutter.bat analyze "$FLUTTER_DIR" --no-pub 2>&1 | grep -q "No issues found"; then
+    if "$FLUTTER_CMD" analyze "$FLUTTER_DIR" --no-pub 2>&1 | grep -q "No issues found"; then
       echo -e "${GREEN}✓ flutter analyze passou${NC}"
     else
       echo -e "${RED}✗ flutter analyze encontrou problemas${NC}"
