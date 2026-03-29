@@ -23,7 +23,15 @@ Thumbs.db
 .claude/settings.local.json.bak
 .claude/sessions/
 .claude/audit.log
+.claude/team-output/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
+
+# GarraIA SuperPowers — estado e outputs de automação
+.garra-estado.md
+.dream-state.json
+.dream.lock
+batch-results.json
+parallel-review-*.md
 
 # MCP server configs at repo root — may contain API tokens / bearer tokens.
 # Use mcp.json.example (committed, no secrets) as reference.

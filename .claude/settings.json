@@ -1,5 +1,18 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -34,6 +47,17 @@
     ]
   },
   "permissions": {
-    "deny": ["Bash(rm -rf /*)"]
+    "allow": [
+      "Bash(git *)",
+      "Bash(cargo *)",
+      "Bash(python3 *)",
+      "Bash(gh *)",
+      "Bash(jq *)",
+      "Bash(flutter *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)"
+    ]
   }
 }
