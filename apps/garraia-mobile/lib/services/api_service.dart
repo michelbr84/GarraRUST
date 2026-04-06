@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 part 'api_service.g.dart';
@@ -14,7 +15,7 @@ const String kApiBaseUrl = String.fromEnvironment(
 const _kTokenKey = 'garraia_jwt';
 
 @riverpod
-ApiService apiService(ApiServiceRef ref) => ApiService();
+ApiService apiService(Ref ref) => ApiService();
 
 class ApiService {
   final Dio _dio;

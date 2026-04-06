@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use garraia_db::SessionStore;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -12,6 +14,257 @@ const MAX_DELAY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// Máximo de heartbeats pendentes por sessão.
 const MAX_PENDING_PER_SESSION: i64 = 5;
+
+// ── Phase 5.4: Webhook & Event Trigger Support ──────────────────────────
+
+/// Event types that can trigger agent execution
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventType {
+    /// Pull request created
+    PrCreated,
+    /// Code pushed to repository
+    Push,
+    /// Issue opened
+    IssueOpened,
+    /// Custom event type
+    Custom(String),
+}
+
+impl EventType {
+    /// Parse from string
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "pr_created" => Self::PrCreated,
+            "push" => Self::Push,
+            "issue_opened" => Self::IssueOpened,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+
+    /// Convert to string
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::PrCreated => "pr_created",
+            Self::Push => "push",
+            Self::IssueOpened => "issue_opened",
+            Self::Custom(s) => s,
+        }
+    }
+}
+
+/// Status of a scheduled task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Pending execution
+    Pending,
+    /// Currently running
+    Running,
+    /// Completed successfully
+    Completed,
+    /// Failed
+    Failed,
+    /// Cancelled
+    Cancelled,
+}
+
+/// Scheduled task with metadata for dashboard display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTask {
+    /// Unique task ID
+    pub id: String,
+    /// Session ID
+    pub session_id: String,
+    /// Task description/reason
+    pub reason: String,
+    /// Current status
+    pub status: TaskStatus,
+    /// When the task was last run
+    #[serde(default)]
+    pub last_run: Option<String>,
+    /// When the task will next run
+    #[serde(default)]
+    pub next_run: Option<String>,
+    /// Task type
+    pub task_type: ScheduledTaskType,
+}
+
+/// Type of scheduled task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledTaskType {
+    /// Time-based heartbeat
+    Heartbeat,
+    /// Webhook trigger
+    Webhook,
+    /// Event trigger
+    Event,
+}
+
+/// Webhook trigger configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookTrigger {
+    /// URL pattern to match incoming webhooks
+    pub url_pattern: String,
+    /// Session to wake up
+    pub session_id: String,
+    /// Handler description
+    pub handler: String,
+    /// Whether the trigger is active
+    pub active: bool,
+    /// Created timestamp
+    pub created_at: String,
+}
+
+/// Event trigger configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventTrigger {
+    /// Event type to listen for
+    pub event_type: EventType,
+    /// Session to wake up
+    pub session_id: String,
+    /// Handler description
+    pub handler: String,
+    /// Whether the trigger is active
+    pub active: bool,
+    /// Created timestamp
+    pub created_at: String,
+}
+
+/// Registry for webhook and event triggers
+pub struct TriggerRegistry {
+    /// Webhook triggers indexed by URL pattern
+    webhooks: Arc<Mutex<HashMap<String, WebhookTrigger>>>,
+    /// Event triggers indexed by event type string
+    events: Arc<Mutex<HashMap<String, Vec<EventTrigger>>>>,
+}
+
+impl TriggerRegistry {
+    /// Create a new TriggerRegistry
+    pub fn new() -> Self {
+        Self {
+            webhooks: Arc::new(Mutex::new(HashMap::new())),
+            events: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Register a webhook trigger
+    pub async fn on_webhook(&self, url_pattern: &str, session_id: &str, handler: &str) {
+        let trigger = WebhookTrigger {
+            url_pattern: url_pattern.to_string(),
+            session_id: session_id.to_string(),
+            handler: handler.to_string(),
+            active: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let mut webhooks = self.webhooks.lock().await;
+        webhooks.insert(url_pattern.to_string(), trigger);
+    }
+
+    /// Register an event trigger
+    pub async fn on_event(&self, event_type: EventType, session_id: &str, handler: &str) {
+        let trigger = EventTrigger {
+            event_type: event_type.clone(),
+            session_id: session_id.to_string(),
+            handler: handler.to_string(),
+            active: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let mut events = self.events.lock().await;
+        events
+            .entry(event_type.as_str().to_string())
+            .or_insert_with(Vec::new)
+            .push(trigger);
+    }
+
+    /// Find webhook triggers matching a URL
+    pub async fn match_webhook(&self, url: &str) -> Vec<WebhookTrigger> {
+        let webhooks = self.webhooks.lock().await;
+        webhooks
+            .values()
+            .filter(|w| w.active && url.contains(&w.url_pattern))
+            .cloned()
+            .collect()
+    }
+
+    /// Find event triggers matching an event type
+    pub async fn match_event(&self, event_type: &EventType) -> Vec<EventTrigger> {
+        let events = self.events.lock().await;
+        events
+            .get(event_type.as_str())
+            .map(|triggers| triggers.iter().filter(|t| t.active).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// List all scheduled tasks for dashboard
+    pub async fn list_scheduled(&self) -> Vec<ScheduledTask> {
+        let mut tasks = Vec::new();
+
+        // Add webhook triggers
+        let webhooks = self.webhooks.lock().await;
+        for (id, webhook) in webhooks.iter() {
+            tasks.push(ScheduledTask {
+                id: id.clone(),
+                session_id: webhook.session_id.clone(),
+                reason: webhook.handler.clone(),
+                status: if webhook.active {
+                    TaskStatus::Pending
+                } else {
+                    TaskStatus::Cancelled
+                },
+                last_run: None,
+                next_run: None,
+                task_type: ScheduledTaskType::Webhook,
+            });
+        }
+        drop(webhooks);
+
+        // Add event triggers
+        let events = self.events.lock().await;
+        for (event_type, triggers) in events.iter() {
+            for trigger in triggers {
+                tasks.push(ScheduledTask {
+                    id: format!("event_{}_{}", event_type, trigger.session_id),
+                    session_id: trigger.session_id.clone(),
+                    reason: trigger.handler.clone(),
+                    status: if trigger.active {
+                        TaskStatus::Pending
+                    } else {
+                        TaskStatus::Cancelled
+                    },
+                    last_run: None,
+                    next_run: None,
+                    task_type: ScheduledTaskType::Event,
+                });
+            }
+        }
+
+        tasks
+    }
+
+    /// Remove a webhook trigger
+    pub async fn remove_webhook(&self, url_pattern: &str) -> bool {
+        let mut webhooks = self.webhooks.lock().await;
+        webhooks.remove(url_pattern).is_some()
+    }
+
+    /// Remove all event triggers for a session
+    pub async fn remove_event_triggers(&self, session_id: &str) {
+        let mut events = self.events.lock().await;
+        for triggers in events.values_mut() {
+            triggers.retain(|t| t.session_id != session_id);
+        }
+    }
+}
+
+impl Default for TriggerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Ferramenta para agendar um "heartbeat" futuro (acordar o agente no futuro).
 pub struct ScheduleHeartbeat {
@@ -118,6 +371,8 @@ mod tests {
             user_id: Some("u-1".to_string()),
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         }
     }
 
@@ -198,6 +453,8 @@ mod tests {
             user_id: Some("u-1".to_string()),
             is_heartbeat: true,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let err = tool
@@ -282,6 +539,8 @@ mod tests {
                     user_id: Some("u2".to_string()),
                     is_heartbeat: false,
                     is_confirmation_approved: false,
+                    working_dir: None,
+                    project_id: None,
                 },
                 serde_json::json!({
                     "delay_seconds": 60,

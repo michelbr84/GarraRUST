@@ -275,12 +275,74 @@ Bloqueantes:
 
 ---
 
+### Wave 0 — Immediate Fixes (2026-04-06)
+**Objetivo**: Desbloqueio imediato de compilação e DX
+
+| Item | Descrição | Status |
+|------|-----------|--------|
+| Riverpod ref fix | `api_service.dart` — `ApiServiceRef` → `Ref` (riverpod_generator 2.6+) | Done |
+| CSpell config | `.cspell.json` — dicionário de projeto ("Garra", termos técnicos) | Done |
+| JDK fix | `JAVA_HOME` apontando para JDK 23 (Gradle 8.14 requer 11+) | Done |
+| ClaudeMaxPower perms | `settings.json` — adiciona `dart`, `npx`, `npm`, `openclaw` | Done |
+| OAuth refresh | `claude /login` — token expirado do Claude Code | Manual |
+| QUIC fix | Chrome `chrome://flags/#enable-quic` → Disabled | Manual |
+
+---
+
+### Wave 7 — OpenClaw Deep Integration (Semanas 17-20)
+**Objetivo**: Bridge bidirecional com OpenClaw para 20+ canais de messaging
+
+| Issue | Título | Dependências |
+|-------|--------|--------------|
+| NEW-1 | `garraia-channels::openclaw` — WebSocket client | - |
+| NEW-2 | `OpenClawConfig` — config schema | - |
+| NEW-3 | Message conversion (OpenClaw JSON ↔ `Message`) | NEW-1 |
+| NEW-4 | Gateway handler (`/api/openclaw/*`) | NEW-1 |
+| NEW-5 | `openclaw` feature flag em garraia-channels | NEW-1 |
+| NEW-6 | AppState integration (openclaw_client field) | NEW-4 |
+| NEW-7 | Tool bridge (`openclaw_bridge.rs`) | NEW-1 |
+| NEW-8 | MCP server option em `mcp.json.example` | - |
+| NEW-9 | Integration tests (WS mock) | NEW-1~7 |
+
+**Arquitetura**:
+```
+OpenClaw Daemon (ws://127.0.0.1:18789)
+  ↕ WebSocket (auto-reconnect, exponential backoff)
+garraia-channels::openclaw::OpenClawClient
+  ↕ Message routing via channel_type metadata
+garraia-gateway::AppState::agents (AgentRuntime)
+```
+
+**Riscos**: Médio — depende do OpenClaw daemon estar rodando
+**Ganhos**: Acesso imediato a WhatsApp, Signal, Telegram, Discord, Google Chat, iMessage, Matrix, Teams, etc. via bridge unificado
+
+---
+
+### Wave 8 — Mobile + OpenClaw Sync (Semanas 21-24)
+**Objetivo**: Flutter app conectada via OpenClaw channels + push notifications
+
+| Issue | Título | Dependências |
+|-------|--------|--------------|
+| NEW-10 | Flutter: OpenClaw channel selector na UI | Wave 7 |
+| NEW-11 | Push notifications via OpenClaw webhooks | Wave 7 |
+| NEW-12 | Offline message queue (SQLite) | GAR-339 |
+| NEW-13 | Voice bridge: OpenClaw TTS/STT → garraia-voice | Wave 7 |
+| NEW-14 | Device node integration (macOS/Android) | Wave 7 |
+
+**Riscos**: Baixo — extensão incremental
+**Ganhos**: App mobile com acesso multi-canal completo
+
+---
+
 ## Conclusão
 
-O backlog tem 71 issues ativas mas com boa estrutura em 2 iniciativas principais:
-1. **Modos de Execução** (GAR-219~240) - focado em runtime/agent behavior  
-2. **Glob & Ignore Engine** (GAR-241~270) - focado em filesystem/traversal
+O backlog tem 71+ issues ativas com boa estrutura em 4 iniciativas principais:
+1. **Modos de Execução** (GAR-219~240) — runtime/agent behavior
+2. **Glob & Ignore Engine** (GAR-241~270) — filesystem/traversal
+3. **OpenClaw Integration** (Wave 7) — multi-channel bridge via WebSocket
+4. **Mobile + OpenClaw Sync** (Wave 8) — Flutter app multi-canal
 
-A recomendação é **dividir em waves menores**, começar com definição/specs (Wave 1), depois implementar core (Wave 2-3), e finalizar UI/integrações (Wave 5-6).
+A recomendação é **dividir em waves menores**, começar com definição/specs (Wave 1), depois implementar core (Wave 2-3), finalizar UI/integrações (Wave 5-6), e expandir canais via OpenClaw (Wave 7-8).
 
 **Foco inicial**: GAR-219 + GAR-221 + GAR-241 + GAR-244 = base para tudo mais.
+**Foco paralelo**: Wave 0 (fixes imediatos) + Wave 7 (OpenClaw bridge).

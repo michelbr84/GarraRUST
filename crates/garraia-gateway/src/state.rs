@@ -42,6 +42,10 @@ pub struct AppState {
     config_rx: Option<watch::Receiver<AppConfig>>,
     /// Broadcast channel for tailing logs to WebSocket clients.
     pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// OpenClaw bridge client (available when OPENCLAW_ENABLED=true).
+    pub openclaw_client: Option<Arc<garraia_channels::OpenClawClient>>,
+    /// OpenClaw configuration.
+    pub openclaw_config: Option<garraia_channels::OpenClawConfig>,
     /// Chatterbox TTS client (available when `--with-voice` is used).
     pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
     /// Whisper STT client (available when `--with-voice` is used).
@@ -75,6 +79,12 @@ pub struct SessionState {
     pub created_at: Instant,
     /// Last time the session had activity (message or pong).
     pub last_active: Instant,
+    /// Phase 1.3: Working directory for this session's project context.
+    pub working_dir: Option<String>,
+    /// Phase 1.3: Human-readable project name for this session.
+    pub project_name: Option<String>,
+    /// Phase 1.3: Project ID linking this session to a registered project.
+    pub project_id: Option<String>,
 }
 
 /// Agent configuration override for a session.
@@ -113,6 +123,8 @@ impl AppState {
             chat_session_manager: None,
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
+            openclaw_client: None,
+            openclaw_config: None,
             voice_client: None,
             stt_client: None,
             health_cache: None,
@@ -225,6 +237,9 @@ impl AppState {
                 connected: true,
                 created_at: now,
                 last_active: now,
+                working_dir: None,
+                project_name: None,
+                project_id: None,
             },
         );
     }

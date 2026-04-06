@@ -1,10 +1,11 @@
+mod commands;
 mod gateway;
+mod hotkey;
 mod overlay;
+mod quick_chat;
 mod tray;
 
-use std::sync::atomic::Ordering;
 use tauri::Manager;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[tauri::command]
 fn set_ignore_mouse(window: tauri::WebviewWindow, ignore: bool) {
@@ -19,6 +20,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let visible = overlay::create_overlay(app.handle())?;
             let gw = gateway::launch(app.handle());
@@ -27,6 +31,9 @@ pub fn run() {
             app.manage(gw.clone());
 
             tray::setup_tray(app.handle(), visible.clone(), gw)?;
+
+            // Register global hotkeys (Alt+G overlay toggle, Ctrl+Space quick-chat)
+            hotkey::register_hotkeys(app.handle(), visible)?;
 
             // Copy default config if not present
             if let (Ok(resource_dir), Ok(config_dir)) =
@@ -49,23 +56,17 @@ pub fn run() {
                 }
             }
 
-            let handle = app.handle().clone();
-            let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyG);
-            app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-                if event.state != ShortcutState::Pressed { return; }
-
-                if visible.load(Ordering::Relaxed) {
-                    if let Some(win) = handle.get_webview_window("parrot") {
-                        let _ = win.eval("window.__garra?.toggleInput()");
-                    }
-                } else {
-                    overlay::toggle_overlay(&handle, &visible);
-                }
-            })?;
-
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![set_ignore_mouse])
+        .invoke_handler(tauri::generate_handler![
+            set_ignore_mouse,
+            commands::select_project_folder,
+            commands::select_files,
+            commands::notify_message,
+            commands::hide_quick_chat,
+            commands::check_for_updates,
+            commands::install_update,
+        ])
         .build(tauri::generate_context!())
         .expect("error while running garraia-desktop")
         .run(|app, event| {
