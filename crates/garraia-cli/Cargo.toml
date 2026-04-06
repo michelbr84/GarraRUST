@@ -32,6 +32,7 @@ dialoguer = "0.11"
 serde_yaml = { workspace = true }
 serde = { workspace = true }
 dirs = "6"
+uuid = { workspace = true }
 regex = { workspace = true }
 ring = { workspace = true }
 tracing-appender = "0.2.4"

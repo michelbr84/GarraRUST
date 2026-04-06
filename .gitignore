@@ -30,6 +30,7 @@ Thumbs.db
 .claude/sessions/
 .claude/audit.log
 .claude/team-output/
+.claude/worktrees/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
 # GarraIA SuperPowers — estado e outputs de automação

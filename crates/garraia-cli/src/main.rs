@@ -1,4 +1,5 @@
 mod banner;
+mod chat;
 mod glob_cmd;
 mod migrate;
 mod update;
@@ -122,6 +123,21 @@ enum Commands {
     Glob {
         #[command(subcommand)]
         action: GlobCommands,
+    },
+
+    /// Interactive AI chat (local-first REPL)
+    Chat {
+        /// Override provider (ollama, anthropic, openai)
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+
+        /// Override model name
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+
+        /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
+        #[arg(long, short = 'u')]
+        url: Option<String>,
     },
 }
 
@@ -1009,6 +1025,10 @@ async fn async_main(
                     )?;
                 }
             }
+        }
+        Commands::Chat { provider, model, url } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(chat::run_chat(config, provider, model, url))?;
         }
     }
 
