@@ -1,16 +1,27 @@
 pub mod bash_tool;
+pub mod code_review_tool;
 pub mod file_read_tool;
 pub mod file_write_tool;
 pub mod git_diff_tool;
+pub mod list_dir_tool;
+pub mod repo_search_tool;
+pub mod run_tests_tool;
 pub mod schedule;
+pub mod tool_context;
 pub mod web_fetch_tool;
 pub mod web_search_tool;
 
 pub use bash_tool::BashTool;
+pub use code_review_tool::CodeReviewTool;
 pub use file_read_tool::FileReadTool;
 pub use file_write_tool::FileWriteTool;
 pub use git_diff_tool::GitDiffTool;
+pub use list_dir_tool::ListDirTool;
+pub use repo_search_tool::RepoSearchTool;
+pub use run_tests_tool::RunTestsTool;
 pub use schedule::ScheduleHeartbeat;
+pub use schedule::{EventTrigger, EventType, ScheduledTask, TaskStatus, TriggerRegistry, WebhookTrigger};
+pub use tool_context::ProjectToolContext;
 pub use web_fetch_tool::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
 
@@ -37,6 +48,15 @@ pub struct ToolContext {
     /// confirmação neste caso e executar diretamente.
     #[serde(default)]
     pub is_confirmation_approved: bool,
+
+    /// Phase 2.2: Working directory for this session (project root).
+    /// Tools use this as CWD for command execution and path resolution.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+
+    /// Phase 2.2: Project ID for this session, linking to a registered project.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// Trait para ferramentas que os agentes podem invocar

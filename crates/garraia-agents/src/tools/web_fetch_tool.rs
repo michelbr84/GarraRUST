@@ -120,6 +120,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
         let result = rt.block_on(tool.execute(&ctx, serde_json::json!({})));
         assert!(result.is_err());

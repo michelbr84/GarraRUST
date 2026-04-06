@@ -641,6 +641,8 @@ impl McpManager {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let input = serde_json::Value::Object(arguments.into_iter().collect());

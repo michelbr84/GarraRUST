@@ -4,31 +4,44 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GarraIA Admin Console</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 :root {
-  --bg-primary: #1a1a2e;
-  --bg-sidebar: #16213e;
-  --bg-card: #0f3460;
-  --bg-input: #1a1a3e;
-  --bg-hover: #1a2a50;
-  --bg-table-alt: #162050;
-  --accent: #e94560;
-  --accent-hover: #ff6b81;
-  --text-primary: #e8e8f0;
+  --bg-primary: #0f1117;
+  --bg-sidebar: #0a0c14;
+  --bg-card: #161822;
+  --bg-card-alt: #1a1d2e;
+  --bg-input: #1a1d2e;
+  --bg-hover: #1e2236;
+  --bg-table-alt: #13151f;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-light: rgba(99,102,241,0.12);
+  --text-primary: #e8eaf0;
   --text-secondary: #9ca3af;
   --text-muted: #6b7280;
-  --border: #2a2a4a;
+  --border: #252836;
+  --border-light: #1f2233;
   --success: #10b981;
+  --success-light: rgba(16,185,129,0.12);
   --warning: #f59e0b;
+  --warning-light: rgba(245,158,11,0.12);
   --error: #ef4444;
+  --error-light: rgba(239,68,68,0.12);
   --info: #3b82f6;
+  --info-light: rgba(59,130,246,0.12);
   --sidebar-width: 240px;
   --topbar-height: 56px;
-  --radius: 8px;
+  --radius: 10px;
+  --radius-sm: 6px;
   --shadow: 0 2px 8px rgba(0,0,0,0.3);
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'SF Mono', SFMono-Regular, 'Cascadia Code', Consolas, monospace;
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', SFMono-Regular, Consolas, monospace;
+  --transition: 150ms ease;
 }
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 body {
@@ -40,62 +53,72 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+/* Buttons */
 button {
   font-family: var(--font);
   cursor: pointer;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   font-size: 13px;
   padding: 8px 16px;
-  transition: background 0.15s, opacity 0.15s;
+  transition: all var(--transition);
+  font-weight: 500;
 }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); }
+.btn-secondary:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
+.btn-danger { background: var(--error); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #dc2626; }
+.btn-success { background: var(--success); color: #fff; }
+.btn-success:hover:not(:disabled) { background: #059669; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-icon { background: transparent; padding: 4px 8px; color: var(--text-secondary); border: none; }
+.btn-icon:hover { color: var(--text-primary); background: var(--bg-hover); border-radius: var(--radius-sm); }
+
+/* Inputs */
 input, textarea, select {
   font-family: var(--font);
   background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition);
 }
-input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
 textarea { resize: vertical; font-family: var(--mono); font-size: 12px; }
+select { cursor: pointer; }
+
+/* Tables */
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
-th { color: var(--text-secondary); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-tr:nth-child(even) { background: var(--bg-table-alt); }
+th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
 tr:hover { background: var(--bg-hover); }
 
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); }
-.btn-secondary:hover:not(:disabled) { background: var(--bg-hover); }
-.btn-danger { background: var(--error); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: #dc2626; }
-.btn-success { background: var(--success); color: #fff; }
-.btn-success:hover:not(:disabled) { background: #059669; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-icon { background: transparent; padding: 4px 8px; color: var(--text-secondary); }
-.btn-icon:hover { color: var(--text-primary); }
-
+/* Badges */
 .badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
   letter-spacing: 0.3px;
 }
-.badge-success { background: rgba(16,185,129,0.15); color: var(--success); }
-.badge-error { background: rgba(239,68,68,0.15); color: var(--error); }
-.badge-warning { background: rgba(245,158,11,0.15); color: var(--warning); }
-.badge-info { background: rgba(59,130,246,0.15); color: var(--info); }
-.badge-neutral { background: rgba(107,114,128,0.15); color: var(--text-secondary); }
+.badge-success { background: var(--success-light); color: var(--success); }
+.badge-error { background: var(--error-light); color: var(--error); }
+.badge-warning { background: var(--warning-light); color: var(--warning); }
+.badge-info { background: var(--info-light); color: var(--info); }
+.badge-neutral { background: rgba(107,114,128,0.12); color: var(--text-secondary); }
 
+/* Cards */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -104,194 +127,157 @@ tr:hover { background: var(--bg-hover); }
   box-shadow: var(--shadow);
 }
 .card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 16px;
 }
-.card-header h3 { font-size: 16px; font-weight: 600; }
+.card-header h3 { font-size: 15px; font-weight: 600; }
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
   margin-bottom: 20px;
 }
-.stat-card {
+
+/* Metric cards with mini sparklines */
+.metric-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  position: relative;
+  overflow: hidden;
 }
-.stat-card .stat-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-.stat-card .stat-value { font-size: 28px; font-weight: 700; }
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.metric-card.metric-blue::before { background: var(--info); }
+.metric-card.metric-green::before { background: var(--success); }
+.metric-card.metric-yellow::before { background: var(--warning); }
+.metric-card.metric-red::before { background: var(--error); }
+.metric-card.metric-purple::before { background: var(--accent); }
+.metric-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; font-weight: 500; }
+.metric-value { font-size: 28px; font-weight: 700; line-height: 1.2; }
+.metric-change {
+  font-size: 12px; margin-top: 4px;
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.metric-change.up { color: var(--success); }
+.metric-change.down { color: var(--error); }
 
+/* Chart containers */
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 250px;
+  margin-bottom: 16px;
+}
+.chart-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 768px) {
+  .chart-row { grid-template-columns: 1fr; }
+}
+
+/* Channel status dots */
+.channel-status {
+  display: flex; align-items: center; gap: 8px; padding: 8px 0;
+}
+.channel-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+}
+.channel-dot.online { background: var(--success); box-shadow: 0 0 6px rgba(16,185,129,0.5); }
+.channel-dot.offline { background: var(--error); }
+.channel-name { font-size: 13px; }
+.channel-type { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+
+/* Log viewer */
+.log-viewer {
+  background: #080a12;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  max-height: 500px;
+  overflow-y: auto;
+  color: #a8b2c1;
+}
+.log-line { padding: 2px 12px; border-bottom: 1px solid rgba(255,255,255,0.02); }
+.log-line:hover { background: rgba(255,255,255,0.03); }
+.log-line.log-error { color: var(--error); background: rgba(239,68,68,0.04); }
+.log-line.log-warn { color: var(--warning); }
+.log-line.log-info { color: var(--info); }
+.log-line .log-timestamp { color: var(--text-muted); margin-right: 8px; }
+.log-line .log-level {
+  display: inline-block; width: 48px; text-align: center;
+  font-weight: 600; font-size: 10px; text-transform: uppercase;
+}
+.log-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; background: var(--bg-card-alt);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  flex-wrap: wrap;
+}
+.log-filter-btn {
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-muted); cursor: pointer;
+  transition: all var(--transition);
+}
+.log-filter-btn:hover, .log-filter-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+.log-search {
+  flex: 1; min-width: 160px;
+  padding: 5px 10px; border-radius: 999px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); font-size: 12px;
+  outline: none;
+}
+.log-search:focus { border-color: var(--accent); }
+
+/* RBAC role selector */
+.role-select {
+  padding: 4px 8px; font-size: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); cursor: pointer;
+}
+.role-select:focus { border-color: var(--accent); }
+
+/* Forms */
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; font-weight: 600; }
 .form-group input, .form-group textarea, .form-group select { width: 100%; }
 .form-row { display: flex; gap: 12px; }
 .form-row .form-group { flex: 1; }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.toolbar input[type="search"] { min-width: 200px; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
 
-.empty-state {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--text-muted);
-}
-.empty-state svg { margin-bottom: 12px; opacity: 0.4; }
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
 
-.pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 16px;
-}
+.pagination { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; }
 
-.toast-container {
-  position: fixed;
-  top: 70px;
-  right: 20px;
-  z-index: 10000;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+/* Toast */
+.toast-container { position: fixed; top: 70px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 8px; }
 .toast {
-  padding: 12px 20px;
-  border-radius: var(--radius);
-  color: #fff;
-  font-size: 13px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  animation: slideIn 0.2s ease-out;
-  max-width: 400px;
+  padding: 12px 20px; border-radius: var(--radius); color: #fff;
+  font-size: 13px; box-shadow: var(--shadow-lg);
+  animation: slideIn 0.2s ease-out; max-width: 400px;
+  display: flex; align-items: center; gap: 8px;
 }
 .toast-success { background: var(--success); }
 .toast-error { background: var(--error); }
 .toast-info { background: var(--info); }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-
-/* Layout */
-#app-shell { display: flex; height: 100vh; }
-#sidebar {
-  width: var(--sidebar-width);
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  flex-shrink: 0;
-  transition: width 0.2s;
-}
-#sidebar.collapsed { width: 56px; }
-#sidebar.collapsed .nav-label, #sidebar.collapsed .sidebar-brand-text, #sidebar.collapsed .nav-section-title { display: none; }
-#sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 700;
-  font-size: 16px;
-  color: var(--accent);
-  white-space: nowrap;
-}
-.sidebar-brand svg { flex-shrink: 0; }
-.nav-section { padding: 8px 0; }
-.nav-section-title {
-  padding: 8px 16px 4px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text-muted);
-  font-weight: 600;
-}
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-.nav-item.active { background: rgba(233,69,96,0.1); color: var(--accent); border-right: 3px solid var(--accent); }
-.nav-item svg { flex-shrink: 0; width: 18px; height: 18px; }
-.nav-label { overflow: hidden; text-overflow: ellipsis; }
-
-#main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-#topbar {
-  height: var(--topbar-height);
-  background: var(--bg-sidebar);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  flex-shrink: 0;
-}
-#topbar-left { display: flex; align-items: center; gap: 12px; }
-#topbar-right { display: flex; align-items: center; gap: 12px; }
-.topbar-user { font-size: 13px; color: var(--text-secondary); }
-.topbar-role { font-size: 11px; }
-#page-title { font-size: 18px; font-weight: 600; }
-#content-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px;
-}
-
-/* Auth screens */
-.auth-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  background: var(--bg-primary);
-}
-.auth-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 40px;
-  width: 100%;
-  max-width: 400px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-}
-.auth-card h1 {
-  text-align: center;
-  margin-bottom: 8px;
-  color: var(--accent);
-  font-size: 24px;
-}
-.auth-card p {
-  text-align: center;
-  color: var(--text-secondary);
-  margin-bottom: 24px;
-  font-size: 13px;
-}
-.auth-card .form-group { margin-bottom: 16px; }
-.auth-card button { width: 100%; padding: 12px; font-size: 15px; margin-top: 8px; }
-.auth-error {
-  background: rgba(239,68,68,0.1);
-  border: 1px solid rgba(239,68,68,0.3);
-  border-radius: var(--radius);
-  padding: 10px 14px;
-  margin-bottom: 16px;
-  color: var(--error);
-  font-size: 13px;
-}
 
 /* Toggle switch */
 .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
@@ -307,57 +293,115 @@ tr:hover { background: var(--bg-hover); }
 .toggle input:checked + .toggle-slider { background: var(--success); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
 
-/* Responsive */
-@media (max-width: 768px) {
-  #sidebar { width: 56px; }
-  .nav-label, .sidebar-brand-text, .nav-section-title { display: none; }
-  .nav-item { justify-content: center; padding: 10px 0; }
-  #content-area { padding: 16px; }
+/* Layout */
+#app-shell { display: flex; height: 100vh; }
+#sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow-y: auto; flex-shrink: 0;
+  transition: width 0.2s;
+}
+#sidebar.collapsed { width: 56px; }
+#sidebar.collapsed .nav-label, #sidebar.collapsed .sidebar-brand-text, #sidebar.collapsed .nav-section-title { display: none; }
+#sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px; border-bottom: 1px solid var(--border);
+  font-weight: 700; font-size: 16px;
+  color: var(--accent); white-space: nowrap;
+}
+.sidebar-brand-icon {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; flex-shrink: 0;
+}
+.nav-section { padding: 8px 0; }
+.nav-section-title {
+  padding: 8px 16px 4px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-muted); font-weight: 600;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; color: var(--text-secondary);
+  cursor: pointer; transition: all 0.1s;
+  font-size: 13px; white-space: nowrap;
+  border-left: 3px solid transparent;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item.active { background: var(--accent-light); color: var(--accent); border-left-color: var(--accent); }
+.nav-item svg { flex-shrink: 0; width: 18px; height: 18px; }
+.nav-label { overflow: hidden; text-overflow: ellipsis; }
+
+#main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#topbar {
+  height: var(--topbar-height);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; flex-shrink: 0;
+}
+#topbar-left { display: flex; align-items: center; gap: 12px; }
+#topbar-right { display: flex; align-items: center; gap: 12px; }
+.topbar-user { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
+#page-title { font-size: 18px; font-weight: 600; }
+#content-area { flex: 1; overflow-y: auto; padding: 24px; }
+
+/* Auth */
+.auth-container { display: flex; align-items: center; justify-content: center; height: 100vh; background: var(--bg-primary); }
+.auth-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 40px; width: 100%; max-width: 400px;
+  box-shadow: var(--shadow-lg);
+}
+.auth-card h1 { text-align: center; margin-bottom: 8px; color: var(--accent); font-size: 24px; }
+.auth-card p { text-align: center; color: var(--text-secondary); margin-bottom: 24px; font-size: 13px; }
+.auth-card .form-group { margin-bottom: 16px; }
+.auth-card button { width: 100%; padding: 12px; font-size: 15px; margin-top: 8px; }
+.auth-error {
+  background: var(--error-light); border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px;
+  color: var(--error); font-size: 13px;
 }
 
-/* Loading spinner */
+/* YAML editor */
+.yaml-editor {
+  width: 100%; min-height: 400px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  background: #080a12; color: #a8b2c1;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px; tab-size: 2;
+}
+
+/* Channel config form */
+.channel-config-form {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  background: var(--bg-card-alt); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+}
+.channel-config-form .form-group { margin-bottom: 0; }
+
 .spinner {
   display: inline-block; width: 18px; height: 18px;
   border: 2px solid var(--border); border-top-color: var(--accent);
   border-radius: 50%; animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-.loading-overlay {
-  display: flex; align-items: center; justify-content: center;
-  padding: 60px; color: var(--text-muted);
-}
+.loading-overlay { display: flex; align-items: center; justify-content: center; padding: 60px; color: var(--text-muted); }
 .loading-overlay .spinner { width: 32px; height: 32px; margin-right: 12px; }
 
-/* Log viewer */
-.log-viewer {
-  background: #0d0d1a;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.6;
-  max-height: 500px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: #a8b2c1;
-}
-
-/* YAML editor */
-.yaml-editor {
-  width: 100%;
-  min-height: 400px;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.6;
-  background: #0d0d1a;
-  color: #a8b2c1;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  tab-size: 2;
+/* Responsive */
+@media (max-width: 768px) {
+  #sidebar { width: 56px; }
+  .nav-label, .sidebar-brand-text, .nav-section-title { display: none; }
+  .nav-item { justify-content: center; padding: 10px 0; }
+  #content-area { padding: 16px; }
+  .chart-row { grid-template-columns: 1fr; }
+  .channel-config-form { grid-template-columns: 1fr; }
 }
 
 .hidden { display: none !important; }
@@ -365,13 +409,12 @@ tr:hover { background: var(--bg-hover); }
 </head>
 <body>
 
-<!-- Toast container -->
 <div id="toast-container" class="toast-container"></div>
 
 <!-- Auth: Login -->
 <div id="view-login" class="auth-container hidden">
   <div class="auth-card">
-    <h1>&#x1f981; GarraIA</h1>
+    <h1>&#x1f99c; GarraIA</h1>
     <p>Sign in to the Admin Console</p>
     <div id="login-error" class="auth-error hidden"></div>
     <div class="form-group">
@@ -389,7 +432,7 @@ tr:hover { background: var(--bg-hover); }
 <!-- Auth: Setup -->
 <div id="view-setup" class="auth-container hidden">
   <div class="auth-card">
-    <h1>&#x1f981; GarraIA Setup</h1>
+    <h1>&#x1f99c; GarraIA Setup</h1>
     <p>Create the first administrator account</p>
     <div id="setup-error" class="auth-error hidden"></div>
     <div class="form-group">
@@ -411,10 +454,9 @@ tr:hover { background: var(--bg-hover); }
 <!-- Main app shell -->
 <div id="view-app" class="hidden">
   <div id="app-shell">
-    <!-- Sidebar -->
     <nav id="sidebar">
       <div class="sidebar-brand">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+        <div class="sidebar-brand-icon">&#x1f99c;</div>
         <span class="sidebar-brand-text">GarraIA Admin</span>
       </div>
       <div class="nav-section">
@@ -423,19 +465,19 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           <span class="nav-label">Dashboard</span>
         </div>
-        <div class="nav-item" data-page="alerts">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span class="nav-label">Alerts</span>
-        </div>
         <div class="nav-item" data-page="metrics">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           <span class="nav-label">Metrics</span>
+        </div>
+        <div class="nav-item" data-page="alerts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span class="nav-label">Alerts</span>
         </div>
       </div>
       <div class="nav-section">
         <div class="nav-section-title">Resources</div>
         <div class="nav-item" data-page="mcp">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="12" cy="10" r="2"/><path d="M8 10h1M15 10h1"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
           <span class="nav-label">MCP Servers</span>
         </div>
         <div class="nav-item" data-page="providers">
@@ -451,7 +493,7 @@ tr:hover { background: var(--bg-hover); }
           <span class="nav-label">Config</span>
         </div>
         <div class="nav-item" data-page="templates">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
           <span class="nav-label">Templates</span>
         </div>
       </div>
@@ -494,7 +536,6 @@ tr:hover { background: var(--bg-hover); }
         </div>
       </div>
     </nav>
-    <!-- Main content -->
     <div id="main-area">
       <header id="topbar">
         <div id="topbar-left">
@@ -506,7 +547,7 @@ tr:hover { background: var(--bg-hover); }
         <div id="topbar-right">
           <span class="topbar-user">
             <span id="topbar-username"></span>
-            <span class="topbar-role badge badge-info" id="topbar-role"></span>
+            <span class="badge badge-info" id="topbar-role"></span>
           </span>
           <button class="btn-secondary btn-sm" id="logout-btn">Logout</button>
         </div>
@@ -525,16 +566,13 @@ let csrfToken = '';
 let currentUser = null;
 let permissions = null;
 let currentPage = '';
+let chartInstances = {};
 
 // ─── API Module ──────────────────────────────────────────────────────
 const API_BASE = '/admin/api';
 
 async function api(method, path, body) {
-  const opts = {
-    method,
-    credentials: 'same-origin',
-    headers: {}
-  };
+  const opts = { method, credentials: 'same-origin', headers: {} };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -544,15 +582,8 @@ async function api(method, path, body) {
   }
   const resp = await fetch(API_BASE + path, opts);
   const data = await resp.json().catch(() => ({}));
-  if (resp.status === 401 && currentUser) {
-    currentUser = null;
-    csrfToken = '';
-    showLogin();
-    throw new Error('Session expired');
-  }
-  if (!resp.ok) {
-    throw new Error(data.error || ('HTTP ' + resp.status));
-  }
+  if (resp.status === 401 && currentUser) { currentUser = null; csrfToken = ''; showLogin(); throw new Error('Session expired'); }
+  if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
   return data;
 }
 
@@ -561,7 +592,7 @@ function apiPost(path, body) { return api('POST', path, body); }
 function apiPut(path, body) { return api('PUT', path, body); }
 function apiDelete(path) { return api('DELETE', path); }
 
-// ─── Permissions helper ──────────────────────────────────────────────
+// ─── Permissions ─────────────────────────────────────────────────────
 function can(resource, action) {
   if (!currentUser) return false;
   if (currentUser.role === 'admin') return true;
@@ -581,7 +612,7 @@ function toast(msg, type) {
   el.className = 'toast toast-' + type;
   el.textContent = msg;
   container.appendChild(el);
-  setTimeout(function() { el.remove(); }, 4000);
+  setTimeout(() => el.remove(), 4000);
 }
 
 // ─── DOM Helpers ─────────────────────────────────────────────────────
@@ -597,7 +628,7 @@ function el(tag, attrs, children) {
   }
   if (children) {
     if (!Array.isArray(children)) children = [children];
-    children.forEach(function(c) {
+    children.forEach(c => {
       if (typeof c === 'string') e.appendChild(document.createTextNode(c));
       else if (c) e.appendChild(c);
     });
@@ -606,55 +637,32 @@ function el(tag, attrs, children) {
 }
 
 function clearEl(e) { while (e.firstChild) e.removeChild(e.firstChild); }
-
-function setContent(html_safe_id, node) {
-  var target = document.getElementById(html_safe_id);
-  clearEl(target);
-  if (typeof node === 'string') {
-    target.textContent = node;
-  } else if (node) {
-    target.appendChild(node);
-  }
-}
-
 function renderContent(node) {
   var area = document.getElementById('content-area');
   clearEl(area);
   if (node) area.appendChild(node);
+  // Destroy old charts
+  Object.keys(chartInstances).forEach(k => { try { chartInstances[k].destroy(); } catch {} });
+  chartInstances = {};
 }
-
 function loading() {
-  var div = el('div', { className: 'loading-overlay' }, [
-    el('div', { className: 'spinner' }),
-    el('span', { textContent: 'Loading...' })
-  ]);
-  return div;
+  return el('div', { className: 'loading-overlay' }, [el('div', { className: 'spinner' }), el('span', { textContent: 'Loading...' })]);
 }
-
 function badgeFor(val, trueText, falseText) {
-  if (val) return el('span', { className: 'badge badge-success', textContent: trueText || 'Active' });
-  return el('span', { className: 'badge badge-error', textContent: falseText || 'Inactive' });
+  return val
+    ? el('span', { className: 'badge badge-success', textContent: trueText || 'Active' })
+    : el('span', { className: 'badge badge-error', textContent: falseText || 'Inactive' });
 }
-
 function roleBadge(role) {
   var cls = role === 'admin' ? 'badge-error' : role === 'operator' ? 'badge-warning' : 'badge-info';
   return el('span', { className: 'badge ' + cls, textContent: role });
 }
-
 function levelBadge(level) {
   var cls = level === 'error' ? 'badge-error' : level === 'warning' ? 'badge-warning' : 'badge-info';
   return el('span', { className: 'badge ' + cls, textContent: level });
 }
-
-function formatDate(s) {
-  if (!s) return '-';
-  try { return new Date(s).toLocaleString(); } catch(e) { return s; }
-}
-
-function truncate(s, len) {
-  if (!s) return '';
-  return s.length > len ? s.substring(0, len) + '...' : s;
-}
+function formatDate(s) { if (!s) return '-'; try { return new Date(s).toLocaleString(); } catch(e) { return s; } }
+function truncate(s, len) { if (!s) return ''; return s.length > len ? s.substring(0, len) + '...' : s; }
 
 // ─── Views Toggle ────────────────────────────────────────────────────
 function hideAllViews() {
@@ -662,19 +670,8 @@ function hideAllViews() {
   document.getElementById('view-setup').classList.add('hidden');
   document.getElementById('view-app').classList.add('hidden');
 }
-
-function showLogin() {
-  hideAllViews();
-  document.getElementById('view-login').classList.remove('hidden');
-  document.getElementById('login-username').focus();
-}
-
-function showSetup() {
-  hideAllViews();
-  document.getElementById('view-setup').classList.remove('hidden');
-  document.getElementById('setup-username').focus();
-}
-
+function showLogin() { hideAllViews(); document.getElementById('view-login').classList.remove('hidden'); document.getElementById('login-username').focus(); }
+function showSetup() { hideAllViews(); document.getElementById('view-setup').classList.remove('hidden'); document.getElementById('setup-username').focus(); }
 function showApp() {
   hideAllViews();
   document.getElementById('view-app').classList.remove('hidden');
@@ -683,39 +680,23 @@ function showApp() {
   updateSidebarVisibility();
   navigate(location.hash.slice(1) || 'dashboard');
 }
-
 function updateSidebarVisibility() {
-  document.querySelectorAll('.nav-item[data-require-role]').forEach(function(item) {
+  document.querySelectorAll('.nav-item[data-require-role]').forEach(item => {
     var req = item.getAttribute('data-require-role');
-    if (req === 'admin' && currentUser.role !== 'admin') {
-      item.classList.add('hidden');
-    } else {
-      item.classList.remove('hidden');
-    }
+    if (req === 'admin' && currentUser.role !== 'admin') item.classList.add('hidden');
+    else item.classList.remove('hidden');
   });
 }
 
-// ─── MCP auto-refresh handle ─────────────────────────────────────────
+// ─── MCP auto-refresh ───────────────────────────────────────────────
 var mcpRefreshTimer = null;
 
 // ─── Router ──────────────────────────────────────────────────────────
 var pages = {
-  dashboard: pageDashboard,
-  mcp: pageMcp,
-  providers: pageProviders,
-  secrets: pageSecrets,
-  config: pageConfig,
-  memory: pageMemory,
-  tools: pageTools,
-  channels: pageChannels,
-  sessions: pageSessions,
-  logs: pageLogs,
-  metrics: pageMetrics,
-  alerts: pageAlerts,
-  templates: pageTemplates,
-  audit: pageAudit,
-  users: pageUsers,
-  about: pageAbout
+  dashboard: pageDashboard, mcp: pageMcp, providers: pageProviders, secrets: pageSecrets,
+  config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
+  sessions: pageSessions, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
+  templates: pageTemplates, audit: pageAudit, users: pageUsers, about: pageAbout
 };
 
 function navigate(page) {
@@ -724,7 +705,7 @@ function navigate(page) {
   currentPage = page;
   location.hash = '#' + page;
   document.getElementById('page-title').textContent = pageTitle(page);
-  document.querySelectorAll('.nav-item').forEach(function(item) {
+  document.querySelectorAll('.nav-item').forEach(item => {
     item.classList.toggle('active', item.getAttribute('data-page') === page);
   });
   renderContent(loading());
@@ -733,66 +714,98 @@ function navigate(page) {
 
 function pageTitle(page) {
   var titles = {
-    dashboard: 'Dashboard', mcp: 'MCP Servers', providers: 'Providers', secrets: 'Secrets',
-    config: 'Configuration', memory: 'Memory', tools: 'Tools',
-    channels: 'Channels', sessions: 'Sessions', logs: 'Logs',
-    metrics: 'Metrics', alerts: 'Alerts', templates: 'Templates',
-    audit: 'Audit Log', users: 'Users', about: 'About'
+    dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
+    config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
+    sessions:'Sessions', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
+    templates:'Templates', audit:'Audit Log', users:'Users', about:'About'
   };
   return titles[page] || page;
 }
 
-window.addEventListener('hashchange', function() {
+window.addEventListener('hashchange', () => {
   if (currentUser) navigate(location.hash.slice(1) || 'dashboard');
 });
 
-// ─── Dashboard ───────────────────────────────────────────────────────
+// ─── Dashboard (Enhanced) ────────────────────────────────────────────
 async function pageDashboard() {
   try {
     var results = await Promise.allSettled([
-      apiGet('/metrics'),
-      apiGet('/alerts'),
-      apiGet('/providers')
+      apiGet('/metrics'), apiGet('/alerts'), apiGet('/providers'), apiGet('/channels'), apiGet('/sessions')
     ]);
     var metrics = results[0].status === 'fulfilled' ? results[0].value : {};
     var alertsData = results[1].status === 'fulfilled' ? results[1].value : { alerts: [] };
     var provData = results[2].status === 'fulfilled' ? results[2].value : { providers: [] };
+    var chanData = results[3].status === 'fulfilled' ? results[3].value : { channels: [] };
+    var sessData = results[4].status === 'fulfilled' ? results[4].value : { sessions: [] };
 
-    var activeProv = (provData.providers || []).filter(function(p) { return p.active; }).length;
+    var activeProv = (provData.providers || []).filter(p => p.active).length;
     var totalProv = (provData.providers || []).length;
+    var activeSessions = sessData.count || (sessData.sessions || []).length;
 
     var frag = document.createDocumentFragment();
 
+    // Metric cards
     var grid = el('div', { className: 'card-grid' });
-    var cards = [
-      { label: 'Active Providers', value: activeProv + ' / ' + totalProv, accent: true },
-      { label: 'Active Sessions', value: String(metrics.active_sessions || 0) },
-      { label: 'Total Requests', value: String(metrics.requests_total || 0) },
-      { label: 'Active Alerts', value: String(alertsData.count || 0), warn: (alertsData.count || 0) > 0 },
+    var metricCards = [
+      { label: 'Active Sessions', value: String(activeSessions), cls: 'metric-blue', icon: '&#128101;' },
+      { label: 'Total Requests', value: String(metrics.requests_total || 0), cls: 'metric-purple', icon: '&#128200;' },
+      { label: 'Active Providers', value: activeProv + '/' + totalProv, cls: 'metric-green', icon: '&#9889;' },
+      { label: 'Active Alerts', value: String(alertsData.count || (alertsData.alerts || []).length), cls: 'metric-red', icon: '&#9888;' },
     ];
-    cards.forEach(function(c) {
-      var sc = el('div', { className: 'stat-card' });
-      sc.appendChild(el('div', { className: 'stat-label', textContent: c.label }));
-      var val = el('div', { className: 'stat-value', textContent: c.value });
-      if (c.accent) val.style.color = 'var(--accent)';
-      if (c.warn) val.style.color = 'var(--warning)';
-      sc.appendChild(val);
-      grid.appendChild(sc);
+    metricCards.forEach(c => {
+      var card = el('div', { className: 'metric-card ' + c.cls });
+      card.innerHTML = '<div class="metric-label">' + c.icon + ' ' + c.label + '</div><div class="metric-value">' + c.value + '</div>';
+      grid.appendChild(card);
     });
     frag.appendChild(grid);
 
+    // Charts row
+    var chartRow = el('div', { className: 'chart-row' });
+
+    // Provider usage pie chart
+    var pieCard = el('div', { className: 'card' });
+    pieCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Provider Distribution' })]));
+    var pieCanvas = el('canvas', { id: 'provider-pie-chart' });
+    var pieContainer = el('div', { className: 'chart-container', style: 'height:220px' });
+    pieContainer.appendChild(pieCanvas);
+    pieCard.appendChild(pieContainer);
+    chartRow.appendChild(pieCard);
+
+    // Sessions bar chart
+    var barCard = el('div', { className: 'card' });
+    barCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Activity Overview' })]));
+    var barCanvas = el('canvas', { id: 'activity-bar-chart' });
+    var barContainer = el('div', { className: 'chart-container', style: 'height:220px' });
+    barContainer.appendChild(barCanvas);
+    barCard.appendChild(barContainer);
+    chartRow.appendChild(barCard);
+
+    frag.appendChild(chartRow);
+
+    // Channel status
+    var channels = chanData.channels || [];
+    if (channels.length > 0) {
+      var chanCard = el('div', { className: 'card', style: 'margin-bottom:20px' });
+      chanCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Channel Status' })]));
+      channels.forEach(ch => {
+        var row = el('div', { className: 'channel-status' });
+        var dotCls = ch.connected ? 'channel-dot online' : 'channel-dot offline';
+        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name">' + ch.name + '</span><span class="channel-type">' + (ch.type || '') + '</span>';
+        chanCard.appendChild(row);
+      });
+      frag.appendChild(chanCard);
+    }
+
+    // Active alerts
     if (alertsData.alerts && alertsData.alerts.length > 0) {
       var alertCard = el('div', { className: 'card' });
       alertCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Active Alerts' })]));
       var tbl = el('table');
-      var thead = el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Level' }),
-        el('th', { textContent: 'Source' }),
-        el('th', { textContent: 'Message' })
-      ])]);
-      tbl.appendChild(thead);
+      tbl.appendChild(el('thead', null, [el('tr', null, [
+        el('th', { textContent: 'Level' }), el('th', { textContent: 'Source' }), el('th', { textContent: 'Message' })
+      ])]));
       var tbody = el('tbody');
-      alertsData.alerts.forEach(function(a) {
+      alertsData.alerts.forEach(a => {
         tbody.appendChild(el('tr', null, [
           el('td', null, [levelBadge(a.level)]),
           el('td', { textContent: a.source }),
@@ -805,6 +818,36 @@ async function pageDashboard() {
     }
 
     renderContent(frag);
+
+    // Render charts after DOM is ready
+    setTimeout(() => {
+      // Provider pie chart
+      var providers = provData.providers || [];
+      if (providers.length > 0 && document.getElementById('provider-pie-chart')) {
+        var labels = providers.map(p => p.display_name || p.id);
+        var data = providers.map(p => p.active ? 1 : 0.2);
+        var colors = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6'];
+        chartInstances.pie = new Chart(document.getElementById('provider-pie-chart'), {
+          type: 'doughnut',
+          data: { labels: labels, datasets: [{ data: data, backgroundColor: colors.slice(0, providers.length), borderWidth: 0 }] },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af', font: { size: 11 } } } } }
+        });
+      }
+      // Activity bar chart
+      if (document.getElementById('activity-bar-chart')) {
+        var barLabels = ['Sessions', 'Requests', 'Providers', 'Channels'];
+        var barData = [activeSessions, metrics.requests_total || 0, totalProv, channels.length];
+        chartInstances.bar = new Chart(document.getElementById('activity-bar-chart'), {
+          type: 'bar',
+          data: { labels: barLabels, datasets: [{ label: 'Count', data: barData, backgroundColor: ['#3b82f6','#6366f1','#10b981','#f59e0b'], borderRadius: 6, borderSkipped: false }] },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { x: { grid: { display: false }, ticks: { color: '#6b7280' } }, y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6b7280' } } }
+          }
+        });
+      }
+    }, 100);
   } catch(e) {
     renderContent(el('div', { className: 'card', textContent: 'Failed to load dashboard: ' + e.message }));
   }
@@ -815,35 +858,25 @@ async function pageProviders() {
   try {
     var data = await apiGet('/providers');
     var providers = data.providers || [];
-
     var frag = document.createDocumentFragment();
     var tbl = el('table');
-    var thead = el('thead', null, [el('tr', null, [
-      el('th', { textContent: 'Provider' }),
-      el('th', { textContent: 'Status' }),
-      el('th', { textContent: 'Model' }),
-      el('th', { textContent: 'API Key' }),
-      el('th', { textContent: 'Default' }),
-      el('th', { textContent: 'Actions' })
-    ])]);
-    tbl.appendChild(thead);
+    tbl.appendChild(el('thead', null, [el('tr', null, [
+      el('th', { textContent: 'Provider' }), el('th', { textContent: 'Status' }),
+      el('th', { textContent: 'Model' }), el('th', { textContent: 'API Key' }),
+      el('th', { textContent: 'Default' }), el('th', { textContent: 'Actions' })
+    ])]));
     var tbody = el('tbody');
-
-    providers.forEach(function(p) {
+    providers.forEach(p => {
       var actions = el('td');
       if (can('providers', 'update')) {
         if (p.active) {
-          var disBtn = el('button', { className: 'btn-secondary btn-sm', textContent: 'Disable', onClick: function() { toggleProvider(p.id, false); } });
-          actions.appendChild(disBtn);
+          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Disable', onClick: () => toggleProvider(p.id, false) }));
         } else {
-          var enBtn = el('button', { className: 'btn-success btn-sm', textContent: 'Enable', onClick: function() { toggleProvider(p.id, true); } });
-          actions.appendChild(enBtn);
+          actions.appendChild(el('button', { className: 'btn-success btn-sm', textContent: 'Enable', onClick: () => toggleProvider(p.id, true) }));
         }
         actions.appendChild(document.createTextNode(' '));
-        var hBtn = el('button', { className: 'btn-secondary btn-sm', textContent: 'Health', onClick: function() { checkProviderHealth(p.id); } });
-        actions.appendChild(hBtn);
+        actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Health', onClick: () => checkProviderHealth(p.id) }));
       }
-
       tbody.appendChild(el('tr', null, [
         el('td', null, [el('strong', { textContent: p.display_name }), document.createTextNode(' '), el('span', { className: 'badge badge-neutral', textContent: p.id })]),
         el('td', null, [badgeFor(p.active)]),
@@ -853,28 +886,16 @@ async function pageProviders() {
         actions
       ]));
     });
-
     tbl.appendChild(tbody);
     frag.appendChild(el('div', { className: 'card' }, [tbl]));
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
 async function toggleProvider(id, enable) {
-  try {
-    var data = await apiPost('/providers/' + encodeURIComponent(id) + (enable ? '/enable' : '/disable'));
-    toast(data.message || (enable ? 'Enabled' : 'Disabled'), 'success');
-    pageProviders();
-  } catch(e) { toast(e.message, 'error'); }
+  try { var data = await apiPost('/providers/' + encodeURIComponent(id) + (enable ? '/enable' : '/disable')); toast(data.message || (enable ? 'Enabled' : 'Disabled'), 'success'); pageProviders(); } catch(e) { toast(e.message, 'error'); }
 }
-
 async function checkProviderHealth(id) {
-  try {
-    var data = await apiGet('/providers/' + encodeURIComponent(id) + '/health');
-    toast(id + ': ' + (data.healthy ? 'Healthy' : 'Unhealthy') + ' (' + (data.available_models || 0) + ' models)', data.healthy ? 'success' : 'error');
-  } catch(e) { toast(e.message, 'error'); }
+  try { var data = await apiGet('/providers/' + encodeURIComponent(id) + '/health'); toast(id + ': ' + (data.healthy ? 'Healthy' : 'Unhealthy'), data.healthy ? 'success' : 'error'); } catch(e) { toast(e.message, 'error'); }
 }
 
 // ─── Secrets ─────────────────────────────────────────────────────────
@@ -882,726 +903,302 @@ async function pageSecrets() {
   try {
     var data = await apiGet('/secrets');
     var secrets = data.secrets || [];
-
     var frag = document.createDocumentFragment();
-
     if (can('secrets', 'create')) {
       var toolbar = el('div', { className: 'toolbar' });
-      var addBtn = el('button', { className: 'btn-primary btn-sm', textContent: '+ Add Secret', onClick: showAddSecretForm });
-      toolbar.appendChild(addBtn);
-      var migrateBtn = el('button', { className: 'btn-secondary btn-sm', textContent: 'Migrate from Config', onClick: migrateSecrets });
-      toolbar.appendChild(migrateBtn);
+      toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add Secret', onClick: showAddSecretForm }));
+      toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Migrate from Config', onClick: migrateSecrets }));
       frag.appendChild(toolbar);
     }
-
     var card = el('div', { className: 'card' });
-    if (secrets.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No secrets configured yet.' }));
-    } else {
+    if (secrets.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No secrets configured yet.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Provider' }),
-        el('th', { textContent: 'Key Name' }),
-        el('th', { textContent: 'Status' }),
-        el('th', { textContent: 'Version' }),
-        el('th', { textContent: 'Updated' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Provider' }), el('th', { textContent: 'Key Name' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'Version' }), el('th', { textContent: 'Updated' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
-      secrets.forEach(function(s) {
+      secrets.forEach(s => {
         var actions = el('td');
-        if (can('secrets', 'update')) {
-          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Rotate', onClick: function() { showRotateSecretForm(s); } }));
-          actions.appendChild(document.createTextNode(' '));
-        }
-        if (can('secrets', 'delete')) {
-          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: function() { deleteSecret(s.provider, s.key_name); } }));
-        }
-        tbody.appendChild(el('tr', null, [
-          el('td', { textContent: s.provider }),
-          el('td', null, [el('code', { textContent: s.key_name })]),
-          el('td', null, [badgeFor(s.is_set, 'Set', 'Empty')]),
-          el('td', { textContent: 'v' + (s.version || 1) }),
-          el('td', { textContent: formatDate(s.updated_at) }),
-          actions
-        ]));
+        if (can('secrets', 'update')) actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Rotate', onClick: () => showRotateSecretForm(s) }));
+        if (can('secrets', 'delete')) { actions.appendChild(document.createTextNode(' ')); actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => deleteSecret(s.provider, s.key_name) })); }
+        tbody.appendChild(el('tr', null, [el('td', { textContent: s.provider }), el('td', null, [el('code', { textContent: s.key_name })]), el('td', null, [badgeFor(s.is_set, 'Set', 'Empty')]), el('td', { textContent: 'v' + (s.version || 1) }), el('td', { textContent: formatDate(s.updated_at) }), actions]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
 function showAddSecretForm() {
   var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
   overlay.appendChild(el('h3', { textContent: 'Add Secret', style: 'margin-bottom:12px' }));
-  var provInput = el('input', { type: 'text', placeholder: 'e.g. openai', id: 'secret-provider' });
-  var keyInput = el('input', { type: 'text', placeholder: 'e.g. api_key', id: 'secret-key' });
-  var valInput = el('input', { type: 'password', placeholder: 'Secret value', id: 'secret-value' });
-
-  overlay.appendChild(el('div', { className: 'form-row' }, [
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Provider' }), provInput]),
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Key Name' }), keyInput])
-  ]));
+  var provInput = el('input', { type: 'text', placeholder: 'e.g. openai' });
+  var keyInput = el('input', { type: 'text', placeholder: 'e.g. api_key' });
+  var valInput = el('input', { type: 'password', placeholder: 'Secret value' });
+  overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Provider' }), provInput]), el('div', { className: 'form-group' }, [el('label', { textContent: 'Key Name' }), keyInput])]));
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Value' }), valInput]));
   overlay.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
-    el('button', { className: 'btn-primary btn-sm', textContent: 'Save', onClick: async function() {
-      try {
-        await apiPost('/secrets', {
-          provider: provInput.value.trim(),
-          key_name: keyInput.value.trim(),
-          value: valInput.value
-        });
-        toast('Secret saved', 'success');
-        pageSecrets();
-      } catch(e) { toast(e.message, 'error'); }
-    }}),
-    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: function() { pageSecrets(); } })
+    el('button', { className: 'btn-primary btn-sm', textContent: 'Save', onClick: async () => { try { await apiPost('/secrets', { provider: provInput.value.trim(), key_name: keyInput.value.trim(), value: valInput.value }); toast('Secret saved', 'success'); pageSecrets(); } catch(e) { toast(e.message, 'error'); } } }),
+    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => pageSecrets() })
   ]));
-
-  var area = document.getElementById('content-area');
-  area.insertBefore(overlay, area.firstChild);
+  document.getElementById('content-area').insertBefore(overlay, document.getElementById('content-area').firstChild);
 }
-
 function showRotateSecretForm(secret) {
   var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
-  overlay.appendChild(el('h3', { textContent: 'Rotate Secret: ' + secret.provider + '/' + secret.key_name, style: 'margin-bottom:12px' }));
-  var valInput = el('input', { type: 'password', placeholder: 'New secret value' });
+  overlay.appendChild(el('h3', { textContent: 'Rotate: ' + secret.provider + '/' + secret.key_name, style: 'margin-bottom:12px' }));
+  var valInput = el('input', { type: 'password', placeholder: 'New value' });
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'New Value' }), valInput]));
   overlay.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
-    el('button', { className: 'btn-primary btn-sm', textContent: 'Rotate', onClick: async function() {
-      try {
-        await apiPost('/secrets/rotate', {
-          provider: secret.provider,
-          key_name: secret.key_name,
-          new_value: valInput.value
-        });
-        toast('Secret rotated', 'success');
-        pageSecrets();
-      } catch(e) { toast(e.message, 'error'); }
-    }}),
-    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: function() { pageSecrets(); } })
+    el('button', { className: 'btn-primary btn-sm', textContent: 'Rotate', onClick: async () => { try { await apiPost('/secrets/rotate', { provider: secret.provider, key_name: secret.key_name, new_value: valInput.value }); toast('Rotated', 'success'); pageSecrets(); } catch(e) { toast(e.message, 'error'); } } }),
+    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => pageSecrets() })
   ]));
-
-  var area = document.getElementById('content-area');
-  area.insertBefore(overlay, area.firstChild);
+  document.getElementById('content-area').insertBefore(overlay, document.getElementById('content-area').firstChild);
 }
-
-async function deleteSecret(provider, keyName) {
-  if (!confirm('Delete secret ' + provider + '/' + keyName + '?')) return;
-  try {
-    await apiDelete('/secrets/' + encodeURIComponent(provider) + '/' + encodeURIComponent(keyName));
-    toast('Secret deleted', 'success');
-    pageSecrets();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function migrateSecrets() {
-  try {
-    var data = await apiPost('/secrets/migrate');
-    toast('Migrated ' + data.count + ' secrets', 'success');
-    pageSecrets();
-  } catch(e) { toast(e.message, 'error'); }
-}
+async function deleteSecret(prov, key) { if (!confirm('Delete ' + prov + '/' + key + '?')) return; try { await apiDelete('/secrets/' + encodeURIComponent(prov) + '/' + encodeURIComponent(key)); toast('Deleted', 'success'); pageSecrets(); } catch(e) { toast(e.message, 'error'); } }
+async function migrateSecrets() { try { var d = await apiPost('/secrets/migrate'); toast('Migrated ' + d.count + ' secrets', 'success'); pageSecrets(); } catch(e) { toast(e.message, 'error'); } }
 
 // ─── Config ──────────────────────────────────────────────────────────
 async function pageConfig() {
   try {
-    var results = await Promise.allSettled([
-      apiGet('/config'),
-      apiGet('/config/versions'),
-      apiGet('/config/flags')
-    ]);
+    var results = await Promise.allSettled([apiGet('/config'), apiGet('/config/versions'), apiGet('/config/flags')]);
     var configData = results[0].status === 'fulfilled' ? results[0].value : {};
     var versionsData = results[1].status === 'fulfilled' ? results[1].value : { versions: [] };
     var flagsData = results[2].status === 'fulfilled' ? results[2].value : { flags: {} };
-
     var frag = document.createDocumentFragment();
 
-    // YAML Editor
     var editorCard = el('div', { className: 'card', style: 'margin-bottom:16px' });
-    editorCard.appendChild(el('div', { className: 'card-header' }, [
-      el('h3', { textContent: 'Configuration Editor' }),
-      el('div', { style: 'display:flex;gap:8px' }, (function() {
-        var btns = [];
-        if (can('config', 'update')) {
-          btns.push(el('button', { className: 'btn-primary btn-sm', textContent: 'Save', onClick: function() { saveConfig(); } }));
-        }
-        if (can('config', 'execute')) {
-          btns.push(el('button', { className: 'btn-success btn-sm', textContent: 'Apply', onClick: function() { applyConfig(); } }));
-        }
-        return btns;
-      })())
-    ]));
-    var textarea = el('textarea', { className: 'yaml-editor', id: 'config-yaml' });
-    textarea.value = configData.config_yaml || '';
-    editorCard.appendChild(textarea);
+    var editorBtns = [];
+    if (can('config', 'update')) editorBtns.push(el('button', { className: 'btn-primary btn-sm', textContent: 'Save', onClick: saveConfig }));
+    if (can('config', 'execute')) editorBtns.push(el('button', { className: 'btn-success btn-sm', textContent: 'Apply', onClick: applyConfig }));
+    editorCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Configuration Editor' }), el('div', { style: 'display:flex;gap:8px' }, editorBtns)]));
+    var ta = el('textarea', { className: 'yaml-editor', id: 'config-yaml' });
+    ta.value = configData.config_yaml || '';
+    editorCard.appendChild(ta);
     frag.appendChild(editorCard);
 
-    // Flags
+    // Feature flags
     var flagCard = el('div', { className: 'card', style: 'margin-bottom:16px' });
     flagCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Feature Flags' })]));
     var flags = flagsData.flags || {};
     var flagList = el('div', { style: 'display:flex;flex-direction:column;gap:12px' });
-    Object.keys(flags).forEach(function(key) {
+    Object.keys(flags).forEach(key => {
       var row = el('div', { style: 'display:flex;align-items:center;justify-content:space-between' });
       row.appendChild(el('span', { textContent: key.replace(/_/g, ' ') }));
       if (typeof flags[key] === 'boolean') {
         var toggle = el('label', { className: 'toggle' });
-        var input = el('input', { type: 'checkbox' });
-        input.checked = flags[key];
-        toggle.appendChild(input);
-        toggle.appendChild(el('span', { className: 'toggle-slider' }));
+        var input = el('input', { type: 'checkbox' }); input.checked = flags[key];
+        toggle.appendChild(input); toggle.appendChild(el('span', { className: 'toggle-slider' }));
         row.appendChild(toggle);
-      } else {
-        row.appendChild(el('span', { className: 'badge badge-neutral', textContent: String(flags[key]) }));
-      }
+      } else row.appendChild(el('span', { className: 'badge badge-neutral', textContent: String(flags[key]) }));
       flagList.appendChild(row);
     });
     flagCard.appendChild(flagList);
-    if (can('config', 'update')) {
-      flagCard.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: 'Update Flags', style: 'margin-top:12px', onClick: updateFlags }));
-    }
     frag.appendChild(flagCard);
 
     // Version history
-    var verCard = el('div', { className: 'card' });
-    verCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Version History' })]));
     var versions = versionsData.versions || [];
-    if (versions.length === 0) {
-      verCard.appendChild(el('div', { className: 'empty-state', textContent: 'No versions yet.' }));
-    } else {
+    if (versions.length > 0) {
+      var verCard = el('div', { className: 'card' });
+      verCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Version History' })]));
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Version' }),
-        el('th', { textContent: 'Author' }),
-        el('th', { textContent: 'Comment' }),
-        el('th', { textContent: 'Created' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Version' }), el('th', { textContent: 'Author' }), el('th', { textContent: 'Comment' }), el('th', { textContent: 'Created' })])]));
       var tbody = el('tbody');
-      versions.forEach(function(v) {
-        var actions = el('td');
-        actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'View', onClick: function() { viewConfigVersion(v.version); } }));
-        if (can('config', 'execute')) {
-          actions.appendChild(document.createTextNode(' '));
-          actions.appendChild(el('button', { className: 'btn-warning btn-sm btn-secondary', textContent: 'Rollback', onClick: function() { rollbackConfig(v.version); } }));
-        }
-        tbody.appendChild(el('tr', null, [
-          el('td', { textContent: 'v' + v.version }),
-          el('td', { textContent: v.author || '-' }),
-          el('td', { textContent: truncate(v.comment || '-', 40) }),
-          el('td', { textContent: formatDate(v.created_at) }),
-          actions
-        ]));
+      versions.forEach(v => {
+        tbody.appendChild(el('tr', null, [el('td', { textContent: 'v' + v.version }), el('td', { textContent: v.author || '-' }), el('td', { textContent: truncate(v.comment || '-', 40) }), el('td', { textContent: formatDate(v.created_at) })]));
       });
-      tbl.appendChild(tbody);
-      verCard.appendChild(tbl);
+      tbl.appendChild(tbody); verCard.appendChild(tbl); frag.appendChild(verCard);
     }
-    frag.appendChild(verCard);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
-async function saveConfig() {
-  try {
-    var yaml = document.getElementById('config-yaml').value;
-    await apiPost('/config', { config_yaml: yaml, comment: 'Saved from admin console' });
-    toast('Config saved', 'success');
-    pageConfig();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function applyConfig() {
-  try {
-    var yaml = document.getElementById('config-yaml').value;
-    var data = await apiPost('/config/apply', { config_yaml: yaml, comment: 'Applied from admin console' });
-    toast(data.message || 'Config applied', data.requires_restart ? 'info' : 'success');
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function rollbackConfig(version) {
-  if (!confirm('Rollback to version ' + version + '?')) return;
-  try {
-    await apiPost('/config/rollback/' + version);
-    toast('Rolled back to v' + version, 'success');
-    pageConfig();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function viewConfigVersion(version) {
-  try {
-    var data = await apiGet('/config/versions/' + version);
-    var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
-    overlay.appendChild(el('div', { className: 'card-header' }, [
-      el('h3', { textContent: 'Version ' + version }),
-      el('button', { className: 'btn-secondary btn-sm', textContent: 'Close', onClick: function() { pageConfig(); } })
-    ]));
-    var ta = el('textarea', { className: 'yaml-editor', readOnly: true });
-    ta.value = data.config_yaml || '';
-    overlay.appendChild(ta);
-    var area = document.getElementById('content-area');
-    area.insertBefore(overlay, area.firstChild);
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function updateFlags() {
-  try {
-    var body = {};
-    await apiPut('/config/flags', body);
-    toast('Flags updated (restart required)', 'info');
-  } catch(e) { toast(e.message, 'error'); }
-}
+async function saveConfig() { try { await apiPost('/config', { config_yaml: document.getElementById('config-yaml').value, comment: 'Saved from admin console' }); toast('Config saved', 'success'); pageConfig(); } catch(e) { toast(e.message, 'error'); } }
+async function applyConfig() { try { var d = await apiPost('/config/apply', { config_yaml: document.getElementById('config-yaml').value, comment: 'Applied from admin console' }); toast(d.message || 'Config applied', d.requires_restart ? 'info' : 'success'); } catch(e) { toast(e.message, 'error'); } }
 
 // ─── Memory ──────────────────────────────────────────────────────────
 async function pageMemory() {
   try {
-    var results = await Promise.allSettled([
-      apiGet('/memory?limit=50'),
-      apiGet('/memory/health')
-    ]);
+    var results = await Promise.allSettled([apiGet('/memory?limit=50'), apiGet('/memory/health')]);
     var memData = results[0].status === 'fulfilled' ? results[0].value : { entries: [] };
     var healthData = results[1].status === 'fulfilled' ? results[1].value : {};
-
     var frag = document.createDocumentFragment();
 
-    // Health status
     var healthCard = el('div', { className: 'card', style: 'margin-bottom:16px' });
-    healthCard.appendChild(el('div', { className: 'card-header' }, [
-      el('h3', { textContent: 'Memory Health' }),
-      el('div', null, [
-        badgeFor(healthData.enabled, 'Enabled', 'Disabled'),
-        document.createTextNode(' '),
-        badgeFor(healthData.healthy, 'Healthy', 'Unhealthy')
-      ])
-    ]));
+    healthCard.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Memory Health' }), el('div', null, [badgeFor(healthData.enabled, 'Enabled', 'Disabled'), document.createTextNode(' '), badgeFor(healthData.healthy, 'Healthy', 'Unhealthy')])]));
     frag.appendChild(healthCard);
 
-    // Toolbar
     var toolbar = el('div', { className: 'toolbar' });
-    var searchInput = el('input', { type: 'search', placeholder: 'Search memory...', id: 'memory-search' });
+    var searchInput = el('input', { type: 'search', placeholder: 'Search memory...' });
     toolbar.appendChild(searchInput);
-    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Search', onClick: function() { searchMemory(searchInput.value); } }));
-    if (can('memory', 'read')) {
-      toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Export', onClick: exportMemory }));
-    }
+    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Search', onClick: () => searchMemory(searchInput.value) }));
+    if (can('memory', 'read')) toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Export', onClick: exportMemory }));
     frag.appendChild(toolbar);
 
     var card = el('div', { className: 'card' });
     var entries = memData.entries || [];
-    if (entries.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No memory entries found.' }));
-    } else {
+    if (entries.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No memory entries.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Session' }),
-        el('th', { textContent: 'Role' }),
-        el('th', { textContent: 'Content' }),
-        el('th', { textContent: 'Created' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session' }), el('th', { textContent: 'Role' }), el('th', { textContent: 'Content' }), el('th', { textContent: 'Created' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
-      entries.forEach(function(e) {
+      entries.forEach(e => {
         var actions = el('td');
-        if (can('memory', 'delete')) {
-          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: function() { deleteMemory(e.session_id); } }));
-        }
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('code', { textContent: truncate(e.session_id || '-', 16) })]),
-          el('td', null, [el('span', { className: 'badge badge-neutral', textContent: e.role || '-' })]),
-          el('td', { textContent: truncate(e.content || '', 80) }),
-          el('td', { textContent: formatDate(e.created_at) }),
-          actions
-        ]));
+        if (can('memory', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => deleteMemory(e.session_id) }));
+        tbody.appendChild(el('tr', null, [el('td', null, [el('code', { textContent: truncate(e.session_id || '-', 16) })]), el('td', null, [el('span', { className: 'badge badge-neutral', textContent: e.role || '-' })]), el('td', { textContent: truncate(e.content || '', 80) }), el('td', { textContent: formatDate(e.created_at) }), actions]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
-async function searchMemory(query) {
-  try {
-    var data = await apiGet('/memory?limit=50&q=' + encodeURIComponent(query));
-    var entries = data.entries || [];
-    toast('Found ' + entries.length + ' entries', 'info');
-    pageMemory();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function deleteMemory(sessionId) {
-  if (!confirm('Delete all memory for session ' + sessionId + '?')) return;
-  try {
-    await apiDelete('/memory/' + encodeURIComponent(sessionId));
-    toast('Memory deleted', 'success');
-    pageMemory();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function exportMemory() {
-  try {
-    var data = await apiPost('/memory/export');
-    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'memory-export-' + new Date().toISOString().slice(0, 10) + '.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('Memory exported', 'success');
-  } catch(e) { toast(e.message, 'error'); }
-}
+async function searchMemory(q) { try { await apiGet('/memory?limit=50&q=' + encodeURIComponent(q)); toast('Search complete', 'info'); pageMemory(); } catch(e) { toast(e.message, 'error'); } }
+async function deleteMemory(sid) { if (!confirm('Delete memory for ' + sid + '?')) return; try { await apiDelete('/memory/' + encodeURIComponent(sid)); toast('Deleted', 'success'); pageMemory(); } catch(e) { toast(e.message, 'error'); } }
+async function exportMemory() { try { var d = await apiPost('/memory/export'); var blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'memory-export.json'; a.click(); toast('Exported', 'success'); } catch(e) { toast(e.message, 'error'); } }
 
 // ─── Tools ───────────────────────────────────────────────────────────
 async function pageTools() {
   try {
     var data = await apiGet('/tools');
     var tools = data.tools || [];
-
     var frag = document.createDocumentFragment();
     var card = el('div', { className: 'card' });
-    if (tools.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No tools registered.' }));
-    } else {
+    if (tools.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No tools registered.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Name' }),
-        el('th', { textContent: 'Description' }),
-        el('th', { textContent: 'Status' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Name' }), el('th', { textContent: 'Description' }), el('th', { textContent: 'Status' })])]));
       var tbody = el('tbody');
-      tools.forEach(function(t) {
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('code', { textContent: t.name })]),
-          el('td', { textContent: t.description || '-' }),
-          el('td', null, [badgeFor(t.enabled, 'Enabled', 'Disabled')])
-        ]));
-      });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tools.forEach(t => { tbody.appendChild(el('tr', null, [el('td', null, [el('code', { textContent: t.name })]), el('td', { textContent: t.description || '-' }), el('td', null, [badgeFor(t.enabled, 'Enabled', 'Disabled')])])); });
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── MCP Manager (GAR-288/289/290) ───────────────────────────────────
+// ─── MCP ─────────────────────────────────────────────────────────────
 function mcpStatusBadge(status) {
   if (!status) return el('span', { className: 'badge badge-neutral', textContent: 'Unknown' });
   var state = (typeof status === 'object') ? status.state : status;
-  var map = {
-    running: ['badge-success', '● Running'],
-    stopped: ['badge-neutral', '○ Stopped'],
-    error:   ['badge-error',   '✕ Error'],
-    starting:['badge-warning', '◌ Starting']
-  };
+  var map = { running: ['badge-success', 'Running'], stopped: ['badge-neutral', 'Stopped'], error: ['badge-error', 'Error'], starting: ['badge-warning', 'Starting'] };
   var info = map[state] || ['badge-neutral', state || 'Unknown'];
-  var badge = el('span', { className: 'badge ' + info[0], textContent: info[1] });
-  if (state === 'error' && status.message) badge.title = status.message;
-  return badge;
+  return el('span', { className: 'badge ' + info[0], textContent: info[1] });
 }
-
-async function pageMcp() {
-  await renderMcpPage();
-  // GAR-290: auto-refresh every 10s
-  if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
-  mcpRefreshTimer = setInterval(function() {
-    if (currentPage !== 'mcp') { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; return; }
-    renderMcpTable(true);
-  }, 10000);
-}
-
-// Renders the full MCP page: toolbar + servers table + template gallery
+async function pageMcp() { await renderMcpPage(); if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; } mcpRefreshTimer = setInterval(() => { if (currentPage !== 'mcp') { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; return; } renderMcpPage(); }, 10000); }
 async function renderMcpPage() {
   try {
-    var [serversData, templatesData] = await Promise.all([
-      apiGet('/mcp'),
-      apiGet('/mcp/templates').catch(function() { return { templates: [] }; })
-    ]);
+    var [serversData, templatesData] = await Promise.all([apiGet('/mcp'), apiGet('/mcp/templates').catch(() => ({ templates: [] }))]);
     var servers = serversData.servers || [];
     var templates = templatesData.templates || [];
-
     var frag = document.createDocumentFragment();
-
-    // ── Toolbar ──
     var toolbar = el('div', { className: 'toolbar' });
-    if (can('mcp_servers', 'create')) {
-      toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add MCP', onClick: function() { showMcpForm(null); } }));
-    }
-    var refreshedAt = el('span', { style: 'margin-left:auto;font-size:11px;color:var(--text-muted)' });
-    refreshedAt.textContent = 'Updated ' + new Date().toLocaleTimeString();
-    toolbar.appendChild(refreshedAt);
+    if (can('mcp_servers', 'create')) toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add MCP', onClick: () => showMcpForm(null) }));
+    toolbar.appendChild(el('span', { style: 'margin-left:auto;font-size:11px;color:var(--text-muted)', textContent: 'Updated ' + new Date().toLocaleTimeString() }));
     frag.appendChild(toolbar);
-
-    // ── Servers table ──
     var card = el('div', { className: 'card', style: 'margin-bottom:20px' });
-    if (servers.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No MCP servers configured. Add one below or use a template.' }));
-    } else {
+    if (servers.length === 0) card.appendChild(el('div', { className: 'empty-state', textContent: 'No MCP servers configured.' }));
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Name' }),
-        el('th', { textContent: 'Transport' }),
-        el('th', { textContent: 'Status' }),
-        el('th', { textContent: 'Tools' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Name' }), el('th', { textContent: 'Transport' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'Tools' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
-      servers.forEach(function(s) {
+      servers.forEach(s => {
         var actions = el('td', { style: 'white-space:nowrap' });
-        if (can('mcp_servers', 'update')) {
-          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Edit', onClick: function() { showMcpForm(s); } }));
-          actions.appendChild(document.createTextNode(' '));
-          actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Restart', onClick: function() { mcpRestart(s.name); } }));
-          actions.appendChild(document.createTextNode(' '));
-        }
-        if (can('mcp_servers', 'delete')) {
-          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: function() { mcpDelete(s.name); } }));
-        }
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('strong', { textContent: s.name })]),
-          el('td', null, [el('span', { className: 'badge badge-info', textContent: s.transport || '-' })]),
-          el('td', null, [mcpStatusBadge(s.status)]),
-          el('td', { textContent: s.tool_count != null ? String(s.tool_count) : '-' }),
-          actions
-        ]));
+        if (can('mcp_servers', 'update')) { actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Edit', onClick: () => showMcpForm(s) })); actions.appendChild(document.createTextNode(' ')); actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Restart', onClick: () => mcpRestart(s.name) })); actions.appendChild(document.createTextNode(' ')); }
+        if (can('mcp_servers', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => mcpDelete(s.name) }));
+        tbody.appendChild(el('tr', null, [el('td', null, [el('strong', { textContent: s.name })]), el('td', null, [el('span', { className: 'badge badge-info', textContent: s.transport || '-' })]), el('td', null, [mcpStatusBadge(s.status)]), el('td', { textContent: s.tool_count != null ? String(s.tool_count) : '-' }), actions]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
-
-    // ── Template gallery (GAR-296/297) ──
     if (templates.length > 0 && can('mcp_servers', 'create')) {
-      var gallerySection = el('div');
-      gallerySection.appendChild(el('div', { className: 'card-header', style: 'margin-bottom:12px' }, [
-        el('h3', { textContent: 'Templates' }),
-      ]));
       var gallery = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px' });
-      templates.forEach(function(t) {
-        var card2 = el('div', { style: 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:8px' });
-        var hdr = el('div', { style: 'display:flex;align-items:center;justify-content:space-between' });
-        hdr.appendChild(el('span', { style: 'font-weight:600;font-size:13px', textContent: t.name }));
-        if (t.builtin) {
-          hdr.appendChild(el('span', { className: 'badge badge-neutral', style: 'font-size:10px', textContent: 'built-in' }));
-        } else {
-          var delBtn = el('button', { className: 'btn-icon', style: 'color:var(--error);font-size:18px;line-height:1', textContent: '×',
-            title: 'Delete template',
-            onClick: function() { deleteMcpTemplate(t.id); }
-          });
-          hdr.appendChild(delBtn);
-        }
-        card2.appendChild(hdr);
-        card2.appendChild(el('div', { style: 'font-size:12px;color:var(--text-secondary);flex:1', textContent: t.description }));
-        card2.appendChild(el('div', { style: 'display:flex;gap:6px;align-items:center' }, [
-          el('span', { className: 'badge badge-info', style: 'font-size:10px', textContent: t.transport }),
-          el('button', { className: 'btn-primary btn-sm', style: 'margin-left:auto;font-size:11px', textContent: 'Use',
-            onClick: function() { showMcpForm(null, t); }
-          })
-        ]));
-        gallery.appendChild(card2);
+      templates.forEach(t => {
+        var c = el('div', { style: 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:8px' });
+        c.appendChild(el('div', { style: 'font-weight:600;font-size:13px' }, [t.name]));
+        c.appendChild(el('div', { style: 'font-size:12px;color:var(--text-secondary);flex:1', textContent: t.description }));
+        c.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: 'Use', onClick: () => showMcpForm(null, t) }));
+        gallery.appendChild(c);
       });
-      gallerySection.appendChild(gallery);
-      frag.appendChild(gallerySection);
+      frag.appendChild(el('div', { className: 'card-header', style: 'margin-bottom:12px' }, [el('h3', { textContent: 'Templates' })]));
+      frag.appendChild(gallery);
     }
-
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed to load MCP page: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
-// Silent refresh: only updates the servers table portion (used by auto-refresh timer)
-async function renderMcpTable(silent) {
-  if (!silent) { await renderMcpPage(); return; }
-  try {
-    var data = await apiGet('/mcp');
-    var area = document.getElementById('content-area');
-    var hasForm = area.querySelector && area.querySelector('input:not([disabled]),select');
-    if (hasForm) return; // form is open, don't overwrite
-    await renderMcpPage();
-  } catch(e) { /* silent failure on background refresh */ }
-}
-
-// GAR-289/297: form for add, edit, or from template
-// server = existing server (edit mode) | null
-// tpl    = template to pre-fill (add from template) | null
 function showMcpForm(server, tpl) {
-  var isEdit = !!server;
-  var src = server || tpl || {};
+  var isEdit = !!server; var src = server || tpl || {};
   var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
-  var title = isEdit ? 'Edit MCP Server: ' + server.name : (tpl ? 'New MCP from template: ' + tpl.name : 'Add MCP Server');
-  overlay.appendChild(el('h3', { textContent: title, style: 'margin-bottom:16px' }));
-
-  var nameInput  = el('input', { type: 'text', placeholder: 'e.g. my-tool', value: isEdit ? server.name : (tpl ? tpl.id : '') });
-  if (isEdit) nameInput.disabled = true;
+  overlay.appendChild(el('h3', { textContent: isEdit ? 'Edit: ' + server.name : 'Add MCP Server', style: 'margin-bottom:16px' }));
+  var nameInput = el('input', { type: 'text', placeholder: 'e.g. my-tool', value: isEdit ? server.name : (tpl ? tpl.id : '') }); if (isEdit) nameInput.disabled = true;
   var transportSel = el('select');
-  ['stdio','http','sse','streamableHttp'].forEach(function(t) {
-    var opt = el('option', { value: t, textContent: t });
-    if ((src.transport || '') === t) opt.selected = true;
-    transportSel.appendChild(opt);
-  });
-  var cmdInput   = el('input', { type: 'text', placeholder: 'e.g. npx -y my-mcp-server', value: src.command || '' });
-  var argsInput  = el('textarea', { rows: '2', placeholder: 'One arg per line', style: 'width:100%' });
-  if (src.args && src.args.length) argsInput.value = src.args.join('\n');
-  var urlInput   = el('input', { type: 'text', placeholder: 'https://...  (for http/sse/streamableHttp)', value: src.url || '' });
-  var tokenInput = el('input', { type: 'password', placeholder: isEdit ? '(leave blank to keep existing)' : 'API token / bearer (optional)' });
+  ['stdio','http','sse','streamableHttp'].forEach(t => { var opt = el('option', { value: t, textContent: t }); if ((src.transport || '') === t) opt.selected = true; transportSel.appendChild(opt); });
+  var cmdInput = el('input', { type: 'text', placeholder: 'e.g. npx -y my-mcp-server', value: src.command || '' });
+  var argsInput = el('textarea', { rows: '2', placeholder: 'One arg per line', style: 'width:100%' }); if (src.args && src.args.length) argsInput.value = src.args.join('\n');
+  var urlInput = el('input', { type: 'text', placeholder: 'https://...', value: src.url || '' });
+  var tokenInput = el('input', { type: 'password', placeholder: 'API token (optional)' });
   var timeoutInput = el('input', { type: 'number', min: '5', max: '300', placeholder: '30', value: String(src.timeout_secs || 30) });
 
-  overlay.appendChild(el('div', { className: 'form-row' }, [
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Name *' }), nameInput]),
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Transport *' }), transportSel])
-  ]));
+  overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Name *' }), nameInput]), el('div', { className: 'form-group' }, [el('label', { textContent: 'Transport *' }), transportSel])]));
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Command (stdio)' }), cmdInput]));
-  overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Args (one per line)' }), argsInput]));
+  overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Args' }), argsInput]));
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'URL (http/sse)' }), urlInput]));
-  overlay.appendChild(el('div', { className: 'form-row' }, [
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'API Token (masked)' }), tokenInput]),
-    el('div', { className: 'form-group', style: 'max-width:120px' }, [el('label', { textContent: 'Timeout (s)' }), timeoutInput])
-  ]));
-
-  var errMsg = el('div', { style: 'color:var(--error);font-size:12px;margin-bottom:8px;display:none' });
-  overlay.appendChild(errMsg);
+  overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Token' }), tokenInput]), el('div', { className: 'form-group', style: 'max-width:120px' }, [el('label', { textContent: 'Timeout (s)' }), timeoutInput])]));
 
   function buildBody() {
-    var argsVal = argsInput.value.split('\n').map(function(a){ return a.trim(); }).filter(Boolean);
-    var env = {};
-    if (tokenInput.value) { env['API_KEY'] = tokenInput.value; }
-    return {
-      name: nameInput.value.trim(),
-      transport: transportSel.value,
-      command: cmdInput.value.trim() || undefined,
-      args: argsVal,
-      url: urlInput.value.trim() || undefined,
-      env: env,
-      timeout_secs: parseInt(timeoutInput.value) || 30
-    };
+    var argsVal = argsInput.value.split('\n').map(a => a.trim()).filter(Boolean);
+    var env = {}; if (tokenInput.value) env['API_KEY'] = tokenInput.value;
+    return { name: nameInput.value.trim(), transport: transportSel.value, command: cmdInput.value.trim() || undefined, args: argsVal, url: urlInput.value.trim() || undefined, env: env, timeout_secs: parseInt(timeoutInput.value) || 30 };
   }
-
-  var btns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' });
-
-  btns.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: isEdit ? 'Save Changes' : 'Add Server', onClick: async function() {
-    var name = nameInput.value.trim();
-    if (!name) { errMsg.textContent = 'Name is required.'; errMsg.style.display = ''; return; }
-    var body = buildBody();
-    try {
-      if (isEdit) {
-        await apiDelete('/mcp/' + encodeURIComponent(server.name));
-        await apiPost('/mcp', body);
-        toast('MCP server updated', 'success');
-      } else {
-        await apiPost('/mcp', body);
-        toast('MCP server added', 'success');
-      }
-      pageMcp();
-    } catch(e) { errMsg.textContent = e.message; errMsg.style.display = ''; }
-  }}));
-
-  // GAR-297: Save as Template button (only on Add / add-from-template)
-  if (!isEdit && can('mcp_servers', 'create')) {
-    btns.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: '⊞ Save as Template', onClick: async function() {
-      var name = nameInput.value.trim();
-      if (!name) { errMsg.textContent = 'Fill in the name first.'; errMsg.style.display = ''; return; }
-      var b = buildBody();
-      var tplBody = {
-        id: name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-        name: name,
-        description: 'Custom template: ' + name,
-        transport: b.transport,
-        command: b.command || null,
-        args: b.args,
-        url: b.url || null,
-        env: b.env,
-        timeout_secs: b.timeout_secs,
-        builtin: false
-      };
-      try {
-        await apiPost('/mcp/templates', tplBody);
-        toast('Template "' + name + '" saved', 'success');
-      } catch(e) { toast('Failed to save template: ' + e.message, 'error'); }
-    }}));
-  }
-
-  btns.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: function() { pageMcp(); } }));
-  overlay.appendChild(btns);
-
-  var area = document.getElementById('content-area');
-  area.insertBefore(overlay, area.firstChild);
+  overlay.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
+    el('button', { className: 'btn-primary btn-sm', textContent: isEdit ? 'Save' : 'Add', onClick: async () => { var body = buildBody(); if (!body.name) return; try { if (isEdit) { await apiDelete('/mcp/' + encodeURIComponent(server.name)); } await apiPost('/mcp', body); toast('Saved', 'success'); pageMcp(); } catch(e) { toast(e.message, 'error'); } } }),
+    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => pageMcp() })
+  ]));
+  document.getElementById('content-area').insertBefore(overlay, document.getElementById('content-area').firstChild);
 }
+async function mcpRestart(name) { try { await apiPost('/mcp/' + encodeURIComponent(name) + '/restart', {}); toast('Restarting...', 'info'); } catch(e) { toast(e.message, 'error'); } }
+async function mcpDelete(name) { if (!confirm('Delete ' + name + '?')) return; try { await apiDelete('/mcp/' + encodeURIComponent(name)); toast('Deleted', 'success'); pageMcp(); } catch(e) { toast(e.message, 'error'); } }
 
-async function deleteMcpTemplate(id) {
-  if (!confirm('Delete template "' + id + '"?')) return;
-  try {
-    await apiDelete('/mcp/templates/' + encodeURIComponent(id));
-    toast('Template deleted', 'success');
-    pageMcp();
-  } catch(e) { toast('Failed: ' + e.message, 'error'); }
-}
-
-async function mcpRestart(name) {
-  try {
-    await apiPost('/mcp/' + encodeURIComponent(name) + '/restart', {});
-    toast('Restarting ' + name + '…', 'info');
-    setTimeout(function() { if (currentPage === 'mcp') renderMcpTable(true); }, 2000);
-  } catch(e) { toast('Restart failed: ' + e.message, 'error'); }
-}
-
-async function mcpDelete(name) {
-  if (!confirm('Delete MCP server "' + name + '"? This cannot be undone.')) return;
-  try {
-    await apiDelete('/mcp/' + encodeURIComponent(name));
-    toast('MCP server deleted', 'success');
-    pageMcp();
-  } catch(e) { toast('Delete failed: ' + e.message, 'error'); }
-}
-
-// ─── Channels ────────────────────────────────────────────────────────
+// ─── Channels (Enhanced with config forms) ───────────────────────────
 async function pageChannels() {
   try {
     var data = await apiGet('/channels');
     var channels = data.channels || [];
-
     var frag = document.createDocumentFragment();
+
+    if (can('channels', 'create')) {
+      var toolbar = el('div', { className: 'toolbar' });
+      toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add Channel', onClick: showAddChannelForm }));
+      frag.appendChild(toolbar);
+    }
+
     var card = el('div', { className: 'card' });
-    if (channels.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No channels configured.' }));
-    } else {
-      var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Name' }),
-        el('th', { textContent: 'Type' }),
-        el('th', { textContent: 'Enabled' }),
-        el('th', { textContent: 'Connected' })
-      ])]));
-      var tbody = el('tbody');
-      channels.forEach(function(c) {
-        tbody.appendChild(el('tr', null, [
-          el('td', { textContent: c.name }),
-          el('td', null, [el('span', { className: 'badge badge-neutral', textContent: c.type || '-' })]),
-          el('td', null, [badgeFor(c.enabled, 'Yes', 'No')]),
-          el('td', null, [badgeFor(c.connected, 'Connected', 'Disconnected')])
-        ]));
+    if (channels.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No channels configured.' })); }
+    else {
+      channels.forEach(ch => {
+        var row = el('div', { className: 'channel-status', style: 'padding:12px 0;border-bottom:1px solid var(--border)' });
+        var dotCls = ch.connected ? 'channel-dot online' : 'channel-dot offline';
+        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name" style="font-weight:600;">' + ch.name + '</span><span class="channel-type">' + (ch.type || '') + '</span>';
+        row.innerHTML += '<span class="badge ' + (ch.enabled ? 'badge-success' : 'badge-neutral') + '" style="margin-left:8px;">' + (ch.enabled ? 'Enabled' : 'Disabled') + '</span>';
+        row.innerHTML += '<span class="badge ' + (ch.connected ? 'badge-success' : 'badge-error') + '" style="margin-left:4px;">' + (ch.connected ? 'Connected' : 'Disconnected') + '</span>';
+        card.appendChild(row);
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
+}
+
+function showAddChannelForm() {
+  var form = el('div', { className: 'channel-config-form' });
+  form.innerHTML = `
+    <div class="form-group"><label>Channel Name</label><input type="text" id="ch-name" placeholder="my-telegram"></div>
+    <div class="form-group"><label>Type</label><select id="ch-type"><option>telegram</option><option>discord</option><option>slack</option><option>whatsapp</option></select></div>
+    <div class="form-group"><label>Token / API Key</label><input type="password" id="ch-token" placeholder="Bot token"></div>
+    <div class="form-group"><label>Chat ID (optional)</label><input type="text" id="ch-chatid" placeholder="Chat ID"></div>
+    <div style="grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn-secondary btn-sm" onclick="this.closest('.channel-config-form').remove()">Cancel</button>
+      <button class="btn-primary btn-sm" onclick="alert('Channel config saved (API integration TODO)')">Save</button>
+    </div>
+  `;
+  document.getElementById('content-area').insertBefore(form, document.getElementById('content-area').firstChild);
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
@@ -1609,126 +1206,127 @@ async function pageSessions() {
   try {
     var data = await apiGet('/sessions');
     var sessions = data.sessions || [];
-
     var frag = document.createDocumentFragment();
-
-    var stats = el('div', { className: 'card-grid', style: 'margin-bottom:16px' });
-    var sc = el('div', { className: 'stat-card' });
-    sc.appendChild(el('div', { className: 'stat-label', textContent: 'Active Sessions' }));
-    sc.appendChild(el('div', { className: 'stat-value', textContent: String(data.count || sessions.length) }));
-    stats.appendChild(sc);
-    frag.appendChild(stats);
-
+    var grid = el('div', { className: 'card-grid', style: 'margin-bottom:16px' });
+    var sc = el('div', { className: 'metric-card metric-blue' });
+    sc.innerHTML = '<div class="metric-label">Active Sessions</div><div class="metric-value">' + (data.count || sessions.length) + '</div>';
+    grid.appendChild(sc);
+    frag.appendChild(grid);
     var card = el('div', { className: 'card' });
-    if (sessions.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No active sessions.' }));
-    } else {
+    if (sessions.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No active sessions.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Session ID' }),
-        el('th', { textContent: 'Tenant' }),
-        el('th', { textContent: 'User' }),
-        el('th', { textContent: 'Channel' }),
-        el('th', { textContent: 'Status' }),
-        el('th', { textContent: 'History' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session ID' }), el('th', { textContent: 'Tenant' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Channel' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'History' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
-      sessions.forEach(function(s) {
+      sessions.forEach(s => {
         var actions = el('td');
-        if (can('sessions', 'delete')) {
-          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Disconnect', onClick: function() { disconnectSession(s.id); } }));
-        }
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('code', { textContent: truncate(s.id, 20) })]),
-          el('td', { textContent: s.tenant_id || '-' }),
-          el('td', { textContent: s.user_id || '-' }),
-          el('td', { textContent: s.channel_id || '-' }),
-          el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]),
-          el('td', { textContent: String(s.history_len || 0) }),
-          actions
-        ]));
+        if (can('sessions', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Disconnect', onClick: () => disconnectSession(s.id) }));
+        tbody.appendChild(el('tr', null, [el('td', null, [el('code', { textContent: truncate(s.id, 20) })]), el('td', { textContent: s.tenant_id || '-' }), el('td', { textContent: s.user_id || '-' }), el('td', { textContent: s.channel_id || '-' }), el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]), el('td', { textContent: String(s.history_len || 0) }), actions]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
+async function disconnectSession(id) { if (!confirm('Disconnect ' + id + '?')) return; try { await apiDelete('/sessions/' + encodeURIComponent(id)); toast('Disconnected', 'success'); pageSessions(); } catch(e) { toast(e.message, 'error'); } }
 
-async function disconnectSession(id) {
-  if (!confirm('Disconnect session ' + id + '?')) return;
-  try {
-    await apiDelete('/sessions/' + encodeURIComponent(id));
-    toast('Session disconnected', 'success');
-    pageSessions();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-// ─── Logs ────────────────────────────────────────────────────────────
+// ─── Logs (Enhanced with filters, search, auto-scroll) ──────────────
 var logsAutoRefresh = null;
+var logFilters = { level: 'all', search: '' };
 
 async function pageLogs() {
   try {
-    var data = await apiGet('/logs?limit=200');
+    var data = await apiGet('/logs?limit=500');
     var lines = data.lines || [];
-
     var frag = document.createDocumentFragment();
 
-    var toolbar = el('div', { className: 'toolbar' });
-    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Refresh', onClick: function() { pageLogs(); } }));
+    // Log toolbar with filters
+    var toolbar = el('div', { className: 'card', style: 'margin-bottom:16px;padding:0;overflow:hidden' });
+    var logToolbar = el('div', { className: 'log-toolbar' });
 
-    var autoLabel = el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)' });
-    var autoCheck = el('input', { type: 'checkbox', id: 'logs-auto-refresh' });
-    autoCheck.addEventListener('change', function() {
-      if (autoCheck.checked) {
-        logsAutoRefresh = setInterval(function() { if (currentPage === 'logs') pageLogs(); }, 5000);
-      } else {
-        clearInterval(logsAutoRefresh);
-        logsAutoRefresh = null;
-      }
+    ['all', 'info', 'warn', 'error'].forEach(level => {
+      var btn = el('button', { className: 'log-filter-btn' + (logFilters.level === level ? ' active' : ''), textContent: level.toUpperCase() });
+      btn.addEventListener('click', () => {
+        logFilters.level = level;
+        document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        filterLogs();
+      });
+      logToolbar.appendChild(btn);
+    });
+
+    var searchInput = el('input', { type: 'search', className: 'log-search', placeholder: 'Search logs...', value: logFilters.search });
+    searchInput.addEventListener('input', () => { logFilters.search = searchInput.value; filterLogs(); });
+    logToolbar.appendChild(searchInput);
+
+    var autoLabel = el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);white-space:nowrap;cursor:pointer;' });
+    var autoCheck = el('input', { type: 'checkbox' });
+    autoCheck.addEventListener('change', () => {
+      if (autoCheck.checked) { logsAutoRefresh = setInterval(() => { if (currentPage === 'logs') pageLogs(); }, 5000); }
+      else { clearInterval(logsAutoRefresh); logsAutoRefresh = null; }
     });
     autoLabel.appendChild(autoCheck);
-    autoLabel.appendChild(document.createTextNode('Auto-refresh (5s)'));
-    toolbar.appendChild(autoLabel);
-    frag.appendChild(toolbar);
+    autoLabel.appendChild(document.createTextNode('Auto-refresh'));
+    logToolbar.appendChild(autoLabel);
 
-    var card = el('div', { className: 'card' });
-    var viewer = el('div', { className: 'log-viewer' });
-    if (lines.length === 0) {
-      viewer.textContent = 'No log entries found.';
-    } else {
-      viewer.textContent = lines.join('\n');
-      setTimeout(function() { viewer.scrollTop = viewer.scrollHeight; }, 50);
+    toolbar.appendChild(logToolbar);
+
+    // Log viewer
+    var viewer = el('div', { className: 'log-viewer', id: 'log-viewer' });
+    if (lines.length === 0) { viewer.innerHTML = '<div class="log-line" style="color:var(--text-muted);padding:20px;">No log entries found.</div>'; }
+    else {
+      lines.forEach(line => {
+        var logLine = el('div', { className: 'log-line' });
+        var level = 'info';
+        if (line.match(/\b(ERROR|error)\b/)) { level = 'error'; logLine.classList.add('log-error'); }
+        else if (line.match(/\b(WARN|warn)\b/)) { level = 'warn'; logLine.classList.add('log-warn'); }
+        else if (line.match(/\b(INFO|info)\b/)) { level = 'info'; logLine.classList.add('log-info'); }
+        logLine.dataset.level = level;
+        logLine.dataset.text = line.toLowerCase();
+
+        // Try to extract timestamp
+        var tsMatch = line.match(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/);
+        if (tsMatch) {
+          logLine.innerHTML = '<span class="log-timestamp">' + tsMatch[0] + '</span>' + line.slice(tsMatch[0].length);
+        } else {
+          logLine.textContent = line;
+        }
+        viewer.appendChild(logLine);
+      });
+      setTimeout(() => { viewer.scrollTop = viewer.scrollHeight; }, 50);
     }
-    card.appendChild(viewer);
-    frag.appendChild(card);
+    toolbar.appendChild(viewer);
+    frag.appendChild(toolbar);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── Metrics ─────────────────────────────────────────────────────────
+function filterLogs() {
+  var viewer = document.getElementById('log-viewer');
+  if (!viewer) return;
+  var lines = viewer.querySelectorAll('.log-line');
+  var search = logFilters.search.toLowerCase();
+  lines.forEach(line => {
+    var levelMatch = logFilters.level === 'all' || line.dataset.level === logFilters.level;
+    var searchMatch = !search || (line.dataset.text && line.dataset.text.includes(search));
+    line.style.display = (levelMatch && searchMatch) ? '' : 'none';
+  });
+}
+
+// ─── Metrics (Enhanced with charts) ──────────────────────────────────
 async function pageMetrics() {
   try {
     var data = await apiGet('/metrics');
-
     var frag = document.createDocumentFragment();
     var grid = el('div', { className: 'card-grid' });
-
-    var items = [
-      { label: 'Total Requests', value: String(data.requests_total || 0) },
-      { label: 'Provider Count', value: String(data.provider_count || 0) },
-      { label: 'Active Sessions', value: String(data.active_sessions || 0) },
-    ];
-    items.forEach(function(item) {
-      var sc = el('div', { className: 'stat-card' });
-      sc.appendChild(el('div', { className: 'stat-label', textContent: item.label }));
-      sc.appendChild(el('div', { className: 'stat-value', textContent: item.value }));
+    [
+      { label: 'Total Requests', value: String(data.requests_total || 0), cls: 'metric-purple' },
+      { label: 'Provider Count', value: String(data.provider_count || 0), cls: 'metric-green' },
+      { label: 'Active Sessions', value: String(data.active_sessions || 0), cls: 'metric-blue' },
+    ].forEach(item => {
+      var sc = el('div', { className: 'metric-card ' + item.cls });
+      sc.innerHTML = '<div class="metric-label">' + item.label + '</div><div class="metric-value">' + item.value + '</div>';
       grid.appendChild(sc);
     });
     frag.appendChild(grid);
@@ -1737,17 +1335,12 @@ async function pageMetrics() {
       var card = el('div', { className: 'card' });
       card.appendChild(el('div', { className: 'card-header' }, [el('h3', { textContent: 'Active Providers' })]));
       var list = el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px' });
-      data.active_providers.forEach(function(p) {
-        list.appendChild(el('span', { className: 'badge badge-success', textContent: p }));
-      });
+      data.active_providers.forEach(p => list.appendChild(el('span', { className: 'badge badge-success', textContent: p })));
       card.appendChild(list);
       frag.appendChild(card);
     }
-
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
 // ─── Alerts ──────────────────────────────────────────────────────────
@@ -1755,34 +1348,19 @@ async function pageAlerts() {
   try {
     var data = await apiGet('/alerts');
     var alerts = data.alerts || [];
-
     var frag = document.createDocumentFragment();
     var card = el('div', { className: 'card' });
-    if (alerts.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No active alerts. All systems operational.' }));
-    } else {
+    if (alerts.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No active alerts. All systems operational.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Level' }),
-        el('th', { textContent: 'Source' }),
-        el('th', { textContent: 'Message' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Level' }), el('th', { textContent: 'Source' }), el('th', { textContent: 'Message' })])]));
       var tbody = el('tbody');
-      alerts.forEach(function(a) {
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [levelBadge(a.level)]),
-          el('td', { textContent: a.source }),
-          el('td', { textContent: a.message })
-        ]));
-      });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      alerts.forEach(a => { tbody.appendChild(el('tr', null, [el('td', null, [levelBadge(a.level)]), el('td', { textContent: a.source }), el('td', { textContent: a.message })])); });
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
 // ─── Templates ───────────────────────────────────────────────────────
@@ -1790,222 +1368,117 @@ async function pageTemplates() {
   try {
     var data = await apiGet('/templates');
     var templates = data.templates || [];
-
     var frag = document.createDocumentFragment();
     var card = el('div', { className: 'card' });
-    if (templates.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No templates configured.' }));
-    } else {
+    if (templates.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No templates configured.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Name' }),
-        el('th', { textContent: 'Provider' }),
-        el('th', { textContent: 'Model' }),
-        el('th', { textContent: 'Prompt Preview' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Name' }), el('th', { textContent: 'Provider' }), el('th', { textContent: 'Model' }), el('th', { textContent: 'Prompt Preview' })])]));
       var tbody = el('tbody');
-      templates.forEach(function(t) {
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('strong', { textContent: t.name || t.id })]),
-          el('td', { textContent: t.provider || '-' }),
-          el('td', { textContent: t.model || '-' }),
-          el('td', { textContent: truncate(t.system_prompt_preview || '-', 80) })
-        ]));
-      });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      templates.forEach(t => { tbody.appendChild(el('tr', null, [el('td', null, [el('strong', { textContent: t.name || t.id })]), el('td', { textContent: t.provider || '-' }), el('td', { textContent: t.model || '-' }), el('td', { textContent: truncate(t.system_prompt_preview || '-', 80) })])); });
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── Audit Log ───────────────────────────────────────────────────────
-var auditOffset = 0;
-var auditLimit = 25;
-
+// ─── Audit ───────────────────────────────────────────────────────────
+var auditOffset = 0, auditLimit = 25;
 async function pageAudit() {
   try {
     var data = await apiGet('/audit-log?limit=' + auditLimit + '&offset=' + auditOffset);
     var entries = data.entries || [];
-
     var frag = document.createDocumentFragment();
-
     var toolbar = el('div', { className: 'toolbar' });
-    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Refresh', onClick: function() { pageAudit(); } }));
+    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Refresh', onClick: pageAudit }));
     frag.appendChild(toolbar);
-
     var card = el('div', { className: 'card' });
-    if (entries.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No audit entries.' }));
-    } else {
+    if (entries.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No audit entries.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Timestamp' }),
-        el('th', { textContent: 'User' }),
-        el('th', { textContent: 'Action' }),
-        el('th', { textContent: 'Resource' }),
-        el('th', { textContent: 'Target' }),
-        el('th', { textContent: 'Outcome' }),
-        el('th', { textContent: 'Detail' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Timestamp' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Action' }), el('th', { textContent: 'Resource' }), el('th', { textContent: 'Outcome' })])]));
       var tbody = el('tbody');
-      entries.forEach(function(e) {
-        var outBadge = e.outcome === 'success'
-          ? el('span', { className: 'badge badge-success', textContent: 'success' })
-          : el('span', { className: 'badge badge-error', textContent: e.outcome || '-' });
-        tbody.appendChild(el('tr', null, [
-          el('td', { textContent: formatDate(e.timestamp) }),
-          el('td', { textContent: e.username || e.user_id || '-' }),
-          el('td', null, [el('code', { textContent: e.action })]),
-          el('td', { textContent: e.resource_type || '-' }),
-          el('td', { textContent: truncate(e.resource_id || '-', 20) }),
-          el('td', null, [outBadge]),
-          el('td', { textContent: truncate(e.detail || '-', 30) })
-        ]));
+      entries.forEach(e => {
+        var outBadge = e.outcome === 'success' ? el('span', { className: 'badge badge-success', textContent: 'success' }) : el('span', { className: 'badge badge-error', textContent: e.outcome || '-' });
+        tbody.appendChild(el('tr', null, [el('td', { textContent: formatDate(e.timestamp) }), el('td', { textContent: e.username || e.user_id || '-' }), el('td', null, [el('code', { textContent: e.action })]), el('td', { textContent: (e.resource_type || '') + (e.resource_id ? '/' + truncate(e.resource_id, 16) : '') }), el('td', null, [outBadge])]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
-
-    // Pagination
     var pag = el('div', { className: 'pagination' });
-    if (auditOffset > 0) {
-      pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Previous', onClick: function() { auditOffset = Math.max(0, auditOffset - auditLimit); pageAudit(); } }));
-    }
-    pag.appendChild(el('span', { textContent: 'Showing ' + (auditOffset + 1) + '-' + (auditOffset + entries.length), style: 'color:var(--text-secondary);font-size:13px' }));
-    if (entries.length === auditLimit) {
-      pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Next', onClick: function() { auditOffset += auditLimit; pageAudit(); } }));
-    }
+    if (auditOffset > 0) pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Previous', onClick: () => { auditOffset = Math.max(0, auditOffset - auditLimit); pageAudit(); } }));
+    pag.appendChild(el('span', { textContent: (auditOffset + 1) + '-' + (auditOffset + entries.length), style: 'color:var(--text-muted);font-size:12px' }));
+    if (entries.length === auditLimit) pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Next', onClick: () => { auditOffset += auditLimit; pageAudit(); } }));
     frag.appendChild(pag);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── Users ───────────────────────────────────────────────────────────
+// ─── Users (Enhanced with RBAC) ──────────────────────────────────────
 async function pageUsers() {
   try {
     var data = await apiGet('/users');
     var users = data.users || [];
-
     var frag = document.createDocumentFragment();
-
     if (can('users', 'create')) {
       var toolbar = el('div', { className: 'toolbar' });
       toolbar.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: '+ Add User', onClick: showAddUserForm }));
       frag.appendChild(toolbar);
     }
-
     var card = el('div', { className: 'card' });
-    if (users.length === 0) {
-      card.appendChild(el('div', { className: 'empty-state', textContent: 'No users.' }));
-    } else {
+    if (users.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No users.' })); }
+    else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [
-        el('th', { textContent: 'Username' }),
-        el('th', { textContent: 'Role' }),
-        el('th', { textContent: 'Created' }),
-        el('th', { textContent: 'Actions' })
-      ])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Username' }), el('th', { textContent: 'Role' }), el('th', { textContent: 'Created' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
-      users.forEach(function(u) {
-        var actions = el('td');
+      users.forEach(u => {
+        var actions = el('td', { style: 'display:flex;align-items:center;gap:8px;' });
         if (can('users', 'update') && u.id !== currentUser.id) {
-          var select = el('select', { style: 'margin-right:8px' });
-          ['viewer', 'operator', 'admin'].forEach(function(r) {
-            var opt = el('option', { value: r, textContent: r });
-            if (r === u.role) opt.selected = true;
-            select.appendChild(opt);
-          });
-          select.addEventListener('change', function() { updateUserRole(u.id, select.value); });
+          var select = el('select', { className: 'role-select' });
+          ['viewer', 'operator', 'admin'].forEach(r => { var opt = el('option', { value: r, textContent: r }); if (r === u.role) opt.selected = true; select.appendChild(opt); });
+          select.addEventListener('change', () => updateUserRole(u.id, select.value));
           actions.appendChild(select);
         }
         if (can('users', 'delete') && u.id !== currentUser.id) {
-          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: function() { deleteUser(u.id, u.username); } }));
+          actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => deleteUser(u.id, u.username) }));
         }
-        tbody.appendChild(el('tr', null, [
-          el('td', null, [el('strong', { textContent: u.username }), u.id === currentUser.id ? el('span', { className: 'badge badge-info', textContent: 'you', style: 'margin-left:8px' }) : document.createTextNode('')]),
-          el('td', null, [roleBadge(u.role)]),
-          el('td', { textContent: formatDate(u.created_at) }),
-          actions
-        ]));
+        var nameCell = el('td');
+        nameCell.appendChild(el('strong', { textContent: u.username }));
+        if (u.id === currentUser.id) { nameCell.appendChild(document.createTextNode(' ')); nameCell.appendChild(el('span', { className: 'badge badge-info', textContent: 'you' })); }
+        tbody.appendChild(el('tr', null, [nameCell, el('td', null, [roleBadge(u.role)]), el('td', { textContent: formatDate(u.created_at) }), actions]));
       });
-      tbl.appendChild(tbody);
-      card.appendChild(tbl);
+      tbl.appendChild(tbody); card.appendChild(tbl);
     }
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
-
 function showAddUserForm() {
   var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
   overlay.appendChild(el('h3', { textContent: 'Add User', style: 'margin-bottom:12px' }));
   var uInput = el('input', { type: 'text', placeholder: 'Username (3+ chars)' });
   var pInput = el('input', { type: 'password', placeholder: 'Password (8+ chars)' });
-  var rSelect = el('select');
-  ['viewer', 'operator', 'admin'].forEach(function(r) {
-    rSelect.appendChild(el('option', { value: r, textContent: r }));
-  });
-
-  overlay.appendChild(el('div', { className: 'form-row' }, [
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Username' }), uInput]),
-    el('div', { className: 'form-group' }, [el('label', { textContent: 'Password' }), pInput])
-  ]));
+  var rSelect = el('select'); ['viewer', 'operator', 'admin'].forEach(r => rSelect.appendChild(el('option', { value: r, textContent: r })));
+  overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Username' }), uInput]), el('div', { className: 'form-group' }, [el('label', { textContent: 'Password' }), pInput])]));
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Role' }), rSelect]));
   overlay.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
-    el('button', { className: 'btn-primary btn-sm', textContent: 'Create', onClick: async function() {
-      try {
-        await apiPost('/users', {
-          username: uInput.value.trim(),
-          password: pInput.value,
-          role: rSelect.value
-        });
-        toast('User created', 'success');
-        pageUsers();
-      } catch(e) { toast(e.message, 'error'); }
-    }}),
-    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: function() { pageUsers(); } })
+    el('button', { className: 'btn-primary btn-sm', textContent: 'Create', onClick: async () => { try { await apiPost('/users', { username: uInput.value.trim(), password: pInput.value, role: rSelect.value }); toast('User created', 'success'); pageUsers(); } catch(e) { toast(e.message, 'error'); } } }),
+    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: pageUsers })
   ]));
-
-  var area = document.getElementById('content-area');
-  area.insertBefore(overlay, area.firstChild);
+  document.getElementById('content-area').insertBefore(overlay, document.getElementById('content-area').firstChild);
 }
-
-async function updateUserRole(userId, role) {
-  try {
-    await apiPut('/users/' + encodeURIComponent(userId) + '/role', { role: role });
-    toast('Role updated', 'success');
-    pageUsers();
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function deleteUser(userId, username) {
-  if (!confirm('Delete user "' + username + '"?')) return;
-  try {
-    await apiDelete('/users/' + encodeURIComponent(userId));
-    toast('User deleted', 'success');
-    pageUsers();
-  } catch(e) { toast(e.message, 'error'); }
-}
+async function updateUserRole(uid, role) { try { await apiPut('/users/' + encodeURIComponent(uid) + '/role', { role }); toast('Role updated', 'success'); pageUsers(); } catch(e) { toast(e.message, 'error'); } }
+async function deleteUser(uid, name) { if (!confirm('Delete "' + name + '"?')) return; try { await apiDelete('/users/' + encodeURIComponent(uid)); toast('Deleted', 'success'); pageUsers(); } catch(e) { toast(e.message, 'error'); } }
 
 // ─── About ───────────────────────────────────────────────────────────
 async function pageAbout() {
   try {
     var data = await apiGet('/about');
     var frag = document.createDocumentFragment();
-
     var card = el('div', { className: 'card' });
     var grid = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:16px' });
-
-    var items = [
+    [
       { label: 'Name', value: data.name || 'GarraIA' },
       { label: 'Version', value: data.version || '-' },
       { label: 'Description', value: data.description || '-' },
@@ -2013,154 +1486,84 @@ async function pageAbout() {
       { label: 'License', value: data.license || '-' },
       { label: 'Active Providers', value: String(data.active_providers || 0) },
       { label: 'Active Sessions', value: String(data.active_sessions || 0) },
-    ];
-
-    items.forEach(function(item) {
+    ].forEach(item => {
       var row = el('div');
-      row.appendChild(el('div', { className: 'stat-label', textContent: item.label, style: 'font-size:12px;color:var(--text-secondary);margin-bottom:2px' }));
-      row.appendChild(el('div', { textContent: item.value, style: 'font-size:14px' }));
+      row.appendChild(el('div', { style: 'font-size:11px;color:var(--text-muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;', textContent: item.label }));
+      row.appendChild(el('div', { style: 'font-size:14px', textContent: item.value }));
       grid.appendChild(row);
     });
-
     card.appendChild(grid);
-
     if (data.repository) {
-      var linkDiv = el('div', { style: 'margin-top:16px' });
-      var link = el('a', { href: data.repository, target: '_blank', textContent: data.repository });
-      linkDiv.appendChild(el('span', { textContent: 'Repository: ', style: 'color:var(--text-secondary)' }));
-      linkDiv.appendChild(link);
+      var linkDiv = el('div', { style: 'margin-top:16px;padding-top:16px;border-top:1px solid var(--border)' });
+      linkDiv.appendChild(el('span', { style: 'color:var(--text-muted);font-size:12px;', textContent: 'Repository: ' }));
+      linkDiv.appendChild(el('a', { href: data.repository, target: '_blank', textContent: data.repository }));
       card.appendChild(linkDiv);
     }
-
     frag.appendChild(card);
     renderContent(frag);
-  } catch(e) {
-    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
-  }
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── Login/Setup handlers ────────────────────────────────────────────
-document.getElementById('login-btn').addEventListener('click', async function() {
+// ─── Auth Handlers ──────────────────────────────────────────────────
+document.getElementById('login-btn').addEventListener('click', async () => {
   var username = document.getElementById('login-username').value.trim();
   var password = document.getElementById('login-password').value;
   var errEl = document.getElementById('login-error');
   errEl.classList.add('hidden');
-
-  if (!username || !password) {
-    errEl.textContent = 'Username and password are required.';
-    errEl.classList.remove('hidden');
-    return;
-  }
-
+  if (!username || !password) { errEl.textContent = 'Username and password are required.'; errEl.classList.remove('hidden'); return; }
   try {
-    var data = await apiPost('/login', { username: username, password: password });
+    var data = await apiPost('/login', { username, password });
     csrfToken = data.csrf_token;
     currentUser = data.user;
     await loadPermissions();
     showApp();
-  } catch(e) {
-    errEl.textContent = e.message;
-    errEl.classList.remove('hidden');
-  }
+  } catch(e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
 });
+document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
 
-document.getElementById('login-password').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') document.getElementById('login-btn').click();
-});
-
-document.getElementById('setup-btn').addEventListener('click', async function() {
+document.getElementById('setup-btn').addEventListener('click', async () => {
   var username = document.getElementById('setup-username').value.trim();
   var password = document.getElementById('setup-password').value;
   var password2 = document.getElementById('setup-password2').value;
   var errEl = document.getElementById('setup-error');
   errEl.classList.add('hidden');
-
-  if (!username || username.length < 3) {
-    errEl.textContent = 'Username must be at least 3 characters.';
-    errEl.classList.remove('hidden');
-    return;
-  }
-  if (!password || password.length < 8) {
-    errEl.textContent = 'Password must be at least 8 characters.';
-    errEl.classList.remove('hidden');
-    return;
-  }
-  if (password !== password2) {
-    errEl.textContent = 'Passwords do not match.';
-    errEl.classList.remove('hidden');
-    return;
-  }
-
+  if (!username || username.length < 3) { errEl.textContent = 'Username must be at least 3 characters.'; errEl.classList.remove('hidden'); return; }
+  if (!password || password.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; errEl.classList.remove('hidden'); return; }
+  if (password !== password2) { errEl.textContent = 'Passwords do not match.'; errEl.classList.remove('hidden'); return; }
   try {
-    var data = await apiPost('/setup', { username: username, password: password });
+    var data = await apiPost('/setup', { username, password });
     csrfToken = data.csrf_token;
     currentUser = data.user;
     await loadPermissions();
     showApp();
-  } catch(e) {
-    errEl.textContent = e.message;
-    errEl.classList.remove('hidden');
-  }
+  } catch(e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
+});
+document.getElementById('setup-password2').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('setup-btn').click(); });
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  try { await apiPost('/logout'); } catch(e) {}
+  currentUser = null; csrfToken = ''; permissions = null; showLogin();
+});
+document.getElementById('sidebar-toggle').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => { var page = item.getAttribute('data-page'); if (page) navigate(page); });
 });
 
-document.getElementById('setup-password2').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') document.getElementById('setup-btn').click();
-});
-
-document.getElementById('logout-btn').addEventListener('click', async function() {
-  try { await apiPost('/logout'); } catch(e) { /* ignore */ }
-  currentUser = null;
-  csrfToken = '';
-  permissions = null;
-  showLogin();
-});
-
-// Sidebar toggle
-document.getElementById('sidebar-toggle').addEventListener('click', function() {
-  document.getElementById('sidebar').classList.toggle('collapsed');
-});
-
-// Nav clicks
-document.querySelectorAll('.nav-item').forEach(function(item) {
-  item.addEventListener('click', function() {
-    var page = item.getAttribute('data-page');
-    if (page) navigate(page);
-  });
-});
-
-// ─── Permissions loading ─────────────────────────────────────────────
-async function loadPermissions() {
-  try {
-    var data = await apiGet('/permissions');
-    permissions = data.permissions || null;
-  } catch(e) {
-    permissions = null;
-  }
-}
+async function loadPermissions() { try { var d = await apiGet('/permissions'); permissions = d.permissions || null; } catch { permissions = null; } }
 
 // ─── Bootstrap ───────────────────────────────────────────────────────
 async function init() {
   try {
     var status = await apiGet('/setup/status');
-    if (status.needs_setup) {
-      showSetup();
-      return;
-    }
-
+    if (status.needs_setup) { showSetup(); return; }
     try {
       var me = await apiGet('/me');
       csrfToken = me.csrf_token;
       currentUser = me.user;
       await loadPermissions();
       showApp();
-    } catch(e) {
-      showLogin();
-    }
-  } catch(e) {
-    showLogin();
-  }
+    } catch(e) { showLogin(); }
+  } catch(e) { showLogin(); }
 }
-
 init();
 
 })();

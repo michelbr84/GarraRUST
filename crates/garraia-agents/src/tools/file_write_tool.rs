@@ -209,6 +209,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let output = tool
@@ -237,6 +239,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         assert!(tool.execute(&ctx, serde_json::json!({})).await.is_err());

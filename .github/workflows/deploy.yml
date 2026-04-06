@@ -1,0 +1,109 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (e.g., v0.3.0, latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/garraia
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Build & push multi-arch Docker image
+  # --------------------------------------------------------------------------
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU (for multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Pushed ${{ steps.meta.outputs.tags }}"
+
+  # --------------------------------------------------------------------------
+  # Optional: Deploy to ECS (requires AWS secrets)
+  # --------------------------------------------------------------------------
+  deploy-ecs:
+    name: Deploy to ECS
+    needs: docker
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster garraia-cluster \
+            --service garraia-service \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Deployment triggered. Waiting for stability..."
+          aws ecs wait services-stable \
+            --cluster garraia-cluster \
+            --services garraia-service \
+            --no-cli-pager
+          echo "Deployment complete."

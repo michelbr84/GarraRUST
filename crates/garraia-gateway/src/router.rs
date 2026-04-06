@@ -14,9 +14,11 @@ use crate::admin;
 use crate::api;
 use crate::mobile_auth;
 use crate::mobile_chat;
+use crate::oauth;
 use crate::openai_api;
 use crate::parrot_ws;
 use crate::state::SharedState;
+use crate::totp;
 use crate::ws;
 
 /// Build the main application router with all routes.
@@ -113,6 +115,35 @@ pub fn build_router(
         .route("/me", get(mobile_auth::me))
         .route("/chat", post(mobile_chat::chat))
         .route("/chat/history", get(mobile_chat::history))
+        // Phase 7.1 — OAuth2/OIDC login
+        .route("/auth/oauth/providers", get(oauth::list_oauth_providers))
+        .route("/auth/oauth/{provider}", get(oauth::oauth_redirect))
+        .route("/auth/oauth/{provider}/callback", get(oauth::oauth_callback))
+        // Phase 7.1 — TOTP 2FA
+        .route("/auth/2fa/setup", post(totp::setup_2fa))
+        .route("/auth/2fa/verify", post(totp::verify_2fa))
+        .route("/auth/2fa/disable", post(totp::disable_2fa))
+        // OpenClaw bridge endpoints
+        .route("/api/openclaw/status", get(crate::openclaw_handler::openclaw_status))
+        .route("/api/openclaw/connect", post(crate::openclaw_handler::openclaw_connect))
+        .route("/api/openclaw/disconnect", post(crate::openclaw_handler::openclaw_disconnect))
+        .route("/api/openclaw/channels", get(crate::openclaw_handler::openclaw_channels))
+        // Phase 3.1: Plugin Registry
+        .route("/api/plugins/install", post(crate::plugins_handler::install_plugin))
+        .route("/api/plugins", get(crate::plugins_handler::list_plugins))
+        .route("/api/plugins/{id}", get(crate::plugins_handler::get_plugin).delete(crate::plugins_handler::uninstall_plugin))
+        .route("/api/plugins/{id}/toggle", post(crate::plugins_handler::toggle_plugin))
+        // Phase 3.2: MCP Marketplace
+        .route("/api/mcp/marketplace", get(crate::mcp_marketplace::marketplace_catalog))
+        .route("/api/mcp/marketplace/install", post(crate::mcp_marketplace::marketplace_install))
+        .route("/api/mcp/{id}/health", get(crate::mcp_marketplace::mcp_server_health))
+        .route("/api/mcp/{id}/config-schema", get(crate::mcp_marketplace::mcp_config_schema))
+        // Phase 3.3: Skills Editor
+        .route("/api/skills", get(crate::skills_handler::list_skills).post(crate::skills_handler::create_skill))
+        .route("/api/skills/import", post(crate::skills_handler::import_skill))
+        .route("/api/skills/{name}", get(crate::skills_handler::get_skill).put(crate::skills_handler::update_skill).delete(crate::skills_handler::delete_skill))
+        .route("/api/skills/{name}/export", get(crate::skills_handler::export_skill))
+        .route("/api/skills/{name}/triggers", post(crate::skills_handler::set_skill_triggers))
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))
