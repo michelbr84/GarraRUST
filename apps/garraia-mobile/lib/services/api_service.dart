@@ -81,6 +81,18 @@ class ApiService {
         .toList();
   }
 
+  // ── Voice ─────────────────────────────────────────────────────────────────
+
+  Future<String> transcribeAudio(String audioPath) async {
+    final resp = await _dio.post<Map<String, dynamic>>(
+      '/api/voice/transcribe',
+      data: FormData.fromMap({
+        'audio': await MultipartFile.fromFile(audioPath),
+      }),
+    );
+    return resp.data?['text'] as String? ?? 'Transcricao indisponivel';
+  }
+
   // ── Token ────────────────────────────────────────────────────────────────
 
   Future<String?> getSavedToken() => _storage.read(key: _kTokenKey);
