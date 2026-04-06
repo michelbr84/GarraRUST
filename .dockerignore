@@ -1,0 +1,17 @@
+target/
+.git/
+.github/
+.claude/
+.env
+.env.*
+*.md
+!README.md
+apps/
+deploy/
+tests/
+docs/
+scripts/
+node_modules/
+*.log
+*.pem
+*.key

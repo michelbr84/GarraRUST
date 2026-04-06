@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Garra Quick Chat</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: transparent;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100%;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: rgba(24, 24, 32, 0.95);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+    .title-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: rgba(0, 0, 0, 0.3);
+      cursor: move;
+      user-select: none;
+    }
+    .title-bar span {
+      color: #8af;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .title-bar .hint {
+      color: rgba(255,255,255,0.35);
+      font-size: 11px;
+    }
+    .response-area {
+      flex: 1;
+      padding: 10px 14px;
+      color: #ddd;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .input-row {
+      display: flex;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .input-row input {
+      flex: 1;
+      background: rgba(255,255,255,0.06);
+      border: none;
+      color: #eee;
+      padding: 10px 14px;
+      font-size: 14px;
+      outline: none;
+    }
+    .input-row input::placeholder {
+      color: rgba(255,255,255,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="title-bar" data-tauri-drag-region>
+      <span>Garra Quick Chat</span>
+      <span class="hint">Ctrl+Space | Esc to close</span>
+    </div>
+    <div class="response-area" id="response"></div>
+    <div class="input-row">
+      <input id="query" type="text" placeholder="Pergunte algo..." autocomplete="off" spellcheck="false" autofocus />
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+    const queryEl = document.getElementById('query');
+    const responseEl = document.getElementById('response');
+    const WS_URL = 'ws://localhost:3888/ws/parrot';
+    let ws = null;
+    let reconnectDelay = 2000;
+
+    function connect() {
+      try { ws = new WebSocket(WS_URL); } catch (_) { scheduleReconnect(); return; }
+      ws.onopen = () => { reconnectDelay = 2000; };
+      ws.onmessage = ev => {
+        try {
+          const msg = JSON.parse(ev.data);
+          switch (msg.type) {
+            case 'thinking':
+              responseEl.textContent = 'Pensando...';
+              break;
+            case 'chunk':
+              if (responseEl.textContent === 'Pensando...') responseEl.textContent = '';
+              responseEl.textContent += msg.text ?? '';
+              break;
+            case 'response':
+              responseEl.textContent = msg.text ?? '';
+              break;
+            case 'error':
+              responseEl.textContent = '\u26a0 ' + (msg.message ?? 'Erro desconhecido');
+              break;
+          }
+        } catch (_) {}
+      };
+      ws.onclose = () => { ws = null; scheduleReconnect(); };
+      ws.onerror = () => { ws?.close(); };
+    }
+
+    function scheduleReconnect() {
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    }
+
+    queryEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const text = queryEl.value.trim();
+        if (text && ws && ws.readyState === WebSocket.OPEN) {
+          responseEl.textContent = 'Pensando...';
+          ws.send(JSON.stringify({ type: 'message', text }));
+          queryEl.value = '';
+        } else if (text) {
+          responseEl.textContent = 'Garra offline \u2014 inicie o GarraIA primeiro';
+        }
+      } else if (e.key === 'Escape') {
+        // Hide window via Tauri
+        if (window.__TAURI__?.core?.invoke) {
+          window.__TAURI__.core.invoke('hide_quick_chat');
+        }
+      }
+    });
+
+    connect();
+  </script>
+</body>
+</html>

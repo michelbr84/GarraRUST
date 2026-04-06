@@ -481,6 +481,8 @@ Apenas retorne o JSON, sem explicações."#,
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         // Executar com timeout

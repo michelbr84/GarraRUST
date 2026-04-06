@@ -1,0 +1,59 @@
+title: "[Show & Tell] "
+labels: ["show-and-tell"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Construiu algo com o GarraIA? Compartilhe aqui!
+        Bots, integrações, plugins, automações — tudo é bem-vindo.
+
+  - type: input
+    id: project-name
+    attributes:
+      label: Nome do projeto
+      placeholder: "Ex: Bot de resumo de e-mails para Telegram"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: O que você construiu?
+      description: Descreva seu projeto e como você usou o GarraIA.
+    validations:
+      required: true
+
+  - type: input
+    id: repo-link
+    attributes:
+      label: Link do repositório ou demo
+      placeholder: "https://github.com/usuario/meu-projeto"
+
+  - type: dropdown
+    id: channels
+    attributes:
+      label: Canais utilizados
+      multiple: true
+      options:
+        - Telegram
+        - Discord
+        - Slack
+        - WhatsApp
+        - iMessage
+        - API REST
+        - WebSocket
+        - Desktop (Tauri)
+        - Mobile (Flutter)
+
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Provedores LLM utilizados
+      multiple: true
+      options:
+        - Anthropic Claude
+        - OpenAI
+        - Ollama (local)
+        - LM Studio
+        - OpenRouter
+        - Outro

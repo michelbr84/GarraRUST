@@ -682,6 +682,8 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat: false,
                         is_confirmation_approved,
+                        working_dir: None,
+                        project_id: None,
                     };
 
                     // registra chamada com payload para detecção de loop por assinatura
@@ -913,6 +915,8 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat,
                         is_confirmation_approved,
+                        working_dir: None,
+                        project_id: None,
                     };
 
                     // registra chamada com payload para detecção de loop por assinatura
@@ -1284,6 +1288,8 @@ impl AgentRuntime {
                             user_id: user_id.map(|s| s.to_string()),
                             is_heartbeat: false,
                             is_confirmation_approved,
+                            working_dir: None,
+                            project_id: None,
                         };
 
                         // registra chamada com payload para detecção de loop por assinatura
@@ -1396,6 +1402,8 @@ impl AgentRuntime {
                                 user_id: user_id.map(|s| s.to_string()),
                                 is_heartbeat: false,
                                 is_confirmation_approved,
+                                working_dir: None,
+                                project_id: None,
                             };
 
                             // registra chamada com payload para detecção de loop por assinatura

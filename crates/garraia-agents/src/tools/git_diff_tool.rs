@@ -333,6 +333,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let output = tool
@@ -353,6 +355,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let output = tool
@@ -373,6 +377,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         // Try diff on a non-existent file
@@ -396,6 +402,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let output = tool
@@ -415,6 +423,8 @@ mod tests {
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
+            working_dir: None,
+            project_id: None,
         };
 
         let result = tool

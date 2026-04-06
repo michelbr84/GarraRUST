@@ -529,11 +529,21 @@ pub async fn danger_zone(
 pub struct AuditLogQuery {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    /// Filter by resource_type (exact match).
     pub resource_type: Option<String>,
+    /// Filter by action (exact match).
     pub action: Option<String>,
+    /// Filter by user_id (exact match) — Phase 7.1 extension.
+    pub user_id: Option<String>,
+    /// ISO-8601 lower bound on timestamp — Phase 7.1 extension.
+    pub from: Option<String>,
+    /// ISO-8601 upper bound on timestamp — Phase 7.1 extension.
+    pub to: Option<String>,
 }
 
 /// GET /admin/api/audit-log
+///
+/// Query params: limit, offset, resource_type, action, user_id, from, to
 pub async fn get_audit_log(
     State(state): State<AdminState>,
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
@@ -546,17 +556,23 @@ pub async fn get_audit_log(
         );
     }
 
+    let limit = query.limit.unwrap_or(50).min(1000);
+    let offset = query.offset.unwrap_or(0);
+
     let guard = state.store.lock().await;
-    let entries = guard.list_audit_log(
-        query.limit.unwrap_or(50),
-        query.offset.unwrap_or(0),
-        query.resource_type.as_deref(),
+    let entries = guard.list_audit_log_filtered(
+        limit,
+        offset,
+        query.user_id.as_deref(),
         query.action.as_deref(),
+        query.resource_type.as_deref(),
+        query.from.as_deref(),
+        query.to.as_deref(),
     );
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({"entries": entries})),
+        Json(serde_json::json!({"entries": entries, "count": entries.len()})),
     )
 }
 

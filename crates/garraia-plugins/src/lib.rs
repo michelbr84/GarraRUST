@@ -1,6 +1,7 @@
 pub mod loader;
 pub mod manifest;
 pub mod runtime;
+pub mod sdk;
 pub mod traits;
 
 pub use loader::{PluginLoader, PluginRegistry};

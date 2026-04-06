@@ -1,0 +1,65 @@
+# ============================================================================
+# GarraIA — systemd service unit
+# Install: sudo cp garraia.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now garraia
+# ============================================================================
+
+[Unit]
+Description=GarraIA Gateway — AI orchestration server
+Documentation=https://github.com/michelbr84/GarraRUST
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=garraia
+Group=garraia
+
+# Binary location
+ExecStart=/usr/local/bin/garraia start --host 0.0.0.0
+
+# Environment
+EnvironmentFile=-/etc/garraia/env
+Environment=RUST_LOG=info
+Environment=GARRAIA_LOG_LEVEL=info
+
+# Working directory and state
+WorkingDirectory=/var/lib/garraia
+StateDirectory=garraia
+ConfigurationDirectory=garraia
+LogsDirectory=garraia
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/lib/garraia /var/log/garraia
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+CPUQuota=100%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=garraia
+
+[Install]
+WantedBy=multi-user.target

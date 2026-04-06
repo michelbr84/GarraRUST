@@ -2,6 +2,7 @@ pub mod chat_sync;
 pub mod db_trait;
 pub mod memory_store;
 pub mod migrations;
+pub mod project_store;
 pub mod session_store;
 pub mod sqlite_db;
 pub mod vector_store;
@@ -15,6 +16,7 @@ pub use memory_store::{
     CompactionReport, MemoryEntry, MemoryProvider, MemoryRole, MemoryStore, NewMemoryEntry,
     RecallQuery, SessionContext,
 };
+pub use project_store::{DataRetentionRecord, Project, ProjectFile, ProjectTemplate};
 pub use session_store::{MobileUser, ScheduledTask, SessionStore, StoredMessage};
 pub use sqlite_db::SqliteDb;
 pub use vector_store::VectorStore;

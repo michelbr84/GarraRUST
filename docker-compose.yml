@@ -1,30 +1,135 @@
+# ============================================================================
+# GarraIA — Docker Compose (development & production)
+# Usage: docker compose up -d
+# With optional services: docker compose --profile postgres --profile redis up -d
+# ============================================================================
+
 services:
+  # --------------------------------------------------------------------------
+  # GarraIA Gateway — main application
+  # --------------------------------------------------------------------------
   garraia:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/michelbr84/garraia:latest
+    container_name: garraia-gateway
     restart: unless-stopped
     ports:
       - "${GARRAIA_PORT:-3888}:3888"
     volumes:
-      # Mount configuration file (override with your own config)
       - ./docs/deployment/config.basic.yml:/home/garraia/.config/garraia/config.yml:ro
-      # Persist credentials (encrypted vault)
       - garraia_credentials:/home/garraia/.config/garraia/credentials
-      # Persist session data and memory (SQLite)
       - garraia_data:/home/garraia/.config/garraia/data
-      # Persist skills
       - garraia_skills:/home/garraia/.config/garraia/skills
     environment:
       - GARRAIA_VAULT_PASSPHRASE=${GARRAIA_VAULT_PASSPHRASE:-}
+      - GARRAIA_JWT_SECRET=${GARRAIA_JWT_SECRET:-}
+      - GARRAIA_LOG_LEVEL=${GARRAIA_LOG_LEVEL:-info}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - REDIS_URL=${REDIS_URL:-}
     env_file:
-      - .env
+      - path: .env
+        required: false
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3888/health || exit 1"]
+      test: ["CMD", "curl", "-sf", "http://localhost:3888/health"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+          cpus: "0.25"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL — optional persistent database
+  # Enable with: docker compose --profile postgres up -d
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: garraia-postgres
+    restart: unless-stopped
+    profiles:
+      - postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-garraia}
+      POSTGRES_USER: ${POSTGRES_USER:-garraia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - garraia_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-garraia}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # --------------------------------------------------------------------------
+  # Redis — optional caching layer
+  # Enable with: docker compose --profile redis up -d
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: garraia-redis
+    restart: unless-stopped
+    profiles:
+      - redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - garraia_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
 
 volumes:
   garraia_credentials:
   garraia_data:
   garraia_skills:
+  garraia_pgdata:
+  garraia_redis:

@@ -1,5 +1,26 @@
 [book]
-authors = ["Colaboradores do GarraIA"]
+title = "GarraIA Documentation"
+authors = ["Michel Brandalero", "Colaboradores do GarraIA"]
 language = "pt-BR"
+multilingual = false
 src = "src"
-title = "Documentação do GarraIA"
+description = "Documentação oficial do GarraIA — gateway de IA multi-canal construído em Rust."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+site-url = "/docs/"
+git-repository-url = "https://github.com/michelbr84/GarraRUST"
+edit-url-template = "https://github.com/michelbr84/GarraRUST/edit/main/docs/src/{path}"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true
