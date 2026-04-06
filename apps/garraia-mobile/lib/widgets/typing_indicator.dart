@@ -109,15 +109,12 @@ class _TypingIndicatorState extends State<TypingIndicator>
 /// AnimatedWidget wrapper for typing indicator dots.
 class _DotAnimatedBuilder extends AnimatedWidget {
   final Widget Function(BuildContext context, Widget? child) builder;
-  final Widget? child;
 
   const _DotAnimatedBuilder({
-    super.key,
     required Animation<double> animation,
     required this.builder,
-    this.child,
   }) : super(listenable: animation);
 
   @override
-  Widget build(BuildContext context) => builder(context, child);
+  Widget build(BuildContext context) => builder(context, null);
 }

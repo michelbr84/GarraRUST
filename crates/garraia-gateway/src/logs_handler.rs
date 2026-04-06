@@ -39,11 +39,10 @@ pub async fn get_logs() -> impl IntoResponse {
         file.read_to_end(&mut raw)?;
         let mut buf = String::from_utf8_lossy(&raw).into_owned();
 
-        if file_len > MAX_TAIL_BYTES {
-            if let Some(pos) = buf.find('\n') {
+        if file_len > MAX_TAIL_BYTES
+            && let Some(pos) = buf.find('\n') {
                 buf = buf[pos + 1..].to_string();
             }
-        }
 
         let lines: Vec<&str> = buf.lines().collect();
         let start = if lines.len() > 1000 {

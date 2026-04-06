@@ -165,11 +165,10 @@ pub fn extract_ip(
     headers: &HeaderMap,
     connect_info: Option<&std::net::SocketAddr>,
 ) -> Option<String> {
-    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = forwarded.split(',').next() {
+    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = forwarded.split(',').next() {
             return Some(first.trim().to_string());
         }
-    }
     connect_info.map(|addr| addr.ip().to_string())
 }
 

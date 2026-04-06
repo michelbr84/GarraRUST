@@ -19,16 +19,14 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             let is_allowed = list.is_allowed(&ctx.user_id);
             if is_allowed {
                 Ok("Welcome to GarraIA! Send me a message and I will respond.\n\nType /help to see available commands.".to_string())
+            } else if list.needs_owner() {
+                list.claim_owner(&ctx.user_id);
+                Ok(format!(
+                    "Welcome, {}! You are now the owner of this GarraIA bot.\n\nUse /pair to generate a code for adding other users.",
+                    ctx.user_name
+                ))
             } else {
-                if list.needs_owner() {
-                    list.claim_owner(&ctx.user_id);
-                    Ok(format!(
-                        "Welcome, {}! You are now the owner of this GarraIA bot.\n\nUse /pair to generate a code for adding other users.",
-                        ctx.user_name
-                    ))
-                } else {
-                    Ok("This bot is private. Send the 6-digit pairing code you received to get access.".to_string())
-                }
+                Ok("This bot is private. Send the 6-digit pairing code you received to get access.".to_string())
             }
         },
     )));

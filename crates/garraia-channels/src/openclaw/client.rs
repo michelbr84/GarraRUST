@@ -131,11 +131,10 @@ impl OpenClawClient {
                 Ok(WsMessage::Text(text)) => {
                     match serde_json::from_str::<serde_json::Value>(&text) {
                         Ok(value) => {
-                            if let Some(msg) = convert::from_openclaw_message(&value) {
-                                if incoming_tx.send(msg).await.is_err() {
+                            if let Some(msg) = convert::from_openclaw_message(&value)
+                                && incoming_tx.send(msg).await.is_err() {
                                     break;
                                 }
-                            }
                         }
                         Err(e) => {
                             warn!(error = %e, "OpenClaw: invalid JSON frame");

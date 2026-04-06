@@ -149,13 +149,11 @@ async fn read_skins(dir: &std::path::Path) -> std::result::Result<Vec<Skin>, Str
         for entry in entries {
             let entry = entry.map_err(|e| format!("entry: {e}"))?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                if let Ok(contents) = std::fs::read_to_string(&path) {
-                    if let Ok(skin) = serde_json::from_str::<Skin>(&contents) {
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(contents) = std::fs::read_to_string(&path)
+                    && let Ok(skin) = serde_json::from_str::<Skin>(&contents) {
                         skins.push(skin);
                     }
-                }
-            }
         }
         Ok(skins)
     })

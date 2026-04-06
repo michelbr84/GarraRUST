@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -11,7 +13,7 @@ import '../screens/splash_screen.dart';
 part 'app_router.g.dart';
 
 @Riverpod(keepAlive: true)
-GoRouter appRouter(AppRouterRef ref) {
+GoRouter appRouter(Ref ref) {
   final router = GoRouter(
     initialLocation: '/splash',
     redirect: (context, state) {

@@ -115,7 +115,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Widget build(BuildContext context) {
     final messages = ref.watch(chatMessagesProvider);
     final mascotState = ref.watch(mascotStateProvider);
-    final user = ref.watch(authStateProvider).valueOrNull;
     final isThinking = mascotState == MascotState.thinking;
 
     return Scaffold(

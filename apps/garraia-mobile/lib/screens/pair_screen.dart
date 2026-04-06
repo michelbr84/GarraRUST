@@ -143,7 +143,7 @@ class _PairScreenState extends ConsumerState<PairScreen>
                         ? Container(
                             width: 8,
                             height: 8,
-                            decoration: BoxDecoration(
+                            decoration: const BoxDecoration(
                               color: Colors.green,
                               shape: BoxShape.circle,
                             ),

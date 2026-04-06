@@ -39,8 +39,6 @@ class _MascotWidgetState extends State<MascotWidget>
   late Animation<double> _bounceAnimation;
   late Animation<double> _jumpAnimation;
 
-  MascotState _previousState = MascotState.idle;
-
   @override
   void initState() {
     super.initState();
@@ -93,7 +91,6 @@ class _MascotWidgetState extends State<MascotWidget>
   void didUpdateWidget(MascotWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.state != widget.state) {
-      _previousState = oldWidget.state;
       _stopAllAnimations();
       _startAnimationForState(widget.state);
     }
@@ -239,7 +236,6 @@ class _MascotAnimatedBuilder extends AnimatedWidget {
   final Widget Function(BuildContext context) builder;
 
   const _MascotAnimatedBuilder({
-    super.key,
     required Listenable animation,
     required this.builder,
   }) : super(listenable: animation);

@@ -67,11 +67,7 @@ impl OpenAiProvider {
         // Remove /v1 or /v1/ from end of base_url if present, to avoid duplication
         let base = self.base_url.trim_end_matches('/');
         // Remove /v1 from end if present (e.g., api/v1 -> api)
-        let base = if base.ends_with("/v1") {
-            &base[..base.len() - 3]
-        } else {
-            base
-        };
+        let base = base.strip_suffix("/v1").unwrap_or(base);
         format!("{}/v1/chat/completions", base)
     }
 
@@ -415,8 +411,8 @@ impl LlmProvider for OpenAiProvider {
                         continue;
                     }
                     
-                    if let Some(data) = trimmed.strip_prefix("data: ") {
-                        if !data.is_empty() && data != "[DONE]" {
+                    if let Some(data) = trimmed.strip_prefix("data: ")
+                        && !data.is_empty() && data != "[DONE]" {
                             // Try to extract error message from JSON
                             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
                                 let err = json_val.get("error")
@@ -437,7 +433,6 @@ impl LlmProvider for OpenAiProvider {
                                 }
                             }
                         }
-                    }
                 }
             }
         }
@@ -447,8 +442,8 @@ impl LlmProvider for OpenAiProvider {
         // The body may also have leading whitespace/newlines (leftover SSE
         // keep-alive events). Detect this before attempting full parse.
         let trimmed_body = body_str.trim();
-        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_body) {
-            if let Some(error) = json_val.get("error") {
+        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_body)
+            && let Some(error) = json_val.get("error") {
                 let msg = error
                     .get("message")
                     .and_then(|m| m.as_str())
@@ -466,7 +461,6 @@ impl LlmProvider for OpenAiProvider {
                 );
                 return Err(Error::Agent(format!("openai API error: {msg}")));
             }
-        }
 
         // Try to parse as JSON, with detailed error logging
         match serde_json::from_slice::<OpenAiResponse>(&body_bytes) {

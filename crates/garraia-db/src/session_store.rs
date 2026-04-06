@@ -720,13 +720,11 @@ impl SessionStore {
             })
             .ok();
 
-        if let Some(metadata_str) = result {
-            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
-                if let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str()) {
+        if let Some(metadata_str) = result
+            && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str)
+                && let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str()) {
                     return Ok(Some(mode.to_string()));
                 }
-            }
-        }
         Ok(None)
     }
 
@@ -772,8 +770,8 @@ impl SessionStore {
             .query_row(params![session_id], |row| row.get(0))
             .ok();
 
-        if let Some(m) = metadata_str {
-            if let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m) {
+        if let Some(m) = metadata_str
+            && let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m) {
                 metadata["agent_mode"] = serde_json::Value::Null;
                 self.conn
                     .execute(
@@ -782,7 +780,6 @@ impl SessionStore {
                     )
                     .map_err(|e| Error::Database(format!("failed to clear agent mode: {e}")))?;
             }
-        }
         Ok(())
     }
 

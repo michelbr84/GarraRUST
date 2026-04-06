@@ -144,6 +144,13 @@ pub fn build_router(
         .route("/api/skills/{name}", get(crate::skills_handler::get_skill).put(crate::skills_handler::update_skill).delete(crate::skills_handler::delete_skill))
         .route("/api/skills/{name}/export", get(crate::skills_handler::export_skill))
         .route("/api/skills/{name}/triggers", post(crate::skills_handler::set_skill_triggers))
+        // Phase 1.3: Projects
+        .route("/api/projects", get(crate::projects_handler::list_projects).post(crate::projects_handler::create_project))
+        .route("/api/projects/{id}", get(crate::projects_handler::get_project).put(crate::projects_handler::update_project).delete(crate::projects_handler::delete_project))
+        .route("/api/projects/{id}/files", get(crate::projects_handler::list_project_files))
+        // Phase 1.3: Skins
+        .route("/api/skins", get(crate::skins_handler::list_skins).post(crate::skins_handler::create_skin))
+        .route("/api/skins/{name}", get(crate::skins_handler::get_skin).delete(crate::skins_handler::delete_skin))
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))

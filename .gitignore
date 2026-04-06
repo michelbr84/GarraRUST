@@ -2,6 +2,12 @@
 /target
 **/*.rs.bk
 
+# Node
+node_modules/
+
+# Binaries (release artifacts — sidecar binaries are already under garraia-desktop/binaries/)
+*.exe
+
 # IDE
 .idea/
 .vscode/
@@ -109,6 +115,6 @@ crates/garraia-desktop/src-tauri/gen/
 crates/garraia-desktop/src-tauri/target/
 crates/garraia-desktop/src-tauri/WixTools/
 crates/garraia-desktop/src-tauri/binaries/
-crates/garraia-desktop/node_modules/
+# node_modules/ covered by global rule above
 # Sprite sheet is generated — do not commit large binary
 crates/garraia-desktop/ui/assets/parrot-sprite.png

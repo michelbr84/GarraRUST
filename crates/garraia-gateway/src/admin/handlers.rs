@@ -1111,11 +1111,10 @@ pub fn derive_encryption_key() -> Vec<u8> {
         .join("admin")
         .join("master.key");
 
-    if let Ok(data) = std::fs::read(&key_path) {
-        if data.len() == 32 {
+    if let Ok(data) = std::fs::read(&key_path)
+        && data.len() == 32 {
             return data;
         }
-    }
 
     let rng = SystemRandom::new();
     let mut key = vec![0u8; 32];
@@ -1268,15 +1267,14 @@ pub async fn migrate_secrets(
     for (name, ch) in &config.channels {
         for (key, val) in &ch.settings {
             let lower = key.to_lowercase();
-            if lower.contains("token") || lower.contains("key") || lower.contains("secret") {
-                if let Some(s) = val.as_str() {
+            if (lower.contains("token") || lower.contains("key") || lower.contains("secret"))
+                && let Some(s) = val.as_str() {
                     if s.is_empty() || s == "***REDACTED***" {
                         continue;
                     }
                     if let Ok((encrypted, nonce)) =
                         encrypt_value(s.as_bytes(), &state.encryption_key)
-                    {
-                        if guard
+                        && guard
                             .set_secret(
                                 "default",
                                 &format!("channel:{name}"),
@@ -1289,9 +1287,7 @@ pub async fn migrate_secrets(
                         {
                             migrated.push(format!("channel:{name}/{key}"));
                         }
-                    }
                 }
-            }
         }
     }
 
@@ -1364,8 +1360,8 @@ pub async fn admin_list_providers(
             guard.get_secret_meta("default", id, "api_key").is_some()
         };
 
-        if active {
-            if let Some(provider) = state.app_state.agents.get_provider(id) {
+        if active
+            && let Some(provider) = state.app_state.agents.get_provider(id) {
                 model = provider.configured_model().map(|m| m.to_string());
                 if let Ok(mut available) = provider.available_models().await {
                     available.retain(|m| !m.trim().is_empty());
@@ -1374,7 +1370,6 @@ pub async fn admin_list_providers(
                     models = available;
                 }
             }
-        }
 
         let config_entry = config.llm.get(*id);
 

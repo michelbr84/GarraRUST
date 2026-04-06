@@ -266,12 +266,11 @@ pub async fn chat_completions(
     let final_mode = agent_mode.or(message_mode);
     
     // Apply X-Agent-Mode header to session if provided (GAR-234)
-    if let Some(ref mode) = final_mode {
-        if let Some(ref session_store) = state.session_store {
+    if let Some(ref mode) = final_mode
+        && let Some(ref session_store) = state.session_store {
             let store = session_store.lock().await;
             let _ = store.set_agent_mode(&session_id, mode);
         }
-    }
 
     // GAR-227: Auto-classify mode when no explicit mode was given.
     if final_mode.is_none() {
@@ -373,8 +372,8 @@ pub async fn chat_completions(
 
     // GAR-184: Resolve slash commands (MCP prompts + /help).
     // /mode is excluded here — it is already handled by the `final_mode` logic above.
-    if new_user_text.starts_with('/') {
-        if let Some(resolved) =
+    if new_user_text.starts_with('/')
+        && let Some(resolved) =
             crate::slash_commands::resolve(&new_user_text, state.mcp_manager_arc.as_ref()).await
         {
             match resolved {
@@ -385,7 +384,6 @@ pub async fn chat_completions(
                 }
             }
         }
-    }
 
     // Get continuity key based on user_id
     let continuity_key = state.continuity_key(user_id.as_deref()).unwrap_or_else(|| "default".to_string());
@@ -678,11 +676,10 @@ async fn handle_non_streaming(
 /// Resolve session ID from headers or create new one
 async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::StatusCode, String)> {
     // Try X-Session-Id header first
-    if let Some(session_id) = headers.get("x-session-id") {
-        if let Ok(s) = session_id.to_str() {
+    if let Some(session_id) = headers.get("x-session-id")
+        && let Ok(s) = session_id.to_str() {
             return Ok(s.to_string());
         }
-    }
 
     // Create new session
     Ok(Uuid::new_v4().to_string())
@@ -691,11 +688,10 @@ async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::
 /// GAR-234: Resolve request ID from headers for tracing
 /// Returns the X-Request-Id if provided, otherwise generates a new one
 fn resolve_request_id(headers: &HeaderMap) -> String {
-    if let Some(request_id) = headers.get("x-request-id") {
-        if let Ok(s) = request_id.to_str() {
+    if let Some(request_id) = headers.get("x-request-id")
+        && let Ok(s) = request_id.to_str() {
             return s.to_string();
         }
-    }
     // Generate new request ID if not provided
     Uuid::new_v4().to_string()
 }
@@ -715,8 +711,8 @@ fn parse_role(role: &str) -> ChatRole {
 /// Maps API key to user_id for authenticated access.
 fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
     // Try Authorization header first
-    if let Some(auth_header) = headers.get("authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
+    if let Some(auth_header) = headers.get("authorization")
+        && let Ok(auth_str) = auth_header.to_str() {
             // Handle "Bearer <token>" format
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
                 let token = token.trim();
@@ -725,12 +721,11 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
                 // The token "garra-local" maps to the local owner
                 if token == "garra-local" {
                     // Get the owner from allowlist
-                    if let Ok(list) = state.allowlist.lock() {
-                        if let Some(owner) = list.owner() {
+                    if let Ok(list) = state.allowlist.lock()
+                        && let Some(owner) = list.owner() {
                             info!("Resolved user_id={} from 'garra-local' token", owner);
                             return Some(owner.to_string());
                         }
-                    }
                 }
                 
                 // For other tokens, use the token itself as user_id
@@ -741,14 +736,12 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
                 }
             }
         }
-    }
     
     // Try X-User-Id header
-    if let Some(user_id_header) = headers.get("x-user-id") {
-        if let Ok(user_id) = user_id_header.to_str() {
+    if let Some(user_id_header) = headers.get("x-user-id")
+        && let Ok(user_id) = user_id_header.to_str() {
             return Some(user_id.to_string());
         }
-    }
     
     None
 }
