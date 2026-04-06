@@ -1,1824 +1,2071 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GarraIA Chat</title>
-    <style>
-      @import url("https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
-
-      :root {
-        --bg: #f3ecdf;
-        --bg-accent: #e8decc;
-        --ink: #2f2416;
-        --ink-soft: #6c5a42;
-        --panel: #fffaf1;
-        --panel-2: #f7ebd8;
-        --panel-edge: #d8c3a5;
-        --elev: 0 14px 30px rgba(91, 68, 38, 0.18);
-        --brand: #7f5a31;
-        --brand-2: #ad7d47;
-        --online: #2d7e4d;
-        --offline: #8f7a5f;
-        --sys: #ece0ce;
-        --assistant: #fffdf8;
-        --error: #f8e2d5;
-        --error-edge: #c28b6e;
-        --sand-1: #ecdec8;
-        --sand-2: #f7efe2;
-        --accent-line: rgba(127, 90, 49, 0.24);
-        --topbar: rgba(255, 247, 233, 0.88);
-        --glow-a: rgba(255, 255, 255, 0.76);
-        --glow-b: rgba(208, 166, 105, 0.35);
-        --user-grad-a: #6a4d2f;
-        --user-grad-b: #4a341e;
-        --warn-edge: #cfaa62;
-        --warn-bg: #f8efd8;
-        --warn-text: #6b5300;
-      }
-
-      [data-theme="dark"] {
-        --bg: #191510;
-        --bg-accent: #110f0d;
-        --ink: #f1e4d0;
-        --ink-soft: #c1ab8d;
-        --panel: #241d16;
-        --panel-2: #1a1510;
-        --panel-edge: #4f3d2b;
-        --elev: 0 16px 34px rgba(0, 0, 0, 0.42);
-        --brand: #d7a467;
-        --brand-2: #ad7841;
-        --online: #84d69c;
-        --offline: #a68f72;
-        --sys: #302519;
-        --assistant: #2b2219;
-        --error: #452a1f;
-        --error-edge: #9d6649;
-        --sand-1: #2e241b;
-        --sand-2: #201912;
-        --accent-line: rgba(215, 164, 103, 0.32);
-        --topbar: rgba(37, 31, 24, 0.9);
-        --glow-a: rgba(255, 205, 140, 0.09);
-        --glow-b: rgba(0, 0, 0, 0.2);
-        --user-grad-a: #7b5631;
-        --user-grad-b: #5b3f25;
-        --warn-edge: #8b6c36;
-        --warn-bg: #322514;
-        --warn-text: #e2c68b;
-      }
-
-      [data-theme="brasil"] {
-        --bg: #002776;
-        --bg-accent: #001c4d;
-        --ink: #f4f4f4;
-        --ink-soft: #b8c5d6;
-        --panel: #003399;
-        --panel-2: #002776;
-        --panel-edge: #0055aa;
-        --elev: 0 16px 34px rgba(0, 20, 60, 0.42);
-        --brand: #ffdf00;
-        --brand-2: #ffc400;
-        --online: #009c3b;
-        --offline: #8fa3b8;
-        --sys: #002968;
-        --assistant: #003399;
-        --error: #8b0000;
-        --error-edge: #cc0000;
-        --sand-1: #002968;
-        --sand-2: #001c4d;
-        --accent-line: rgba(255, 223, 0, 0.4);
-        --topbar: rgba(0, 51, 153, 0.92);
-        --glow-a: rgba(255, 223, 0, 0.12);
-        --glow-b: rgba(0, 30, 80, 0.25);
-        --user-grad-a: #0040a0;
-        --user-grad-b: #002060;
-        --warn-edge: #ffaa00;
-        --warn-bg: #332800;
-        --warn-text: #ffdd66;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        min-height: 100vh;
-        color: var(--ink);
-        font-family: "Archivo", "Segoe UI", sans-serif;
-        background:
-          radial-gradient(
-            1000px 620px at 0% -15%,
-            var(--glow-a) 0%,
-            transparent 58%
-          ),
-          radial-gradient(
-            1000px 620px at 100% -15%,
-            var(--glow-b) 0%,
-            transparent 58%
-          ),
-          linear-gradient(180deg, var(--bg), var(--bg-accent));
-        opacity: 0;
-        transform: translateY(6px);
-        transition:
-          opacity 320ms ease,
-          transform 320ms ease,
-          background 360ms ease,
-          color 240ms ease;
-      }
-
-      body.ready {
-        opacity: 1;
-        transform: translateY(0);
-      }
-
-      .shell {
-        display: flex;
-        height: 100vh;
-        overflow: hidden;
-      }
-
-      .left-sidebar {
-        width: 260px;
-        background: var(--topbar);
-        border-right: 1px solid var(--panel-edge);
-        display: flex;
-        flex-direction: column;
-        padding: 20px 16px;
-        gap: 8px;
-      }
-
-      .left-sidebar .brand {
-        margin-bottom: 24px;
-      }
-
-      .nav-item {
-        padding: 10px 14px;
-        border-radius: 10px;
-        cursor: pointer;
-        font-weight: 600;
-        font-size: 0.9rem;
-        color: var(--ink-soft);
-        transition: all 0.2s ease;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        border: 1px solid transparent;
-      }
-
-      .nav-item:hover {
-        background: var(--sand-1);
-        color: var(--ink);
-      }
-
-      .nav-item.active {
-        background: linear-gradient(145deg, var(--brand-2), var(--brand));
-        color: #fff8ee;
-        box-shadow: 0 4px 12px rgba(57, 34, 13, 0.2);
-        border-color: var(--brand);
-      }
-
-      .main-wrapper {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        padding: 24px;
-        overflow-y: auto;
-        gap: 16px;
-      }
-
-      .topbar {
-        display: flex;
-        justify-content: flex-end;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 12px;
-        border: 1px solid var(--panel-edge);
-        border-radius: 14px;
-        background: var(--topbar);
-        box-shadow: 0 8px 20px rgba(35, 22, 10, 0.12);
-        min-height: 52px;
-      }
-
-      .topbar-actions {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .nano-agents {
-        position: relative;
-        display: none;
-        align-items: center;
-        gap: 12px;
-        align-self: flex-start;
-        background: var(--assistant);
-        padding: 8px 12px;
-        border-radius: 14px;
-        border: 1px solid var(--panel-edge);
-        box-shadow: 0 6px 14px rgba(59, 38, 17, 0.12);
-        overflow: hidden;
-        contain: layout paint;
-        min-height: 34px;
-        max-width: fit-content;
-      }
-
-      .nano-bg {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        opacity: 0.2;
-      }
-
-      .nano-bit {
-        position: absolute;
-        border-radius: 50%;
-        background: var(--brand);
-        transition: opacity 1s ease;
-      }
-
-      .nano-grid {
-        position: relative;
-        width: 22px;
-        height: 22px;
-        flex-shrink: 0;
-        z-index: 1;
-      }
-
-      .nano-agent {
-        position: absolute;
-        width: 10px;
-        height: 10px;
-        transition: transform 1s ease-in-out;
-        padding: 0.5px;
-        background: rgba(255, 255, 255, 0.8);
-        border-radius: 1px;
-        border: 1px solid rgba(0, 0, 0, 0.05);
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        grid-template-rows: 1fr 1fr;
-        box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.03);
-      }
-
-      [data-theme="dark"] .nano-agent {
-        background: rgba(40, 30, 20, 0.8);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-      }
-
-      [data-theme="brasil"] .nano-agent {
-        background: rgba(0, 39, 118, 0.8);
-        border: 1px solid rgba(255, 223, 0, 0.2);
-      }
-
-      .nano-pixel {
-        width: 100%;
-        height: 100%;
-        opacity: 0.8;
-        transition:
-          background-color 0.2s,
-          opacity 0.2s;
-      }
-
-      .nano-text {
-        display: flex;
-        align-items: baseline;
-        gap: 8px;
-        z-index: 1;
-        padding-right: 2px;
-      }
-
-      .nano-label {
-        color: var(--ink);
-        font-weight: 600;
-        font-size: 0.82rem;
-        line-height: 1;
-      }
-
-      .nano-time {
-        color: var(--ink-soft);
-        font-size: 0.68rem;
-        font-weight: 500;
-        font-variant-numeric: tabular-nums;
-        opacity: 0.9;
-      }
-
-      .theme-toggle {
-        padding: 6px 10px;
-        font-size: 0.77rem;
-        border-radius: 999px;
-        border-color: var(--panel-edge);
-        background: var(--panel);
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .badge {
-        width: 30px;
-        height: 30px;
-        border-radius: 8px;
-        border: 2px solid var(--panel-edge);
-        background:
-          radial-gradient(circle at 30% 30%, #4d4d4d 0%, transparent 45%),
-          linear-gradient(145deg, var(--brand), var(--brand-2));
-        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
-      }
-
-      .title {
-        margin: 0;
-        font-size: 1.35rem;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
-      }
-
-      .subtitle {
-        margin: 0;
-        color: var(--ink-soft);
-        font-size: 0.78rem;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
-      }
-
-      .workspace {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 300px;
-        gap: 14px;
-        align-items: stretch;
-        flex: 1;
-        min-height: 0;
-      }
-
-      .panel-view {
-        display: none;
-        flex-direction: column;
-        height: 100%;
-      }
-
-      .panel-view.is-active {
-        display: flex;
-      }
-
-      .panel {
-        border: 1px solid var(--panel-edge);
-        border-radius: 16px;
-        background: linear-gradient(180deg, var(--panel), var(--panel-2));
-        box-shadow: var(--elev);
-        overflow: hidden;
-        animation: rise 360ms ease both;
-        position: relative;
-      }
-
-      .panel::before {
-        content: "";
-        position: absolute;
-        inset: 0 0 auto;
-        height: 3px;
-        background: linear-gradient(
-          90deg,
-          transparent,
-          var(--accent-line),
-          transparent
-        );
-        pointer-events: none;
-      }
-
-      .panel-head {
-        padding: 14px 16px;
-        border-bottom: 1px solid var(--panel-edge);
-        background: var(--sand-1);
-      }
-
-      .panel-art {
-        display: block;
-        width: 95%;
-        max-width: 200px;
-        max-height: 180px;
-        height: auto;
-        object-fit: contain;
-        border-radius: 12px;
-        border: 1px solid var(--panel-edge);
-        margin: 0 auto 10px;
-        background: var(--panel);
-        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08);
-      }
-
-      .panel-head h2 {
-        margin: 0;
-        font-size: 1rem;
-        letter-spacing: 0.25px;
-      }
-
-      .hint {
-        margin: 6px 0 0;
-        color: var(--ink-soft);
-        font-size: 0.82rem;
-        line-height: 1.35;
-      }
-
-      .sidebar-body {
-        padding: 14px;
-        display: grid;
-        gap: 14px;
-      }
-
-      .status-group {
-        display: grid;
-        gap: 8px;
-      }
-
-      .status-group h3 {
-        margin: 0;
-        font-size: 0.82rem;
-        text-transform: uppercase;
-        letter-spacing: 0.6px;
-        color: var(--ink-soft);
-      }
-
-      .status-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 8px;
-        font-size: 0.83rem;
-        color: var(--ink-soft);
-      }
-
-      .status-row code {
-        color: var(--brand);
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.78rem;
-        text-align: right;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 150px;
-      }
-
-      .status-dot {
-        display: inline-block;
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        margin-right: 4px;
-      }
-
-      .dot-ok {
-        background: var(--online);
-      }
-
-      .dot-off {
-        background: var(--offline);
-      }
-
-      .dot-warn {
-        background: #d4a017;
-      }
-
-      .channel-list {
-        display: grid;
-        gap: 4px;
-      }
-
-      .channel-tag {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 4px 9px;
-        border: 1px solid var(--panel-edge);
-        border-radius: 8px;
-        font-size: 0.78rem;
-        background: var(--panel);
-      }
-
-      .no-channels {
-        color: var(--ink-soft);
-        font-size: 0.8rem;
-        font-style: italic;
-      }
-
-      .gateway-key-section {
-        display: grid;
-        gap: 6px;
-      }
-
-      .gateway-key-section label {
-        font-size: 0.82rem;
-        color: var(--ink-soft);
-        font-weight: 500;
-      }
-
-      .gateway-key-section input {
-        width: 100%;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        color: var(--ink);
-        background: var(--panel);
-        padding: 8px 10px;
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.82rem;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-      }
-
-      .gateway-key-section input:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .gateway-key-section .hint {
-        font-size: 0.76rem;
-        margin: 0;
-      }
-
-      .provider-select {
-        width: 100%;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        color: var(--ink);
-        background: var(--panel);
-        padding: 8px 10px;
-        font-family: "Archivo", "Segoe UI", sans-serif;
-        font-size: 0.84rem;
-        cursor: pointer;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-        appearance: auto;
-      }
-
-      .provider-select:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .provider-status {
-        font-size: 0.78rem;
-        color: var(--ink-soft);
-        min-height: 1.2em;
-      }
-
-      .provider-model-label {
-        display: block;
-        font-size: 0.78rem;
-        color: var(--ink-soft);
-        margin-top: 2px;
-      }
-
-      .provider-model-input {
-        width: 100%;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        color: var(--ink);
-        background: var(--panel);
-        padding: 8px 10px;
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.82rem;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-      }
-
-      .provider-model-input:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .provider-model-status {
-        font-size: 0.74rem;
-        color: var(--ink-soft);
-        min-height: 1.1em;
-      }
-
-      .provider-key-input {
-        width: 100%;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        color: var(--ink);
-        background: var(--panel);
-        padding: 8px 10px;
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.82rem;
-        margin-bottom: 6px;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-      }
-
-      .provider-key-input:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .provider-activate-btn {
-        width: 100%;
-        border: 1px solid var(--brand);
-        color: #fff8ee;
-        background: linear-gradient(145deg, var(--brand-2), var(--brand));
-        box-shadow: 0 6px 14px rgba(57, 34, 13, 0.3);
-        border-radius: 10px;
-        padding: 8px 12px;
-        font-family: "Archivo", "Segoe UI", sans-serif;
-        font-size: 0.84rem;
-        font-weight: 600;
-        cursor: pointer;
-      }
-
-      .pill {
-        border: 1px solid var(--panel-edge);
-        border-radius: 999px;
-        padding: 6px 10px;
-        font-size: 0.8rem;
-        background: var(--panel);
-        min-width: 118px;
-        text-align: center;
-      }
-
-      .online {
-        color: var(--online);
-        font-weight: 700;
-      }
-
-      .offline {
-        color: var(--offline);
-        font-weight: 700;
-      }
-
-      .chat-top {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 16px;
-        border-bottom: 1px solid var(--panel-edge);
-        background: var(--sand-1);
-        flex-wrap: wrap;
-      }
-
-      .chat-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 12px;
-        color: var(--ink-soft);
-        font-size: 0.84rem;
-      }
-
-      .chat {
-        flex: 1;
-        overflow-y: auto;
-        padding: 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 11px;
-        background: var(--sand-2);
-        min-height: 0;
-      }
-
-      .placeholder-view {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        color: var(--ink-soft);
-        font-size: 1.1rem;
-        background: var(--sand-2);
-        padding: 32px;
-      }
-
-      .msg {
-        max-width: min(86%, 760px);
-        border: 1px solid var(--panel-edge);
-        border-radius: 14px;
-        padding: 10px 12px;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        line-height: 1.42;
-        box-shadow: 0 6px 14px rgba(59, 38, 17, 0.12);
-        animation: msg-in 220ms ease both;
-      }
-
-      .sys {
-        align-self: center;
-        background: var(--sys);
-        color: var(--ink-soft);
-        font-size: 0.82rem;
-        border-style: dashed;
-        box-shadow: none;
-      }
-
-      .user {
-        align-self: flex-end;
-        color: #fff7e9;
-        border-color: var(--brand);
-        background: linear-gradient(
-          145deg,
-          var(--user-grad-a),
-          var(--user-grad-b)
-        );
-      }
-
-      .assistant {
-        align-self: flex-start;
-        background: var(--assistant);
-        white-space: normal;
-      }
-
-      .assistant p {
-        margin: 0 0 0.65rem;
-      }
-
-      .assistant p:last-child {
-        margin-bottom: 0;
-      }
-
-      .assistant h1,
-      .assistant h2,
-      .assistant h3,
-      .assistant h4,
-      .assistant h5,
-      .assistant h6 {
-        margin: 0.25rem 0 0.5rem;
-        line-height: 1.25;
-      }
-
-      .assistant h1 {
-        font-size: 1.18rem;
-      }
-
-      .assistant h2 {
-        font-size: 1.1rem;
-      }
-
-      .assistant h3 {
-        font-size: 1.02rem;
-      }
-
-      .assistant ul {
-        margin: 0.25rem 0 0.65rem 1.2rem;
-        padding: 0;
-      }
-
-      .assistant li {
-        margin: 0.2rem 0;
-      }
-
-      .assistant blockquote {
-        margin: 0.35rem 0 0.65rem;
-        padding: 0.15rem 0.75rem;
-        border-left: 3px solid var(--panel-edge);
-        color: var(--ink-soft);
-      }
-
-      .assistant code {
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.86em;
-        background: var(--sand-1);
-        border: 1px solid var(--panel-edge);
-        border-radius: 6px;
-        padding: 0.05rem 0.35rem;
-      }
-
-      .assistant pre {
-        margin: 0.35rem 0 0.7rem;
-        padding: 0.55rem 0.7rem;
-        border-radius: 10px;
-        border: 1px solid var(--panel-edge);
-        background: var(--sand-1);
-        overflow-x: auto;
-        white-space: pre;
-      }
-
-      .assistant pre code {
-        background: none;
-        border: none;
-        padding: 0;
-        border-radius: 0;
-        font-size: 0.84rem;
-      }
-
-      .assistant a {
-        color: var(--brand);
-      }
-
-      .assistant .md-table-wrap {
-        margin: 0.35rem 0 0.7rem;
-        overflow-x: auto;
-      }
-
-      .assistant table {
-        width: 100%;
-        min-width: 320px;
-        border-collapse: collapse;
-      }
-
-      .assistant th,
-      .assistant td {
-        border: 1px solid var(--panel-edge);
-        padding: 0.35rem 0.5rem;
-        vertical-align: top;
-      }
-
-      .assistant th {
-        background: var(--sand-1);
-        font-weight: 600;
-        text-align: left;
-      }
-
-      .assistant .md-align-right {
-        text-align: right;
-      }
-
-      .assistant .md-align-center {
-        text-align: center;
-      }
-
-      .error {
-        align-self: flex-start;
-        background: var(--error);
-        border-color: var(--error-edge);
-        color: var(--ink);
-      }
-
-      .controls {
-        border-top: 1px solid var(--panel-edge);
-        padding: 14px;
-        display: grid;
-        gap: 10px;
-        background: var(--sand-1);
-      }
-
-      .actions {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      button {
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        background: var(--panel);
-        color: var(--ink);
-        padding: 8px 12px;
-        font-family: "Archivo", "Segoe UI", sans-serif;
-        font-size: 0.84rem;
-        font-weight: 600;
-        cursor: pointer;
-        transition:
-          transform 120ms ease,
-          box-shadow 120ms ease,
-          border-color 120ms ease;
-      }
-
-      button:hover {
-        transform: translateY(-1px);
-        border-color: var(--brand-2);
-        box-shadow: 0 7px 14px rgba(0, 0, 0, 0.12);
-      }
-
-      button.primary {
-        border-color: var(--brand);
-        color: #fff8ee;
-        background: linear-gradient(145deg, var(--brand-2), var(--brand));
-        box-shadow: 0 10px 18px rgba(57, 34, 13, 0.35);
-      }
-
-      .composer {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 8px;
-        align-items: end;
-      }
-
-      textarea {
-        width: 100%;
-        min-height: 66px;
-        max-height: 190px;
-        resize: vertical;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        color: var(--ink);
-        background: var(--panel);
-        padding: 10px 11px;
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.9rem;
-        line-height: 1.4;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-      }
-
-      textarea:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .divider {
-        border: none;
-        border-top: 1px solid var(--panel-edge);
-        margin: 2px 0;
-      }
-
-      .update-banner {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 16px;
-        margin-bottom: 12px;
-        border: 1px solid var(--warn-edge);
-        border-radius: 12px;
-        background: linear-gradient(145deg, var(--warn-bg), var(--panel-2));
-        font-size: 0.84rem;
-        color: var(--warn-text);
-        animation: rise 360ms ease both;
-      }
-
-      .update-banner a {
-        color: var(--brand);
-        font-weight: 600;
-        text-decoration: none;
-      }
-
-      .update-banner a:hover {
-        text-decoration: underline;
-      }
-
-      .update-banner-close {
-        cursor: pointer;
-        opacity: 0.7;
-      }
-
-      .update-banner-close:hover {
-        opacity: 1;
-      }
-
-      /* Settings Cards & Forms */
-      .settings-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 16px 20px;
-        border-bottom: 1px solid var(--panel-edge);
-        background: var(--sand-1);
-      }
-
-      .settings-header h2 {
-        margin: 0;
-        font-size: 1.1rem;
-      }
-
-      .settings-body {
-        padding: 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        overflow-y: auto;
-        flex: 1;
-        min-height: 0;
-      }
-
-      .card {
-        border: 1px solid var(--panel-edge);
-        border-radius: 12px;
-        background: var(--panel);
-        padding: 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-
-      .card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .card-title {
-        font-weight: 600;
-        font-size: 1rem;
-        margin: 0;
-      }
-
-      .card-meta {
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-        background: var(--sand-2);
-        padding: 6px 10px;
-        border-radius: 6px;
-        word-break: break-all;
-      }
-
-      .card-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        margin-top: 4px;
-        border-top: 1px solid var(--panel-edge);
-        padding-top: 12px;
-      }
-
-      .card-actions button {
-        font-size: 0.75rem;
-        padding: 6px 10px;
-      }
-
-      .btn-danger {
-        color: var(--error-edge);
-        border-color: var(--error-edge);
-      }
-
-      .btn-danger:hover {
-        background: var(--error);
-      }
-
-      .empty-state {
-        text-align: center;
-        padding: 40px 20px;
-        color: var(--ink-soft);
-        background: var(--sand-2);
-        border-radius: 12px;
-        border: 1px dashed var(--panel-edge);
-      }
-
-      .topbar,
-      .panel,
-      .panel-head,
-      .chat-top,
-      .chat,
-      .controls,
-      .msg,
-      button,
-      .pill,
-      .gateway-key-section input,
-      .provider-select,
-      .provider-model-input,
-      .provider-key-input,
-      textarea,
-      .channel-tag,
-      .update-banner {
-        transition:
-          background 280ms ease,
-          border-color 280ms ease,
-          color 220ms ease,
-          box-shadow 280ms ease;
-      }
-
-      @keyframes rise {
-        from {
-          opacity: 0;
-          transform: translateY(8px);
-        }
-
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      @keyframes msg-in {
-        from {
-          opacity: 0;
-          transform: translateY(5px);
-        }
-
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      @media (max-width: 980px) {
-        .shell {
-          padding: 14px;
-        }
-
-        .workspace {
-          grid-template-columns: 1fr;
-        }
-
-        .chat {
-          min-height: 44vh;
-          max-height: 56vh;
-        }
-
-        .composer {
-          grid-template-columns: 1fr;
-        }
-
-        .composer button {
-          width: 100%;
-        }
-
-        .nano-label {
-          font-size: 0.72rem;
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        body {
-          opacity: 1;
-          transform: none;
-          transition: none;
-        }
-
-        .panel,
-        .msg,
-        .update-banner {
-          animation: none;
-        }
-
-        .topbar,
-        .panel,
-        .panel-head,
-        .chat-top,
-        .chat,
-        .controls,
-        .msg,
-        button,
-        .pill,
-        .gateway-key-section input,
-        .provider-select,
-        .provider-model-input,
-        .provider-key-input,
-        textarea,
-        .channel-tag,
-        .update-banner {
-          transition: none;
-        }
-
-        .nano-bit,
-        .nano-agent,
-        .nano-pixel {
-          transition: none;
-        }
-      }
-
-      /* Memory & Logs Views */
-      .memory-actions {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .memory-search-input {
-        padding: 6px 10px;
-        border-radius: 10px;
-        border: 1px solid var(--panel-edge);
-        background: var(--panel);
-        color: var(--ink);
-        font-family: "IBM Plex Mono", Consolas, monospace;
-        font-size: 0.82rem;
-        transition:
-          border-color 120ms ease,
-          box-shadow 120ms ease;
-      }
-
-      .memory-search-input:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .memory-list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-
-      .logs-box {
-        overflow: auto;
-        padding: 12px;
-        border: 1px solid var(--panel-edge);
-        background: var(--bg);
-        color: var(--ink);
-        font-family:
-          "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
-          Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 12px;
-        border-radius: 10px;
-        white-space: pre-wrap;
-        flex: 1;
-        min-height: 0;
-      }
-
-      .text-secondary {
-        color: var(--ink-soft);
-      }
-
-      /* Custom scrollbars */
-      .logs-box::-webkit-scrollbar,
-      .memory-list::-webkit-scrollbar,
-      .settings-body::-webkit-scrollbar,
-      .chat::-webkit-scrollbar,
-      .main-wrapper::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-
-      .logs-box::-webkit-scrollbar-track,
-      .memory-list::-webkit-scrollbar-track,
-      .settings-body::-webkit-scrollbar-track,
-      .chat::-webkit-scrollbar-track,
-      .main-wrapper::-webkit-scrollbar-track {
-        background: transparent;
-      }
-
-      .logs-box::-webkit-scrollbar-thumb,
-      .memory-list::-webkit-scrollbar-thumb,
-      .settings-body::-webkit-scrollbar-thumb,
-      .chat::-webkit-scrollbar-thumb,
-      .main-wrapper::-webkit-scrollbar-thumb {
-        background-color: var(--panel-edge);
-        border-radius: 10px;
-      }
-
-      .logs-box::-webkit-scrollbar-thumb:hover,
-      .memory-list::-webkit-scrollbar-thumb:hover,
-      .settings-body::-webkit-scrollbar-thumb:hover,
-      .chat::-webkit-scrollbar-thumb:hover,
-      .main-wrapper::-webkit-scrollbar-thumb:hover {
-        background-color: var(--brand);
-      }
-
-      /* Nav icon styles */
-      .nav-item > svg {
-        width: 20px;
-        height: 20px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 2px;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        flex-shrink: 0;
-      }
-
-      [data-theme="brasil"] .nav-item svg,
-      [data-theme="dark"] .nav-item svg {
-        stroke: var(--ink);
-      }
-
-      /* Hide initially inactive elements */
-      .update-banner {
-        display: none;
-      }
-
-      .gateway-key-section {
-        display: none;
-      }
-
-      .provider-key-section {
-        display: none;
-      }
-
-      /* Mode Sidebar Styles */
-      .mode-sidebar {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding: 12px 0;
-        margin-top: auto;
-      }
-
-      .mode-search {
-        position: relative;
-        padding: 0 4px;
-      }
-
-      .mode-search-input {
-        width: 100%;
-        padding: 8px 12px 8px 32px;
-        border: 1px solid var(--panel-edge);
-        border-radius: 10px;
-        background: var(--panel);
-        color: var(--ink);
-        font-family: "Archivo", "Segoe UI", sans-serif;
-        font-size: 0.84rem;
-        transition: border-color 120ms ease, box-shadow 120ms ease;
-      }
-
-      .mode-search-input:focus {
-        outline: none;
-        border-color: var(--brand);
-        box-shadow: 0 0 0 3px rgba(127, 90, 49, 0.2);
-      }
-
-      .mode-search-icon {
-        position: absolute;
-        left: 10px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: var(--ink-soft);
-        pointer-events: none;
-      }
-
-      .mode-search-icon svg {
-        width: 16px;
-        height: 16px;
-      }
-
-      .mode-list {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        overflow-y: auto;
-        max-height: calc(100vh - 450px);
-        padding: 4px;
-      }
-
-      .mode-section-title {
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        color: var(--ink-soft);
-        padding: 8px 8px 4px;
-        margin-top: 8px;
-      }
-
-      .mode-item {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 10px;
-        border-radius: 10px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        border: 1px solid transparent;
-      }
-
-      .mode-item:hover {
-        background: var(--sand-1);
-        border-color: var(--panel-edge);
-      }
-
-      .mode-item.active {
-        background: linear-gradient(145deg, var(--brand-2), var(--brand));
-        color: #fff8ee;
-        box-shadow: 0 4px 12px rgba(57, 34, 13, 0.2);
-        border-color: var(--brand);
-      }
-
-      .mode-item.active .mode-desc {
-        color: rgba(255, 248, 234, 0.8);
-      }
-
-      .mode-item.mode-auto {
-        background: var(--panel-2);
-        border: 1px dashed var(--panel-edge);
-      }
-
-      .mode-item.mode-auto:hover {
-        border-style: solid;
-        background: var(--sand-1);
-      }
-
-      .mode-item.mode-auto.active {
-        background: linear-gradient(145deg, var(--online), #1e6b3d);
-        border-style: solid;
-      }
-
-      .mode-item.mode-custom {
-        border-left: 3px solid var(--warn-edge);
-      }
-
-      .mode-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        background: var(--sand-1);
-        flex-shrink: 0;
-      }
-
-      .mode-item.active .mode-icon {
-        background: rgba(255, 255, 255, 0.2);
-      }
-
-      .mode-info {
-        flex: 1;
-        min-width: 0;
-      }
-
-      .mode-name {
-        font-weight: 600;
-        font-size: 0.88rem;
-        line-height: 1.2;
-      }
-
-      .mode-desc {
-        font-size: 0.72rem;
-        color: var(--ink-soft);
-        line-height: 1.3;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        max-width: 160px;
-      }
-
-      .mode-check {
-        color: var(--online);
-        font-weight: 700;
-        font-size: 0.9rem;
-      }
-
-      .mode-item.active .mode-check {
-        color: #fff;
-      }
-
-      /* Mode Badge in Chat */
-      .mode-badge {
-        display: none;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: var(--panel);
-        border: 1px solid var(--panel-edge);
-        font-size: 0.78rem;
-        font-weight: 600;
-        color: var(--ink);
-        cursor: pointer;
-        transition: all 0.2s ease;
-      }
-
-      .mode-badge:hover {
-        border-color: var(--brand);
-        box-shadow: 0 2px 8px rgba(127, 90, 49, 0.2);
-      }
-
-      .mode-badge-icon {
-        display: flex;
-        align-items: center;
-      }
-
-      .mode-badge-icon svg {
-        width: 14px;
-        height: 14px;
-      }
-
-      .mode-badge-text {
-        text-transform: capitalize;
-      }
-    </style>
-  </head>
-
-  <body>
-    <main class="shell">
-      <!-- Left Sidebar for Navigation -->
-      <aside class="left-sidebar">
-        <div class="brand">
-          <div class="badge"></div>
-          <div>
-            <h1 class="title">GarraIA</h1>
-            <p class="subtitle" data-i18n="app.subtitle">
-              Your personal AI assistant
-            </p>
-          </div>
-        </div>
-
-        <div class="nav-item active" id="nav-chat" data-view="chat">
-          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path
-              d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-            ></path>
-          </svg>
-          Chat
-        </div>
-
-        <div class="nav-item" id="nav-memory" data-view="memory">
-          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-          </svg>
-          <span data-i18n="memory">Memórias</span>
-        </div>
-
-        <div class="nav-item" id="nav-logs" data-view="logs">
-          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 17 10 11 4 5"></polyline>
-            <line x1="12" y1="19" x2="20" y2="19"></line>
-          </svg>
-          <span data-i18n="logs">Logs</span>
-        </div>
-
-        <div class="nav-item" id="nav-mcps" data-view="mcps">
-          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
-          </svg>
-          <span data-i18n="settings.mcps">MCPs Settings</span>
-        </div>
-
-        <div class="nav-item" id="nav-extensions" data-view="extensions">
-          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path
-              d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
-            ></path>
-            <polyline points="7.5 4.21 12 6.81 16.5 4.21"></polyline>
-            <polyline points="7.5 19.79 7.5 14.6 3 12"></polyline>
-            <polyline points="21 12 16.5 14.6 16.5 19.79"></polyline>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-          </svg>
-          <span data-i18n="extensions">Extensions</span>
-        </div>
-
-        <!-- Mode Sidebar -->
-        <div class="mode-sidebar" id="mode-sidebar">
-          <div class="mode-search">
-            <span class="mode-search-icon">
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-            </span>
-            <input type="text" id="mode-search-input" class="mode-search-input" placeholder="Search modes...">
-          </div>
-          <div class="mode-list" id="mode-list">
-            <!-- Modes will be populated by JavaScript -->
-          </div>
-          <button class="add-mode-btn" id="add-custom-mode-btn">
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19"></line>
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-            Create Custom Mode
-          </button>
-        </div>
-      </aside>
-
-      <div class="main-wrapper">
-        <header class="topbar">
-          <div class="topbar-actions">
-            <button onclick="setLanguage('pt-BR')">PT</button>
-            <button onclick="setLanguage('en-US')">EN</button>
-            <button
-              id="theme-toggle"
-              class="theme-toggle"
-              type="button"
-              data-i18n="theme.dark_mode"
-            >
-              Modo Escuro
-            </button>
-            <div class="pill" id="conn-pill">
-              <span class="offline" data-i18n="status.disconnected"
-                >Desconectado</span
-              >
-            </div>
-          </div>
-        </header>
-
-        <div id="update-banner" class="update-banner">
-          <span id="update-banner-text"></span>
-          <button
-            class="update-banner-close"
-            id="update-banner-close"
-            title="Dismiss"
-          >
-            &times;
-          </button>
-        </div>
-
-        <div class="workspace">
-          <section class="panel panel-view is-active" id="view-chat" data-view-panel="chat">
-            <div class="chat-top">
-              <div class="chat-meta">
-                <span>Chat</span>
-                <span>Enter sends, Shift+Enter newline</span>
-              </div>
-              <div class="actions">
-                <div class="mode-badge" id="mode-badge" title="Current mode - click to change">
-                  <!-- Mode badge will be populated by JavaScript -->
-                </div>
-                <button id="reconnect" data-i18n="chat.reconnect">
-                  Reconectar
-                </button>
-                <button id="clear" data-i18n="chat.new">Novo Chat</button>
-              </div>
-            </div>
-
-            <div id="chat" class="chat">
-              <div id="nano-agents" class="nano-agents" aria-live="polite">
-                <div class="nano-bg" id="nano-bg"></div>
-                <div class="nano-grid" id="nano-grid"></div>
-                <div class="nano-text">
-                  <span class="nano-label">Typing...</span>
-                  <span id="nano-time" class="nano-time">0s</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="controls">
-              <div class="composer">
-                <textarea
-                  id="input"
-                  data-i18n-placeholder="chat.placeholder"
-                  placeholder="Digite uma mensagem..."
-                ></textarea>
-                <button id="send" class="primary" data-i18n="chat.send">
-                  Enviar
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <!-- Memory View -->
-          <section
-            class="panel panel-view"
-            id="view-memory"
-            data-view-panel="memory"
-          >
-            <div class="settings-header">
-              <h2>Memórias</h2>
-              <div class="actions memory-actions">
-                <input type="text" id="memory-search-input" class="memory-search-input" placeholder="Buscar memória...">
-                <button class="primary" id="memory-search-btn">Buscar</button>
-                <button id="memory-refresh-btn">Recentes</button>
-                <button id="memory-export-btn">Exportar</button>
-                <button class="btn-danger" id="memory-clear-btn">Limpar</button>
-              </div>
-            </div>
-            <div class="settings-body memory-list" id="memory-list">
-              <p class="text-secondary">Loading...</p>
-            </div>
-          </section>
-
-          <!-- Logs View -->
-          <section
-            class="panel panel-view"
-            id="view-logs"
-            data-view-panel="logs"
-          >
-            <div class="settings-header">
-              <h2>Logs</h2>
-              <div class="actions">
-                <button id="logs-pause-btn">Pausar Scroll</button>
-                <button class="primary" id="logs-refresh-btn">Recarregar</button>
-              </div>
-            </div>
-            <pre class="settings-body logs-box" id="logs-view">
-              Loading...
-            </pre>
-          </section>
-
-          <!-- MCPs View — populated from GET /api/mcp -->
-          <section
-            class="panel panel-view"
-            id="view-mcps"
-            data-view-panel="mcps"
-          >
-            <div class="settings-header">
-              <h2>MCPs</h2>
-            </div>
-            <div class="settings-body" id="mcps-list">
-              <p class="text-secondary">Loading...</p>
-            </div>
-          </section>
-
-          <!-- Structural Mockup for Extensions View -->
-          <section
-            class="panel panel-view"
-            id="view-extensions"
-            data-view-panel="extensions"
-          >
-            <div class="settings-header">
-              <h2>Extensions</h2>
-            </div>
-            <div class="settings-body" id="extensions-list">
-              <div class="empty-state">
-                <p>Nenhuma extensão instalada.</p>
-              </div>
-            </div>
-          </section>
-          <aside class="panel">
-            <div class="panel-head">
-              <img
-                class="panel-art"
-                src="/static/UI%20Crab.png"
-                alt="GarraIA UI crab"
-              />
-              <h2 data-i18n="system.status">Status do Sistema</h2>
-            </div>
-            <div class="sidebar-body">
-              <div class="status-group">
-                <h3 data-i18n="gateway">Gateway</h3>
-                <div class="status-row">
-                  <span data-i18n="server">Server</span>
-                  <code id="api-status" data-i18n="status.checking"
-                    >checking...</code
-                  >
-                </div>
-                <div class="status-row">
-                  <span data-i18n="session">Session</span>
-                  <code id="session">none</code>
-                </div>
-                <div class="status-row">
-                  <span data-i18n="active_sessions">Active sessions</span>
-                  <code id="session-count">-</code>
-                </div>
-              </div>
-
-              <hr class="divider" />
-
-              <div class="status-group">
-                <h3 data-i18n="channels">Channels</h3>
-                <div id="channel-list" class="channel-list">
-                  <span class="no-channels" data-i18n="none_configured"
-                    >No channels connected</span
-                  >
-                </div>
-              </div>
-
-              <hr class="divider" />
-
-              <div class="status-group">
-                <h3>Provedor LLM</h3>
-                <select id="provider-select" class="provider-select" title="Provedor LLM">
-                  <option value="">Loading...</option>
-                </select>
-                <div id="provider-status" class="provider-status"></div>
-                <label
-                  for="provider-model-input"
-                  class="provider-model-label"
-                  data-i18n="model_optional"
-                  >Model (optional)</label
-                >
-                <input
-                  id="provider-model-input"
-                  class="provider-model-input"
-                  list="provider-model-options"
-                  data-i18n-placeholder="provider.model_placeholder"
-                  placeholder="Provider default model"
-                  autocomplete="off"
-                />
-                <datalist id="provider-model-options"></datalist>
-                <div
-                  id="provider-model-status"
-                  class="provider-model-status"
-                ></div>
-                <div id="provider-key-section" class="provider-key-section">
-                  <input
-                    id="provider-api-key"
-                    type="password"
-                    data-i18n-placeholder="auth.enter_api_key"
-                    placeholder="Enter API key..."
-                    autocomplete="off"
-                    class="provider-key-input"
-                  />
-                  <button
-                    id="provider-activate"
-                    class="provider-activate-btn"
-                    data-i18n="save_activate"
-                  >
-                    Save & Activate
-                  </button>
-                </div>
-              </div>
-
-              <div
-                id="auth-section"
-                class="gateway-key-section"
-              >
-                <hr class="divider" />
-                <label for="key-gateway">Gateway API Key</label>
-                <input
-                  id="key-gateway"
-                  type="password"
-                  data-i18n-placeholder="auth.enter_gateway_key"
-                  placeholder="Enter your gateway key"
-                  autocomplete="off"
-                />
-                <p class="hint" data-i18n="auth.requires_auth">
-                  This gateway requires authentication.
-                </p>
-                <button id="auth-connect" data-i18n="auth.connect">
-                  Connect
-                </button>
-              </div>
-
-              <div class="actions">
-                <button id="refresh" data-i18n="refresh_status">
-                  Refresh Status
-                </button>
-              </div>
-            </div>
-          </aside>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GarraIA Chat</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* ========== THEME SYSTEM — CSS Custom Properties ========== */
+:root, [data-theme="light"] {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f5;
+  --bg-sidebar: #ffffff;
+  --bg-chat: #f8f9fa;
+  --bg-input: #ffffff;
+  --bg-hover: #f0f2f5;
+  --bg-active: #e8ecf1;
+  --bg-user-msg: #2563eb;
+  --bg-ai-msg: #ffffff;
+  --bg-code: #1e1e1e;
+  --bg-modal: rgba(0,0,0,0.5);
+  --bg-dropdown: #ffffff;
+  --bg-tooltip: #1a1a2e;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --text-inverse: #ffffff;
+  --text-user-msg: #ffffff;
+  --text-ai-msg: #111827;
+  --text-code: #e4e4e7;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-light: rgba(37,99,235,0.1);
+  --border: #e5e7eb;
+  --border-light: #f0f2f5;
+  --border-focus: #2563eb;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --sidebar-width: 280px;
+  --right-panel-width: 300px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  --scrollbar-thumb: #c4c4c4;
+  --scrollbar-track: transparent;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --bg-tertiary: #1a2332;
+  --bg-sidebar: #111827;
+  --bg-chat: #0f172a;
+  --bg-input: #1f2937;
+  --bg-hover: #2a3544;
+  --bg-active: #374151;
+  --bg-user-msg: #2563eb;
+  --bg-ai-msg: #1f2937;
+  --bg-code: #0d1117;
+  --bg-modal: rgba(0,0,0,0.7);
+  --bg-dropdown: #1f2937;
+  --bg-tooltip: #374151;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --text-inverse: #111827;
+  --text-user-msg: #ffffff;
+  --text-ai-msg: #e5e7eb;
+  --text-code: #e4e4e7;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-light: rgba(59,130,246,0.15);
+  --border: #374151;
+  --border-light: #2a3544;
+  --border-focus: #3b82f6;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+  --scrollbar-thumb: #4b5563;
+}
+
+[data-theme="brasil"] {
+  --bg-primary: #002776;
+  --bg-secondary: #003399;
+  --bg-tertiary: #001f5c;
+  --bg-sidebar: #001a4d;
+  --bg-chat: #002060;
+  --bg-input: #003399;
+  --bg-hover: #0044aa;
+  --bg-active: #0055bb;
+  --bg-user-msg: #009c3b;
+  --bg-ai-msg: #003399;
+  --bg-code: #001133;
+  --bg-modal: rgba(0,15,50,0.8);
+  --bg-dropdown: #002776;
+  --text-primary: #f4f4f4;
+  --text-secondary: #b8c5d6;
+  --text-muted: #7a8ea8;
+  --text-inverse: #001a4d;
+  --text-user-msg: #ffffff;
+  --text-ai-msg: #e8eef4;
+  --text-code: #e4e4e7;
+  --accent: #ffdf00;
+  --accent-hover: #ffc400;
+  --accent-light: rgba(255,223,0,0.15);
+  --border: #0055aa;
+  --border-light: #003d7a;
+  --border-focus: #ffdf00;
+  --success: #009c3b;
+  --warning: #ffdf00;
+  --error: #cc0000;
+  --scrollbar-thumb: #0066cc;
+}
+
+[data-theme="dracula"] {
+  --bg-primary: #282a36;
+  --bg-secondary: #343746;
+  --bg-tertiary: #21222c;
+  --bg-sidebar: #21222c;
+  --bg-chat: #282a36;
+  --bg-input: #343746;
+  --bg-hover: #44475a;
+  --bg-active: #4d5066;
+  --bg-user-msg: #bd93f9;
+  --bg-ai-msg: #343746;
+  --bg-code: #1e1f29;
+  --bg-modal: rgba(20,21,30,0.8);
+  --bg-dropdown: #343746;
+  --text-primary: #f8f8f2;
+  --text-secondary: #bfbfbf;
+  --text-muted: #6272a4;
+  --text-inverse: #282a36;
+  --text-user-msg: #282a36;
+  --text-ai-msg: #f8f8f2;
+  --text-code: #f8f8f2;
+  --accent: #bd93f9;
+  --accent-hover: #a87df5;
+  --accent-light: rgba(189,147,249,0.15);
+  --border: #44475a;
+  --border-light: #383a4a;
+  --border-focus: #bd93f9;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+  --info: #8be9fd;
+  --scrollbar-thumb: #6272a4;
+}
+
+[data-theme="monokai"] {
+  --bg-primary: #272822;
+  --bg-secondary: #2e2f28;
+  --bg-tertiary: #1e1f1c;
+  --bg-sidebar: #1e1f1c;
+  --bg-chat: #272822;
+  --bg-input: #2e2f28;
+  --bg-hover: #3e3d32;
+  --bg-active: #49483e;
+  --bg-user-msg: #a6e22e;
+  --bg-ai-msg: #2e2f28;
+  --bg-code: #1a1b18;
+  --bg-modal: rgba(15,15,12,0.8);
+  --bg-dropdown: #2e2f28;
+  --text-primary: #f8f8f2;
+  --text-secondary: #c0bfb8;
+  --text-muted: #75715e;
+  --text-inverse: #272822;
+  --text-user-msg: #272822;
+  --text-ai-msg: #f8f8f2;
+  --text-code: #f8f8f2;
+  --accent: #a6e22e;
+  --accent-hover: #8cc919;
+  --accent-light: rgba(166,226,46,0.15);
+  --border: #3e3d32;
+  --border-light: #333328;
+  --border-focus: #a6e22e;
+  --success: #a6e22e;
+  --warning: #e6db74;
+  --error: #f92672;
+  --info: #66d9ef;
+  --scrollbar-thumb: #75715e;
+}
+
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #272c36;
+  --bg-sidebar: #272c36;
+  --bg-chat: #2e3440;
+  --bg-input: #3b4252;
+  --bg-hover: #434c5e;
+  --bg-active: #4c566a;
+  --bg-user-msg: #5e81ac;
+  --bg-ai-msg: #3b4252;
+  --bg-code: #242933;
+  --bg-modal: rgba(20,24,32,0.8);
+  --bg-dropdown: #3b4252;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #7b88a1;
+  --text-inverse: #2e3440;
+  --text-user-msg: #eceff4;
+  --text-ai-msg: #eceff4;
+  --text-code: #d8dee9;
+  --accent: #88c0d0;
+  --accent-hover: #7ab2c2;
+  --accent-light: rgba(136,192,208,0.15);
+  --border: #434c5e;
+  --border-light: #3a4252;
+  --border-focus: #88c0d0;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+  --info: #81a1c1;
+  --scrollbar-thumb: #4c566a;
+}
+
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  transition: background 200ms ease, color 200ms ease;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { opacity: 0.8; }
+
+/* ========== LAYOUT — 3-Panel ========== */
+.app-shell { display: flex; height: 100vh; }
+
+/* LEFT SIDEBAR */
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: width 200ms ease, transform 200ms ease;
+  z-index: 100;
+}
+.sidebar.collapsed { width: 0; overflow: hidden; border: none; }
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sidebar-logo {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+.sidebar-brand { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+.sidebar-subtitle { font-size: 11px; color: var(--text-muted); }
+
+.sidebar-actions {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.new-chat-btn {
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 150ms ease;
+}
+.new-chat-btn:hover { background: var(--accent-hover); }
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.session-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background 100ms ease;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.session-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.session-item.active { background: var(--bg-active); color: var(--text-primary); }
+.session-item-icon { font-size: 16px; flex-shrink: 0; opacity: 0.6; }
+.session-item-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-footer-btn {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font);
+  transition: background 100ms ease;
+  width: 100%;
+  text-align: left;
+}
+.sidebar-footer-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* CENTER — Chat Area */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-chat);
+}
+
+.chat-header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-secondary);
+  min-height: 56px;
+  flex-shrink: 0;
+}
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hamburger-btn {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  font-size: 20px;
+}
+.hamburger-btn:hover { background: var(--bg-hover); }
+.chat-title { font-weight: 600; font-size: 15px; }
+.chat-header-right { display: flex; align-items: center; gap: 8px; }
+.header-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.header-badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+.dot-online { background: var(--success); }
+.dot-offline { background: var(--error); }
+
+/* Messages */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-group {
+  display: flex;
+  gap: 12px;
+  max-width: 840px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 0;
+  animation: msgFadeIn 200ms ease;
+}
+.message-group.user-group { flex-direction: row-reverse; }
+.message-group.system-group { justify-content: center; max-width: 600px; }
+
+@keyframes msgFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.msg-avatar {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.msg-avatar.ai-avatar { background: var(--accent-light); }
+.msg-avatar.user-avatar { background: var(--bg-user-msg); color: var(--text-user-msg); font-size: 13px; font-weight: 600; }
+
+.msg-content { flex: 1; min-width: 0; }
+.msg-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.msg-author { font-weight: 600; color: var(--text-primary); }
+.msg-time { color: var(--text-muted); }
+
+.msg-body {
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+  font-size: 14px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.user-group .msg-body {
+  background: var(--bg-user-msg);
+  color: var(--text-user-msg);
+  border-bottom-right-radius: 4px;
+}
+.ai-group .msg-body {
+  background: var(--bg-ai-msg);
+  color: var(--text-ai-msg);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+.system-group .msg-body {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px 16px;
+  border: 1px dashed var(--border);
+}
+.error-group .msg-body {
+  background: rgba(239,68,68,0.1);
+  color: var(--error);
+  border: 1px solid rgba(239,68,68,0.2);
+}
+
+/* Markdown in messages */
+.msg-body p { margin: 0 0 0.6em; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-body h1, .msg-body h2, .msg-body h3 { margin: 0.5em 0 0.3em; line-height: 1.3; }
+.msg-body h1 { font-size: 1.2em; }
+.msg-body h2 { font-size: 1.1em; }
+.msg-body h3 { font-size: 1.05em; }
+.msg-body ul, .msg-body ol { margin: 0.3em 0 0.6em 1.5em; }
+.msg-body li { margin: 0.15em 0; }
+.msg-body blockquote {
+  margin: 0.3em 0 0.6em;
+  padding: 0.2em 0.8em;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.msg-body a { color: var(--accent); }
+.msg-body code:not(pre code) {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.msg-body table { width: 100%; border-collapse: collapse; margin: 0.5em 0; }
+.msg-body th, .msg-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.msg-body th { background: var(--bg-tertiary); font-weight: 600; }
+
+/* Code blocks */
+.code-block-wrapper {
+  position: relative;
+  margin: 0.5em 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--bg-code);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.copy-code-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: all 100ms ease;
+}
+.copy-code-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+.code-block-wrapper pre {
+  margin: 0 !important;
+  padding: 12px !important;
+  border-radius: 0 !important;
+  border: none !important;
+  background: var(--bg-code) !important;
+  overflow-x: auto;
+}
+.code-block-wrapper pre code {
+  font-family: var(--mono) !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+/* Typing indicator / streaming cursor */
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+  background: var(--bg-ai-msg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  border-bottom-left-radius: 4px;
+}
+.typing-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: typingPulse 1.4s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typingPulse {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1); }
+}
+
+.streaming-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  margin-left: 2px;
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Stop generating button */
+.stop-generating-btn {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 12px;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: var(--shadow-md);
+  transition: all 100ms ease;
+  z-index: 10;
+}
+.stop-generating-btn:hover { background: var(--bg-hover); box-shadow: var(--shadow-lg); }
+.stop-generating-btn .stop-icon {
+  width: 12px; height: 12px;
+  border-radius: 2px;
+  background: var(--text-secondary);
+}
+
+/* Input area */
+.chat-input-area {
+  position: relative;
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.input-wrapper {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 840px;
+  margin: 0 auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 8px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.input-wrapper:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.input-left-btns, .input-right-btns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.input-btn {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-sm);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: all 100ms ease;
+  position: relative;
+  font-family: var(--font);
+}
+.input-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.input-btn .badge-count {
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#chat-input {
+  flex: 1;
+  min-height: 24px;
+  max-height: 160px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  padding: 6px 4px;
+}
+#chat-input::placeholder { color: var(--text-muted); }
+
+.send-btn {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  border: none;
+  color: var(--text-inverse);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background 100ms ease;
+  flex-shrink: 0;
+}
+.send-btn:hover { background: var(--accent-hover); }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Dropdown menus */
+.dropdown-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 8px;
+  min-width: 240px;
+  background: var(--bg-dropdown);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  display: none;
+  overflow: hidden;
+}
+.dropdown-menu.show { display: block; animation: dropIn 150ms ease; }
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dropdown-section { padding: 4px 0; border-bottom: 1px solid var(--border-light); }
+.dropdown-section:last-child { border-bottom: none; }
+.dropdown-section-title {
+  padding: 6px 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.dropdown-item {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background 80ms ease;
+}
+.dropdown-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dropdown-item-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+.dropdown-item-text { flex: 1; }
+.dropdown-item-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Toggle switch */
+.toggle-switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--border); border-radius: 20px; transition: 0.2s;
+}
+.toggle-slider::before {
+  content: ''; position: absolute; height: 14px; width: 14px;
+  left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.2s;
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--success); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+/* RIGHT PANEL */
+.right-panel {
+  width: var(--right-panel-width);
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+  transition: width 200ms ease;
+}
+.right-panel.collapsed { width: 0; overflow: hidden; border: none; }
+
+.right-panel-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.right-panel-header h3 { font-size: 14px; font-weight: 600; }
+.right-panel-close {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 18px; padding: 4px;
+  border-radius: var(--radius-sm);
+}
+.right-panel-close:hover { background: var(--bg-hover); }
+
+.right-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+.right-section:last-child { border-bottom: none; }
+.right-section h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+.right-section .status-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0; font-size: 13px;
+}
+.right-section .status-row .label { color: var(--text-secondary); }
+.right-section .status-row .value { color: var(--text-primary); font-family: var(--mono); font-size: 12px; }
+.right-section .channel-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 12px;
+  margin: 2px 4px 2px 0; background: var(--bg-tertiary);
+}
+
+/* Provider selector in right panel */
+.provider-select-wrap {
+  margin-top: 8px;
+}
+.provider-select-wrap select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.provider-select-wrap select:focus { border-color: var(--border-focus); }
+.provider-select-wrap input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+  margin-top: 6px;
+}
+.provider-select-wrap input:focus { border-color: var(--border-focus); }
+.provider-status-text { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+.provider-key-form { display: none; margin-top: 8px; }
+.provider-key-form input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 8px;
+}
+.provider-activate-btn {
+  width: 100%;
+  padding: 8px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+.provider-activate-btn:hover { background: var(--accent-hover); }
+
+.gateway-key-form { display: none; margin-top: 8px; }
+.gateway-key-form input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 8px;
+}
+
+/* Settings / Skin editor modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-modal);
+  z-index: 500;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 90%;
+  max-width: 560px;
+  max-height: 85vh;
+  overflow-y: auto;
+  animation: modalIn 200ms ease;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-header h2 { font-size: 16px; font-weight: 600; }
+.modal-close {
+  background: none; border: none; font-size: 22px;
+  color: var(--text-muted); cursor: pointer; padding: 4px;
+}
+.modal-body { padding: 20px; }
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Skin editor */
+.skin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.skin-color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skin-color-field label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skin-color-field input[type="color"] {
+  width: 32px; height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: none;
+  padding: 2px;
+}
+.skin-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.skin-preset-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  transition: all 100ms ease;
+}
+.skin-preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+.skin-preset-btn.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
+
+.skin-actions {
+  display: flex;
+  gap: 8px;
+}
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  transition: all 100ms ease;
+}
+.btn-sm:hover { border-color: var(--accent); color: var(--text-primary); }
+.btn-primary-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font);
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-weight: 600;
+  transition: background 100ms ease;
+}
+.btn-primary-sm:hover { background: var(--accent-hover); }
+
+/* Mobile overlay for sidebar */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 99;
+}
+.sidebar-overlay.show { display: block; }
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 1024px) {
+  .right-panel { width: 0; overflow: hidden; border: none; }
+  .right-panel.expanded { width: var(--right-panel-width); border-left: 1px solid var(--border); }
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    transform: translateX(-100%);
+    z-index: 100;
+    width: var(--sidebar-width);
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .hamburger-btn { display: flex; }
+  .right-panel { width: 0; overflow: hidden; border: none; }
+  .chat-messages { padding: 12px; }
+  .chat-input-area { padding: 12px; }
+  .input-wrapper { border-radius: var(--radius-md); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
+}
+
+/* Misc hidden utility */
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- LEFT SIDEBAR -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">&#x1f99c;</div>
+      <div>
+        <div class="sidebar-brand">GarraIA</div>
+        <div class="sidebar-subtitle">AI Gateway</div>
+      </div>
+    </div>
+    <div class="sidebar-actions">
+      <button class="new-chat-btn" id="new-chat-btn">
+        <span>+</span> New Chat
+      </button>
+    </div>
+    <div class="session-list" id="session-list">
+      <!-- Sessions populated by JS -->
+    </div>
+    <div class="sidebar-footer">
+      <button class="sidebar-footer-btn" id="settings-btn" title="Settings">
+        &#9881; Settings
+      </button>
+      <button class="sidebar-footer-btn" id="skin-editor-btn" title="Skin Editor">
+        &#127912; Themes & Skins
+      </button>
+    </div>
+  </nav>
+
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <!-- CENTER — Chat -->
+  <main class="chat-area">
+    <header class="chat-header">
+      <div class="chat-header-left">
+        <button class="hamburger-btn" id="hamburger-btn" title="Toggle sidebar">&#9776;</button>
+        <span class="chat-title" id="chat-title">New Conversation</span>
+      </div>
+      <div class="chat-header-right">
+        <span class="header-badge" id="conn-badge">
+          <span class="dot dot-offline" id="conn-dot"></span>
+          <span id="conn-status">Disconnected</span>
+        </span>
+        <button class="input-btn" id="right-panel-toggle" title="Toggle info panel">&#9776;</button>
+      </div>
+    </header>
+
+    <div class="chat-messages" id="chat-messages">
+      <div class="message-group system-group">
+        <div class="msg-content">
+          <div class="msg-body">Welcome to GarraIA. Type a message to get started.</div>
         </div>
       </div>
-    </main>
-    <script src="/assets/i18n.js" defer></script>
-    <script type="module" src="/assets/app.js"></script>
-  </body>
+    </div>
+
+    <div class="chat-input-area">
+      <div id="stop-btn-container"></div>
+      <div class="input-wrapper">
+        <div class="input-left-btns">
+          <div style="position:relative;">
+            <button class="input-btn" id="plus-btn" title="Attach & More">+</button>
+            <div class="dropdown-menu" id="plus-dropdown">
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Project</div>
+                <div class="dropdown-item" data-action="select-project">
+                  <span class="dropdown-item-icon">&#128193;</span>
+                  <span class="dropdown-item-text">Select Project</span>
+                </div>
+                <div class="dropdown-item" data-action="new-project">
+                  <span class="dropdown-item-icon">&#10010;</span>
+                  <span class="dropdown-item-text">New Project</span>
+                </div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Files</div>
+                <div class="dropdown-item" data-action="browse-files">
+                  <span class="dropdown-item-icon">&#128196;</span>
+                  <span class="dropdown-item-text">Browse Files</span>
+                </div>
+                <div class="dropdown-item" data-action="attach-files">
+                  <span class="dropdown-item-icon">&#128206;</span>
+                  <span class="dropdown-item-text">Attach Files</span>
+                </div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Mode</div>
+                <div class="dropdown-item" data-action="agent-mode">
+                  <span class="dropdown-item-icon">&#129302;</span>
+                  <span class="dropdown-item-text">Agent Mode</span>
+                  <span class="dropdown-item-badge" id="current-mode-badge">auto</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <textarea id="chat-input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for newline)"></textarea>
+
+        <div class="input-right-btns">
+          <div style="position:relative;">
+            <button class="input-btn" id="extensions-btn" title="Extensions">
+              &#129513;
+              <span class="badge-count hidden" id="ext-badge-count">0</span>
+            </button>
+            <div class="dropdown-menu" id="extensions-dropdown" style="right:0;left:auto;">
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">MCP Servers</div>
+                <div id="ext-mcp-list" class="dropdown-item" style="color:var(--text-muted);font-size:12px;">Loading...</div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Tools</div>
+                <div id="ext-tools-list" class="dropdown-item" style="color:var(--text-muted);font-size:12px;">Loading...</div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Skills</div>
+                <div class="dropdown-item" style="color:var(--text-muted);font-size:12px;">No skills loaded</div>
+              </div>
+            </div>
+          </div>
+          <button class="send-btn" id="send-btn" title="Send message">&#10148;</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="right-panel" id="right-panel">
+    <div class="right-panel-header">
+      <h3>Context Info</h3>
+      <button class="right-panel-close" id="right-panel-close">&times;</button>
+    </div>
+    <div class="right-section">
+      <h4>Gateway</h4>
+      <div class="status-row"><span class="label">Server</span><span class="value" id="api-status">checking...</span></div>
+      <div class="status-row"><span class="label">Session</span><span class="value" id="session-id">none</span></div>
+      <div class="status-row"><span class="label">Active Sessions</span><span class="value" id="session-count">-</span></div>
+    </div>
+    <div class="right-section">
+      <h4>Channels</h4>
+      <div id="channel-list"><span style="color:var(--text-muted);font-size:12px;">No channels connected</span></div>
+    </div>
+    <div class="right-section">
+      <h4>LLM Provider</h4>
+      <div class="provider-select-wrap">
+        <select id="provider-select" title="LLM Provider"><option value="">Loading...</option></select>
+        <div class="provider-status-text" id="provider-status"></div>
+        <input id="provider-model-input" list="provider-model-options" placeholder="Model (optional)" autocomplete="off" />
+        <datalist id="provider-model-options"></datalist>
+        <div id="provider-model-status" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
+        <div class="provider-key-form" id="provider-key-section">
+          <input id="provider-api-key" type="password" placeholder="Enter API key..." autocomplete="off" />
+          <button class="provider-activate-btn" id="provider-activate">Save & Activate</button>
+        </div>
+      </div>
+    </div>
+    <div class="right-section gateway-key-form" id="auth-section">
+      <h4>Gateway Authentication</h4>
+      <input id="key-gateway" type="password" placeholder="Enter gateway key" autocomplete="off" />
+      <button class="provider-activate-btn" id="auth-connect" style="margin-top:8px;">Connect</button>
+    </div>
+    <div class="right-section">
+      <button class="btn-sm" id="refresh-status" style="width:100%;">&#8635; Refresh Status</button>
+    </div>
+  </aside>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button class="modal-close" data-close-modal="settings-modal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="margin-bottom:16px;">
+        <h4 style="font-size:13px;margin-bottom:8px;">Language</h4>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-sm" onclick="setLanguage('pt-BR')">Portugues</button>
+          <button class="btn-sm" onclick="setLanguage('en-US')">English</button>
+        </div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <h4 style="font-size:13px;margin-bottom:8px;">Connection</h4>
+        <button class="btn-sm" id="reconnect-btn" style="width:100%;">Reconnect WebSocket</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SKIN EDITOR MODAL -->
+<div class="modal-overlay" id="skin-modal">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h2>Themes & Skins</h2>
+      <button class="modal-close" data-close-modal="skin-modal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <h4 style="font-size:13px;margin-bottom:10px;">Built-in Themes</h4>
+      <div class="skin-presets" id="skin-presets">
+        <button class="skin-preset-btn" data-theme="light">Light</button>
+        <button class="skin-preset-btn" data-theme="dark">Dark</button>
+        <button class="skin-preset-btn" data-theme="brasil">Brasil</button>
+        <button class="skin-preset-btn" data-theme="dracula">Dracula</button>
+        <button class="skin-preset-btn" data-theme="monokai">Monokai</button>
+        <button class="skin-preset-btn" data-theme="nord">Nord</button>
+      </div>
+      <h4 style="font-size:13px;margin-bottom:10px;margin-top:20px;">Skin Editor</h4>
+      <div class="skin-grid" id="skin-editor-grid">
+        <!-- populated by JS -->
+      </div>
+      <div class="skin-actions">
+        <button class="btn-sm" id="skin-export-btn">Export Skin JSON</button>
+        <button class="btn-sm" id="skin-import-btn">Import Skin JSON</button>
+        <input type="file" id="skin-import-file" accept=".json" style="display:none;" />
+        <button class="btn-primary-sm" id="skin-save-btn">Save to Server</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+(function() {
+
+// ─── State ───────────────────────────────────────────────────────────
+const State = {
+  session: localStorage.getItem('garraia.session_id') || '',
+  gatewayKey: localStorage.getItem('garraia.gateway_key') || '',
+  selectedProvider: localStorage.getItem('garraia.provider') || '',
+  authRequired: false,
+  connected: false,
+  thinking: false,
+  providers: [],
+  sessions: [],
+  socket: null,
+  reconnectTimer: null,
+  streamingMsgEl: null,
+  currentTheme: localStorage.getItem('garraia.ui.theme') || 'dark',
+};
+
+// ─── DOM Refs ────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const chatMessages = $('chat-messages');
+const chatInput = $('chat-input');
+const sendBtn = $('send-btn');
+const connDot = $('conn-dot');
+const connStatus = $('conn-status');
+const sessionEl = $('session-id');
+const sessionCountEl = $('session-count');
+const apiStatusEl = $('api-status');
+const channelListEl = $('channel-list');
+const providerSelect = $('provider-select');
+const providerStatus = $('provider-status');
+const providerKeySection = $('provider-key-section');
+const providerApiKey = $('provider-api-key');
+const providerActivateBtn = $('provider-activate');
+const providerModelInput = $('provider-model-input');
+const providerModelOptions = $('provider-model-options');
+const authSection = $('auth-section');
+const keyGateway = $('key-gateway');
+const authConnectBtn = $('auth-connect');
+const sidebar = $('sidebar');
+const sidebarOverlay = $('sidebar-overlay');
+const sessionListEl = $('session-list');
+const rightPanel = $('right-panel');
+const stopBtnContainer = $('stop-btn-container');
+
+// ─── Marked Configuration ─────────────────────────────────────────────
+const renderer = new marked.Renderer();
+const origCodeRenderer = renderer.code;
+
+renderer.code = function(codeObj) {
+  const text = typeof codeObj === 'object' ? (codeObj.text || '') : codeObj;
+  const lang = typeof codeObj === 'object' ? (codeObj.lang || '') : (arguments[1] || '');
+
+  let highlighted;
+  if (lang && hljs.getLanguage(lang)) {
+    highlighted = hljs.highlight(text, { language: lang }).value;
+  } else {
+    highlighted = hljs.highlightAuto(text).value;
+  }
+  const langLabel = lang || 'code';
+  return `<div class="code-block-wrapper"><div class="code-block-header"><span>${langLabel}</span><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
+};
+
+marked.setOptions({
+  renderer: renderer,
+  breaks: true,
+  gfm: true
+});
+
+window.copyCodeBlock = function(btn) {
+  const code = btn.closest('.code-block-wrapper').querySelector('code').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+  });
+};
+
+// ─── Theme System ─────────────────────────────────────────────────────
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('garraia.ui.theme', theme);
+  State.currentTheme = theme;
+  // Update hljs theme
+  const hljsLink = $('hljs-theme');
+  if (hljsLink) {
+    const isDark = !['light'].includes(theme);
+    hljsLink.href = isDark
+      ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
+      : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+  }
+  // Update preset buttons
+  document.querySelectorAll('.skin-preset-btn[data-theme]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.theme === theme);
+  });
+}
+
+// Initialize skin editor
+function initSkinEditor() {
+  const editableVars = [
+    ['--bg-primary', 'Background'],
+    ['--bg-secondary', 'Panel BG'],
+    ['--bg-chat', 'Chat BG'],
+    ['--bg-user-msg', 'User Msg'],
+    ['--bg-ai-msg', 'AI Msg'],
+    ['--text-primary', 'Text'],
+    ['--text-secondary', 'Text Muted'],
+    ['--accent', 'Accent'],
+    ['--accent-hover', 'Accent Hover'],
+    ['--border', 'Border'],
+    ['--success', 'Success'],
+    ['--error', 'Error'],
+  ];
+
+  const grid = $('skin-editor-grid');
+  grid.innerHTML = '';
+  const computed = getComputedStyle(document.documentElement);
+
+  editableVars.forEach(([varName, label]) => {
+    const field = document.createElement('div');
+    field.className = 'skin-color-field';
+    const lbl = document.createElement('label');
+    lbl.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'color';
+    const raw = computed.getPropertyValue(varName).trim();
+    input.value = rgbToHex(raw) || '#000000';
+    input.addEventListener('input', () => {
+      document.documentElement.style.setProperty(varName, input.value);
+    });
+    input.dataset.varName = varName;
+    field.appendChild(lbl);
+    field.appendChild(input);
+    grid.appendChild(field);
+  });
+}
+
+function rgbToHex(color) {
+  if (!color) return '#000000';
+  if (color.startsWith('#')) {
+    if (color.length === 4) {
+      return '#' + color[1]+color[1]+color[2]+color[2]+color[3]+color[3];
+    }
+    return color.slice(0,7);
+  }
+  const m = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (m) {
+    return '#' + [m[1],m[2],m[3]].map(x => parseInt(x).toString(16).padStart(2,'0')).join('');
+  }
+  return '#000000';
+}
+
+function exportSkin() {
+  const vars = {};
+  const inputs = document.querySelectorAll('#skin-editor-grid input[type="color"]');
+  inputs.forEach(inp => { vars[inp.dataset.varName] = inp.value; });
+  const blob = new Blob([JSON.stringify({ theme: State.currentTheme, variables: vars }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'garraia-skin-' + Date.now() + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importSkin(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (data.variables) {
+        Object.entries(data.variables).forEach(([k, v]) => {
+          document.documentElement.style.setProperty(k, v);
+        });
+        initSkinEditor(); // refresh color pickers
+      }
+    } catch (err) { console.error('Invalid skin file:', err); }
+  };
+  reader.readAsText(file);
+}
+
+async function saveSkinToServer() {
+  const vars = {};
+  document.querySelectorAll('#skin-editor-grid input[type="color"]').forEach(inp => {
+    vars[inp.dataset.varName] = inp.value;
+  });
+  try {
+    await fetch('/api/skins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'custom-' + Date.now(), variables: vars })
+    });
+  } catch (e) { console.warn('Could not save skin:', e); }
+}
+
+// ─── WebSocket ──────────────────────────────────────────────────────
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const base = `${proto}//${location.host}/ws`;
+  return State.gatewayKey ? `${base}?token=${encodeURIComponent(State.gatewayKey)}` : base;
+}
+
+function connect() {
+  if (State.socket && (State.socket.readyState === WebSocket.OPEN || State.socket.readyState === WebSocket.CONNECTING)) return;
+  State.socket = new WebSocket(wsUrl());
+  State.socket.onopen = () => {
+    setConnected(true);
+    if (State.session) {
+      State.socket.send(JSON.stringify({ type: 'resume', session_id: State.session }));
+    } else {
+      State.socket.send(JSON.stringify({ type: 'init' }));
+    }
+  };
+  State.socket.onmessage = (ev) => handleServerEvent(ev.data);
+  State.socket.onclose = () => { setConnected(false); scheduleReconnect(); };
+  State.socket.onerror = () => { setConnected(false); };
+}
+
+function scheduleReconnect() {
+  if (State.reconnectTimer) return;
+  State.reconnectTimer = setTimeout(() => { State.reconnectTimer = null; connect(); }, 2000);
+}
+
+function reconnectFresh() {
+  if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
+  if (State.socket) { State.socket.onclose = null; try { State.socket.close(); } catch {} State.socket = null; }
+  setConnected(false);
+  connect();
+}
+
+function setConnected(status) {
+  State.connected = status;
+  connDot.className = 'dot ' + (status ? 'dot-online' : 'dot-offline');
+  connStatus.textContent = status ? 'Connected' : 'Disconnected';
+}
+
+function setSession(id) {
+  State.session = id || '';
+  if (State.session) localStorage.setItem('garraia.session_id', State.session);
+  else localStorage.removeItem('garraia.session_id');
+  sessionEl.textContent = State.session ? State.session.slice(0, 8) + '...' : 'none';
+  sessionEl.title = State.session;
+}
+
+function handleServerEvent(raw) {
+  let evt;
+  try { evt = JSON.parse(raw); } catch { appendSystemMsg('[RAW] ' + raw); return; }
+  if (evt.session_id) setSession(evt.session_id);
+
+  switch (evt.type) {
+    case 'connected':
+      if (evt.note) appendSystemMsg('Connected (' + evt.note + ').');
+      refreshStatus();
+      break;
+    case 'resumed':
+      appendSystemMsg('Session resumed (' + (evt.history_length || 0) + ' messages).');
+      refreshStatus();
+      break;
+    case 'message':
+      handleAssistantMessage(evt.content || 'Empty response');
+      break;
+    case 'error':
+      setThinking(false);
+      appendErrorMsg((evt.code || 'Error') + ': ' + (evt.message || 'Unknown error'));
+      break;
+    case 'log':
+      break; // logs go elsewhere
+    default:
+      appendSystemMsg('Event ' + (evt.type || 'unknown') + ': ' + JSON.stringify(evt));
+  }
+}
+
+function handleAssistantMessage(content) {
+  // Try to parse streaming chunks
+  let isStream = false;
+  let parsedContent = '';
+  try {
+    const lines = content.split('\\n');
+    for (const line of lines) {
+      if (line.trim().startsWith('{') && line.trim().endsWith('}')) {
+        const data = JSON.parse(line);
+        if (data.content !== undefined) { isStream = true; parsedContent += data.content; }
+      }
+    }
+  } catch (e) {}
+
+  if (!isStream) {
+    appendAIMsg(content);
+    setThinking(false);
+    return;
+  }
+
+  // Streaming: append to existing or create new
+  if (State.streamingMsgEl) {
+    const bodyEl = State.streamingMsgEl.querySelector('.msg-body');
+    bodyEl.classList.add('streaming-cursor');
+    const currentText = bodyEl.getAttribute('data-raw') || '';
+    const newText = currentText + parsedContent;
+    bodyEl.setAttribute('data-raw', newText);
+    bodyEl.innerHTML = marked.parse(newText);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  } else {
+    appendAIMsg(parsedContent, true);
+  }
+  resetThinkingDebounce();
+}
+
+let thinkingTimeout = null;
+function resetThinkingDebounce() {
+  setThinking(true);
+  if (thinkingTimeout) clearTimeout(thinkingTimeout);
+  thinkingTimeout = setTimeout(() => { setThinking(false); }, 1500);
+}
+
+function setThinking(status) {
+  if (State.thinking === status) return;
+  State.thinking = status;
+  const typingEl = $('typing-indicator');
+  if (status) {
+    if (!typingEl) {
+      const el = createTypingIndicator();
+      chatMessages.appendChild(el);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+    showStopButton();
+  } else {
+    if (typingEl) typingEl.remove();
+    if (State.streamingMsgEl) {
+      const bodyEl = State.streamingMsgEl.querySelector('.msg-body');
+      bodyEl.classList.remove('streaming-cursor');
+      State.streamingMsgEl = null;
+    }
+    hideStopButton();
+  }
+}
+
+function createTypingIndicator() {
+  const group = document.createElement('div');
+  group.className = 'message-group ai-group';
+  group.id = 'typing-indicator';
+  group.innerHTML = `
+    <div class="msg-avatar ai-avatar">&#x1f99c;</div>
+    <div class="msg-content">
+      <div class="typing-indicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+    </div>
+  `;
+  return group;
+}
+
+function showStopButton() {
+  stopBtnContainer.innerHTML = `
+    <button class="stop-generating-btn" id="stop-gen-btn">
+      <span class="stop-icon"></span> Stop generating
+    </button>
+  `;
+  $('stop-gen-btn').addEventListener('click', () => {
+    setThinking(false);
+    // Could send abort signal via WS in future
+  });
+}
+function hideStopButton() { stopBtnContainer.innerHTML = ''; }
+
+// ─── Message Rendering ──────────────────────────────────────────────
+function appendUserMsg(text) {
+  const group = document.createElement('div');
+  group.className = 'message-group user-group';
+  group.innerHTML = `
+    <div class="msg-avatar user-avatar">U</div>
+    <div class="msg-content">
+      <div class="msg-header">
+        <span class="msg-author">You</span>
+        <span class="msg-time">${formatTime(new Date())}</span>
+      </div>
+      <div class="msg-body">${escapeHtml(text)}</div>
+    </div>
+  `;
+  // Remove typing indicator before appending
+  const typing = $('typing-indicator');
+  if (typing) typing.remove();
+  chatMessages.appendChild(group);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendAIMsg(text, isStreaming) {
+  // Remove typing indicator
+  const typing = $('typing-indicator');
+  if (typing) typing.remove();
+
+  const group = document.createElement('div');
+  group.className = 'message-group ai-group';
+
+  const rendered = marked.parse(text);
+  const bodyClass = isStreaming ? 'msg-body streaming-cursor' : 'msg-body';
+  group.innerHTML = `
+    <div class="msg-avatar ai-avatar">&#x1f99c;</div>
+    <div class="msg-content">
+      <div class="msg-header">
+        <span class="msg-author">GarraIA</span>
+        <span class="msg-time">${formatTime(new Date())}</span>
+      </div>
+      <div class="${bodyClass}" data-raw="${escapeAttr(text)}">${rendered}</div>
+    </div>
+  `;
+  chatMessages.appendChild(group);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  if (isStreaming) { State.streamingMsgEl = group; }
+}
+
+function appendSystemMsg(text) {
+  const group = document.createElement('div');
+  group.className = 'message-group system-group';
+  group.innerHTML = `<div class="msg-content"><div class="msg-body">${escapeHtml(text)}</div></div>`;
+  chatMessages.appendChild(group);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendErrorMsg(text) {
+  const group = document.createElement('div');
+  group.className = 'message-group error-group';
+  group.innerHTML = `
+    <div class="msg-content">
+      <div class="msg-body">${escapeHtml(text)}</div>
+    </div>
+  `;
+  chatMessages.appendChild(group);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function escapeAttr(s) {
+  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatTime(d) {
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// ─── Send ────────────────────────────────────────────────────────────
+function sendMessage() {
+  const content = chatInput.value.trim();
+  if (!content) return;
+  if (!State.socket || State.socket.readyState !== WebSocket.OPEN) {
+    appendErrorMsg('Not connected to server.');
+    return;
+  }
+  appendUserMsg(content);
+  setThinking(true);
+  const msg = { content };
+  if (State.selectedProvider) msg.provider = State.selectedProvider;
+  if (providerModelInput && providerModelInput.value.trim()) msg.model = providerModelInput.value.trim();
+  State.socket.send(JSON.stringify(msg));
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+  chatInput.focus();
+}
+
+// ─── Status / Providers ──────────────────────────────────────────────
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    apiStatusEl.innerHTML = '<span class="dot dot-online" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:4px;"></span>' + j.status;
+    sessionCountEl.textContent = j.sessions;
+    if (channelListEl) {
+      if (j.channels && j.channels.length > 0) {
+        channelListEl.innerHTML = j.channels.map(ch => '<span class="channel-tag"><span class="dot dot-online" style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);"></span> ' + ch + '</span>').join('');
+      } else {
+        channelListEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No channels</span>';
+      }
+    }
+  } catch {
+    apiStatusEl.textContent = 'Unavailable';
+    sessionCountEl.textContent = '-';
+  }
+  loadProviders();
+}
+
+async function loadProviders() {
+  try {
+    const r = await fetch('/api/providers');
+    const j = await r.json();
+    State.providers = j.providers || [];
+    providerSelect.innerHTML = '';
+    State.providers.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.active ? p.display_name : p.display_name + ' (Not Configured)';
+      providerSelect.appendChild(opt);
+    });
+    const def = State.providers.find(p => p.is_default);
+    const saved = State.selectedProvider || (def ? def.id : '');
+    if (saved && [...providerSelect.options].some(o => o.value === saved)) providerSelect.value = saved;
+    updateProviderUI();
+  } catch {
+    providerSelect.innerHTML = '<option value="">Unavailable</option>';
+  }
+}
+
+function updateProviderUI() {
+  const id = providerSelect.value;
+  const p = State.providers.find(x => x.id === id);
+  if (!p) { providerStatus.textContent = ''; providerKeySection.style.display = 'none'; return; }
+  if (p.active) {
+    providerStatus.innerHTML = '<span style="color:var(--success);">&#9679;</span> Active' + (p.is_default ? ' (Default)' : '');
+    providerKeySection.style.display = 'none';
+  } else {
+    providerStatus.innerHTML = '<span style="color:var(--error);">&#9679;</span> Not Configured';
+    providerKeySection.style.display = p.needs_api_key ? 'block' : 'none';
+  }
+  if (providerModelOptions) {
+    providerModelOptions.innerHTML = '';
+    if (p.models && p.models.length > 0) {
+      p.models.forEach(m => { const opt = document.createElement('option'); opt.value = m; providerModelOptions.appendChild(opt); });
+    }
+  }
+  if (providerModelInput) {
+    providerModelInput.value = p.model || (p.models && p.models.length > 0 ? p.models[0] : '');
+  }
+  State.selectedProvider = id;
+  localStorage.setItem('garraia.provider', id);
+}
+
+async function loadExtensions() {
+  // MCP servers
+  try {
+    const r = await fetch('/api/mcp');
+    const j = await r.json();
+    const servers = j.servers || [];
+    const mcpList = $('ext-mcp-list');
+    if (servers.length === 0) {
+      mcpList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;padding:4px 0;">No MCP servers</span>';
+    } else {
+      mcpList.innerHTML = '';
+      mcpList.style.display = 'block';
+      mcpList.style.padding = '0';
+      servers.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.style.fontSize = '12px';
+        const statusColor = (s.status && s.status.state === 'running') ? 'var(--success)' : 'var(--text-muted)';
+        item.innerHTML = `<span style="color:${statusColor};font-size:8px;">&#9679;</span> <span>${s.name}</span> <span style="color:var(--text-muted);font-size:10px;">${s.transport || ''}</span>`;
+        mcpList.appendChild(item);
+      });
+      const badge = $('ext-badge-count');
+      const activeCount = servers.filter(s => s.status && s.status.state === 'running').length;
+      if (activeCount > 0) { badge.textContent = activeCount; badge.classList.remove('hidden'); }
+    }
+  } catch {}
+
+  // Tools
+  try {
+    const r = await fetch('/api/tools');
+    const j = await r.json();
+    const tools = j.tools || [];
+    const toolsList = $('ext-tools-list');
+    if (tools.length === 0) {
+      toolsList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No tools</span>';
+    } else {
+      toolsList.innerHTML = '';
+      toolsList.style.display = 'block';
+      toolsList.style.padding = '0';
+      tools.slice(0, 10).forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.style.fontSize = '12px';
+        item.innerHTML = `<span class="dropdown-item-icon" style="font-size:12px;">&#128295;</span> <span>${t.name}</span>`;
+        toolsList.appendChild(item);
+      });
+      if (tools.length > 10) {
+        const more = document.createElement('div');
+        more.className = 'dropdown-item';
+        more.style.cssText = 'font-size:11px;color:var(--text-muted);';
+        more.textContent = '+ ' + (tools.length - 10) + ' more...';
+        toolsList.appendChild(more);
+      }
+    }
+  } catch {}
+}
+
+// ─── Session List ────────────────────────────────────────────────────
+function addSessionToList(sessionId) {
+  if (!sessionListEl || !sessionId) return;
+  // Avoid duplicates
+  if (sessionListEl.querySelector(`[data-session="${sessionId}"]`)) return;
+  const item = document.createElement('div');
+  item.className = 'session-item' + (sessionId === State.session ? ' active' : '');
+  item.dataset.session = sessionId;
+  item.innerHTML = `
+    <span class="session-item-icon">&#128172;</span>
+    <span class="session-item-text">${sessionId.slice(0, 16)}...</span>
+    <span class="session-item-time">${formatTime(new Date())}</span>
+  `;
+  item.addEventListener('click', () => {
+    setSession(sessionId);
+    document.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+    item.classList.add('active');
+    reconnectFresh();
+    closeSidebarMobile();
+  });
+  sessionListEl.prepend(item);
+}
+
+// ─── Dropdown Logic ──────────────────────────────────────────────────
+function setupDropdown(btnId, menuId) {
+  const btn = $(btnId);
+  const menu = $(menuId);
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.dropdown-menu.show').forEach(m => { if (m !== menu) m.classList.remove('show'); });
+    menu.classList.toggle('show');
+  });
+}
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
+});
+
+// ─── Sidebar Mobile ──────────────────────────────────────────────────
+function openSidebarMobile() { sidebar.classList.add('mobile-open'); sidebarOverlay.classList.add('show'); }
+function closeSidebarMobile() { sidebar.classList.remove('mobile-open'); sidebarOverlay.classList.remove('show'); }
+
+// ─── Modals ──────────────────────────────────────────────────────────
+function openModal(id) { $(id).classList.add('show'); }
+function closeModal(id) { $(id).classList.remove('show'); }
+
+document.querySelectorAll('[data-close-modal]').forEach(btn => {
+  btn.addEventListener('click', () => closeModal(btn.dataset.closeModal));
+});
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay.id); });
+});
+
+// ─── Auto-resize textarea ───────────────────────────────────────────
+chatInput.addEventListener('input', () => {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
+});
+
+// ─── Event Listeners ────────────────────────────────────────────────
+sendBtn.addEventListener('click', sendMessage);
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+$('new-chat-btn').addEventListener('click', () => {
+  chatMessages.innerHTML = '';
+  appendSystemMsg('New conversation started.');
+  setSession('');
+  reconnectFresh();
+  closeSidebarMobile();
+});
+
+$('hamburger-btn').addEventListener('click', openSidebarMobile);
+sidebarOverlay.addEventListener('click', closeSidebarMobile);
+
+$('right-panel-toggle').addEventListener('click', () => { rightPanel.classList.toggle('collapsed'); rightPanel.classList.toggle('expanded'); });
+$('right-panel-close').addEventListener('click', () => { rightPanel.classList.add('collapsed'); rightPanel.classList.remove('expanded'); });
+
+$('settings-btn').addEventListener('click', () => { openModal('settings-modal'); closeSidebarMobile(); });
+$('skin-editor-btn').addEventListener('click', () => { openModal('skin-modal'); initSkinEditor(); closeSidebarMobile(); });
+$('reconnect-btn').addEventListener('click', reconnectFresh);
+$('refresh-status').addEventListener('click', refreshStatus);
+
+// Theme presets
+document.querySelectorAll('.skin-preset-btn[data-theme]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    // Clear any custom inline vars
+    const editable = ['--bg-primary','--bg-secondary','--bg-chat','--bg-user-msg','--bg-ai-msg','--text-primary','--text-secondary','--accent','--accent-hover','--border','--success','--error'];
+    editable.forEach(v => document.documentElement.style.removeProperty(v));
+    applyTheme(btn.dataset.theme);
+    initSkinEditor();
+  });
+});
+
+// Skin export/import
+$('skin-export-btn').addEventListener('click', exportSkin);
+$('skin-import-btn').addEventListener('click', () => $('skin-import-file').click());
+$('skin-import-file').addEventListener('change', (e) => { if (e.target.files[0]) importSkin(e.target.files[0]); });
+$('skin-save-btn').addEventListener('click', saveSkinToServer);
+
+// Provider events
+providerSelect.addEventListener('change', () => {
+  updateProviderUI();
+  const p = State.providers.find(x => x.id === providerSelect.value);
+  if (p && p.active) {
+    fetch('/api/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_type: p.id, set_default: true })
+    }).then(() => loadProviders());
+  }
+});
+
+providerActivateBtn.addEventListener('click', async () => {
+  const id = providerSelect.value;
+  const key = providerApiKey.value.trim();
+  if (!key) return;
+  providerActivateBtn.textContent = 'Activating...';
+  providerActivateBtn.disabled = true;
+  try {
+    const r = await fetch('/api/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_type: id, api_key: key, set_default: true })
+    });
+    const j = await r.json();
+    if (r.ok) { providerApiKey.value = ''; appendSystemMsg('Provider ' + id + ' activated.'); await loadProviders(); }
+    else { appendErrorMsg(j.message || 'Activation failed'); }
+  } catch (e) { appendErrorMsg('Activation failed: ' + e); }
+  finally { providerActivateBtn.textContent = 'Save & Activate'; providerActivateBtn.disabled = false; }
+});
+
+authConnectBtn.addEventListener('click', () => {
+  State.gatewayKey = keyGateway.value.trim();
+  localStorage.setItem('garraia.gateway_key', State.gatewayKey);
+  reconnectFresh();
+});
+
+// Dropdown setups
+setupDropdown('plus-btn', 'plus-dropdown');
+setupDropdown('extensions-btn', 'extensions-dropdown');
+
+// ─── Boot ────────────────────────────────────────────────────────────
+async function boot() {
+  applyTheme(State.currentTheme);
+  refreshStatus();
+  loadExtensions();
+
+  try {
+    const r = await fetch('/api/auth-check');
+    const j = await r.json();
+    State.authRequired = j.auth_required;
+  } catch { State.authRequired = false; }
+
+  if (State.authRequired) {
+    if (authSection) authSection.style.display = '';
+    if (State.gatewayKey) { connect(); }
+    else { appendSystemMsg('Gateway API Key required.'); }
+  } else {
+    if (authSection) authSection.style.display = 'none';
+    connect();
+  }
+
+  // Track sessions
+  if (State.session) addSessionToList(State.session);
+
+  // Watch for session changes
+  const origSetSession = setSession;
+  const _origSetSession = setSession;
+}
+
+// Language helper
+window.setLanguage = function(lang) {
+  localStorage.setItem('lang', lang);
+  if (window.loadLocale) window.loadLocale(lang);
+};
+
+boot();
+
+})();
+</script>
+</body>
 </html>

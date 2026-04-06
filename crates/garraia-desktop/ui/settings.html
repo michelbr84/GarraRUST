@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Garra Settings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: #1a1a24;
+      color: #ddd;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100%;
+    }
+    .container {
+      padding: 24px;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 20px;
+      color: #8af;
+      margin-bottom: 24px;
+    }
+    .section {
+      margin-bottom: 20px;
+      padding: 16px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .section h2 {
+      font-size: 14px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+    }
+    .row + .row {
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+    .row label {
+      font-size: 14px;
+    }
+    .row .hint {
+      font-size: 11px;
+      color: #777;
+      margin-top: 2px;
+    }
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      cursor: pointer;
+    }
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle .slider {
+      position: absolute;
+      inset: 0;
+      background: #444;
+      border-radius: 24px;
+      transition: background 0.2s;
+    }
+    .toggle .slider::before {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .slider {
+      background: #4a9;
+    }
+    .toggle input:checked + .slider::before {
+      transform: translateX(20px);
+    }
+    .btn {
+      padding: 8px 18px;
+      background: rgba(136, 170, 255, 0.15);
+      color: #8af;
+      border: 1px solid rgba(136, 170, 255, 0.3);
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover {
+      background: rgba(136, 170, 255, 0.25);
+    }
+    .version {
+      text-align: center;
+      color: #555;
+      font-size: 12px;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Garra Settings</h1>
+
+    <div class="section">
+      <h2>General</h2>
+      <div class="row">
+        <div>
+          <label>Start with Windows</label>
+          <div class="hint">Launch Garra when you log in</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="autostart" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row">
+        <div>
+          <label>Notification sounds</label>
+          <div class="hint">Play sound for new messages</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="notif-sound" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Shortcuts</h2>
+      <div class="row">
+        <label>Toggle overlay</label>
+        <span style="color:#8af;font-size:13px">Alt + G</span>
+      </div>
+      <div class="row">
+        <label>Quick Chat</label>
+        <span style="color:#8af;font-size:13px">Ctrl + Space</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Updates</h2>
+      <div class="row">
+        <label>Current version: v0.2.0</label>
+        <button class="btn" id="check-update">Check for Updates</button>
+      </div>
+    </div>
+
+    <div class="version">Garra Desktop v0.2.0</div>
+  </div>
+
+  <script>
+    'use strict';
+    const invoke = window.__TAURI__?.core?.invoke ?? (() => Promise.resolve());
+
+    // Check for updates button
+    document.getElementById('check-update')?.addEventListener('click', async () => {
+      const btn = document.getElementById('check-update');
+      btn.textContent = 'Checking...';
+      btn.disabled = true;
+      try {
+        const info = await invoke('check_for_updates');
+        if (info?.available) {
+          btn.textContent = 'Update to v' + info.version;
+          btn.onclick = async () => {
+            btn.textContent = 'Installing...';
+            btn.disabled = true;
+            try {
+              await invoke('install_update');
+              btn.textContent = 'Restart to finish';
+            } catch (e) {
+              btn.textContent = 'Install failed';
+            }
+          };
+        } else {
+          btn.textContent = 'Up to date!';
+          setTimeout(() => { btn.textContent = 'Check for Updates'; btn.disabled = false; }, 3000);
+        }
+      } catch (e) {
+        btn.textContent = 'Check failed';
+        setTimeout(() => { btn.textContent = 'Check for Updates'; btn.disabled = false; }, 3000);
+      }
+    });
+  </script>
+</body>
+</html>

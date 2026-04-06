@@ -1,0 +1,29 @@
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use este espaço para perguntas gerais, ideias e discussões sobre o GarraIA.
+        Para bugs, use [Issues](https://github.com/michelbr84/GarraRUST/issues/new?template=bug_report.md).
+
+  - type: textarea
+    id: body
+    attributes:
+      label: Sua pergunta ou ideia
+      description: Descreva o que você gostaria de discutir.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Categoria
+      options:
+        - Pergunta de uso
+        - Ideia de feature
+        - Discussão de arquitetura
+        - Compartilhando um projeto
+        - Outro
+    validations:
+      required: true

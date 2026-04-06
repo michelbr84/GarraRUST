@@ -443,19 +443,45 @@ impl AdminStore {
         resource_type: Option<&str>,
         action: Option<&str>,
     ) -> Vec<AuditEntry> {
+        self.list_audit_log_filtered(limit, offset, None, action, resource_type, None, None)
+    }
+
+    /// Extended audit-log query supporting all Phase-7.1 filter fields.
+    pub fn list_audit_log_filtered(
+        &self,
+        limit: usize,
+        offset: usize,
+        user_id: Option<&str>,
+        action: Option<&str>,
+        resource_type: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Vec<AuditEntry> {
         let mut sql = String::from(
             "SELECT id, timestamp, user_id, username, action, resource_type, resource_id, details, ip_address, outcome
              FROM audit_log WHERE 1=1",
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(rt) = resource_type {
-            sql.push_str(" AND resource_type = ?");
-            params_vec.push(Box::new(rt.to_string()));
+        if let Some(uid) = user_id {
+            sql.push_str(" AND user_id = ?");
+            params_vec.push(Box::new(uid.to_string()));
         }
         if let Some(a) = action {
             sql.push_str(" AND action = ?");
             params_vec.push(Box::new(a.to_string()));
+        }
+        if let Some(rt) = resource_type {
+            sql.push_str(" AND resource_type = ?");
+            params_vec.push(Box::new(rt.to_string()));
+        }
+        if let Some(f) = from {
+            sql.push_str(" AND timestamp >= ?");
+            params_vec.push(Box::new(f.to_string()));
+        }
+        if let Some(t) = to {
+            sql.push_str(" AND timestamp <= ?");
+            params_vec.push(Box::new(t.to_string()));
         }
 
         sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");

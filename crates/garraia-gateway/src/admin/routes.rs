@@ -42,6 +42,8 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
         .route("/api/users/{id}", delete(handlers::delete_user))
         .route("/api/danger-zone", post(handlers::danger_zone))
         .route("/api/audit-log", get(handlers::get_audit_log))
+        // Phase 7.1: additional audit endpoint alias (canonical path)
+        .route("/api/audit", get(handlers::get_audit_log))
         .route("/api/permissions", get(handlers::get_permissions_matrix))
         // ── Phase 2: Secrets ──
         .route(

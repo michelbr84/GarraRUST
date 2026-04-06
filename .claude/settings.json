@@ -53,7 +53,11 @@
       "Bash(python3 *)",
       "Bash(gh *)",
       "Bash(jq *)",
-      "Bash(flutter *)"
+      "Bash(flutter *)",
+      "Bash(dart *)",
+      "Bash(npx *)",
+      "Bash(npm *)",
+      "Bash(openclaw *)"
     ],
     "deny": [
       "Bash(rm -rf /*)",

@@ -4,8 +4,13 @@ import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
+import '../services/offline_queue.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/mascot_widget.dart';
+import '../widgets/queue_status_indicator.dart';
+import '../widgets/scroll_to_bottom_button.dart';
+import '../widgets/typing_indicator.dart';
+import '../widgets/voice_input_widget.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -14,16 +19,44 @@ class ChatScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends ConsumerState<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   bool _sending = false;
+  bool _showScrollToBottom = false;
+  bool _showVoiceInput = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scrollCtrl.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Flush offline queue on app resume
+      ref.read(offlineQueueProvider).onAppResume();
+    }
+  }
+
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final isAtBottom = _scrollCtrl.position.pixels >=
+        _scrollCtrl.position.maxScrollExtent - 100;
+    if (_showScrollToBottom == isAtBottom) {
+      setState(() => _showScrollToBottom = !isAtBottom);
+    }
   }
 
   Future<void> _send() async {
@@ -36,9 +69,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _scrollToBottom();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro: $e')),
-        );
+        // If sending failed due to network, queue it offline
+        final queueStatus = ref.read(queueStatusProvider);
+        if (!queueStatus.isOnline) {
+          await ref.read(offlineQueueProvider).enqueue(text);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Mensagem salva para envio quando online'),
+              ),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Erro: $e')),
+            );
+          }
+        }
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -57,17 +105,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
+  Future<String> _handleAudioRecorded(String audioPath) async {
+    // TODO: Send audio to backend /voice endpoint
+    // For now, return a placeholder transcription
+    return 'Transcricao de audio nao disponivel ainda';
+  }
+
   @override
   Widget build(BuildContext context) {
     final messages = ref.watch(chatMessagesProvider);
     final mascotState = ref.watch(mascotStateProvider);
     final user = ref.watch(authStateProvider).valueOrNull;
+    final isThinking = mascotState == MascotState.thinking;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Garra'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MascotWidget(size: 32, state: mascotState),
+            const SizedBox(width: 10),
+            const Text('Garra'),
+          ],
+        ),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.devices_rounded),
+            tooltip: 'Parear dispositivos',
+            onPressed: () => context.push('/pair'),
+          ),
           PopupMenuButton<String>(
             onSelected: (v) async {
               if (v == 'logout') {
@@ -92,43 +159,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
-          // Mascot header
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Column(
-              children: [
-                MascotWidget(size: 80, state: mascotState),
-                const SizedBox(height: 4),
-                Text(
-                  user?.email ?? '',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: 0.5),
-                      ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
+          // Offline queue status indicator
+          const QueueStatusIndicator(),
 
           // Message list
           Expanded(
             child: messages.when(
               loading: () => const Center(child: CircularProgressIndicator()),
               error: (e, _) => Center(child: Text('Erro ao carregar: $e')),
-              data: (msgs) => msgs.isEmpty
+              data: (msgs) => msgs.isEmpty && !isThinking
                   ? _EmptyChat(onPrompt: (p) {
                       _inputCtrl.text = p;
                       _send();
                     })
-                  : ListView.builder(
-                      controller: _scrollCtrl,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      itemCount: msgs.length,
-                      itemBuilder: (_, i) => ChatBubble(message: msgs[i]),
+                  : Stack(
+                      children: [
+                        ListView.builder(
+                          controller: _scrollCtrl,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          itemCount: msgs.length + (isThinking ? 1 : 0),
+                          itemBuilder: (_, i) {
+                            if (i == msgs.length && isThinking) {
+                              return const TypingIndicator();
+                            }
+                            return ChatBubble(message: msgs[i]);
+                          },
+                        ),
+                        if (_showScrollToBottom)
+                          ScrollToBottomButton(
+                            onPressed: _scrollToBottom,
+                          ),
+                      ],
                     ),
             ),
           ),
@@ -138,6 +200,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             controller: _inputCtrl,
             sending: _sending,
             onSend: _send,
+            showVoiceInput: _showVoiceInput,
+            onToggleVoice: () {
+              setState(() => _showVoiceInput = !_showVoiceInput);
+            },
+            onAudioRecorded: _handleAudioRecorded,
+            onTranscription: (text) {
+              _inputCtrl.text = text;
+              setState(() => _showVoiceInput = false);
+            },
           ),
         ],
       ),
@@ -149,35 +220,68 @@ class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
+  final bool showVoiceInput;
+  final VoidCallback onToggleVoice;
+  final Future<String> Function(String) onAudioRecorded;
+  final void Function(String) onTranscription;
 
   const _InputBar({
     required this.controller,
     required this.sending,
     required this.onSend,
+    required this.showVoiceInput,
+    required this.onToggleVoice,
+    required this.onAudioRecorded,
+    required this.onTranscription,
   });
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                maxLines: 4,
-                minLines: 1,
-                textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
-                  hintText: 'Digite uma mensagem...',
-                ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Divider(height: 1),
+          if (showVoiceInput)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: VoiceInputWidget(
+                onAudioRecorded: onAudioRecorded,
+                onTranscription: onTranscription,
               ),
             ),
-            const SizedBox(width: 8),
-            _SendButton(sending: sending, onSend: onSend),
-          ],
-        ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: Row(
+              children: [
+                // Voice toggle button
+                IconButton(
+                  icon: Icon(
+                    showVoiceInput
+                        ? Icons.keyboard_rounded
+                        : Icons.mic_rounded,
+                    size: 22,
+                  ),
+                  onPressed: onToggleVoice,
+                  tooltip: showVoiceInput ? 'Teclado' : 'Voz',
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    maxLines: 4,
+                    minLines: 1,
+                    textInputAction: TextInputAction.newline,
+                    decoration: const InputDecoration(
+                      hintText: 'Digite uma mensagem...',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _SendButton(sending: sending, onSend: onSend),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -219,12 +323,12 @@ class _EmptyChat extends StatelessWidget {
   const _EmptyChat({required this.onPrompt});
 
   static const _suggestions = [
-    '🐾 Quem é você, Garra?',
-    '💡 Me conta uma curiosidade insana',
-    '📋 Me ajuda a organizar meu dia',
-    '🎯 Qual é seu superpoder?',
-    '😄 Me conta uma piada',
-    '🚀 O que você consegue fazer?',
+    'Quem e voce, Garra?',
+    'Me conta uma curiosidade insana',
+    'Me ajuda a organizar meu dia',
+    'Qual e seu superpoder?',
+    'Me conta uma piada',
+    'O que voce consegue fazer?',
   ];
 
   @override
@@ -235,8 +339,10 @@ class _EmptyChat extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          const MascotWidget(size: 80),
+          const SizedBox(height: 16),
           Text(
-            'Oi! Eu sou o Garra. 🐾',
+            'Oi! Eu sou o Garra.',
             textAlign: TextAlign.center,
             style: Theme.of(context)
                 .textTheme
@@ -264,9 +370,9 @@ class _EmptyChat extends StatelessWidget {
                   ),
                 )
                 .toList(),
-            ),
-          ],
-        ),
+          ),
+        ],
+      ),
     );
   }
 }

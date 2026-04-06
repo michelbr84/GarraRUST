@@ -1,0 +1,18 @@
+apiVersion: v2
+name: garraia
+description: GarraIA — Multi-channel, multi-provider LLM orchestration gateway
+type: application
+version: 0.1.0
+appVersion: "0.3.0"
+maintainers:
+  - name: michelbr84
+    url: https://github.com/michelbr84
+home: https://github.com/michelbr84/GarraRUST
+sources:
+  - https://github.com/michelbr84/GarraRUST
+keywords:
+  - ai
+  - llm
+  - gateway
+  - rust
+  - axum

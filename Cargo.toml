@@ -36,7 +36,7 @@ tokio-stream = "0.1"
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate", "multipart"], default-features = false }
 hyper = "1"
 
 # Serialization

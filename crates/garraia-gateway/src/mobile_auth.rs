@@ -337,6 +337,11 @@ fn jwt_secret() -> String {
     })
 }
 
+/// Public re-export so that oauth.rs and totp.rs can issue tokens without duplicating logic.
+pub fn issue_jwt_pub(user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    issue_jwt(user_id, email)
+}
+
 fn issue_jwt(user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

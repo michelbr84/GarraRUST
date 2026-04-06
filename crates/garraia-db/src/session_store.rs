@@ -220,13 +220,77 @@ impl SessionStore {
                     email       TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     salt        TEXT NOT NULL,
-                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    totp_secret TEXT
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_users_email
-                    ON mobile_users(email);",
+                    ON mobile_users(email);
+
+                -- Phase 2.1: Projects table
+                CREATE TABLE IF NOT EXISTS projects (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    path        TEXT NOT NULL,
+                    description TEXT,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT,
+                    owner_id    TEXT,
+                    settings    TEXT DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_projects_owner
+                    ON projects(owner_id);
+
+                -- Phase 2.3: Project files for RAG indexing
+                CREATE TABLE IF NOT EXISTS project_files (
+                    id          TEXT PRIMARY KEY,
+                    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    file_path   TEXT NOT NULL,
+                    content_hash TEXT,
+                    embedding   BLOB,
+                    indexed_at  TEXT,
+                    file_size   INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_files_project
+                    ON project_files(project_id);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_project_path
+                    ON project_files(project_id, file_path);
+
+                -- Phase 2.4: Project templates
+                CREATE TABLE IF NOT EXISTS project_templates (
+                    id              TEXT PRIMARY KEY,
+                    name            TEXT NOT NULL,
+                    description     TEXT,
+                    system_prompt   TEXT,
+                    tools_enabled   TEXT,
+                    default_mode    TEXT,
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                -- Phase 7.4: GDPR data retention tracking
+                CREATE TABLE IF NOT EXISTS data_retention (
+                    id          TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    entity_id   TEXT NOT NULL,
+                    expires_at  TEXT NOT NULL,
+                    deleted_at  TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_data_retention_entity
+                    ON data_retention(entity_type, entity_id);
+
+                CREATE INDEX IF NOT EXISTS idx_data_retention_expires
+                    ON data_retention(expires_at) WHERE deleted_at IS NULL;",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
+
+        // Phase 2.1: add project_id column to sessions (nullable FK)
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id);",
+        );
 
         // GAR-202: Migrate legacy telegram-{chat_id} session IDs to chat_session_keys.
         let _ = self.conn.execute_batch(
@@ -1113,6 +1177,50 @@ impl SessionStore {
             )
             .optional()
             .map_err(|e| Error::Database(format!("find_mobile_user_by_id: {e}")))
+    }
+
+    // ── TOTP secret management (Phase 7.1) ──────────────────────────────────
+
+    /// Store (or replace) a TOTP secret for the given mobile user.
+    /// The secret should be stored encrypted by the caller in production;
+    /// here we store the base32-encoded value and rely on the vault for
+    /// at-rest encryption of the DB file.
+    pub fn set_mobile_user_totp_secret(&self, user_id: &str, secret: &str) -> Result<()> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE mobile_users SET totp_secret = ?1 WHERE id = ?2",
+                params![secret, user_id],
+            )
+            .map_err(|e| Error::Database(format!("set_totp_secret: {e}")))?;
+        if affected == 0 {
+            return Err(Error::Database("user not found".into()));
+        }
+        Ok(())
+    }
+
+    /// Retrieve the TOTP secret for a mobile user. Returns `None` if not set.
+    pub fn get_mobile_user_totp_secret(&self, user_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT totp_secret FROM mobile_users WHERE id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())
+            .map_err(|e| Error::Database(format!("get_totp_secret: {e}")))
+    }
+
+    /// Remove the TOTP secret from a mobile user (disables 2FA).
+    pub fn clear_mobile_user_totp_secret(&self, user_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE mobile_users SET totp_secret = NULL WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| Error::Database(format!("clear_totp_secret: {e}")))?;
+        Ok(())
     }
 }
 
