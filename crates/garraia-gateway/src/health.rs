@@ -281,8 +281,8 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
             // Log any status changes
             let prev = cache.read().await;
             for r in &results {
-                if let Some(old) = prev.iter().find(|o| o.name == r.name) {
-                    if old.ok != r.ok {
+                if let Some(old) = prev.iter().find(|o| o.name == r.name)
+                    && old.ok != r.ok {
                         if r.ok {
                             info!(provider = %r.name, "🟢 provider recovered");
                         } else {
@@ -293,7 +293,6 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
                             );
                         }
                     }
-                }
             }
             drop(prev);
 

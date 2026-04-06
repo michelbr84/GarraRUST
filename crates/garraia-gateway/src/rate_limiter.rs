@@ -266,23 +266,20 @@ pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
     }
 
     // Use first 8 chars of JWT subject as key (if present) — never the full token
-    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = auth.strip_prefix("Bearer ") {
+    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && let Some(token) = auth.strip_prefix("Bearer ") {
             // Use token prefix only — enough to identify the key space
             let prefix = &token[..token.len().min(8)];
             return format!("jwt:{prefix}");
         }
-    }
 
     // Fall back to X-Forwarded-For
     if let Some(forwarded) = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-    {
-        if let Some(first_ip) = forwarded.split(',').next() {
+        && let Some(first_ip) = forwarded.split(',').next() {
             return format!("ip:{}", first_ip.trim());
         }
-    }
 
     "ip:unknown".to_string()
 }

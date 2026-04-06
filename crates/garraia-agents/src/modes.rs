@@ -30,6 +30,7 @@ use std::collections::HashMap;
 /// Cada modo define uma estratégia diferente de comportamento.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AgentMode {
     /// Decide automaticamente o modo baseado no conteúdo da mensagem
     Auto,
@@ -40,6 +41,7 @@ pub enum AgentMode {
     /// Modo de implementação ativa - permite escrita
     Code,
     /// Modo de perguntas - apenas texto (padrão Telegram)
+    #[default]
     Ask,
     /// Modo de debug - análise de erros
     Debug,
@@ -53,6 +55,7 @@ pub enum AgentMode {
 
 impl AgentMode {
     /// Parse string para AgentMode (case-insensitive)
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" => Some(Self::Auto),
@@ -99,12 +102,6 @@ impl AgentMode {
     }
 }
 
-impl Default for AgentMode {
-    fn default() -> Self {
-        // Telegram default é "ask", outros canais podem usar "auto"
-        Self::Ask
-    }
-}
 
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -606,27 +603,23 @@ impl ModeEngine {
         channel: Option<&str>,
     ) -> AgentMode {
         // 1. Header tem maior precedência
-        if let Some(mode_str) = header_mode {
-            if let Some(mode) = AgentMode::from_str(mode_str) {
+        if let Some(mode_str) = header_mode
+            && let Some(mode) = AgentMode::from_str(mode_str) {
                 return mode;
             }
-        }
 
         // 2. Modo salvo na sessão (via comando /mode)
-        if let Some(mode_str) = session_mode {
-            if let Some(mode) = AgentMode::from_str(mode_str) {
+        if let Some(mode_str) = session_mode
+            && let Some(mode) = AgentMode::from_str(mode_str) {
                 return mode;
             }
-        }
 
         // 3. Default por canal
-        if let Some(channel_str) = channel {
-            if let Some(default_mode) = self.channel_defaults.get(channel_str.to_lowercase().as_str()) {
-                if let Some(mode) = AgentMode::from_str(default_mode) {
+        if let Some(channel_str) = channel
+            && let Some(default_mode) = self.channel_defaults.get(channel_str.to_lowercase().as_str())
+                && let Some(mode) = AgentMode::from_str(default_mode) {
                     return mode;
                 }
-            }
-        }
 
         // 4. Default global
         AgentMode::default()
@@ -738,11 +731,10 @@ impl ModeEngine {
             return prompt.to_string();
         }
 
-        if let Some(profile) = self.get_profile(mode.as_str()) {
-            if let Some(template) = &profile.system_prompt_template {
+        if let Some(profile) = self.get_profile(mode.as_str())
+            && let Some(template) = &profile.system_prompt_template {
                 return template.clone();
             }
-        }
 
         // Fallback para ask
         "You are a helpful AI assistant.".to_string()

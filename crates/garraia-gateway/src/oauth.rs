@@ -35,6 +35,7 @@ pub enum OAuthProvider {
 }
 
 impl OAuthProvider {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "google" => Some(OAuthProvider::Google),
@@ -55,7 +56,7 @@ impl OAuthProvider {
             OAuthProvider::Oidc => config
                 .authorization_endpoint
                 .clone()
-                .unwrap_or_else(|| "".to_string()),
+                .unwrap_or_default(),
         }
     }
 
@@ -70,7 +71,7 @@ impl OAuthProvider {
             OAuthProvider::Oidc => config
                 .token_endpoint
                 .clone()
-                .unwrap_or_else(|| "".to_string()),
+                .unwrap_or_default(),
         }
     }
 
@@ -170,12 +171,25 @@ impl OAuthConfig {
 // ── OAuth state store (in-memory, short-lived) ────────────────────────────────
 
 /// Minimal in-memory CSRF state store for OAuth flows.
-/// Each state value maps to the originating provider name.
+/// Each state value maps to the originating provider name and creation time.
 /// In a production cluster this should be backed by Redis / DB.
+///
+/// Entries older than `TTL` (10 minutes) are automatically evicted during
+/// validation to prevent unbounded memory growth from abandoned flows.
 #[derive(Debug, Default)]
 pub struct OAuthStateStore {
-    pending: std::sync::Mutex<HashMap<String, String>>,
+    pending: std::sync::Mutex<HashMap<String, OAuthPendingEntry>>,
 }
+
+/// A pending OAuth state entry with creation timestamp for TTL enforcement.
+#[derive(Debug, Clone)]
+struct OAuthPendingEntry {
+    provider: String,
+    created_at: std::time::Instant,
+}
+
+/// Maximum age for an OAuth state token (10 minutes).
+const OAUTH_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl OAuthStateStore {
     pub fn new() -> Self {
@@ -185,19 +199,30 @@ impl OAuthStateStore {
     /// Generate and store a new CSRF state token. Returns the token.
     pub fn create(&self, provider: &str) -> String {
         let token = Uuid::new_v4().to_string().replace('-', "");
+        let entry = OAuthPendingEntry {
+            provider: provider.to_string(),
+            created_at: std::time::Instant::now(),
+        };
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(token.clone(), provider.to_string());
+            .insert(token.clone(), entry);
         token
     }
 
     /// Validate and consume a state token. Returns the provider name if valid.
+    ///
+    /// Also evicts any entries older than `OAUTH_STATE_TTL` to prevent
+    /// unbounded growth from abandoned OAuth flows.
     pub fn validate_and_consume(&self, token: &str) -> Option<String> {
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(token)
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Evict expired entries
+        let now = std::time::Instant::now();
+        pending.retain(|_, entry| now.duration_since(entry.created_at) < OAUTH_STATE_TTL);
+
+        // Consume the requested token (if it survived eviction)
+        pending.remove(token).map(|entry| entry.provider)
     }
 }
 

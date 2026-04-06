@@ -309,8 +309,10 @@ impl ChatSessionManager {
 
 /// Strategy for resolving session ID from incoming requests
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum SessionKeyStrategy {
     /// Use X-Session-Id header
+    #[default]
     Header,
     /// Use metadata.session_id in request body
     BodyMetadata,
@@ -320,11 +322,6 @@ pub enum SessionKeyStrategy {
     CreateNew,
 }
 
-impl Default for SessionKeyStrategy {
-    fn default() -> Self {
-        SessionKeyStrategy::Header
-    }
-}
 
 /// Session resolver configuration
 #[derive(Debug, Clone)]

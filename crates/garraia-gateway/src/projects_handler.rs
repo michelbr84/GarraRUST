@@ -190,8 +190,8 @@ async fn collect_project_files(dir: &std::path::Path) -> std::result::Result<Vec
         let mut ignored: Vec<String> = Vec::new();
 
         // Parse .garraignore patterns (simple line-based glob matching).
-        if ignore_path.is_file() {
-            if let Ok(contents) = std::fs::read_to_string(&ignore_path) {
+        if ignore_path.is_file()
+            && let Ok(contents) = std::fs::read_to_string(&ignore_path) {
                 for line in contents.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -200,7 +200,6 @@ async fn collect_project_files(dir: &std::path::Path) -> std::result::Result<Vec
                     ignored.push(trimmed.to_string());
                 }
             }
-        }
 
         let mut files = Vec::new();
         collect_dir_recursive(&dir, &dir, &ignored, &mut files)?;
@@ -336,13 +335,12 @@ pub async fn create_session_with_project(
         }
 
         // If project_id is provided, look up the project and populate fields from it.
-        if let Some(ref pid) = body.project_id {
-            if let Some(project) = PROJECTS.get(pid) {
+        if let Some(ref pid) = body.project_id
+            && let Some(project) = PROJECTS.get(pid) {
                 session.project_id = Some(pid.clone());
                 session.project_name = Some(project.name.clone());
                 session.working_dir = Some(project.path.clone());
             }
-        }
 
         // Explicit overrides take precedence over project lookups.
         if let Some(ref wd) = body.working_dir {

@@ -84,8 +84,8 @@ impl ProjectToolContext {
 
         // When sandboxing with a working directory, ensure the resolved path
         // stays within the working directory.
-        if self.sandbox_enabled {
-            if let Some(ref wd) = self.working_dir {
+        if self.sandbox_enabled
+            && let Some(ref wd) = self.working_dir {
                 // Canonicalize both paths for comparison. If the file doesn't
                 // exist yet (e.g. write target), canonicalize the parent
                 // directory instead.
@@ -130,7 +130,6 @@ impl ProjectToolContext {
                     )));
                 }
             }
-        }
 
         Ok(())
     }

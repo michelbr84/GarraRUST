@@ -303,15 +303,12 @@ class _WaveformPainter extends CustomPainter {
 /// Helper to use AnimatedWidget with builder pattern for voice input.
 class _VoiceAnimatedBuilder extends AnimatedWidget {
   final Widget Function(BuildContext context, Widget? child) builder;
-  final Widget? child;
 
   const _VoiceAnimatedBuilder({
-    super.key,
     required Animation<double> animation,
     required this.builder,
-    this.child,
   }) : super(listenable: animation);
 
   @override
-  Widget build(BuildContext context) => builder(context, child);
+  Widget build(BuildContext context) => builder(context, null);
 }

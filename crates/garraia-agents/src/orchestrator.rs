@@ -52,8 +52,10 @@ impl OrchestratorLimits {
 
 /// Status de um step durante a execução
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum StepStatus {
     /// Step pendente
+    #[default]
     Pending,
     /// Step em execução
     Running,
@@ -67,11 +69,6 @@ pub enum StepStatus {
     Validated,
 }
 
-impl Default for StepStatus {
-    fn default() -> Self {
-        StepStatus::Pending
-    }
-}
 
 /// Uma única etapa do plano de execução
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,25 +513,23 @@ Apenas retorne o JSON, sem explicações."#,
         // Validações simples por padrão
         let validation_lower = validation.to_lowercase();
         
-        if validation_lower.contains("não vazio") || validation_lower.contains("not empty") {
-            if result.trim().is_empty() {
+        if (validation_lower.contains("não vazio") || validation_lower.contains("not empty"))
+            && result.trim().is_empty() {
                 return ValidationResult {
                     passed: false,
                     message: "Result is empty but expected non-empty".to_string(),
                     should_retry: true,
                 };
             }
-        }
         
-        if validation_lower.contains("sucesso") || validation_lower.contains("success") {
-            if result.to_lowercase().contains("erro") || result.to_lowercase().contains("error") {
+        if (validation_lower.contains("sucesso") || validation_lower.contains("success"))
+            && (result.to_lowercase().contains("erro") || result.to_lowercase().contains("error")) {
                 return ValidationResult {
                     passed: false,
                     message: "Result contains error".to_string(),
                     should_retry: true,
                 };
             }
-        }
 
         // Verificar indicadores de falha comuns
         let failure_indicators = ["failed", "error:", "exception", "panic", "não encontrado", "not found"];
@@ -696,7 +691,7 @@ fn extract_text(content: &[ContentBlock]) -> String {
 /// Extrai JSON de texto que pode conter código markdown
 fn extract_json_from_text(text: &str) -> Option<String> {
     // Try direct parse first
-    if let Ok(_) = serde_json::from_str::<serde_json::Value>(text) {
+    if serde_json::from_str::<serde_json::Value>(text).is_ok() {
         return Some(text.to_string());
     }
 

@@ -37,15 +37,14 @@ pub async fn auto_classify(
     }
 
     // Heuristic was ambiguous — try LLM if enabled and a runtime is available.
-    if llm_enabled {
-        if let Some(rt) = runtime {
+    if llm_enabled
+        && let Some(rt) = runtime {
             let mode = classify_with_llm(text, rt, model_override).await;
             if mode.is_some() {
                 debug!(mode = ?mode, "auto_router: LLM classify match");
                 return mode;
             }
         }
-    }
 
     None
 }

@@ -370,6 +370,7 @@ impl Default for TypeTimeout {
 ///     use_gitignore: true
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct FsConfig {
     #[serde(default)]
     pub glob: FsGlobConfig,
@@ -377,14 +378,6 @@ pub struct FsConfig {
     pub ignore: FsIgnoreConfig,
 }
 
-impl Default for FsConfig {
-    fn default() -> Self {
-        Self {
-            glob: FsGlobConfig::default(),
-            ignore: FsIgnoreConfig::default(),
-        }
-    }
-}
 
 /// Glob matching configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

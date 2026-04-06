@@ -64,7 +64,7 @@ impl ListDirTool {
 
     /// Check if a directory should be skipped
     fn should_skip(name: &str) -> bool {
-        SKIP_DIRS.iter().any(|&skip| name == skip)
+        SKIP_DIRS.contains(&name)
     }
 
     /// Recursively list directory contents

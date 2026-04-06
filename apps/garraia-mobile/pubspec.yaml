@@ -48,8 +48,7 @@ dependencies:
   # Network detection
   connectivity_plus: ^6.1.1
 
-  # Push notifications (Firebase stub)
-  firebase_messaging: ^15.1.6
+  # Local notifications
   flutter_local_notifications: ^18.0.1
 
   # WebSocket for sync

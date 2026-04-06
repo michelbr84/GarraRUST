@@ -7,10 +7,12 @@ target/
 dist/
 release/
 *.wasm
+*.exe
 
 # ─── Dependências e lock files ──────────────────────────────────────────────
 # Cargo.lock é grande e gerado automaticamente; não útil para análise do agente
 Cargo.lock
+node_modules/
 
 # ─── Dados de runtime ───────────────────────────────────────────────────────
 *.db
@@ -90,7 +92,7 @@ apps/garraia-mobile/.flutter-plugins-dependencies
 crates/garraia-desktop/src-tauri/gen/
 crates/garraia-desktop/src-tauri/target/
 crates/garraia-desktop/src-tauri/WixTools/
-crates/garraia-desktop/node_modules/
+# node_modules/ covered by global rule above
 # Sprite sheet PNG — binário gerado, não tem valor de busca textual
 crates/garraia-desktop/ui/assets/parrot-sprite.png
 

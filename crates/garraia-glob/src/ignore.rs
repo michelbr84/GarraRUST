@@ -147,11 +147,9 @@ impl IgnoreFile {
                     raw_negated.push(neg.to_string());
                     negated_compiled.push(compiled);
                 }
-            } else {
-                if let Some(compiled) = compile_pair(trimmed, &config) {
-                    raw_patterns.push(trimmed.to_string());
-                    positive.push(compiled);
-                }
+            } else if let Some(compiled) = compile_pair(trimmed, &config) {
+                raw_patterns.push(trimmed.to_string());
+                positive.push(compiled);
             }
         }
 

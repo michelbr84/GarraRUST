@@ -130,10 +130,10 @@ impl RunTestsTool {
                 // Look for "test result:" line
                 let mut summary = String::new();
                 for line in output.lines() {
-                    if line.contains("test result:") {
-                        summary.push_str(line.trim());
-                        summary.push('\n');
-                    } else if line.contains("FAILED") || line.contains("failures:") {
+                    if line.contains("test result:")
+                        || line.contains("FAILED")
+                        || line.contains("failures:")
+                    {
                         summary.push_str(line.trim());
                         summary.push('\n');
                     }

@@ -8,7 +8,6 @@ use super::{CommandContext, CommandError, CommandResult, Role, SlashCommand};
 ///
 /// Commands are registered once at startup and looked up by name
 /// when a user sends a message starting with `/`.
-
 pub struct ClosureCommand<F> {
     name: &'static str,
     desc: &'static str,

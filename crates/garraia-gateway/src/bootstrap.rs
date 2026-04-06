@@ -734,7 +734,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                 path = %facts_path.display(),
                                 "facts.json is not a JSON object, skipping — expected {{ \"nome\": ..., \"sobre\": ... }}"
                             );
-                        } else if facts.as_object().map_or(true, |o| o.is_empty()) {
+                        } else if facts.as_object().is_none_or(|o| o.is_empty()) {
                             warn!(
                                 path = %facts_path.display(),
                                 "facts.json is an empty object {{}}, skipping injection"
@@ -744,55 +744,47 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             let mut facts_context = String::from("\n\n# Fatos do Usuário\n");
 
                             // Nome
-                            if let Some(nome) = facts.get("nome").and_then(|v| v.as_str()) {
-                                if !nome.is_empty() {
+                            if let Some(nome) = facts.get("nome").and_then(|v| v.as_str())
+                                && !nome.is_empty() {
                                     facts_context.push_str(&format!("Nome: {}\n", nome));
                                 }
-                            }
                             // Apelido
-                            if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str()) {
-                                if !apelido.is_empty() {
+                            if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str())
+                                && !apelido.is_empty() {
                                     facts_context.push_str(&format!("Apelido: {}\n", apelido));
                                 }
-                            }
                             // Sobre
-                            if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str()) {
-                                if !sobre.is_empty() {
+                            if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str())
+                                && !sobre.is_empty() {
                                     facts_context.push_str(&format!("Sobre: {}\n", sobre));
                                 }
-                            }
                             // Empresa
-                            if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str()) {
-                                if !empresa.is_empty() {
+                            if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str())
+                                && !empresa.is_empty() {
                                     facts_context.push_str(&format!("Empresa: {}\n", empresa));
                                 }
-                            }
                             // Cargo
-                            if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str()) {
-                                if !cargo.is_empty() {
+                            if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str())
+                                && !cargo.is_empty() {
                                     facts_context.push_str(&format!("Cargo: {}\n", cargo));
                                 }
-                            }
                             // Localização
                             if let Some(local) =
                                 facts.get("localizacao").and_then(|v| v.as_object())
                             {
                                 let mut parts = Vec::new();
-                                if let Some(v) = local.get("cidade").and_then(|v| v.as_str()) {
-                                    if !v.is_empty() {
+                                if let Some(v) = local.get("cidade").and_then(|v| v.as_str())
+                                    && !v.is_empty() {
                                         parts.push(v.to_string());
                                     }
-                                }
-                                if let Some(v) = local.get("estado").and_then(|v| v.as_str()) {
-                                    if !v.is_empty() {
+                                if let Some(v) = local.get("estado").and_then(|v| v.as_str())
+                                    && !v.is_empty() {
                                         parts.push(v.to_string());
                                     }
-                                }
-                                if let Some(v) = local.get("pais").and_then(|v| v.as_str()) {
-                                    if !v.is_empty() {
+                                if let Some(v) = local.get("pais").and_then(|v| v.as_str())
+                                    && !v.is_empty() {
                                         parts.push(v.to_string());
                                     }
-                                }
                                 if !parts.is_empty() {
                                     facts_context
                                         .push_str(&format!("Localização: {}\n", parts.join(", ")));
@@ -923,8 +915,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             // Fatos importantes
                             if let Some(fatos) =
                                 facts.get("fatos_importantes").and_then(|v| v.as_array())
-                            {
-                                if !fatos.is_empty() {
+                                && !fatos.is_empty() {
                                     facts_context.push_str("Fatos importantes:\n");
                                     for fato in fatos {
                                         if let Some(f) = fato.as_str() {
@@ -932,7 +923,6 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                                         }
                                     }
                                 }
-                            }
 
                             // Inject facts into system prompt
                             let new_prompt = match runtime.system_prompt() {

@@ -184,8 +184,8 @@ impl Channel for TelegramChannel {
                                         "telegram voice message from {} [uid={}] (chat {})",
                                         user_name, user_id, chat_id_raw
                                     );
-                                    if let Err(e) = voice_handler(bot.clone(), msg).await {
-                                        if e != "__blocked__" {
+                                    if let Err(e) = voice_handler(bot.clone(), msg).await
+                                        && e != "__blocked__" {
                                             warn!("voice handler error for chat {}: {e}", chat_id_raw);
                                             let _ = bot
                                                 .send_message(
@@ -194,7 +194,6 @@ impl Channel for TelegramChannel {
                                                 )
                                                 .await;
                                         }
-                                    }
                                 } else {
                                     info!(
                                         "telegram: voice message from {} ignored (voice handler not configured)",

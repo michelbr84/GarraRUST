@@ -29,22 +29,20 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     if let Some(cookie_hdr) = headers.get("cookie").and_then(|v| v.to_str().ok()) {
         for part in cookie_hdr.split(';') {
             let part = part.trim();
-            if let Some(val) = part.strip_prefix("garraia_session=") {
-                if !val.is_empty() {
+            if let Some(val) = part.strip_prefix("garraia_session=")
+                && !val.is_empty() {
                     return Some(val.to_string());
                 }
-            }
         }
     }
     // 2. Authorization: Bearer <token>
-    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(t) = auth.strip_prefix("Bearer ") {
+    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && let Some(t) = auth.strip_prefix("Bearer ") {
             let t = t.trim();
             if !t.is_empty() {
                 return Some(t.to_string());
             }
         }
-    }
     // 3. X-Session-Key: <token>
     if let Some(key) = headers.get("x-session-key").and_then(|v| v.to_str().ok()) {
         let key = key.trim();

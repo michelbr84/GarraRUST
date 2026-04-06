@@ -79,8 +79,8 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 | | **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
 | | **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
 | | **Agendamento** | Cron, intervalo, único | Sim | Não |
-| | **Roteamento multi-agente** | Planejado (#108) | Sim (agentId) | Não |
-| | **Orquestração de sessões** | Planejado (#108) | Sim | Não |
+| | **Roteamento multi-agente** | Sim (Priority Router) | Sim (agentId) | Não |
+| | **Orquestração de sessões** | Sim (Session Continuity) | Sim | Não |
 | | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
 | | **Canais** | 5 | 6+ | 4 |
 | | **Provedores de LLM** | 100+ | 10+ | 22+ |

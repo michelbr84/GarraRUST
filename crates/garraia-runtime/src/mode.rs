@@ -8,6 +8,7 @@ use std::collections::HashMap;
 /// Modos de execução disponíveis no GarraIA
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AgentMode {
     /// Decide automaticamente baseado no contexto
     Auto,
@@ -18,6 +19,7 @@ pub enum AgentMode {
     /// Desenvolvimento e implementação
     Code,
     /// Consulta e explicação (padrão para Telegram)
+    #[default]
     Ask,
     /// Debugging e análise de erros
     Debug,
@@ -29,11 +31,6 @@ pub enum AgentMode {
     Edit,
 }
 
-impl Default for AgentMode {
-    fn default() -> Self {
-        AgentMode::Ask // Padrão seguro para Telegram - não quebra comportamento atual
-    }
-}
 
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,6 +69,7 @@ impl std::str::FromStr for AgentMode {
 
 /// Políticas de tools por modo
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ToolPolicy {
     /// Tools explicitamente permitidas
     pub allowed: Vec<String>,
@@ -83,16 +81,6 @@ pub struct ToolPolicy {
     pub required: Option<String>,
 }
 
-impl Default for ToolPolicy {
-    fn default() -> Self {
-        Self {
-            allowed: vec![],
-            denied: vec![],
-            read_only: vec![],
-            required: None,
-        }
-    }
-}
 
 /// Parâmetros LLM padrão por modo
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
