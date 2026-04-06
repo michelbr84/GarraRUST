@@ -48,6 +48,9 @@
     "issues.json",
     "package-lock.json",
     "**/*.min.js",
-    "**/*.min.css"
+    "**/*.min.css",
+    "docs/roadmap.md",
+    "docs/roadmap-strategy.md",
+    ".claude/worktrees/**"
   ]
 }

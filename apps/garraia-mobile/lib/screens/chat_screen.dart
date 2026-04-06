@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
+import '../services/api_service.dart';
 import '../services/offline_queue.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/mascot_widget.dart';
@@ -106,9 +107,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Future<String> _handleAudioRecorded(String audioPath) async {
-    // TODO: Send audio to backend /voice endpoint
-    // For now, return a placeholder transcription
-    return 'Transcricao de audio nao disponivel ainda';
+    try {
+      final api = ref.read(apiServiceProvider);
+      return await api.transcribeAudio(audioPath);
+    } catch (_) {
+      return 'Erro ao transcrever audio';
+    }
   }
 
   @override
