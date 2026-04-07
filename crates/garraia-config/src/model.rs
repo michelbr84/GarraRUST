@@ -437,6 +437,14 @@ pub struct VoiceConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// TTS provider: "chatterbox", "hibiki", or "lmstudio" (default: "chatterbox").
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+
+    /// TTS model name (only used for lmstudio provider).
+    #[serde(default)]
+    pub tts_model: Option<String>,
+
     /// Base URL of the Chatterbox Multilingual TTS server.
     #[serde(default = "default_tts_endpoint")]
     pub tts_endpoint: String,
@@ -458,12 +466,18 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            tts_provider: default_tts_provider(),
+            tts_model: None,
             tts_endpoint: default_tts_endpoint(),
             stt_endpoint: default_stt_endpoint(),
             hibiki_endpoint: default_tts_endpoint(),
             language: default_voice_language(),
         }
     }
+}
+
+fn default_tts_provider() -> String {
+    "chatterbox".to_string()
 }
 
 fn default_transport() -> String {

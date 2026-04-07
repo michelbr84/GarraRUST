@@ -66,35 +66,79 @@ impl GatewayServer {
         // Register built-in commands (must be done before Telegram channels are created)
         crate::commands::register_commands(&mut state.command_registry.write().unwrap());
 
-        // Initialize Chatterbox TTS client if voice is enabled
+        // Initialize TTS client if voice is enabled (supports multiple providers)
         if state.config.voice.enabled {
-            let voice_client = garraia_voice::ChatterboxClient::new(
-                &state.config.voice.tts_endpoint,
-                &state.config.voice.language,
-            );
-            match voice_client.health_check().await {
-                Ok(true) => {
-                    info!(
-                        "🔊 Voice mode enabled — Chatterbox TTS at {}",
-                        state.config.voice.tts_endpoint
-                    );
-                    state.voice_client = Some(Arc::new(voice_client));
-                }
-                Ok(false) => {
-                    warn!(
-                        "⚠️  Voice mode requested but Chatterbox is not reachable at {}",
-                        state.config.voice.tts_endpoint
-                    );
-                    // Still store the client so it can be used once server comes up
-                    state.voice_client = Some(Arc::new(voice_client));
-                }
-                Err(e) => {
-                    warn!("⚠️  Voice mode health check failed: {e}");
-                    state.voice_client = Some(Arc::new(voice_client));
-                }
-            }
+            let tts_provider = state.config.voice.tts_provider.as_str();
+            let tts_endpoint = &state.config.voice.tts_endpoint;
+            let language = &state.config.voice.language;
 
-            // Initialize Whisper STT client
+            let tts_client: Arc<dyn garraia_voice::TtsSynthesizer> = match tts_provider {
+                "hibiki" => {
+                    let client = garraia_voice::HibikiClient::new(
+                        &state.config.voice.hibiki_endpoint,
+                        language,
+                    );
+                    info!(
+                        "🔊 Voice mode enabled — Hibiki TTS at {}",
+                        state.config.voice.hibiki_endpoint
+                    );
+                    Arc::new(client)
+                }
+                "lmstudio" => {
+                    let model = state
+                        .config
+                        .voice
+                        .tts_model
+                        .as_deref()
+                        .unwrap_or("vieneu-tts-v2-turbo");
+                    let client =
+                        garraia_voice::LmStudioTtsClient::new(tts_endpoint, model, language);
+                    match client.health_check().await {
+                        Ok(true) => {
+                            info!(
+                                "🔊 Voice mode enabled — LM Studio TTS at {} (model: {})",
+                                tts_endpoint, model
+                            );
+                        }
+                        Ok(false) => {
+                            warn!(
+                                "⚠️  Voice mode requested but LM Studio is not reachable at {}",
+                                tts_endpoint
+                            );
+                        }
+                        Err(e) => {
+                            warn!("⚠️  LM Studio TTS health check failed: {e}");
+                        }
+                    }
+                    Arc::new(client)
+                }
+                _ => {
+                    // Default: Chatterbox
+                    let client =
+                        garraia_voice::ChatterboxClient::new(tts_endpoint, language);
+                    match client.health_check().await {
+                        Ok(true) => {
+                            info!(
+                                "🔊 Voice mode enabled — Chatterbox TTS at {}",
+                                tts_endpoint
+                            );
+                        }
+                        Ok(false) => {
+                            warn!(
+                                "⚠️  Voice mode requested but Chatterbox is not reachable at {}",
+                                tts_endpoint
+                            );
+                        }
+                        Err(e) => {
+                            warn!("⚠️  Chatterbox TTS health check failed: {e}");
+                        }
+                    }
+                    Arc::new(client)
+                }
+            };
+            state.voice_client = Some(tts_client);
+
+            // Initialize Whisper STT client (works for both standalone Whisper and LM Studio)
             let stt_client = garraia_voice::WhisperClient::new(
                 &state.config.voice.stt_endpoint,
                 &state.config.voice.language,

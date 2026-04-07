@@ -112,7 +112,7 @@ pub async fn synthesize(
     let start = std::time::Instant::now();
 
     match voice_client
-        .synthesize(&body.text, body.language.as_deref())
+        .synthesize_bytes(&body.text, lang)
         .await
     {
         Ok(audio_bytes) => {

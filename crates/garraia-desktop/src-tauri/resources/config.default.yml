@@ -73,8 +73,32 @@ timeouts:
     default_secs: 60
 
 # ============================================
+# Voice (TTS / STT)
+# ============================================
+
+voice:
+  enabled: false
+  tts_provider: "lmstudio"
+  tts_model: "vieneu-tts-v2-turbo"
+  tts_endpoint: "http://127.0.0.1:1234"
+  stt_endpoint: "http://127.0.0.1:1234"
+  language: "pt"
+
+# ============================================
+# Embeddings
+# ============================================
+
+embeddings:
+  lmstudio:
+    provider: "openai"
+    model: "text-embedding-mxbai-embed-large-v1"
+    base_url: "http://localhost:1234"
+    api_key: "lm-studio"
+
+# ============================================
 # Memory
 # ============================================
 
 memory:
-  enabled: false
+  enabled: true
+  embedding_provider: "lmstudio"
