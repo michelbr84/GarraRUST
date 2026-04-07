@@ -713,6 +713,10 @@ body {
 }
 .send-btn:hover { background: var(--accent-hover); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#mic-btn.recording { color: var(--error); animation: mic-pulse 1s infinite; }
+@keyframes mic-pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+.recording-indicator { display:none; font-size:12px; color:var(--error); padding:2px 8px; }
+.recording-indicator.active { display:flex; align-items:center; gap:4px; }
 
 /* Dropdown menus */
 .dropdown-menu {
@@ -1152,6 +1156,11 @@ body {
         <span>+</span> New Chat
       </button>
     </div>
+    <div class="channel-filter" style="padding:4px 12px;">
+      <select id="channel-filter" title="Filter by channel" style="width:100%;padding:6px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:12px;font-family:var(--font);">
+        <option value="">All Channels</option>
+      </select>
+    </div>
     <div class="session-list" id="session-list">
       <!-- Sessions populated by JS -->
     </div>
@@ -1251,10 +1260,20 @@ body {
               </div>
               <div class="dropdown-section">
                 <div class="dropdown-section-title">Skills</div>
-                <div class="dropdown-item" style="color:var(--text-muted);font-size:12px;">No skills loaded</div>
+                <div id="ext-skills-list" class="dropdown-item" style="color:var(--text-muted);font-size:12px;">Loading...</div>
+                <div class="dropdown-item" style="font-size:11px;color:var(--accent);cursor:pointer;" id="manage-skills-btn">Manage Skills...</div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Plugins</div>
+                <div id="ext-plugins-list" class="dropdown-item" style="color:var(--text-muted);font-size:12px;">Loading...</div>
+              </div>
+              <div class="dropdown-section">
+                <div class="dropdown-section-title">Marketplace</div>
+                <div id="ext-marketplace-list" class="dropdown-item" style="color:var(--text-muted);font-size:12px;">Loading...</div>
               </div>
             </div>
           </div>
+          <button class="input-btn" id="mic-btn" title="Voice input (hold or click to record)">&#127908;</button>
           <button class="send-btn" id="send-btn" title="Send message">&#10148;</button>
         </div>
       </div>
@@ -1296,6 +1315,10 @@ body {
       <input id="key-gateway" type="password" placeholder="Enter gateway key" autocomplete="off" />
       <button class="provider-activate-btn" id="auth-connect" style="margin-top:8px;">Connect</button>
     </div>
+    <div class="right-section" id="file-tree-section" style="display:none;">
+      <h4>Project Files</h4>
+      <div id="file-tree-container" style="max-height:300px;overflow-y:auto;font-size:12px;"></div>
+    </div>
     <div class="right-section">
       <button class="btn-sm" id="refresh-status" style="width:100%;">&#8635; Refresh Status</button>
     </div>
@@ -1316,6 +1339,12 @@ body {
           <button class="btn-sm" onclick="setLanguage('pt-BR')">Portugues</button>
           <button class="btn-sm" onclick="setLanguage('en-US')">English</button>
         </div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <h4 style="font-size:13px;margin-bottom:8px;">Voice</h4>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" id="tts-toggle" /> Read AI responses aloud (TTS)
+        </label>
       </div>
       <div style="margin-bottom:16px;">
         <h4 style="font-size:13px;margin-bottom:8px;">Connection</h4>
@@ -1419,6 +1448,8 @@ const sidebarOverlay = $('sidebar-overlay');
 const sessionListEl = $('session-list');
 const rightPanel = $('right-panel');
 const stopBtnContainer = $('stop-btn-container');
+const attachedFiles = [];
+let ttsEnabled = localStorage.getItem('garraia.tts_enabled') === 'true';
 
 // ─── Marked Configuration ─────────────────────────────────────────────
 const renderer = new marked.Renderer();
@@ -1662,6 +1693,7 @@ function handleAssistantMessage(content) {
   if (!isStream) {
     appendAIMsg(content);
     setThinking(false);
+    playTTS(content);
     return;
   }
 
@@ -1822,13 +1854,22 @@ function formatTime(d) {
 
 // ─── Send ────────────────────────────────────────────────────────────
 function sendMessage() {
-  const content = chatInput.value.trim();
+  let content = chatInput.value.trim();
   if (!content) return;
   if (!State.socket || State.socket.readyState !== WebSocket.OPEN) {
     appendErrorMsg('Not connected to server.');
     return;
   }
-  appendUserMsg(content);
+  // Append readable file contents as context
+  if (attachedFiles.length > 0) {
+    const textFiles = attachedFiles.filter(f => f.content);
+    if (textFiles.length > 0) {
+      content += '\n\n--- Attached Files ---';
+      textFiles.forEach(f => { content += '\n\n### ' + f.name + '\n```\n' + f.content.substring(0, 10000) + '\n```'; });
+    }
+    attachedFiles.length = 0;
+  }
+  appendUserMsg(chatInput.value.trim());
   setThinking(true);
   const msg = { content };
   if (State.selectedProvider) msg.provider = State.selectedProvider;
@@ -1936,7 +1977,7 @@ async function loadExtensions() {
   try {
     const r = await fetch('/api/mcp/tools');
     const j = await r.json();
-    const tools = j.tools || [];
+    const tools = j.runtime_tools || j.tools || [];
     const toolsList = $('ext-tools-list');
     if (tools.length === 0) {
       toolsList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No tools</span>';
@@ -1945,10 +1986,11 @@ async function loadExtensions() {
       toolsList.style.display = 'block';
       toolsList.style.padding = '0';
       tools.slice(0, 10).forEach(t => {
+        const name = typeof t === 'string' ? t : t.name;
         const item = document.createElement('div');
         item.className = 'dropdown-item';
         item.style.fontSize = '12px';
-        item.innerHTML = `<span class="dropdown-item-icon" style="font-size:12px;">&#128295;</span> <span>${t.name}</span>`;
+        item.innerHTML = `<span class="dropdown-item-icon" style="font-size:12px;">&#128295;</span> <span>${escapeHtml(name)}</span>`;
         toolsList.appendChild(item);
       });
       if (tools.length > 10) {
@@ -1960,6 +2002,112 @@ async function loadExtensions() {
       }
     }
   } catch {}
+
+  // Skills
+  try {
+    const r = await fetch('/api/skills');
+    const j = await r.json();
+    const skills = j.skills || j || [];
+    const skillsList = $('ext-skills-list');
+    if (!Array.isArray(skills) || skills.length === 0) {
+      skillsList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No skills</span>';
+    } else {
+      skillsList.innerHTML = '';
+      skillsList.style.display = 'block';
+      skillsList.style.padding = '0';
+      skills.slice(0, 8).forEach(s => {
+        const name = typeof s === 'string' ? s : (s.name || s.id || '');
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.style.fontSize = '12px';
+        item.style.cursor = 'pointer';
+        item.innerHTML = `<span class="dropdown-item-icon" style="font-size:12px;">&#9889;</span> <span>${escapeHtml(name)}</span>`;
+        item.addEventListener('click', () => {
+          chatInput.value = '/' + name + ' ';
+          chatInput.focus();
+          document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
+        });
+        skillsList.appendChild(item);
+      });
+      if (skills.length > 8) {
+        const more = document.createElement('div');
+        more.className = 'dropdown-item';
+        more.style.cssText = 'font-size:11px;color:var(--text-muted);';
+        more.textContent = '+ ' + (skills.length - 8) + ' more...';
+        skillsList.appendChild(more);
+      }
+    }
+  } catch { $('ext-skills-list').innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No skills</span>'; }
+
+  // Plugins
+  try {
+    const r = await fetch('/api/plugins');
+    const j = await r.json();
+    const plugins = j.plugins || j || [];
+    const pluginsList = $('ext-plugins-list');
+    if (!Array.isArray(plugins) || plugins.length === 0) {
+      pluginsList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No plugins installed</span>';
+    } else {
+      pluginsList.innerHTML = '';
+      pluginsList.style.display = 'block';
+      pluginsList.style.padding = '0';
+      plugins.forEach(p => {
+        const name = typeof p === 'string' ? p : (p.name || p.id || '');
+        const enabled = typeof p === 'object' ? p.enabled : true;
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.style.cssText = 'font-size:12px;display:flex;align-items:center;justify-content:space-between;';
+        item.innerHTML = `<span><span style="color:${enabled ? 'var(--success)' : 'var(--text-muted)'};font-size:8px;">&#9679;</span> ${escapeHtml(name)}</span>`;
+        pluginsList.appendChild(item);
+      });
+    }
+  } catch { $('ext-plugins-list').innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No plugins</span>'; }
+
+  // Marketplace
+  try {
+    const r = await fetch('/api/mcp/marketplace');
+    const j = await r.json();
+    const catalog = j.catalog || j.servers || j || [];
+    const mktList = $('ext-marketplace-list');
+    if (!Array.isArray(catalog) || catalog.length === 0) {
+      mktList.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No marketplace items</span>';
+    } else {
+      mktList.innerHTML = '';
+      mktList.style.display = 'block';
+      mktList.style.padding = '0';
+      catalog.slice(0, 6).forEach(s => {
+        const name = typeof s === 'string' ? s : (s.name || s.id || '');
+        const desc = typeof s === 'object' ? (s.description || '') : '';
+        const installed = typeof s === 'object' && s.installed;
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.style.cssText = 'font-size:12px;cursor:pointer;';
+        item.innerHTML = `<span class="dropdown-item-icon" style="font-size:12px;">&#128230;</span> <span style="flex:1;">${escapeHtml(name)}</span>${installed ? '<span class="dropdown-item-badge">installed</span>' : ''}`;
+        if (!installed) {
+          item.addEventListener('click', async () => {
+            item.innerHTML = '<span style="color:var(--text-muted);">Installing...</span>';
+            try {
+              await fetch('/api/mcp/marketplace/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: typeof s === 'object' ? (s.id || s.name) : s })
+              });
+              appendSystemMsg('Installed: ' + name);
+              loadExtensions();
+            } catch (err) { appendErrorMsg('Install failed: ' + String(err)); }
+          });
+        }
+        mktList.appendChild(item);
+      });
+      if (catalog.length > 6) {
+        const more = document.createElement('div');
+        more.className = 'dropdown-item';
+        more.style.cssText = 'font-size:11px;color:var(--text-muted);';
+        more.textContent = '+ ' + (catalog.length - 6) + ' more in marketplace...';
+        mktList.appendChild(more);
+      }
+    }
+  } catch { $('ext-marketplace-list').innerHTML = '<span style="color:var(--text-muted);font-size:12px;">Marketplace unavailable</span>'; }
 }
 
 // ─── Session List ────────────────────────────────────────────────────
@@ -2046,6 +2194,8 @@ $('settings-btn').addEventListener('click', () => { openModal('settings-modal');
 $('skin-editor-btn').addEventListener('click', () => { openModal('skin-modal'); initSkinEditor(); closeSidebarMobile(); });
 $('reconnect-btn').addEventListener('click', reconnectFresh);
 $('refresh-status').addEventListener('click', refreshStatus);
+const ttsToggle = $('tts-toggle');
+if (ttsToggle) { ttsToggle.checked = localStorage.getItem('garraia.tts_enabled') === 'true'; ttsToggle.addEventListener('change', () => { ttsEnabled = ttsToggle.checked; localStorage.setItem('garraia.tts_enabled', String(ttsToggle.checked)); }); }
 
 // Theme presets
 document.querySelectorAll('.skin-preset-btn[data-theme]').forEach(btn => {
@@ -2102,6 +2252,10 @@ authConnectBtn.addEventListener('click', () => {
   reconnectFresh();
 });
 
+// Channel filter
+const channelFilter = $('channel-filter');
+if (channelFilter) { channelFilter.addEventListener('change', () => { renderSessionList(allSessions); }); }
+
 // Dropdown setups
 setupDropdown('plus-btn', 'plus-dropdown');
 setupDropdown('extensions-btn', 'extensions-dropdown');
@@ -2133,6 +2287,7 @@ function updateProjectBadge() {
   if (currentProject && titleEl) {
     titleEl.textContent = currentProject.name || 'New Conversation';
   }
+  loadFileTree();
 }
 
 // Delegated click handler for all [data-action] items
@@ -2314,12 +2469,27 @@ function handleAttachFiles() {
   fileInput.click();
 }
 
-$('attach-file-input').addEventListener('change', (e) => {
+$('attach-file-input').addEventListener('change', async (e) => {
   const files = e.target.files;
   if (!files || files.length === 0) return;
-  const names = Array.from(files).map(f => f.name);
-  appendSystemMsg('Attached: ' + names.join(', '));
-  // Insert file names into the input for reference
+  attachedFiles.length = 0;
+  const names = [];
+  for (const file of files) {
+    names.push(file.name);
+    // Read text files directly for context
+    if (file.size < 100000 && (file.type.startsWith('text/') || /\.(txt|md|rs|js|ts|py|json|toml|yaml|yml|html|css|csv|xml|log|sh|bat)$/i.test(file.name))) {
+      try {
+        const text = await file.text();
+        attachedFiles.push({ name: file.name, content: text, type: 'text' });
+      } catch {
+        attachedFiles.push({ name: file.name, content: null, type: 'binary' });
+      }
+    } else {
+      attachedFiles.push({ name: file.name, content: null, type: 'binary', size: file.size });
+    }
+  }
+  const attachCount = attachedFiles.filter(f => f.content).length;
+  appendSystemMsg('Attached ' + names.length + ' file(s)' + (attachCount > 0 ? ' (' + attachCount + ' readable)' : '') + ': ' + names.join(', '));
   chatInput.value += (chatInput.value ? ' ' : '') + '[Attached: ' + names.join(', ') + ']';
   chatInput.focus();
 });
@@ -2408,22 +2578,93 @@ function renderModeList(modes, currentMode) {
 }
 
 // ─── Load Sessions from API ─────────────────────────────────────────
+let allSessions = []; // cache for filtering
+
 async function loadSessions() {
   try {
-    const r = await fetch('/api/status');
+    const r = await fetch('/api/sessions');
     const j = await r.json();
-    // Populate from active sessions if the API provides them
-    if (j.active_sessions && Array.isArray(j.active_sessions)) {
-      j.active_sessions.forEach(s => {
-        const id = typeof s === 'string' ? s : (s.id || s.session_id || '');
-        if (id) addSessionToList(id);
-      });
-    }
+    const sessions = j.sessions || [];
+    allSessions = sessions;
+    populateChannelFilter(sessions);
+    renderSessionList(sessions);
   } catch (err) {
-    console.warn('Could not load sessions:', err);
+    console.warn('Could not load sessions from API, falling back:', err);
+    // Fallback to status endpoint
+    try {
+      const r = await fetch('/api/status');
+      const j = await r.json();
+      if (j.active_sessions && Array.isArray(j.active_sessions)) {
+        j.active_sessions.forEach(s => {
+          const id = typeof s === 'string' ? s : (s.id || s.session_id || '');
+          if (id) addSessionToList(id);
+        });
+      }
+    } catch {}
   }
-  // Always show current session if we have one
   if (State.session) addSessionToList(State.session);
+}
+
+function populateChannelFilter(sessions) {
+  const filter = $('channel-filter');
+  if (!filter) return;
+  const channels = new Set();
+  sessions.forEach(s => {
+    const ch = s.channel_id || detectChannel(s.session_id || '');
+    if (ch) channels.add(ch);
+  });
+  // Keep "All Channels" as first option
+  const current = filter.value;
+  filter.innerHTML = '<option value="">All Channels</option>';
+  [...channels].sort().forEach(ch => {
+    const opt = document.createElement('option');
+    opt.value = ch;
+    opt.textContent = ch.charAt(0).toUpperCase() + ch.slice(1);
+    filter.appendChild(opt);
+  });
+  filter.value = current;
+}
+
+function detectChannel(sessionId) {
+  if (sessionId.startsWith('telegram-')) return 'telegram';
+  if (sessionId.startsWith('discord-')) return 'discord';
+  if (sessionId.startsWith('slack-')) return 'slack';
+  if (sessionId.startsWith('whatsapp-')) return 'whatsapp';
+  if (sessionId.startsWith('mobile-')) return 'mobile';
+  if (sessionId.startsWith('matrix-')) return 'matrix';
+  if (sessionId.startsWith('teams-')) return 'teams';
+  if (sessionId.startsWith('irc-')) return 'irc';
+  if (sessionId.startsWith('signal-')) return 'signal';
+  if (sessionId.startsWith('line-')) return 'line';
+  return 'web';
+}
+
+function renderSessionList(sessions) {
+  sessionListEl.innerHTML = '';
+  const filter = ($('channel-filter') || {}).value || '';
+  sessions.forEach(s => {
+    const id = s.session_id || s.id || '';
+    const channel = s.channel_id || detectChannel(id);
+    if (filter && channel !== filter) return;
+    const item = document.createElement('div');
+    item.className = 'session-item' + (id === State.session ? ' active' : '');
+    item.dataset.session = id;
+    item.dataset.channel = channel;
+    const channelBadge = channel !== 'web' ? `<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--accent-light);color:var(--accent);margin-left:auto;">${channel}</span>` : '';
+    item.innerHTML = `
+      <span class="session-item-icon">&#128172;</span>
+      <span class="session-item-text">${escapeHtml(id.slice(0, 16))}...</span>
+      ${channelBadge}
+    `;
+    item.addEventListener('click', () => {
+      setSession(id);
+      document.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+      item.classList.add('active');
+      reconnectFresh();
+      closeSidebarMobile();
+    });
+    sessionListEl.appendChild(item);
+  });
 }
 
 // ─── Boot ────────────────────────────────────────────────────────────
@@ -2456,6 +2697,229 @@ async function boot() {
     const badge = $('current-mode-badge');
     if (badge && (j.mode || j.current)) badge.textContent = j.mode || j.current;
   } catch {}
+}
+
+// ─── Voice Recording (Mic Button) ──────────────────────────────────
+const micBtn = $('mic-btn');
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+
+micBtn.addEventListener('click', async () => {
+  if (isRecording) {
+    stopRecording();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+    audioChunks = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      if (blob.size < 100) return; // too short
+      micBtn.classList.remove('recording');
+      micBtn.innerHTML = '&#8987;'; // hourglass while transcribing
+      try {
+        const form = new FormData();
+        form.append('file', blob, 'recording.webm');
+        const r = await fetch('/api/stt', { method: 'POST', body: form });
+        const j = await r.json();
+        if (j.text && j.text.trim()) {
+          chatInput.value += (chatInput.value ? ' ' : '') + j.text.trim();
+          chatInput.focus();
+          chatInput.dispatchEvent(new Event('input'));
+          appendSystemMsg('Transcribed: ' + j.text.trim());
+        } else if (j.error) {
+          appendErrorMsg('STT: ' + j.error);
+        }
+      } catch (err) {
+        appendErrorMsg('STT failed: ' + String(err));
+      }
+      micBtn.innerHTML = '&#127908;';
+      isRecording = false;
+    };
+    mediaRecorder.start();
+    isRecording = true;
+    micBtn.classList.add('recording');
+    appendSystemMsg('Recording... click mic again to stop.');
+  } catch (err) {
+    appendErrorMsg('Microphone access denied: ' + String(err));
+  }
+});
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    isRecording = false;
+  }
+}
+
+// ─── TTS Playback Helper ───────────────────────────────────────────
+async function playTTS(text) {
+  if (!ttsEnabled || !text) return;
+  try {
+    const r = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.substring(0, 500) })
+    });
+    const j = await r.json();
+    if (j.audio) {
+      const audio = new Audio('data:audio/wav;base64,' + j.audio);
+      audio.play().catch(() => {});
+    }
+  } catch {}
+}
+
+// ─── File Tree in Right Panel ──────────────────────────────────────
+async function loadFileTree() {
+  const section = $('file-tree-section');
+  const container = $('file-tree-container');
+  if (!currentProject) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  container.innerHTML = '<span style="color:var(--text-muted);">Loading...</span>';
+  try {
+    const r = await fetch('/api/projects/' + encodeURIComponent(currentProject.id) + '/files');
+    const j = await r.json();
+    const files = j.files || j || [];
+    if (!Array.isArray(files) || files.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-muted);">No files</span>';
+      return;
+    }
+    container.innerHTML = '';
+    files.forEach(f => {
+      const name = typeof f === 'string' ? f : (f.name || f.path || '');
+      const isDir = typeof f === 'object' && f.is_dir;
+      const el = document.createElement('div');
+      el.style.cssText = 'padding:3px 6px;cursor:pointer;border-radius:4px;display:flex;align-items:center;gap:6px;';
+      el.innerHTML = '<span style="font-size:13px;">' + (isDir ? '&#128193;' : '&#128196;') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(name) + '</span>';
+      el.addEventListener('mouseenter', () => { el.style.background = 'var(--bg-hover)'; });
+      el.addEventListener('mouseleave', () => { el.style.background = ''; });
+      el.addEventListener('click', () => {
+        chatInput.value += (chatInput.value ? ' ' : '') + '@' + name;
+        chatInput.focus();
+      });
+      container.appendChild(el);
+    });
+  } catch (err) {
+    container.innerHTML = '<span style="color:var(--error);font-size:11px;">Error loading files</span>';
+  }
+}
+
+// ─── Skills Editor ──────────────────────────────────────────────────
+const manageSkillsBtn = $('manage-skills-btn');
+if (manageSkillsBtn) {
+  manageSkillsBtn.addEventListener('click', () => {
+    document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
+    openSkillsEditor();
+  });
+}
+
+async function openSkillsEditor() {
+  openDynamicModal('Skills Editor', '<div class="dynamic-modal-loading">Loading skills...</div>',
+    '<button class="btn-primary-sm" id="dm-new-skill-btn">+ New Skill</button>');
+  try {
+    const r = await fetch('/api/skills');
+    const j = await r.json();
+    const skills = j.skills || j || [];
+    let html = '';
+    if (!Array.isArray(skills) || skills.length === 0) {
+      html = '<div class="dynamic-modal-empty">No skills found. Create one!</div>';
+    } else {
+      html = '<ul class="dynamic-modal-list">';
+      skills.forEach(s => {
+        const name = typeof s === 'string' ? s : (s.name || s.id || '');
+        const desc = typeof s === 'object' ? (s.description || s.trigger || '') : '';
+        html += `<li style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span style="flex:1;">
+            <strong>${escapeHtml(name)}</strong>
+            ${desc ? '<br><span style="font-size:11px;color:var(--text-muted);">' + escapeHtml(String(desc).substring(0, 80)) + '</span>' : ''}
+          </span>
+          <button class="btn-sm" data-edit-skill="${escapeAttr(name)}" style="font-size:11px;">Edit</button>
+          <button class="btn-sm" data-delete-skill="${escapeAttr(name)}" style="font-size:11px;color:var(--error);">Del</button>
+        </li>`;
+      });
+      html += '</ul>';
+    }
+    $('dynamic-modal-body').innerHTML = html;
+
+    // Wire edit/delete buttons
+    $('dynamic-modal-body').querySelectorAll('[data-edit-skill]').forEach(btn => {
+      btn.addEventListener('click', () => openSkillEditForm(btn.dataset.editSkill));
+    });
+    $('dynamic-modal-body').querySelectorAll('[data-delete-skill]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete skill "' + btn.dataset.deleteSkill + '"?')) return;
+        try {
+          await fetch('/api/skills/' + encodeURIComponent(btn.dataset.deleteSkill), { method: 'DELETE' });
+          appendSystemMsg('Skill deleted: ' + btn.dataset.deleteSkill);
+          openSkillsEditor();
+        } catch (err) { appendErrorMsg('Delete failed: ' + String(err)); }
+      });
+    });
+  } catch (err) {
+    $('dynamic-modal-body').innerHTML = '<div class="dynamic-modal-error">Failed to load skills: ' + escapeHtml(String(err)) + '</div>';
+  }
+  // Wire new skill button
+  const newBtn = $('dm-new-skill-btn');
+  if (newBtn) newBtn.addEventListener('click', () => openSkillEditForm(null));
+}
+
+async function openSkillEditForm(existingName) {
+  let skillData = { name: '', description: '', trigger: '', body: '' };
+  if (existingName) {
+    try {
+      const r = await fetch('/api/skills/' + encodeURIComponent(existingName));
+      const j = await r.json();
+      skillData = { name: j.name || existingName, description: j.description || '', trigger: j.trigger || '', body: j.body || j.content || j.template || '' };
+    } catch {}
+  }
+  const html = `
+    <div class="dynamic-modal-form">
+      <div><label>Name</label><input type="text" id="dm-skill-name" value="${escapeAttr(skillData.name)}" placeholder="my-skill" ${existingName ? 'readonly' : ''} /></div>
+      <div><label>Description</label><input type="text" id="dm-skill-desc" value="${escapeAttr(skillData.description)}" placeholder="What this skill does" /></div>
+      <div><label>Trigger</label><input type="text" id="dm-skill-trigger" value="${escapeAttr(skillData.trigger)}" placeholder="Regex or keyword trigger" /></div>
+      <div><label>Body / Template</label><textarea id="dm-skill-body" rows="6" style="font-family:var(--mono);font-size:12px;" placeholder="Skill template or instructions...">${escapeHtml(skillData.body)}</textarea></div>
+    </div>
+  `;
+  const footer = `<button class="btn-sm" onclick="openSkillsEditor()">Back</button> <button class="btn-primary-sm" id="dm-save-skill-btn">${existingName ? 'Update' : 'Create'}</button>`;
+  openDynamicModal(existingName ? 'Edit Skill: ' + existingName : 'New Skill', html, footer);
+
+  $('dm-save-skill-btn').addEventListener('click', async () => {
+    const name = ($('dm-skill-name') || {}).value || '';
+    const description = ($('dm-skill-desc') || {}).value || '';
+    const trigger = ($('dm-skill-trigger') || {}).value || '';
+    const body = ($('dm-skill-body') || {}).value || '';
+    if (!name.trim()) { appendErrorMsg('Skill name is required.'); return; }
+
+    $('dm-save-skill-btn').textContent = 'Saving...';
+    $('dm-save-skill-btn').disabled = true;
+    try {
+      const url = existingName ? '/api/skills/' + encodeURIComponent(existingName) : '/api/skills';
+      const method = existingName ? 'PUT' : 'POST';
+      const r = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), description: description.trim(), trigger: trigger.trim(), body: body, template: body })
+      });
+      if (r.ok) {
+        appendSystemMsg('Skill ' + (existingName ? 'updated' : 'created') + ': ' + name.trim());
+        loadExtensions();
+        openSkillsEditor();
+      } else {
+        const j = await r.json().catch(() => ({}));
+        appendErrorMsg('Failed: ' + (j.message || j.error || 'Unknown error'));
+        $('dm-save-skill-btn').textContent = existingName ? 'Update' : 'Create';
+        $('dm-save-skill-btn').disabled = false;
+      }
+    } catch (err) {
+      appendErrorMsg('Save failed: ' + String(err));
+      $('dm-save-skill-btn').textContent = existingName ? 'Update' : 'Create';
+      $('dm-save-skill-btn').disabled = false;
+    }
+  });
 }
 
 // Language helper

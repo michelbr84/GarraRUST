@@ -31,6 +31,8 @@ impl GatewayServer {
 
     pub async fn run(self) -> Result<()> {
         let addr = format!("{}:{}", self.config.gateway.host, self.config.gateway.port);
+        let tls_cert = self.config.gateway.tls_cert_path.clone();
+        let tls_key = self.config.gateway.tls_key_path.clone();
 
         let mut agents = build_agent_runtime(&self.config);
 
@@ -387,19 +389,45 @@ impl GatewayServer {
         let state_for_shutdown = Arc::clone(&state);
         let app = build_router(state, whatsapp_state, admin_store);
 
-        let listener = TcpListener::bind(&addr).await?;
-        info!("GarraIA gateway listening on {}", addr);
+        // TLS support: if cert + key paths are configured and tls feature is enabled,
+        // use axum-server with rustls. Otherwise, plain HTTP.
+        let use_tls = tls_cert.is_some() && tls_key.is_some();
 
-        // Graceful shutdown on Ctrl-C / SIGTERM.
-        // `into_make_service_with_connect_info` injects ConnectInfo<SocketAddr>
-        // so that the rate-limiter can extract per-client IP addresses.
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+        if use_tls {
+            #[cfg(feature = "tls")]
+            {
+                let cert_path = tls_cert.as_ref().unwrap();
+                let key_path = tls_key.as_ref().unwrap();
+                info!("TLS enabled: cert={}, key={}", cert_path, key_path);
+                let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                    .await
+                    .map_err(|e| garraia_common::Error::Gateway(format!("TLS config error: {e}")))?;
+                let sock_addr: std::net::SocketAddr = addr.parse()
+                    .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
+                info!("GarraIA gateway listening on https://{}", sock_addr);
+                axum_server::bind_rustls(sock_addr, tls_config)
+                    .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+                    .await
+                    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                warn!("TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP");
+                let listener = TcpListener::bind(&addr).await?;
+                info!("GarraIA gateway listening on http://{}", addr);
+                axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await
+                    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+            }
+        } else {
+            let listener = TcpListener::bind(&addr).await?;
+            info!("GarraIA gateway listening on http://{}", addr);
+            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+        }
 
         // Disconnect MCP servers on shutdown
         if let Some(ref manager) = state_for_shutdown.mcp_manager_arc {

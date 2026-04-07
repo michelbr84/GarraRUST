@@ -19,6 +19,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+  <img src="https://img.shields.io/badge/crates-16-green" alt="Crates">
+  <img src="https://img.shields.io/badge/channels-11-purple" alt="Channels">
+  <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
+</p>
+
+<p align="center">
   <a href="#início-rápido">Início Rápido</a> &middot;
   <a href="#por-que-garraia">Por que GarraIA?</a> &middot;
   <a href="#recursos">Recursos</a> &middot;
@@ -82,7 +90,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 | | **Roteamento multi-agente** | Sim (Priority Router) | Sim (agentId) | Não |
 | | **Orquestração de sessões** | Sim (Session Continuity) | Sim | Não |
 | | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
-| | **Canais** | 5 | 6+ | 4 |
+| | **Canais** | 11 | 6+ | 4 |
 | | **Provedores de LLM** | 100+ | 10+ | 22+ |
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
 | | **Recarregamento de config a quente** | Sim | Não | Não |
@@ -126,6 +134,12 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
+- **Google Chat** - integração via API do Google Workspace
+- **Microsoft Teams** - bot via Bot Framework / Graph API
+- **Matrix** - protocolo federado, suporte a rooms e E2EE
+- **LINE** - Messaging API com webhooks
+- **IRC** - cliente IRC com suporte a múltiplos canais e redes
+- **Signal** - mensagens seguras via signal-cli
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 
 ### Comandos e Aliases (Slash Commands)
@@ -146,13 +160,16 @@ O GarraIA possui um sistema unificado de comandos interativos disponíveis no ch
 
 Além dos comandos embutidos, qualquer servidor MCP que exponha **prompts** via `prompts/list` aparece automaticamente como slash command. Por exemplo, um servidor de automação com prompt `n8n-deploy` fica disponível como `/n8n-deploy [args]`. O endpoint `GET /api/slash-commands` retorna a lista completa (built-ins + MCP dinâmicos).
 
-### Voice Mode (TTS/STT)
+### Voice Mode (STT/TTS) com Múltiplos Providers
 
-- **Chatterbox TTS** - síntese de voz multilíngue local (pt, en, es, fr, de, it, hi) via GPU
+- **STT Providers** - Whisper local (whisper.cpp) e OpenAI Whisper API com dual-endpoint
+- **TTS Providers** - Chatterbox (GPU, multilíngue), Hibiki, ElevenLabs, Kokoro, OpenAI TTS API
+- **Síntese multilíngue** - pt, en, es, fr, de, it, hi via GPU local
 - **Endpoint REST** - `POST /api/tts` para síntese sob demanda
 - **Ativação** - `garraia start --with-voice` habilita o modo de voz
 - **Health check automático** - verificação HTTP do Chatterbox no boot
 - **Integração Telegram** - resposta por áudio automática no pipeline voice
+- **Conversão de formato** - via ffmpeg, streaming de áudio em tempo real
 
 ### VS Code Integration (API OpenAI-Compatible)
 
@@ -384,6 +401,49 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
 - Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
 - CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
+
+### MCP Tool Integration com Marketplace
+
+- Conecte qualquer servidor compatível com MCP (filesystem, GitHub, bancos de dados, busca na web)
+- **Marketplace de ferramentas** - descubra e instale servidores MCP via `garraia mcp install`
+- Ferramentas aparecem como ferramentas nativas com nomes namespaced (`server.tool`)
+- Prompts MCP viram slash commands automaticamente
+- Admin API para adicionar/remover servidores sem reiniciar
+
+### Sistema de Plugins WASM
+
+- Sandbox WebAssembly via wasmtime com acesso controlado ao host
+- Compile com `--features plugins` para habilitar
+- Isolamento de memória e CPU por plugin
+- API host para acesso a ferramentas e estado do agente
+
+### Skills Editor com CRUD
+
+- Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
+- Auto-descoberta de `~/.garraia/skills/`
+- **Editor visual** na WebChat UI para criar/editar skills
+- CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
+- CRUD completo via API REST (`GET/POST/PATCH/DELETE /api/skills`)
+
+### Autenticacao OAuth2/OIDC + TOTP 2FA
+
+- **OAuth2/OIDC** - suporte a provedores externos de identidade
+- **TOTP 2FA** - autenticacao de dois fatores via aplicativo (Google Authenticator, Authy)
+- **JWT** - tokens de sessao com 30 dias de validade, refresh automatico
+- **PBKDF2-HMAC-SHA256** - 600k iteracoes para hash de senhas
+- **Pareamento por codigo** - whitelist de usuarios por canal
+
+### EU AI Act Compliance
+
+- **Headers X-AI-Model** - todas as respostas incluem o modelo usado (`X-AI-Model`, `X-AI-Provider`)
+- **Transparencia** - identificacao clara de conteudo gerado por IA
+- **Logging auditavel** - registros estruturados de todas as interacoes com LLMs
+
+### TLS/HTTPS Nativo
+
+- **Suporte TLS nativo** - configure certificados SSL diretamente no GarraIA
+- **Let's Encrypt** - renovacao automatica de certificados
+- **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
 
 ### Health Checks Centralizados
 
@@ -778,6 +838,12 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Slack (Socket Mode, streaming) | ✅ Funcionando |
 | WhatsApp (webhooks) | ✅ Funcionando |
 | iMessage (macOS, grupos) | ✅ Funcionando |
+| Google Chat (Google Workspace) | ✅ Funcionando |
+| Microsoft Teams (Bot Framework) | ✅ Funcionando |
+| Matrix (federado, E2EE) | ✅ Funcionando |
+| LINE (Messaging API) | ✅ Funcionando |
+| IRC (multi-canal, multi-rede) | ✅ Funcionando |
+| Signal (signal-cli) | ✅ Funcionando |
 | Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
 | Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
 | Cliente MCP (stdio, HTTP/SSE/StreamableHttp, bridge de ferramentas, admin API) | ✅ Funcionando |
@@ -793,6 +859,11 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
 | Sistema de plugins (Sandbox WASM) | ✅ Funcionando |
+| MCP Marketplace (install, discover) | ✅ Funcionando |
+| Skills Editor CRUD (API + WebChat UI) | ✅ Funcionando |
+| OAuth2/OIDC + TOTP 2FA | ✅ Funcionando |
+| EU AI Act Compliance (X-AI-Model headers) | ✅ Funcionando |
+| TLS/HTTPS nativo | ✅ Funcionando |
 | Processamento de mídia (PDF, imagens) | ✅ Funcionando |
 | Garra Cloud Alpha — app mobile Flutter (Android/iOS) | ✅ Funcionando |
 | Mobile Auth (register/login/me, JWT, PBKDF2) | ✅ Funcionando |

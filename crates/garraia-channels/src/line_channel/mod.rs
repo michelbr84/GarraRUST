@@ -235,4 +235,54 @@ mod tests {
         assert_eq!(channel.display_name(), "LINE");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
     }
+
+    #[tokio::test]
+    async fn send_message_missing_reply_token() {
+        let on_msg: LineOnMessageFn =
+            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = LineConfig {
+            channel_access_token: "test-token".into(),
+            channel_secret: "test-secret".into(),
+        };
+        let channel = LineChannel::new(config, on_msg);
+        let msg = Message::text(
+            garraia_common::types::SessionId::from_string("test-session"),
+            garraia_common::types::ChannelId::from_string("test-channel"),
+            garraia_common::types::UserId::from_string("test-user"),
+            garraia_common::MessageDirection::Outgoing,
+            "hello",
+        );
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: LineOnMessageFn =
+            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = LineConfig {
+            channel_access_token: "token".into(),
+            channel_secret: "secret".into(),
+        };
+        let channel = LineChannel::new(config, on_msg);
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[test]
+    fn display_name_is_line() {
+        let on_msg: LineOnMessageFn =
+            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = LineConfig {
+            channel_access_token: "t".into(),
+            channel_secret: "s".into(),
+        };
+        let channel = LineChannel::new(config, on_msg);
+        assert_eq!(channel.display_name(), "LINE");
+    }
 }

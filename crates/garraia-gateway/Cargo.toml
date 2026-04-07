@@ -44,10 +44,12 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
 filetime = "0.2"
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 
 [features]
 default = []
 mcp-http = ["garraia-agents/mcp-http"]
+tls = ["dep:axum-server"]
 
 [dev-dependencies]
 tempfile = "3"

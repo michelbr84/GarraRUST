@@ -46,6 +46,27 @@ pub fn build_router(
         }
     });
 
+    // Build CORS layer — use configured origins or allow all in dev mode.
+    let cors_layer = {
+        let origins = &state.config.gateway.allowed_origins;
+        let cors = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+        if origins.is_empty() {
+            cors.allow_origin(Any)
+        } else {
+            let parsed: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            cors.allow_origin(parsed)
+        }
+    };
+
+    // EU AI Act compliance: inject X-AI-Model and X-AI-Provider headers.
+    let default_provider = state.agents.default_provider_id().unwrap_or_default();
+    let default_model = state.agents.get_provider(&default_provider)
+        .and_then(|p| p.configured_model().map(|m| m.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+
     let whatsapp_routes = Router::new()
         .route(
             "/webhooks/whatsapp",
@@ -110,19 +131,24 @@ pub fn build_router(
         //     get(runtime_handler::list_tools_handler),
         // )
         // GAR-335/339: Mobile Cloud Alpha — auth + chat endpoints
-        .route("/auth/register", post(mobile_auth::register))
-        .route("/auth/login", post(mobile_auth::login))
+        // Auth routes with strict rate limiting (10 req/min, burst 3)
+        .nest("", {
+            let auth_limiter = crate::rate_limiter::RateLimiter::auth_limiter();
+            Router::new()
+                .route("/auth/register", post(mobile_auth::register))
+                .route("/auth/login", post(mobile_auth::login))
+                .route("/auth/oauth/providers", get(oauth::list_oauth_providers))
+                .route("/auth/oauth/{provider}", get(oauth::oauth_redirect))
+                .route("/auth/oauth/{provider}/callback", get(oauth::oauth_callback))
+                .route("/auth/2fa/setup", post(totp::setup_2fa))
+                .route("/auth/2fa/verify", post(totp::verify_2fa))
+                .route("/auth/2fa/disable", post(totp::disable_2fa))
+                .layer(axum::middleware::from_fn_with_state(auth_limiter, crate::rate_limiter::rate_limit_layer))
+                .with_state(state.clone())
+        })
         .route("/me", get(mobile_auth::me))
         .route("/chat", post(mobile_chat::chat))
         .route("/chat/history", get(mobile_chat::history))
-        // Phase 7.1 — OAuth2/OIDC login
-        .route("/auth/oauth/providers", get(oauth::list_oauth_providers))
-        .route("/auth/oauth/{provider}", get(oauth::oauth_redirect))
-        .route("/auth/oauth/{provider}/callback", get(oauth::oauth_callback))
-        // Phase 7.1 — TOTP 2FA
-        .route("/auth/2fa/setup", post(totp::setup_2fa))
-        .route("/auth/2fa/verify", post(totp::verify_2fa))
-        .route("/auth/2fa/disable", post(totp::disable_2fa))
         // OpenClaw bridge endpoints
         .route("/api/openclaw/status", get(crate::openclaw_handler::openclaw_status))
         .route("/api/openclaw/connect", post(crate::openclaw_handler::openclaw_connect))
@@ -170,12 +196,21 @@ pub fn build_router(
             admin::routes::build_admin_router(state, admin_store),
         )
         .layer(governor_layer)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors_layer)
+        .layer({
+            let model = default_model.clone();
+            let provider = default_provider.clone();
+            axum::middleware::from_fn(move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+                let model = model.clone();
+                let provider = provider.clone();
+                async move {
+                    let mut resp = next.run(req).await;
+                    resp.headers_mut().insert("X-AI-Provider", axum::http::HeaderValue::from_str(&provider).unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown")));
+                    resp.headers_mut().insert("X-AI-Model", axum::http::HeaderValue::from_str(&model).unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown")));
+                    resp
+                }
+            })
+        })
 }
 
 async fn health() -> &'static str {

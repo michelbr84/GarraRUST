@@ -16,6 +16,8 @@ use tracing::info;
 
 use crate::traits::{Channel, ChannelStatus};
 use garraia_common::{Error, Message, MessageContent, Result};
+#[cfg(test)]
+use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
 
 pub use config::GoogleChatConfig;
 
@@ -207,6 +209,56 @@ mod tests {
         let channel = GoogleChatChannel::new(config, on_msg);
         assert_eq!(channel.channel_type(), "google_chat");
         assert_eq!(channel.display_name(), "Google Chat");
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn send_message_missing_space_metadata() {
+        let on_msg: GoogleChatOnMessageFn =
+            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = GoogleChatConfig {
+            webhook_url: Some("https://example.com/webhook".into()),
+            service_account_key_path: None,
+            service_account_token: String::new(),
+        };
+        let channel = GoogleChatChannel::new(config, on_msg);
+        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("google_chat_space"));
+    }
+
+    #[test]
+    fn send_via_webhook_requires_url() {
+        let on_msg: GoogleChatOnMessageFn =
+            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = GoogleChatConfig {
+            webhook_url: None,
+            service_account_key_path: None,
+            service_account_token: String::new(),
+        };
+        let channel = GoogleChatChannel::new(config, on_msg);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(channel.send_via_webhook("test"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: GoogleChatOnMessageFn =
+            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = GoogleChatConfig {
+            webhook_url: Some("https://example.com".into()),
+            service_account_key_path: None,
+            service_account_token: String::new(),
+        };
+        let channel = GoogleChatChannel::new(config, on_msg);
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
     }
 }

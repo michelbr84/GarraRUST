@@ -398,4 +398,64 @@ mod tests {
         let line = "not a valid irc line";
         assert!(parse_privmsg(line).is_none());
     }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: IrcOnMessageFn =
+            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = IrcConfig {
+            server: "irc.example.com".into(),
+            port: 6667,
+            nick: "garrabot".into(),
+            channels: vec!["#test".into()],
+            use_tls: false,
+        };
+        let channel = IrcChannel::new(config, on_msg);
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+        assert_eq!(channel.channel_type(), "irc");
+    }
+
+    #[test]
+    fn display_name_is_irc() {
+        let on_msg: IrcOnMessageFn =
+            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = IrcConfig {
+            server: "irc.example.com".into(),
+            port: 6667,
+            nick: "bot".into(),
+            channels: vec![],
+            use_tls: false,
+        };
+        let channel = IrcChannel::new(config, on_msg);
+        assert_eq!(channel.display_name(), "IRC");
+    }
+
+    #[tokio::test]
+    async fn send_message_without_connection_fails() {
+        let on_msg: IrcOnMessageFn =
+            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = IrcConfig {
+            server: "irc.example.com".into(),
+            port: 6667,
+            nick: "garrabot".into(),
+            channels: vec!["#test".into()],
+            use_tls: false,
+        };
+        let channel = IrcChannel::new(config, on_msg);
+        let msg = Message::text(
+            garraia_common::types::SessionId::from_string("test-session"),
+            garraia_common::types::ChannelId::from_string("test-channel"),
+            garraia_common::types::UserId::from_string("test-user"),
+            garraia_common::MessageDirection::Outgoing,
+            "hello",
+        );
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+    }
 }
