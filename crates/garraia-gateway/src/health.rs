@@ -135,7 +135,14 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
                     llm_config.api_key.is_some() || std::env::var("OPENAI_API_KEY").is_ok();
                 if has_key {
                     let base = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
-                    Some(format!("{}/v1/models", base))
+                    let base = base.trim_end_matches('/');
+                    // Avoid /v1/v1/models when base_url already ends with /v1
+                    let health_url = if base.ends_with("/v1") {
+                        format!("{}/models", base)
+                    } else {
+                        format!("{}/v1/models", base)
+                    };
+                    Some(health_url)
                 } else {
                     handles.push(tokio::spawn(async move {
                         HealthStatus {
