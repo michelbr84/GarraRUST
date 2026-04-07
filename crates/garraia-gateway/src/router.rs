@@ -132,7 +132,7 @@ pub fn build_router(
         // )
         // GAR-335/339: Mobile Cloud Alpha — auth + chat endpoints
         // Auth routes with strict rate limiting (10 req/min, burst 3)
-        .nest("", {
+        .merge({
             let auth_limiter = crate::rate_limiter::RateLimiter::auth_limiter();
             Router::new()
                 .route("/auth/register", post(mobile_auth::register))
