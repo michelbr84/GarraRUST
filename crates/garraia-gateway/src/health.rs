@@ -184,33 +184,50 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
         }
     }
 
-    // Check TTS provider if voice is configured
-    if state.voice_client.is_some() {
-        let endpoint = state.config.voice.tts_endpoint.clone();
+    // Check voice services only if voice is enabled
+    if state.config.voice.enabled {
         let provider = state.config.voice.tts_provider.clone();
-        let t = timeout;
-        let check_name = format!("tts-{}", provider);
-        handles.push(tokio::spawn(async move {
-            check_http(&check_name, &format!("{}/", endpoint), t).await
-        }));
-    }
 
-    // Check Whisper STT if stt_endpoint is configured
-    let stt_endpoint = state.config.voice.stt_endpoint.clone();
-    if !stt_endpoint.is_empty() {
-        let t = state.config.timeouts.stt.default_secs;
-        handles.push(tokio::spawn(async move {
-            check_http("whisper-stt", &format!("{}/health", stt_endpoint), t).await
-        }));
-    }
+        // Check the active TTS provider endpoint
+        if state.voice_client.is_some() {
+            let endpoint = state.config.voice.tts_endpoint.clone();
+            let t = timeout;
+            let check_name = format!("tts-{}", provider);
+            // LM Studio uses /v1/models, others use root
+            let health_url = if provider == "lmstudio" {
+                format!("{}/v1/models", endpoint)
+            } else {
+                format!("{}/", endpoint)
+            };
+            handles.push(tokio::spawn(async move {
+                check_http(&check_name, &health_url, t).await
+            }));
+        }
 
-    // Check Hibiki TTS if hibiki_endpoint is configured
-    let hibiki_endpoint = state.config.voice.hibiki_endpoint.clone();
-    if !hibiki_endpoint.is_empty() {
-        let t = state.config.timeouts.tts.default_secs;
-        handles.push(tokio::spawn(async move {
-            check_http("hibiki-tts", &format!("{}/", hibiki_endpoint), t).await
-        }));
+        // Check STT only if provider is NOT lmstudio (lmstudio shares the TTS endpoint)
+        // or if stt_endpoint differs from tts_endpoint
+        let stt_endpoint = state.config.voice.stt_endpoint.clone();
+        let tts_endpoint = state.config.voice.tts_endpoint.clone();
+        if state.stt_client.is_some() && stt_endpoint != tts_endpoint {
+            let t = timeout;
+            let health_url = if provider == "lmstudio" {
+                format!("{}/v1/models", stt_endpoint)
+            } else {
+                format!("{}/health", stt_endpoint)
+            };
+            handles.push(tokio::spawn(async move {
+                check_http("whisper-stt", &health_url, t).await
+            }));
+        }
+
+        // Check Hibiki only if it's the active TTS provider
+        if provider == "hibiki" {
+            let hibiki_endpoint = state.config.voice.hibiki_endpoint.clone();
+            let t = timeout;
+            handles.push(tokio::spawn(async move {
+                check_http("hibiki-tts", &format!("{}/", hibiki_endpoint), t).await
+            }));
+        }
     }
 
     // Collect all results
