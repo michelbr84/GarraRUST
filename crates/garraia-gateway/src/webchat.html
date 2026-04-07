@@ -1071,6 +1071,67 @@ body {
   *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
 }
 
+/* Dynamic modal content */
+.dynamic-modal-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.dynamic-modal-list li {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background 80ms ease;
+}
+.dynamic-modal-list li:last-child { border-bottom: none; }
+.dynamic-modal-list li:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dynamic-modal-list li.active-item { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+.dynamic-modal-form { display: flex; flex-direction: column; gap: 10px; }
+.dynamic-modal-form label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+.dynamic-modal-form input,
+.dynamic-modal-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+}
+.dynamic-modal-form input:focus,
+.dynamic-modal-form textarea:focus { border-color: var(--border-focus); }
+.dynamic-modal-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.dynamic-modal-loading {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.dynamic-modal-error {
+  text-align: center;
+  padding: 16px;
+  color: var(--error);
+  font-size: 13px;
+}
+.file-tree-item {
+  padding-left: 8px;
+}
+.file-tree-item .file-icon { font-size: 14px; flex-shrink: 0; }
+
 /* Misc hidden utility */
 .hidden { display: none !important; }
 </style>
@@ -1294,6 +1355,23 @@ body {
     </div>
   </div>
 </div>
+
+<!-- DYNAMIC MODAL (reused for plus-button actions) -->
+<div class="modal-overlay" id="dynamic-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="dynamic-modal-title">Title</h2>
+      <button class="modal-close" data-close-modal="dynamic-modal">&times;</button>
+    </div>
+    <div class="modal-body" id="dynamic-modal-body">
+      <!-- populated by JS -->
+    </div>
+    <div class="modal-footer" id="dynamic-modal-footer"></div>
+  </div>
+</div>
+
+<!-- Hidden file input for attach-files action -->
+<input type="file" id="attach-file-input" multiple style="display:none;" />
 
 <script>
 'use strict';
@@ -1856,7 +1934,7 @@ async function loadExtensions() {
 
   // Tools
   try {
-    const r = await fetch('/api/tools');
+    const r = await fetch('/api/mcp/tools');
     const j = await r.json();
     const tools = j.tools || [];
     const toolsList = $('ext-tools-list');
@@ -2028,11 +2106,333 @@ authConnectBtn.addEventListener('click', () => {
 setupDropdown('plus-btn', 'plus-dropdown');
 setupDropdown('extensions-btn', 'extensions-dropdown');
 
+// ─── Dynamic Modal Helpers ──────────────────────────────────────────
+function openDynamicModal(title, bodyHtml, footerHtml) {
+  $('dynamic-modal-title').textContent = title;
+  $('dynamic-modal-body').innerHTML = bodyHtml;
+  $('dynamic-modal-footer').innerHTML = footerHtml || '';
+  openModal('dynamic-modal');
+}
+
+function closeDynamicModal() {
+  closeModal('dynamic-modal');
+}
+
+// Re-bind close buttons for dynamic modal (since they are added after initial querySelectorAll)
+document.addEventListener('click', (e) => {
+  const closeBtn = e.target.closest('[data-close-modal="dynamic-modal"]');
+  if (closeBtn) closeDynamicModal();
+});
+
+// ─── Plus Dropdown Actions ──────────────────────────────────────────
+// Current project tracking
+let currentProject = JSON.parse(localStorage.getItem('garraia.current_project') || 'null');
+
+function updateProjectBadge() {
+  const titleEl = $('chat-title');
+  if (currentProject && titleEl) {
+    titleEl.textContent = currentProject.name || 'New Conversation';
+  }
+}
+
+// Delegated click handler for all [data-action] items
+document.addEventListener('click', (e) => {
+  const actionEl = e.target.closest('[data-action]');
+  if (!actionEl) return;
+
+  const action = actionEl.dataset.action;
+  // Close the dropdown
+  document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
+
+  switch (action) {
+    case 'select-project': handleSelectProject(); break;
+    case 'new-project': handleNewProject(); break;
+    case 'browse-files': handleBrowseFiles(); break;
+    case 'attach-files': handleAttachFiles(); break;
+    case 'agent-mode': handleAgentMode(); break;
+  }
+});
+
+async function handleSelectProject() {
+  openDynamicModal('Select Project', '<div class="dynamic-modal-loading">Loading projects...</div>', '');
+  try {
+    const r = await fetch('/api/projects');
+    const j = await r.json();
+    const projects = j.projects || j || [];
+    if (!Array.isArray(projects) || projects.length === 0) {
+      $('dynamic-modal-body').innerHTML = '<div class="dynamic-modal-empty">No projects found. Create one first.</div>';
+      $('dynamic-modal-footer').innerHTML = '<button class="btn-primary-sm" id="dm-new-project-btn">New Project</button>';
+      $('dm-new-project-btn').addEventListener('click', () => { closeDynamicModal(); handleNewProject(); });
+      return;
+    }
+    let html = '<ul class="dynamic-modal-list">';
+    projects.forEach(p => {
+      const isActive = currentProject && currentProject.id === p.id;
+      html += `<li class="${isActive ? 'active-item' : ''}" data-project-id="${p.id}" data-project-name="${escapeAttr(p.name || '')}">
+        <span style="font-size:16px;">&#128193;</span>
+        <span style="flex:1;">${escapeHtml(p.name || p.id)}</span>
+        <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(p.path || '')}</span>
+      </li>`;
+    });
+    html += '</ul>';
+    $('dynamic-modal-body').innerHTML = html;
+    $('dynamic-modal-footer').innerHTML = '<button class="btn-primary-sm" id="dm-new-project-btn">New Project</button>';
+    $('dm-new-project-btn').addEventListener('click', () => { closeDynamicModal(); handleNewProject(); });
+
+    // Click handler for selecting a project
+    $('dynamic-modal-body').querySelectorAll('[data-project-id]').forEach(li => {
+      li.addEventListener('click', () => {
+        currentProject = { id: li.dataset.projectId, name: li.dataset.projectName };
+        localStorage.setItem('garraia.current_project', JSON.stringify(currentProject));
+        updateProjectBadge();
+        appendSystemMsg('Project selected: ' + (currentProject.name || currentProject.id));
+        closeDynamicModal();
+      });
+    });
+  } catch (err) {
+    $('dynamic-modal-body').innerHTML = '<div class="dynamic-modal-error">Failed to load projects: ' + escapeHtml(String(err)) + '</div>';
+  }
+}
+
+function handleNewProject() {
+  const html = `
+    <div class="dynamic-modal-form">
+      <div>
+        <label>Project Name</label>
+        <input type="text" id="dm-project-name" placeholder="My Project" autofocus />
+      </div>
+      <div>
+        <label>Path</label>
+        <input type="text" id="dm-project-path" placeholder="/path/to/project" />
+      </div>
+      <div>
+        <label>Description (optional)</label>
+        <textarea id="dm-project-desc" rows="2" placeholder="Brief description..."></textarea>
+      </div>
+    </div>
+  `;
+  const footer = '<button class="btn-sm" onclick="document.getElementById(\'dynamic-modal\').classList.remove(\'show\')">Cancel</button> <button class="btn-primary-sm" id="dm-create-project-btn">Create</button>';
+  openDynamicModal('New Project', html, footer);
+
+  // Focus the name input after modal opens
+  setTimeout(() => { const el = $('dm-project-name'); if (el) el.focus(); }, 100);
+
+  $('dm-create-project-btn').addEventListener('click', async () => {
+    const name = ($('dm-project-name') || {}).value || '';
+    const path = ($('dm-project-path') || {}).value || '';
+    const description = ($('dm-project-desc') || {}).value || '';
+
+    if (!name.trim()) {
+      appendErrorMsg('Project name is required.');
+      return;
+    }
+
+    $('dm-create-project-btn').textContent = 'Creating...';
+    $('dm-create-project-btn').disabled = true;
+
+    try {
+      const r = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), path: path.trim(), description: description.trim() })
+      });
+      const j = await r.json();
+      if (r.ok) {
+        currentProject = { id: j.id || j.project_id || name, name: name.trim() };
+        localStorage.setItem('garraia.current_project', JSON.stringify(currentProject));
+        updateProjectBadge();
+        appendSystemMsg('Project created: ' + name.trim());
+        closeDynamicModal();
+      } else {
+        appendErrorMsg('Failed to create project: ' + (j.message || j.error || 'Unknown error'));
+        $('dm-create-project-btn').textContent = 'Create';
+        $('dm-create-project-btn').disabled = false;
+      }
+    } catch (err) {
+      appendErrorMsg('Failed to create project: ' + String(err));
+      $('dm-create-project-btn').textContent = 'Create';
+      $('dm-create-project-btn').disabled = false;
+    }
+  });
+}
+
+async function handleBrowseFiles() {
+  if (!currentProject) {
+    openDynamicModal('Browse Files', '<div class="dynamic-modal-empty">No project selected. Select a project first.</div>',
+      '<button class="btn-primary-sm" id="dm-select-first-btn">Select Project</button>');
+    $('dm-select-first-btn').addEventListener('click', () => { closeDynamicModal(); handleSelectProject(); });
+    return;
+  }
+
+  openDynamicModal('Browse Files - ' + (currentProject.name || ''), '<div class="dynamic-modal-loading">Loading files...</div>', '');
+  try {
+    const r = await fetch('/api/projects/' + encodeURIComponent(currentProject.id) + '/files');
+    const j = await r.json();
+    const files = j.files || j || [];
+    if (!Array.isArray(files) || files.length === 0) {
+      $('dynamic-modal-body').innerHTML = '<div class="dynamic-modal-empty">No files found in this project.</div>';
+      return;
+    }
+    let html = '<ul class="dynamic-modal-list">';
+    files.forEach(f => {
+      const name = typeof f === 'string' ? f : (f.name || f.path || '');
+      const isDir = typeof f === 'object' && f.is_dir;
+      const icon = isDir ? '&#128193;' : '&#128196;';
+      const size = (typeof f === 'object' && f.size) ? (' (' + formatFileSize(f.size) + ')') : '';
+      html += `<li class="file-tree-item">
+        <span class="file-icon">${icon}</span>
+        <span style="flex:1;">${escapeHtml(name)}</span>
+        <span style="font-size:11px;color:var(--text-muted);">${size}</span>
+      </li>`;
+    });
+    html += '</ul>';
+    $('dynamic-modal-body').innerHTML = html;
+
+    // Click on a file to mention it in chat
+    $('dynamic-modal-body').querySelectorAll('.file-tree-item').forEach(li => {
+      li.addEventListener('click', () => {
+        const fileName = li.querySelector('span:nth-child(2)').textContent;
+        chatInput.value += (chatInput.value ? ' ' : '') + '@' + fileName;
+        chatInput.focus();
+        closeDynamicModal();
+      });
+    });
+  } catch (err) {
+    $('dynamic-modal-body').innerHTML = '<div class="dynamic-modal-error">Failed to load files: ' + escapeHtml(String(err)) + '</div>';
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function handleAttachFiles() {
+  const fileInput = $('attach-file-input');
+  fileInput.value = '';
+  fileInput.click();
+}
+
+$('attach-file-input').addEventListener('change', (e) => {
+  const files = e.target.files;
+  if (!files || files.length === 0) return;
+  const names = Array.from(files).map(f => f.name);
+  appendSystemMsg('Attached: ' + names.join(', '));
+  // Insert file names into the input for reference
+  chatInput.value += (chatInput.value ? ' ' : '') + '[Attached: ' + names.join(', ') + ']';
+  chatInput.focus();
+});
+
+async function handleAgentMode() {
+  openDynamicModal('Agent Mode', '<div class="dynamic-modal-loading">Loading modes...</div>', '');
+  try {
+    // Load current mode and available modes in parallel
+    const [modesRes, currentRes] = await Promise.all([
+      fetch('/api/modes'),
+      fetch('/api/mode/current')
+    ]);
+    const modesData = await modesRes.json();
+    const currentData = await currentRes.json();
+    const modes = modesData.modes || modesData || [];
+    const currentMode = currentData.mode || currentData.current || 'auto';
+
+    if (!Array.isArray(modes) || modes.length === 0) {
+      // Fallback: show default modes
+      const defaultModes = [
+        { id: 'auto', name: 'Auto', description: 'Automatically select the best mode' },
+        { id: 'code', name: 'Code', description: 'Focused on code generation and editing' },
+        { id: 'chat', name: 'Chat', description: 'General conversation mode' },
+        { id: 'agent', name: 'Agent', description: 'Autonomous agent with tool use' }
+      ];
+      renderModeList(defaultModes, currentMode);
+    } else {
+      renderModeList(modes, currentMode);
+    }
+  } catch (err) {
+    // Fallback on error: show default modes
+    const defaultModes = [
+      { id: 'auto', name: 'Auto', description: 'Automatically select the best mode' },
+      { id: 'code', name: 'Code', description: 'Focused on code generation and editing' },
+      { id: 'chat', name: 'Chat', description: 'General conversation mode' },
+      { id: 'agent', name: 'Agent', description: 'Autonomous agent with tool use' }
+    ];
+    renderModeList(defaultModes, 'auto');
+  }
+}
+
+function renderModeList(modes, currentMode) {
+  let html = '<ul class="dynamic-modal-list">';
+  modes.forEach(m => {
+    const id = m.id || m.name || m;
+    const name = m.name || m.id || m;
+    const desc = m.description || '';
+    const isActive = (String(id).toLowerCase() === String(currentMode).toLowerCase());
+    html += `<li class="${isActive ? 'active-item' : ''}" data-mode-id="${escapeAttr(String(id))}">
+      <span style="font-size:16px;">&#129302;</span>
+      <span style="flex:1;">
+        <strong>${escapeHtml(String(name))}</strong>
+        ${desc ? '<br><span style="font-size:11px;color:var(--text-muted);">' + escapeHtml(desc) + '</span>' : ''}
+      </span>
+      ${isActive ? '<span class="dropdown-item-badge">current</span>' : ''}
+    </li>`;
+  });
+  html += '</ul>';
+  $('dynamic-modal-body').innerHTML = html;
+  $('dynamic-modal-footer').innerHTML = '';
+
+  // Click handler for selecting a mode
+  $('dynamic-modal-body').querySelectorAll('[data-mode-id]').forEach(li => {
+    li.addEventListener('click', async () => {
+      const modeId = li.dataset.modeId;
+      try {
+        const r = await fetch('/api/mode/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: modeId })
+        });
+        if (r.ok) {
+          const badge = $('current-mode-badge');
+          if (badge) badge.textContent = modeId;
+          appendSystemMsg('Mode changed to: ' + modeId);
+          closeDynamicModal();
+        } else {
+          const j = await r.json();
+          appendErrorMsg('Failed to set mode: ' + (j.message || j.error || 'Unknown error'));
+        }
+      } catch (err) {
+        appendErrorMsg('Failed to set mode: ' + String(err));
+      }
+    });
+  });
+}
+
+// ─── Load Sessions from API ─────────────────────────────────────────
+async function loadSessions() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    // Populate from active sessions if the API provides them
+    if (j.active_sessions && Array.isArray(j.active_sessions)) {
+      j.active_sessions.forEach(s => {
+        const id = typeof s === 'string' ? s : (s.id || s.session_id || '');
+        if (id) addSessionToList(id);
+      });
+    }
+  } catch (err) {
+    console.warn('Could not load sessions:', err);
+  }
+  // Always show current session if we have one
+  if (State.session) addSessionToList(State.session);
+}
+
 // ─── Boot ────────────────────────────────────────────────────────────
 async function boot() {
   applyTheme(State.currentTheme);
+  updateProjectBadge();
   refreshStatus();
   loadExtensions();
+  loadSessions();
 
   try {
     const r = await fetch('/api/auth-check');
@@ -2049,12 +2449,13 @@ async function boot() {
     connect();
   }
 
-  // Track sessions
-  if (State.session) addSessionToList(State.session);
-
-  // Watch for session changes
-  const origSetSession = setSession;
-  const _origSetSession = setSession;
+  // Load current agent mode badge
+  try {
+    const r = await fetch('/api/mode/current');
+    const j = await r.json();
+    const badge = $('current-mode-badge');
+    if (badge && (j.mode || j.current)) badge.textContent = j.mode || j.current;
+  } catch {}
 }
 
 // Language helper

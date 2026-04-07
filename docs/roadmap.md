@@ -1,7 +1,7 @@
 # GarraIA — Roadmap Completo para Produto AAA
 
 > De gateway multi-canal a plataforma AI lider de mercado.
-> Ultima atualizacao: 2026-04-06
+> Ultima atualizacao: 2026-04-07
 
 ---
 
@@ -13,21 +13,29 @@
 
 ---
 
-## Nota Competitiva Atual: 8.2/10
+## Nota Competitiva Atual: 7.5/10
 
 | Dimensao | GarraIA | LobeChat | LibreChat | Open WebUI | OpenClaw |
 |----------|---------|----------|-----------|------------|----------|
-| UI/UX | 8 | 9 | 8 | 8 | 6 |
+| UI/UX | 6 | 9 | 8 | 8 | 6 |
 | Multi-Provider | 9 | 9 | 9 | 8 | 8 |
-| Plugins/Extensoes | 8 | 9 | 8 | 7 | 9 |
+| Plugins/Extensoes | 7 | 9 | 8 | 7 | 9 |
 | Memoria/Contexto | 8 | 7 | 6 | 7 | 5 |
-| Multi-Canal | 10 | 1 | 1 | 2 | 9 |
-| Dev Experience | 8 | 8 | 8 | 6 | 5 |
-| Comunidade | 4 | 8 | 7 | 9 | 10 |
-| Producao | 8 | 8 | 8 | 9 | 6 |
-| **MEDIA** | **8.2** | **7.9** | **7.1** | **7.3** | **7.1** |
+| Multi-Canal | 9 | 1 | 1 | 2 | 9 |
+| Dev Experience | 7 | 8 | 8 | 6 | 5 |
+| Comunidade | 3 | 8 | 7 | 9 | 10 |
+| Producao | 7 | 8 | 8 | 9 | 6 |
+| **MEDIA** | **7.0** | **7.9** | **7.1** | **7.3** | **7.1** |
 
 **Meta:** Chegar a 8.5/10 ate 2027-Q1.
+
+---
+
+## Legenda de Status
+
+- [x] Concluido e funcional
+- [~] Backend pronto, frontend parcial ou nao integrado
+- [ ] Nao implementado
 
 ---
 
@@ -44,7 +52,7 @@
 
 ---
 
-### Fase 1 — Web UI AAA (Concluida 2026-04-06)
+### Fase 1 — Web UI (Backend 2026-04-06, Frontend em progresso)
 **Objetivo:** Elevar UI/UX de 5/10 para 8/10
 **Impacto:** Desbloqueia adocao por usuarios nao-tecnicos
 
@@ -52,142 +60,144 @@
 - [x] Redesenhar `webchat.html` com layout moderno (sidebar + chat + painel direito)
 - [x] Componente de mensagem com Markdown rendering, syntax highlighting, copy button
 - [x] Streaming de respostas via SSE/WebSocket com animacao de digitacao
-- [x] Suporte a temas: Light, Dark, Brasil, Custom
+- [x] Suporte a temas: Light, Dark, Brasil, Dracula, Monokai, Nord
 - [x] Responsivo (mobile-first design)
 
 #### 1.2 Barra de Ferramentas do Chat
-- [x] **Botao "+" (Recursos)** ao lado do campo de digitacao:
-  - Selecionar pasta/projeto para contexto (`working_dir`)
-  - Criar novo projeto (nome + caminho)
-  - Navegar pastas do sistema (file picker)
-  - Anexar arquivos/imagens ao chat
-  - Selecionar modo do agente (code, review, debug, auto)
-- [x] **Botao "Extensoes" (puzzle icon)** ao lado do botao enviar:
-  - Adicionar/remover MCP servers
-  - Gerenciar plugins WASM
-  - Configurar skills
-  - Ver tools disponiveis
-  - Toggle tool_sharing OpenClaw
+- [~] **Botao "+" (Recursos)** — HTML existe, event listeners parciais:
+  - [~] Selecionar pasta/projeto para contexto (`working_dir`) — API pronta, UI parcial
+  - [~] Criar novo projeto (nome + caminho) — API pronta, UI parcial
+  - [~] Navegar pastas do sistema (file picker) — API pronta, UI parcial
+  - [ ] Anexar arquivos/imagens ao chat — nao implementado
+  - [~] Selecionar modo do agente (code, review, debug, auto) — API pronta, UI parcial
+- [~] **Botao "Extensoes" (puzzle icon)** — carrega MCP/tools/skills:
+  - [x] Listar MCP servers
+  - [~] Listar tools (endpoint corrigido /api/mcp/tools)
+  - [~] Listar skills
+  - [ ] Gerenciar plugins WASM via UI
+  - [ ] Toggle tool_sharing OpenClaw via UI
 
 #### 1.3 Conceito de Projeto/Pasta
 - [x] Adicionar campo `working_dir: Option<String>` em `SessionState`
 - [x] Adicionar campo `project_name: Option<String>` em `SessionState`
-- [x] API: `POST /api/sessions` aceitar `{ working_dir, project_name }`
+- [x] API: `POST /api/sessions/with-project` aceitar `{ working_dir, project_name }`
 - [x] API: `POST /api/projects` — criar/listar projetos
 - [x] API: `GET /api/projects/{id}/files` — listar arquivos do projeto
 - [x] Propagar `working_dir` para `ToolContext` (bash_tool, file_read, file_write)
-- [x] Restringir tools ao escopo da pasta selecionada (sandbox)
-- [x] UI: Arvore de arquivos no painel lateral direito
-- [x] UI: Breadcrumb mostrando projeto/pasta atual
+- [x] Seguranca: paths nao podem escapar do `working_dir` (path traversal protection)
+- [~] UI: Arvore de arquivos no painel lateral direito — estrutura existe, wiring parcial
+- [~] UI: Breadcrumb mostrando projeto/pasta atual — estrutura existe, wiring parcial
 
 #### 1.4 Skins/Temas
-- [x] Sistema de skins via CSS variables (ja existe parcialmente: light/dark/brasil)
+- [x] Sistema de skins via CSS variables
 - [x] API: `GET /api/skins` — listar skins disponiveis
 - [x] API: `POST /api/skins` — salvar skin customizada
-- [x] Skin editor visual (color picker + preview)
-- [x] Pack de skins: Dracula, Monokai, Solarized, Nord, GarraIA Classic
+- [x] Skin editor visual (color picker + preview) — funcional
+- [x] Pack de skins: Dracula, Monokai, Nord, Light, Dark, Brasil
 - [x] Skins exportaveis/importaveis como JSON
 
 #### 1.5 Admin Panel Upgrade
-- [x] Dashboard com metricas em tempo real (sessoes, mensagens/min, latencia)
-- [x] Graficos de uso por provider/canal
-- [x] Gerenciamento de usuarios com RBAC
-- [x] Configuracao de canais via UI (sem editar config.yml)
+- [x] Dashboard com metricas (sessoes ativas, providers, alertas)
+- [x] Graficos de uso por provider/canal (Chart.js)
+- [~] Gerenciamento de usuarios com RBAC — backend pronto, UI basica
+- [~] Configuracao de canais via UI — formulario existe, sem persistencia
 - [x] Log viewer com filtros e busca
 
 ---
 
-### Fase 2 — Projetos e Contexto (Concluida 2026-04-06)
+### Fase 2 — Projetos e Contexto (Backend concluido 2026-04-06)
 **Objetivo:** Permitir que usuarios trabalhem em projetos especificos
 **Impacto:** Diferenciacao critica vs concorrentes
 
 #### 2.1 Sistema de Projetos
 - [x] Tabela `projects` no SQLite: id, name, path, description, created_at, owner_id
-- [x] CRUD completo de projetos
+- [x] CRUD completo de projetos (project_store.rs, 15 testes)
 - [x] Projeto associado a sessao (1:N — muitas sessoes por projeto)
-- [x] Indexacao automatica de arquivos do projeto (file tree cache)
 - [x] `.garraignore` respeitado na indexacao
 
 #### 2.2 Contexto de Pasta
 - [x] `BashTool` usa `working_dir` como CWD quando definido
 - [x] `FileReadTool` e `FileWriteTool` resolvem paths relativos ao projeto
 - [x] `GitDiffTool` opera no repositorio do projeto
-- [x] Seguranca: paths nao podem escapar do `working_dir` (path traversal protection)
+- [x] Seguranca: `ProjectToolContext` com path traversal protection (5 testes)
 
 #### 2.3 RAG por Projeto
-- [x] Ingestao automatica de arquivos do projeto (markdown, codigo, docs)
-- [x] Embedding incremental (so re-indexa arquivos alterados)
-- [x] Busca semantica scoped ao projeto ativo
-- [x] UI: Upload de documentos via drag-and-drop
+- [x] Tabela `project_files` com embedding BLOB e content_hash
+- [x] Embedding incremental (needs_reindex via content_hash)
+- [x] Busca semantica via cosine similarity (search_project_files)
+- [~] UI: Upload de documentos via drag-and-drop — nao wired
 
 #### 2.4 Templates de Projeto
-- [x] Templates pre-configurados: "Rust Crate", "Flutter App", "Web Frontend", "API Backend"
-- [x] Cada template inclui: system prompt customizado, tools habilitadas, modo default
-- [x] Salvar projeto como template para reutilizar
+- [x] Tabela `project_templates` com system_prompt, tools_enabled, default_mode
+- [x] CRUD de templates + create_project_from_template
+- [~] UI para selecionar/criar templates — nao implementado
 
 ---
 
-### Fase 3 — Plugin Marketplace e MCP (Concluida 2026-04-06)
+### Fase 3 — Plugin Marketplace e MCP (Backend concluido 2026-04-06)
 **Objetivo:** Elevar Plugins de 6/10 para 8/10
 **Impacto:** Ecossistema de extensoes
 
 #### 3.1 Plugin Registry
-- [x] Registro central de plugins (JSON manifest)
-- [x] `POST /api/plugins/install` — instalar plugin por URL ou nome
-- [x] `GET /api/plugins` — listar instalados com status
-- [x] `DELETE /api/plugins/{id}` — desinstalar
-- [x] Versionamento (semver) com auto-update opcional
+- [x] Registro central de plugins com JSON manifest
+- [x] API: install, list, get, delete, toggle — todos funcionais
+- [x] Versionamento (semver) com comparacao
 
 #### 3.2 MCP Marketplace
-- [x] Catalogo de MCP servers populares (filesystem, github, postgres, slack, notion)
-- [x] One-click install de MCP servers
-- [x] UI de configuracao por MCP (formulario com campos dinamicos)
-- [x] Health dashboard por MCP server
+- [x] Catalogo built-in de 8 MCP servers populares
+- [x] API: one-click install, health check, config-schema
+- [~] UI de configuracao por MCP — backend pronto, UI nao wired
 
 #### 3.3 Skills Editor
-- [x] Editor visual de skills (SKILL.md)
-- [x] Galeria de skills da comunidade
-- [x] Importar/exportar skills
-- [x] Triggers automaticos (e.g., "ao abrir projeto X, ativar skill Y")
+- [x] API: CRUD de skills, import/export, triggers — todos funcionais
+- [~] Editor visual de skills — nao implementado no frontend
+- [~] Galeria de skills da comunidade — nao implementado
 
 #### 3.4 WASM Plugin SDK
-- [x] Documentacao do Plugin SDK (Rust -> WASM)
-- [x] Template de plugin com `cargo generate`
-- [x] Exemplos: "translator", "code-formatter", "summarizer"
-- [x] Publicacao de plugins via `garraia plugin publish`
+- [x] Documentacao do Plugin SDK (docs/src/guides/plugin-sdk.md)
+- [x] Host functions definidas (sdk/host_functions.rs)
+- [x] Plugin trait definido (sdk/plugin_trait.rs)
+- [~] Template de plugin com `cargo generate` — docs existem, template nao criado
+- [~] Publicacao via `garraia plugin publish` — comando CLI nao implementado
 
 ---
 
-### Fase 4 — Multi-Canal Nativo (Concluida 2026-04-06)
+### Fase 4 — Multi-Canal Nativo (Estrutura 2026-04-06)
 **Objetivo:** Consolidar lideranca multi-canal (9/10 -> 10/10)
 **Impacto:** Diferenciador unico vs 95% dos concorrentes
 
-#### 4.1 Canais Nativos OpenClaw-Style
-- [x] WhatsApp Business API (nativo, sem bridge)
-- [x] Signal (via signal-cli REST API)
-- [x] Google Chat (Workspace API)
-- [x] Microsoft Teams (Graph API)
-- [x] Matrix/Element (Matrix SDK)
-- [x] LINE (Messaging API)
-- [x] IRC (tokio-based)
+#### 4.1 Canais Nativos
+- [x] WhatsApp Business API (canal existente, funcional)
+- [x] Telegram (canal existente, funcional com voz)
+- [x] Discord (canal existente, slash commands)
+- [x] Slack (canal existente, Socket Mode)
+- [x] iMessage (macOS only, funcional)
+- [~] Google Chat — struct implementada, nao testada em producao
+- [~] Microsoft Teams — struct implementada, nao testada
+- [~] Matrix/Element — struct implementada, nao testada
+- [~] LINE — struct implementada, nao testada
+- [~] IRC — struct implementada com parser, nao testada
+- [~] Signal — struct implementada, nao testada
 
 #### 4.2 Canal Bridge (OpenClaw Pattern)
-- [x] WebSocket bridge para OpenClaw daemon (ja implementado)
-- [x] Fallback: se canal nativo falhar, rota via OpenClaw
-- [x] Metricas de latencia por canal
-- [x] Auto-discovery de canais OpenClaw disponiveis
+- [x] WebSocket bridge para OpenClaw daemon
+- [x] Fallback routing (send_with_fallback)
+- [x] ChannelMetrics com AtomicChannelMetrics (lock-free)
 
 #### 4.3 Unified Inbox
-- [x] UI: Inbox unificado mostrando todas as mensagens de todos os canais
-- [x] Filtro por canal, usuario, data
-- [x] Responder diretamente de qualquer canal
-- [x] Notificacoes cross-canal
+- [~] UI: sidebar mostra sessoes de todos os canais — parcial
+- [ ] Filtro por canal, usuario, data
+- [ ] Responder diretamente de qualquer canal na UI
+- [ ] Notificacoes cross-canal na UI
 
 #### 4.4 Voice Native
-- [x] Whisper STT integrado (local ou API)
-- [x] TTS via Chatterbox/ElevenLabs/Kokoro
-- [x] Voice mode no Web UI (gravar e enviar audio)
-- [x] Transcricao automatica de audios recebidos
+- [x] Whisper STT integrado (whisper.cpp server CUDA, large-v3-turbo)
+- [x] TTS via LM Studio (vieneu-tts-v2-turbo) + Chatterbox + Hibiki
+- [x] TtsSynthesizer trait polimorfco com 3 providers
+- [x] WhisperClient dual-endpoint (whisper.cpp /inference + OpenAI /v1/audio)
+- [x] Health check condicional por provider ativo
+- [~] Voice mode no Web UI (gravar e enviar audio) — nao wired
+- [x] Transcricao automatica de audios recebidos (Telegram)
 
 ---
 
@@ -195,129 +205,132 @@
 **Objetivo:** Sistema de agentes de classe mundial
 **Impacto:** Compete com Claude Code, Cursor, OpenClaw agents
 
-#### 5.1 Modos de Execucao (GAR-219~240)
-- [x] AgentMode enum completo (ask, code, debug, review, auto, custom)
+#### 5.1 Modos de Execucao
+- [x] AgentMode enum (Ask, Code, Debug, Review, Auto, Custom)
 - [x] ToolPolicyEngine — quais tools cada modo pode usar
-- [x] Auto Router — deteccao automatica de modo baseado na mensagem
-- [x] LLM Router opcional — usa LLM para decidir modo
-- [x] Persistencia de modo por sessao
+- [x] AutoRouter — deteccao por keywords
+- [x] LlmRouter — deteccao via LLM (opcional)
+- [x] SessionModeMetadata — persistencia de modo por sessao
 
 #### 5.2 Multi-Agent Orchestration
-- [x] Agentes paralelos (2+ agentes trabalhando simultaneamente)
-- [x] Agente coordinator (delega tarefas entre sub-agentes)
-- [x] Pipeline de agentes (output de A -> input de B)
-- [x] Agentes com memoria isolada (sandbox de contexto)
+- [x] AgentCoordinator com spawn_agent + cancel token
+- [x] parallel_execute (respeita max_concurrent)
+- [x] pipeline_execute (output A -> input B, fail-fast)
 
-#### 5.3 Code Agent
-- [x] `repo_search` tool — busca semantica no codigo
-- [x] `list_dir` tool — listagem inteligente de diretorio
-- [x] `git_diff` tool — diff com contexto
-- [x] `run_tests` tool — executa testes e reporta resultado
-- [x] `code_review` tool — review automatico de mudancas
+#### 5.3 Code Agent (4 novas tools)
+- [x] `repo_search` tool — grep + file pattern (usa rg)
+- [x] `list_dir` tool — tree com file sizes, skip build dirs
+- [x] `run_tests` tool — auto-detect framework (cargo/flutter/npm/pytest)
+- [x] `code_review` tool — diff -> LLM review com severity
 
 #### 5.4 Scheduled Agents
-- [x] Cron-based execution (ja parcial)
-- [x] Webhook triggers
-- [x] Event-driven agents (e.g., "quando PR for criado, rode review")
-- [x] Dashboard de execucoes agendadas
+- [x] TriggerRegistry com on_webhook e on_event
+- [x] EventType: PrCreated, Push, IssueOpened, Custom
+- [x] list_scheduled() com dashboard data
+- [~] UI dashboard de execucoes agendadas — nao implementado
 
 ---
 
-### Fase 6 — Desktop e Mobile (Concluida 2026-04-06)
+### Fase 6 — Desktop e Mobile (Estrutura 2026-04-06)
 **Objetivo:** Apps nativos competitivos
 **Impacto:** Fecha gap com Jan.ai, Chatbox, LobeChat
 
 #### 6.1 Desktop (Tauri v2)
-- [x] Tray icon com quick-chat
-- [x] Hotkey global (e.g., Ctrl+Space) para abrir chat inline
-- [x] File picker nativo para selecionar projeto/pasta
-- [x] System notifications para mensagens de canais
-- [x] Auto-start com Windows
-- [x] Auto-update via releases do GitHub
+- [x] Tray icon com quick-chat e menu completo
+- [x] Hotkey global (Alt+G overlay, Ctrl+Space quick-chat)
+- [x] File picker nativo (select_project_folder, select_files)
+- [x] System notifications (tauri-plugin-notification)
+- [x] Auto-start com Windows (toggle em Settings UI)
+- [x] Auto-update via GitHub releases (tauri-plugin-updater)
+- [x] Quick-chat HTML + Settings HTML
 
 #### 6.2 Mobile (Flutter)
-- [x] Chat screen redesenhado com bolhas modernas
-- [x] Mascote Garra com animacoes Rive
-- [x] Push notifications via Firebase
-- [x] Offline message queue (enfileirar quando sem internet)
-- [x] Voice input nativo (gravar + enviar)
-- [x] Biometric auth (fingerprint/face)
-- [x] Deep links para abrir sessao especifica
+- [x] Chat screen com bolhas modernas, markdown, timestamps
+- [x] Mascote Garra com 4 animacoes (idle/thinking/talking/happy)
+- [~] Push notifications — stub criado, Firebase nao configurado
+- [x] Offline message queue (sqflite + connectivity_plus + auto-retry)
+- [x] Voice input widget (hold-to-record, waveform, transcricao)
+- [x] Biometric auth (local_auth + PIN fallback)
+- [x] Deep links (garraia://chat/{sessionId})
+- [x] Flutter analyze: 0 issues
 
 #### 6.3 Cross-Platform Sync
-- [x] Sessao compartilhada entre Web, Desktop e Mobile
-- [x] Historico sincronizado em real-time
-- [x] Notificacao em um device cancela nos outros
-- [x] QR code para parear dispositivos
+- [x] SyncService com WebSocket + auto-reconnect + heartbeat
+- [x] QR code pairing screen (qr_flutter + mobile_scanner)
+- [~] Sessao compartilhada real-time — struct pronta, servidor nao wired
+- [ ] Notificacao cross-device cancelation
 
 ---
 
-### Fase 7 — Seguranca e Enterprise (Concluida 2026-04-06)
+### Fase 7 — Seguranca e Enterprise (Backend 2026-04-06)
 **Objetivo:** Production-ready para empresas
 **Impacto:** Desbloqueia mercado enterprise
 
 #### 7.1 Seguranca
-- [x] Audit log completo (quem, quando, o que, resultado)
-- [x] RBAC granular (admin, operator, viewer, custom roles)
-- [x] OAuth2/OIDC login (Google, GitHub, Azure AD)
-- [x] 2FA (TOTP)
-- [x] Rate limiting por usuario/IP/API key
-- [x] Content sanitization (GAR-209) — anti-prompt-injection
-- [x] SSL/TLS nativo (sem nginx na frente)
+- [x] Audit log completo (AuditEntry com user, action, target, result, IP)
+- [x] RBAC granular (Permission enum, CustomRole, has_permission)
+- [x] OAuth2/OIDC (Google, GitHub, Azure AD) — routes + handlers
+- [x] 2FA TOTP (generate, verify, QR URI) — routes + handlers
+- [x] Rate limiting (RateLimiter, sliding window, configurable)
+- [x] Content sanitization (anti-prompt-injection patterns)
+- [~] Rate limiting em /auth/login e /auth/register — implementado mas nao wired como middleware
+- [~] OAuth state TTL — implementado (10min eviction)
+- [ ] SSL/TLS nativo built-in (atualmente via reverse proxy)
 
 #### 7.2 Observabilidade
-- [x] Metricas Prometheus (`/metrics`)
-- [x] Tracing distribuido (OpenTelemetry)
-- [x] Dashboard Grafana pre-configurado
-- [x] Alertas configuraveis (latencia, erros, uso)
+- [x] Metricas Prometheus (`GET /metrics`) — 15 counters/gauges
+- [x] OtelConfig + init_tracing + span helpers
+- [x] Dashboard Grafana pre-configurado (deploy/grafana/dashboard.json)
+- [~] Alertas configuraveis — estrutura pronta, nao wired
 
 #### 7.3 Deploy
-- [x] Dockerfile otimizado (multi-stage, <50MB image)
-- [x] docker-compose.yml com todos os servicos
-- [x] Helm chart para Kubernetes
-- [x] Terraform module para AWS/GCP/Azure
-- [x] systemd unit file para bare metal
-- [x] CI/CD templates (GitHub Actions, GitLab CI)
+- [x] Dockerfile otimizado multi-stage (builder + runtime)
+- [x] docker-compose.yml (app + postgres + redis opcionais)
+- [x] Helm chart completo (deploy/helm/garraia/)
+- [x] Terraform module AWS ECS Fargate (deploy/terraform/)
+- [x] systemd unit file (deploy/systemd/garraia.service)
+- [x] CI/CD: ci.yml + release.yml + deploy.yml (multi-arch Docker)
 
 #### 7.4 Compliance
-- [x] GDPR: export/delete de dados do usuario
-- [x] SOC 2: audit log + access control
-- [x] EU AI Act: transparencia sobre modelo usado
-- [x] Data residency: configuracao de regiao para dados
+- [x] GDPR: export_user_data + delete_user_data (cascade delete)
+- [x] data_retention table com TTL
+- [~] SOC 2 audit log — log existe, dashboard nao
+- [~] EU AI Act transparencia — campo model nos responses, nao formalizado
 
 ---
 
-### Fase 8 — Comunidade e Ecossistema (Concluida 2026-04-06)
+### Fase 8 — Comunidade e Ecossistema (Parcial 2026-04-06)
 **Objetivo:** Elevar Comunidade de 2/10 para 6/10
 **Impacto:** Sustentabilidade do projeto
 
 #### 8.1 Documentacao
-- [x] Site de documentacao (mdBook ou Docusaurus)
-- [x] Getting Started em <5 minutos
-- [x] Guias: "Conectar Telegram", "Adicionar LM Studio", "Criar Plugin"
-- [x] API Reference completa (OpenAPI/Swagger)
-- [x] Video tutoriais (YouTube/Loom) — pendente gravacao
+- [x] Site de documentacao (mdBook configurado, book.toml)
+- [x] Getting Started em <5 minutos (docs/src/getting-started.md)
+- [x] Guias: Conectar Telegram, Adicionar LM Studio, Criar Plugin
+- [x] API Reference completa (docs/src/api-reference.md)
+- [ ] Video tutoriais (YouTube/Loom)
 
 #### 8.2 Comunidade
-- [x] Discord server oficial — pendente criacao manual
-- [x] GitHub Discussions habilitado — templates criados
+- [x] GitHub Discussions habilitado + templates
 - [x] Contributing guide (CONTRIBUTING.md)
 - [x] Issue templates (bug, feature, plugin)
-- [x] Hacktoberfest participation — pendente inscricao
-- [x] Newsletter mensal — pendente setup
+- [x] PR template (.github/PULL_REQUEST_TEMPLATE.md)
+- [ ] Discord server oficial
+- [ ] Newsletter mensal
 
 #### 8.3 Marketing
-- [x] Landing page (garraia.org) — pendente deploy
-- [x] Blog com posts tecnicos — pendente conteudo
-- [x] Benchmarks publicados (vs OpenClaw, vs LibreChat)
-- [x] Case studies (3-5 deployments reais) — pendente
-- [x] Presenca em Hacker News, Reddit r/selfhosted, r/LocalLLaMA — pendente
+- [x] Benchmarks documentados (docs/src/benchmarks.md)
+- [x] Pricing page (docs/src/pricing.md)
+- [ ] Landing page (garraia.org)
+- [ ] Blog com posts tecnicos
+- [ ] Case studies
+- [ ] Presenca em Hacker News, Reddit
 
 #### 8.4 Monetizacao (Opcional)
-- [x] GarraIA Cloud (hosted version) — pendente infraestrutura
-- [x] Planos: Free (1 canal), Pro ($10/mes, unlimited), Enterprise (custom) — docs criados
-- [x] Marketplace de plugins premium — infraestrutura pronta
-- [x] Suporte prioritario para enterprise — pendente
+- [~] Docs de planos (Free/Pro/Enterprise) criados
+- [ ] GarraIA Cloud (hosted version)
+- [ ] Marketplace de plugins premium
+- [ ] Suporte prioritario enterprise
 
 ---
 
@@ -325,14 +338,14 @@
 
 | Marco | Data Alvo | Status |
 |-------|-----------|--------|
-| **v0.3 — Web UI** | 2026-05 | CONCLUIDO (2026-04-06) |
-| **v0.4 — Projetos** | 2026-06 | CONCLUIDO (2026-04-06) |
-| **v0.5 — Plugins** | 2026-07 | CONCLUIDO (2026-04-06) |
-| **v0.6 — Canais** | 2026-08 | CONCLUIDO (2026-04-06) |
-| **v0.7 — Agentes** | 2026-09 | CONCLUIDO (2026-04-06) |
-| **v0.8 — Apps** | 2026-11 | CONCLUIDO (2026-04-06) |
-| **v0.9 — Enterprise** | 2027-01 | CONCLUIDO (2026-04-06) |
-| **v1.0 — GA** | 2027-03 | Em progresso — pendente comunidade/marketing externo |
+| **v0.3 — Web UI** | 2026-05 | Backend OK, frontend parcial |
+| **v0.4 — Projetos** | 2026-06 | Backend + DB + testes OK |
+| **v0.5 — Plugins** | 2026-07 | Backend OK, UI nao wired |
+| **v0.6 — Canais** | 2026-08 | 5 funcionais + 6 structs prontas |
+| **v0.7 — Agentes** | 2026-09 | CONCLUIDO (130 testes) |
+| **v0.8 — Apps** | 2026-11 | Desktop OK, Mobile 90% |
+| **v0.9 — Enterprise** | 2027-01 | Backend OK, wiring parcial |
+| **v1.0 — GA** | 2027-03 | Em progresso |
 
 ---
 
@@ -341,34 +354,33 @@
 | Metrica | Anterior | Atual | Meta v1.0 |
 |---------|----------|-------|-----------|
 | GitHub Stars | ~100 | ~100 | 2,000 |
-| Nota Competitiva | 6.6/10 | 8.2/10 | 8.5/10 |
+| Nota Competitiva | 6.6/10 | 7.0/10 | 8.5/10 |
 | Providers Suportados | 14 | 14 | 20 |
-| Canais Nativos | 5 | 12 | 12 |
-| Plugins Registrados | 0 | 8 (MCP) | 50 |
+| Canais Funcionais | 5 | 5 (+6 structs) | 12 |
+| Plugins Registrados | 0 | 8 (MCP catalog) | 50 |
 | Skills Disponiveis | 13 | 13 | 50 |
-| MCP Templates | 5 | 8 | 30 |
-| Testes (coverage) | ~30% | ~45% | 80% |
+| Testes | ~120 | ~195 | 500 |
 | Docs Pages | ~5 | ~30 | 100 |
+
+---
+
+## Prioridades Imediatas
+
+1. **Web UI wiring** — Conectar botoes da sidebar as APIs existentes
+2. **Voice UI** — Gravar audio no browser e enviar ao backend
+3. **Testes dos novos canais** — Testar Google Chat, Teams, Matrix em prod
+4. **Security wiring** — Rate limiter em auth, CORS restrito
+5. **Mobile Firebase** — Configurar push notifications reais
+6. **v0.3 release** — Tag + binarios + changelog
 
 ---
 
 ## Dependencias Criticas
 
 ```
-Fase 1.3 (Projetos API) → Fase 2.1 (Sistema de Projetos) ✅
-Fase 1.2 (Botoes UI) → Fase 3.2 (MCP Marketplace UI) ✅
-Fase 2.2 (Contexto Pasta) → Fase 5.3 (Code Agent) ✅
-Fase 3.4 (Plugin SDK) → Fase 8.3 (Marketing de ecossistema) ✅
-Fase 5.1 (Modos) → Fase 5.2 (Multi-Agent) ✅
-Fase 7.1 (Seguranca) → Fase 7.4 (Compliance) ✅
+Fase 1.2 (Botoes UI wiring) → Fase 3.2 (MCP Marketplace UI)
+Fase 2.2 (Contexto Pasta) → Fase 5.3 (Code Agent) CONCLUIDO
+Fase 5.1 (Modos) → Fase 5.2 (Multi-Agent) CONCLUIDO
+Fase 7.1 (Seguranca) → Fase 7.4 (Compliance) Backend OK
+Web UI wiring → v0.3 release
 ```
-
----
-
-## Proximos Passos (pos-roadmap)
-
-1. **Comunidade externa** — Criar Discord server, gravar video tutoriais, publicar no Reddit/HN
-2. **Testes E2E** — Aumentar cobertura de testes de integracao
-3. **Performance** — Benchmark real e otimizacao de hot paths
-4. **Seguranca** — Aplicar recomendacoes da auditoria (JWT secret, CORS, rate limiting em auth)
-5. **v1.0 GA** — Polimento final, docs completos, release oficial
