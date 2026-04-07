@@ -16,6 +16,8 @@ use tracing::info;
 
 use crate::traits::{Channel, ChannelStatus};
 use garraia_common::{Error, Message, MessageContent, Result};
+#[cfg(test)]
+use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
 
 pub use config::TeamsConfig;
 
@@ -249,5 +251,52 @@ mod tests {
         assert_eq!(channel.channel_type(), "teams");
         assert_eq!(channel.display_name(), "Microsoft Teams");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn send_message_missing_metadata() {
+        let on_msg: TeamsOnMessageFn =
+            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = TeamsConfig {
+            app_id: "test-app".into(),
+            app_secret: "test-secret".into(),
+            tenant_id: "test-tenant".into(),
+        };
+        let channel = TeamsChannel::new(config, on_msg);
+        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: TeamsOnMessageFn =
+            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = TeamsConfig {
+            app_id: "test".into(),
+            app_secret: "secret".into(),
+            tenant_id: "tenant".into(),
+        };
+        let channel = TeamsChannel::new(config, on_msg);
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[test]
+    fn display_name_is_microsoft_teams() {
+        let on_msg: TeamsOnMessageFn =
+            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = TeamsConfig {
+            app_id: "a".into(),
+            app_secret: "b".into(),
+            tenant_id: "c".into(),
+        };
+        let channel = TeamsChannel::new(config, on_msg);
+        assert_eq!(channel.display_name(), "Microsoft Teams");
     }
 }

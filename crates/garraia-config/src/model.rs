@@ -96,6 +96,19 @@ pub struct GatewayConfig {
     /// When false (default) the global api_key still works without a session token.
     #[serde(default)]
     pub session_tokens_required: bool,
+
+    /// Allowed CORS origins. Empty = allow all (dev mode).
+    /// Example: ["https://app.garraia.org", "http://localhost:3888"]
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
+    /// Path to TLS certificate file (PEM). Enables HTTPS when set with tls_key_path.
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file (PEM).
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
 }
 
 fn default_session_ttl_secs() -> i64 { 86_400 }
@@ -111,6 +124,9 @@ impl Default for GatewayConfig {
             session_ttl_secs: default_session_ttl_secs(),
             session_idle_secs: default_session_idle_secs(),
             session_tokens_required: false,
+            allowed_origins: Vec::new(),
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }

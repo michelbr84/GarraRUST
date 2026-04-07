@@ -359,4 +359,54 @@ mod tests {
         assert_eq!(channel.display_name(), "Signal");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
     }
+
+    #[tokio::test]
+    async fn send_message_missing_recipient() {
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_from, _name, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = SignalConfig {
+            signal_cli_url: "http://localhost:8080".into(),
+            phone_number: "+1234567890".into(),
+        };
+        let channel = SignalChannel::new(config, on_msg);
+        let msg = Message::text(
+            garraia_common::types::SessionId::from_string("test-session"),
+            garraia_common::types::ChannelId::from_string("test-channel"),
+            garraia_common::types::UserId::from_string("test-user"),
+            garraia_common::MessageDirection::Outgoing,
+            "hello",
+        );
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_from, _name, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = SignalConfig {
+            signal_cli_url: "http://localhost:8080".into(),
+            phone_number: "+0".into(),
+        };
+        let channel = SignalChannel::new(config, on_msg);
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[test]
+    fn display_name_is_signal() {
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_from, _name, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = SignalConfig {
+            signal_cli_url: "http://localhost:8080".into(),
+            phone_number: "+0".into(),
+        };
+        let channel = SignalChannel::new(config, on_msg);
+        assert_eq!(channel.display_name(), "Signal");
+    }
 }

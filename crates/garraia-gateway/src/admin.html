@@ -701,6 +701,7 @@ var pages = {
 
 function navigate(page) {
   if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; }
+  if (auditAutoRefresh !== null) { clearInterval(auditAutoRefresh); auditAutoRefresh = null; }
   if (!pages[page]) page = 'dashboard';
   currentPage = page;
   location.hash = '#' + page;
@@ -1383,36 +1384,130 @@ async function pageTemplates() {
   } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
-// ─── Audit ───────────────────────────────────────────────────────────
-var auditOffset = 0, auditLimit = 25;
+// ─── Audit Log Viewer ────────────────────────────────────────────────
+var auditLogFilter = 'ALL';
+var auditAutoRefresh = null;
+
+function parseLogLine(line) {
+  // Typical tracing format: 2026-04-07T12:34:56.789Z  INFO garraia_gateway::server: Listening on 0.0.0.0:3888
+  // Or: 2026-04-07T12:34:56  WARN target: message
+  var match = line.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+([^:]+):\s*(.*)/);
+  if (match) return { timestamp: match[1], level: match[2], target: match[3].trim(), message: match[4] };
+  // Fallback: try level anywhere
+  var lvlMatch = line.match(/\b(ERROR|WARN|INFO|DEBUG|TRACE)\b/);
+  return { timestamp: '', level: lvlMatch ? lvlMatch[1] : 'INFO', target: '', message: line };
+}
+
+function levelBadgeForLog(level) {
+  var cls = 'badge-info';
+  if (level === 'ERROR') cls = 'badge-error';
+  else if (level === 'WARN') cls = 'badge-warning';
+  else if (level === 'DEBUG' || level === 'TRACE') cls = 'badge-neutral';
+  return el('span', { className: 'badge ' + cls, textContent: level });
+}
+
 async function pageAudit() {
+  if (auditAutoRefresh !== null) { clearInterval(auditAutoRefresh); auditAutoRefresh = null; }
   try {
-    var data = await apiGet('/audit-log?limit=' + auditLimit + '&offset=' + auditOffset);
-    var entries = data.entries || [];
+    var resp = await fetch('/api/logs');
+    var data = await resp.json();
+    var rawLogs = data.logs || '';
+    var lines = rawLogs.split('\n').filter(function(l) { return l.trim().length > 0; });
+    var parsed = lines.map(parseLogLine);
+
     var frag = document.createDocumentFragment();
-    var toolbar = el('div', { className: 'toolbar' });
-    toolbar.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Refresh', onClick: pageAudit }));
-    frag.appendChild(toolbar);
-    var card = el('div', { className: 'card' });
-    if (entries.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No audit entries.' })); }
-    else {
-      var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Timestamp' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Action' }), el('th', { textContent: 'Resource' }), el('th', { textContent: 'Outcome' })])]));
-      var tbody = el('tbody');
-      entries.forEach(e => {
-        var outBadge = e.outcome === 'success' ? el('span', { className: 'badge badge-success', textContent: 'success' }) : el('span', { className: 'badge badge-error', textContent: e.outcome || '-' });
-        tbody.appendChild(el('tr', null, [el('td', { textContent: formatDate(e.timestamp) }), el('td', { textContent: e.username || e.user_id || '-' }), el('td', null, [el('code', { textContent: e.action })]), el('td', { textContent: (e.resource_type || '') + (e.resource_id ? '/' + truncate(e.resource_id, 16) : '') }), el('td', null, [outBadge])]));
+
+    // Toolbar card
+    var toolbarCard = el('div', { className: 'card', style: 'margin-bottom:16px;padding:0;overflow:hidden' });
+    var logToolbar = el('div', { className: 'log-toolbar' });
+
+    // Level filter buttons
+    ['ALL', 'ERROR', 'WARN', 'INFO', 'DEBUG'].forEach(function(level) {
+      var btn = el('button', { className: 'log-filter-btn' + (auditLogFilter === level ? ' active' : ''), textContent: level });
+      btn.addEventListener('click', function() {
+        auditLogFilter = level;
+        document.querySelectorAll('#audit-toolbar .log-filter-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        filterAuditLogs();
       });
-      tbl.appendChild(tbody); card.appendChild(tbl);
+      logToolbar.appendChild(btn);
+    });
+
+    // Refresh button
+    var refreshBtn = el('button', { className: 'btn-secondary btn-sm', textContent: 'Refresh', style: 'margin-left:auto' });
+    refreshBtn.addEventListener('click', function() { pageAudit(); });
+    logToolbar.appendChild(refreshBtn);
+
+    // Auto-refresh toggle
+    var autoLabel = el('label', { style: 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);white-space:nowrap;cursor:pointer;' });
+    var autoCheck = el('input', { type: 'checkbox', checked: true });
+    autoCheck.addEventListener('change', function() {
+      if (autoCheck.checked) {
+        auditAutoRefresh = setInterval(function() { if (currentPage === 'audit') pageAudit(); }, 30000);
+      } else {
+        clearInterval(auditAutoRefresh); auditAutoRefresh = null;
+      }
+    });
+    autoLabel.appendChild(autoCheck);
+    autoLabel.appendChild(document.createTextNode('Auto-refresh (30s)'));
+    logToolbar.appendChild(autoLabel);
+
+    logToolbar.id = 'audit-toolbar';
+    toolbarCard.appendChild(logToolbar);
+    frag.appendChild(toolbarCard);
+
+    // Count badge
+    var countInfo = el('div', { style: 'margin-bottom:8px;font-size:12px;color:var(--text-muted)' });
+    countInfo.textContent = parsed.length + ' log entries';
+    frag.appendChild(countInfo);
+
+    // Table card
+    var card = el('div', { className: 'card', style: 'overflow-x:auto' });
+    if (parsed.length === 0) {
+      card.appendChild(el('div', { className: 'empty-state', textContent: 'No log entries found. Ensure the server is writing to ~/.garraia/garraia.log' }));
+    } else {
+      var tbl = el('table', { id: 'audit-log-table' });
+      tbl.appendChild(el('thead', null, [el('tr', null, [
+        el('th', { textContent: 'Timestamp', style: 'width:200px' }),
+        el('th', { textContent: 'Level', style: 'width:80px' }),
+        el('th', { textContent: 'Target', style: 'width:220px' }),
+        el('th', { textContent: 'Message' })
+      ])]));
+      var tbody = el('tbody');
+      // Show newest first
+      parsed.reverse().forEach(function(entry) {
+        var tr = el('tr');
+        tr.dataset.level = entry.level;
+        tr.appendChild(el('td', { textContent: entry.timestamp, style: 'font-family:var(--mono);font-size:12px;color:var(--text-muted);white-space:nowrap' }));
+        var lvlTd = el('td');
+        lvlTd.appendChild(levelBadgeForLog(entry.level));
+        tr.appendChild(lvlTd);
+        tr.appendChild(el('td', { textContent: entry.target, style: 'font-family:var(--mono);font-size:12px;color:var(--text-secondary)' }));
+        tr.appendChild(el('td', { textContent: entry.message, style: 'font-size:13px;word-break:break-word' }));
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      card.appendChild(tbl);
     }
     frag.appendChild(card);
-    var pag = el('div', { className: 'pagination' });
-    if (auditOffset > 0) pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Previous', onClick: () => { auditOffset = Math.max(0, auditOffset - auditLimit); pageAudit(); } }));
-    pag.appendChild(el('span', { textContent: (auditOffset + 1) + '-' + (auditOffset + entries.length), style: 'color:var(--text-muted);font-size:12px' }));
-    if (entries.length === auditLimit) pag.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Next', onClick: () => { auditOffset += auditLimit; pageAudit(); } }));
-    frag.appendChild(pag);
     renderContent(frag);
-  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
+
+    // Apply current filter
+    filterAuditLogs();
+
+    // Start auto-refresh by default
+    auditAutoRefresh = setInterval(function() { if (currentPage === 'audit') pageAudit(); }, 30000);
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed to load logs: ' + e.message })); }
+}
+
+function filterAuditLogs() {
+  var tbl = document.getElementById('audit-log-table');
+  if (!tbl) return;
+  var rows = tbl.querySelectorAll('tbody tr');
+  rows.forEach(function(row) {
+    if (auditLogFilter === 'ALL') { row.style.display = ''; }
+    else { row.style.display = (row.dataset.level === auditLogFilter) ? '' : 'none'; }
+  });
 }
 
 // ─── Users (Enhanced with RBAC) ──────────────────────────────────────

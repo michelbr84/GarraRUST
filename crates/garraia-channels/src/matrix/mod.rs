@@ -17,6 +17,8 @@ use tracing::{error, info, warn};
 
 use crate::traits::{Channel, ChannelStatus};
 use garraia_common::{Error, Message, MessageContent, Result};
+#[cfg(test)]
+use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
 
 pub use config::MatrixConfig;
 
@@ -374,5 +376,52 @@ mod tests {
         assert_eq!(channel.channel_type(), "matrix");
         assert_eq!(channel.display_name(), "Matrix");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn send_message_missing_room_metadata() {
+        let on_msg: MatrixOnMessageFn =
+            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = MatrixConfig {
+            homeserver_url: "https://matrix.example.org".into(),
+            access_token: "test-token".into(),
+            room_ids: vec!["!room:example.org".into()],
+        };
+        let channel = MatrixChannel::new(config, on_msg);
+        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let result = channel.send_message(&msg).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn initial_status_is_disconnected() {
+        let on_msg: MatrixOnMessageFn =
+            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = MatrixConfig {
+            homeserver_url: "https://matrix.example.org".into(),
+            access_token: "test-token".into(),
+            room_ids: vec![],
+        };
+        let channel = MatrixChannel::new(config, on_msg);
+        assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    #[test]
+    fn display_name_is_matrix() {
+        let on_msg: MatrixOnMessageFn =
+            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+                Box::pin(async { Ok("test".to_string()) })
+            });
+        let config = MatrixConfig {
+            homeserver_url: "https://matrix.example.org".into(),
+            access_token: "test".into(),
+            room_ids: vec![],
+        };
+        let channel = MatrixChannel::new(config, on_msg);
+        assert_eq!(channel.display_name(), "Matrix");
     }
 }
