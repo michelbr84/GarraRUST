@@ -204,17 +204,13 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
             }));
         }
 
-        // Check STT only if provider is NOT lmstudio (lmstudio shares the TTS endpoint)
-        // or if stt_endpoint differs from tts_endpoint
+        // Check STT if stt_endpoint differs from tts_endpoint (separate service)
         let stt_endpoint = state.config.voice.stt_endpoint.clone();
         let tts_endpoint = state.config.voice.tts_endpoint.clone();
         if state.stt_client.is_some() && stt_endpoint != tts_endpoint {
             let t = timeout;
-            let health_url = if provider == "lmstudio" {
-                format!("{}/v1/models", stt_endpoint)
-            } else {
-                format!("{}/health", stt_endpoint)
-            };
+            // whisper.cpp server responds on root /, standalone whisper uses /health
+            let health_url = format!("{}/", stt_endpoint);
             handles.push(tokio::spawn(async move {
                 check_http("whisper-stt", &health_url, t).await
             }));
