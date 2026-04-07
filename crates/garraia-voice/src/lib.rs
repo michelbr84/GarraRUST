@@ -3,7 +3,7 @@
 //! Sistema de voz do GarraIA.
 //!
 //! Arquitetura:
-//!   Whisper Large v3 (STT) → LLM (cérebro) → Hibiki-Zero-3B + MioCodec (TTS)
+//!   Whisper (STT) → LLM (cérebro) → TTS (Chatterbox/Hibiki/LMStudio)
 //!
 //! Interface principal:
 //! ```ignore
@@ -24,3 +24,41 @@ pub use pipeline::{VoiceError, VoiceMetrics, VoicePipeline};
 pub use stt::whisper_client::WhisperClient;
 pub use tts::chatterbox_client::ChatterboxClient;
 pub use tts::hibiki_client::HibikiClient;
+pub use tts::lmstudio_client::LmStudioTtsClient;
+
+/// Trait unificado para provedores TTS.
+///
+/// Retorna bytes de áudio WAV cru.
+#[async_trait::async_trait]
+pub trait TtsSynthesizer: Send + Sync {
+    async fn synthesize_bytes(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError>;
+}
+
+#[async_trait::async_trait]
+impl TtsSynthesizer for ChatterboxClient {
+    async fn synthesize_bytes(&self, text: &str, language: &str) -> Result<Vec<u8>, VoiceError> {
+        self.synthesize(text, Some(language)).await
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsSynthesizer for HibikiClient {
+    async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
+        let tmp = std::env::temp_dir().join(format!("garraia_tts_{}.wav", std::process::id()));
+        self.synthesize(text, &tmp).await?;
+        let bytes = tokio::fs::read(&tmp).await.map_err(|e| VoiceError::Tts(e.to_string()))?;
+        let _ = tokio::fs::remove_file(&tmp).await;
+        Ok(bytes)
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsSynthesizer for LmStudioTtsClient {
+    async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
+        let tmp = std::env::temp_dir().join(format!("garraia_tts_{}.wav", std::process::id()));
+        self.synthesize(text, &tmp).await?;
+        let bytes = tokio::fs::read(&tmp).await.map_err(|e| VoiceError::Tts(e.to_string()))?;
+        let _ = tokio::fs::remove_file(&tmp).await;
+        Ok(bytes)
+    }
+}

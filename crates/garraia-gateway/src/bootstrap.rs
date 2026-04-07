@@ -1441,7 +1441,7 @@ pub fn build_telegram_voice_handler(
                 .await;
 
             // Try to synthesize voice response
-            match tts.synthesize(&response, None).await {
+            match tts.synthesize_bytes(&response, "default").await {
                 Ok(audio_data) => {
                     // Save audio to temp file
                     let audio_path = temp_dir.join(format!("garraia_response_{}.wav", uuid::Uuid::new_v4()));

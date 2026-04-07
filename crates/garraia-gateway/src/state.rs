@@ -46,8 +46,9 @@ pub struct AppState {
     pub openclaw_client: Option<Arc<garraia_channels::OpenClawClient>>,
     /// OpenClaw configuration.
     pub openclaw_config: Option<garraia_channels::OpenClawConfig>,
-    /// Chatterbox TTS client (available when `--with-voice` is used).
-    pub voice_client: Option<Arc<garraia_voice::ChatterboxClient>>,
+    /// TTS client (available when `--with-voice` is used).
+    /// Supports Chatterbox, Hibiki, and LM Studio providers via `dyn TtsSynthesizer`.
+    pub voice_client: Option<Arc<dyn garraia_voice::TtsSynthesizer>>,
     /// Whisper STT client (available when `--with-voice` is used).
     pub stt_client: Option<Arc<garraia_voice::WhisperClient>>,
     /// Cached health check results (updated by background task).

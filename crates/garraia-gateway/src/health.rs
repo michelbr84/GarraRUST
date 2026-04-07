@@ -184,12 +184,14 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
         }
     }
 
-    // Check Chatterbox TTS if voice is configured
+    // Check TTS provider if voice is configured
     if state.voice_client.is_some() {
         let endpoint = state.config.voice.tts_endpoint.clone();
+        let provider = state.config.voice.tts_provider.clone();
         let t = timeout;
+        let check_name = format!("tts-{}", provider);
         handles.push(tokio::spawn(async move {
-            check_http("chatterbox", &format!("{}/", endpoint), t).await
+            check_http(&check_name, &format!("{}/", endpoint), t).await
         }));
     }
 
