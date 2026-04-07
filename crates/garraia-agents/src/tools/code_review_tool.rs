@@ -233,8 +233,6 @@ impl Tool for CodeReviewTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_code_review_schema() {
         // We need a provider to create the tool, but we can test the schema statically

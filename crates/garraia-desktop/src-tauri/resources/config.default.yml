@@ -22,6 +22,12 @@ llm:
     base_url: "http://localhost:1234/v1"
     api_key: "lm-studio"
 
+  # Ollama (servidor local alternativo — fallback automático)
+  ollama:
+    provider: "ollama"
+    model: "llama3.1"
+    base_url: "http://localhost:11434"
+
   # OpenRouter (provedor em nuvem — requer chave de API)
   # Obtenha sua chave em https://openrouter.ai
   # openrouter:
