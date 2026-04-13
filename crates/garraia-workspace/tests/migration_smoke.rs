@@ -114,5 +114,165 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "expected SQLSTATE 23505 (unique_violation), got: {db_err:?}"
     );
 
+    // ─── Migration 002 validation ──────────────────────────────────────────
+    //
+    // `names` and `index_names` were populated earlier via a single query after
+    // `Workspace::connect` returned. Because `migrate_on_start = true` applies
+    // migrations 001 AND 002 atomically before the first query, those snapshots
+    // already include everything migration 002 creates. If a future refactor
+    // moves schema queries above `connect()`, these assertions will silently
+    // regress — keep the query calls downstream of `connect()`.
+
+    // New tables exist.
+    for expected in &["roles", "permissions", "role_permissions", "audit_events"] {
+        assert!(
+            names.contains(expected),
+            "missing table from migration 002: {expected}"
+        );
+    }
+
+    // Partial unique index exists.
+    assert!(
+        index_names.contains(&"group_members_single_owner_idx"),
+        "missing partial unique index group_members_single_owner_idx"
+    );
+
+    // Seed counts — pinned exact values. Loose bounds would let a silent
+    // regression drop rows without failing; `==` surfaces any change.
+    let roles_count: i64 = sqlx::query_scalar("SELECT count(*) FROM roles")
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(roles_count, 5, "expected exactly 5 seeded roles");
+
+    let perms_count: i64 = sqlx::query_scalar("SELECT count(*) FROM permissions")
+        .fetch_one(workspace.pool())
+        .await?;
+    assert_eq!(
+        perms_count, 22,
+        "expected exactly 22 seeded permissions, got {perms_count}"
+    );
+
+    let owner_perms: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'owner'")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(owner_perms, perms_count, "owner should have all permissions");
+
+    let admin_perms: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'admin'")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        admin_perms, 20,
+        "admin should have 20 permissions (all except group.delete + export.group)"
+    );
+
+    let member_perms: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'member'")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(member_perms, 11, "member should have exactly 11 permissions");
+
+    let guest_perms: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'guest'")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(guest_perms, 6, "guest should have exactly 6 permissions");
+
+    let child_perms: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'child'")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        child_perms, 4,
+        "child should have exactly 4 permissions (chats read/write + tasks read/write)"
+    );
+
+    // Single-owner constraint violation.
+    // Setup: create a group owned by the test user, try to add a second owner.
+    let group_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, type, created_by) VALUES ($1, 'family', $2) RETURNING id",
+    )
+    .bind("Test Family")
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
+        .bind(group_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
+
+    // Create a second user and try to add them as another owner of the same group.
+    let user2_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
+    )
+    .bind("second@example.com")
+    .bind("Second User")
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let dup_owner =
+        sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
+            .bind(group_id)
+            .bind(user2_id)
+            .execute(workspace.pool())
+            .await
+            .expect_err("second owner for same group must be rejected");
+
+    let db_err = dup_owner
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23505"),
+        "expected unique_violation for single-owner constraint"
+    );
+
+    // Audit event insert + read-back. Exercises both a regular row (with
+    // actor_user_id) and a NULL-actor row (post-erasure survival path per
+    // LGPD art. 8 §5 / GDPR art. 17(1)).
+    let audit_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO audit_events (group_id, actor_user_id, actor_label, action, resource_type, resource_id, metadata) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING id",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .bind("Test User")
+    .bind("group.create")
+    .bind("group")
+    .bind(group_id.to_string())
+    .bind(r#"{"source":"smoke_test"}"#)
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(!audit_id.is_nil());
+
+    // Read-back exercises jsonb + uuid deserialization and proves the row is
+    // queryable, not just writable.
+    let audit_action: String =
+        sqlx::query_scalar("SELECT action FROM audit_events WHERE id = $1")
+            .bind(audit_id)
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(audit_action, "group.create");
+
+    // NULL-actor row: documents the explicit design that audit rows survive
+    // hard user deletion. actor_label is still set so the audit remains
+    // readable post-erasure.
+    let null_actor_audit: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO audit_events (group_id, actor_user_id, actor_label, action, resource_type, resource_id, metadata) \
+         VALUES ($1, NULL, $2, $3, $4, $5, $6::jsonb) RETURNING id",
+    )
+    .bind(group_id)
+    .bind("deleted-user@example.com")
+    .bind("users.delete")
+    .bind("user")
+    .bind("legacy-id-placeholder")
+    .bind(r#"{"source":"smoke_test","reason":"erasure_survival"}"#)
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(!null_actor_audit.is_nil());
+
     Ok(())
 }
