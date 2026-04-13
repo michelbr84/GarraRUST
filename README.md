@@ -45,6 +45,10 @@
 
 <!-- TODO: Adicionar GIF de demonstração do terminal VHS aqui (#103) -->
 
+## 🗺️ Roadmap AAA
+
+O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA. Consulte o [ROADMAP.md](ROADMAP.md) para detalhes sobre as integrações de Superpowers, TurboQuant+ (KV Cache compression) e o ecosistema completo (Zero-latency streaming, Desktop Tauri e Mobile remoto).
+
 ## Início Rápido
 
 ```bash

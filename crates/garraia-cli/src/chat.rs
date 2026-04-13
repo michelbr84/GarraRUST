@@ -124,8 +124,11 @@ pub async fn detect_provider(
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
         let base = url.trim_end_matches('/').to_string();
-        // Use "not-needed" as API key — local servers don't require auth
-        let key = std::env::var("LLM_API_KEY").unwrap_or_else(|_| "not-needed".to_string());
+        // Try multiple env vars for the API key (LM Studio may require auth)
+        let key = std::env::var("LLM_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .or_else(|_| std::env::var("GARRAIA_EMBEDDING_API_KEY"))
+            .unwrap_or_else(|_| "not-needed".to_string());
         let provider = OpenAiProvider::new(
             &key,
             None, // model will be set from --model flag or default
@@ -141,7 +144,7 @@ pub async fn detect_provider(
         return (
             format!("lmstudio ({})", base),
             model,
-            Arc::new(provider),
+            Arc::new(provider) as Arc<dyn LlmProvider>,
         );
     }
 
@@ -158,7 +161,7 @@ pub async fn detect_provider(
         return (
             "ollama".to_string(),
             model,
-            Arc::new(ollama),
+            Arc::new(ollama) as Arc<dyn LlmProvider>,
         );
     }
 
@@ -172,7 +175,7 @@ pub async fn detect_provider(
                 .unwrap_or("claude-sonnet-4-5-20250929")
                 .to_string();
             let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
-            return ("anthropic".to_string(), model, Arc::new(provider));
+            return ("anthropic".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
         }
     }
 
@@ -186,7 +189,7 @@ pub async fn detect_provider(
                 .unwrap_or("gpt-4o")
                 .to_string();
             let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
-            return ("openai".to_string(), model, Arc::new(provider));
+            return ("openai".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
         }
     }
 
@@ -204,7 +207,7 @@ pub async fn detect_provider(
                 Some(model.clone()),
                 Some("https://openrouter.ai/api/v1".to_string()),
             );
-            return ("openrouter".to_string(), model, Arc::new(provider));
+            return ("openrouter".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
         }
     }
 
@@ -217,7 +220,7 @@ pub async fn detect_provider(
     (
         "ollama (offline)".to_string(),
         model,
-        Arc::new(ollama),
+        Arc::new(ollama) as Arc<dyn LlmProvider>,
     )
 }
 

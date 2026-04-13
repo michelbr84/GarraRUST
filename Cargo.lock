@@ -2497,6 +2497,7 @@ dependencies = [
  "daemonize",
  "dialoguer",
  "dirs 6.0.0",
+ "dotenvy",
  "garraia-agents",
  "garraia-channels",
  "garraia-common",

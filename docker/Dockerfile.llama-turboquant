@@ -1,0 +1,60 @@
+# Dockerfile for llama.cpp with TurboQuant+ KV cache compression
+#
+# Builds from the TurboQuant+ fork with CUDA support.
+# For CPU-only, remove --build-arg GGML_CUDA=ON.
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake git build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Clone TurboQuant+ fork
+RUN git clone --branch feature/turboquant-kv-cache --single-branch \
+    https://github.com/TheTom/llama-cpp-turboquant.git .
+
+# Build with CUDA
+RUN cmake -B build \
+        -DGGML_CUDA=ON \
+        -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build -j "$(nproc)"
+
+# ─── Runtime image ──────────────────────────────────────────────────────────
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=builder /build/build/bin/llama-cli /usr/local/bin/llama-cli
+
+ENV TURBOQUANT_MODEL="models/model.gguf"
+ENV CACHE_TYPE_K="turbo3"
+ENV CACHE_TYPE_V="turbo2"
+ENV CONTEXT_SIZE="32768"
+ENV N_GPU_LAYERS="99"
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=30 --start-period=60s \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["sh", "-c", \
+    "llama-server \
+        -m /models/${TURBOQUANT_MODEL} \
+        --alias turboquant \
+        --jinja \
+        -ngl ${N_GPU_LAYERS} \
+        -c ${CONTEXT_SIZE} \
+        -fa on \
+        --cache-type-k ${CACHE_TYPE_K} \
+        --cache-type-v ${CACHE_TYPE_V} \
+        -np 1 \
+        --metrics \
+        --host 0.0.0.0 \
+        --port 8080"]

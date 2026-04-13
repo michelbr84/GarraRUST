@@ -66,10 +66,20 @@ apps/
 6. **NUNCA** expor secrets em logs (`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`, etc.)
 7. **NUNCA** ignorar erros de compilação do `cargo check`
 
+## Framework de Desenvolvimento: Superpowers
+
+O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framework primário de workflow de desenvolvimento.
+
+- **Config:** `.claude/superpowers-config.md` — contexto do projeto para o Superpowers
+- **Bridge:** `skills/superpowers-bridge.md` — mapeamento entre skills locais e Superpowers
+- **Regra:** Para features novas, bugs complexos e refactoring → usar workflow Superpowers (brainstorming → spec → plan → TDD → review → merge)
+- **Skills locais** são usadas para operações específicas: pre-commit, generate-docs, translate, shell-explain
+
 ## Skills disponíveis
 
 | Skill | Uso |
 |-------|-----|
+| `/superpowers-bridge` | Mapeamento skills locais ↔ Superpowers |
 | `/review-pr` | Revisa PR com code-reviewer + security-auditor |
 | `/tdd-loop` | Red-Green-Refactor automático |
 | `/fix-issue` | Corrige issue GitHub via TDD |
@@ -104,3 +114,4 @@ apps/
 - @imports `.claude/agents/` para agentes especializados
 - @imports `skills/` para workflows reutilizáveis
 - @imports `.garra-estado.md` para estado da sessão anterior
+- @imports `ROADMAP.md` para visualizar as metas AAA e próximos passos

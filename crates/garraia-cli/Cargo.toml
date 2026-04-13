@@ -36,6 +36,7 @@ uuid = { workspace = true }
 regex = { workspace = true }
 ring = { workspace = true }
 tracing-appender = "0.2.4"
+dotenvy.workspace = true
 
 [features]
 default = []
