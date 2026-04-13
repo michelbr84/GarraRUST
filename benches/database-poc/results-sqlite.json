@@ -1,0 +1,95 @@
+{
+  "run_at": "2026-04-13T21:34:03.493305100Z",
+  "host": {
+    "os": "windows",
+    "arch": "x86_64",
+    "cpus": 20,
+    "total_memory_mb": null
+  },
+  "scenarios": [
+    {
+      "id": "B1",
+      "name": "Insert throughput (100k messages, single txn)",
+      "backend": "sqlite",
+      "status": "ok",
+      "p50_ms": 0.002,
+      "p95_ms": 0.027,
+      "p99_ms": 0.053,
+      "throughput": 84966.79879853548,
+      "iterations": 3,
+      "notes": "WAL mode, synchronous=NORMAL, single transaction, prepared statement. messages_b1 table has no FTS triggers."
+    },
+    {
+      "id": "B2",
+      "name": "FTS common term ('ut')",
+      "backend": "sqlite",
+      "status": "ok",
+      "p50_ms": 0.03,
+      "p95_ms": 0.035,
+      "p99_ms": 0.049,
+      "throughput": null,
+      "iterations": 100,
+      "notes": "unicode61 tokenizer, LIMIT 100 (last_rowcount=100)"
+    },
+    {
+      "id": "B3",
+      "name": "FTS rare term (QUUX-RARE-TOKEN)",
+      "backend": "sqlite",
+      "status": "ok",
+      "p50_ms": 0.049,
+      "p95_ms": 0.07,
+      "p99_ms": 0.113,
+      "throughput": null,
+      "iterations": 100,
+      "notes": "unicode61 tokenizer, LIMIT 100, injected 10 matches (last_rowcount=10)"
+    },
+    {
+      "id": "B4",
+      "name": "ANN top-5 (plain cosine scan)",
+      "backend": "sqlite",
+      "status": "ok",
+      "p50_ms": 685.567,
+      "p95_ms": 685.567,
+      "p99_ms": 685.567,
+      "throughput": null,
+      "iterations": 3,
+      "notes": "plain cosine scan (sqlite-vec not loaded); real production would use sqlite-vec virtual table"
+    },
+    {
+      "id": "B5",
+      "name": "Hybrid FTS + ANN",
+      "backend": "sqlite",
+      "status": "notapplicable",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "throughput": null,
+      "iterations": 0,
+      "notes": "Hybrid FTS+ANN requires both subsystems to be queryable in one SQL; SQLite with plain cosine scan cannot express this without application-side merging"
+    },
+    {
+      "id": "B6",
+      "name": "Row-level security / tenant isolation",
+      "backend": "sqlite",
+      "status": "notapplicable",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "throughput": null,
+      "iterations": 0,
+      "notes": "SQLite has no row-level security equivalent; isolation must be enforced at application layer"
+    },
+    {
+      "id": "B7",
+      "name": "Connection-pool / concurrent writer stress",
+      "backend": "sqlite",
+      "status": "notapplicable",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "throughput": null,
+      "iterations": 0,
+      "notes": "SQLite WAL mode allows concurrent readers but serializes writers; meaningful pool stress comparison requires Postgres"
+    }
+  ]
+}

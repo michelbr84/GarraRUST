@@ -1,0 +1,95 @@
+{
+  "run_at": "2026-04-13T21:36:57.126004700Z",
+  "host": {
+    "os": "windows",
+    "arch": "x86_64",
+    "cpus": 20,
+    "total_memory_mb": null
+  },
+  "scenarios": [
+    {
+      "id": "B1",
+      "name": "Insert throughput (100k msgs batched)",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 10583.0862,
+      "p95_ms": null,
+      "p99_ms": null,
+      "throughput": 9449.039543871428,
+      "iterations": 3,
+      "notes": "batch=500; rows=100000; median wall=10583.1ms"
+    },
+    {
+      "id": "B2",
+      "name": "FTS common term",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 1.109,
+      "p95_ms": 1.488,
+      "p99_ms": 1.761,
+      "throughput": null,
+      "iterations": 3,
+      "notes": "100 queries/iter; median of per-iter percentiles"
+    },
+    {
+      "id": "B3",
+      "name": "FTS rare term",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 0.893,
+      "p95_ms": 1.151,
+      "p99_ms": 1.225,
+      "throughput": null,
+      "iterations": 3,
+      "notes": "100 queries/iter; median of per-iter percentiles"
+    },
+    {
+      "id": "B4",
+      "name": "ANN top-5",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 4.463,
+      "p95_ms": 5.527,
+      "p99_ms": 6.075,
+      "throughput": null,
+      "iterations": 3,
+      "notes": "100 queries/iter; median of per-iter percentiles"
+    },
+    {
+      "id": "B5",
+      "name": "Hybrid query (FTS+ANN+group)",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 7.435,
+      "p95_ms": 8.431,
+      "p99_ms": 9.015,
+      "throughput": null,
+      "iterations": 3,
+      "notes": "100 queries/iter; median of per-iter percentiles"
+    },
+    {
+      "id": "B6",
+      "name": "RLS cross-group isolation",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "throughput": null,
+      "iterations": 1,
+      "notes": "RLS blocked cross-group SELECT (0 rows returned for group-B id while scoped to group A)"
+    },
+    {
+      "id": "B7",
+      "name": "Pool stress (100 concurrent, 10R+1W each)",
+      "backend": "postgres",
+      "status": "ok",
+      "p50_ms": 686.079,
+      "p95_ms": 2123.775,
+      "p99_ms": 2140.159,
+      "throughput": null,
+      "iterations": 1,
+      "notes": "100 tasks, pool=20; wall=2141.7ms; failures=0"
+    }
+  ]
+}

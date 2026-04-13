@@ -180,10 +180,10 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 ### 3.1 Decisões arquiteturais (ADRs obrigatórios antes de codar)
 
-- [ ] `docs/adr/0003-database-for-workspace.md` — Postgres (recomendado pelo report) vs continuar SQLite. Decisão: **Postgres** com SQLx + migrations; SQLite mantido só para dev/CLI single-user.
-- [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório.
-- [ ] `docs/adr/0005-identity-provider.md` — manter JWT interno ou adotar OIDC (Keycloak/Authelia/Authentik). Recomendação: **JWT interno + adapter OIDC plugável**.
-- [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa.
+- [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico em [`benches/database-poc/`](benches/database-poc/). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via [GAR-373](https://linear.app/chatgpt25/issue/GAR-373). ✅
+- [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374))
+- [ ] `docs/adr/0005-identity-provider.md` — manter JWT interno ou adotar OIDC (Keycloak/Authelia/Authentik). Recomendação: **JWT interno + adapter OIDC plugável**. ([GAR-375](https://linear.app/chatgpt25/issue/GAR-375))
+- [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. ([GAR-376](https://linear.app/chatgpt25/issue/GAR-376))
 
 ### 3.2 Domínio & Schema
 
