@@ -21,12 +21,24 @@
 crates/
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry
   garraia-agents/     — LLM providers (OpenAI/Anthropic/Ollama), AgentRuntime, tools
-  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD
+  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-desktop/    — Tauri v2 app (Windows MSI)
 apps/
   garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
+```
+
+### Crates planejados (Fases 1-3 do ROADMAP AAA)
+
+```text
+garraia-config/      — Fase 1.3 — schema unificado (serde + validator), hot-reload via SSE
+garraia-telemetry/   — Fase 2.3 — OpenTelemetry + Prometheus + redaction PII
+garraia-embeddings/  — Fase 2.1 — embeddings locais (mxbai) + vector store (lancedb)
+garraia-plugins/     — Fase 2.2 — wasmtime sandbox com capabilities default-deny
+garraia-workspace/   — Fase 3   — Postgres (SQLx) multi-tenant: groups, members, RLS
+garraia-auth/        — Fase 3.3 — Scope/Principal/RBAC central separado de -security
+garraia-storage/     — Fase 3.5 — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
 ```
 
 ## Convenções de código
@@ -66,9 +78,12 @@ apps/
 2. **NUNCA** `rm -rf /`, `rm -rf ~` ou fork bombs
 3. **NUNCA** force push para `main`
 4. **NUNCA** usar `unwrap()` em código de produção (apenas em testes)
-5. **NUNCA** concatenar strings em SQL queries (usar `params!`)
-6. **NUNCA** expor secrets em logs (`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`, etc.)
+5. **NUNCA** concatenar strings em SQL queries — `params!` (rusqlite) ou `sqlx::query!` (Postgres)
+6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`, etc.)
 7. **NUNCA** ignorar erros de compilação do `cargo check`
+8. **SEMPRE** escrever ADR em `docs/adr/NNNN-*.md` antes de decisão arquitetural irreversível (Postgres vs SQLite, vector store, storage backend, etc.) — ver `ROADMAP.md` §3.1
+9. **SEMPRE** migrations Postgres forward-only (colunas novas → backfill → NOT NULL depois)
+10. **SEMPRE** testes de autorização cross-group antes de merge em qualquer rota nova de `garraia-workspace`/`garraia-auth`
 
 ## Framework de Desenvolvimento: Superpowers
 
@@ -118,4 +133,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 - @imports `.claude/agents/` para agentes especializados
 - @imports `skills/` para workflows reutilizáveis
 - @imports `.garra-estado.md` para estado da sessão anterior
-- @imports `ROADMAP.md` para visualizar as metas AAA e próximos passos
+- @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
+- @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
+- @imports `docs/adr/` — decisões arquiteturais (popular conforme Fases 1-3 avançam)
+- Linear: [time GarraIA-RUST (GAR)](https://linear.app/chatgpt25/team/GAR/projects) — execução semana a semana
