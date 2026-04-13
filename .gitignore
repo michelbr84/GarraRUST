@@ -83,7 +83,14 @@ dist/
 release/
 
 # Planning / drafts (internal)
-plans/
+# Por default, conteúdo de plans/ é ignorado para não vazar drafts locais.
+# Planos numerados (0001-*.md, 0002-*.md, ...) e README SÃO commitados
+# como histórico de decisões de execução — cada plano está atrelado a
+# uma issue GAR-* no Linear e é aprovado antes da execução.
+# NOTE: use `plans/*` (não `plans/`) para permitir negação de arquivos.
+plans/*
+!plans/[0-9][0-9][0-9][0-9]-*.md
+!plans/README.md
 
 # Linear automation scripts (internal tooling — contain hardcoded API keys)
 # scripts/ subdirectory is NOT excluded (contains build-installer.ps1)
