@@ -421,5 +421,179 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "expected SQLSTATE 23503 (foreign_key_violation)"
     );
 
+    // ─── Migration 005 validation ──────────────────────────────────────────
+
+    // Extension `vector` is installed.
+    let has_vector: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(
+        has_vector,
+        "pgvector extension must be installed by migration 005"
+    );
+
+    // New tables exist.
+    for expected in &["memory_items", "memory_embeddings"] {
+        assert!(
+            names.contains(expected),
+            "missing table from migration 005: {expected}"
+        );
+    }
+
+    // HNSW index exists.
+    assert!(
+        index_names.contains(&"memory_embeddings_embedding_hnsw_idx"),
+        "missing HNSW index from migration 005"
+    );
+
+    // Insert 3 memory_items (1 per scope) + embeddings.
+    let memory_fact_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content) \
+         VALUES ('group', $1, $2, $3, 'Test User', 'fact', 'A família gosta de churrasco aos domingos') \
+         RETURNING id",
+    )
+    .bind(group_id)
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let memory_pref_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content) \
+         VALUES ('user', $1, NULL, $2, 'Test User', 'preference', 'Prefere respostas curtas') \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let memory_note_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content) \
+         VALUES ('chat', $1, $2, $3, 'Test User', 'note', 'Combinamos churrasco dia 20') \
+         RETURNING id",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // Deterministic unit-normalized 768-d vectors. We use ChaCha8Rng
+    // explicitly (not StdRng) so the bit-for-bit output is stable across
+    // rand crate major versions — StdRng's backing algorithm is not
+    // guaranteed by the rand contract.
+    fn unit_vector(seed: u64) -> pgvector::Vector {
+        use rand::{Rng, SeedableRng};
+        use rand_chacha::ChaCha8Rng;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut v: Vec<f32> = (0..768).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+        }
+        pgvector::Vector::from(v)
+    }
+
+    // Generic 768-d helper for the wrong-dimension negative test below.
+    fn vector_of_dim(dim: usize) -> pgvector::Vector {
+        pgvector::Vector::from(vec![0.0_f32; dim])
+    }
+
+    for (item_id, seed) in [
+        (memory_fact_id, 1u64),
+        (memory_pref_id, 2u64),
+        (memory_note_id, 3u64),
+    ] {
+        sqlx::query(
+            "INSERT INTO memory_embeddings (memory_item_id, model, embedding) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(item_id)
+        .bind("mxbai-embed-large-v1")
+        .bind(unit_vector(seed))
+        .execute(workspace.pool())
+        .await?;
+    }
+
+    // ANN query: query with seed=1 (same as first insert) should hit it first.
+    let query_vec = unit_vector(1);
+    let top_k: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT memory_item_id FROM memory_embeddings \
+         ORDER BY embedding <=> $1 LIMIT 3",
+    )
+    .bind(query_vec)
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(top_k.len(), 3, "expected 3 ANN results");
+    assert_eq!(
+        top_k[0].0, memory_fact_id,
+        "nearest neighbor should be seed=1 vector"
+    );
+
+    // Negative test: scope_type CHECK blocks invalid value.
+    let bad_scope = sqlx::query(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content) \
+         VALUES ('invalid_scope', $1, $2, $3, 'X', 'fact', 'bad')",
+    )
+    .bind(user_id)
+    .bind(group_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("scope_type CHECK should reject 'invalid_scope'");
+    let db_err = bad_scope.as_database_error().expect("database error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23514"),
+        "expected check_violation"
+    );
+
+    // Negative test: TTL in the past.
+    let bad_ttl = sqlx::query(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content, ttl_expires_at) \
+         VALUES ('user', $1, NULL, $2, 'X', 'fact', 'expired', now() - interval '1 day')",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("TTL in past should be rejected");
+    let ttl_err = bad_ttl.as_database_error().expect("database-layer error");
+    assert_eq!(
+        ttl_err.code().as_deref(),
+        Some("23514"),
+        "expected check_violation for past TTL"
+    );
+
+    // Negative test: wrong vector dimension. vector(768) must reject a
+    // 512-element vector. pgvector returns a DB-layer error (the exact
+    // SQLSTATE varies by pgvector version — typically 22000 data_exception
+    // or 22P02 invalid_text_representation). We assert it's a DB error
+    // from the bind path, not a success.
+    let wrong_dim = sqlx::query(
+        "INSERT INTO memory_embeddings (memory_item_id, model, embedding) \
+         VALUES ($1, $2, $3)",
+    )
+    .bind(memory_fact_id)
+    .bind("wrong-dim-model")
+    .bind(vector_of_dim(512))
+    .execute(workspace.pool())
+    .await
+    .expect_err("vector(768) must reject a 512-dim embedding");
+    assert!(
+        wrong_dim.as_database_error().is_some(),
+        "wrong-dim rejection must be a DB-layer error, got: {wrong_dim:?}"
+    );
+
     Ok(())
 }

@@ -19,10 +19,11 @@ cargo test -p garraia-workspace
 ```
 
 The integration test spins up a `pgvector/pgvector:pg16` container via
-`testcontainers`, applies migrations 001, 002, and 004, and verifies schema shape,
-RBAC seed counts, single-owner partial unique index, and the audit_events
-survival paths (regular row + NULL-actor row). Target wall time: under 15
-seconds on a warm cache.
+`testcontainers`, applies migrations 001, 002, 004, and 005, and verifies schema shape,
+RBAC seed counts, single-owner partial unique index, the audit_events
+survival paths (regular row + NULL-actor row), and the pgvector HNSW
+index plus an ANN nearest-neighbor query over memory_embeddings.
+Target wall time: under 20 seconds on a warm cache.
 
 ## Required Postgres role privileges
 
@@ -39,10 +40,11 @@ attribute or the `CREATE` privilege on the database.
   `migrate_on_start = false` for the app pool. A dedicated migration issue
   (follow-up after GAR-413) will document the exact `GRANT` statements.
 
-## Scope (GAR-407, GAR-386, GAR-388)
+## Scope (GAR-407, GAR-386, GAR-388, GAR-389)
 
 Bootstrap only: migration 001 (users/groups) + migration 002 (RBAC roles,
 permissions, role_permissions, audit_events, single-owner partial unique
 index) + migration 004 (chats, chat_members, messages with Portuguese FTS,
-message_threads) + connect/migrate helpers + smoke test. CRUD lands in later
-issues (GAR-393 API, GAR-391 auth).
+message_threads) + migration 005 (memory_items with tri-level scope +
+memory_embeddings with pgvector HNSW cosine index) + connect/migrate helpers
++ smoke test. CRUD lands in later issues (GAR-393 API, GAR-391 auth).

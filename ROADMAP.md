@@ -211,8 +211,8 @@ Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](h
 - [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `files`, `file_versions`, `file_shares`
-- [ ] `memory_items` (`id`, `scope_type`, `scope_id`, `group_id`, `kind`, `content`, `sensitivity`, `ttl_expires_at`)
-- [ ] `memory_embeddings` (`memory_item_id`, `embedding`) — pgvector
+- [x] `memory_items` (`id`, `scope_type` CHECK user/group/chat, `scope_id` sem FK, **`group_id` NULL-able** para user-scope, `created_by ON DELETE SET NULL` + `created_by_label` cache, `kind` CHECK 6 valores, `content` CHECK 10k, `sensitivity` CHECK 4 níveis + partial index em secret, `source_chat_id/source_message_id ON DELETE SET NULL`, `ttl_expires_at` CHECK future) — migration 005 ✅
+- [x] `memory_embeddings` (`memory_item_id` FK CASCADE, `model` CHECK 256, `embedding vector(768)`, PK `(memory_item_id, model)`, **HNSW `vector_cosine_ops`** index) — migration 005 ✅
 
 **Critério de aceite do schema:**
 
