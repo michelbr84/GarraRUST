@@ -256,7 +256,7 @@ O GarraIA mantém **histórico unificado** entre todos os canais:
 | Gerar novo | Se nenhum ID for fornecido, uma nova sessão é criada |
 | Recuperação | Use `/v1/models` para verificar a conexão, depois inicie com `X-Session-Id` vazio para nova sessão |
 
-#### Segurança
+#### Segurança Api
 
 - Requer autenticação via `Authorization: Bearer <api_key>`
 - O endpoint é binding em `127.0.0.1` por padrão (local only)
@@ -290,6 +290,7 @@ O GarraIA possui um sistema avançado de **Modos de Execução** que permite sel
 #### Precedência de Modo
 
 O modo é resolvido nesta ordem:
+
 1. **Header** `X-Agent-Mode` (maior prioridade)
 2. **Comando** `/mode <nome>` no chat
 3. **Preferência por canal** (Telegram = `ask`, Web/API = `auto`)
@@ -377,6 +378,7 @@ Para usar modo específico, adicione o header `X-Agent-Mode` na requisição ou 
 ##### Modo Prefix (Fallback)
 
 Se o header não for suportado, use prefix no início da mensagem:
+
 - `mode: debug` → muda para modo debug
 - `/mode ask` → muda para modo ask
 
@@ -690,7 +692,7 @@ timeouts:
 
 Consulte a [referência completa de configuração](docs/) para todas as opções, incluindo Discord, Slack, WhatsApp, iMessage, voice mode, embeddings e configuração de servidor MCP.
 
-#### .garraignore
+### .garraignore
 
 Crie um `.garraignore` na raiz do projeto para controlar quais arquivos o agente ignora durante buscas (`file_read`, `repo_search`, `list_dir`). Sintaxe idêntica ao `.gitignore`, com suporte adicional a extglob (`!(*.txt)`, `*(src)`, etc.):
 
@@ -756,7 +758,7 @@ apps/
 
 O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vida completo da execução do agente:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                    GARRAIA RUNTIME FLOW                          │
 ├─────────────────────────────────────────────────────────────────┤
@@ -784,7 +786,7 @@ O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vid
 
 O [`garraia-voice`](crates/garraia-voice/src/lib.rs) implementa o pipeline de voz end-to-end:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                    VOICE PIPELINE                                │
 ├─────────────────────────────────────────────────────────────────┤
