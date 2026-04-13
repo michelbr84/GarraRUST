@@ -17,7 +17,7 @@
 
 ## Estrutura de crates
 
-Atualizado após GAR-373 (2026-04-13). 17 crates ativos no workspace + 1 PoC efêmero em `benches/`.
+Atualizado após GAR-407 (2026-04-13). **18 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
 
 ```text
 crates/
@@ -29,6 +29,11 @@ crates/
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
+  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant (GAR-407).
+                        Migration 001 (users, user_identities, sessions, api_keys,
+                        groups, group_members, group_invites) + pgcrypto/citext.
+                        Handle PII-safe via skip(config) + custom Debug redaction.
+                        Decisão: docs/adr/0003-database-for-workspace.md.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
   garraia-media/      — processamento de PDF, imagens, mídia
@@ -46,10 +51,6 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
-garraia-workspace/   — Fase 3   (GAR-407) — Postgres 16 + pgvector (SQLx 0.8) multi-tenant,
-                       RLS + FORCE ROW LEVEL SECURITY, FTS tsvector+GIN.
-                       Decisão formalizada em docs/adr/0003-database-for-workspace.md
-                       (GAR-373 accepted 2026-04-13) com benchmark em benches/database-poc/
 garraia-auth/        — Fase 3.3 (GAR-391) — Scope/Principal/RBAC central separado de -security
 garraia-storage/     — Fase 3.5 (GAR-394) — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
 ```
