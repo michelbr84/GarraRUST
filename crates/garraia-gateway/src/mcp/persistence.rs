@@ -286,8 +286,6 @@ impl McpPersistenceService {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::mcp::{McpServerConfig, McpStatus};
 

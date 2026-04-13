@@ -425,6 +425,9 @@ fn kill_and_wait(pid: u32) -> bool {
 }
 
 fn main() -> Result<()> {
+    // Attempt to load .env file from the current directory, ignoring errors if missing
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     // Show update notice (non-blocking, from cache)
@@ -1027,8 +1030,7 @@ async fn async_main(
             }
         }
         Commands::Chat { provider, model, url } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(chat::run_chat(config, provider, model, url))?;
+            chat::run_chat(config, provider, model, url).await?;
         }
     }
 

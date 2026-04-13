@@ -1,0 +1,70 @@
+# docker-compose.turboquant.yml
+#
+# Run GarraIA with llama.cpp TurboQuant+ for optimized local inference.
+#
+# The llama-turboquant service builds the TurboQuant+ fork of llama.cpp
+# and serves it with KV cache compression enabled.
+#
+# Usage:
+#   docker compose -f docker-compose.turboquant.yml up
+#
+# Prerequisites:
+#   - Place your .gguf model in ./models/
+#   - Set TURBOQUANT_MODEL in .env (e.g. "models/Qwen3-8B-Q4_K_M.gguf")
+
+services:
+  garraia:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3888:3888"
+    volumes:
+      - ./docs/deployment/config.turboquant.yml:/home/garraia/.config/garraia/config.yml:ro
+      - garraia_credentials:/home/garraia/.config/garraia/credentials
+      - garraia_data:/home/garraia/.config/garraia/data
+      - garraia_skills:/home/garraia/.config/garraia/skills
+    depends_on:
+      llama-turboquant:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  llama-turboquant:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.llama-turboquant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Mount your models directory
+      - ./models:/models:ro
+    environment:
+      # Model file path (relative to /models/)
+      TURBOQUANT_MODEL: ${TURBOQUANT_MODEL:-models/model.gguf}
+      # KV cache types — turbo3/turbo2 is the recommended asymmetric config
+      CACHE_TYPE_K: ${CACHE_TYPE_K:-turbo3}
+      CACHE_TYPE_V: ${CACHE_TYPE_V:-turbo2}
+      # Context window size
+      CONTEXT_SIZE: ${CONTEXT_SIZE:-32768}
+      # Number of GPU layers (-1 = all)
+      N_GPU_LAYERS: ${N_GPU_LAYERS:-99}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    # Enable GPU support (requires NVIDIA Container Toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  garraia_credentials:
+  garraia_data:
+  garraia_skills:
