@@ -30,9 +30,14 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 # Config validation
 validator = { version = "0.18", features = ["derive"] }
+# pgvector bindings for sqlx — enables binding Vec<f32> → vector(768) in
+# migration 005 (memory_embeddings). Runtime-only, no macros.
+pgvector = { version = "0.4", features = ["sqlx"] }
 
 [dev-dependencies]
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 anyhow = "1"
+rand = "0.8"
+rand_chacha = "0.3"
