@@ -274,5 +274,152 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .await?;
     assert!(!null_actor_audit.is_nil());
 
+    // ─── Migration 004 validation ──────────────────────────────────────────
+    //
+    // Same snapshot semantics as migration 002: `names` and `index_names` were
+    // populated after `Workspace::connect` applied all migrations atomically.
+
+    // New tables exist.
+    for expected in &["chats", "chat_members", "messages", "message_threads"] {
+        assert!(
+            names.contains(expected),
+            "missing table from migration 004: {expected}"
+        );
+    }
+
+    // Critical FTS + pagination + performance indexes exist. All 8 indexes
+    // migration 004 creates are asserted here — silent removal of any would
+    // degrade query performance without a test catching it.
+    for expected in &[
+        "messages_body_tsv_idx",
+        "messages_chat_created_idx",
+        "messages_group_created_idx",
+        "messages_thread_id_idx",
+        "messages_sender_idx",
+        "chats_group_id_idx",
+        "chats_group_type_idx",
+        "chat_members_user_id_idx",
+        "chat_members_unread_idx",
+        "message_threads_chat_idx",
+    ] {
+        assert!(
+            index_names.contains(expected),
+            "missing index from migration 004: {expected}"
+        );
+    }
+
+    // Verify body_tsv is a STORED generated column.
+    let attgenerated: String = sqlx::query_scalar(
+        "SELECT attgenerated::text FROM pg_attribute \
+         WHERE attrelid = 'messages'::regclass AND attname = 'body_tsv'",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert_eq!(
+        attgenerated, "s",
+        "body_tsv must be STORED (attgenerated='s')"
+    );
+
+    // Create a chat and add the test user as owner.
+    let chat_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO chats (group_id, type, name, created_by) \
+         VALUES ($1, 'channel', 'geral', $2) RETURNING id",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query("INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'owner')")
+        .bind(chat_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
+
+    // Insert 3 messages with known tokens.
+    for (body, label) in [
+        (
+            "Bom dia pessoal tudo certo para o churrasco no Brasil",
+            "msg-brasil",
+        ),
+        (
+            "Vou trazer carne e bebidas para a festa amanhã",
+            "msg-festa",
+        ),
+        ("Confirma presença até amanhã por favor", "msg-confirma"),
+    ] {
+        sqlx::query(
+            "INSERT INTO messages (chat_id, group_id, sender_user_id, sender_label, body) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(chat_id)
+        .bind(group_id)
+        .bind(user_id)
+        .bind(label)
+        .bind(body)
+        .execute(workspace.pool())
+        .await?;
+    }
+
+    // FTS query: positive match (body contains "brasil").
+    let hits_positive: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages \
+         WHERE chat_id = $1 AND body_tsv @@ plainto_tsquery('portuguese', 'brasil') \
+         AND deleted_at IS NULL",
+    )
+    .bind(chat_id)
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(
+        hits_positive.len(),
+        1,
+        "expected exactly 1 FTS match for 'brasil'"
+    );
+
+    // FTS query: negative match (token not in any body).
+    let hits_negative: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages \
+         WHERE body_tsv @@ plainto_tsquery('portuguese', 'helicoptero') \
+         AND deleted_at IS NULL",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(
+        hits_negative.len(),
+        0,
+        "expected 0 FTS matches for 'helicoptero'"
+    );
+
+    // Compound FK test: message with mismatched group_id must fail.
+    // Create a second group to force the mismatch.
+    let other_group_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, type, created_by) VALUES ('Other', 'team', $1) RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let mismatch = sqlx::query(
+        "INSERT INTO messages (chat_id, group_id, sender_user_id, sender_label, body) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(chat_id) // chat belongs to `group_id`
+    .bind(other_group_id) // but we claim `other_group_id`
+    .bind(user_id)
+    .bind("Test User")
+    .bind("should fail")
+    .execute(workspace.pool())
+    .await
+    .expect_err("compound FK should reject cross-group message");
+
+    let db_err = mismatch
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23503"),
+        "expected SQLSTATE 23503 (foreign_key_violation)"
+    );
+
     Ok(())
 }
