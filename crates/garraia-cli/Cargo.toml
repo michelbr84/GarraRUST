@@ -39,8 +39,9 @@ tracing-appender = "0.2.4"
 dotenvy.workspace = true
 
 [features]
-default = []
+default = ["telemetry"]
 plugins = ["dep:garraia-plugins"]
+telemetry = ["garraia-gateway/telemetry"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

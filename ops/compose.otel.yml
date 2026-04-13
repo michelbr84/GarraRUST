@@ -1,0 +1,71 @@
+# GarraIA — Observability overlay (Jaeger + Prometheus + Grafana)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f ops/compose.otel.yml up
+#
+# UIs:
+#   - Jaeger      http://localhost:16686
+#   - Prometheus  http://localhost:9090
+#   - Grafana     http://localhost:3000  (admin / garraia)
+#
+# Gateway must be started with:
+#   GARRAIA_OTEL_ENABLED=true
+#   GARRAIA_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: garraia-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    networks:
+      - garraia-otel
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    container_name: garraia-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - garraia-otel
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: garraia-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: garraia
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+    networks:
+      - garraia-otel
+    restart: unless-stopped
+
+networks:
+  garraia-otel:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

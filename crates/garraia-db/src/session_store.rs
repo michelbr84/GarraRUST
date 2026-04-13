@@ -1,7 +1,7 @@
 use garraia_common::{Error, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
-use tracing::info;
+use tracing::{info, instrument};
 
 /// Persisted message row loaded from the session store.
 #[derive(Debug, Clone)]
@@ -350,6 +350,7 @@ impl SessionStore {
     }
 
     /// Append a single message to a session.
+    #[instrument(skip(self, content, metadata), fields(session_id = %session_id, direction = %direction), err)]
     pub fn append_message(
         &self,
         session_id: &str,
@@ -363,6 +364,7 @@ impl SessionStore {
 
     /// Append a single message to a session with full details (for Chat Sync).
     #[allow(clippy::too_many_arguments)]
+    #[instrument(skip(self, content, metadata), fields(session_id = %session_id, direction = %direction, provider = ?provider, model = ?model), err)]
     pub fn append_message_with_details(
         &self,
         session_id: &str,
@@ -400,6 +402,7 @@ impl SessionStore {
     }
 
     /// Load recent messages for a session in chronological order.
+    #[instrument(skip(self), fields(session_id = %session_id), err)]
     pub fn load_recent_messages(
         &self,
         session_id: &str,

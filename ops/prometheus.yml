@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  - job_name: garraia-gateway
+    metrics_path: /metrics
+    static_configs:
+      # Gateway running on the host machine (default for local dev)
+      - targets:
+          - "host.docker.internal:3888"
+      # Alternative: gateway running inside the same compose network
+      # - targets:
+      #     - "garraia-gateway:3888"

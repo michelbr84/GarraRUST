@@ -14,6 +14,22 @@ use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
+/// Initialize OpenTelemetry tracing + Prometheus metrics if enabled.
+/// Fail-soft: any init error is logged to stderr and the gateway continues
+/// without telemetry. The returned `Option<Guard>` must be bound to a named
+/// variable that lives until end of main scope so Drop flushes exporters.
+#[cfg(feature = "telemetry")]
+fn init_telemetry_guard() -> Option<garraia_gateway::garraia_telemetry::Guard> {
+    let telemetry_config = garraia_gateway::garraia_telemetry::TelemetryConfig::from_env()
+        .unwrap_or_default();
+    garraia_gateway::garraia_telemetry::init(telemetry_config)
+        .map_err(|e| {
+            eprintln!("telemetry init failed (continuing without): {e}");
+            e
+        })
+        .ok()
+}
+
 #[derive(Parser)]
 #[command(name = "garraia", version, about = "GarraIA - Personal AI Assistant")]
 struct Cli {
@@ -532,6 +548,12 @@ async fn async_main(
                 config.voice.enabled = true;
             }
             init_tracing(&effective_level);
+            // GAR-384: Initialize OpenTelemetry tracing + Prometheus metrics.
+            // Guard is bound to `_telemetry_guard` so its Drop (which flushes
+            // and shuts down the exporter) runs at the end of this scope.
+            // Telemetry init failures must NOT prevent the gateway from starting.
+            #[cfg(feature = "telemetry")]
+            let _telemetry_guard = init_telemetry_guard();
             banner::print_banner(
                 &config.gateway.host,
                 config.gateway.port,
@@ -553,6 +575,8 @@ async fn async_main(
             ..
         } => {
             init_tracing(&effective_level);
+            #[cfg(feature = "telemetry")]
+            let _telemetry_guard = init_telemetry_guard();
             try_stop_daemon(port);
             let mut config = config;
             config.gateway.host = host;
@@ -1073,6 +1097,10 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
                 .init();
 
             tracing::info!("daemon started (PID file: {})", pid_path.display());
+
+            // GAR-384: telemetry guard must outlive the server run.
+            #[cfg(feature = "telemetry")]
+            let _telemetry_guard = init_telemetry_guard();
 
             // Build a fresh tokio runtime in the daemon child process.
             // This is safe because daemonization happened before any runtime

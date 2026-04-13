@@ -1,0 +1,43 @@
+[package]
+name = "garraia-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OpenTelemetry + tracing baseline for GarraIA"
+
+[dependencies]
+# Tracing ecosystem (workspace-provided)
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+
+# OpenTelemetry (direct versions — not in workspace)
+tracing-opentelemetry = "0.27"
+opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry-semantic-conventions = "0.26"
+
+# Metrics
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+
+# HTTP layers
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
+axum = { version = "0.8" }
+
+# Validation + ids
+validator = { version = "0.18", features = ["derive"] }
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tracing-test = "0.2"
+opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics", "testing"] }
+opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
