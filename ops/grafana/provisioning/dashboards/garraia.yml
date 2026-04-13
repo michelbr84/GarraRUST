@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: GarraIA
+    orgId: 1
+    folder: GarraIA
+    folderUid: garraia
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

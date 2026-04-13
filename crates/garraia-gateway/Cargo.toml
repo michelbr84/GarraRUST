@@ -16,6 +16,7 @@ garraia-db = { workspace = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
 garraia-voice = { workspace = true }
+garraia-telemetry = { path = "../garraia-telemetry", optional = true }
 
 # Telegram (for voice handler)
 teloxide = { workspace = true }
@@ -47,9 +48,10 @@ filetime = "0.2"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 
 [features]
-default = []
+default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
+telemetry = ["dep:garraia-telemetry"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -59,3 +61,5 @@ tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+tracing-test = "0.2"
+tower = { workspace = true, features = ["util"] }

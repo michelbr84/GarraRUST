@@ -38,3 +38,6 @@ pub mod ws;
 pub mod parrot_ws;
 
 pub use server::GatewayServer;
+
+#[cfg(feature = "telemetry")]
+pub use garraia_telemetry;

@@ -21,6 +21,24 @@ use crate::state::SharedState;
 use crate::totp;
 use crate::ws;
 
+/// Apply OpenTelemetry tracing + request-id middleware layers when the
+/// `telemetry` feature is enabled. No-op otherwise.
+#[cfg(feature = "telemetry")]
+fn apply_telemetry_layers(router: Router) -> Router {
+    // tower layers run in reverse declaration order on incoming requests,
+    // so request_id_layer (declared last) runs first and populates the
+    // X-Request-Id header before the trace layer records it in the span.
+    router
+        .layer(garraia_telemetry::propagate_request_id_layer())
+        .layer(garraia_telemetry::http_trace_layer())
+        .layer(garraia_telemetry::request_id_layer())
+}
+
+#[cfg(not(feature = "telemetry"))]
+fn apply_telemetry_layers(router: Router) -> Router {
+    router
+}
+
 /// Build the main application router with all routes.
 pub fn build_router(
     state: SharedState,
@@ -75,7 +93,7 @@ pub fn build_router(
         )
         .with_state(whatsapp_state);
 
-    Router::new()
+    let router = Router::new()
         .route("/", get(web_chat))
         .route("/health", get(health))
         .route("/api/health", get(crate::health::health_handler))
@@ -210,7 +228,9 @@ pub fn build_router(
                     resp
                 }
             })
-        })
+        });
+
+    apply_telemetry_layers(router)
 }
 
 async fn health() -> &'static str {

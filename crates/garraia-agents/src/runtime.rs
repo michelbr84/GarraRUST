@@ -440,6 +440,7 @@ impl AgentRuntime {
     }
 
     /// Run the full conversation loop: recall context, call LLM, execute tools, return response.
+    #[instrument(skip_all, fields(session_id = %session_id))]
     pub async fn process_message(
         &self,
         session_id: &str,
@@ -451,6 +452,7 @@ impl AgentRuntime {
     }
 
     /// Same as `process_message` but includes continuity/user context for shared memory.
+    #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_message_with_context(
         &self,
         session_id: &str,
@@ -475,6 +477,7 @@ impl AgentRuntime {
 
     /// Process a scheduled heartbeat message. Tools receive `is_heartbeat = true`
     /// so that recursive scheduling is blocked.
+    #[instrument(skip_all, fields(session_id = %session_id, has_user_id = user_id.is_some()))]
     pub async fn process_heartbeat(
         &self,
         session_id: &str,
@@ -496,6 +499,7 @@ impl AgentRuntime {
 
     /// Process a message with explicit agent config overrides (for multi-agent routing).
     #[allow(clippy::too_many_arguments)]
+    #[instrument(skip_all, fields(session_id = %session_id, provider = ?provider_id, model = ?model_override))]
     pub async fn process_message_with_agent_config(
         &self,
         session_id: &str,
@@ -738,7 +742,16 @@ impl AgentRuntime {
         }
     }
 
-    #[instrument(skip(self, conversation_history), fields(provider_id, continuity_key = ?continuity_key))]
+    #[instrument(
+        skip_all,
+        fields(
+            session_id = %session_id,
+            has_continuity = continuity_key.is_some(),
+            has_user_id = user_id.is_some(),
+            is_heartbeat,
+            provider_id = tracing::field::Empty,
+        )
+    )]
     async fn process_message_impl(
         &self,
         session_id: &str,
@@ -748,19 +761,10 @@ impl AgentRuntime {
         user_id: Option<&str>,
         is_heartbeat: bool,
     ) -> Result<String> {
-        // Debug: Log system prompt presence
-        if let Some(prompt) = &self.system_prompt {
-            info!("system_prompt present, length: {}", prompt.len());
-            if prompt.contains("Fatos do Usuário") {
-                info!("system_prompt contains user facts!");
-            }
-        } else {
-            warn!("system_prompt is None!");
-        }
-
         let provider: Arc<dyn LlmProvider> = self
             .default_provider()
             .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?;
+        tracing::Span::current().record("provider_id", provider.provider_id());
 
         // Build system message: system_prompt + memory context
         let memory_context = match self
@@ -996,7 +1000,14 @@ impl AgentRuntime {
     }
 
     /// Streaming variant with continuity/user context for shared memory.
-    #[instrument(skip(self, conversation_history, delta_tx), fields(provider_id, continuity_key = ?continuity_key))]
+    #[instrument(
+        skip_all,
+        fields(
+            session_id = %session_id,
+            has_continuity = continuity_key.is_some(),
+            has_user_id = user_id.is_some(),
+        )
+    )]
     pub async fn process_message_streaming_with_context(
         &self,
         session_id: &str,
@@ -1024,7 +1035,16 @@ impl AgentRuntime {
 
     /// Streaming variant with explicit agent config overrides (for multi-agent routing or dynamic models).
     #[allow(clippy::too_many_arguments)]
-    #[instrument(skip(self, conversation_history, delta_tx), fields(provider_id, continuity_key = ?continuity_key))]
+    #[instrument(
+        skip_all,
+        fields(
+            session_id = %session_id,
+            has_continuity = continuity_key.is_some(),
+            has_user_id = user_id.is_some(),
+            provider_id = tracing::field::Empty,
+            model = tracing::field::Empty,
+        )
+    )]
     pub async fn process_message_streaming_with_agent_config(
         &self,
         session_id: &str,

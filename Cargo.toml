@@ -11,6 +11,7 @@ members = [
     "crates/garraia-plugins",
     "crates/garraia-media",
     "crates/garraia-security",
+    "crates/garraia-telemetry",
     "crates/garraia-common",
     "crates/garraia-skills",
     "crates/garraia-tools",
