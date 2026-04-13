@@ -896,7 +896,7 @@ Acompanhe as próximas entregas e contribua através dos nossos **[Projects no L
 6. **[Fase 6 — Lançamento & SRE](https://linear.app/chatgpt25/project/fase-6-lancamento-and-sre-35277d8571eb)** — Helm, Terraform, SLOs, runbooks, beta → GA.
 7. **[Fase 7 — Pós-GA & Evolução](https://linear.app/chatgpt25/project/fase-7-pos-ga-and-evolucao-14dc29a5f581)** — Multi-região, federation, marketplace, voice, vision, enterprise.
 
-Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345) e o bootstrap dos 7 projects AAA (GAR-371..410) em 2026-04-13.
+Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345), bootstrap dos 7 projects AAA (GAR-371..410) e a primeira entrega AAA: **[GAR-384 — OpenTelemetry + Prometheus baseline](https://linear.app/chatgpt25/issue/GAR-384)** via o novo crate `garraia-telemetry` (Jaeger + Prometheus + Grafana via `ops/compose.otel.yml`, feature flag opt-out, PII redaction by design).
 
 Navegue por todas as [issues abertas no Linear](https://linear.app/) ou filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
 
