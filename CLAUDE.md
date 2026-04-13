@@ -29,9 +29,11 @@ crates/
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant (GAR-407).
-                        Migration 001 (users, user_identities, sessions, api_keys,
-                        groups, group_members, group_invites) + pgcrypto/citext.
+  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant (GAR-407 + GAR-386).
+                        Migration 001 (users, identities, sessions, api_keys, groups,
+                        group_members, invites) + pgcrypto/citext.
+                        Migration 002 (roles/permissions/role_permissions seed estático
+                        + audit_events sem FK + single-owner partial unique index).
                         Handle PII-safe via skip(config) + custom Debug redaction.
                         Decisão: docs/adr/0003-database-for-workspace.md.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
