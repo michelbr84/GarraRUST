@@ -176,6 +176,8 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 **Objetivo:** transformar Garra de mono-usuário em **workspace compartilhado** com arquivos, chats e memória IA escopados por grupo, conforme `deep-research-report.md`.
 
+**Status (2026-04-13):** 🟡 **Parcialmente desbloqueada.** ADR 0003 ([GAR-373](https://linear.app/chatgpt25/issue/GAR-373)) accepted, fixando **PostgreSQL 16 + pgvector + pg_trgm** como backend; benchmark empírico em [`benches/database-poc/`](benches/database-poc/). Próximo marco: [GAR-407](https://linear.app/chatgpt25/issue/GAR-407) (`garraia-workspace` crate + migration 001). ADRs 0004-0006 ainda pendentes para object storage, identity, search.
+
 > Esta é a fase de maior valor de produto e a de maior risco de segurança. Tudo aqui nasce com "privacidade por padrão" e testes de autorização.
 
 ### 3.1 Decisões arquiteturais (ADRs obrigatórios antes de codar)

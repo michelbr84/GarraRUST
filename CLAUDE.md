@@ -17,7 +17,7 @@
 
 ## Estrutura de crates
 
-Atualizado após GAR-384 (2026-04-13). 17 crates ativos no workspace.
+Atualizado após GAR-373 (2026-04-13). 17 crates ativos no workspace + 1 PoC efêmero em `benches/`.
 
 ```text
 crates/
@@ -46,9 +46,21 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
-garraia-workspace/   — Fase 3   (GAR-407) — Postgres (SQLx) multi-tenant: groups, RLS
+garraia-workspace/   — Fase 3   (GAR-407) — Postgres 16 + pgvector (SQLx 0.8) multi-tenant,
+                       RLS + FORCE ROW LEVEL SECURITY, FTS tsvector+GIN.
+                       Decisão formalizada em docs/adr/0003-database-for-workspace.md
+                       (GAR-373 accepted 2026-04-13) com benchmark em benches/database-poc/
 garraia-auth/        — Fase 3.3 (GAR-391) — Scope/Principal/RBAC central separado de -security
 garraia-storage/     — Fase 3.5 (GAR-394) — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
+```
+
+### PoCs efêmeros
+
+```text
+benches/
+  database-poc/    — GAR-373 bench harness (Postgres vs SQLite). Crate ISOLADO, NÃO é
+                     workspace member. Deletar depois que garraia-workspace (GAR-407)
+                     estiver estabilizado. Tem [workspace] próprio no Cargo.toml.
 ```
 
 ## Convenções de código
@@ -145,5 +157,5 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 - @imports `.garra-estado.md` para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais (popular conforme Fases 1-3 avançam)
+- @imports `docs/adr/` — decisões arquiteturais. **Accepted:** 0003 (Postgres para Group Workspace). **Proposed/blocked:** 0001, 0002, 0004-0008. Ver `docs/adr/README.md` para o índice.
 - Linear: [time GarraIA-RUST (GAR)](https://linear.app/chatgpt25/team/GAR/projects) — execução semana a semana
