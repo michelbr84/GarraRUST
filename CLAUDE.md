@@ -17,7 +17,7 @@
 
 ## Estrutura de crates
 
-```
+```text
 crates/
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry
   garraia-agents/     — LLM providers (OpenAI/Anthropic/Ollama), AgentRuntime, tools
@@ -32,6 +32,7 @@ apps/
 ## Convenções de código
 
 ### Rust
+
 - `AppState` é `Arc<AppState>` — import via `crate::state::AppState`
 - DB via `SessionStore` (rusqlite, sync, `tokio::sync::Mutex`)
 - Axum 0.8: `FromRequestParts` usa AFIT nativo — **sem** `#[async_trait]`
@@ -41,17 +42,20 @@ apps/
 - `cargo clippy --workspace` para linting
 
 ### Flutter
+
 - State management: Riverpod + code generation
 - Navigation: go_router com auth redirect
 - HTTP: Dio com `_AuthInterceptor` (JWT bearer)
 - Nunca usar `withOpacity()` — usar `withValues(alpha:)`
 
 ### Shell / Scripts
+
 - `set -euo pipefail` em todos os scripts
 - Usar `#!/usr/bin/env bash` (não `/bin/bash`)
 - Paths devem funcionar cross-platform (usar `which` ou env vars)
 
 ### Commits
+
 - Formato: Conventional Commits (`feat:`, `fix:`, `chore:`, `refactor:`, `test:`, `docs:`)
 - Imperativo: "adiciona feature" (não "adicionada feature")
 - Limite 72 chars no assunto
@@ -78,7 +82,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 ## Skills disponíveis
 
 | Skill | Uso |
-|-------|-----|
+| ------- | ----- |
 | `/superpowers-bridge` | Mapeamento skills locais ↔ Superpowers |
 | `/review-pr` | Revisa PR com code-reviewer + security-auditor |
 | `/tdd-loop` | Red-Green-Refactor automático |
@@ -93,7 +97,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 ## Agents disponíveis
 
 | Agent | Papel |
-|-------|-------|
+| ------- | ------- |
 | `code-reviewer` | Revisor sênior Rust/Flutter |
 | `security-auditor` | Auditor OWASP, JWT, crypto |
 | `doc-writer` | Escritor técnico PT-BR/EN |
