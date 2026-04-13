@@ -17,6 +17,7 @@ members = [
     "crates/garraia-tools",
     "crates/garraia-runtime",
     "crates/garraia-voice",
+    "crates/garraia-workspace",
     "crates/garraia-glob",
 ]
 

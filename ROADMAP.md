@@ -189,17 +189,17 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 ### 3.2 Domínio & Schema
 
-Novo crate: `garraia-workspace`.
+Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](https://linear.app/chatgpt25/issue/GAR-407). Migration 001 aplica 7 tabelas (users/user_identities/sessions/api_keys/groups/group_members/group_invites) + extensões `pgcrypto` + `citext`, com smoke test testcontainers `pgvector/pgvector:pg16` verde (~7s). PII-safe `Workspace` handle via `#[instrument(skip(config))]` + custom `Debug` redacting `database_url`. Plan: [`plans/0003-gar-407-workspace-schema-bootstrap.md`](plans/0003-gar-407-workspace-schema-bootstrap.md).
 
 **Tabelas (Postgres + SQLx migrations):**
 
-- [ ] `users` (`id`, `email`, `display_name`, `status`, `created_at`)
-- [ ] `user_identities` (`id`, `user_id`, `provider`, `provider_sub`, `created_at`) — OIDC
-- [ ] `sessions` (`id`, `user_id`, `refresh_token_hash`, `expires_at`, `device_id`, `created_at`)
-- [ ] `api_keys` (`id`, `user_id`, `label`, `key_hash`, `scopes`, `created_at`, `revoked_at`)
-- [ ] `groups` (`id`, `name`, `type`, `created_by`, `settings_jsonb`, `created_at`)
-- [ ] `group_members` (`group_id`, `user_id`, `role`, `status`, `joined_at`, `invited_by`)
-- [ ] `group_invites` (`id`, `group_id`, `invited_email`, `token_hash`, `expires_at`, `accepted_at`)
+- [x] `users` (`id`, `email citext`, `display_name`, `status`, `legacy_sqlite_id`, `created_at`, `updated_at`) — migration 001 ✅
+- [x] `user_identities` (`id`, `user_id`, `provider`, `provider_sub`, `password_hash`, `created_at`) — OIDC-ready, migration 001 ✅
+- [x] `sessions` (`id`, `user_id`, `refresh_token_hash UNIQUE`, `device_id`, `expires_at`, `revoked_at`, `created_at`) — migration 001 ✅
+- [x] `api_keys` (`id`, `user_id`, `label`, `key_hash UNIQUE`, `scopes jsonb`, `created_at`, `revoked_at`, `last_used_at`) — Argon2id pinned, migration 001 ✅
+- [x] `groups` (`id`, `name`, `type`, `created_by`, `settings jsonb`, `created_at`, `updated_at`) — migration 001 ✅
+- [x] `group_members` (`group_id`, `user_id`, `role`, `status`, `joined_at`, `invited_by`) — migration 001 ✅
+- [x] `group_invites` (`id`, `group_id`, `invited_email citext`, `proposed_role`, `token_hash UNIQUE`, `expires_at`, `created_by`, `created_at`, `accepted_at`, `accepted_by`) — migration 001 ✅
 - [ ] `roles`, `permissions`, `role_permissions`
 - [ ] `audit_events` (`id`, `group_id`, `actor_user_id`, `action`, `resource_type`, `resource_id`, `ip`, `user_agent`, `metadata_jsonb`, `created_at`)
 - [ ] `chats` (`id`, `group_id`, `type`, `name`, `settings_jsonb`)
