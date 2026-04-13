@@ -17,28 +17,38 @@
 
 ## Estrutura de crates
 
+Atualizado após GAR-384 (2026-04-13). 17 crates ativos no workspace.
+
 ```text
 crates/
-  garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry
-  garraia-agents/     — LLM providers (OpenAI/Anthropic/Ollama), AgentRuntime, tools
-  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
-  garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2
+  garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate
+  garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
+  garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
-  garraia-desktop/    — Tauri v2 app (Windows MSI)
+  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
+  garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
+  garraia-config/     — schema unificado de config (serde + validator + notify)
+  garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
+  garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
+  garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
+  garraia-media/      — processamento de PDF, imagens, mídia
+  garraia-skills/     — registry de skills para o agente
+  garraia-tools/      — tools compartilhadas (file ops, search, web)
+  garraia-runtime/    — runtime helpers
+  garraia-common/     — tipos + erros compartilhados
+  garraia-glob/       — glob matching utilitário
+  garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
 apps/
   garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
 ```
 
-### Crates planejados (Fases 1-3 do ROADMAP AAA)
+### Crates planejados (ROADMAP AAA Fases 2-3)
 
 ```text
-garraia-config/      — Fase 1.3 — schema unificado (serde + validator), hot-reload via SSE
-garraia-telemetry/   — Fase 2.3 — OpenTelemetry + Prometheus + redaction PII
-garraia-embeddings/  — Fase 2.1 — embeddings locais (mxbai) + vector store (lancedb)
-garraia-plugins/     — Fase 2.2 — wasmtime sandbox com capabilities default-deny
-garraia-workspace/   — Fase 3   — Postgres (SQLx) multi-tenant: groups, members, RLS
-garraia-auth/        — Fase 3.3 — Scope/Principal/RBAC central separado de -security
-garraia-storage/     — Fase 3.5 — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
+garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
+garraia-workspace/   — Fase 3   (GAR-407) — Postgres (SQLx) multi-tenant: groups, RLS
+garraia-auth/        — Fase 3.3 (GAR-391) — Scope/Principal/RBAC central separado de -security
+garraia-storage/     — Fase 3.5 (GAR-394) — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
 ```
 
 ## Convenções de código
