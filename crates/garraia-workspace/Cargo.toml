@@ -1,0 +1,38 @@
+[package]
+name = "garraia-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Multi-tenant Postgres workspace (groups, members, auth, RBAC, audit) — Fase 3"
+
+[dependencies]
+# SQL driver (runtime-only, no query! macros yet — see plan 0003 §12 Q1)
+# TLS feature is intentionally absent: Postgres connection runs on a private
+# network (self-host or managed instance behind the gateway). If the workspace
+# is ever deployed across a public network, enable `tls-rustls` here and
+# document the change; do NOT silently promote to the workspace root sqlx dep
+# without verifying the TLS feature survives the promotion.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "json"] }
+# Identifiers
+uuid = { version = "1", features = ["v7", "serde"] }
+# Timestamps
+chrono = { version = "0.4", features = ["serde"] }
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Errors
+thiserror = { workspace = true }
+# Async runtime
+tokio = { workspace = true }
+# Tracing (PII-safe spans via skip)
+tracing = { workspace = true }
+# Config validation
+validator = { version = "0.18", features = ["derive"] }
+
+[dev-dependencies]
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+anyhow = "1"
