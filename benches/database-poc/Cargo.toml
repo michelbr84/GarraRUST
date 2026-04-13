@@ -1,0 +1,50 @@
+[package]
+name = "garraia-database-poc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "GAR-373 — Postgres vs SQLite benchmark PoC. Ephemeral — delete after ADR 0003 is merged."
+
+# CRITICAL: this crate is NOT a member of the main workspace.
+# It exists in isolation so its heavy deps don't pollute gateway build.
+[workspace]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+# Error handling
+anyhow = "1"
+thiserror = "2"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Postgres
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+pgvector = { version = "0.4", features = ["sqlx"] }
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled", "vtab", "functions", "blob"] }
+tempfile = "3"
+# Data gen
+uuid = { version = "1", features = ["v4", "v7"] }
+rand = "0.8"
+rand_chacha = "0.3"
+fake = { version = "2.9", features = ["derive", "chrono"] }
+# Serialization for results
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+# Timing
+hdrhistogram = "7"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
