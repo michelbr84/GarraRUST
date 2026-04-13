@@ -47,7 +47,7 @@
 
 ## 🗺️ Roadmap AAA
 
-O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA. Consulte o [ROADMAP.md](ROADMAP.md) para detalhes sobre as integrações de Superpowers, TurboQuant+ (KV Cache compression) e o ecosistema completo (Zero-latency streaming, Desktop Tauri e Mobile remoto).
+O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Execução semana a semana acompanhada nos [projects Linear do time GarraIA-RUST](https://linear.app/chatgpt25/team/GAR/projects).
 
 ## Início Rápido
 
@@ -886,21 +886,17 @@ O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://disc
 
 ### Roteiro de Desenvolvimento (Roadmap)
 
-Acompanhe as próximas entregas e contribua através do nosso **[Board Oficial no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)**.
+Acompanhe as próximas entregas e contribua através dos nossos **[Projects no Linear (time GarraIA-RUST)](https://linear.app/chatgpt25/team/GAR/projects)**. O plano completo está consolidado em [`ROADMAP.md`](ROADMAP.md) e distribuído em 7 fases:
 
-Fases completadas:
+1. **[Fase 1 — Core & Inferência](https://linear.app/chatgpt25/project/fase-1-core-and-inferencia-dc084beb8656)** — TurboQuant+ (KV cache, PagedAttention, quantização), Superpowers workflow, config reativo.
+2. **[Fase 2 — Performance, RAG & MCP](https://linear.app/chatgpt25/project/fase-2-performance-rag-and-mcp-75d77421bfd6)** — Embeddings locais, vector store, plugins WASM sandboxed, OpenTelemetry.
+3. **[Fase 3 — Group Workspace](https://linear.app/chatgpt25/project/fase-3-group-workspace-850d2a440e35)** — Multi-tenant família/equipe: arquivos, chats, memória IA, tasks, docs, RBAC com RLS Postgres. **Caminho crítico.**
+4. **[Fase 4 — UX Multi-Plataforma AAA](https://linear.app/chatgpt25/project/fase-4-ux-multi-plataforma-aaa-b4f6bbe546c1)** — Desktop Tauri AAA, Mobile Android/iOS, CLI interativa.
+5. **[Fase 5 — Qualidade, Segurança & Compliance](https://linear.app/chatgpt25/project/fase-5-qualidade-seguranca-and-compliance-f174cd2c73c0)** — Security hardening, fuzz, LGPD/GDPR, first-run wizard.
+6. **[Fase 6 — Lançamento & SRE](https://linear.app/chatgpt25/project/fase-6-lancamento-and-sre-35277d8571eb)** — Helm, Terraform, SLOs, runbooks, beta → GA.
+7. **[Fase 7 — Pós-GA & Evolução](https://linear.app/chatgpt25/project/fase-7-pos-ga-and-evolucao-14dc29a5f581)** — Multi-região, federation, marketplace, voice, vision, enterprise.
 
-- **✅ Fase 1: Core Hardening & Test Fix** - Cobertura end-to-end, estabilização de crates isoladas.
-- **✅ Fase 2: Voice E2E Integration** - Pipeline STT -> LLM -> TTS com fallbacks robustos.
-- **✅ Fase 3: Commands Enhancement & Registry** - Expansão do sistema de comandos slash.
-- **✅ Fase 4: Admin Console** - Projeto unificado ao Admin Console principal.
-- **✅ Garra Desktop — Fase 1 & 2 (GAR-303..316)** - Overlay Tauri v2 transparente, hotkey Alt+G, sprite animado (idle/thinking/talking), bolha de fala e barra de input.
-
-Fases em andamento:
-
-- **Garra Desktop — Fase 3 (GAR-317..323)** - Endpoint `/ws/parrot` no gateway, integração bidirecional com GarraIA.
-- **Fase 5: Media & Multi-Agent** - Roteamento complexo e processamento multimídia.
-- **Fase 6: Release, Docs & Community** - Lançamento público, instaladores e guias.
+Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345) e o bootstrap dos 7 projects AAA (GAR-371..410) em 2026-04-13.
 
 Navegue por todas as [issues abertas no Linear](https://linear.app/) ou filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
 
