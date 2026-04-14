@@ -1,8 +1,85 @@
-# Plan 0013: GAR-391d + GAR-392 — Cross-group authz suite (epic GAR-391 closer)
+# Plan 0013: GAR-392 — RLS matrix (epic GAR-391 parcial; 391d deferido)
+
+> **⚠️ Amendment 2026-04-14 (pre-execution re-scope — path C)**
+>
+> Empirical verification of Open Question #3 (worktree
+> `.claude/worktrees/gar-391d-392-authz-suite`, HEAD `db0b7f9`) confirmed
+> that 15 of 18 HTTP endpoints required by the original `APP_MATRIX` do
+> not exist in `garraia-gateway`. Only `/v1/auth/{login,refresh,logout,
+> signup}` and the legacy mobile `/me` + `/chat` are present.
+> `build_test_router` does not exist.
+>
+> To avoid material touches to `garraia-gateway` (guardrail from
+> 2026-04-14 brainstorming session) and avoid creating production-path
+> stub handlers that would later turn into dead code, this plan is
+> RE-SCOPED:
+>
+> - **GAR-392 (RLS matrix + hygiene)** is the sole deliverable of this
+>   rodada.
+> - **GAR-391d (app-layer cross-group matrix)** is DEFERRED to a future
+>   plan 0014, to be scheduled inside Phase 3.4 when REST resource
+>   endpoints (`/v1/chats`, `/v1/messages`, `/v1/memory`, `/v1/tasks`,
+>   `/v1/groups`, `/v1/me`) are materialized.
+> - **Epic GAR-391 does NOT close with this plan.** It remains open.
+> - **Zero material changes to `garraia-gateway`** in this rodada. No
+>   `build_test_router`, no `test-support` feature, no stub handlers.
+> - GAR-391d stays in **Backlog** (not In Progress) until plan 0014.
+>
+> **Tasks affected:**
+>
+> | # | Status | Notes |
+> |---|---|---|
+> | 1 | ✅ keep | `raw()` escape hatch |
+> | 2 | ✂ reduce | `common/cases.rs` keeps only `DbRole`/`SqlOp`/`TenantCtx`/`RlsExpected`/`RlsCase`. `AppCase`/`Relationship`/`Expected`/`DenyKind` removed (→ plan 0014) |
+> | 3 | ✂ simplify | `common/harness.rs` without axum/HTTP. Fields: `_container`, `admin_url`, `app_pool`, `login_pool`, `signup_pool` only |
+> | 4 | ✂ reduce | `Tenant::new` without JWTs (RLS matrix uses GUCs, not tokens). `TestUser { user_id, email }` only. `actor_for` removed |
+> | 5 | ❌ removed | No `common/http.rs`, no `build_test_router` |
+> | 6 | ❌ mostly removed | Only `classify_pg_error` survives — relocated to **new** `common/oracle.rs` (~20 lines) |
+> | 7 | ❌ removed | `APP_MATRIX` deferred to plan 0014 |
+> | 8 | ✅ keep (core) | `rls_matrix.rs` + executor — the core deliverable |
+> | 9 | ✂ adapt | `total_case_count_at_least_80` (RLS-only threshold). `rls_role_coverage_check` replaces app-layer coverage check |
+> | 10 | ✂ rewritten | **NOT** remove the "Pending" line; REPLACE with "GAR-392 delivered, 391d deferred to plan 0014". Audit of escape hatch, ADR amendment (392-only), `ROADMAP.md` (391d → Phase 3.4), `.garra-estado.md`, Linear bookkeeping |
+>
+> **Revised file layout** (§3 of the plan, superseding the original):
+>
+> ```
+> crates/garraia-auth/
+> ├── Cargo.toml                    # MODIFY — minimal dev-deps only
+> ├── src/
+> │   ├── login_pool.rs              # MODIFY — #[cfg(test)] raw()
+> │   └── signup_pool.rs             # MODIFY — #[cfg(test)] raw()
+> └── tests/
+>     ├── common/
+>     │   ├── mod.rs                 # CREATE
+>     │   ├── cases.rs               # CREATE — RLS types only
+>     │   ├── harness.rs             # CREATE — container + 3 pools, NO axum
+>     │   ├── tenants.rs             # CREATE — Tenant::new sem JWT
+>     │   └── oracle.rs              # CREATE — classify_pg_error
+>     ├── rls_matrix.rs              # CREATE
+>     └── meta_tripwires.rs          # CREATE
+> ```
+>
+> **Zero files touched in `crates/garraia-gateway/`.** Zero dev-dep on
+> `garraia-gateway` or `reqwest`/`http` added to `garraia-auth/Cargo.toml`.
+>
+> **Revised targets:**
+>
+> - `cargo test -p garraia-auth --test rls_matrix` passes with ≥80 cases.
+> - `cargo test -p garraia-auth --test meta_tripwires` passes
+>   (`total_case_count_at_least_80` + `rls_role_coverage_check`).
+> - ~35 TDD steps, ~8s warm runtime, 3–5h dev session.
+>
+> **Budget / counts** in §6.1 and §6.3 below are superseded by the line
+> above. The design doc
+> (`docs/superpowers/specs/2026-04-14-gar-391d-392-authz-suite-design.md`)
+> remains intact as the complete target state and will be consulted by
+> plan 0014.
+
+---
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Entregar uma suíte dual de testes de autorização cross-group (GAR-391d app-layer + GAR-392 RLS direto) em `crates/garraia-auth/tests/`, fechando o epic GAR-391 com ≥100 cenários contra um Postgres real via testcontainers.
+**Goal:** Entregar uma suíte pura de testes RLS cross-tenant (GAR-392) em `crates/garraia-auth/tests/` com ≥80 cenários contra um Postgres real via testcontainers, exercitando os 3 dedicated roles (`garraia_app`/`garraia_login`/`garraia_signup`), os 4 `TenantCtx` variants e o oráculo SQLSTATE+MESSAGE que distingue `InsufficientPrivilege`/`PermissionDenied`/`RlsFilteredZero`/`RowsVisible`. Fechamento do épico GAR-391 fica pendente até plan 0014 entregar a matriz app-layer (GAR-391d) quando a Fase 3.4 materializar os handlers REST.
 
 **Architecture:** Harness compartilhado (`OnceCell<Arc<Harness>>`) sobe um único `pgvector/pg16`, roda migrations 001..010 uma vez, expõe `app_pool` / `login_pool` / `signup_pool` + `axum` app em porta efêmera. Cada case usa um `Tenant` fresh (`group_id` + 4 users nas 4 `Relationship` variants) — isolamento por dados novos, sem truncate/rollback. Duas matrizes declarativas (`APP_MATRIX` com ~120 casos + `RLS_MATRIX` com ~84 casos) iteradas por um único `#[tokio::test]` cada, coletando todas as falhas e reportando com `case_id` estável.
 
