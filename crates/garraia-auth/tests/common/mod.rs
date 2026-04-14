@@ -11,5 +11,6 @@
 
 pub mod cases;
 pub mod harness;
+pub mod matrix;
 pub mod oracle;
 pub mod tenants;
