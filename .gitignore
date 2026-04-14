@@ -92,6 +92,11 @@ release/
 # NOTE: use `plans/*` (não `plans/`) para permitir negação de arquivos.
 plans/*
 !plans/[0-9][0-9][0-9][0-9]-*.md
+# Fractional / corretive plans (e.g., 0011.5-* for a migration prereq spun
+# out of a feature plan). Discovered missing during plan 0011.5 review:
+# the integer pattern above doesn't match `NNNN.M-*` because position 5
+# is `.` instead of `-`.
+!plans/[0-9][0-9][0-9][0-9].[0-9]-*.md
 !plans/README.md
 
 # Linear automation scripts (internal tooling — contain hardcoded API keys)
