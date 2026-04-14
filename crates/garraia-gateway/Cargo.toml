@@ -66,6 +66,13 @@ default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
 telemetry = ["dep:garraia-telemetry"]
+# Plan 0016 M2 — exposes test-only helpers on `GatewayServer` so the
+# integration test harness (`tests/common/mod.rs`) can build a Router
+# without running the full bootstrap pipeline. WARNING: MUST NOT be
+# enabled by any production binary or non-test crate. Transitively
+# enables the `test-support` feature of `garraia-auth` so the harness
+# can call `JwtIssuer::new_for_test`.
+test-helpers = ["garraia-auth/test-support"]
 
 [dev-dependencies]
 tempfile = "3"

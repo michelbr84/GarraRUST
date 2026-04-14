@@ -552,6 +552,66 @@ impl GatewayServer {
     }
 }
 
+/// **Test-only router builder** — plan 0016 M2-T2.
+///
+/// Thin wrapper around the production `router::build_router` that
+/// skips the filesystem / bootstrap side effects of the normal
+/// `GatewayServer::run` path:
+///
+/// * No agent runtime compilation from config (`AgentRuntime::new()`)
+/// * No channel bootstrap (`ChannelRegistry::new()`)
+/// * No MCP filesystem I/O (the harness sets `GARRAIA_CONFIG_DIR`
+///   to a tempdir before calling this so `McpPersistenceService`
+///   cannot pollute the developer's real config directory)
+/// * No admin sqlite file (`AdminStore::in_memory()`)
+/// * No TLS, no graceful shutdown listener
+///
+/// The caller injects pre-built `Arc<LoginPool>`, `Arc<SignupPool>`,
+/// `Arc<JwtIssuer>` and optional `Arc<AppPool>` — all produced by
+/// the integration test harness against a testcontainer Postgres.
+///
+/// Returned `Router` is ready for `tower::ServiceExt::oneshot`
+/// without any socket binding.
+///
+/// Gated behind `#[cfg(feature = "test-helpers")]` so the function
+/// is invisible to production builds. MUST NOT be called from any
+/// non-test code path.
+#[cfg(feature = "test-helpers")]
+pub async fn build_router_for_test(
+    config: AppConfig,
+    login_pool: Arc<garraia_auth::LoginPool>,
+    signup_pool: Arc<garraia_auth::SignupPool>,
+    jwt_issuer: Arc<garraia_auth::JwtIssuer>,
+    app_pool: Option<Arc<garraia_auth::AppPool>>,
+) -> axum::Router {
+    use crate::admin;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+
+    // Zero-config minimal runtime + channel registry. No providers,
+    // no tools, no channels wired. Confirmed by team-coordinator gate
+    // against state.rs unit tests.
+    let mut state = AppState::new(
+        config,
+        AgentRuntime::new(),
+        ChannelRegistry::new(),
+    );
+
+    // Inject the auth pieces the harness built against testcontainer.
+    state.set_auth_components(login_pool, signup_pool, jwt_issuer, app_pool);
+    let state: crate::state::SharedState = Arc::new(state);
+
+    // Minimal collaborators expected by the production router.
+    let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
+        Arc::new(Vec::new());
+    let admin_store = Arc::new(Mutex::new(
+        admin::store::AdminStore::in_memory()
+            .expect("in-memory admin store should work"),
+    ));
+
+    build_router(state, whatsapp_state, admin_store)
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
