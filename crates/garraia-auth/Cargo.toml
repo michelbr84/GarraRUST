@@ -8,6 +8,15 @@ repository.workspace = true
 description = "Authentication and authorization for GarraIA Group Workspace (GAR-391a/b)"
 build = "build.rs"
 
+[features]
+# Exposes test-only escape hatches (`LoginPool::raw`, `SignupPool::raw`) so
+# integration tests in `tests/` can build a raw `sqlx::PgPool` handle for the
+# RLS matrix suite (GAR-392, plan 0013 path C). Production code (any non-test
+# build) never enables this; CI audit checks that `pub fn raw` appears only
+# under `#[cfg(any(test, feature = "test-support"))]`. See
+# docs/superpowers/specs/2026-04-14-gar-391d-392-authz-suite-design.md §4.6.
+test-support = []
+
 [dependencies]
 # SQL driver — runtime-only, matches garraia-workspace's feature set so the
 # LoginPool can be built from the same Postgres instance without forcing TLS.

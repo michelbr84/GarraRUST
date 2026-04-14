@@ -102,6 +102,18 @@ impl LoginPool {
     pub(crate) fn pool(&self) -> &PgPool {
         &self.inner
     }
+
+    /// **Test-only escape hatch** for the RLS matrix suite (GAR-392, plan 0013).
+    ///
+    /// Gated behind `#[cfg(any(test, feature = "test-support"))]` so it is
+    /// invisible to any production build. Integration tests in `tests/` enable
+    /// it via `cargo test --features test-support`. CI audit: `grep 'pub fn raw'`
+    /// on `crates/garraia-auth/src/` must return only entries preceded by this
+    /// exact cfg gate. See ADR 0005 Amendment 2026-04-14.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn raw(&self) -> &PgPool {
+        &self.inner
+    }
 }
 
 impl LoginPool {
