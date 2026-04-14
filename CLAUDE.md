@@ -17,7 +17,7 @@
 
 ## Estrutura de crates
 
-Atualizado após GAR-391a (2026-04-14). **19 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
+Atualizado após GAR-391a (2026-04-13). **19 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
 
 ```text
 crates/
@@ -104,6 +104,12 @@ benches/
 - `set -euo pipefail` em todos os scripts
 - Usar `#!/usr/bin/env bash` (não `/bin/bash`)
 - Paths devem funcionar cross-platform (usar `which` ou env vars)
+
+### Convenção de datas
+
+- **Project narrative dates** (ROADMAP, plans, ADRs, READMEs, commit prose, doc paragraphs como "entregue em YYYY-MM-DD") usam **America/New_York (Florida)** local time. Nunca usar UTC para data narrativa do projeto sem dizer explicitamente.
+- **API timestamps, audit_events, log timestamps, JWT `iat`/`exp`, `expires_at` em response bodies** são sempre **UTC ISO 8601 com sufixo `Z`** — declaração explícita de UTC.
+- Quando estiver em dúvida em prosa de doc/plan/commit, use o local time da Flórida. Se a referência for tecnicamente UTC (ex.: timestamp de log capturado), anote `(UTC)` inline.
 
 ### Commits
 

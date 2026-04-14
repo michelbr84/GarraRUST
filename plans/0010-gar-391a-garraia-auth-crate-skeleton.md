@@ -7,7 +7,7 @@
 > **Priority:** Urgent
 > **Estimated session size:** 3-5 horas de trabalho focado
 > **Author:** Claude Opus 4.6 + @michelbr84
-> **Date:** 2026-04-14
+> **Date:** 2026-04-13
 > **Depends on:** ✅ GAR-407 (`user_identities` schema) + ✅ GAR-408 (RLS FORCE + `garraia_app` role + Axum extractor contract) + ✅ GAR-375 (ADR 0005 — normative spec)
 > **Unblocks:** **GAR-391b** (real `verify_credential` impl + login endpoint), **GAR-391c** (Axum `Principal` extractor + `RequirePermission`), **GAR-391d** (cross-group authz test suite — GAR-392)
 

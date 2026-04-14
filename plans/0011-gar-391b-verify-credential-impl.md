@@ -22,7 +22,7 @@
 > **Priority:** Urgent
 > **Estimated session size:** 6-9 horas focado (maior das quatro fatias)
 > **Author:** Claude Opus 4.6 + @michelbr84
-> **Date:** 2026-04-14
+> **Date:** 2026-04-13
 > **Depends on:** ✅ GAR-391a (skeleton + `LoginPool` + migration 008) + ✅ GAR-375 (ADR 0005 normativo) + ✅ GAR-407/408/390 (schema + RLS + tasks)
 > **Unblocks:** **GAR-391c** (Axum extractor + `RequirePermission` + gateway wiring) + **GAR-391d / GAR-392** (cross-group authz suite)
 
@@ -318,7 +318,12 @@ Body: { "email": "user@example.com", "password": "..." }
 200 OK:
   { "access_token": "<jwt>",
     "refresh_token": "<base64>",
-    "expires_at": "2026-04-14T03:00:00Z",
+    "expires_at": "2026-04-14T03:00:00Z",   // ISO 8601 UTC (Z suffix). All API
+                                             // timestamps are UTC; convert to
+                                             // local on the client. Project
+                                             // narrative dates use America/
+                                             // New_York; only API/log/audit
+                                             // timestamps are explicit UTC.
     "user_id": "<uuid>" }
 
 401 Unauthorized (every failure mode):
