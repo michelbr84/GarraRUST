@@ -40,8 +40,18 @@ crates/
                         signup} retornando 401 byte-identical em todos os modos de falha + 409
                         em duplicate signup. Audit em todos os terminals do login flow. Gateway
                         wiring via AuthConfig em garraia-config (4 env vars, fail-soft). Métricas
-                        Prometheus baseline com bounded outcome enum. Pending: 391d/GAR-392
-                        (suite cross-group authz ≥100 cenários) fecha o epic.
+                        Prometheus baseline com bounded outcome enum. GAR-392 (pure RLS
+                        matrix, 81 cenários, plan 0013 path C) ✅ entregue 2026-04-14 —
+                        matriz table-driven contra pgvector/pg16 real exercitando
+                        garraia_app (10 FORCE RLS tables × 4 TenantCtx + WITH CHECK
+                        writes) + garraia_login e garraia_signup (grant layer allow/
+                        denied). Oracle SQLSTATE distingue InsufficientPrivilege
+                        (42501 grant) / PermissionDenied (42501 WITH CHECK) /
+                        RlsFilteredZero (USING) / RowsVisible (any positive). GAR-391d
+                        (app-layer cross-group via HTTP) DEFERIDO para plan 0014 /
+                        Fase 3.4 — endpoints REST /v1/{chats,messages,memory,tasks,
+                        groups,me} ainda não existem em garraia-gateway (verificado
+                        empiricamente 2026-04-14). Epic GAR-391 continua aberto.
                         Decisão: docs/adr/0005-identity-provider.md (com Amendment 2026-04-13).
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)

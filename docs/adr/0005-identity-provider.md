@@ -846,6 +846,71 @@ Zero code is touched in this ADR — rollback at level 1 or 2 is free.
 
 ---
 
+## Amendment 2026-04-14 — GAR-392 RLS enforcement evidence (partial)
+
+Plan 0013 path C delivered **GAR-392 only** — the pure RLS matrix — and
+deferred **GAR-391d** (app-layer cross-group matrix via HTTP) to a future
+plan 0014 because empirical verification showed 15 of 18 REST resource
+endpoints the original suite targeted do not yet exist in
+`garraia-gateway`. The epic **GAR-391 remains open** until plan 0014 ships
+inside Phase 3.4.
+
+What this Amendment validates as of 2026-04-14:
+
+- **GRANT boundary** for the three dedicated roles (`garraia_app`,
+  `garraia_login`, `garraia_signup`) is exercised by 81 cases in
+  `crates/garraia-auth/tests/rls_matrix.rs`. Every allow-listed table
+  shows `RowsVisible`; every non-listed table shows
+  `InsufficientPrivilege`. Gap B (signup role cannot reach
+  tenant-scoped data) is covered by 12 explicit denied cases in Block 4
+  of the matrix.
+- **RLS USING/WITH CHECK enforcement** on the 10 FORCE RLS tables from
+  migration 007 is exercised across all four `TenantCtx` variants
+  (`Correct` / `WrongGroupCorrectUser` / `BothUnset` /
+  `CorrectRoleWrongTenant`). NULLIF fail-closed behavior is confirmed
+  by `BothUnset` cases returning `RlsFilteredZero`.
+- **Rule 11 boundary** (`LoginPool`/`SignupPool` production access only
+  via the typed newtypes) is preserved. The test suite uses
+  `#[cfg(any(test, feature = "test-support"))] pub fn raw(&self) ->
+  &PgPool` escape hatches. A CI-friendly audit is:
+
+  ```bash
+  grep -n 'pub fn raw' crates/garraia-auth/src/
+  ```
+
+  Every hit must be preceded by the exact `#[cfg(any(test,
+  feature = "test-support"))]` line. No production `.rs` file compiles
+  calls to `raw()`.
+- **SQLSTATE oracle** in `tests/common/oracle.rs` distinguishes the
+  three flavors of 42501 denial (`InsufficientPrivilege` from grant
+  layer, `PermissionDenied` from WITH CHECK, `RlsFilteredZero` from
+  USING) by message prefix. Postgres 16 message wording is captured
+  in-file and will break loudly if a patch release changes it.
+
+What this Amendment does NOT validate (deferred to plan 0014):
+
+- Cross-group behavior **through the real Axum router** for REST
+  resources (`/v1/chats`, `/v1/messages`, `/v1/memory`, `/v1/tasks`,
+  `/v1/groups`, `/v1/me`). These endpoints do not exist in
+  `garraia-gateway` as of this commit; plan 0014 picks up this work
+  when Phase 3.4 materializes them.
+- HTTP-level `Relationship` matrix (Owner/Member/Outsider/CrossTenant)
+  and the 401/404/403 policy documented in §3.1 of the design doc.
+
+The original design doc
+`docs/superpowers/specs/2026-04-14-gar-391d-392-authz-suite-design.md`
+remains intact as the complete target state for the full GAR-391 epic
+and is the canonical input for plan 0014.
+
+Links:
+- Plan: [`plans/0013-gar-391d-392-authz-suite.md`](../../plans/0013-gar-391d-392-authz-suite.md) (amendment path C)
+- Matrix: [`crates/garraia-auth/tests/common/matrix.rs`](../../crates/garraia-auth/tests/common/matrix.rs)
+- Oracle: [`crates/garraia-auth/tests/common/oracle.rs`](../../crates/garraia-auth/tests/common/oracle.rs)
+- Runner: [`crates/garraia-auth/tests/rls_matrix.rs`](../../crates/garraia-auth/tests/rls_matrix.rs)
+- Tripwires: [`crates/garraia-auth/tests/meta_tripwires.rs`](../../crates/garraia-auth/tests/meta_tripwires.rs)
+
+---
+
 ## Links
 
 - [GAR-375](https://linear.app/chatgpt25/issue/GAR-375) — this ADR's source issue
