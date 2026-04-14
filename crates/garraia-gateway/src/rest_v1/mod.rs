@@ -4,6 +4,7 @@
 //! OpenAPI 3.1 spec is generated via `utoipa`; Swagger UI is served at
 //! `/docs`.
 
+pub mod me;
 pub mod problem;
 
 use std::sync::Arc;
