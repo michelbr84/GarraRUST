@@ -48,6 +48,10 @@ rusqlite = { workspace = true }
 base64 = { workspace = true }
 ring = { workspace = true }
 jsonwebtoken = { workspace = true }
+# Fase 3.4 REST /v1 (plan 0015): OpenAPI generation + Swagger UI.
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "reqwest"] }
+thiserror = { workspace = true }
 dirs = "6"
 governor = "0.8"
 tower_governor = "0.8"

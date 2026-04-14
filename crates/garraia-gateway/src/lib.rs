@@ -27,6 +27,7 @@ pub mod openai_api;
 pub mod plugins_handler;
 pub mod projects_handler;
 pub mod rate_limiter;
+pub mod rest_v1;
 pub mod router;
 pub mod skins_handler;
 pub mod skills_handler;
