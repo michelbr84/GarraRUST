@@ -24,28 +24,33 @@ crates/
   garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
-  garraia-auth/       — ✅ verify path real (GAR-391a + GAR-391b). IdentityProvider trait
-                        + InternalProvider real + LoginPool newtype (private inner PgPool,
-                        validated via SELECT current_user, !Clone enforced via static_assertions)
-                        + Argon2id (RFC 9106 m=64MiB,t=3,p=4) + PBKDF2 dual-verify + lazy upgrade
-                        transacional sob FOR NO KEY UPDATE OF ui + constant-time anti-enumeration
-                        via DUMMY_HASH em build.rs + audit_events em todos os terminais + JWT
-                        HS256 access token (15min, algorithm-confusion guards) + Credential.password
-                        em SecretString + endpoint POST /v1/auth/login no garraia-gateway sob
-                        feature `auth-v1` retornando 401 byte-identical anti-enumeração.
-                        **391b shipped com escopo reduzido**: refresh tokens, SessionStore::issue
-                        no endpoint, create_identity, signup/refresh/logout endpoints, e wiring
-                        no AppState principal todos diferidos para 391c (gaps estruturais nos
-                        grants do garraia_login role surfacing empíricos).
-                        Decisão: docs/adr/0005-identity-provider.md.
+  garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
+                        Tipos: IdentityProvider trait + InternalProvider + LoginPool/SignupPool
+                        newtypes (private inner PgPool, validated via SELECT current_user, !Clone
+                        enforced via static_assertions) + Role/Action enums + fn can() central
+                        com 5×22=110-case table-driven test + Principal extractor (Axum
+                        FromRequestParts) + RequirePermission struct method (NOT FromRequestParts
+                        devido a const-generic limitation do Axum). Crypto: Argon2id (RFC 9106
+                        m=64MiB,t=3,p=4) + PBKDF2 dual-verify + lazy upgrade transacional sob
+                        FOR NO KEY UPDATE OF ui + constant-time anti-enumeration via DUMMY_HASH
+                        em build.rs. JWT: HS256 access token (15min) + algorithm-confusion guards
+                        + refresh token opaco com HMAC-SHA256 separado. PII: Credential.password
+                        em SecretString + RedactedStorageError wrapper. Endpoints (default-on,
+                        feature `auth-v1` REMOVIDA em 391c): POST /v1/auth/{login,refresh,logout,
+                        signup} retornando 401 byte-identical em todos os modos de falha + 409
+                        em duplicate signup. Audit em todos os terminals do login flow. Gateway
+                        wiring via AuthConfig em garraia-config (4 env vars, fail-soft). Métricas
+                        Prometheus baseline com bounded outcome enum. Pending: 391d/GAR-392
+                        (suite cross-group authz ≥100 cenários) fecha o epic.
+                        Decisão: docs/adr/0005-identity-provider.md (com Amendment 2026-04-13).
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
-                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a + 391b prereq).
-                        25 tabelas em 8 migrations, 18 sob FORCE RLS, 7 tenant-root
+                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c).
+                        25 tabelas em 9 migrations, 18 sob FORCE RLS, 7 tenant-root
                         sob app-layer:
                         • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
                         • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
@@ -55,6 +60,8 @@ crates/
                         • 007 RLS FORCE wrap-up em 10 tabelas com NULLIF fail-closed
                         • 008 garraia_login NOLOGIN BYPASSRLS dedicated role (GAR-391a)
                         • 009 user_identities.hash_upgraded_at (GAR-391b prereq, plan 0011.5)
+                        • 010 garraia_signup NOLOGIN BYPASSRLS + GRANT SELECT ON sessions/group_members
+                              TO garraia_login (GAR-391c, Gaps A+B+C closed)
                         Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004).
                         Handle PII-safe via skip(config) + custom Debug redaction.
                         Decisão: docs/adr/0003-database-for-workspace.md.
@@ -136,8 +143,9 @@ benches/
 8. **SEMPRE** escrever ADR em `docs/adr/NNNN-*.md` antes de decisão arquitetural irreversível (Postgres vs SQLite, vector store, storage backend, etc.) — ver `ROADMAP.md` §3.1
 9. **SEMPRE** migrations Postgres forward-only (colunas novas → backfill → NOT NULL depois)
 10. **SEMPRE** testes de autorização cross-group antes de merge em qualquer rota nova de `garraia-workspace`/`garraia-auth`
-11. **SEMPRE** usar a `garraia_login` BYPASSRLS dedicated role exclusivamente em paths de credential verification (login + lazy upgrade PBKDF2→Argon2id). Acesso ao role só via `garraia-auth::LoginPool` newtype — nunca raw `PgPool`. Documentado em `docs/adr/0005-identity-provider.md`.
+11. **SEMPRE** usar a `garraia_login` BYPASSRLS dedicated role exclusivamente em paths de credential verification (login + lazy upgrade PBKDF2→Argon2id + extractor membership lookup + refresh token verify/revoke). Acesso ao role só via `garraia-auth::LoginPool` newtype — nunca raw `PgPool`. Documentado em `docs/adr/0005-identity-provider.md` (com Amendment 2026-04-13 cobrindo Gaps A/C).
 12. **NUNCA** ler `user_identities.password_hash` no app pool role (`garraia_app`) — RLS filtra para 0 rows. Tratar 0 rows como "user not found" é anti-pattern (significa "RLS bloqueou"). Sempre usar `garraia_login` via login endpoint. Ver ADR 0005 §"Anti-patterns".
+13. **SEMPRE** usar a `garraia_signup` BYPASSRLS dedicated role exclusivamente para o signup flow (`POST /v1/auth/signup`). Acesso só via `garraia-auth::SignupPool` newtype — nunca raw `PgPool`, nunca substituível pelo `LoginPool`. O role tem `INSERT` em `users`/`user_identities` mas NENHUM acesso a `sessions`, `messages`, `chats`, `memory_*`, `tasks*`, `groups`, `group_members` ou qualquer dado de tenant. Migration 010, ADR 0005 §"Amendment 2026-04-13" Gap B.
 
 ## Framework de Desenvolvimento: Superpowers
 

@@ -82,6 +82,75 @@ Mixing the two is a compile-time error: `LoginPool` is the only constructor
 path for a credential-verification-capable pool, and it refuses any role
 other than `garraia_login`.
 
+## What ships in 391c
+
+### RBAC primitives
+
+- **`Role` enum** — 5 variants (`Owner`, `Admin`, `Member`, `Guest`, `Child`)
+  mirroring `group_members.role` and the `roles` seed in migration 002.
+  Tiers: `owner=100, admin=80, member=50, guest=20, child=10`. Round-trip
+  stable via `from_str` / `as_str`.
+- **`Action` enum** — 22 variants covering every `permissions.id` row
+  seeded in migration 002 (`files.*`, `chats.*`, `memory.*`, `tasks.*`,
+  `docs.*`, `members.manage`, `group.{settings,delete}`, `export.{self,group}`).
+- **`fn can(principal, action) -> bool`** — central RBAC gate. Returns
+  `false` if `principal.role.is_none()`. Backed by a 5×22=110-case
+  table-driven unit test (`can_matrix_matches_seed`) asserting exactly 63
+  trues across every role × action combination.
+
+### Extractors
+
+- **`Principal` (implements `FromRequestParts<S>`)** — extracts
+  `Authorization: Bearer <jwt>`, verifies via `JwtIssuer::verify_access`,
+  then optionally resolves `X-Group-Id` header into a typed `Role` via
+  `SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2 AND
+  status='active'` (uses `LoginPool` BYPASSRLS, requires migration 010
+  Gap C grant). Returns 401 / 403 / 400 per documented contract.
+- **`RequirePermission` is NOT a `FromRequestParts` extractor** — Axum's
+  const generics over enums are unstable. Instead, call
+  `RequirePermission::check(&principal, action)?` or the free function
+  `require_permission(&principal, action)?` inside handlers as inline
+  guards returning `(403, "forbidden")` on failure.
+
+### Signup pool
+
+- **`SignupPool` newtype** — dedicated `garraia_signup` BYPASSRLS pool.
+  Constructor validates `SELECT current_user = 'garraia_signup'`.
+  Non-`Clone` enforced via `static_assertions`. Identical boundary
+  contract as `LoginPool`.
+- **`signup_user(login_pool, signup_pool, email, password, display_name)`**
+  free function — transactional: `INSERT INTO users + user_identities` with
+  fresh Argon2id hash. Translates Postgres SQLSTATE 23505 to
+  `AuthError::DuplicateEmail`.
+
+### Other additions
+
+- **`RedactedStorageError`** — newtype over `sqlx::Error` whose `Display`
+  strips `postgres://` substrings and `host=`/`password=`/`user=` segments.
+  Closes the M-3 deferral from 391b.
+- **`AuthConfig` (in `garraia-config`)** — 4 env vars: `GARRAIA_JWT_SECRET`,
+  `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_LOGIN_DATABASE_URL`,
+  `GARRAIA_SIGNUP_DATABASE_URL`. All fields `SecretString` with manual
+  `Debug` redaction. Fail-soft (`from_env` returns `Ok(None)` when any
+  var missing) + strict variant (`require_from_env`) for prod.
+- **4 endpoints wired default-on** (feature flag `auth-v1` REMOVED):
+  - `POST /v1/auth/login` — now includes `refresh_token` (Gap A fix).
+  - `POST /v1/auth/refresh` — rotation default ON (revoke old before issue new).
+  - `POST /v1/auth/logout` — idempotent 204 always.
+  - `POST /v1/auth/signup` — uses `SignupPool`; 201+tokens on success, 409 on duplicate.
+- **Migration 010** (`010_signup_role_and_session_select.sql` in `garraia-workspace`):
+  - Creates `garraia_signup NOLOGIN BYPASSRLS` (Gap B).
+  - `GRANT SELECT ON sessions TO garraia_login` (Gap A).
+  - `GRANT SELECT ON group_members TO garraia_login` (Gap C).
+
+### Structural gaps resolved
+
+| Gap | Root cause | Resolution |
+|-----|-----------|------------|
+| A — sessions SELECT | `INSERT ... RETURNING id` and `verify_refresh` need SELECT on sessions | `GRANT SELECT ON sessions TO garraia_login` (migration 010) |
+| B — signup INSERT | Login role's scope precludes INSERT on user_identities | New `garraia_signup` role + `SignupPool` newtype (migration 010) |
+| C — group_members SELECT | `Principal` extractor membership query failed at runtime | `GRANT SELECT ON group_members TO garraia_login` (migration 010, mid-execution Option 1 approval) |
+
 ## Tests
 
 ```

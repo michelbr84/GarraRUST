@@ -17,11 +17,16 @@ garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
 garraia-voice = { workspace = true }
 garraia-telemetry = { path = "../garraia-telemetry", optional = true }
-# garraia-auth — wired only when the `auth-v1` feature is enabled (GAR-391b).
-# The full AppState wiring lives in 391c; in 391b the endpoint runs as an
-# isolated subrouter behind the feature flag.
-garraia-auth = { workspace = true, optional = true }
-secrecy = { version = "0.10", optional = true }
+# garraia-auth — wired into the gateway as default since GAR-391c.
+# The auth router lives at `/v1/auth/*` and is mounted unconditionally.
+# AppState carries Option<Arc<...>> fields that are None when AuthConfig
+# env vars are missing (fail-soft mode).
+garraia-auth = { workspace = true }
+secrecy = "0.10"
+# Auth metrics — same version pin as garraia-telemetry to share the global
+# Prometheus exporter recorder. Behind cfg(feature = "telemetry") at the
+# call sites in `auth_metrics.rs`.
+metrics = "0.23"
 
 # Telegram (for voice handler)
 teloxide = { workspace = true }
@@ -57,11 +62,6 @@ default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
 telemetry = ["dep:garraia-telemetry"]
-# GAR-391b — POST /v1/auth/login under an isolated subrouter. The full
-# AppState wiring (extractor, RequirePermission, refresh/logout endpoints)
-# lands in 391c; this feature exists so 391b can ship the verify path
-# end-to-end without touching the default build.
-auth-v1 = ["dep:garraia-auth", "dep:secrecy"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -73,10 +73,11 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 tracing-test = "0.2"
 tower = { workspace = true, features = ["util"] }
-# GAR-391b auth-v1 endpoint integration test (gated by `cfg(feature = "auth-v1")`).
-# The test boots a pgvector container, applies workspace migrations 001..009,
-# constructs the auth subrouter, and validates the byte-identical 401 anti-
-# enumeration property across 3 failure modes.
+# GAR-391c integration tests for `/v1/auth/*` endpoints (login/refresh/logout/
+# signup). The auth router is now wired into AppState by default (feature
+# `auth-v1` removed in 391c). Tests boot a pgvector container, apply workspace
+# migrations 001..010, and validate happy paths + byte-identical 401 anti-
+# enumeration. Plan reference: plans/0012-gar-391c-extractor-and-wiring.md.
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }

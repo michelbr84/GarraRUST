@@ -85,4 +85,12 @@ pub enum AuthError {
     /// itself.
     #[error("hashing error: {0}")]
     Hashing(String),
+
+    // 391c-impl-B
+    /// A signup attempt collided with an existing `users.email` (or the
+    /// corresponding `user_identities.provider_sub`). Surfaced by
+    /// [`crate::internal::signup_user`] so the gateway can respond with
+    /// HTTP 409 Conflict.
+    #[error("duplicate email")]
+    DuplicateEmail,
 }

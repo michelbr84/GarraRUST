@@ -53,6 +53,8 @@ jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 # Base64 URL-safe encoding for refresh tokens.
 base64 = { workspace = true }
+# Axum extractor support (GAR-391c).
+axum = { workspace = true }
 
 [build-dependencies]
 # Build script generates a DUMMY_HASH constant (Argon2id PHC over a discarded

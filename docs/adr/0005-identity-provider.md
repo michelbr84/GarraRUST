@@ -583,6 +583,59 @@ COMMENT ON ROLE garraia_login IS 'BYPASSRLS role used EXCLUSIVELY by the garraia
 
 ---
 
+## Amendment 2026-04-13: GAR-391c additions
+
+**Author:** Claude Opus 4.6 + @michelbr84
+**Migration:** `010_signup_role_and_session_select.sql`
+**Cross-references:** plans `plans/0012-gar-391c-extractor-and-wiring.md` (with its Wave 1.5 amendment banner); plan `plans/0011-gar-391b-verify-credential-impl.md` amendment (Gap A origin).
+
+The normative DDL in §"Login role specification" above documented 4 grants for `garraia_login` and no signup role. Three structural gaps surfaced empirically during GAR-391b and GAR-391c implementation, requiring migration 010 to extend the grant set. **This amendment is normative**; the §"Login role specification" DDL block is superseded by migration 010 for the additional grants.
+
+### Gap A — `garraia_login` gains `SELECT ON sessions`
+
+PostgreSQL requires `SELECT` privilege on the columns named in an `INSERT ... RETURNING` clause. The login flow's `SessionStore::issue` (which does `INSERT INTO sessions ... RETURNING id`) and `SessionStore::verify_refresh` (which does `SELECT ... WHERE refresh_token_hash = $1`) both run under the `garraia_login` pool. Without this grant, both operations failed at runtime with "permission denied for table sessions". Discovered during GAR-391b, deferred to GAR-391c for resolution via migration 010.
+
+New grant: `GRANT SELECT ON sessions TO garraia_login;`
+
+This grant is consistent with the login role's purpose: it reads session data only as part of the login/refresh flow, not tenant content.
+
+### Gap B — new `garraia_signup` role
+
+The login role's defining constraint — minimal credential-verification scope — makes it unsuitable for signup. Signup requires `INSERT ON users` and `INSERT ON user_identities`, grants that would expand `garraia_login`'s blast radius to arbitrary identity creation. A dedicated `garraia_signup NOLOGIN BYPASSRLS` role was created with its own minimal grant set:
+
+```sql
+GRANT USAGE ON SCHEMA public TO garraia_signup;
+GRANT SELECT, INSERT ON users TO garraia_signup;
+GRANT SELECT, INSERT ON user_identities TO garraia_signup;
+GRANT INSERT ON audit_events TO garraia_signup;
+```
+
+This role is accessed exclusively via the `garraia-auth::SignupPool` newtype, enforcing the same compile-time boundary as `LoginPool` (private inner `PgPool`, runtime `current_user='garraia_signup'` validation, `!Clone` enforced via `static_assertions`). Compromise of `garraia_signup` = ability to create arbitrary identities (less critical than `garraia_login` but still a tenant-onboarding attack vector). Threat model and mitigations documented in the migration 010 comment block. Rate limiting on the `/v1/auth/signup` endpoint is deferred to a 391c follow-up.
+
+### Gap C — `garraia_login` gains `SELECT ON group_members`
+
+The `garraia-auth` `Principal` extractor (GAR-391c) resolves the caller's group role via `SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'active'`, using the `LoginPool` (BYPASSRLS). Without this grant, the query failed with "permission denied for table group_members", causing all group-scoped requests to return 401 instead of 403 (verified empirically by the `non_member_group_returns_403` test failure). `group_members` is **not** under RLS — migration 007 §scope explicitly excludes it ("recursive RLS is expensive, app-layer enforced via JOIN with the membership query above") — so this grant does not bypass any tenant isolation that wasn't already app-layer.
+
+New grant: `GRANT SELECT ON group_members TO garraia_login;`
+
+This grant is consistent with the login role's "resolve who you are" purpose and was approved via Option 1 (2026-04-13).
+
+### Updated grant set for `garraia_login` (effective post-migration 010)
+
+```sql
+GRANT USAGE ON SCHEMA public TO garraia_login;
+GRANT SELECT, UPDATE ON user_identities TO garraia_login;
+GRANT SELECT ON users TO garraia_login;
+GRANT INSERT, UPDATE ON sessions TO garraia_login;
+GRANT SELECT ON sessions TO garraia_login;          -- Gap A (391c)
+GRANT INSERT ON audit_events TO garraia_login;
+GRANT SELECT ON group_members TO garraia_login;     -- Gap C (391c)
+```
+
+Any further grant requires (a) a new migration, (b) a new ADR amendment with rationale, and (c) a security review. The role is now at its maximum acceptable surface for the login + extractor flows; signup and tenant management use distinct roles.
+
+---
+
 ## Migration strategy: `mobile_users` → `user_identities`
 
 The migration is implemented by `garraia-cli migrate workspace` ([GAR-413](https://linear.app/chatgpt25/issue/GAR-413)) — **not** by this ADR. The algorithm is normative and must match exactly:

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use garraia_agents::{AgentRuntime, ChatMessage};
+use garraia_auth::{InternalProvider, JwtIssuer, LoginPool, SessionStore as AuthSessionStore, SignupPool};
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::AppConfig;
 use garraia_db::{ChatSessionManager, SessionStore};
@@ -63,6 +64,36 @@ pub struct AppState {
     pub boot_time: std::time::Instant,
     /// Runtime settings for agent execution.
     pub runtime_settings: RuntimeSettings,
+
+    // ── GAR-391c: garraia-auth wiring ──────────────────────────────────────
+    // All five are `Option` so the gateway boots in fail-soft mode when
+    // `AuthConfig::from_env` returns None (missing env vars in dev). The
+    // `/v1/auth/*` endpoints check for `Some` and return 503 otherwise.
+    //
+    // Note: the SQLite legacy `session_store` field above is intentionally
+    // distinct from `auth_session_store` (Postgres `garraia-auth::SessionStore`)
+    // because they back unrelated paths (mobile_auth.rs vs the new auth_routes.rs).
+    /// `InternalProvider` wired through `LoginPool` (BYPASSRLS, garraia_login role).
+    /// Security review 391c L-3: `pub` here is acceptable because the inner
+    /// `LoginPool::pool()` accessor is `pub(crate)` to `garraia-auth`, so
+    /// downstream gateway code cannot extract the raw `PgPool`. The
+    /// `Arc<InternalProvider>` only exposes the trait surface.
+    pub auth_provider: Option<Arc<InternalProvider>>,
+    /// JWT issuer + verifier (HS256), shared across login + extractor.
+    pub jwt_issuer: Option<Arc<JwtIssuer>>,
+    /// Postgres-backed session store for refresh tokens (`garraia-auth::SessionStore`).
+    /// Renamed to `auth_session_store` to avoid collision with the legacy SQLite
+    /// `session_store` field above.
+    pub auth_session_store: Option<Arc<AuthSessionStore>>,
+    /// Dedicated signup pool (BYPASSRLS, garraia_signup role) for the
+    /// `/v1/auth/signup` endpoint. Distinct from `LoginPool` by design.
+    /// `pub(crate)` per security review L-3 — only `auth_routes.rs` needs it.
+    pub(crate) signup_pool: Option<Arc<SignupPool>>,
+    /// Shared `Arc<LoginPool>` so the extractor can perform group_members
+    /// membership lookups without holding a separate handle.
+    /// `pub(crate)` per security review L-3 — only the extractor + auth_routes
+    /// need it; downstream handlers must NOT acquire the BYPASSRLS pool.
+    pub(crate) login_pool: Option<Arc<LoginPool>>,
 }
 
 /// Per-connection session tracking.
@@ -141,7 +172,32 @@ impl AppState {
             ))),
             boot_time: Instant::now(),
             runtime_settings: RuntimeSettings::default(),
+            // GAR-391c auth wiring — None until bootstrap loads AuthConfig.
+            auth_provider: None,
+            jwt_issuer: None,
+            auth_session_store: None,
+            signup_pool: None,
+            login_pool: None,
         }
+    }
+
+    /// Attach the garraia-auth components built from `AuthConfig` at bootstrap
+    /// time. All four are wired together: `LoginPool` is shared by
+    /// `InternalProvider` and `SessionStore`. `SignupPool` is independent.
+    /// (GAR-391c)
+    pub fn set_auth_components(
+        &mut self,
+        login_pool: Arc<LoginPool>,
+        signup_pool: Arc<SignupPool>,
+        jwt_issuer: Arc<JwtIssuer>,
+    ) {
+        let provider = Arc::new(InternalProvider::new(login_pool.clone()));
+        let session_store = Arc::new(AuthSessionStore::new(login_pool.clone()));
+        self.auth_provider = Some(provider);
+        self.jwt_issuer = Some(jwt_issuer);
+        self.auth_session_store = Some(session_store);
+        self.signup_pool = Some(signup_pool);
+        self.login_pool = Some(login_pool);
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.

@@ -1480,7 +1480,9 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "permissions",
         "role_permissions",
         "groups",
-        "group_members",
+        // `group_members` REMOVED from this negative matrix in 391c —
+        // migration 010 grants SELECT to garraia_login (Gap C fix). The
+        // positive assertion lives in the migration 010 block below.
         "group_invites",
     ] {
         let leaked: bool =
@@ -1556,6 +1558,93 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
     assert!(password_hash_exists);
+
+    // ── Migration 010 validation ────────────────────────────────────────────
+    //
+    // garraia_signup NOLOGIN BYPASSRLS dedicated role for the garraia-auth
+    // signup flow + new SELECT on sessions for garraia_login (closes Gap A
+    // from GAR-391b). See plan 0012 §3.1 and migration
+    // 010_signup_role_and_session_select.sql.
+
+    let signup_role: (bool, bool) = sqlx::query_as(
+        "SELECT rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = 'garraia_signup'",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(signup_role.0, "garraia_signup must have BYPASSRLS attribute");
+    assert!(!signup_role.1, "garraia_signup must be NOLOGIN by default");
+
+    // Positive grants — every privilege from plan 0012 §3.1.
+    for (table, privs) in &[
+        ("users", "SELECT, INSERT"),
+        ("user_identities", "SELECT, INSERT"),
+        ("audit_events", "INSERT"),
+    ] {
+        let granted: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('garraia_signup', $1, $2)")
+                .bind(table)
+                .bind(privs)
+                .fetch_one(workspace.pool())
+                .await?;
+        assert!(granted, "garraia_signup must have {privs} on {table}");
+    }
+
+    // Negative grants — signup role MUST NOT have access to any tenant data
+    // or session state. Narrower than the login role's blast radius.
+    for table in &[
+        "sessions",
+        "messages",
+        "memory_items",
+        "tasks",
+        "groups",
+    ] {
+        let leaked: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('garraia_signup', $1, 'SELECT')")
+                .bind(table)
+                .fetch_one(workspace.pool())
+                .await?;
+        assert!(
+            !leaked,
+            "garraia_signup MUST NOT have SELECT on {table} (privilege leak)"
+        );
+    }
+
+    // New positive grant for garraia_login on sessions (Gap A fix from 391b).
+    // INSERT ... RETURNING id + verify_refresh both require SELECT on sessions.
+    let login_sessions_select: bool =
+        sqlx::query_scalar("SELECT has_table_privilege('garraia_login', 'sessions', 'SELECT')")
+            .fetch_one(workspace.pool())
+            .await?;
+    assert!(
+        login_sessions_select,
+        "garraia_login must have SELECT on sessions (Gap A fix, migration 010)"
+    );
+
+    // New positive grant for garraia_login on group_members (Gap C fix from 391c).
+    // The Principal extractor needs to resolve membership via
+    // `SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2 AND status='active'`.
+    let login_members_select: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege('garraia_login', 'group_members', 'SELECT')",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(
+        login_members_select,
+        "garraia_login must have SELECT on group_members (Gap C fix, migration 010)"
+    );
+
+    // Negative regression: garraia_signup MUST NOT gain SELECT on group_members.
+    // The signup pool's whole purpose is creating a new identity; reading
+    // tenant membership is out of scope.
+    let signup_members_leaked: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege('garraia_signup', 'group_members', 'SELECT')",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(
+        !signup_members_leaked,
+        "garraia_signup MUST NOT have SELECT on group_members"
+    );
 
     Ok(())
 }

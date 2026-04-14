@@ -2764,6 +2764,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-trait",
+ "axum 0.8.8",
  "base64 0.22.1",
  "chrono",
  "garraia-workspace",
@@ -2833,6 +2834,7 @@ dependencies = [
  "dirs 6.0.0",
  "garraia-common",
  "notify",
+ "secrecy 0.10.3",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2840,6 +2842,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+ "validator",
 ]
 
 [[package]]
@@ -2910,6 +2913,7 @@ dependencies = [
  "governor 0.8.1",
  "http-body-util",
  "jsonwebtoken",
+ "metrics",
  "password-hash",
  "reqwest 0.12.28",
  "ring",
