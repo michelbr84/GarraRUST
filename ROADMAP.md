@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-04-13
+> **Última atualização:** 2026-04-14
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -176,7 +176,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 **Objetivo:** transformar Garra de mono-usuário em **workspace compartilhado** com arquivos, chats e memória IA escopados por grupo, conforme `deep-research-report.md`.
 
-**Status (2026-04-13):** 🟡 **Parcialmente desbloqueada.** ADR 0003 ([GAR-373](https://linear.app/chatgpt25/issue/GAR-373)) accepted, fixando **PostgreSQL 16 + pgvector + pg_trgm** como backend; benchmark empírico em [`benches/database-poc/`](benches/database-poc/). Próximo marco: [GAR-407](https://linear.app/chatgpt25/issue/GAR-407) (`garraia-workspace` crate + migration 001). ADRs 0004-0006 ainda pendentes para object storage, identity, search.
+**Status (2026-04-14):** 🟢 **Schema completo + auth skeleton entregue.** ADR 0003 ([GAR-373](https://linear.app/chatgpt25/issue/GAR-373)) e ADR 0005 ([GAR-375](https://linear.app/chatgpt25/issue/GAR-375)) accepted. Crate `garraia-workspace` materializado com **8 migrations** (001 users/groups, 002 RBAC + audit, 004 chats/messages/FTS, 005 memory + pgvector HNSW, 006 tasks Tier 1, 007 RLS FORCE em 10 tabelas, 008 `garraia_login` BYPASSRLS dedicated role, 009 `user_identities.hash_upgraded_at` prereq de 391b) + smoke test integration verde. Crate `garraia-auth` skeleton merged via 391a (`IdentityProvider` trait + `LoginPool` newtype). Próximo marco: **GAR-391b** (`verify_credential` real impl + dual-verify + JWT) — plano aprovado em [`plans/0011-gar-391b-verify-credential-impl.md`](plans/0011-gar-391b-verify-credential-impl.md). ADRs 0004 (storage), 0006 (search) e 0008 (docs collab) ainda pendentes.
 
 > Esta é a fase de maior valor de produto e a de maior risco de segurança. Tudo aqui nasce com "privacidade por padrão" e testes de autorização.
 
@@ -189,7 +189,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 ### 3.2 Domínio & Schema
 
-Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](https://linear.app/chatgpt25/issue/GAR-407). Migration 001 aplica 7 tabelas (users/user_identities/sessions/api_keys/groups/group_members/group_invites) + extensões `pgcrypto` + `citext`, com smoke test testcontainers `pgvector/pgvector:pg16` verde (~7s). PII-safe `Workspace` handle via `#[instrument(skip(config))]` + custom `Debug` redacting `database_url`. Plan: [`plans/0003-gar-407-workspace-schema-bootstrap.md`](plans/0003-gar-407-workspace-schema-bootstrap.md).
+Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-13/14 via 8 migrations sequenciais: 001 (GAR-407, users/groups/sessions/api_keys), 002 (GAR-386, RBAC + audit_events + single-owner index), 004 (GAR-388, chats + messages com `tsvector` GIN + compound FK), 005 (GAR-389, memory_items + memory_embeddings com pgvector HNSW cosine), 006 (GAR-390, tasks Tier 1 Notion-like com RLS embedded), 007 (GAR-408, FORCE RLS em 10 tabelas com NULLIF fail-closed + prova empírica via ownership transfer panic-safe), 008 (GAR-391a, `garraia_login NOLOGIN BYPASSRLS` dedicated role + 4 GRANTs exatos do ADR 0005) e 009 (GAR-391b prereq, `user_identities.hash_upgraded_at`). Smoke test testcontainers `pgvector/pgvector:pg16` cobre todas as migrations em ~10-13s wall. PII-safe `Workspace` handle via `#[instrument(skip(config))]` + custom `Debug` redacting `database_url`. Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004). Plans: [`plans/0003`](plans/0003-gar-407-workspace-schema-bootstrap.md) → [`plans/0010`](plans/0010-gar-391a-garraia-auth-crate-skeleton.md) → [`plans/0011.5`](plans/0011.5-gar-391b-migration-009-hash-upgraded-at.md).
 
 **Tabelas (Postgres + SQLx migrations):**
 
@@ -208,7 +208,6 @@ Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](h
 - [x] `messages` (`id`, `chat_id`, **`group_id` denormalizado**, `sender_user_id`, `sender_label`, `body` CHECK len 1..100k, **`body_tsv tsvector GENERATED STORED + GIN`**, `reply_to_id ON DELETE SET NULL`, `thread_id` plain uuid, `deleted_at` soft-delete, **compound FK `(chat_id, group_id) → chats(id, group_id)`**) — migration 004 ✅
 - [x] `message_threads` (`id`, `chat_id`, `root_message_id UNIQUE`, `title`, `resolved_at`) — migration 004 ✅
 - [ ] `message_attachments` — deferido até GAR-387 (files) materializar
-- [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `files`, `file_versions`, `file_shares`
 - [x] `memory_items` (`id`, `scope_type` CHECK user/group/chat, `scope_id` sem FK, **`group_id` NULL-able** para user-scope, `created_by ON DELETE SET NULL` + `created_by_label` cache, `kind` CHECK 6 valores, `content` CHECK 10k, `sensitivity` CHECK 4 níveis + partial index em secret, `source_chat_id/source_message_id ON DELETE SET NULL`, `ttl_expires_at` CHECK future) — migration 005 ✅
@@ -794,14 +793,17 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
+**Atualizado 2026-04-14** após entrega de Fase 2.3 (OTel ✅), schema completo da Fase 3.2 (8 migrations ✅), Fase 3.3 ADR 0005 ✅ e GAR-391a (skeleton + login role ✅).
+
 Quando retomar execução, priorizar **nesta ordem**:
 
-1. **Fase 1.3 — Config & Runtime Wiring** — destrava o resto e é a menor unidade entregável.
-2. **Fase 5.1 — CredentialVault final (GAR-291)** — requisito de segurança pré-existente, bloqueia qualquer release público.
-3. **Fase 3.1 — ADRs do Group Workspace** — decisões de Postgres/storage/identity/search antes de escrever código novo.
-4. **Fase 2.3 — OpenTelemetry baseline** — instrumentar agora é muito mais barato que retrofit.
+1. **GAR-391b — `verify_credential` real impl + audit + JWT** ([plan 0011](plans/0011-gar-391b-verify-credential-impl.md)) — desbloqueado pela migration 009 (prereq estrutural) já merged. Próxima fatia da fase 3.3 que destrava todo o login flow real.
+2. **GAR-391c — Axum extractor + `RequirePermission` + gateway wiring** — segue 391b imediatamente; sem isso o `Principal` não chega nas rotas REST.
+3. **GAR-392 / 391d — Suite cross-group authz** (≥100 cenários) — fecha o epic GAR-391 e materializa o critério de aceite §3.3 do roadmap.
+4. **ADR 0004 — Object storage** ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374)) — bloqueia GAR-387 (migration 003 files) e o crate `garraia-storage` (Fase 3.5). Único ADR ainda pendente que afeta caminho crítico.
+5. **Fase 5.1 — CredentialVault final (GAR-291)** — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3.
 
-Esses quatro itens, em paralelo, formam um sprint de 3-4 semanas cobrível por um time pequeno de agentes (code + security + doc + coordinator).
+Trilha paralela disponível para um segundo dev/agente: **Fase 1.3 — Config reativo**, ainda não materializado.
 
 ---
 
