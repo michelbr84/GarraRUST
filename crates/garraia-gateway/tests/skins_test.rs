@@ -8,6 +8,7 @@ use std::net::TcpListener;
 use garraia_config::AppConfig;
 use garraia_gateway::GatewayServer;
 use serde_json::json;
+use serial_test::serial;
 
 /// Pick a random available port.
 fn random_port() -> u16 {
@@ -61,6 +62,7 @@ async fn start_test_gateway_with_skins_dir(skins_dir: &str) -> String {
 }
 
 #[tokio::test]
+#[serial]
 async fn skin_crud_lifecycle() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins");
@@ -145,6 +147,7 @@ async fn skin_crud_lifecycle() {
 }
 
 #[tokio::test]
+#[serial]
 async fn get_nonexistent_skin_returns_404() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins_404");
@@ -164,6 +167,7 @@ async fn get_nonexistent_skin_returns_404() {
 }
 
 #[tokio::test]
+#[serial]
 async fn create_skin_with_path_traversal_returns_400() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins_traversal");

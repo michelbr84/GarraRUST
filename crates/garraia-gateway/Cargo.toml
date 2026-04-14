@@ -74,6 +74,16 @@ telemetry = ["dep:garraia-telemetry"]
 # can call `JwtIssuer::new_for_test`.
 test-helpers = ["garraia-auth/test-support"]
 
+# Plan 0016 M2 review fix H-2 (code-reviewer): declare `harness_smoke`
+# as requiring the `test-helpers` feature so running
+# `cargo test -p garraia-gateway --test harness_smoke` without
+# `--features test-helpers` produces a clear Cargo-level error instead
+# of a confusing "unresolved import" error from rustc.
+[[test]]
+name = "harness_smoke"
+path = "tests/harness_smoke.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 tempfile = "3"
 serial_test = { workspace = true }

@@ -30,7 +30,12 @@ async fn harness_boots_and_router_responds_to_openapi_json() {
         .expect("oneshot should succeed");
 
     let status = resp.status();
-    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("failed to collect openapi.json body bytes")
+        .to_bytes();
     if status != StatusCode::OK {
         let body_str = String::from_utf8_lossy(&body);
         panic!("openapi.json expected 200, got {status}. body: {body_str}");

@@ -23,7 +23,6 @@
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -212,12 +211,6 @@ fn minimal_test_config() -> AppConfig {
     let mut cfg = AppConfig::default();
     cfg.memory.enabled = false;
     cfg
-}
-
-/// Helper to grab the config tempdir path for diagnostic assertions.
-#[allow(dead_code)]
-pub fn tempdir_for_debug(h: &Harness) -> PathBuf {
-    h._config_tempdir.path().to_path_buf()
 }
 
 /// Build a `GET` request suitable for `tower::ServiceExt::oneshot`
