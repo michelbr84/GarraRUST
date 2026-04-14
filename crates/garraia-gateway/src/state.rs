@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use garraia_agents::{AgentRuntime, ChatMessage};
-use garraia_auth::{InternalProvider, JwtIssuer, LoginPool, SessionStore as AuthSessionStore, SignupPool};
+use garraia_auth::{
+    AppPool, InternalProvider, JwtIssuer, LoginPool, SessionStore as AuthSessionStore, SignupPool,
+};
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::AppConfig;
 use garraia_db::{ChatSessionManager, SessionStore};
@@ -94,6 +96,11 @@ pub struct AppState {
     /// `pub(crate)` per security review L-3 — only the extractor + auth_routes
     /// need it; downstream handlers must NOT acquire the BYPASSRLS pool.
     pub(crate) login_pool: Option<Arc<LoginPool>>,
+    /// Shared `Arc<AppPool>` — the RLS-enforced `garraia_app` pool used by
+    /// `/v1/*` handlers outside the auth flow. `pub(crate)` — only
+    /// `rest_v1` constructs a `RestV1FullState` from it. Absent when
+    /// `GARRAIA_APP_DATABASE_URL` is not configured (plan 0016 M1-T3).
+    pub(crate) app_pool: Option<Arc<AppPool>>,
 }
 
 /// Per-connection session tracking.
@@ -178,18 +185,27 @@ impl AppState {
             auth_session_store: None,
             signup_pool: None,
             login_pool: None,
+            // Plan 0016 M1-T3 — None until bootstrap loads AuthConfig
+            // AND `GARRAIA_APP_DATABASE_URL` is set AND the pool
+            // connects successfully. Independent of the other three
+            // pools: absence only degrades /v1/groups-style handlers.
+            app_pool: None,
         }
     }
 
     /// Attach the garraia-auth components built from `AuthConfig` at bootstrap
-    /// time. All four are wired together: `LoginPool` is shared by
-    /// `InternalProvider` and `SessionStore`. `SignupPool` is independent.
-    /// (GAR-391c)
+    /// time. All four required pools/tokens are wired together: `LoginPool`
+    /// is shared by `InternalProvider` and `SessionStore`. `SignupPool` is
+    /// independent. `AppPool` (plan 0016 M1-T3) is **optional** and wired
+    /// only when `GARRAIA_APP_DATABASE_URL` was set and the connect
+    /// succeeded — handlers that need it fall back to 503 when `None`.
+    /// (GAR-391c + plan 0016 M1-T3)
     pub fn set_auth_components(
         &mut self,
         login_pool: Arc<LoginPool>,
         signup_pool: Arc<SignupPool>,
         jwt_issuer: Arc<JwtIssuer>,
+        app_pool: Option<Arc<AppPool>>,
     ) {
         let provider = Arc::new(InternalProvider::new(login_pool.clone()));
         let session_store = Arc::new(AuthSessionStore::new(login_pool.clone()));
@@ -198,6 +214,7 @@ impl AppState {
         self.auth_session_store = Some(session_store);
         self.signup_pool = Some(signup_pool);
         self.login_pool = Some(login_pool);
+        self.app_pool = app_pool;
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.

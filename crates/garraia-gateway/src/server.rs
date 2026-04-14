@@ -206,12 +206,45 @@ impl GatewayServer {
                     refresh_hmac_secret: auth_cfg.refresh_hmac_secret.clone(),
                 });
 
+                // Plan 0016 M1-T3: optional AppPool construction.
+                // Only attempted when GARRAIA_APP_DATABASE_URL is set.
+                // Failures degrade /v1/groups-style handlers to 503
+                // but never block the rest of the auth wiring.
+                let app_pool_opt: Option<Arc<garraia_auth::AppPool>> =
+                    if let Some(app_url) = auth_cfg.app_database_url.as_ref() {
+                        use garraia_auth::AppPoolConfig;
+                        match garraia_auth::AppPool::from_dedicated_config(&AppPoolConfig {
+                            database_url: app_url.expose_secret().to_string(),
+                            max_connections: 10,
+                        })
+                        .await
+                        {
+                            Ok(p) => {
+                                info!("garraia-auth AppPool wired (garraia_app role)");
+                                Some(Arc::new(p))
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "AppPool connect failed; /v1/groups-style handlers will answer 503"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        info!(
+                            "GARRAIA_APP_DATABASE_URL not set; /v1/groups-style handlers will answer 503"
+                        );
+                        None
+                    };
+
                 match (login_pool_result, signup_pool_result, jwt_result) {
                     (Ok(login_pool), Ok(signup_pool), Ok(jwt)) => {
                         state.set_auth_components(
                             Arc::new(login_pool),
                             Arc::new(signup_pool),
                             Arc::new(jwt),
+                            app_pool_opt,
                         );
                         info!("garraia-auth wired (login + signup pools + jwt)");
                     }
