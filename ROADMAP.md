@@ -184,7 +184,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 - [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico em [`benches/database-poc/`](benches/database-poc/). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via [GAR-373](https://linear.app/chatgpt25/issue/GAR-373). ✅
 - [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374))
-- [ ] `docs/adr/0005-identity-provider.md` — manter JWT interno ou adotar OIDC (Keycloak/Authelia/Authentik). Recomendação: **JWT interno + adapter OIDC plugável**. ([GAR-375](https://linear.app/chatgpt25/issue/GAR-375))
+- [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-14 via [GAR-375](https://linear.app/chatgpt25/issue/GAR-375). ✅
 - [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. ([GAR-376](https://linear.app/chatgpt25/issue/GAR-376))
 
 ### 3.2 Domínio & Schema
@@ -224,12 +224,15 @@ Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](h
 
 Novo crate: `garraia-auth` (separado de `garraia-security`).
 
+**Status (2026-04-14):** 🟡 **Decisão de identity provider tomada** via [ADR 0005](docs/adr/0005-identity-provider.md) — `garraia_login` BYPASSRLS role + Argon2id RFC 9106 + HS256 JWT + lazy upgrade dual-verify. Hard blocker de login flow sob RLS resolvido. Próximo: implementação do crate via [GAR-391](https://linear.app/chatgpt25/issue/GAR-391).
+
 - [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`.
 - [ ] `struct Principal { user_id, group_id, role }` carregado via extractor Axum.
 - [ ] `fn can(principal, action) -> bool` central — todas as rotas passam por ele.
 - [ ] Papéis: `Owner`, `Admin`, `Member`, `Guest`, `Child/Dependent`.
 - [ ] **Capabilities** (`files.write`, `chats.moderate`, `memory.delete`, `members.manage`) → mapeadas por papel.
-- [ ] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `files`, `memory_items` restringindo por `group_id` usando `current_setting('app.current_group_id')`.
+- [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — 18 tabelas com FORCE RLS + NULLIF fail-closed. Migrations 006 e 007. ✅
+- [x] **Identity provider decision:** [ADR 0005](docs/adr/0005-identity-provider.md) — BYPASSRLS dedicated role (`garraia_login` NOLOGIN BYPASSRLS) + Argon2id (m=64MiB, t=3, p=4) + HS256 JWT + PBKDF2→Argon2id lazy upgrade dual-verify + `IdentityProvider` trait shape congelada. ✅
 - [ ] **Guardrails Child/Dependent**: sem export, sem share externo, content filter aplicado pré-LLM.
 
 **Critério de aceite:**
