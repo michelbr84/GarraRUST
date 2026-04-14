@@ -224,8 +224,22 @@ impl GatewayServer {
                                 Some(Arc::new(p))
                             }
                             Err(e) => {
+                                // Security review plan 0016 M1 (M-1):
+                                // route the sqlx::Error through the
+                                // RedactedStorageError wrapper so the
+                                // Postgres connection URL cannot leak
+                                // into the warn! log line. Some sqlx
+                                // 0.8 connect failure variants embed
+                                // substrings of the URL in Display.
+                                let redacted = match e {
+                                    garraia_auth::AuthError::Storage(sqlx_err) => {
+                                        garraia_auth::RedactedStorageError::from(sqlx_err)
+                                            .to_string()
+                                    }
+                                    other => other.to_string(),
+                                };
                                 warn!(
-                                    error = %e,
+                                    error = %redacted,
                                     "AppPool connect failed; /v1/groups-style handlers will answer 503"
                                 );
                                 None

@@ -139,26 +139,37 @@ pub fn router(app_state: Arc<AppState>) -> Router {
         RestV1FullState::from_app_state(&app_state),
         RestV1AuthState::from_app_state(&app_state),
     ) {
-        (Some(_full), Some(auth)) => {
-            // Mode 1: auth + AppPool wired. M1 still uses the stub
-            // for /v1/groups because the real handlers land in M4.
-            // The full state is computed and proven wire-able but
-            // currently unused — kept here so M4 can flip the routes
-            // with a single edit.
+        (Some(full), Some(_auth)) => {
+            // Mode 1: auth + AppPool wired.
+            //
+            // Uses `RestV1FullState` as the router state so the
+            // `FromRef` chain exposes `Arc<JwtIssuer>`,
+            // `Arc<LoginPool>` AND `Arc<AppPool>` at the extractor
+            // level. `GET /v1/me` still compiles against this state
+            // because `RestV1FullState: FromRef<Arc<JwtIssuer>>` and
+            // `FromRef<Arc<LoginPool>>`.
+            //
+            // TODO plan 0016 M4: replace the two
+            // `unconfigured_handler` lines below with the real
+            // handlers (`groups::create_group` + `groups::get_group`)
+            // without touching `.with_state(full)` — the state type
+            // is already correct.
             Router::new()
                 .route("/v1/me", get(me::get_me))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route("/v1/groups/{id}", get(unconfigured_handler))
-                .with_state(auth)
+                .with_state(full)
                 .merge(
                     SwaggerUi::new("/docs")
                         .url("/v1/openapi.json", ApiDoc::openapi()),
                 )
         }
         (None, Some(auth)) => {
-            // Mode 2: auth wired, AppPool missing. Same route
-            // surface as mode 1, but /v1/groups is 503 via
-            // explicit fail-soft. /v1/me still works.
+            // Mode 2: auth wired, AppPool missing. `/v1/me` still
+            // works (uses `RestV1AuthState`); `/v1/groups` answers
+            // 503 via `unconfigured_handler`. Same route surface as
+            // mode 1 so clients see consistent URLs regardless of
+            // whether `GARRAIA_APP_DATABASE_URL` is set.
             Router::new()
                 .route("/v1/me", get(me::get_me))
                 .route("/v1/groups", post(unconfigured_handler))
