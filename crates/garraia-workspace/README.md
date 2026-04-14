@@ -19,15 +19,18 @@ cargo test -p garraia-workspace
 ```
 
 The integration test spins up a `pgvector/pgvector:pg16` container via
-`testcontainers`, applies migrations 001, 002, 004, 005, and 007, and verifies
-schema shape, RBAC seed counts, single-owner partial unique index, the
-audit_events survival paths (regular row + NULL-actor row), the pgvector HNSW
-index plus an ANN nearest-neighbor query over memory_embeddings, and 8
-row-level-security cross-group isolation scenarios (positive read, cross-group
-block, unset-settings fail-closed, FORCE RLS vs table owner, chat_members JOIN
-policy, memory_items user-scope isolation, memory_embeddings recursive JOIN,
-and audit_events dual policy). Target wall time: under 25 seconds on a warm
-cache.
+`testcontainers`, applies migrations 001, 002, 004, 005, 006, and 007, and
+verifies schema shape, RBAC seed counts, single-owner partial unique index,
+the audit_events survival paths (regular row + NULL-actor row), the pgvector
+HNSW index plus an ANN nearest-neighbor query over memory_embeddings, 8
+row-level-security cross-group isolation scenarios from migration 007
+(positive read, cross-group block, unset-settings fail-closed, FORCE RLS vs
+table owner, chat_members JOIN policy, memory_items user-scope isolation,
+memory_embeddings recursive JOIN, audit_events dual policy), and the
+migration 006 tasks Tier 1 block (subtask cascade semantics, compound FK
+cross-group drift block, enum CHECK violation, RLS positive + cross-group
+scenarios across all 8 task tables). Target wall time: under 30 seconds on
+a warm cache.
 
 ## Required Postgres role privileges
 
@@ -43,6 +46,14 @@ attribute or the `CREATE` privilege on the database.
   on `public` + `SELECT/INSERT/UPDATE/DELETE` on the tables. Set
   `migrate_on_start = false` for the app pool. A dedicated migration issue
   (follow-up after GAR-413) will document the exact `GRANT` statements.
+
+Migration 006 creates the 8 tasks Tier 1 tables (`task_lists`, `tasks`,
+`task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`,
+`task_subscriptions`, `task_activity`) with RLS FORCE embedded in the same
+migration (no retrofit). Because 006 runs BEFORE 007 in lexicographic order,
+it creates the `garraia_app` role idempotently and issues explicit GRANTs —
+`ALTER DEFAULT PRIVILEGES` from 007 does not retroactively cover tables
+created by earlier migrations.
 
 Migration 007 enables `FORCE ROW LEVEL SECURITY` on 10 tenant-scoped tables
 (`messages`, `chats`, `chat_members`, `message_threads`, `memory_items`,
@@ -79,13 +90,16 @@ to production. ADR 0005 (GAR-375 Identity Provider) must explicitly cover
 this decision before any login endpoint ships. This is not a follow-up —
 it is a pre-merge blocker for GAR-391.
 
-## Scope (GAR-407, GAR-386, GAR-388, GAR-389, GAR-408)
+## Scope (GAR-407, GAR-386, GAR-388, GAR-389, GAR-408, GAR-390)
 
 Bootstrap only: migration 001 (users/groups) + migration 002 (RBAC roles,
 permissions, role_permissions, audit_events, single-owner partial unique
 index) + migration 004 (chats, chat_members, messages with Portuguese FTS,
 message_threads) + migration 005 (memory_items with tri-level scope +
-memory_embeddings with pgvector HNSW cosine index) + migration 007 (FORCE RLS
-on 10 tenant-scoped tables with 3 policy classes — direct, JOIN, dual — all
-fail-closed when `SET LOCAL app.current_*_id` is unset) + connect/migrate
-helpers + smoke test. CRUD lands in later issues (GAR-393 API, GAR-391 auth).
+memory_embeddings with pgvector HNSW cosine index) + migration 006 (tasks
+Tier 1 Notion-like: task_lists/tasks with compound FK + subtasks via self-FK,
+task_assignees, task_labels + task_label_assignments, task_comments,
+task_subscriptions, task_activity — all 8 with RLS FORCE embedded) +
+migration 007 (FORCE RLS on 10 tenant-scoped tables with 3 policy classes —
+direct, JOIN, dual — all fail-closed when `SET LOCAL app.current_*_id` is
+unset) + connect/migrate helpers + smoke test. CRUD lands in later issues (GAR-393 API, GAR-391 auth).
