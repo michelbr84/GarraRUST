@@ -76,6 +76,7 @@ test-helpers = ["garraia-auth/test-support"]
 
 [dev-dependencies]
 tempfile = "3"
+serial_test = { workspace = true }
 wiremock = "0.6"
 tokio-tungstenite = "0.26"
 tokio = { workspace = true }
