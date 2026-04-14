@@ -29,14 +29,17 @@ crates/
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant (GAR-407 + GAR-386 + GAR-388).
-                        Migration 001 (users, identities, sessions, api_keys, groups,
-                        group_members, invites) + pgcrypto/citext.
-                        Migration 002 (roles/permissions/role_permissions seed estático
-                        + audit_events sem FK + single-owner partial unique index).
-                        Migration 004 (chats, chat_members, messages com Portuguese FTS
-                        tsvector STORED + GIN, message_threads, compound FK contra
-                        cross-group drift). Slot 003 reservado para GAR-387 (files).
+  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
+                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390).
+                        25 tabelas em 6 migrations, 18 sob FORCE RLS, 7 tenant-root
+                        sob app-layer:
+                        • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
+                        • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
+                        • 004 chats/chat_members/messages (FTS) /message_threads com compound FK
+                        • 005 memory_items/memory_embeddings (pgvector HNSW cosine)
+                        • 006 tasks Tier 1 Notion-like (8 tabelas com RLS embedded + subtasks)
+                        • 007 RLS FORCE wrap-up em 10 tabelas com NULLIF fail-closed
+                        Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004).
                         Handle PII-safe via skip(config) + custom Debug redaction.
                         Decisão: docs/adr/0003-database-for-workspace.md.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
