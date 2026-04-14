@@ -34,5 +34,22 @@ pub use provider::IdentityProvider;
 pub use sessions::{SessionId, SessionStore};
 pub use types::{Credential, Identity, LoginOutcome, Principal, RequestCtx};
 
+// 391c-impl-A — Role/Action/can/extractor
+pub mod action;
+pub mod can;
+pub mod extractor;
+pub mod role;
+pub use action::Action;
+pub use can::can;
+pub use extractor::{require_permission, RequirePermission};
+pub use role::Role;
+
+// 391c-impl-B — SignupPool/signup_user/RedactedStorageError
+pub mod signup_pool;
+pub mod storage_redacted;
+pub use internal::signup_user;
+pub use signup_pool::{SignupConfig, SignupPool};
+pub use storage_redacted::RedactedStorageError;
+
 /// Convenience `Result` alias for crate APIs.
 pub type Result<T> = std::result::Result<T, AuthError>;

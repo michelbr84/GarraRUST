@@ -209,6 +209,10 @@ pub fn build_router(
         .route("/admin", get(admin_page))
         .with_state(state.clone())
         .merge(whatsapp_routes)
+        // GAR-391c: /v1/auth/{login,refresh,logout,signup} mounted
+        // unconditionally. Handlers fail-soft to 503 when AuthConfig env
+        // vars are missing (state.auth_provider == None).
+        .merge(crate::auth_routes::router().with_state(state.clone()))
         .nest(
             "/admin",
             admin::routes::build_admin_router(state, admin_store),

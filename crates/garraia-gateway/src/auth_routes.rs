@@ -1,70 +1,60 @@
-//! `POST /v1/auth/login` — feature-gated subrouter for GAR-391b.
+//! `/v1/auth/*` routes — wired into the global `AppState` since GAR-391c.
 //!
-//! This module exists ONLY when `auth-v1` is on. It does NOT touch the
-//! default `AppState` of `garraia-gateway`. The router is built standalone
-//! (its own `AuthState` carrying the `InternalProvider` + `JwtIssuer`) so
-//! it can be tested in isolation. GAR-391c removes the feature flag, wires
-//! the components into the global `AppState`, and adds the extractor +
-//! refresh/logout endpoints.
+//! ## Endpoints
 //!
-//! ## Scope (391b reduced)
+//! | Method | Path | Returns | Notes |
+//! |---|---|---|---|
+//! | POST | `/v1/auth/login`  | 200 + tokens / 401 byte-identical | refresh_token re-enabled |
+//! | POST | `/v1/auth/refresh` | 200 + new tokens / 401 byte-identical | rotation default ON |
+//! | POST | `/v1/auth/logout`  | 204 always (idempotent) | anti-enumeration |
+//! | POST | `/v1/auth/signup`  | 201 + tokens / 409 duplicate | uses SignupPool |
 //!
-//! 391b ships **access tokens only**. The login response is
-//! `{user_id, access_token, expires_at}` — no `refresh_token`. Refresh
-//! tokens, the refresh endpoint, the logout endpoint and `SessionStore`
-//! wiring all move to **391c** (see plan 0011 amendment "Segunda correção
-//! de escopo aplicada durante Wave 1"). The reason: the `garraia_login`
-//! BYPASSRLS role from migration 008 lacks `SELECT ON sessions`, which is
-//! required by both `INSERT ... RETURNING id` and `verify_refresh`.
-//! Adding that grant means broadening migration 008 + ADR 0005 in a
-//! separate corrective delivery; doing so alongside the refresh endpoint
-//! (which is intrinsically coupled) is the cleaner unit of work for 391c.
+//! ## Fail-soft when AuthConfig missing
+//!
+//! Each handler checks `state.auth_provider.is_some()` (and friends) and
+//! returns `503 Service Unavailable` if any required component is `None`.
+//! This lets the gateway boot in dev without `GARRAIA_*` env vars set.
 //!
 //! ## Anti-enumeration
 //!
-//! Every failure mode (`user not found`, `wrong password`,
-//! `account suspended`, `account deleted`, `unknown hash format`) returns
-//! a **byte-identical** 401 response body `{"error":"invalid_credentials"}`
-//! and identical headers. The integration test
-//! `tests/auth_v1_login.rs::failure_modes_are_byte_identical` asserts this.
+//! All five login failure modes return a **byte-identical** 401 response
+//! body. Refresh failures use the same body. Signup uses a distinct 409
+//! because login already leaks email existence and 391c's signup endpoint
+//! prioritizes UX clarity over enumeration resistance (rate limiting is
+//! the right tool for signup abuse — deferred to follow-up).
+//!
+//! Plan reference: `plans/0012-gar-391c-extractor-and-wiring.md` §3.4.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
-use garraia_auth::{AuthError, Credential, InternalProvider, JwtIssuer, RequestCtx};
-use secrecy::SecretString;
+use garraia_auth::{AuthError, Credential, RequestCtx, signup_user};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// State carried by the `/v1/auth/*` subrouter. Held by `Arc` so the router
-/// can be shared across worker threads without cloning the issuer.
-///
-/// Refresh-token persistence (`SessionStore`) is intentionally NOT in this
-/// state for 391b — it joins in 391c when the refresh endpoint lands.
-#[derive(Clone)]
-pub struct AuthState {
-    pub provider: Arc<InternalProvider>,
-    pub jwt: Arc<JwtIssuer>,
-}
+use crate::auth_metrics;
+use crate::state::AppState;
 
-/// Build the auth subrouter. Mount with `.merge(auth_routes::router(state))`
-/// in `bootstrap.rs` when you want the v1 endpoint live.
-pub fn router(state: AuthState) -> Router {
+/// Build the `/v1/auth/*` subrouter against the global `AppState`.
+/// Mounted unconditionally by `crate::router::build_router` since GAR-391c.
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/auth/login", post(login_handler))
-        .with_state(state)
+        .route("/v1/auth/refresh", post(refresh_handler))
+        .route("/v1/auth/logout", post(logout_handler))
+        .route("/v1/auth/signup", post(signup_handler))
 }
 
-/// `POST /v1/auth/login` request body.
-///
-/// `Debug` is **manually implemented** so the password never reaches
-/// `tracing::debug!("{:?}", body)` accidentally. (Security review 391b H-2.)
+// ─── Request / response shapes ─────────────────────────────────────────────
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub email: String,
@@ -80,26 +70,68 @@ impl std::fmt::Debug for LoginRequest {
     }
 }
 
-/// 391b login response shape — access token only. `refresh_token` joins
-/// in 391c.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub user_id: Uuid,
     pub access_token: String,
+    pub refresh_token: String,
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Deserialize)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+}
 
-async fn login_handler(
-    State(state): State<AuthState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<LoginRequest>,
-) -> impl IntoResponse {
-    // Build the request context from the available headers. Production
-    // gateways behind a reverse proxy will populate `X-Forwarded-For` and
-    // the future extractor (391c) will parse it; for 391b we fall back to
-    // the direct connection address.
+impl std::fmt::Debug for RefreshRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshRequest")
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LogoutRequest {
+    pub refresh_token: String,
+}
+
+impl std::fmt::Debug for LogoutRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogoutRequest")
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SignupRequest {
+    pub email: String,
+    pub password: String,
+    pub display_name: String,
+}
+
+impl std::fmt::Debug for SignupRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignupRequest")
+            .field("email", &self.email)
+            .field("password", &"[REDACTED]")
+            .field("display_name", &self.display_name)
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
+pub struct SignupResponse {
+    pub user_id: Uuid,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+fn build_request_ctx(headers: &HeaderMap, addr: SocketAddr) -> RequestCtx {
     let forwarded_ip = headers
         .get("X-Forwarded-For")
         .and_then(|v| v.to_str().ok())
@@ -114,68 +146,14 @@ async fn login_handler(
         .get("X-Request-ID")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_owned());
-
-    let ctx = RequestCtx {
+    RequestCtx {
         ip: Some(ip),
         user_agent,
         request_id,
-    };
-
-    let credential = Credential::Internal {
-        email: body.email.clone(),
-        password: SecretString::from(body.password),
-    };
-
-    match state
-        .provider
-        .verify_credential_with_ctx(&credential, &ctx)
-        .await
-    {
-        Ok(Some(user_id)) => {
-            // 391b: access token only. Refresh tokens defer to 391c with
-            // the refresh endpoint and the migration-010 SELECT-on-sessions
-            // grant.
-            let (access_token, expires_at) = match state.jwt.issue_access(user_id) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!(error = %e, "jwt issuance failed");
-                    return internal_error();
-                }
-            };
-            let response = LoginResponse {
-                user_id,
-                access_token,
-                expires_at,
-            };
-            // serde_json::to_value cannot fail for a #[derive(Serialize)]
-            // struct of fixed shape, but we use `?`-style match instead of
-            // unwrap to keep `unwrap()` strictly out of production paths
-            // (project rule + code review 391b blocker #1).
-            match serde_json::to_value(&response) {
-                Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-                Err(e) => {
-                    tracing::error!(error = %e, "login response serialization failed");
-                    internal_error()
-                }
-            }
-        }
-        Ok(None) => unauthorized(),
-        Err(AuthError::UnknownHashFormat) => {
-            // Anti-enumeration: same body as wrong-password / not-found.
-            unauthorized()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "verify_credential storage error");
-            internal_error()
-        }
     }
 }
 
-fn unauthorized() -> axum::response::Response {
-    // Static body — serializing a `#[derive(Serialize)] struct ErrorBody`
-    // with a single `&'static str` field cannot fail, but we still avoid
-    // `unwrap()` in production by using the `json!` macro which is
-    // infallible at this call site.
+fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({"error": "invalid_credentials"})),
@@ -183,10 +161,274 @@ fn unauthorized() -> axum::response::Response {
         .into_response()
 }
 
-fn internal_error() -> axum::response::Response {
+fn internal_error() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({"error": "internal_error"})),
     )
         .into_response()
 }
+
+fn service_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": "auth_unavailable"})),
+    )
+        .into_response()
+}
+
+fn duplicate_email() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({"error": "duplicate_email"})),
+    )
+        .into_response()
+}
+
+/// Issue a fresh access + refresh pair for a verified `user_id`. Used by
+/// login + refresh + signup happy paths.
+async fn issue_token_pair(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(String, String, DateTime<Utc>), Response> {
+    let jwt = state.jwt_issuer.as_ref().ok_or_else(service_unavailable)?;
+    let sessions = state
+        .auth_session_store
+        .as_ref()
+        .ok_or_else(service_unavailable)?;
+
+    let (access_token, expires_at) = jwt.issue_access(user_id).map_err(|e| {
+        tracing::error!(error = %e, "jwt issuance failed");
+        internal_error()
+    })?;
+    let refresh = jwt.issue_refresh().map_err(|e| {
+        tracing::error!(error = %e, "refresh token generation failed");
+        internal_error()
+    })?;
+    sessions
+        .issue(user_id, &refresh.hmac_hash, None)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "session insert failed");
+            internal_error()
+        })?;
+    Ok((
+        access_token,
+        refresh.plaintext.expose_secret().to_string(),
+        expires_at,
+    ))
+}
+
+// ─── POST /v1/auth/login ───────────────────────────────────────────────────
+
+async fn login_handler(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<LoginRequest>,
+) -> Response {
+    let started = Instant::now();
+    let Some(provider) = state.auth_provider.as_ref() else {
+        auth_metrics::record_login("failure_internal", started.elapsed().as_secs_f64());
+        return service_unavailable();
+    };
+    let ctx = build_request_ctx(&headers, addr);
+
+    let credential = Credential::Internal {
+        email: body.email.clone(),
+        password: SecretString::from(body.password),
+    };
+
+    let outcome = provider
+        .verify_credential_with_ctx(&credential, &ctx)
+        .await;
+    let elapsed = started.elapsed().as_secs_f64();
+
+    match outcome {
+        Ok(Some(user_id)) => match issue_token_pair(&state, user_id).await {
+            Ok((access_token, refresh_token, expires_at)) => {
+                auth_metrics::record_login("success", elapsed);
+                let response = LoginResponse {
+                    user_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                };
+                match serde_json::to_value(&response) {
+                    Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "login response serialization failed");
+                        internal_error()
+                    }
+                }
+            }
+            Err(resp) => {
+                auth_metrics::record_login("failure_internal", elapsed);
+                resp
+            }
+        },
+        Ok(None) => {
+            auth_metrics::record_login("failure_invalid_credentials", elapsed);
+            unauthorized()
+        }
+        Err(AuthError::UnknownHashFormat) => {
+            auth_metrics::record_login("failure_unknown_hash", elapsed);
+            unauthorized()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "verify_credential storage error");
+            auth_metrics::record_login("failure_internal", elapsed);
+            internal_error()
+        }
+    }
+}
+
+// ─── POST /v1/auth/refresh ─────────────────────────────────────────────────
+
+async fn refresh_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RefreshRequest>,
+) -> Response {
+    let Some(jwt) = state.jwt_issuer.as_ref() else {
+        auth_metrics::record_refresh("failure_internal");
+        return service_unavailable();
+    };
+    let Some(sessions) = state.auth_session_store.as_ref() else {
+        auth_metrics::record_refresh("failure_internal");
+        return service_unavailable();
+    };
+
+    // Verify the supplied plaintext against stored sessions.
+    let result = sessions
+        .verify_refresh(&body.refresh_token, jwt.as_ref())
+        .await;
+    match result {
+        Ok(Some((session_id, user_id))) => {
+            // Rotation default ON: revoke the old session and issue a new pair.
+            if let Err(e) = sessions.revoke(session_id).await {
+                tracing::error!(error = %e, "session revoke failed during rotation");
+                auth_metrics::record_refresh("failure_internal");
+                return internal_error();
+            }
+            match issue_token_pair(&state, user_id).await {
+                Ok((access_token, refresh_token, expires_at)) => {
+                    auth_metrics::record_refresh("success");
+                    let response = LoginResponse {
+                        user_id,
+                        access_token,
+                        refresh_token,
+                        expires_at,
+                    };
+                    match serde_json::to_value(&response) {
+                        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+                        Err(e) => {
+                            tracing::error!(error = %e, "refresh response serialization failed");
+                            internal_error()
+                        }
+                    }
+                }
+                Err(resp) => {
+                    auth_metrics::record_refresh("failure_internal");
+                    resp
+                }
+            }
+        }
+        Ok(None) => {
+            auth_metrics::record_refresh("failure_invalid_credentials");
+            unauthorized()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "verify_refresh storage error");
+            auth_metrics::record_refresh("failure_internal");
+            internal_error()
+        }
+    }
+}
+
+// ─── POST /v1/auth/logout ──────────────────────────────────────────────────
+
+async fn logout_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<LogoutRequest>,
+) -> Response {
+    let Some(jwt) = state.jwt_issuer.as_ref() else {
+        return service_unavailable();
+    };
+    let Some(sessions) = state.auth_session_store.as_ref() else {
+        return service_unavailable();
+    };
+
+    // Idempotent: unknown / already-revoked tokens still return 204.
+    if let Ok(Some((session_id, _user_id))) =
+        sessions.verify_refresh(&body.refresh_token, jwt.as_ref()).await
+    {
+        let _ = sessions.revoke(session_id).await;
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ─── POST /v1/auth/signup ──────────────────────────────────────────────────
+
+// TODO(GAR-391c-followup): rate limiting via tower-governor on this handler.
+// Plan 0012 §3.4 deferred rate limiting to a dedicated follow-up. Without it,
+// `/v1/auth/signup` is the most abusable endpoint on the gateway. Open a new
+// GAR issue + ADR-style note when the rate-limit story is ready. Security
+// review 391c L-2 flagged the absence with no linked issue — this comment
+// closes that nit by documenting the explicit deferral here at the call site.
+async fn signup_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SignupRequest>,
+) -> Response {
+    let Some(login_pool) = state.login_pool.as_ref() else {
+        auth_metrics::record_signup("failure_internal");
+        return service_unavailable();
+    };
+    let Some(signup_pool) = state.signup_pool.as_ref() else {
+        auth_metrics::record_signup("failure_internal");
+        return service_unavailable();
+    };
+
+    let password = SecretString::from(body.password);
+    match signup_user(
+        login_pool.as_ref(),
+        signup_pool.as_ref(),
+        &body.email,
+        &password,
+        &body.display_name,
+    )
+    .await
+    {
+        Ok(user_id) => match issue_token_pair(&state, user_id).await {
+            Ok((access_token, refresh_token, expires_at)) => {
+                auth_metrics::record_signup("success");
+                let response = SignupResponse {
+                    user_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                };
+                match serde_json::to_value(&response) {
+                    Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "signup response serialization failed");
+                        internal_error()
+                    }
+                }
+            }
+            Err(resp) => {
+                auth_metrics::record_signup("failure_internal");
+                resp
+            }
+        },
+        Err(AuthError::DuplicateEmail) => {
+            auth_metrics::record_signup("failure_duplicate_email");
+            duplicate_email()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "signup_user error");
+            auth_metrics::record_signup("failure_internal");
+            internal_error()
+        }
+    }
+}
+

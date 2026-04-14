@@ -112,7 +112,7 @@ impl SessionStore {
         plaintext: &str,
         issuer: &JwtIssuer,
     ) -> Result<Option<(SessionId, Uuid)>, AuthError> {
-        let computed = issuer.hmac_refresh(plaintext);
+        let computed = issuer.hmac_refresh(plaintext)?;
         let row = sqlx::query(
             "SELECT id, user_id, refresh_token_hash, expires_at, revoked_at \
              FROM sessions \

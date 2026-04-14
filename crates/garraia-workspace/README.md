@@ -19,7 +19,7 @@ cargo test -p garraia-workspace
 ```
 
 The integration test spins up a `pgvector/pgvector:pg16` container via
-`testcontainers`, applies migrations 001, 002, 004, 005, 006, 007, 008, and 009, and
+`testcontainers`, applies migrations 001, 002, 004, 005, 006, 007, 008, 009, and 010, and
 verifies schema shape, RBAC seed counts, single-owner partial unique index,
 the audit_events survival paths (regular row + NULL-actor row), the pgvector
 HNSW index plus an ANN nearest-neighbor query over memory_embeddings, 8
@@ -35,8 +35,12 @@ block (`garraia_login` BYPASSRLS attribute + 4 positive grants per ADR 0005
 `information_schema.usage_privileges` — see GAR-391a), and the migration
 009 column-add block (`user_identities.hash_upgraded_at` exists as
 `timestamp with time zone`, nullable, no default — prereq for GAR-391b
-lazy upgrade path, see plan 0011.5). Target wall time: under 30 seconds
-on a warm cache.
+lazy upgrade path, see plan 0011.5), and the migration 010 signup-role
+block (`garraia_signup` BYPASSRLS/NOLOGIN attributes + 3 positive grants
+on `users`/`user_identities`/`audit_events` + 5-table negative grant
+matrix covering `sessions`/`messages`/`memory_items`/`tasks`/`groups` +
+new `garraia_login` SELECT on `sessions` closing Gap A from GAR-391b —
+see plan 0012 §3.1). Target wall time: under 30 seconds on a warm cache.
 
 ## Required Postgres role privileges
 
@@ -74,29 +78,38 @@ Every request touching these tables must
 `SET LOCAL app.current_user_id = '<uuid>'` at transaction start —
 `garraia-auth` (GAR-391) is the canonical caller.
 
-### ⚠️ HARD BLOCKER for GAR-391 production rollout: login flow role
+### ✅ Resolved: login + signup flow roles (GAR-391a/b/c)
 
-Because `user_identities` is itself under RLS and holds `password_hash`, the
-**login flow cannot read it under the normal app pool role**. At login time
-`app.current_user_id` is not yet known (that's what we're trying to
-determine), so the `user_identities_owner_only` policy filters every row
-and returns an empty result set. **An empty result here MUST NOT be treated
-as "user not found" by login code** — it means "RLS blocked; unauthenticated"
-which is semantically different from the definitive "no such user" answer.
+The original GAR-408 callout flagged this as a HARD BLOCKER: `user_identities`
+sits under FORCE RLS and holds `password_hash`, so the login flow could not
+read it under the normal app pool role. ADR 0005 (GAR-375) chose Option 1
+(distinct BYPASSRLS roles) and GAR-391a/b/c implemented it across three
+migrations:
 
-Production deployments therefore REQUIRE one of:
+- **Migration 008** (GAR-391a) — creates `garraia_login NOLOGIN BYPASSRLS`
+  with minimal grants for the verify path: `SELECT, UPDATE` on
+  `user_identities`, `SELECT` on `users`, `INSERT, UPDATE` on `sessions`,
+  `INSERT` on `audit_events`. Accessed exclusively via the
+  `garraia-auth::LoginPool` newtype (private inner `PgPool`, runtime
+  `current_user='garraia_login'` validation, `!Clone` enforced via
+  `static_assertions`).
+- **Migration 009** (GAR-391b prereq) — adds `user_identities.hash_upgraded_at`
+  for the lazy upgrade path PBKDF2→Argon2id.
+- **Migration 010** (GAR-391c) — creates `garraia_signup NOLOGIN BYPASSRLS`
+  for the signup endpoint (Gap B) and adds `GRANT SELECT ON sessions TO
+  garraia_login` (Gap A — `INSERT...RETURNING id` and `verify_refresh`
+  needed SELECT) plus `GRANT SELECT ON group_members TO garraia_login`
+  (Gap C — `Principal` extractor membership lookup). The signup role is
+  accessed exclusively via the `garraia-auth::SignupPool` newtype with
+  the same boundary contract.
 
-1. A distinct Postgres role with `BYPASSRLS` attribute used exclusively by
-   the login path, OR
-2. A `SECURITY DEFINER` function that verifies credentials and returns a
-   user id without exposing the underlying `user_identities` row.
+The "0 rows = RLS blocked" anti-pattern flagged above is also addressed: the
+`garraia_login` BYPASSRLS attribute means 0 rows now legitimately means
+"user not found", and ADR 0005 §"Anti-patterns" #12 forbids the app pool
+from ever reading `user_identities.password_hash`. See the ADR's
+**Amendment 2026-04-13** for the full grant set updates.
 
-Designing and granting this role is a **hard blocker** for GAR-391 going
-to production. ADR 0005 (GAR-375 Identity Provider) must explicitly cover
-this decision before any login endpoint ships. This is not a follow-up —
-it is a pre-merge blocker for GAR-391.
-
-## Scope (GAR-407, GAR-386, GAR-388, GAR-389, GAR-408, GAR-390)
+## Scope (GAR-407, GAR-386, GAR-388, GAR-389, GAR-408, GAR-390, GAR-391a/b/c)
 
 Bootstrap only: migration 001 (users/groups) + migration 002 (RBAC roles,
 permissions, role_permissions, audit_events, single-owner partial unique

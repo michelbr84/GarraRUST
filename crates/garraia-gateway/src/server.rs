@@ -179,6 +179,62 @@ impl GatewayServer {
             }
         }
 
+        // GAR-391c: wire garraia-auth components from AuthConfig env vars.
+        // Fail-soft: if AuthConfig::from_env returns None (any var missing),
+        // the gateway boots without /v1/auth/* enabled and the handlers
+        // return 503. This is intentional for dev mode.
+        match garraia_config::AuthConfig::from_env() {
+            Ok(Some(auth_cfg)) => {
+                use garraia_auth::{
+                    JwtConfig, JwtIssuer as AuthJwtIssuer, LoginConfig, LoginPool, SignupConfig,
+                    SignupPool,
+                };
+                use secrecy::ExposeSecret;
+
+                let login_pool_result = LoginPool::from_dedicated_config(&LoginConfig {
+                    database_url: auth_cfg.login_database_url.expose_secret().to_string(),
+                    max_connections: 5,
+                })
+                .await;
+                let signup_pool_result = SignupPool::from_dedicated_config(&SignupConfig {
+                    database_url: auth_cfg.signup_database_url.expose_secret().to_string(),
+                    max_connections: 3,
+                })
+                .await;
+                let jwt_result = AuthJwtIssuer::new(JwtConfig {
+                    jwt_secret: auth_cfg.jwt_secret.clone(),
+                    refresh_hmac_secret: auth_cfg.refresh_hmac_secret.clone(),
+                });
+
+                match (login_pool_result, signup_pool_result, jwt_result) {
+                    (Ok(login_pool), Ok(signup_pool), Ok(jwt)) => {
+                        state.set_auth_components(
+                            Arc::new(login_pool),
+                            Arc::new(signup_pool),
+                            Arc::new(jwt),
+                        );
+                        info!("garraia-auth wired (login + signup pools + jwt)");
+                    }
+                    (lp, sp, jwt) => {
+                        warn!(
+                            login_ok = lp.is_ok(),
+                            signup_ok = sp.is_ok(),
+                            jwt_ok = jwt.is_ok(),
+                            "garraia-auth wiring partially failed; /v1/auth/* will return 503"
+                        );
+                    }
+                }
+            }
+            Ok(None) => {
+                info!(
+                    "AuthConfig env vars not set (GARRAIA_JWT_SECRET / GARRAIA_REFRESH_HMAC_SECRET / GARRAIA_LOGIN_DATABASE_URL / GARRAIA_SIGNUP_DATABASE_URL); /v1/auth/* will return 503"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "AuthConfig validation failed; /v1/auth/* will return 503");
+            }
+        }
+
         // Start config hot-reload watcher
         let config_path = garraia_config::ConfigLoader::default_config_dir().join("config.yml");
 

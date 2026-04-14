@@ -27,11 +27,14 @@ use async_trait::async_trait;
 use sqlx::Row;
 use uuid::Uuid;
 
+use secrecy::SecretString;
+
 use crate::audit::{audit_login, AuditAction};
 use crate::error::AuthError;
 use crate::hashing::{consume_dummy_hash, hash_argon2id, verify_argon2id, verify_pbkdf2};
 use crate::login_pool::LoginPool;
 use crate::provider::IdentityProvider;
+use crate::signup_pool::SignupPool;
 use crate::types::{Credential, Identity, RequestCtx};
 use crate::Result;
 
@@ -305,4 +308,125 @@ impl IdentityProvider for InternalProvider {
         // directly, bypassing the auth crate.
         Err(AuthError::NotImplemented)
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 391c-impl-B — signup_user free function
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Create a new `users` row plus a corresponding `user_identities` row with
+/// a fresh Argon2id password hash, all inside a single transaction on the
+/// dedicated [`SignupPool`].
+///
+/// This is a free function (not a trait method) because the trait
+/// [`crate::provider::IdentityProvider`] is intentionally bound to the
+/// `LoginPool`, and signup requires INSERT grants that the login role does
+/// not carry. See plan 0012 §3.1 (migration 010) for the role/grant design.
+///
+/// ## Flow
+///
+/// 1. Lowercase email (symmetric with the login lookup on `provider_sub`).
+/// 2. Hash the password via [`hash_argon2id`].
+/// 3. Open a transaction on `signup_pool`.
+/// 4. `INSERT INTO users (email, display_name, status='active') RETURNING id`.
+///    A unique-violation on `(email)` maps to [`AuthError::DuplicateEmail`]
+///    and the transaction is rolled back.
+/// 5. `INSERT INTO user_identities (user_id, provider='internal',
+///    provider_sub=email_lower, password_hash=phc) RETURNING id`. A unique
+///    violation on `(provider, provider_sub)` likewise maps to
+///    `DuplicateEmail`.
+/// 6. Commit and return the new `user_id`.
+///
+/// ## Audit
+///
+/// No audit row is written here — per plan 0012 §3.2 the call-site (future
+/// signup endpoint in 391c gateway wiring) is responsible for inserting the
+/// signup-attempt audit event. This keeps `signup_user` focused on the DB
+/// mutation and allows the wiring agent to capture richer `RequestCtx`
+/// fields (`ip`, `user_agent`, `request_id`) from the HTTP layer.
+///
+/// ## Note on the unused `login_pool` parameter
+///
+/// The signature accepts `&LoginPool` so the future wiring code can perform
+/// a pre-flight duplicate-email SELECT on the login pool if we decide to
+/// front-run signups with a cheap read (avoiding the cost of a full
+/// Argon2id hash on obvious collisions). In 391c-impl-B we do NOT use it —
+/// the INSERT itself is authoritative and cheaper to reason about — but
+/// keeping it in the signature now avoids churn when the optimisation
+/// lands. The parameter is deliberately underscore-free so callers treat
+/// it as load-bearing: the orchestration layer must own both pools anyway.
+#[allow(unused_variables)]
+pub async fn signup_user(
+    login_pool: &LoginPool,
+    signup_pool: &SignupPool,
+    email: &str,
+    password: &SecretString,
+    display_name: &str,
+) -> Result<Uuid> {
+    let email_lower = email.to_lowercase();
+    let password_hash = hash_argon2id(password)?;
+
+    let mut tx = signup_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(AuthError::Storage)?;
+
+    // ─── users row ─────────────────────────────────────────────────────
+    let user_id: Uuid = match sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO users (email, display_name, status) \
+         VALUES ($1, $2, 'active') \
+         RETURNING id",
+    )
+    .bind(&email_lower)
+    .bind(display_name)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            if is_unique_violation(&err) {
+                let _ = tx.rollback().await;
+                return Err(AuthError::DuplicateEmail);
+            }
+            let _ = tx.rollback().await;
+            return Err(AuthError::Storage(err));
+        }
+    };
+
+    // ─── user_identities row ───────────────────────────────────────────
+    let identity_result = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO user_identities (user_id, provider, provider_sub, password_hash) \
+         VALUES ($1, 'internal', $2, $3) \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(&email_lower)
+    .bind(&password_hash)
+    .fetch_one(&mut *tx)
+    .await;
+
+    if let Err(err) = identity_result {
+        if is_unique_violation(&err) {
+            let _ = tx.rollback().await;
+            return Err(AuthError::DuplicateEmail);
+        }
+        let _ = tx.rollback().await;
+        return Err(AuthError::Storage(err));
+    }
+
+    tx.commit().await.map_err(AuthError::Storage)?;
+    Ok(user_id)
+}
+
+/// Return true if the `sqlx::Error` is a Postgres unique-violation
+/// (SQLSTATE `23505`). Used by [`signup_user`] to translate DB collisions
+/// into [`AuthError::DuplicateEmail`] without probing.
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = err {
+        if let Some(code) = db_err.code() {
+            return code == "23505";
+        }
+    }
+    false
 }

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
+use crate::role::Role;
+
 /// An authenticated identity. Returned by providers after successful
 /// credential verification. Maps to a row in `user_identities`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,8 +65,9 @@ impl std::fmt::Debug for Credential {
 pub struct Principal {
     pub user_id: Uuid,
     pub group_id: Option<Uuid>,
-    /// `'owner' | 'admin' | 'member' | 'guest' | 'child'` (placeholder).
-    pub role: Option<String>,
+    /// Typed group role (GAR-391c). `None` when the caller did not supply
+    /// an `X-Group-Id` header or is not a member of the requested group.
+    pub role: Option<Role>,
 }
 
 /// Forensic context captured by the future Axum extractor (391c) and

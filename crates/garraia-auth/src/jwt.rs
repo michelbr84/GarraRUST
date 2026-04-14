@@ -161,7 +161,7 @@ impl JwtIssuer {
             .try_fill_bytes(&mut bytes)
             .map_err(|e| AuthError::Config(format!("OsRng failure: {e}")))?;
         let plaintext = URL_SAFE_NO_PAD.encode(bytes);
-        let hmac_hash = self.hmac_refresh(&plaintext);
+        let hmac_hash = self.hmac_refresh(&plaintext)?;
         Ok(RefreshTokenPair {
             plaintext: SecretString::from(plaintext),
             hmac_hash,
@@ -169,16 +169,41 @@ impl JwtIssuer {
     }
 
     /// HMAC-SHA256 of a refresh-token plaintext, hex-encoded for storage in
-    /// `sessions.refresh_token_hash`. Used by both `issue_refresh` and the
-    /// future refresh-verify path.
-    pub fn hmac_refresh(&self, plaintext: &str) -> String {
+    /// `sessions.refresh_token_hash`. Used by both `issue_refresh` and
+    /// `SessionStore::verify_refresh`.
+    ///
+    /// Returns `Err(AuthError::Config)` only if `HmacSha256::new_from_slice`
+    /// rejects the key (which only happens for an empty key — and we
+    /// validate `>= 32 bytes` in `JwtIssuer::new`, so in practice this
+    /// branch is unreachable). Code review 391c #1: `expect()` was
+    /// replaced with `?` propagation per CLAUDE.md rule 4 (no expect/unwrap
+    /// in production paths).
+    pub fn hmac_refresh(&self, plaintext: &str) -> Result<String, AuthError> {
         let mut mac = HmacSha256::new_from_slice(
             self.config.refresh_hmac_secret.expose_secret().as_bytes(),
         )
-        .expect("HMAC accepts any key length");
+        .map_err(|e| AuthError::Config(format!("hmac key invalid: {e}")))?;
         mac.update(plaintext.as_bytes());
         let bytes = mac.finalize().into_bytes();
-        hex_encode(&bytes)
+        Ok(hex_encode(&bytes))
+    }
+}
+
+/// Extract the bearer token from an HTTP `Authorization` header.
+///
+/// Returns `Some(token)` if the header is present and starts with
+/// `Bearer ` (case-insensitive on the scheme). `None` otherwise.
+pub fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    // Case-insensitive "Bearer " prefix, per RFC 7235 §2.1.
+    if value.len() < 7 {
+        return None;
+    }
+    let (scheme, rest) = value.split_at(7);
+    if scheme.eq_ignore_ascii_case("Bearer ") {
+        Some(rest.trim_start())
+    } else {
+        None
     }
 }
 
@@ -288,6 +313,32 @@ mod tests {
     }
 
     #[test]
+    fn extract_bearer_token_parses_header() {
+        use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
+
+        let mut h = HeaderMap::new();
+        assert_eq!(extract_bearer_token(&h), None);
+
+        h.insert(AUTHORIZATION, HeaderValue::from_static("Bearer abc.def.ghi"));
+        assert_eq!(extract_bearer_token(&h), Some("abc.def.ghi"));
+
+        // Case-insensitive scheme.
+        h.insert(AUTHORIZATION, HeaderValue::from_static("bearer xyz"));
+        assert_eq!(extract_bearer_token(&h), Some("xyz"));
+
+        h.insert(AUTHORIZATION, HeaderValue::from_static("BEARER  with-space"));
+        assert_eq!(extract_bearer_token(&h), Some("with-space"));
+
+        // Wrong scheme.
+        h.insert(AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwdw=="));
+        assert_eq!(extract_bearer_token(&h), None);
+
+        // Too short.
+        h.insert(AUTHORIZATION, HeaderValue::from_static("short"));
+        assert_eq!(extract_bearer_token(&h), None);
+    }
+
+    #[test]
     fn refresh_token_pair_shape_and_hmac_stable() {
         let issuer = JwtIssuer::new(cfg()).unwrap();
         let pair = issuer.issue_refresh().expect("issue refresh");
@@ -296,7 +347,9 @@ mod tests {
         // HMAC SHA-256 hex = 64 chars.
         assert_eq!(pair.hmac_hash.len(), 64);
         // hmac_refresh is deterministic for the same plaintext + same key.
-        let recomputed = issuer.hmac_refresh(pair.plaintext.expose_secret());
+        let recomputed = issuer
+            .hmac_refresh(pair.plaintext.expose_secret())
+            .expect("hmac_refresh must not fail with a 32-byte secret");
         assert_eq!(recomputed, pair.hmac_hash);
     }
 }
