@@ -17,13 +17,20 @@
 
 ## Estrutura de crates
 
-Atualizado após GAR-407 (2026-04-13). **18 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
+Atualizado após GAR-391a (2026-04-14). **19 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
 
 ```text
 crates/
   garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
+  garraia-auth/       — ✅ skeleton (GAR-391a). IdentityProvider trait + InternalProvider stub
+                        + LoginPool newtype (private inner PgPool, validated via SELECT
+                        current_user, !Clone enforced via static_assertions) + Principal/
+                        Credential/AuthError types + migration 008_login_role.sql (garraia_login
+                        NOLOGIN BYPASSRLS, 4 GRANTs exatos do ADR 0005). Real verify_credential,
+                        JWT, Axum extractor e suite authz ficam para 391b/c/d.
+                        Decisão: docs/adr/0005-identity-provider.md.
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
@@ -59,7 +66,6 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
-garraia-auth/        — Fase 3.3 (GAR-391) — Scope/Principal/RBAC central separado de -security
 garraia-storage/     — Fase 3.5 (GAR-394) — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
 ```
 

@@ -1434,5 +1434,93 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         tx.rollback().await?;
     }
 
+    // ── Migration 008 validation ────────────────────────────────────────────
+    //
+    // garraia_login NOLOGIN BYPASSRLS dedicated role for the garraia-auth
+    // login flow. See ADR 0005 §"Login role specification" and migration
+    // 008_login_role.sql.
+
+    let login_role: (bool, bool) = sqlx::query_as(
+        "SELECT rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = 'garraia_login'",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(login_role.0, "garraia_login must have BYPASSRLS attribute");
+    assert!(!login_role.1, "garraia_login must be NOLOGIN by default");
+
+    // Positive grants — every privilege from ADR 0005 §"Login role specification".
+    for (table, privs) in &[
+        ("user_identities", "SELECT, UPDATE"),
+        ("users", "SELECT"),
+        ("sessions", "INSERT, UPDATE"),
+        ("audit_events", "INSERT"),
+    ] {
+        let granted: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('garraia_login', $1, $2)")
+                .bind(table)
+                .bind(privs)
+                .fetch_one(workspace.pool())
+                .await?;
+        assert!(granted, "garraia_login must have {privs} on {table}");
+    }
+
+    // Negative grants — login role MUST NOT have access to anything beyond
+    // the four ADR 0005 §"Login role specification" tables. Coverage spans:
+    //   - chat / memory / tasks (default-privileges leak from migration 007)
+    //   - api_keys (separate auth surface — would broaden the credential blast radius)
+    //   - roles / permissions / role_permissions (RBAC config, public lookup only)
+    //   - groups / group_members / group_invites (tenant management)
+    // GAR-391a security review H-2.
+    for table in &[
+        "messages",
+        "memory_items",
+        "tasks",
+        "api_keys",
+        "roles",
+        "permissions",
+        "role_permissions",
+        "groups",
+        "group_members",
+        "group_invites",
+    ] {
+        let leaked: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('garraia_login', $1, 'SELECT')")
+                .bind(table)
+                .fetch_one(workspace.pool())
+                .await?;
+        assert!(
+            !leaked,
+            "garraia_login MUST NOT have SELECT on {table} (privilege leak)"
+        );
+    }
+
+    // Negative sequence assertion — no `GRANT USAGE ON ALL SEQUENCES` was
+    // issued by migration 008, so `garraia_login` must not hold USAGE on any
+    // sequence currently in the public schema. If a future migration needs
+    // sequence access for the login role, it must do so on a per-sequence
+    // basis with an accompanying security review (GAR-391a security review
+    // C-1 + H-2).
+    // Use a CTE so Postgres applies the relkind/namespace filter BEFORE
+    // calling has_sequence_privilege — otherwise the planner may invoke the
+    // privilege check on TOAST-related pg_class rows that look like
+    // sequences from a different angle and fail with "X is not a sequence".
+    // Use information_schema.usage_privileges directly — the standard view
+    // is already filtered to grantable objects per role, so we don't have
+    // to call has_sequence_privilege on raw pg_class rows (which can trip
+    // on TOAST entries that the planner evaluates eagerly).
+    let leaked_sequences: Vec<(String,)> = sqlx::query_as(
+        "SELECT object_name::text \
+         FROM information_schema.usage_privileges \
+         WHERE grantee = 'garraia_login' \
+           AND object_schema = 'public' \
+           AND object_type = 'SEQUENCE'",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    assert!(
+        leaked_sequences.is_empty(),
+        "garraia_login must not hold USAGE on any sequence (leaked: {leaked_sequences:?})"
+    );
+
     Ok(())
 }
