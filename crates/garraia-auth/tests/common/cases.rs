@@ -15,7 +15,7 @@
 /// All three are defined by migrations 008/010 in `garraia-workspace`:
 /// `garraia_app` (RLS-enforced), `garraia_login` (BYPASSRLS, login path),
 /// `garraia_signup` (BYPASSRLS, signup path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DbRole {
     App,
     Login,
@@ -33,7 +33,7 @@ impl DbRole {
 }
 
 /// SQL op exercised by a case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SqlOp {
     Select,
     Insert,
@@ -43,7 +43,7 @@ pub enum SqlOp {
 
 /// How the session GUCs `app.current_user_id` and `app.current_group_id`
 /// are configured before the op runs. See design doc §2.6 and §4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TenantCtx {
     /// Both GUCs set to the tenant's real member + group.
     Correct,
@@ -62,7 +62,7 @@ pub enum TenantCtx {
 /// See design doc §4.1 for the rule distinguishing `InsufficientPrivilege`
 /// (42501 at the GRANT layer), `PermissionDenied` (42501 from a WITH CHECK
 /// RLS write policy), and `RlsFilteredZero` (USING clause silently filtered).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RlsExpected {
     /// SELECT returned exactly `n` rows, or a write affected exactly `n`.
     RowsVisible(usize),
