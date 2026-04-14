@@ -15,10 +15,14 @@
 //! | `GARRAIA_REFRESH_HMAC_SECRET` | yes | ≥32 bytes; **distinct** from `GARRAIA_JWT_SECRET`. |
 //! | `GARRAIA_LOGIN_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_login` BYPASSRLS role. |
 //! | `GARRAIA_SIGNUP_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_signup` BYPASSRLS role. |
+//! | `GARRAIA_APP_DATABASE_URL` | **optional** | Postgres URL connecting as the `garraia_app` RLS-enforced role. Used by `/v1/*` handlers outside the auth flow. When absent, `/v1/groups` and future write endpoints fail-soft to 503; `/v1/me` still works. Added in plan 0016 M1. |
 //!
-//! When any required var is missing, [`AuthConfig::from_env`] returns
+//! When any **required** var is missing, [`AuthConfig::from_env`] returns
 //! `Ok(None)` (NOT an error) so the gateway boots in fail-soft mode with the
 //! `/v1/auth/*` endpoints disabled. The bootstrap layer logs a warning.
+//! `GARRAIA_APP_DATABASE_URL` is optional and does NOT trigger fail-soft
+//! — its absence only degrades the `/v1/*` handler surface, not the auth
+//! flow.
 //! Production deployments verify the config at startup via
 //! [`AuthConfig::require_from_env`] which errors instead.
 
@@ -52,6 +56,14 @@ pub struct AuthConfig {
     /// Postgres connection URL for the `garraia_signup` BYPASSRLS pool.
     /// Used by `SignupPool` exclusively.
     pub signup_database_url: SecretString,
+
+    /// Postgres connection URL for the `garraia_app` RLS-enforced pool.
+    /// Used by `AppPool` (plan 0016 M1) for `/v1/*` handlers outside
+    /// the auth flow. **Optional** — when absent, `/v1/groups` and
+    /// future write endpoints fail-soft to 503, but the core auth
+    /// flow and `/v1/me` continue to work. Added in plan 0016 M1
+    /// without breaking existing callers.
+    pub app_database_url: Option<SecretString>,
 }
 
 impl std::fmt::Debug for AuthConfig {
@@ -61,6 +73,10 @@ impl std::fmt::Debug for AuthConfig {
             .field("refresh_hmac_secret", &"[REDACTED]")
             .field("login_database_url", &"[REDACTED]")
             .field("signup_database_url", &"[REDACTED]")
+            .field(
+                "app_database_url",
+                &self.app_database_url.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -91,6 +107,14 @@ impl AuthConfig {
                 "GARRAIA_SIGNUP_DATABASE_URL must be a postgres:// URL".into(),
             ));
         }
+        if let Some(app_url) = self.app_database_url.as_ref() {
+            let app_url = app_url.expose_secret();
+            if !(app_url.starts_with("postgres://") || app_url.starts_with("postgresql://")) {
+                return Err(AuthConfigError::Validation(
+                    "GARRAIA_APP_DATABASE_URL must be a postgres:// URL".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -115,11 +139,20 @@ impl AuthConfig {
             Err(_) => return Ok(None),
         };
 
+        // Optional: GARRAIA_APP_DATABASE_URL. Plan 0016 M1 — absence
+        // does NOT trigger fail-soft of the whole AuthConfig; it only
+        // means AppPool will not be constructed and /v1/groups-style
+        // handlers will answer 503.
+        let app_db = std::env::var("GARRAIA_APP_DATABASE_URL")
+            .ok()
+            .map(SecretString::from);
+
         let cfg = AuthConfig {
             jwt_secret: SecretString::from(jwt),
             refresh_hmac_secret: SecretString::from(refresh),
             login_database_url: SecretString::from(login_db),
             signup_database_url: SecretString::from(signup_db),
+            app_database_url: app_db,
         };
         cfg.validate_secrets()?;
         Ok(Some(cfg))
@@ -136,11 +169,20 @@ impl AuthConfig {
         let signup_db = std::env::var("GARRAIA_SIGNUP_DATABASE_URL")
             .map_err(|_| AuthConfigError::MissingEnv("GARRAIA_SIGNUP_DATABASE_URL"))?;
 
+        // Optional: GARRAIA_APP_DATABASE_URL. Plan 0016 M1 — even in
+        // `require_from_env` this is treated as optional. Operators
+        // who require /v1/groups-style handlers are responsible for
+        // failing their own boot if `app_database_url` is None.
+        let app_db = std::env::var("GARRAIA_APP_DATABASE_URL")
+            .ok()
+            .map(SecretString::from);
+
         let cfg = AuthConfig {
             jwt_secret: SecretString::from(jwt),
             refresh_hmac_secret: SecretString::from(refresh),
             login_database_url: SecretString::from(login_db),
             signup_database_url: SecretString::from(signup_db),
+            app_database_url: app_db,
         };
         cfg.validate_secrets()?;
         Ok(cfg)
@@ -161,6 +203,9 @@ mod tests {
             signup_database_url: SecretString::from(
                 "postgres://garraia_signup:pw@localhost/garraia".to_string(),
             ),
+            // Plan 0016 M1: optional. Tests default to None to exercise
+            // the "AuthConfig present but AppPool disabled" path.
+            app_database_url: None,
         }
     }
 

@@ -4,7 +4,6 @@
 //! handles the optional `X-Group-Id` membership lookup. This handler
 //! issues no SQL of its own.
 
-use axum::extract::State;
 use axum::Json;
 use garraia_auth::Principal;
 use serde::Serialize;
@@ -12,7 +11,6 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::problem::RestError;
-use super::RestV1State;
 
 /// Response body for `GET /v1/me`.
 #[derive(Debug, Serialize, ToSchema)]
@@ -39,10 +37,7 @@ pub struct MeResponse {
     ),
     security(("bearer" = []))
 )]
-pub async fn get_me(
-    State(_state): State<RestV1State>,
-    principal: Principal,
-) -> Result<Json<MeResponse>, RestError> {
+pub async fn get_me(principal: Principal) -> Result<Json<MeResponse>, RestError> {
     Ok(Json(MeResponse {
         user_id: principal.user_id,
         group_id: principal.group_id,
