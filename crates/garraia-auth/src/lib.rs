@@ -14,17 +14,25 @@
 //!
 //! See [`docs/adr/0005-identity-provider.md`](../../docs/adr/0005-identity-provider.md).
 
+pub mod audit;
 pub mod error;
+pub mod hashing;
 pub mod internal;
+pub mod jwt;
 pub mod login_pool;
 pub mod provider;
+pub mod sessions;
 pub mod types;
 
+pub use audit::{audit_login, AuditAction};
 pub use error::AuthError;
+pub use hashing::{hash_argon2id, verify_argon2id, verify_pbkdf2};
 pub use internal::InternalProvider;
+pub use jwt::{AccessClaims, JwtConfig, JwtIssuer, RefreshTokenPair};
 pub use login_pool::{LoginConfig, LoginPool};
 pub use provider::IdentityProvider;
-pub use types::{Credential, Identity, Principal, RequestCtx};
+pub use sessions::{SessionId, SessionStore};
+pub use types::{Credential, Identity, LoginOutcome, Principal, RequestCtx};
 
 /// Convenience `Result` alias for crate APIs.
 pub type Result<T> = std::result::Result<T, AuthError>;

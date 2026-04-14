@@ -14,6 +14,64 @@
 > e `user_agent text` como colunas top-level (não keys do jsonb), e
 > `created_at` (não `occurred_at`). O `audit.rs` em 391b deve ser
 > implementado contra o schema real, não contra a descrição deste §6.3.
+>
+> **⚠️ Correção de escopo aplicada durante Wave 1 (2026-04-13):**
+> `create_identity` foi **deferido para 391c**. O `garraia_login` role
+> (migration 008) tem `SELECT, UPDATE` em `user_identities` mas **não
+> INSERT** — por design, o role é para o login flow, não signup. Wirar
+> `create_identity` pelo `LoginPool` exigiria (a) migration 010 com
+> `GRANT INSERT` (broadening do login role — regressão de segurança) ou
+> (b) um signup pool separado + signup endpoint, ambos pertencentes a
+> 391c. O signup endpoint já estava deferido em §3 "Out of scope", então
+> `create_identity` segue a mesma fatia. Em 391b o método retorna
+> `Err(AuthError::NotImplemented)` com um doc-comment explicando o
+> motivo. Tests que precisam seedar identidades usam o admin pool
+> diretamente, bypassing o auth crate.
+>
+> **⚠️ Segunda correção de escopo aplicada durante Wave 1 (2026-04-13):**
+> **Refresh tokens (`SessionStore::issue` no endpoint, response com
+> `refresh_token`) deferidos para 391c.** O `garraia_login` role
+> (migration 008) tem `INSERT, UPDATE` em `sessions` mas **não SELECT** —
+> e o login flow precisa de SELECT para (a) `INSERT ... RETURNING id`
+> usado por `SessionStore::issue` (Postgres exige SELECT nas colunas do
+> RETURNING) e (b) `SessionStore::verify_refresh` (lookup por
+> `refresh_token_hash`). Adicionar `GRANT SELECT ON sessions` exigiria
+> migration 010 + addendum no ADR 0005. Per a regra "não misture
+> correção estrutural com feature impl" e dado que **refresh tokens são
+> intrinsecamente acoplados ao refresh endpoint**, e o refresh endpoint
+> JÁ estava deferido para 391c em §3 "Out of scope", o caminho mínimo é:
+>
+> - **Endpoint `POST /v1/auth/login` em 391b retorna apenas
+>   `{user_id, access_token, expires_at}`** — sem `refresh_token` no body.
+> - `SessionStore` permanece como código (load-bearing para 391c) mas
+>   **não é chamado pelo endpoint** em 391b. Os unit tests de `JwtIssuer`
+>   ainda exercitam o lifecycle de access/refresh tokens em memória.
+> - **Anti-enumeração** continua válida: o teste
+>   `failure_modes_are_byte_identical` valida que os 401 batem byte a
+>   byte, agora também batem com o sucesso reduzido (mesma forma de
+>   response sem `refresh_token`).
+> - **391c** ganha tudo de session/refresh: `SessionStore::issue` no
+>   endpoint, refresh endpoint, logout endpoint, eventualmente migration
+>   010 com `GRANT SELECT ON sessions` (via plan 0012 ou subdivisão).
+>
+> **Ainda em scope no 391b após esta redução:**
+> - Real `verify_credential` com `FOR NO KEY UPDATE OF ui` ✅
+> - Dual-verify Argon2id + PBKDF2 com lazy upgrade transacional ✅
+> - Constant-time anti-enumeration via `DUMMY_HASH` em build.rs ✅
+> - `audit_events` em todos os terminais ✅
+> - JWT HS256 access token (15min) + algorithm confusion guards ✅
+> - Endpoint `POST /v1/auth/login` sob feature `auth-v1` no
+>   `garraia-gateway` ✅
+> - Anti-enumeração via 401 byte-identical em todos os modos de falha ✅
+>
+> **Body malformado test:** axum 0.8 `Json<T>` retorna **422 Unprocessable
+> Entity** para JSON sintaticamente válido com campos do tipo errado
+> (ex.: `{"email": 42}`), e 400 apenas para JSON sintaticamente inválido.
+> O teste `malformed_body_returns_400` foi renomeado para
+> `malformed_body_returns_422` para refletir o comportamento real e
+> documentado do framework, sem custom error mapping em 391b. Custom
+> error mapping (RFC 9457 Problem Details) é trabalho de Fase 3.4 (REST
+> /v1 OpenAPI) — fora do escopo de 391b.
 
 > **Status:** 📋 Awaiting approval
 > **Issue:** [GAR-391](https://linear.app/chatgpt25/issue/GAR-391) — sub-issue 391b (real verify + audit + JWT)

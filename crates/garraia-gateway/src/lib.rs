@@ -1,6 +1,8 @@
 pub mod a2a;
 pub mod admin;
 pub mod agent_router;
+#[cfg(feature = "auth-v1")]
+pub mod auth_routes;
 pub mod auto_router;
 pub mod context_summarizer;
 pub mod session_auth;
