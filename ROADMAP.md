@@ -342,22 +342,23 @@ Novo crate: `garraia-storage`.
 
 #### Tier 1 — Tasks (MVP)
 
-Novo módulo em `garraia-workspace` (ou crate `garraia-tasks` se o módulo crescer).
+Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **RLS FORCE embutido desde o dia zero** (sem retrofit via 007+).
 
 **Schema (Postgres migrations):**
 
-- [ ] `task_lists` (`id`, `group_id`, `name`, `type` = `list|board|calendar`, `settings_jsonb`, `created_by`, `created_at`, `archived_at`)
-- [ ] `tasks` (`id`, `list_id`, `group_id`, `parent_task_id`, `title`, `description_md`, `status`, `priority`, `due_at`, `started_at`, `completed_at`, `estimated_minutes`, `created_by`, `created_at`, `updated_at`, `deleted_at`)
-- [ ] `task_assignees` (`task_id`, `user_id`, `assigned_at`, `assigned_by`)
-- [ ] `task_labels` (`id`, `group_id`, `name`, `color`)
-- [ ] `task_label_assignments` (`task_id`, `label_id`)
-- [ ] `task_comments` (`id`, `task_id`, `author_user_id`, `body_md`, `created_at`, `edited_at`, `deleted_at`)
-- [ ] `task_attachments` (`task_id`, `file_id`) — reusa `files`
-- [ ] `task_subscriptions` (`task_id`, `user_id`) — para notificações
-- [ ] `task_activity` (`id`, `task_id`, `actor_user_id`, `kind`, `payload_jsonb`, `created_at`) — histórico de mudanças
-- [ ] Status enum: `backlog|todo|in_progress|review|done|canceled`
-- [ ] Priority enum: `none|low|medium|high|urgent`
-- [ ] Índices: `(group_id, status)`, `(list_id, status)`, `(due_at) WHERE deleted_at IS NULL`
+- [x] `task_lists` (`id`, `group_id`, `name`, `type` = `list|board|calendar`, `description`, `created_by ON DELETE SET NULL`, `created_by_label` cache, `settings jsonb`, `archived_at`, `UNIQUE (id, group_id)`) — migration 006 ✅
+- [x] `tasks` (`id`, `list_id`, **`group_id` denormalizado**, `parent_task_id` self-FK CASCADE, `title`, `description_md` CHECK 50k, `status` CHECK 6 valores, `priority` CHECK 5 valores, `due_at`, `started_at`, `completed_at`, `estimated_minutes`, `recurrence_rrule` com CHECK charset, `created_by ON DELETE SET NULL`, `created_by_label` cache, `deleted_at` soft-delete, **compound FK `(list_id, group_id) → task_lists(id, group_id)`**) — migration 006 ✅
+- [x] `task_assignees` (PK composta `(task_id, user_id)`, `assigned_at`, `assigned_by ON DELETE SET NULL`) — migration 006 ✅
+- [x] `task_labels` (`id`, `group_id`, `name`, `color` hex CHECK, `created_by ON DELETE SET NULL` + `created_by_label` cache, `UNIQUE (group_id, name)`) — migration 006 ✅
+- [x] `task_label_assignments` (PK composta `(task_id, label_id)`, `assigned_at`) — migration 006 ✅
+- [x] `task_comments` (`id`, `task_id` CASCADE, `author_user_id ON DELETE SET NULL` + `author_label` cache, `body_md` CHECK 50k, `edited_at`, `deleted_at`) — migration 006 ✅
+- [ ] `task_attachments` (`task_id`, `file_id`) — deferido até GAR-387 (files) materializar
+- [x] `task_subscriptions` (PK composta `(task_id, user_id)` CASCADE, `subscribed_at`, `muted`) — migration 006 ✅
+- [x] `task_activity` (`id`, `task_id` CASCADE, **`group_id` denormalizado**, `actor_user_id` plain uuid sem FK, `actor_label` cache, `kind` CHECK 12 valores, `payload jsonb`) — migration 006 ✅
+- [x] Status enum: `backlog|todo|in_progress|review|done|canceled` — migration 006 ✅
+- [x] Priority enum: `none|low|medium|high|urgent` — migration 006 ✅
+- [x] Índices críticos: `(list_id, status)`, `(group_id, status)`, `(due_at) WHERE deleted_at IS NULL AND due_at IS NOT NULL`, `(parent_task_id)` partial, `(group_id, completed_at DESC) WHERE status = 'done'` — migration 006 ✅
+- [x] **RLS FORCE embutido na migration 006** com 2 classes: direct (`task_lists`, `tasks`, `task_labels`, `task_activity` via group_id denormalizado + NULLIF) e JOIN (`task_assignees`, `task_label_assignments`, `task_comments`, `task_subscriptions` via recursive subquery em tasks). 8 cenários de smoke test cobrindo cascade, compound FK, enum CHECK, RLS positive + cross-group. ✅
 
 **API REST `/v1`:**
 

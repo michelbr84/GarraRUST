@@ -630,7 +630,8 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         Ok(tx)
     }
 
-    // Metadata check: all 10 tables must have relforcerowsecurity = true.
+    // Metadata check: all 18 tables must have relforcerowsecurity = true.
+    // 10 from migration 007 + 8 from migration 006 (tasks Tier 1).
     // Complements Cenário 4 (empirical FORCE proof) with a direct pg_class
     // query — two orthogonal evidence paths.
     let forced_tables: Vec<(String,)> = sqlx::query_as(
@@ -638,16 +639,59 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
          WHERE relforcerowsecurity = true \
          AND relname IN ('messages','chats','chat_members','message_threads',\
                          'memory_items','memory_embeddings','audit_events',\
-                         'sessions','api_keys','user_identities') \
+                         'sessions','api_keys','user_identities',\
+                         'task_lists','tasks','task_assignees','task_labels',\
+                         'task_label_assignments','task_comments',\
+                         'task_subscriptions','task_activity') \
          ORDER BY relname",
     )
     .fetch_all(workspace.pool())
     .await?;
     assert_eq!(
         forced_tables.len(),
-        10,
-        "expected all 10 tenant-scoped tables to have FORCE RLS, got: {forced_tables:?}"
+        18,
+        "expected all 18 tenant-scoped tables to have FORCE RLS (10 from migration 007 + 8 from migration 006), got: {forced_tables:?}"
     );
+
+    // Migration 006 tables exist.
+    for expected in &[
+        "task_lists",
+        "tasks",
+        "task_assignees",
+        "task_labels",
+        "task_label_assignments",
+        "task_comments",
+        "task_subscriptions",
+        "task_activity",
+    ] {
+        assert!(
+            names.contains(expected),
+            "missing table from migration 006: {expected}"
+        );
+    }
+
+    // Migration 006 critical indexes.
+    for expected in &[
+        "tasks_list_status_idx",
+        "tasks_group_status_idx",
+        "tasks_due_idx",
+        "tasks_parent_idx",
+        "tasks_completed_idx",
+        "task_lists_group_idx",
+        "task_assignees_user_idx",
+        "task_labels_group_idx",
+        "task_label_assignments_label_idx",
+        "task_comments_task_created_idx",
+        "task_subscriptions_user_idx",
+        "task_activity_task_created_idx",
+        "task_activity_group_created_idx",
+        "task_activity_kind_idx",
+    ] {
+        assert!(
+            index_names.contains(expected),
+            "missing index from migration 006: {expected}"
+        );
+    }
 
     // ── Cross-group fixtures (shared by scenarios 2, 5, 6, 7, 8) ──────────
     //
@@ -793,7 +837,20 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // breaks one table's NULLIF would now surface immediately.
     {
         let mut tx = rls_scope(workspace.pool(), None, None).await?;
+        // All 18 tenant-scoped tables must fail closed when app.current_*_id
+        // is unset: 10 from migration 007 + 8 from migration 006.
+        // JOIN-class tables (chat_members, message_threads, task_assignees,
+        // task_label_assignments, task_comments, task_subscriptions,
+        // memory_embeddings) are implicitly covered via their recursive
+        // subquery against tables that already fail closed, but we assert
+        // them explicitly to catch any future regression where a policy
+        // forgets the NULLIF wrapper or anchors on an unprotected column.
+        //
+        // format!("SELECT count(*) FROM {table}") is intentional and safe:
+        // `table` comes from a hardcoded compile-time &[&str], NOT user
+        // input. Same safety argument as the SET LOCAL format! in rls_scope.
         for table in &[
+            // migration 007 (10)
             "messages",
             "chats",
             "chat_members",
@@ -804,6 +861,15 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             "sessions",
             "api_keys",
             "user_identities",
+            // migration 006 (8)
+            "task_lists",
+            "tasks",
+            "task_assignees",
+            "task_labels",
+            "task_label_assignments",
+            "task_comments",
+            "task_subscriptions",
+            "task_activity",
         ] {
             let sql = format!("SELECT count(*) FROM {table}");
             let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut *tx).await?;
@@ -966,6 +1032,405 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             visible, 2,
             "cenário 8: audit_events dual policy: group+self visible (2 rows), other user NOT"
         );
+        tx.rollback().await?;
+    }
+
+    // ─── Migration 006 validation (Tasks Tier 1 + RLS FORCE) ──────────────
+    //
+    // Wave 1 fixtures for GAR-390. All setup goes through the superuser pool
+    // (bypasses RLS) because we are testing the policies, not the setup path.
+
+    // ── Fixture: task_list + parent task + 2 subtasks in group A ──────────
+    let test_list_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_lists (group_id, name, type, created_by, created_by_label) \
+         VALUES ($1, 'Sprint Alpha', 'board', $2, 'Test User') RETURNING id",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let parent_task_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO tasks (list_id, group_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, 'Parent task', $3, 'Test User') RETURNING id",
+    )
+    .bind(test_list_id)
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let child1_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO tasks (list_id, group_id, parent_task_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, $3, 'Subtask 1', $4, 'Test User') RETURNING id",
+    )
+    .bind(test_list_id)
+    .bind(group_id)
+    .bind(parent_task_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let child2_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO tasks (list_id, group_id, parent_task_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, $3, 'Subtask 2', $4, 'Test User') RETURNING id",
+    )
+    .bind(test_list_id)
+    .bind(group_id)
+    .bind(parent_task_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // ── Subtask cascade test (soft delete preserves, hard delete cascades) ─
+    sqlx::query("UPDATE tasks SET deleted_at = now() WHERE id = $1")
+        .bind(parent_task_id)
+        .execute(workspace.pool())
+        .await?;
+    let surviving_soft: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE parent_task_id = $1")
+            .bind(parent_task_id)
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        surviving_soft, 2,
+        "migration 006: soft delete must not cascade to subtasks"
+    );
+
+    sqlx::query("DELETE FROM tasks WHERE id = $1")
+        .bind(parent_task_id)
+        .execute(workspace.pool())
+        .await?;
+    let remaining_hard: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id IN ($1, $2)")
+            .bind(child1_id)
+            .bind(child2_id)
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        remaining_hard, 0,
+        "migration 006: hard delete must cascade via ON DELETE CASCADE to subtasks"
+    );
+
+    // ── Compound FK negative test: list from group A + group_id from B ────
+    let bad_compound = sqlx::query(
+        "INSERT INTO tasks (list_id, group_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, 'cross-group', $3, 'Test User')",
+    )
+    .bind(test_list_id) // belongs to group A
+    .bind(other_group_id) // but we claim group B
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 006: compound FK must block cross-group drift");
+    let db_err = bad_compound
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23503"),
+        "expected SQLSTATE 23503 (foreign_key_violation) for compound FK drift"
+    );
+
+    // ── Enum CHECK negative test ──────────────────────────────────────────
+    let bad_status = sqlx::query(
+        "INSERT INTO tasks (list_id, group_id, title, status, created_by, created_by_label) \
+         VALUES ($1, $2, 'x', 'invalid_status', $3, 'Test User')",
+    )
+    .bind(test_list_id)
+    .bind(group_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 006: invalid status must be rejected by CHECK");
+    let db_err = bad_status
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23514"),
+        "expected SQLSTATE 23514 (check_violation) for invalid status enum"
+    );
+
+    // ── Full positive fixture in group A (post-cascade, fresh) ────────────
+    let positive_task_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO tasks (list_id, group_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, 'Positive task', $3, 'Test User') RETURNING id",
+    )
+    .bind(test_list_id)
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)",
+    )
+    .bind(positive_task_id)
+    .bind(user_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let positive_label_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_labels (group_id, name, color, created_by, created_by_label) \
+         VALUES ($1, 'urgent', '#ff0000', $2, 'Test User') RETURNING id",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)",
+    )
+    .bind(positive_task_id)
+    .bind(positive_label_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let positive_comment_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_comments (task_id, author_user_id, author_label, body_md) \
+         VALUES ($1, $2, 'Test User', 'looks good') RETURNING id",
+    )
+    .bind(positive_task_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)",
+    )
+    .bind(positive_task_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let positive_activity_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_activity (task_id, group_id, actor_user_id, actor_label, kind, payload) \
+         VALUES ($1, $2, $3, 'Test User', 'created', '{}'::jsonb) RETURNING id",
+    )
+    .bind(positive_task_id)
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // ── Cross-group fixture (group B, bypass) ─────────────────────────────
+    let other_list_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_lists (group_id, name, type, created_by, created_by_label) \
+         VALUES ($1, 'Other board', 'board', $2, 'RLS User B') RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let other_task_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO tasks (list_id, group_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, 'Cross-group task', $3, 'Test User') RETURNING id",
+    )
+    .bind(other_list_id)
+    .bind(other_group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)",
+    )
+    .bind(other_task_id)
+    .bind(user_b_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let other_label_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_labels (group_id, name, color, created_by, created_by_label) \
+         VALUES ($1, 'secret', '#00ff00', $2, 'RLS User B') RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)",
+    )
+    .bind(other_task_id)
+    .bind(other_label_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let other_comment_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_comments (task_id, author_user_id, author_label, body_md) \
+         VALUES ($1, $2, 'RLS User B', 'secret cross-group comment') RETURNING id",
+    )
+    .bind(other_task_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)",
+    )
+    .bind(other_task_id)
+    .bind(user_b_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let other_activity_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO task_activity (task_id, group_id, actor_user_id, actor_label, kind, payload) \
+         VALUES ($1, $2, $3, 'RLS User B', 'created', '{}'::jsonb) RETURNING id",
+    )
+    .bind(other_task_id)
+    .bind(other_group_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    // ── Cenário 9 — RLS positive read across all 8 task tables ────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+
+        let tl: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
+                .bind(test_list_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tl, 1, "cenário 9: own task_list visible");
+
+        let t: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id = $1")
+            .bind(positive_task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(t, 1, "cenário 9: own task visible");
+
+        let ta: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_assignees WHERE task_id = $1",
+        )
+        .bind(positive_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(ta, 1, "cenário 9: own task_assignees visible");
+
+        let tlab: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
+                .bind(positive_label_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tlab, 1, "cenário 9: own task_labels visible");
+
+        let tla: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_label_assignments WHERE task_id = $1",
+        )
+        .bind(positive_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(tla, 1, "cenário 9: own task_label_assignments visible");
+
+        let tc: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
+                .bind(positive_comment_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tc, 1, "cenário 9: own task_comments visible");
+
+        let ts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_subscriptions WHERE task_id = $1",
+        )
+        .bind(positive_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(ts, 1, "cenário 9: own task_subscriptions visible");
+
+        let tact: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
+                .bind(positive_activity_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tact, 1, "cenário 9: own task_activity visible");
+
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 10 — RLS cross-group blocked across all 8 task tables ─────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+
+        let tl: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
+                .bind(other_list_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tl, 0, "cenário 10: cross-group task_list must not leak");
+
+        let t: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id = $1")
+            .bind(other_task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(t, 0, "cenário 10: cross-group task must not leak");
+
+        let ta: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_assignees WHERE task_id = $1",
+        )
+        .bind(other_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            ta, 0,
+            "cenário 10: cross-group task_assignees must not leak (JOIN policy)"
+        );
+
+        let tlab: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
+                .bind(other_label_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(tlab, 0, "cenário 10: cross-group task_labels must not leak");
+
+        let tla: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_label_assignments WHERE task_id = $1",
+        )
+        .bind(other_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            tla, 0,
+            "cenário 10: cross-group task_label_assignments must not leak (JOIN policy)"
+        );
+
+        let tc: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
+                .bind(other_comment_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            tc, 0,
+            "cenário 10: cross-group task_comments must not leak (JOIN policy)"
+        );
+
+        let ts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task_subscriptions WHERE task_id = $1",
+        )
+        .bind(other_task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            ts, 0,
+            "cenário 10: cross-group task_subscriptions must not leak (JOIN policy)"
+        );
+
+        let tact: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
+                .bind(other_activity_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            tact, 0,
+            "cenário 10: cross-group task_activity must not leak"
+        );
+
         tx.rollback().await?;
     }
 
