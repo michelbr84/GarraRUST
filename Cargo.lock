@@ -3026,6 +3026,7 @@ dependencies = [
  "pgvector",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "scopeguard",
  "serde",
  "serde_json",
  "sqlx",

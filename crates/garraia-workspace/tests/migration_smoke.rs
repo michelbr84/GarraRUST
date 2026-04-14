@@ -595,5 +595,379 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "wrong-dim rejection must be a DB-layer error, got: {wrong_dim:?}"
     );
 
+    // ─── Migration 007 validation (RLS FORCE on 10 tenant-scoped tables) ──
+    //
+    // Strategy: use `SET LOCAL ROLE garraia_app` to demote the superuser
+    // connection to a non-owner role, then `SET LOCAL app.current_group_id`
+    // and `SET LOCAL app.current_user_id` to establish the request scope.
+    // Mirrors the B6 benchmark pattern in benches/database-poc/.
+
+    // Helper: opens a transaction, demotes to garraia_app role, and
+    // conditionally sets both app.current_group_id and app.current_user_id
+    // for the duration of the transaction. Returns the transaction so the
+    // caller can run queries and then rollback/commit.
+    async fn rls_scope(
+        pool: &sqlx::PgPool,
+        group_id: Option<uuid::Uuid>,
+        user_id: Option<uuid::Uuid>,
+    ) -> anyhow::Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE garraia_app")
+            .execute(&mut *tx)
+            .await?;
+        if let Some(gid) = group_id {
+            // Dynamic SET LOCAL via format! is intentional: SET LOCAL does
+            // not support parameter binding, and the value is a typed
+            // uuid::Uuid that sqlx already validated — no user input flows
+            // through this path. Safe by construction.
+            let stmt = format!("SET LOCAL app.current_group_id = '{gid}'");
+            sqlx::query(&stmt).execute(&mut *tx).await?;
+        }
+        if let Some(uid) = user_id {
+            let stmt = format!("SET LOCAL app.current_user_id = '{uid}'");
+            sqlx::query(&stmt).execute(&mut *tx).await?;
+        }
+        Ok(tx)
+    }
+
+    // Metadata check: all 10 tables must have relforcerowsecurity = true.
+    // Complements Cenário 4 (empirical FORCE proof) with a direct pg_class
+    // query — two orthogonal evidence paths.
+    let forced_tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT relname::text FROM pg_class \
+         WHERE relforcerowsecurity = true \
+         AND relname IN ('messages','chats','chat_members','message_threads',\
+                         'memory_items','memory_embeddings','audit_events',\
+                         'sessions','api_keys','user_identities') \
+         ORDER BY relname",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(
+        forced_tables.len(),
+        10,
+        "expected all 10 tenant-scoped tables to have FORCE RLS, got: {forced_tables:?}"
+    );
+
+    // ── Cross-group fixtures (shared by scenarios 2, 5, 6, 7, 8) ──────────
+    //
+    // `other_group_id` already exists from the compound-FK test above
+    // (type='team', owned by user_id). Reuse it as our "group B". We still
+    // need: a second user (user_b), a chat in group B, a message in that
+    // chat, a chat_member row in that chat, a personal memory owned by
+    // user_b, an embedding for that memory, and 3 audit rows. All inserted
+    // via the superuser pool — bypassing RLS for setup is intentional
+    // (tests verify the policy, not the setup path).
+
+    let user_b_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
+    )
+    .bind("rls-user-b@example.com")
+    .bind("RLS User B")
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let other_chat_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO chats (group_id, type, name, created_by) \
+         VALUES ($1, 'channel', 'other-geral', $2) RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let other_message_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO messages (chat_id, group_id, sender_user_id, sender_label, body) \
+         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+    )
+    .bind(other_chat_id)
+    .bind(other_group_id)
+    .bind(user_id)
+    .bind("Test User")
+    .bind("secret cross-group message")
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query("INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1, $2, 'owner')")
+        .bind(other_chat_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
+
+    // Personal memory owned by user_b (scope_type=user, group_id=NULL).
+    let other_user_memory_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO memory_items (scope_type, scope_id, group_id, created_by, \
+         created_by_label, kind, content) \
+         VALUES ('user', $1, NULL, $1, 'RLS User B', 'preference', \
+                 'user_b personal memory — must not leak') \
+         RETURNING id",
+    )
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO memory_embeddings (memory_item_id, model, embedding) \
+         VALUES ($1, $2, $3)",
+    )
+    .bind(other_user_memory_id)
+    .bind("mxbai-embed-large-v1")
+    .bind(unit_vector(999))
+    .execute(workspace.pool())
+    .await?;
+
+    // 3 audit rows for scenario 8, all tagged with a distinctive action so
+    // we can filter away the 2 audit rows inserted earlier by migration 002
+    // validation block.
+    // Row A: group-scoped, actor=user_A → visible under group branch.
+    sqlx::query(
+        "INSERT INTO audit_events (group_id, actor_user_id, actor_label, action, \
+         resource_type, resource_id) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .bind("Test User")
+    .bind("smoke_test_rls_audit")
+    .bind("group")
+    .bind(group_id.to_string())
+    .execute(workspace.pool())
+    .await?;
+    // Row B: personal, actor=user_A → visible under user branch.
+    sqlx::query(
+        "INSERT INTO audit_events (group_id, actor_user_id, actor_label, action, \
+         resource_type, resource_id) VALUES (NULL, $1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind("Test User")
+    .bind("smoke_test_rls_audit")
+    .bind("user")
+    .bind(user_id.to_string())
+    .execute(workspace.pool())
+    .await?;
+    // Row C: personal, actor=user_b → NOT visible to user_A.
+    sqlx::query(
+        "INSERT INTO audit_events (group_id, actor_user_id, actor_label, action, \
+         resource_type, resource_id) VALUES (NULL, $1, $2, $3, $4, $5)",
+    )
+    .bind(user_b_id)
+    .bind("RLS User B")
+    .bind("smoke_test_rls_audit")
+    .bind("user")
+    .bind(user_b_id.to_string())
+    .execute(workspace.pool())
+    .await?;
+
+    // ── Cenário 1 — Positive read ─────────────────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM messages WHERE chat_id = $1")
+                .bind(chat_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            count, 3,
+            "cenário 1: positive read should see all 3 messages from migration 004"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 2 — Cross-group read blocked ──────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE id = $1")
+            .bind(other_message_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(
+            leaked, 0,
+            "cenário 2: cross-group message must not be visible"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 3 — Unset settings fail-closed (ALL 10 tables) ─────────────
+    //
+    // Stronger than plan §7.2: we assert fail-closed on every one of the 10
+    // RLS-protected tables, not just `messages`. A silent regression that
+    // breaks one table's NULLIF would now surface immediately.
+    {
+        let mut tx = rls_scope(workspace.pool(), None, None).await?;
+        for table in &[
+            "messages",
+            "chats",
+            "chat_members",
+            "message_threads",
+            "memory_items",
+            "memory_embeddings",
+            "audit_events",
+            "sessions",
+            "api_keys",
+            "user_identities",
+        ] {
+            let sql = format!("SELECT count(*) FROM {table}");
+            let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut *tx).await?;
+            assert_eq!(
+                count, 0,
+                "cenário 3: unset settings must yield 0 rows on `{table}` (fail-closed)"
+            );
+        }
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 4 — FORCE RLS vs table owner ─────────────────────────────
+    //
+    // FORCE RLS guarantees that a table OWNER is still subject to policies.
+    // It does NOT bypass the separate BYPASSRLS / SUPERUSER attribute — the
+    // testcontainer 'postgres' user is a superuser, so it bypasses RLS for
+    // that reason, independent of FORCE. To prove FORCE empirically, we
+    // create a dedicated non-superuser role, transfer ownership of the
+    // `messages` table to it, demote via SET LOCAL ROLE, and observe that
+    // policies still apply.
+    //
+    // Ownership restoration is guarded by scopeguard::defer_lifetime_on_drop
+    // so a panic/early-return inside the scenario block does NOT leave the
+    // table owned by the test role. Test-correctness requirement per
+    // @security-auditor H2 and @code-reviewer S1.
+    sqlx::query(
+        "DO $$ BEGIN \
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'garraia_force_test_owner') THEN \
+             CREATE ROLE garraia_force_test_owner NOLOGIN; \
+           END IF; \
+         END $$",
+    )
+    .execute(workspace.pool())
+    .await?;
+    sqlx::query("ALTER TABLE messages OWNER TO garraia_force_test_owner")
+        .execute(workspace.pool())
+        .await?;
+    // Panic-safe ownership restore. scopeguard runs the closure when the
+    // surrounding scope ends, whether via normal completion, ? propagation,
+    // or panic. Uses std::thread blocking on the pool via a fresh async
+    // runtime handle since Drop cannot be async — we use a sync SQL path
+    // through the existing tokio runtime via `tokio::task::block_in_place`
+    // + `Handle::current().block_on`. This is test-only code and the
+    // blocking pattern is acceptable for teardown correctness.
+    let pool_for_restore = workspace.pool().clone();
+    let _restore_guard = scopeguard::guard((), move |_| {
+        let pool = pool_for_restore.clone();
+        // Best-effort restore. If the runtime is already torn down (rare),
+        // the ownership stays with the test role until testcontainer drop —
+        // acceptable fallback because the container is ephemeral.
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("restore runtime");
+            rt.block_on(async move {
+                let _ = sqlx::query("ALTER TABLE messages OWNER TO postgres")
+                    .execute(&pool)
+                    .await;
+            });
+        })
+        .join();
+    });
+    {
+        let mut tx = workspace.pool().begin().await?;
+        sqlx::query("SET LOCAL ROLE garraia_force_test_owner")
+            .execute(&mut *tx)
+            .await?;
+        // Now we ARE the table owner, and NOT a superuser. FORCE RLS must
+        // still apply. No SET LOCAL app.current_group_id → fail-closed.
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM messages")
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(
+            count, 0,
+            "cenário 4: FORCE RLS must block the non-superuser table owner when app.current_group_id is unset"
+        );
+        tx.rollback().await?;
+    }
+    // Restore ownership explicitly on the happy path. The scopeguard remains
+    // as the panic-safety net.
+    drop(_restore_guard);
+
+    // ── Cenário 5 — chat_members JOIN policy ──────────────────────────────
+    //
+    // Setup (bypass) inserted exactly 1 chat_members row for `chat_id`
+    // (migration 004 test block). Assert exact count, not loose lower bound —
+    // a future fixture that accidentally adds a row must surface here.
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let own_members: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_members WHERE chat_id = $1")
+                .bind(chat_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            own_members, 1,
+            "cenário 5: should see exactly 1 chat member row for own chat"
+        );
+        let other_members: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_members WHERE chat_id = $1")
+                .bind(other_chat_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(
+            other_members, 0,
+            "cenário 5: JOIN policy must block cross-group chat_members"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 6 — memory_items user-scope isolation (LGPD-critical) ────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let visible_personal_other: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM memory_items \
+             WHERE scope_type = 'user' AND created_by = $1",
+        )
+        .bind(user_b_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            visible_personal_other, 0,
+            "cenário 6: personal memory of another user must not leak"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 7 — memory_embeddings via recursive JOIN ──────────────────
+    //
+    // Count-based assertion (not negative-membership over top-k). The prior
+    // form asserted `!hits.any(|id| id == other_user_memory_id)` under
+    // LIMIT 10, which can pass vacuously if the cross-user embedding happens
+    // to be outside the top-10 window — proving nothing about RLS. The
+    // correct proof is: under the current scope, a DIRECT count of the
+    // cross-user embedding row must be 0. This bypasses ANN ranking and
+    // exercises only the RLS composition (memory_embeddings subquery →
+    // memory_items RLS → user-scope branch).
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let leaked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM memory_embeddings WHERE memory_item_id = $1",
+        )
+        .bind(other_user_memory_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            leaked, 0,
+            "cenário 7: memory_embeddings RLS must block cross-user embedding via recursive JOIN to memory_items"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 8 — audit_events dual policy ──────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let visible: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE action = 'smoke_test_rls_audit'",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(
+            visible, 2,
+            "cenário 8: audit_events dual policy: group+self visible (2 rows), other user NOT"
+        );
+        tx.rollback().await?;
+    }
+
     Ok(())
 }
