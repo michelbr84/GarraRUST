@@ -717,7 +717,7 @@ crates/
 ├── garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
 ├── garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
 ├── garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
-├── garraia-auth/       # ✅ verify path real + extractor + endpoints (GAR-391a/b/c) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). 391d (cross-group authz suite) ainda pending.
+├── garraia-auth/       # ✅ verify path real + extractor + endpoints + RLS matrix (GAR-391a/b/c + GAR-392) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). GAR-392 RLS matrix ✅ (plan 0013 path C, 81 cenários × 3 dedicated roles × 10 FORCE RLS tables). GAR-391d (app-layer cross-group matrix via HTTP) deferido ao plan 0014 — aguarda endpoints REST /v1/{chats,messages,memory,tasks,groups,me} da Fase 3.4; epic GAR-391 permanece aberto.
 ├── garraia-voice/      # Pipeline de voz: Whisper STT → LLM → Chatterbox/Hibiki TTS
 ├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
 ├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
