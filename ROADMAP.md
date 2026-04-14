@@ -224,10 +224,11 @@ Crate `garraia-workspace` ✅ **bootstrap merged** em 2026-04-13 via [GAR-407](h
 
 Novo crate: `garraia-auth` (separado de `garraia-security`).
 
-**Status (2026-04-14):** 🟡 **Decisão de identity provider tomada** via [ADR 0005](docs/adr/0005-identity-provider.md) — `garraia_login` BYPASSRLS role + Argon2id RFC 9106 + HS256 JWT + lazy upgrade dual-verify. Hard blocker de login flow sob RLS resolvido. Próximo: implementação do crate via [GAR-391](https://linear.app/chatgpt25/issue/GAR-391).
+**Status (2026-04-14):** 🟢 **Skeleton entregue** via GAR-391a — crate `garraia-auth` existe com `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype validado por `current_user` + migration `008_login_role.sql` criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005. Próximas fatias: **391b** (`verify_credential` real + dual-verify + JWT), **391c** (extractor Axum + `RequirePermission` + wiring), **391d**/GAR-392 (suite cross-group authz). [ADR 0005](docs/adr/0005-identity-provider.md) accepted; trait shape congelada.
 
+- [x] **Skeleton (GAR-391a):** crate `garraia-auth` + `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype com `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + migration 008 + smoke tests (3 unit + 3 integration). ✅
+- [x] `struct Principal { user_id, group_id, role: Option<String> }` shape inicial — typed `Role` enum chega em 391c. ✅
 - [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`.
-- [ ] `struct Principal { user_id, group_id, role }` carregado via extractor Axum.
 - [ ] `fn can(principal, action) -> bool` central — todas as rotas passam por ele.
 - [ ] Papéis: `Owner`, `Admin`, `Member`, `Guest`, `Child/Dependent`.
 - [ ] **Capabilities** (`files.write`, `chats.moderate`, `memory.delete`, `members.manage`) → mapeadas por papel.

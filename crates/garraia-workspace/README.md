@@ -19,7 +19,7 @@ cargo test -p garraia-workspace
 ```
 
 The integration test spins up a `pgvector/pgvector:pg16` container via
-`testcontainers`, applies migrations 001, 002, 004, 005, 006, and 007, and
+`testcontainers`, applies migrations 001, 002, 004, 005, 006, 007, and 008, and
 verifies schema shape, RBAC seed counts, single-owner partial unique index,
 the audit_events survival paths (regular row + NULL-actor row), the pgvector
 HNSW index plus an ANN nearest-neighbor query over memory_embeddings, 8
@@ -29,8 +29,11 @@ table owner, chat_members JOIN policy, memory_items user-scope isolation,
 memory_embeddings recursive JOIN, audit_events dual policy), and the
 migration 006 tasks Tier 1 block (subtask cascade semantics, compound FK
 cross-group drift block, enum CHECK violation, RLS positive + cross-group
-scenarios across all 8 task tables). Target wall time: under 30 seconds on
-a warm cache.
+scenarios across all 8 task tables), and the migration 008 login-role
+block (`garraia_login` BYPASSRLS attribute + 4 positive grants per ADR 0005
++ 10-table negative grant matrix + sequence USAGE negative assertion via
+`information_schema.usage_privileges` — see GAR-391a). Target wall time:
+under 30 seconds on a warm cache.
 
 ## Required Postgres role privileges
 

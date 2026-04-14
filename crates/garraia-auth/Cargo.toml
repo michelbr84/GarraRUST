@@ -1,0 +1,46 @@
+[package]
+name = "garraia-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Authentication and authorization for GarraIA Group Workspace (skeleton — GAR-391a)"
+
+[dependencies]
+# SQL driver — runtime-only, matches garraia-workspace's feature set so the
+# LoginPool can be built from the same Postgres instance without forcing TLS.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+# Identifiers
+uuid = { version = "1", features = ["v7", "serde"] }
+# Timestamps (used by future Identity/Session shapes — declared now so 391b
+# does not have to touch Cargo.toml for an additive-only delivery).
+chrono = { version = "0.4", features = ["serde"] }
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Errors
+thiserror = { workspace = true }
+# Async runtime
+tokio = { workspace = true }
+# Tracing (PII-safe spans via skip)
+tracing = { workspace = true }
+# Async traits — standard Rust ecosystem dep until trait return-position
+# `impl Trait` lands stable for dyn-compatible traits.
+async-trait = { workspace = true }
+# Config validation — same crate version as garraia-workspace.
+validator = { version = "0.18", features = ["derive"] }
+
+[dev-dependencies]
+# Compile-time `LoginPool: !Clone` denial — see GAR-391a security review H-1.
+# Tiny zero-dep crate used only by unit tests.
+static_assertions = "1"
+# Integration tests spin their own pgvector container so garraia-auth stays
+# independently testable. Shared fixture optimization deferred to GAR-391c.
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+anyhow = "1"
+# Used by the smoke test to apply migrations 001..008 before exercising the
+# LoginPool constructor.
+garraia-workspace = { path = "../garraia-workspace" }

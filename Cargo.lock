@@ -2737,6 +2737,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "garraia-auth"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "garraia-workspace",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "static_assertions",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "validator",
+]
+
+[[package]]
 name = "garraia-channels"
 version = "0.2.0"
 dependencies = [
@@ -7947,6 +7968,12 @@ dependencies = [
  "psm",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "string_cache"
