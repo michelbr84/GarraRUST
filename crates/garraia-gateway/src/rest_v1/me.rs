@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::problem::RestError;
-use super::RestV1State;
+use super::RestV1AuthState;
 
 /// Response body for `GET /v1/me`.
 #[derive(Debug, Serialize, ToSchema)]
@@ -40,7 +40,7 @@ pub struct MeResponse {
     security(("bearer" = []))
 )]
 pub async fn get_me(
-    State(_state): State<RestV1State>,
+    State(_state): State<RestV1AuthState>,
     principal: Principal,
 ) -> Result<Json<MeResponse>, RestError> {
     Ok(Json(MeResponse {
