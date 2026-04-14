@@ -1522,5 +1522,40 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         "garraia_login must not hold USAGE on any sequence (leaked: {leaked_sequences:?})"
     );
 
+    // ── Migration 009 validation ────────────────────────────────────────────
+    //
+    // user_identities.hash_upgraded_at was added by migration 009 to support
+    // the lazy upgrade path in garraia-auth::InternalProvider::verify_credential
+    // (GAR-391b). See plan 0011.5.
+
+    let hash_upgraded_at: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT data_type, is_nullable, column_default \
+         FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND table_name = 'user_identities' \
+           AND column_name = 'hash_upgraded_at'",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert_eq!(hash_upgraded_at.0, "timestamp with time zone");
+    assert_eq!(hash_upgraded_at.1, "YES", "hash_upgraded_at must be nullable");
+    assert!(
+        hash_upgraded_at.2.is_none(),
+        "hash_upgraded_at must NOT have a default (NULL is the only initial state)"
+    );
+
+    // Defensive regression: password_hash still exists with the original shape.
+    let password_hash_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM information_schema.columns \
+             WHERE table_schema = 'public' \
+               AND table_name = 'user_identities' \
+               AND column_name = 'password_hash' \
+         )",
+    )
+    .fetch_one(workspace.pool())
+    .await?;
+    assert!(password_hash_exists);
+
     Ok(())
 }

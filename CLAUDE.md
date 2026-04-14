@@ -37,8 +37,8 @@ crates/
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
-                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390).
-                        25 tabelas em 6 migrations, 18 sob FORCE RLS, 7 tenant-root
+                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a + 391b prereq).
+                        25 tabelas em 8 migrations, 18 sob FORCE RLS, 7 tenant-root
                         sob app-layer:
                         • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
                         • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
@@ -46,6 +46,8 @@ crates/
                         • 005 memory_items/memory_embeddings (pgvector HNSW cosine)
                         • 006 tasks Tier 1 Notion-like (8 tabelas com RLS embedded + subtasks)
                         • 007 RLS FORCE wrap-up em 10 tabelas com NULLIF fail-closed
+                        • 008 garraia_login NOLOGIN BYPASSRLS dedicated role (GAR-391a)
+                        • 009 user_identities.hash_upgraded_at (GAR-391b prereq, plan 0011.5)
                         Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004).
                         Handle PII-safe via skip(config) + custom Debug redaction.
                         Decisão: docs/adr/0003-database-for-workspace.md.
