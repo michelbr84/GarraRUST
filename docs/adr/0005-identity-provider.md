@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Deciders:** @michelbr84 + Claude (review: `@security-auditor`)
-- **Date:** 2026-04-14
+- **Date:** 2026-04-13
 - **Tags:** fase-3, security, ws-authz, gar-375
 - **Supersedes:** none
 - **Superseded by:** none

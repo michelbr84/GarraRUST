@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-04-14
+> **Última atualização:** 2026-04-13 (local America/New_York)
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -176,7 +176,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 **Objetivo:** transformar Garra de mono-usuário em **workspace compartilhado** com arquivos, chats e memória IA escopados por grupo, conforme `deep-research-report.md`.
 
-**Status (2026-04-14):** 🟢 **Schema completo + auth skeleton entregue.** ADR 0003 ([GAR-373](https://linear.app/chatgpt25/issue/GAR-373)) e ADR 0005 ([GAR-375](https://linear.app/chatgpt25/issue/GAR-375)) accepted. Crate `garraia-workspace` materializado com **8 migrations** (001 users/groups, 002 RBAC + audit, 004 chats/messages/FTS, 005 memory + pgvector HNSW, 006 tasks Tier 1, 007 RLS FORCE em 10 tabelas, 008 `garraia_login` BYPASSRLS dedicated role, 009 `user_identities.hash_upgraded_at` prereq de 391b) + smoke test integration verde. Crate `garraia-auth` skeleton merged via 391a (`IdentityProvider` trait + `LoginPool` newtype). Próximo marco: **GAR-391b** (`verify_credential` real impl + dual-verify + JWT) — plano aprovado em [`plans/0011-gar-391b-verify-credential-impl.md`](plans/0011-gar-391b-verify-credential-impl.md). ADRs 0004 (storage), 0006 (search) e 0008 (docs collab) ainda pendentes.
+**Status (2026-04-13):** 🟢 **Schema completo + auth skeleton entregue.** ADR 0003 ([GAR-373](https://linear.app/chatgpt25/issue/GAR-373)) e ADR 0005 ([GAR-375](https://linear.app/chatgpt25/issue/GAR-375)) accepted. Crate `garraia-workspace` materializado com **8 migrations** (001 users/groups, 002 RBAC + audit, 004 chats/messages/FTS, 005 memory + pgvector HNSW, 006 tasks Tier 1, 007 RLS FORCE em 10 tabelas, 008 `garraia_login` BYPASSRLS dedicated role, 009 `user_identities.hash_upgraded_at` prereq de 391b) + smoke test integration verde. Crate `garraia-auth` skeleton merged via 391a (`IdentityProvider` trait + `LoginPool` newtype). Próximo marco: **GAR-391b** (`verify_credential` real impl + dual-verify + JWT) — plano aprovado em [`plans/0011-gar-391b-verify-credential-impl.md`](plans/0011-gar-391b-verify-credential-impl.md). ADRs 0004 (storage), 0006 (search) e 0008 (docs collab) ainda pendentes.
 
 > Esta é a fase de maior valor de produto e a de maior risco de segurança. Tudo aqui nasce com "privacidade por padrão" e testes de autorização.
 
@@ -184,7 +184,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 - [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico em [`benches/database-poc/`](benches/database-poc/). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via [GAR-373](https://linear.app/chatgpt25/issue/GAR-373). ✅
 - [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374))
-- [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-14 via [GAR-375](https://linear.app/chatgpt25/issue/GAR-375). ✅
+- [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-13 via [GAR-375](https://linear.app/chatgpt25/issue/GAR-375). ✅
 - [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. ([GAR-376](https://linear.app/chatgpt25/issue/GAR-376))
 
 ### 3.2 Domínio & Schema
@@ -223,7 +223,7 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 
 Novo crate: `garraia-auth` (separado de `garraia-security`).
 
-**Status (2026-04-14):** 🟢 **Skeleton entregue** via GAR-391a — crate `garraia-auth` existe com `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype validado por `current_user` + migration `008_login_role.sql` criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005. Próximas fatias: **391b** (`verify_credential` real + dual-verify + JWT), **391c** (extractor Axum + `RequirePermission` + wiring), **391d**/GAR-392 (suite cross-group authz). [ADR 0005](docs/adr/0005-identity-provider.md) accepted; trait shape congelada.
+**Status (2026-04-13):** 🟢 **Skeleton entregue** via GAR-391a — crate `garraia-auth` existe com `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype validado por `current_user` + migration `008_login_role.sql` criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005. Próximas fatias: **391b** (`verify_credential` real + dual-verify + JWT), **391c** (extractor Axum + `RequirePermission` + wiring), **391d**/GAR-392 (suite cross-group authz). [ADR 0005](docs/adr/0005-identity-provider.md) accepted; trait shape congelada.
 
 - [x] **Skeleton (GAR-391a):** crate `garraia-auth` + `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype com `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + migration 008 + smoke tests (3 unit + 3 integration). ✅
 - [x] `struct Principal { user_id, group_id, role: Option<String> }` shape inicial — typed `Role` enum chega em 391c. ✅
@@ -793,7 +793,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-04-14** após entrega de Fase 2.3 (OTel ✅), schema completo da Fase 3.2 (8 migrations ✅), Fase 3.3 ADR 0005 ✅ e GAR-391a (skeleton + login role ✅).
+**Atualizado 2026-04-13** após entrega de Fase 2.3 (OTel ✅), schema completo da Fase 3.2 (8 migrations ✅), Fase 3.3 ADR 0005 ✅ e GAR-391a (skeleton + login role ✅).
 
 Quando retomar execução, priorizar **nesta ordem**:
 

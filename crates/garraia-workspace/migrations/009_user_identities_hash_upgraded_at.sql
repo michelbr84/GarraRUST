@@ -9,7 +9,7 @@
 -- no backfill. NULL = "this row has never been rotated".
 --
 -- ─── Why a separate migration instead of folding into 391b ────────────────
--- User rule (2026-04-14): structural corrections discovered during Wave 0
+-- User rule (2026-04-13): structural corrections discovered during Wave 0
 -- reconnaissance must NOT be bundled with the feature implementation that
 -- needs them. Migration 009 ships alone, then GAR-391b lands on top.
 --
