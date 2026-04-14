@@ -57,15 +57,34 @@ pub enum TenantCtx {
 
 /// Oracle outcome for an RLS case. The executor classifies the Postgres
 /// response into exactly one of these and the matrix compares against the
-/// expected variant.
+/// expected variant via `oracle::matches_expected`.
 ///
 /// See design doc §4.1 for the rule distinguishing `InsufficientPrivilege`
 /// (42501 at the GRANT layer), `PermissionDenied` (42501 from a WITH CHECK
 /// RLS write policy), and `RlsFilteredZero` (USING clause silently filtered).
+///
+/// # Strict vs. loose row counting
+///
+/// `RowsVisible(n)` is **strict** — the match requires the count to equal `n`
+/// exactly. This is the oracle shape for `garraia_app` (RLS-enforced) cases,
+/// where a policy regression that leaked extra rows from other tenants MUST
+/// fail the test loudly. A loose match here would hide cross-tenant leaks
+/// (see security audit H-1, 2026-04-14).
+///
+/// `RowsVisibleAny` is **loose** — any positive count matches. This is used
+/// only for `garraia_login` / `garraia_signup` BYPASSRLS SELECT allow cases,
+/// where the role legitimately observes accumulated state across the shared
+/// harness process (other tenants' users/identities/group_members). For
+/// those cases, the oracle's semantic is "grant layer allows reads" — not
+/// "exactly one row exists".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RlsExpected {
     /// SELECT returned exactly `n` rows, or a write affected exactly `n`.
+    /// STRICT match — see type-level docs.
     RowsVisible(usize),
+    /// SELECT or write returned any positive number of rows / affected.
+    /// LOOSE match — only for BYPASSRLS roles, see type-level docs.
+    RowsVisibleAny,
     /// SQLSTATE 42501 with message prefix `permission denied for (table|relation)`.
     InsufficientPrivilege,
     /// SQLSTATE 42501 with message `new row violates row-level security policy`.

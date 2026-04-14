@@ -14,18 +14,16 @@
 
 mod common;
 
-use common::cases::{DbRole, RlsCase, RlsExpected, SqlOp, TenantCtx};
-use common::harness::Harness;
-use common::oracle::{classify_count, classify_pg_error};
-use common::tenants::Tenant;
-use sqlx::PgPool;
-use uuid::Uuid;
-
 // The RLS_MATRIX const lives in `common::matrix` so both `rls_matrix.rs`
 // (the runner) and `meta_tripwires.rs` (Task 9 counters) can import the
 // same data. See plan 0013 path C Task 8/9.
-
+use common::cases::{DbRole, RlsCase, RlsExpected, SqlOp, TenantCtx};
+use common::harness::Harness;
 use common::matrix::RLS_MATRIX;
+use common::oracle::{classify_count, classify_pg_error, matches_expected};
+use common::tenants::Tenant;
+use sqlx::PgPool;
+use uuid::Uuid;
 
 // ─── Runner ────────────────────────────────────────────────────────────────
 
@@ -39,7 +37,7 @@ async fn matrix_rls() -> anyhow::Result<()> {
 
     for case in RLS_MATRIX {
         let outcome = execute_case(&h, &tenant, case).await;
-        if outcome != case.expected {
+        if !matches_expected(outcome, case.expected) {
             failures.push(format!(
                 "[{}] role={} table={} op={:?} ctx={:?}\n  expected={:?}\n  got     ={:?}",
                 case.case_id,
@@ -175,8 +173,16 @@ async fn execute_case(h: &Harness, t: &Tenant, case: &RlsCase) -> RlsExpected {
             set_guc(&mut conn, "app.current_group_id", &t.group_id.to_string()).await;
         }
         TenantCtx::WrongGroupCorrectUser => {
+            // User stays on tenant.member (a real member of tenant.group_id)
+            // but the group GUC points at `cross_group_id` — a real group
+            // owned by a *different* tenant (`cross_tenant`). This is the
+            // textbook cross-tenant escalation attempt the RLS USING
+            // clause is supposed to block: "I'm authenticated as user X
+            // who legitimately belongs to group A, but I'm claiming my
+            // current group is B where I have no membership." See code-
+            // review finding I-1 (2026-04-14).
             set_guc(&mut conn, "app.current_user_id", &t.member.user_id.to_string()).await;
-            set_guc(&mut conn, "app.current_group_id", &Uuid::now_v7().to_string()).await;
+            set_guc(&mut conn, "app.current_group_id", &t.cross_group_id.to_string()).await;
         }
         TenantCtx::BothUnset => {
             // Intentionally nothing.
