@@ -5,14 +5,22 @@
 //! `/docs`.
 
 pub mod me;
+pub mod openapi;
 pub mod problem;
 
 use std::sync::Arc;
 
 use axum::extract::FromRef;
+use axum::routing::get;
+use axum::Router;
 use garraia_auth::{JwtIssuer, LoginPool};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::state::AppState;
+
+use self::openapi::ApiDoc;
+use self::problem::RestError;
 
 /// Sub-state for the `/v1` router. Holds exactly the `Arc`s that the
 /// `garraia_auth::Principal` extractor needs via `FromRef`.
@@ -49,4 +57,36 @@ impl FromRef<RestV1State> for Arc<LoginPool> {
     fn from_ref(s: &RestV1State) -> Self {
         s.login_pool.clone()
     }
+}
+
+/// Build the `/v1` router (Fase 3.4 slice 1).
+///
+/// When `AuthConfig` is wired, returns a router that serves:
+/// - `GET /v1/me` via the `Principal` extractor,
+/// - `/v1/openapi.json` — the generated OpenAPI 3.1 document,
+/// - `GET /docs` — Swagger UI rendering that document.
+///
+/// When `AuthConfig` is missing (fail-soft dev mode), returns a router
+/// with the same route set but every handler answers 503 Problem Details.
+/// Routes are enumerated explicitly (no `.fallback()`) so the merged
+/// main router does not lose its own 404 behavior.
+pub fn router(app_state: Arc<AppState>) -> Router {
+    match RestV1State::from_app_state(&app_state) {
+        Some(sub) => Router::new()
+            .route("/v1/me", get(me::get_me))
+            .with_state(sub)
+            .merge(
+                SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()),
+            ),
+        None => Router::new()
+            .route("/v1/me", get(unconfigured_handler))
+            .route("/v1/openapi.json", get(unconfigured_handler))
+            .route("/docs", get(unconfigured_handler)),
+    }
+}
+
+/// Fail-soft handler used when `AuthConfig` is missing. Every `/v1`
+/// route falls back to this while the gateway boots without auth.
+async fn unconfigured_handler() -> RestError {
+    RestError::AuthUnconfigured
 }

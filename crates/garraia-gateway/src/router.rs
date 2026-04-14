@@ -213,6 +213,10 @@ pub fn build_router(
         // unconditionally. Handlers fail-soft to 503 when AuthConfig env
         // vars are missing (state.auth_provider == None).
         .merge(crate::auth_routes::router().with_state(state.clone()))
+        // Fase 3.4 REST /v1 skeleton (plan 0015). Mounts /v1/me,
+        // /v1/openapi.json and /docs. Fail-soft: when AuthConfig env
+        // vars are missing, every /v1 route answers 503 Problem Details.
+        .merge(crate::rest_v1::router(state.clone()))
         .nest(
             "/admin",
             admin::routes::build_admin_router(state, admin_store),
