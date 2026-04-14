@@ -11,4 +11,5 @@
 
 pub mod cases;
 pub mod harness;
-// tenants, oracle added in Tasks 4, 8.
+pub mod tenants;
+// oracle added in Task 8.
