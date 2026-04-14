@@ -37,6 +37,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0012 | [Axum extractor + `RequirePermission` + refresh/logout/signup endpoints](0012-gar-391c-extractor-and-wiring.md) | [GAR-391c](https://linear.app/chatgpt25/issue/GAR-391) | ✅ Merged 2026-04-13 (`88f323e`) |
 | 0013 | [RLS matrix (GAR-392) — path C, 391d deferido](0013-gar-391d-392-authz-suite.md) | [GAR-392](https://linear.app/chatgpt25/issue/GAR-392) | ✅ Merged 2026-04-14 (`4069ace` + `1267987`). GAR-391d re-escopado para plan 0014; epic **GAR-391 permanece aberto** |
 | 0014 | _(planejado)_ App-layer cross-group authz matrix via HTTP | [GAR-391d](https://linear.app/chatgpt25/issue/GAR-391) | ⏳ Deferido — aguarda endpoints REST `/v1/{chats,messages,memory,tasks,groups,me}` materializarem na Fase 3.4 |
+| 0015 | [Fase 3.4 — REST `/v1` skeleton (slice 1: `GET /v1/me`)](0015-fase-3-4-rest-v1-skeleton.md) | GAR-WS-API (pré-condição GAR-391d) | ⏳ Aprovado 2026-04-14 |
 
 ## Arquivos não-versionados
 
