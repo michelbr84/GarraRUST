@@ -88,11 +88,20 @@ fn validate_postgres_url(url: &str) -> Result<(), validator::ValidationError> {
 /// the validating constructor. The denial is enforced by a compile-time
 /// `static_assertions::assert_not_impl_all!` test in this module.
 pub struct LoginPool {
-    /// Held for use by 391b (`pool()` accessor will be added then,
-    /// `pub(crate)` only). The `dead_code` allow goes away once
-    /// `InternalProvider::verify_credential` reads it.
-    #[allow(dead_code)]
+    /// Wrapped private `PgPool`. Read-only access via `pool()` (`pub(crate)`)
+    /// to limit the boundary surface to other modules of `garraia-auth` only.
     inner: PgPool,
+}
+
+impl LoginPool {
+    /// Return a reference to the inner pool. **Crate-private** so external
+    /// callers cannot bypass the boundary contract by extracting the pool
+    /// and reusing it for non-auth queries. Only modules inside
+    /// `garraia-auth` (notably `internal::verify_credential` and
+    /// `sessions::SessionStore`) may call this.
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.inner
+    }
 }
 
 impl LoginPool {

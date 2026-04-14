@@ -5,16 +5,17 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Authentication and authorization for GarraIA Group Workspace (skeleton — GAR-391a)"
+description = "Authentication and authorization for GarraIA Group Workspace (GAR-391a/b)"
+build = "build.rs"
 
 [dependencies]
 # SQL driver — runtime-only, matches garraia-workspace's feature set so the
 # LoginPool can be built from the same Postgres instance without forcing TLS.
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+# `ipnetwork` feature is needed for binding `IpAddr` -> Postgres `inet`.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "ipnetwork"] }
 # Identifiers
 uuid = { version = "1", features = ["v7", "serde"] }
-# Timestamps (used by future Identity/Session shapes — declared now so 391b
-# does not have to touch Cargo.toml for an additive-only delivery).
+# Timestamps
 chrono = { version = "0.4", features = ["serde"] }
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -30,6 +31,42 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 # Config validation — same crate version as garraia-workspace.
 validator = { version = "0.18", features = ["derive"] }
+# Password hashing — Argon2id (RFC 9106 first recommendation: m=64MiB, t=3, p=4)
+# via RustCrypto. Isolated from garraia-security (which uses ring/PBKDF2) per
+# plan 0011 §13 Q5 default.
+argon2 = "0.5"
+# Legacy PBKDF2 verify for the dual-verify lazy upgrade path. PBKDF2-SHA256
+# stored as PHC strings produced by garraia-security and the GAR-413 migration tool.
+pbkdf2 = { version = "0.12", features = ["password-hash", "simple"] }
+# Shared PHC string parser — required by both argon2 and pbkdf2.
+password-hash = "0.5"
+# Constant-time refresh-token comparison.
+subtle = "2.6"
+# HMAC-SHA256 for refresh-token hash + sha2 for the digest primitive.
+hmac = "0.12"
+sha2 = "0.10"
+# Wraps secrets so they never reach `Debug`/`Display` accidentally.
+secrecy = { version = "0.10", features = ["serde"] }
+# JWT issuance + verification (HS256). Pinned via the workspace.
+jsonwebtoken = { workspace = true }
+# Cryptographic randomness for refresh tokens.
+rand = { workspace = true }
+# Base64 URL-safe encoding for refresh tokens.
+base64 = { workspace = true }
+
+[build-dependencies]
+# Build script generates a DUMMY_HASH constant (Argon2id PHC over a discarded
+# random secret) at compile time so the constant-time anti-enumeration path
+# does not have to pay the hashing cost on every cold start. See plan 0011 §6.1.
+#
+# `rand` is pinned to 0.8 (NOT the workspace 0.9) because `password-hash 0.5`
+# brings `rand_core 0.6` and rand 0.9 brings `rand_core 0.9` — the two
+# `rand_core` major versions are incompatible at the trait level. Build-deps
+# are isolated from runtime-deps in cargo, so this pin does not affect the
+# workspace 0.9 rand used at runtime by jwt.rs / sessions.rs / hashing.rs.
+argon2 = "0.5"
+rand = "0.8"
+password-hash = { version = "0.5", features = ["getrandom"] }
 
 [dev-dependencies]
 # Compile-time `LoginPool: !Clone` denial — see GAR-391a security review H-1.

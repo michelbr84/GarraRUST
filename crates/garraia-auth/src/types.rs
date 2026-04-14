@@ -3,6 +3,8 @@
 //! These are shape-only in 391a. No behavior is attached — extractor logic,
 //! capability checks, and request context extraction land in 391c.
 
+use chrono::{DateTime, Utc};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -23,15 +25,19 @@ pub struct Identity {
 /// it. New credential types arrive via new variants — never via new trait
 /// methods on `IdentityProvider` (frozen by ADR 0005).
 ///
-/// `Debug` is **manually implemented** to redact the password field. Never
-/// derive `Debug` on this enum directly.
+/// The password field is wrapped in [`secrecy::SecretString`] so it never
+/// reaches `Debug`/`Display` accidentally and is zeroed on drop. Manual
+/// `Debug` impl (instead of derive) gives a stable redacted output.
 #[derive(Clone)]
 pub enum Credential {
     /// Email + password against `user_identities` for `provider = 'internal'`.
     /// Verification path: Argon2id (current) or PBKDF2 with lazy upgrade
-    /// (legacy). Real impl in GAR-391b.
-    Internal { email: String, password: String },
-    // Future: OidcIdToken { token: String, issuer: String } — added in ADR 0009.
+    /// (legacy). Implementation in GAR-391b.
+    Internal {
+        email: String,
+        password: SecretString,
+    },
+    // Future: OidcIdToken { token: SecretString, issuer: String } — ADR 0009.
 }
 
 impl std::fmt::Debug for Credential {
@@ -62,7 +68,7 @@ pub struct Principal {
 }
 
 /// Forensic context captured by the future Axum extractor (391c) and
-/// passed into every login attempt by the future `audit_login` helper (391b).
+/// passed into every login attempt by [`crate::audit::audit_login`].
 ///
 /// All fields are optional because every header is optional in HTTP — the
 /// audit row gets `NULL` whenever the upstream proxy doesn't forward them.
@@ -71,4 +77,28 @@ pub struct RequestCtx {
     pub ip: Option<IpAddr>,
     pub user_agent: Option<String>,
     pub request_id: Option<String>,
+}
+
+/// Result of a successful `POST /v1/auth/login` call. Used by the gateway
+/// to compose the JSON response body in **391c**. Defined here in 391b
+/// as load-bearing scaffolding for the refresh endpoint that is coming.
+///
+/// **⚠️ Not populated in GAR-391b.** The 391b endpoint returns a smaller
+/// shape (`{user_id, access_token, expires_at}`) without `refresh_token`
+/// because `SessionStore::issue` cannot run under the current login pool
+/// grants. `LoginOutcome` becomes the canonical return shape in 391c when
+/// the refresh endpoint and migration 010 land together.
+///
+/// `refresh_token` is the **plaintext** opaque token (32 random bytes,
+/// URL-safe base64). The HMAC-SHA256 hash of this same value lives in
+/// `sessions.refresh_token_hash`. Plain text leaves the gateway exactly
+/// once — in the response body — and the client must store it securely.
+/// `secrecy::SecretString` redacts on `Debug`, so `#[derive(Debug)]` is
+/// safe.
+#[derive(Debug, Clone)]
+pub struct LoginOutcome {
+    pub user_id: Uuid,
+    pub access_token: String,
+    pub refresh_token: SecretString,
+    pub expires_at: DateTime<Utc>,
 }

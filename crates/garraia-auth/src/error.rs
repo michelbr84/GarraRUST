@@ -63,4 +63,26 @@ pub enum AuthError {
     /// First field is provider id, second is the underlying reason.
     #[error("provider `{0}` unavailable: {1}")]
     ProviderUnavailable(String, String),
+
+    /// Account exists but is not in the `active` status (suspended/deleted).
+    /// The Display intentionally does NOT distinguish between suspended and
+    /// deleted to avoid leaking account state to the caller. `verify_credential`
+    /// converts this into the same `Ok(None)` return as wrong-password to
+    /// keep the response shape uniform.
+    #[error("account is not active")]
+    AccountNotActive,
+
+    /// JWT issuance or verification error.
+    ///
+    /// **PII warning.** `jsonwebtoken::errors::Error` Display does NOT embed
+    /// the secret or the token, so it is safe to log at `{}`. Avoid `{:?}`
+    /// regardless out of caution.
+    #[error("jwt error: {0}")]
+    JwtIssue(#[source] jsonwebtoken::errors::Error),
+
+    /// Password hashing or PHC parsing error. The string is the underlying
+    /// `argon2`/`pbkdf2`/`password-hash` error and never embeds the password
+    /// itself.
+    #[error("hashing error: {0}")]
+    Hashing(String),
 }

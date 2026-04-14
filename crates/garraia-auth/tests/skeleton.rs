@@ -13,6 +13,7 @@ use garraia_auth::{
     AuthError, Credential, IdentityProvider, InternalProvider, LoginConfig, LoginPool,
 };
 use garraia_workspace::{Workspace, WorkspaceConfig};
+use secrecy::SecretString;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers::ImageExt;
@@ -99,37 +100,33 @@ async fn internal_provider_methods_return_not_implemented() -> anyhow::Result<()
     apply_migrations(&postgres_url).await?;
     let login_url = promote_login_role(&postgres_url).await?;
 
-    let pool = LoginPool::from_dedicated_config(&LoginConfig {
-        database_url: login_url,
-        max_connections: 2,
-    })
-    .await?;
+    let pool = std::sync::Arc::new(
+        LoginPool::from_dedicated_config(&LoginConfig {
+            database_url: login_url,
+            max_connections: 2,
+        })
+        .await?,
+    );
     let provider = InternalProvider::new(pool);
 
     assert_eq!(provider.id(), "internal");
 
     let credential = Credential::Internal {
         email: "test@example.com".into(),
-        password: "irrelevant".into(),
+        password: SecretString::from("irrelevant".to_owned()),
     };
 
+    // 391b: verify_credential against an empty user_identities table returns
+    // `Ok(None)` (constant-time path) — NOT NotImplemented anymore.
     match provider.verify_credential(&credential).await {
-        Err(AuthError::NotImplemented) => {}
-        other => panic!("expected NotImplemented, got: {other:?}"),
+        Ok(None) => {}
+        other => panic!("expected Ok(None) for empty DB, got: {other:?}"),
     }
 
-    match provider
-        .find_by_provider_sub("00000000-0000-0000-0000-000000000000")
-        .await
-    {
-        Err(AuthError::NotImplemented) => {}
-        other => panic!("expected NotImplemented, got: {other:?}"),
-    }
-
-    let dummy_user = uuid::Uuid::nil();
-    match provider.create_identity(dummy_user, &credential).await {
-        Err(AuthError::NotImplemented) => {}
-        other => panic!("expected NotImplemented, got: {other:?}"),
+    // find_by_provider_sub against an empty table returns Ok(None).
+    match provider.find_by_provider_sub("nobody@example.com").await {
+        Ok(None) => {}
+        other => panic!("expected Ok(None) for missing identity, got: {other:?}"),
     }
 
     Ok(())

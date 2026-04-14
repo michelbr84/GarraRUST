@@ -24,12 +24,19 @@ crates/
   garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
-  garraia-auth/       — ✅ skeleton (GAR-391a). IdentityProvider trait + InternalProvider stub
-                        + LoginPool newtype (private inner PgPool, validated via SELECT
-                        current_user, !Clone enforced via static_assertions) + Principal/
-                        Credential/AuthError types + migration 008_login_role.sql (garraia_login
-                        NOLOGIN BYPASSRLS, 4 GRANTs exatos do ADR 0005). Real verify_credential,
-                        JWT, Axum extractor e suite authz ficam para 391b/c/d.
+  garraia-auth/       — ✅ verify path real (GAR-391a + GAR-391b). IdentityProvider trait
+                        + InternalProvider real + LoginPool newtype (private inner PgPool,
+                        validated via SELECT current_user, !Clone enforced via static_assertions)
+                        + Argon2id (RFC 9106 m=64MiB,t=3,p=4) + PBKDF2 dual-verify + lazy upgrade
+                        transacional sob FOR NO KEY UPDATE OF ui + constant-time anti-enumeration
+                        via DUMMY_HASH em build.rs + audit_events em todos os terminais + JWT
+                        HS256 access token (15min, algorithm-confusion guards) + Credential.password
+                        em SecretString + endpoint POST /v1/auth/login no garraia-gateway sob
+                        feature `auth-v1` retornando 401 byte-identical anti-enumeração.
+                        **391b shipped com escopo reduzido**: refresh tokens, SessionStore::issue
+                        no endpoint, create_identity, signup/refresh/logout endpoints, e wiring
+                        no AppState principal todos diferidos para 391c (gaps estruturais nos
+                        grants do garraia_login role surfacing empíricos).
                         Decisão: docs/adr/0005-identity-provider.md.
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
