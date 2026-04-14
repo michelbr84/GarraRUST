@@ -51,5 +51,9 @@ pub use internal::signup_user;
 pub use signup_pool::{SignupConfig, SignupPool};
 pub use storage_redacted::RedactedStorageError;
 
+// 0016-M1 — AppPool (garraia_app RLS-enforced pool for /v1 handlers)
+pub mod app_pool;
+pub use app_pool::{AppPool, AppPoolConfig};
+
 /// Convenience `Result` alias for crate APIs.
 pub type Result<T> = std::result::Result<T, AuthError>;
