@@ -70,6 +70,11 @@ pub const RLS_MATRIX: &[RlsCase] = &[
     RlsCase { case_id: "rls_app_audit_events_select_wrong_tenant", db_role: DbRole::App, table: "audit_events", op: SqlOp::Select, tenant_ctx: TenantCtx::CorrectRoleWrongTenant, expected: RlsExpected::RlsFilteredZero },
 
     // ─── sessions ───────────────────────────────────────────────────────
+    // `sessions` is **user-scoped**, not group-scoped: its RLS policy
+    // admits rows where user_id = app.current_user_id GUC. So under
+    // `WrongGroupCorrectUser` (user correct, group wrong) the member's
+    // own session is still visible — this is intended by policy design,
+    // not an RLS leak. See security audit finding M-3 (2026-04-14).
     RlsCase { case_id: "rls_app_sessions_select_correct", db_role: DbRole::App, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::Correct, expected: RlsExpected::RowsVisible(1) },
     RlsCase { case_id: "rls_app_sessions_select_wrong_group", db_role: DbRole::App, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::WrongGroupCorrectUser, expected: RlsExpected::RowsVisible(1) },
     RlsCase { case_id: "rls_app_sessions_select_both_unset", db_role: DbRole::App, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RlsFilteredZero },
@@ -82,6 +87,10 @@ pub const RLS_MATRIX: &[RlsCase] = &[
     RlsCase { case_id: "rls_app_api_keys_select_wrong_tenant", db_role: DbRole::App, table: "api_keys", op: SqlOp::Select, tenant_ctx: TenantCtx::CorrectRoleWrongTenant, expected: RlsExpected::RlsFilteredZero },
 
     // ─── user_identities ────────────────────────────────────────────────
+    // Same user-scoped design as `sessions`: RLS admits rows where
+    // user_id = app.current_user_id. Under `WrongGroupCorrectUser` the
+    // member's own identity row is still visible — intended, not a
+    // leak. See security audit finding M-3 (2026-04-14).
     RlsCase { case_id: "rls_app_user_identities_select_correct", db_role: DbRole::App, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::Correct, expected: RlsExpected::RowsVisible(1) },
     RlsCase { case_id: "rls_app_user_identities_select_wrong_group", db_role: DbRole::App, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::WrongGroupCorrectUser, expected: RlsExpected::RowsVisible(1) },
     RlsCase { case_id: "rls_app_user_identities_select_both_unset", db_role: DbRole::App, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RlsFilteredZero },
@@ -105,10 +114,14 @@ pub const RLS_MATRIX: &[RlsCase] = &[
     // Block 3 — garraia_login (BYPASSRLS) — grant layer only.
     // ═══════════════════════════════════════════════════════════════════════
 
-    RlsCase { case_id: "rls_login_users_select_allow", db_role: DbRole::Login, table: "users", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
-    RlsCase { case_id: "rls_login_user_identities_select_allow", db_role: DbRole::Login, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
-    RlsCase { case_id: "rls_login_sessions_select_allow", db_role: DbRole::Login, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
-    RlsCase { case_id: "rls_login_group_members_select_allow", db_role: DbRole::Login, table: "group_members", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
+    // `RowsVisibleAny` (loose) — garraia_login is BYPASSRLS and sees
+    // every row in each table, so the count depends on accumulated
+    // harness state, not on the seed alone. The oracle semantic we
+    // care about here is "GRANT allows SELECT", not exact cardinality.
+    RlsCase { case_id: "rls_login_users_select_allow", db_role: DbRole::Login, table: "users", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
+    RlsCase { case_id: "rls_login_user_identities_select_allow", db_role: DbRole::Login, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
+    RlsCase { case_id: "rls_login_sessions_select_allow", db_role: DbRole::Login, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
+    RlsCase { case_id: "rls_login_group_members_select_allow", db_role: DbRole::Login, table: "group_members", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
 
     RlsCase { case_id: "rls_login_audit_events_select_denied", db_role: DbRole::Login, table: "audit_events", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::InsufficientPrivilege },
     RlsCase { case_id: "rls_login_chats_select_denied", db_role: DbRole::Login, table: "chats", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::InsufficientPrivilege },
@@ -130,8 +143,9 @@ pub const RLS_MATRIX: &[RlsCase] = &[
     // Block 4 — garraia_signup (BYPASSRLS) — grant layer only.
     // ═══════════════════════════════════════════════════════════════════════
 
-    RlsCase { case_id: "rls_signup_users_select_allow", db_role: DbRole::Signup, table: "users", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
-    RlsCase { case_id: "rls_signup_user_identities_select_allow", db_role: DbRole::Signup, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisible(1) },
+    // Same loose-count rationale as the garraia_login allow cases above.
+    RlsCase { case_id: "rls_signup_users_select_allow", db_role: DbRole::Signup, table: "users", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
+    RlsCase { case_id: "rls_signup_user_identities_select_allow", db_role: DbRole::Signup, table: "user_identities", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::RowsVisibleAny },
 
     RlsCase { case_id: "rls_signup_audit_events_select_denied", db_role: DbRole::Signup, table: "audit_events", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::InsufficientPrivilege },
     RlsCase { case_id: "rls_signup_sessions_select_denied", db_role: DbRole::Signup, table: "sessions", op: SqlOp::Select, tenant_ctx: TenantCtx::BothUnset, expected: RlsExpected::InsufficientPrivilege },

@@ -95,6 +95,7 @@ fn all_oracle_variants_exercised() {
 
     let required = [
         RlsExpected::RowsVisible(1),
+        RlsExpected::RowsVisibleAny,
         RlsExpected::InsufficientPrivilege,
         RlsExpected::PermissionDenied,
         RlsExpected::RlsFilteredZero,

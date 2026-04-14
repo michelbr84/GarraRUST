@@ -13,15 +13,22 @@
 //!
 //! | Outcome                | Condition                                   |
 //! |------------------------|---------------------------------------------|
-//! | `RowsVisible(n)`       | query ok, >= 1 rows / affected              |
+//! | `RowsVisible(n)`       | query ok, returned/affected exactly `n`     |
 //! | `RlsFilteredZero`      | query ok, zero rows / affected              |
+//!
+//! `classify_count` ALWAYS returns the exact count (strict). The matrix then
+//! compares against the expected variant via `matches_expected`, which
+//! supports a loose `RowsVisibleAny` variant for BYPASSRLS roles that
+//! legitimately observe accumulated state across the shared harness. See
+//! the type-level docs on `RlsExpected` and security audit finding H-1
+//! (2026-04-14) for why this split exists.
 //!
 //! Postgres 16 message text is stable across patch releases; if a future
 //! upgrade changes the wording the matrix will surface the regression
 //! immediately (a case flipping from `InsufficientPrivilege` to `None`
 //! panics with the raw error so the new prefix can be added here).
 //!
-//! Plan 0013 path C — Task 8.
+//! Plan 0013 path C — Task 8 + H-1 fix.
 
 use super::cases::RlsExpected;
 
@@ -54,17 +61,33 @@ pub fn classify_pg_error(err: &sqlx::Error) -> Option<RlsExpected> {
 /// Classify a numeric result (row count from SELECT or `rows_affected`
 /// from a write) into the appropriate success variant.
 ///
-/// Any positive count collapses to `RowsVisible(1)`. The oracle's
-/// semantic is "is any row visible under this GUC configuration vs.
-/// filtered out" — not "exactly how many rows". Collapsing makes the
-/// matrix robust against shared-harness state where BYPASSRLS roles
-/// (`garraia_login`, `garraia_signup`) observe users / identities /
-/// group_members accumulated by *other* test cases in the same process.
-/// Negative or zero counts always classify as `RlsFilteredZero`.
+/// **Strict counting.** Returns the exact count as `RowsVisible(n)`. The
+/// matrix uses `matches_expected` to decide whether a strict or loose
+/// comparison is required for the specific case. See security audit
+/// finding H-1 (2026-04-14): collapsing `n > 0` to `RowsVisible(1)`
+/// unconditionally would hide cross-tenant leaks where a policy
+/// regression made `garraia_app` visible N > 1 rows under `Correct` GUCs.
+/// The strict count + per-case loose flag preserves both correctness
+/// (strict for `garraia_app`) and robustness against accumulated state
+/// (loose for BYPASSRLS roles).
 pub fn classify_count(n: i64) -> RlsExpected {
     if n <= 0 {
         RlsExpected::RlsFilteredZero
     } else {
-        RlsExpected::RowsVisible(1)
+        RlsExpected::RowsVisible(n as usize)
+    }
+}
+
+/// Decide whether an observed outcome satisfies the expected outcome.
+///
+/// For most variants this is exact equality. The exception is
+/// `RowsVisibleAny`, which matches any `RowsVisible(n)` with `n >= 1`.
+/// `RowsVisibleAny` exists only for `garraia_login` / `garraia_signup`
+/// SELECT allow cases where accumulated state across the harness is
+/// legitimate. See `RlsExpected` type docs.
+pub fn matches_expected(outcome: RlsExpected, expected: RlsExpected) -> bool {
+    match expected {
+        RlsExpected::RowsVisibleAny => matches!(outcome, RlsExpected::RowsVisible(_)),
+        other => outcome == other,
     }
 }
