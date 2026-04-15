@@ -100,7 +100,9 @@ async fn project_crud_lifecycle() {
     let list_body: serde_json::Value = list_resp.json().await.expect("valid JSON");
     let projects = list_body["projects"].as_array().expect("should be array");
     assert!(
-        projects.iter().any(|p| p["id"].as_str() == Some(&project_id)),
+        projects
+            .iter()
+            .any(|p| p["id"].as_str() == Some(&project_id)),
         "created project should appear in list"
     );
 

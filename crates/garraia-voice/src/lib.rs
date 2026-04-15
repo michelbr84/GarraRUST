@@ -46,7 +46,9 @@ impl TtsSynthesizer for HibikiClient {
     async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
         let tmp = std::env::temp_dir().join(format!("garraia_tts_{}.wav", std::process::id()));
         self.synthesize(text, &tmp).await?;
-        let bytes = tokio::fs::read(&tmp).await.map_err(|e| VoiceError::Tts(e.to_string()))?;
+        let bytes = tokio::fs::read(&tmp)
+            .await
+            .map_err(|e| VoiceError::Tts(e.to_string()))?;
         let _ = tokio::fs::remove_file(&tmp).await;
         Ok(bytes)
     }
@@ -57,7 +59,9 @@ impl TtsSynthesizer for LmStudioTtsClient {
     async fn synthesize_bytes(&self, text: &str, _language: &str) -> Result<Vec<u8>, VoiceError> {
         let tmp = std::env::temp_dir().join(format!("garraia_tts_{}.wav", std::process::id()));
         self.synthesize(text, &tmp).await?;
-        let bytes = tokio::fs::read(&tmp).await.map_err(|e| VoiceError::Tts(e.to_string()))?;
+        let bytes = tokio::fs::read(&tmp)
+            .await
+            .map_err(|e| VoiceError::Tts(e.to_string()))?;
         let _ = tokio::fs::remove_file(&tmp).await;
         Ok(bytes)
     }

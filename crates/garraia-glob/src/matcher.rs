@@ -71,7 +71,10 @@ impl GlobMatcher {
             compiled.push(GlobPattern::new(pattern, &config)?);
         }
 
-        Ok(Self { patterns: compiled, options })
+        Ok(Self {
+            patterns: compiled,
+            options,
+        })
     }
 
     /// Check if a path matches any of the patterns.
@@ -91,7 +94,10 @@ impl GlobMatcher {
             .filter_map(|e| e.ok())
         {
             if file_count >= self.options.max_files {
-                tracing::warn!(max = self.options.max_files, "GlobMatcher: max_files limit reached");
+                tracing::warn!(
+                    max = self.options.max_files,
+                    "GlobMatcher: max_files limit reached"
+                );
                 break;
             }
 
@@ -121,7 +127,10 @@ impl GlobMatcher {
 
     /// Get the pattern source strings.
     pub fn patterns(&self) -> Vec<String> {
-        self.patterns.iter().map(|p| p.source().to_string()).collect()
+        self.patterns
+            .iter()
+            .map(|p| p.source().to_string())
+            .collect()
     }
 }
 

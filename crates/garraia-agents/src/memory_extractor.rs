@@ -86,17 +86,18 @@ Se não houver fatos relevantes, retorne: []"#
 
         // Tentar extrair JSON do texto de resposta
         if let Some(start) = response.find('[')
-            && let Some(end) = response.rfind(']') {
-                let json_str = &response[start..=end];
-                if let Ok(facts) = serde_json::from_str::<Vec<StructuredFact>>(json_str) {
-                    // Filtrar fatos com valores vazios
-                    let valid_facts: Vec<StructuredFact> = facts
-                        .into_iter()
-                        .filter(|f| !f.key.trim().is_empty() && !f.value.trim().is_empty())
-                        .collect();
-                    return Ok(valid_facts);
-                }
+            && let Some(end) = response.rfind(']')
+        {
+            let json_str = &response[start..=end];
+            if let Ok(facts) = serde_json::from_str::<Vec<StructuredFact>>(json_str) {
+                // Filtrar fatos com valores vazios
+                let valid_facts: Vec<StructuredFact> = facts
+                    .into_iter()
+                    .filter(|f| !f.key.trim().is_empty() && !f.value.trim().is_empty())
+                    .collect();
+                return Ok(valid_facts);
             }
+        }
 
         Ok(Vec::new())
     }

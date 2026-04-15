@@ -50,9 +50,10 @@ impl CircuitBreaker {
 
         let guard = self.last_failure.read().await;
         if let Some(last) = *guard
-            && last.elapsed() >= self.recovery_timeout {
-                return CircuitState::HalfOpen;
-            }
+            && last.elapsed() >= self.recovery_timeout
+        {
+            return CircuitState::HalfOpen;
+        }
         CircuitState::Open
     }
 
@@ -132,13 +133,11 @@ impl RetryPolicy {
 }
 
 /// Priority-ordered fallback list for providers.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FallbackConfig {
     /// Provider IDs in priority order (first = highest priority).
     pub provider_order: Vec<String>,
 }
-
 
 impl FallbackConfig {
     pub fn new(order: Vec<String>) -> Self {

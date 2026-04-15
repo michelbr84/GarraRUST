@@ -6,9 +6,9 @@
 //! - `GET /api/mcp/{id}/health` — health check for a specific MCP server
 //! - `GET /api/mcp/{id}/config-schema` — JSON Schema for config form
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -87,12 +87,10 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
         McpCatalogEntry {
             id: "github".into(),
             name: "GitHub".into(),
-            description: "Interact with GitHub repositories, issues, pull requests, and more".into(),
+            description: "Interact with GitHub repositories, issues, pull requests, and more"
+                .into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@modelcontextprotocol/server-github".into(),
-            ],
+            install_args: vec!["-y".into(), "@modelcontextprotocol/server-github".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -115,10 +113,7 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
             name: "PostgreSQL".into(),
             description: "Query and manage PostgreSQL databases".into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@modelcontextprotocol/server-postgres".into(),
-            ],
+            install_args: vec!["-y".into(), "@modelcontextprotocol/server-postgres".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -142,12 +137,10 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
         McpCatalogEntry {
             id: "slack".into(),
             name: "Slack".into(),
-            description: "Send messages, manage channels, and interact with Slack workspaces".into(),
+            description: "Send messages, manage channels, and interact with Slack workspaces"
+                .into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@modelcontextprotocol/server-slack".into(),
-            ],
+            install_args: vec!["-y".into(), "@modelcontextprotocol/server-slack".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -169,10 +162,7 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
             name: "Notion".into(),
             description: "Read and write Notion pages, databases, and blocks".into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@notionhq/notion-mcp-server".into(),
-            ],
+            install_args: vec!["-y".into(), "@notionhq/notion-mcp-server".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}
@@ -213,12 +203,10 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
         McpCatalogEntry {
             id: "puppeteer".into(),
             name: "Puppeteer".into(),
-            description: "Browser automation — navigate, screenshot, and interact with web pages".into(),
+            description: "Browser automation — navigate, screenshot, and interact with web pages"
+                .into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@modelcontextprotocol/server-puppeteer".into(),
-            ],
+            install_args: vec!["-y".into(), "@modelcontextprotocol/server-puppeteer".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -239,10 +227,7 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
             name: "SQLite".into(),
             description: "Query and manage SQLite databases".into(),
             install_command: "npx".into(),
-            install_args: vec![
-                "-y".into(),
-                "@modelcontextprotocol/server-sqlite".into(),
-            ],
+            install_args: vec!["-y".into(), "@modelcontextprotocol/server-sqlite".into()],
             config_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -278,9 +263,7 @@ pub struct InstallMcpRequest {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/mcp/marketplace — catalog of popular MCP servers with metadata.
-pub async fn marketplace_catalog(
-    State(_state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn marketplace_catalog(State(_state): State<SharedState>) -> Json<serde_json::Value> {
     let catalog = built_in_catalog();
 
     Json(serde_json::json!({

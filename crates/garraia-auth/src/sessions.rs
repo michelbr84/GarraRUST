@@ -126,8 +126,15 @@ impl SessionStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        let stored_hash: String = row.try_get("refresh_token_hash").map_err(AuthError::Storage)?;
-        if computed.as_bytes().ct_eq(stored_hash.as_bytes()).unwrap_u8() == 0 {
+        let stored_hash: String = row
+            .try_get("refresh_token_hash")
+            .map_err(AuthError::Storage)?;
+        if computed
+            .as_bytes()
+            .ct_eq(stored_hash.as_bytes())
+            .unwrap_u8()
+            == 0
+        {
             return Ok(None);
         }
 
@@ -136,8 +143,7 @@ impl SessionStore {
         if revoked_at.is_some() {
             return Ok(None);
         }
-        let expires_at: DateTime<Utc> =
-            row.try_get("expires_at").map_err(AuthError::Storage)?;
+        let expires_at: DateTime<Utc> = row.try_get("expires_at").map_err(AuthError::Storage)?;
         if expires_at <= Utc::now() {
             return Ok(None);
         }

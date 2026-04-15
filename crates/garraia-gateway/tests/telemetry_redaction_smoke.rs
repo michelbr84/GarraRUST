@@ -8,7 +8,7 @@
 //! `include_headers(true)` (or headers leak some other way), the bearer token
 //! below will show up in captured tracing output and this test will fail.
 
-use axum::{body::Body, http::Request, routing::get, Router};
+use axum::{Router, body::Body, http::Request, routing::get};
 use tower::ServiceExt;
 use tracing_test::traced_test;
 

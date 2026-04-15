@@ -68,10 +68,7 @@ pub async fn log_action(
 ///
 /// Returns at most `filter.limit` entries (default 100, capped at 1000),
 /// ordered newest-first.
-pub async fn query_audit(
-    store: &Arc<Mutex<AdminStore>>,
-    filter: &AuditFilter,
-) -> Vec<AuditEntry> {
+pub async fn query_audit(store: &Arc<Mutex<AdminStore>>, filter: &AuditFilter) -> Vec<AuditEntry> {
     let limit = filter.limit.unwrap_or(100).min(1000);
     let offset = filter.offset.unwrap_or(0);
 

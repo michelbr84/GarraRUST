@@ -8,9 +8,9 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tracing::{error, info, warn};
 
-use crate::traits::ChannelStatus;
 use super::config::OpenClawConfig;
 use super::convert;
+use crate::traits::ChannelStatus;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -43,9 +43,7 @@ impl OpenClawClient {
         // Spawn the connection loop.
         let client_clone = Arc::clone(&client);
         tokio::spawn(async move {
-            client_clone
-                .connection_loop(outgoing_rx, incoming_tx)
-                .await;
+            client_clone.connection_loop(outgoing_rx, incoming_tx).await;
         });
 
         // Return the incoming receiver so the gateway can consume messages.
@@ -132,9 +130,10 @@ impl OpenClawClient {
                     match serde_json::from_str::<serde_json::Value>(&text) {
                         Ok(value) => {
                             if let Some(msg) = convert::from_openclaw_message(&value)
-                                && incoming_tx.send(msg).await.is_err() {
-                                    break;
-                                }
+                                && incoming_tx.send(msg).await.is_err()
+                            {
+                                break;
+                            }
                         }
                         Err(e) => {
                             warn!(error = %e, "OpenClaw: invalid JSON frame");

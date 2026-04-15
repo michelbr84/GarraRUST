@@ -15,9 +15,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::modes::{AgentMode, ModeProfile, ToolPolicy};
-use crate::providers::{
-    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart,
-};
+use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart};
 
 /// Extended mode profile with additional fields for Phase 5.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,8 +105,7 @@ impl ToolPolicyEngine {
         };
 
         if policy.whitelist_mode {
-            policy.allowed.is_empty()
-                || policy.allowed.iter().any(|t| t == tool_name)
+            policy.allowed.is_empty() || policy.allowed.iter().any(|t| t == tool_name)
         } else {
             !policy.denied.iter().any(|t| t == tool_name)
         }
@@ -174,9 +171,21 @@ impl AutoRouter {
 
         // Debug mode: fix/bug/error patterns
         let debug_keywords = [
-            "fix", "bug", "error", "erro", "panic", "crash", "stacktrace",
-            "stack trace", "exception", "falha", "problema", "debug",
-            "broken", "failing", "not working",
+            "fix",
+            "bug",
+            "error",
+            "erro",
+            "panic",
+            "crash",
+            "stacktrace",
+            "stack trace",
+            "exception",
+            "falha",
+            "problema",
+            "debug",
+            "broken",
+            "failing",
+            "not working",
         ];
         if debug_keywords.iter().any(|kw| input.contains(kw)) {
             return AgentMode::Debug;
@@ -185,9 +194,18 @@ impl AutoRouter {
         // Review mode: review/check patterns (checked before code to avoid
         // "review this code" matching the "code" keyword in code_keywords)
         let review_keywords = [
-            "review", "check", "analyze", "audit", "inspect",
-            "revisar", "verificar", "analisar", "auditar", "inspecionar",
-            "code review", "pr review",
+            "review",
+            "check",
+            "analyze",
+            "audit",
+            "inspect",
+            "revisar",
+            "verificar",
+            "analisar",
+            "auditar",
+            "inspecionar",
+            "code review",
+            "pr review",
         ];
         if review_keywords.iter().any(|kw| input.contains(kw)) {
             return AgentMode::Review;
@@ -195,9 +213,24 @@ impl AutoRouter {
 
         // Code mode: write/create/implement patterns
         let code_keywords = [
-            "write", "create", "implement", "build", "make", "add",
-            "escrever", "criar", "implementar", "construir", "fazer", "adicionar",
-            "refactor", "refatorar", "generate", "gerar", "code", "coding",
+            "write",
+            "create",
+            "implement",
+            "build",
+            "make",
+            "add",
+            "escrever",
+            "criar",
+            "implementar",
+            "construir",
+            "fazer",
+            "adicionar",
+            "refactor",
+            "refatorar",
+            "generate",
+            "gerar",
+            "code",
+            "coding",
         ];
         if code_keywords.iter().any(|kw| input.contains(kw)) {
             return AgentMode::Code;
@@ -205,9 +238,21 @@ impl AutoRouter {
 
         // Ask mode: explain/what patterns
         let ask_keywords = [
-            "explain", "what", "how", "why", "describe", "define",
-            "explicar", "o que", "como", "por que", "descrever", "definir",
-            "?", "tell me", "diga",
+            "explain",
+            "what",
+            "how",
+            "why",
+            "describe",
+            "define",
+            "explicar",
+            "o que",
+            "como",
+            "por que",
+            "descrever",
+            "definir",
+            "?",
+            "tell me",
+            "diga",
         ];
         if ask_keywords.iter().any(|kw| input.contains(kw)) {
             return AgentMode::Ask;
@@ -274,7 +319,10 @@ Mode:"#,
         let request = LlmRequest {
             model: model.to_string(),
             messages,
-            system: Some("You are a message classifier. Reply with exactly one word: the mode name.".to_string()),
+            system: Some(
+                "You are a message classifier. Reply with exactly one word: the mode name."
+                    .to_string(),
+            ),
             max_tokens: Some(10),
             temperature: Some(0.0),
             tools: vec![],
@@ -399,7 +447,10 @@ mod tests {
     fn test_auto_router_custom_keyword() {
         let mut router = AutoRouter::new();
         router.add_keyword("deploy", AgentMode::Orchestrator);
-        assert_eq!(router.detect_mode("deploy to production"), AgentMode::Orchestrator);
+        assert_eq!(
+            router.detect_mode("deploy to production"),
+            AgentMode::Orchestrator
+        );
     }
 
     #[test]

@@ -66,10 +66,8 @@ async fn start_test_gateway_with_skins_dir(skins_dir: &str) -> String {
 async fn skin_crud_lifecycle() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins");
-    let base = start_test_gateway_with_skins_dir(
-        skins_path.to_str().expect("valid utf8 path"),
-    )
-    .await;
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
     let client = reqwest::Client::new();
 
     // ── List (initially empty) ───────────────────────────────────────────
@@ -151,10 +149,8 @@ async fn skin_crud_lifecycle() {
 async fn get_nonexistent_skin_returns_404() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins_404");
-    let base = start_test_gateway_with_skins_dir(
-        skins_path.to_str().expect("valid utf8 path"),
-    )
-    .await;
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
     let client = reqwest::Client::new();
 
     let resp = client
@@ -171,10 +167,8 @@ async fn get_nonexistent_skin_returns_404() {
 async fn create_skin_with_path_traversal_returns_400() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let skins_path = tmp.path().join("skins_traversal");
-    let base = start_test_gateway_with_skins_dir(
-        skins_path.to_str().expect("valid utf8 path"),
-    )
-    .await;
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
     let client = reqwest::Client::new();
 
     let resp = client

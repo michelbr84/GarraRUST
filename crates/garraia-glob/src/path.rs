@@ -55,16 +55,12 @@ pub fn relative_to(path: &str, root: &str) -> Option<String> {
 
 /// Get the file extension from a path
 pub fn extension(path: &str) -> Option<&str> {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
+    Path::new(path).extension().and_then(|ext| ext.to_str())
 }
 
 /// Get the file name from a path
 pub fn file_name(path: &str) -> Option<&str> {
-    Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
+    Path::new(path).file_name().and_then(|name| name.to_str())
 }
 
 /// Get the parent directory from a path

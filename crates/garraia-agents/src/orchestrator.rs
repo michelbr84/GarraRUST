@@ -12,11 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::providers::{
-    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart,
-};
+use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart};
 use crate::tools::{Tool, ToolContext};
 
 /// Configurações de limites do Orchestrator
@@ -51,8 +49,7 @@ impl OrchestratorLimits {
 }
 
 /// Status de um step durante a execução
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum StepStatus {
     /// Step pendente
     #[default]
@@ -68,7 +65,6 @@ pub enum StepStatus {
     /// Step validado (pode continuar)
     Validated,
 }
-
 
 /// Uma única etapa do plano de execução
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,12 +159,18 @@ impl OrchestratorPlan {
 
     /// Retorna o número de steps pendentes
     pub fn pending_count(&self) -> usize {
-        self.steps.iter().filter(|s| s.status == StepStatus::Pending).count()
+        self.steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending)
+            .count()
     }
 
     /// Retorna o número de steps completados
     pub fn completed_count(&self) -> usize {
-        self.steps.iter().filter(|s| s.status == StepStatus::Completed).count()
+        self.steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .count()
     }
 }
 
@@ -291,13 +293,17 @@ Apenas retorne o JSON, sem explicações."#,
         let request = LlmRequest {
             model: model.to_string(),
             messages,
-            system: Some("You are a task planning assistant. Generate execution plans in JSON format.".to_string()),
+            system: Some(
+                "You are a task planning assistant. Generate execution plans in JSON format."
+                    .to_string(),
+            ),
             max_tokens: Some(4096),
             temperature: Some(0.3),
             tools: vec![],
         };
 
-        let response = provider.complete(&request)
+        let response = provider
+            .complete(&request)
             .await
             .map_err(|e| format!("LLM error: {}", e))?;
 
@@ -305,47 +311,51 @@ Apenas retorne o JSON, sem explicações."#,
 
         // Parse JSON from response
         let plan = self.parse_plan_from_response(&response_text, task)?;
-        
+
         info!("Generated plan with {} steps", plan.steps.len());
         Ok(plan)
     }
 
     /// Parse o plano a partir da resposta do LLM
-    fn parse_plan_from_response(&self, response: &str, task: &str) -> Result<OrchestratorPlan, String> {
+    fn parse_plan_from_response(
+        &self,
+        response: &str,
+        task: &str,
+    ) -> Result<OrchestratorPlan, String> {
         // Try to extract JSON from response
         let json_str = extract_json_from_text(response)
             .ok_or_else(|| "Could not extract JSON from response".to_string())?;
 
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-        let steps_array = parsed.get("steps")
+        let steps_array = parsed
+            .get("steps")
             .and_then(|v| v.as_array())
             .ok_or_else(|| "Missing 'steps' array in response".to_string())?;
 
         let mut plan = OrchestratorPlan::new(task);
 
         for (idx, step_val) in steps_array.iter().enumerate() {
-            let description = step_val.get("description")
+            let description = step_val
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("No description")
                 .to_string();
 
-            let tool_name = step_val.get("tool_name")
+            let tool_name = step_val
+                .get("tool_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("bash")
                 .to_string();
 
-            let tool_input = step_val.get("tool_input")
+            let tool_input = step_val
+                .get("tool_input")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            let mut step = OrchestratorStep::new(
-                (idx + 1) as u32,
-                &description,
-                &tool_name,
-                tool_input,
-            );
+            let mut step =
+                OrchestratorStep::new((idx + 1) as u32, &description, &tool_name, tool_input);
 
             if let Some(validation) = step_val.get("validation").and_then(|v| v.as_str()) {
                 step = step.with_validation(validation);
@@ -389,13 +399,18 @@ Apenas retorne o JSON, sem explicações."#,
 
         // Loop principal de execução
         let mut loop_count = 0;
-        
+
         while !plan.completed && loop_count < self.limits.max_loops {
             loop_count += 1;
-            info!("Orchestrator loop {} of {}", loop_count, self.limits.max_loops);
+            info!(
+                "Orchestrator loop {} of {}",
+                loop_count, self.limits.max_loops
+            );
 
             // Encontrar próximo step pendente
-            let next_step_idx = plan.steps.iter()
+            let next_step_idx = plan
+                .steps
+                .iter()
                 .position(|s| s.status == StepStatus::Pending);
 
             if let Some(idx) = next_step_idx {
@@ -410,13 +425,19 @@ Apenas retorne o JSON, sem explicações."#,
                     Ok(()) => {
                         step.status = StepStatus::Completed;
                         successful_steps += 1;
-                        
+
                         // Validar resultado se houver validação definida
                         if let Some(validation) = &step.validation {
-                            let validation_result = self.validate_step_result(step, validation, provider).await;
+                            let validation_result =
+                                self.validate_step_result(step, validation, provider).await;
                             if !validation_result.passed {
-                                warn!("Step {} validation failed: {}", step.id, validation_result.message);
-                                if validation_result.should_retry && step.attempts < self.limits.retry_count {
+                                warn!(
+                                    "Step {} validation failed: {}",
+                                    step.id, validation_result.message
+                                );
+                                if validation_result.should_retry
+                                    && step.attempts < self.limits.retry_count
+                                {
                                     step.status = StepStatus::Retrying;
                                     retried_steps += 1;
                                     continue;
@@ -429,14 +450,16 @@ Apenas retorne o JSON, sem explicações."#,
                     Err(e) => {
                         error!("Step {} failed: {}", step.id, e);
                         step.error = Some(e.clone());
-                        
+
                         // Tentar retry se não excedeu limite
                         if step.attempts < self.limits.retry_count {
                             step.attempts += 1;
                             step.status = StepStatus::Retrying;
                             retried_steps += 1;
-                            warn!("Retrying step {} (attempt {}/{})", 
-                                  step.id, step.attempts, self.limits.retry_count);
+                            warn!(
+                                "Retrying step {} (attempt {}/{})",
+                                step.id, step.attempts, self.limits.retry_count
+                            );
                         } else {
                             step.status = StepStatus::Failed;
                             failed_steps += 1;
@@ -455,8 +478,14 @@ Apenas retorne o JSON, sem explicações."#,
         }
 
         // Gerar summary
-        let summary = self.generate_summary(&plan, successful_steps, failed_steps, retried_steps, start_time);
-        
+        let summary = self.generate_summary(
+            &plan,
+            successful_steps,
+            failed_steps,
+            retried_steps,
+            start_time,
+        );
+
         // Armazenar no histórico
         plan.summary = Some(summary.summary_text.clone());
         self.execution_history.push(plan);
@@ -465,11 +494,16 @@ Apenas retorne o JSON, sem explicações."#,
     }
 
     /// Executa um único step
-    async fn execute_step(&self, step: &mut OrchestratorStep, session_id: &str) -> Result<(), String> {
+    async fn execute_step(
+        &self,
+        step: &mut OrchestratorStep,
+        session_id: &str,
+    ) -> Result<(), String> {
         info!("Executing step {} with tool {}", step.id, step.tool_name);
 
         // Encontrar ferramenta
-        let tool = self.find_tool(&step.tool_name)
+        let tool = self
+            .find_tool(&step.tool_name)
             .ok_or_else(|| format!("Tool not found: {}", step.tool_name))?;
 
         // Criar contexto
@@ -488,7 +522,12 @@ Apenas retorne o JSON, sem explicações."#,
             tool.execute(&context, step.tool_input.clone()),
         )
         .await
-        .map_err(|_| format!("Step {} timed out after {}s", step.id, self.limits.timeout_secs))?
+        .map_err(|_| {
+            format!(
+                "Step {} timed out after {}s",
+                step.id, self.limits.timeout_secs
+            )
+        })?
         .map_err(|e| format!("Tool execution error: {}", e))?;
 
         if output.is_error {
@@ -509,30 +548,39 @@ Apenas retorne o JSON, sem explicações."#,
     ) -> ValidationResult {
         // Validação básica: verificar se resultado contém certas keywords
         let result = step.result.as_deref().unwrap_or("");
-        
+
         // Validações simples por padrão
         let validation_lower = validation.to_lowercase();
-        
+
         if (validation_lower.contains("não vazio") || validation_lower.contains("not empty"))
-            && result.trim().is_empty() {
-                return ValidationResult {
-                    passed: false,
-                    message: "Result is empty but expected non-empty".to_string(),
-                    should_retry: true,
-                };
-            }
-        
+            && result.trim().is_empty()
+        {
+            return ValidationResult {
+                passed: false,
+                message: "Result is empty but expected non-empty".to_string(),
+                should_retry: true,
+            };
+        }
+
         if (validation_lower.contains("sucesso") || validation_lower.contains("success"))
-            && (result.to_lowercase().contains("erro") || result.to_lowercase().contains("error")) {
-                return ValidationResult {
-                    passed: false,
-                    message: "Result contains error".to_string(),
-                    should_retry: true,
-                };
-            }
+            && (result.to_lowercase().contains("erro") || result.to_lowercase().contains("error"))
+        {
+            return ValidationResult {
+                passed: false,
+                message: "Result contains error".to_string(),
+                should_retry: true,
+            };
+        }
 
         // Verificar indicadores de falha comuns
-        let failure_indicators = ["failed", "error:", "exception", "panic", "não encontrado", "not found"];
+        let failure_indicators = [
+            "failed",
+            "error:",
+            "exception",
+            "panic",
+            "não encontrado",
+            "not found",
+        ];
         for indicator in &failure_indicators {
             if result.to_lowercase().contains(indicator) {
                 return ValidationResult {
@@ -560,9 +608,11 @@ Apenas retorne o JSON, sem explicações."#,
         start_time: std::time::Instant,
     ) -> OrchestratorSummary {
         let total_time = start_time.elapsed().as_secs();
-        
-        let step_details: Vec<StepDetail> = plan.steps.iter().map(|s| {
-            StepDetail {
+
+        let step_details: Vec<StepDetail> = plan
+            .steps
+            .iter()
+            .map(|s| StepDetail {
                 id: s.id.clone(),
                 description: s.description.clone(),
                 status: format!("{:?}", s.status),
@@ -575,8 +625,8 @@ Apenas retorne o JSON, sem explicações."#,
                     }
                 }),
                 error: s.error.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         let summary_text = if plan.completed {
             if failed_steps > 0 {
@@ -624,7 +674,7 @@ Apenas retorne o JSON, sem explicações."#,
     /// Check de segurança para comandos bash
     pub fn validate_bash_command(command: &str) -> ValidationResult {
         let cmd_lower = command.to_lowercase();
-        
+
         // Padrões perigosos
         let dangerous_patterns = [
             "rm -rf",
@@ -752,10 +802,16 @@ mod tests {
     fn test_orchestrator_plan() {
         let mut plan = OrchestratorPlan::new("Test task");
         plan.add_step(OrchestratorStep::new(
-            1, "Step 1", "bash", serde_json::json!({})
+            1,
+            "Step 1",
+            "bash",
+            serde_json::json!({}),
         ));
         plan.add_step(OrchestratorStep::new(
-            2, "Step 2", "file_read", serde_json::json!({})
+            2,
+            "Step 2",
+            "file_read",
+            serde_json::json!({}),
         ));
 
         assert_eq!(plan.steps.len(), 2);

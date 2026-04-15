@@ -4,12 +4,7 @@
 //!   POST /chat           — send a message, get a response
 //!   GET  /chat/history   — return recent message history for the authenticated user
 
-use axum::{
-    Json,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use garraia_db::StoredMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -41,8 +36,7 @@ fn garra_persona() -> &'static str {
     use std::sync::OnceLock;
     static PERSONA: OnceLock<String> = OnceLock::new();
     PERSONA.get_or_init(|| {
-        std::env::var("GARRA_MOBILE_PERSONA")
-            .unwrap_or_else(|_| DEFAULT_PERSONA.to_string())
+        std::env::var("GARRA_MOBILE_PERSONA").unwrap_or_else(|_| DEFAULT_PERSONA.to_string())
     })
 }
 
@@ -108,7 +102,7 @@ pub async fn chat(
         .process_message_with_agent_config(
             &session_id,
             &req.message,
-            &[],           // history already hydrated into runtime session
+            &[], // history already hydrated into runtime session
             Some(&session_id),
             Some(&user_id),
             None,          // provider: use default
@@ -146,10 +140,7 @@ pub async fn chat(
 
             (
                 StatusCode::OK,
-                Json(serde_json::json!(ChatResponse {
-                    reply,
-                    session_id,
-                })),
+                Json(serde_json::json!(ChatResponse { reply, session_id })),
             )
         }
         Err(e) => {

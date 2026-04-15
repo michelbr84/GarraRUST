@@ -17,16 +17,15 @@
 use std::sync::Arc;
 
 use garraia_auth::{
-    audit::AuditAction, AuthError, Credential, InternalProvider, LoginConfig, LoginPool,
-    RequestCtx,
+    AuthError, Credential, InternalProvider, LoginConfig, LoginPool, RequestCtx, audit::AuditAction,
 };
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use password_hash::{PasswordHasher, SaltString};
 use pbkdf2::Pbkdf2;
 use secrecy::SecretString;
 use sqlx::Row;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
 use uuid::Uuid;
 
@@ -81,8 +80,7 @@ async fn concurrent_lazy_upgrade_emits_exactly_one_upgrade_row() -> anyhow::Resu
     .await?;
 
     // Build a SHARED InternalProvider with a multi-conn LoginPool.
-    let login_url =
-        postgres_url.replace("postgres:postgres@", "garraia_login:test-password@");
+    let login_url = postgres_url.replace("postgres:postgres@", "garraia_login:test-password@");
     let pool = Arc::new(
         LoginPool::from_dedicated_config(&LoginConfig {
             database_url: login_url,
@@ -120,33 +118,30 @@ async fn concurrent_lazy_upgrade_emits_exactly_one_upgrade_row() -> anyhow::Resu
     assert_eq!(successes, 5);
 
     // Exactly one upgrade row.
-    let upgrade_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_events WHERE action = $1",
-    )
-    .bind(AuditAction::PasswordHashUpgraded.as_str())
-    .fetch_one(&admin)
-    .await?;
+    let upgrade_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action = $1")
+            .bind(AuditAction::PasswordHashUpgraded.as_str())
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(
         upgrade_count, 1,
         "concurrent lazy upgrade must produce exactly 1 upgrade audit row, got {upgrade_count}"
     );
 
     // 5 success rows.
-    let success_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_events WHERE action = $1",
-    )
-    .bind(AuditAction::LoginSuccess.as_str())
-    .fetch_one(&admin)
-    .await?;
+    let success_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action = $1")
+            .bind(AuditAction::LoginSuccess.as_str())
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(success_count, 5);
 
     // Stored hash is now Argon2id.
-    let stored: String = sqlx::query_scalar(
-        "SELECT password_hash FROM user_identities WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_one(&admin)
-    .await?;
+    let stored: String =
+        sqlx::query_scalar("SELECT password_hash FROM user_identities WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&admin)
+            .await?;
     assert!(stored.starts_with("$argon2id$"));
     Ok(())
 }

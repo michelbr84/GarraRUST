@@ -91,12 +91,7 @@ impl IntoResponse for RestError {
             detail,
         };
         let json = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-        (
-            status,
-            [("content-type", "application/problem+json")],
-            json,
-        )
-            .into_response()
+        (status, [("content-type", "application/problem+json")], json).into_response()
     }
 }
 

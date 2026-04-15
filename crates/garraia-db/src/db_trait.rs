@@ -24,18 +24,9 @@ pub trait GarraDb: Send + Sync {
     /// Append a message turn to `session_id`.
     ///
     /// `direction` is `"user"`, `"assistant"`, or `"system"`.
-    async fn append_message(
-        &self,
-        session_id: &str,
-        direction: &str,
-        content: &str,
-    ) -> Result<()>;
+    async fn append_message(&self, session_id: &str, direction: &str, content: &str) -> Result<()>;
 
     /// Return the `limit` most recent messages for `session_id`,
     /// in chronological order (oldest first).
-    async fn list_messages(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> Result<Vec<StoredMessage>>;
+    async fn list_messages(&self, session_id: &str, limit: usize) -> Result<Vec<StoredMessage>>;
 }

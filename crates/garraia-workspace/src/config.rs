@@ -74,9 +74,7 @@ impl WorkspaceConfig {
 
         if let Ok(v) = std::env::var("GARRAIA_WORKSPACE_MAX_CONNECTIONS") {
             cfg.max_connections = v.parse::<u32>().map_err(|e| {
-                WorkspaceError::Config(format!(
-                    "invalid GARRAIA_WORKSPACE_MAX_CONNECTIONS: {e}"
-                ))
+                WorkspaceError::Config(format!("invalid GARRAIA_WORKSPACE_MAX_CONNECTIONS: {e}"))
             })?;
         }
 
@@ -92,10 +90,7 @@ impl WorkspaceConfig {
 }
 
 fn parse_bool(s: &str) -> bool {
-    matches!(
-        s.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 /// Custom validator: the URL must use a Postgres scheme.
@@ -127,9 +122,18 @@ mod tests {
             migrate_on_start: false,
         };
         let dbg = format!("{cfg:?}");
-        assert!(!dbg.contains("supersecret"), "Debug must not leak credentials: {dbg}");
-        assert!(!dbg.contains("password"), "Debug must not leak credentials: {dbg}");
-        assert!(dbg.contains("[REDACTED]"), "Debug should show redaction marker");
+        assert!(
+            !dbg.contains("supersecret"),
+            "Debug must not leak credentials: {dbg}"
+        );
+        assert!(
+            !dbg.contains("password"),
+            "Debug must not leak credentials: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "Debug should show redaction marker"
+        );
         assert!(dbg.contains("max_connections: 7"));
         assert!(dbg.contains("migrate_on_start: false"));
     }

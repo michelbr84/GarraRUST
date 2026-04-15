@@ -63,7 +63,9 @@ pub async fn notify_message(
         builder = builder.sound("default");
     }
 
-    builder.show().map_err(|e| format!("Notification error: {e}"))?;
+    builder
+        .show()
+        .map_err(|e| format!("Notification error: {e}"))?;
 
     Ok(())
 }
@@ -74,7 +76,8 @@ pub async fn notify_message(
 #[tauri::command]
 pub async fn hide_quick_chat(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("quick-chat") {
-        win.hide().map_err(|e| format!("Failed to hide quick-chat: {e}"))?;
+        win.hide()
+            .map_err(|e| format!("Failed to hide quick-chat: {e}"))?;
     }
     Ok(())
 }

@@ -42,12 +42,7 @@ impl GarraDb for SqliteDb {
         guard.upsert_session(id, "api", id, &serde_json::Value::Null)
     }
 
-    async fn append_message(
-        &self,
-        session_id: &str,
-        direction: &str,
-        content: &str,
-    ) -> Result<()> {
+    async fn append_message(&self, session_id: &str, direction: &str, content: &str) -> Result<()> {
         let guard = self.0.lock().await;
         guard.append_message(
             session_id,
@@ -58,11 +53,7 @@ impl GarraDb for SqliteDb {
         )
     }
 
-    async fn list_messages(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> Result<Vec<StoredMessage>> {
+    async fn list_messages(&self, session_id: &str, limit: usize) -> Result<Vec<StoredMessage>> {
         let guard = self.0.lock().await;
         guard.load_recent_messages(session_id, limit)
     }
@@ -87,8 +78,12 @@ mod tests {
     async fn test_append_and_list() {
         let db = make_db().await;
         db.create_session("s2").await.expect("create");
-        db.append_message("s2", "user", "hello").await.expect("append user");
-        db.append_message("s2", "assistant", "world").await.expect("append assistant");
+        db.append_message("s2", "user", "hello")
+            .await
+            .expect("append user");
+        db.append_message("s2", "assistant", "world")
+            .await
+            .expect("append assistant");
 
         let msgs = db.list_messages("s2", 10).await.expect("list");
         assert_eq!(msgs.len(), 2);

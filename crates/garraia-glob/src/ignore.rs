@@ -153,7 +153,14 @@ impl IgnoreFile {
             }
         }
 
-        Self { positive, negated_compiled, raw_patterns, raw_negated, kind, source: None }
+        Self {
+            positive,
+            negated_compiled,
+            raw_patterns,
+            raw_negated,
+            kind,
+            source: None,
+        }
     }
 
     /// Parse a `.gitignore` file from disk (standard glob patterns).
@@ -228,7 +235,10 @@ impl IgnoreFile {
 ///
 /// `dot = true` so patterns like `*.env` or `*.key` match dotfiles such as `.env`.
 fn ignore_config() -> GlobConfig {
-    GlobConfig { dot: true, ..GlobConfig::default() }
+    GlobConfig {
+        dot: true,
+        ..GlobConfig::default()
+    }
 }
 
 /// Compile a raw ignore pattern into an (entry, contents) pair.
@@ -256,9 +266,9 @@ fn compile_pair(raw: &str, config: &GlobConfig) -> Option<(GlobPattern, GlobPatt
 /// Returns `true` if `pattern` contains any extglob operator (`!(`, `*(`, `+(`, `@(`, `?(`).
 fn has_extglob(pattern: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
-    chars.windows(2).any(|w| {
-        matches!(w[0], '!' | '*' | '+' | '@' | '?') && w[1] == '('
-    })
+    chars
+        .windows(2)
+        .any(|w| matches!(w[0], '!' | '*' | '+' | '@' | '?') && w[1] == '(')
 }
 
 /// Apply gitignore-style anchoring to a raw pattern.
@@ -347,7 +357,7 @@ mod tests {
     #[test]
     fn directory_pattern_ignores_contents() {
         let ig = git("target/\n");
-        assert!(ig.is_ignored("target"));              // the dir entry itself
+        assert!(ig.is_ignored("target")); // the dir entry itself
         assert!(ig.is_ignored("target/debug/foo.exe")); // contents beneath
     }
 
@@ -386,14 +396,14 @@ mod tests {
         // !(*.rs) — ignore everything except .rs files
         let ig = garra("!(*.rs)\n");
         assert!(ig.is_ignored("Cargo.toml")); // not .rs → ignored
-        assert!(!ig.is_ignored("main.rs"));   // .rs → NOT ignored
+        assert!(!ig.is_ignored("main.rs")); // .rs → NOT ignored
     }
 
     #[test]
     fn garraignore_extglob_star() {
         // *(log) — matches zero or more "log" repetitions
         let ig = garra("*(log).txt\n");
-        assert!(ig.is_ignored(".txt"));       // zero logs → **/.txt
+        assert!(ig.is_ignored(".txt")); // zero logs → **/.txt
         assert!(ig.is_ignored("log.txt"));
         assert!(ig.is_ignored("loglog.txt"));
     }

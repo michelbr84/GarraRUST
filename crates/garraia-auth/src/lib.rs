@@ -24,7 +24,7 @@ pub mod provider;
 pub mod sessions;
 pub mod types;
 
-pub use audit::{audit_login, AuditAction};
+pub use audit::{AuditAction, audit_login};
 pub use error::AuthError;
 pub use hashing::{hash_argon2id, verify_argon2id, verify_pbkdf2};
 pub use internal::InternalProvider;
@@ -41,7 +41,7 @@ pub mod extractor;
 pub mod role;
 pub use action::Action;
 pub use can::can;
-pub use extractor::{require_permission, RequirePermission};
+pub use extractor::{RequirePermission, require_permission};
 pub use role::Role;
 
 // 391c-impl-B — SignupPool/signup_user/RedactedStorageError

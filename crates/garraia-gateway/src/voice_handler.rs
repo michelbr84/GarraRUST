@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{State, Multipart};
+use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -111,10 +111,7 @@ pub async fn synthesize(
     );
     let start = std::time::Instant::now();
 
-    match voice_client
-        .synthesize_bytes(&body.text, lang)
-        .await
-    {
+    match voice_client.synthesize_bytes(&body.text, lang).await {
         Ok(audio_bytes) => {
             let elapsed = start.elapsed();
             info!(
@@ -166,7 +163,7 @@ pub struct SttResponse {
 }
 
 /// POST /api/stt — transcribe audio using Whisper STT.
-/// 
+///
 /// Accepts multipart form data with an audio file (WAV, OGG, MP3, etc.).
 /// Returns JSON with transcribed text on success.
 /// Only available when the server is started with `--with-voice`.
@@ -193,16 +190,16 @@ pub async fn transcribe(
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let field_name = field.name().unwrap_or("").to_string();
-        
+
         if field_name == "file" {
             let filename = field
                 .file_name()
                 .map(|s: &str| s.to_string())
                 .unwrap_or_else(|| "audio.wav".to_string());
-            
+
             // Record filename for tracing before moving
             tracing::Span::current().record("filename", &filename);
-            
+
             let data: Vec<u8> = match field.bytes().await {
                 Ok(bytes) => bytes.to_vec(),
                 Err(e) => {
@@ -253,7 +250,7 @@ pub async fn transcribe(
     // Create temp file for Whisper (it expects a file path)
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join(format!("garraia_stt_{}.wav", uuid::Uuid::new_v4()));
-    
+
     // Write audio to temp file
     if let Err(e) = tokio::fs::write(&temp_path, &audio_bytes).await {
         error!("Failed to write temp audio file: {}", e);
@@ -280,13 +277,7 @@ pub async fn transcribe(
                 duration_ms = elapsed.as_millis() as u64,
                 "✅ STT transcription complete"
             );
-            (
-                StatusCode::OK,
-                Json(SttResponse {
-                    text,
-                    error: None,
-                }),
-            )
+            (StatusCode::OK, Json(SttResponse { text, error: None }))
         }
         Err(e) => {
             let elapsed = start.elapsed();

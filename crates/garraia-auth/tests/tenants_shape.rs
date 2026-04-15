@@ -36,44 +36,39 @@ async fn tenant_new_creates_two_groups_and_four_users() -> anyhow::Result<()> {
     // legitimate for fixture sanity checks, not for the RLS matrix itself.
     let admin = sqlx::PgPool::connect(&h.admin_url).await?;
 
-    let user_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users WHERE id = ANY($1::uuid[])",
-    )
-    .bind(&ids[..])
-    .fetch_one(&admin)
-    .await?;
+    let user_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE id = ANY($1::uuid[])")
+            .bind(&ids[..])
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(user_count, 4);
 
-    let identity_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM user_identities WHERE user_id = ANY($1::uuid[])",
-    )
-    .bind(&ids[..])
-    .fetch_one(&admin)
-    .await?;
+    let identity_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM user_identities WHERE user_id = ANY($1::uuid[])")
+            .bind(&ids[..])
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(identity_count, 4);
 
-    let primary_members: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM group_members WHERE group_id = $1",
-    )
-    .bind(t.group_id)
-    .fetch_one(&admin)
-    .await?;
+    let primary_members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM group_members WHERE group_id = $1")
+            .bind(t.group_id)
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(primary_members, 2, "primary group must have owner + member");
 
-    let cross_members: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM group_members WHERE group_id = $1",
-    )
-    .bind(t.cross_group_id)
-    .fetch_one(&admin)
-    .await?;
+    let cross_members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM group_members WHERE group_id = $1")
+            .bind(t.cross_group_id)
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(cross_members, 1, "cross group must have only cross owner");
 
-    let outsider_memberships: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM group_members WHERE user_id = $1",
-    )
-    .bind(t.outsider.user_id)
-    .fetch_one(&admin)
-    .await?;
+    let outsider_memberships: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM group_members WHERE user_id = $1")
+            .bind(t.outsider.user_id)
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(outsider_memberships, 0, "outsider must have no memberships");
 
     admin.close().await;

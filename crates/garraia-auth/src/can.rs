@@ -64,8 +64,17 @@ fn build_matrix() -> HashMap<Role, HashSet<Action>> {
     m.insert(
         Role::Member,
         [
-            FilesRead, FilesWrite, ChatsRead, ChatsWrite, MemoryRead, MemoryWrite, TasksRead,
-            TasksWrite, DocsRead, DocsWrite, ExportSelf,
+            FilesRead,
+            FilesWrite,
+            ChatsRead,
+            ChatsWrite,
+            MemoryRead,
+            MemoryWrite,
+            TasksRead,
+            TasksWrite,
+            DocsRead,
+            DocsWrite,
+            ExportSelf,
         ]
         .into_iter()
         .collect(),
@@ -264,7 +273,11 @@ mod tests {
     fn no_role_means_no_permission() {
         let principal = p(None);
         for a in Action::ALL {
-            assert!(!can(&principal, a), "no-role principal must not have {:?}", a);
+            assert!(
+                !can(&principal, a),
+                "no-role principal must not have {:?}",
+                a
+            );
         }
     }
 }

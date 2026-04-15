@@ -84,21 +84,21 @@ impl SessionStore {
         );
 
         // Migration: add source column to messages (for Chat Sync)
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN source TEXT;",
-        );
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN provider TEXT;",
-        );
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN model TEXT;",
-        );
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN tokens_in INTEGER;",
-        );
-        let _ = self.conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN tokens_out INTEGER;",
-        );
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN source TEXT;");
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN provider TEXT;");
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN model TEXT;");
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN tokens_in INTEGER;");
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE messages ADD COLUMN tokens_out INTEGER;");
 
         self.conn
             .execute_batch(
@@ -359,7 +359,9 @@ impl SessionStore {
         timestamp: chrono::DateTime<chrono::Utc>,
         metadata: &serde_json::Value,
     ) -> Result<()> {
-        self.append_message_with_details(session_id, direction, content, timestamp, metadata, None, None, None, None, None)
+        self.append_message_with_details(
+            session_id, direction, content, timestamp, metadata, None, None, None, None, None,
+        )
     }
 
     /// Append a single message to a session with full details (for Chat Sync).
@@ -529,9 +531,10 @@ impl SessionStore {
         source: &str,
         external_id: &str,
     ) -> Result<Option<String>> {
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare(
-                "SELECT session_id FROM chat_session_keys WHERE source = ?1 AND external_id = ?2"
+                "SELECT session_id FROM chat_session_keys WHERE source = ?1 AND external_id = ?2",
             )
             .map_err(|e| Error::Database(format!("failed to prepare session key query: {e}")))?;
 
@@ -577,12 +580,13 @@ impl SessionStore {
 
     /// Get the latest summary for a session.
     pub fn get_latest_session_summary(&self, session_id: &str) -> Result<Option<(String, i32)>> {
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare(
                 "SELECT summary_text, message_count FROM chat_summaries
                  WHERE session_id = ?1
                  ORDER BY created_at DESC
-                 LIMIT 1"
+                 LIMIT 1",
             )
             .map_err(|e| Error::Database(format!("failed to prepare summary query: {e}")))?;
 
@@ -597,7 +601,8 @@ impl SessionStore {
 
     /// Get total message count for a session.
     pub fn get_message_count(&self, session_id: &str) -> Result<i32> {
-        let count: i32 = self.conn
+        let count: i32 = self
+            .conn
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 params![session_id],
@@ -712,7 +717,8 @@ impl SessionStore {
     /// Get the current agent mode for a session.
     /// Returns None if no mode has been set.
     pub fn get_agent_mode(&self, session_id: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare("SELECT metadata FROM sessions WHERE id = ?1")
             .map_err(|e| Error::Database(format!("failed to prepare mode query: {e}")))?;
 
@@ -725,22 +731,23 @@ impl SessionStore {
 
         if let Some(metadata_str) = result
             && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str)
-                && let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str()) {
-                    return Ok(Some(mode.to_string()));
-                }
+            && let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str())
+        {
+            return Ok(Some(mode.to_string()));
+        }
         Ok(None)
     }
 
     /// Set the current agent mode for a session.
     pub fn set_agent_mode(&self, session_id: &str, mode: &str) -> Result<()> {
         // First get existing metadata
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare("SELECT metadata FROM sessions WHERE id = ?1")
             .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
 
-        let metadata_str: Option<String> = stmt
-            .query_row(params![session_id], |row| row.get(0))
-            .ok();
+        let metadata_str: Option<String> =
+            stmt.query_row(params![session_id], |row| row.get(0)).ok();
 
         let mut metadata = if let Some(m) = metadata_str {
             serde_json::from_str(&m).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
@@ -765,24 +772,25 @@ impl SessionStore {
     /// Clear the agent mode for a session (reset to default).
     pub fn clear_agent_mode(&self, session_id: &str) -> Result<()> {
         // Get existing metadata
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare("SELECT metadata FROM sessions WHERE id = ?1")
             .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
 
-        let metadata_str: Option<String> = stmt
-            .query_row(params![session_id], |row| row.get(0))
-            .ok();
+        let metadata_str: Option<String> =
+            stmt.query_row(params![session_id], |row| row.get(0)).ok();
 
         if let Some(m) = metadata_str
-            && let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m) {
-                metadata["agent_mode"] = serde_json::Value::Null;
-                self.conn
-                    .execute(
-                        "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
-                        params![metadata.to_string(), session_id],
-                    )
-                    .map_err(|e| Error::Database(format!("failed to clear agent mode: {e}")))?;
-            }
+            && let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m)
+        {
+            metadata["agent_mode"] = serde_json::Value::Null;
+            self.conn
+                .execute(
+                    "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    params![metadata.to_string(), session_id],
+                )
+                .map_err(|e| Error::Database(format!("failed to clear agent mode: {e}")))?;
+        }
         Ok(())
     }
 
@@ -856,9 +864,11 @@ impl SessionStore {
                     name: row.get(2)?,
                     description: row.get(3)?,
                     base_mode: row.get(4)?,
-                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                     prompt_override: row.get(6)?,
-                    defaults: serde_json::from_str(&defaults_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    defaults: serde_json::from_str(&defaults_raw)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                     is_active: row.get::<_, i32>(8)? == 1,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
@@ -868,7 +878,8 @@ impl SessionStore {
 
         let mut modes = Vec::new();
         for row in rows {
-            let mode = row.map_err(|e| Error::Database(format!("failed to read custom mode row: {}", e)))?;
+            let mode =
+                row.map_err(|e| Error::Database(format!("failed to read custom mode row: {}", e)))?;
             modes.push(mode);
         }
         Ok(modes)
@@ -893,9 +904,11 @@ impl SessionStore {
                     name: row.get(2)?,
                     description: row.get(3)?,
                     base_mode: row.get(4)?,
-                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    tool_policy_overrides: serde_json::from_str(&tool_policy_raw)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                     prompt_override: row.get(6)?,
-                    defaults: serde_json::from_str(&defaults_raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                    defaults: serde_json::from_str(&defaults_raw)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                     is_active: row.get::<_, i32>(8)? == 1,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
@@ -955,7 +968,8 @@ impl SessionStore {
         );
 
         // Convert params_vec to slice
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
 
         self.conn
             .execute(&query, params_refs.as_slice())
@@ -966,7 +980,8 @@ impl SessionStore {
 
     /// Delete (soft delete) a custom mode
     pub fn delete_custom_mode(&self, mode_id: &str) -> Result<bool> {
-        let rows_affected = self.conn
+        let rows_affected = self
+            .conn
             .execute(
                 "UPDATE custom_modes SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
                 params![mode_id],
@@ -1040,9 +1055,7 @@ impl SessionStore {
         idle_timeout_secs: i64,
     ) -> Result<Option<String>> {
         let idle_clause = if idle_timeout_secs > 0 {
-            format!(
-                "AND datetime(last_active, '+{idle_timeout_secs} seconds') > datetime('now')"
-            )
+            format!("AND datetime(last_active, '+{idle_timeout_secs} seconds') > datetime('now')")
         } else {
             String::new()
         };
@@ -1135,10 +1148,7 @@ impl SessionStore {
     }
 
     /// Find a mobile user by email. Returns `None` if not found.
-    pub fn find_mobile_user_by_email(
-        &self,
-        email: &str,
-    ) -> Result<Option<MobileUser>> {
+    pub fn find_mobile_user_by_email(&self, email: &str) -> Result<Option<MobileUser>> {
         self.conn
             .query_row(
                 "SELECT id, email, password_hash, salt, created_at
@@ -1383,20 +1393,30 @@ mod tests {
             .expect("session upsert should succeed");
 
         // Initially no mode set
-        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        let mode = store
+            .get_agent_mode(session_id)
+            .expect("get mode should succeed");
         assert!(mode.is_none(), "Initial mode should be None");
 
         // Set mode to "code"
-        store.set_agent_mode(session_id, "code").expect("set mode should succeed");
+        store
+            .set_agent_mode(session_id, "code")
+            .expect("set mode should succeed");
 
         // Retrieve mode
-        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        let mode = store
+            .get_agent_mode(session_id)
+            .expect("get mode should succeed");
         assert_eq!(mode, Some("code".to_string()), "Mode should be 'code'");
 
         // Change mode to "debug"
-        store.set_agent_mode(session_id, "debug").expect("set mode should succeed");
+        store
+            .set_agent_mode(session_id, "debug")
+            .expect("set mode should succeed");
 
-        let mode = store.get_agent_mode(session_id).expect("get mode should succeed");
+        let mode = store
+            .get_agent_mode(session_id)
+            .expect("get mode should succeed");
         assert_eq!(mode, Some("debug".to_string()), "Mode should be 'debug'");
     }
 
@@ -1411,14 +1431,20 @@ mod tests {
 
         // Set mode
         store.set_agent_mode(session_id, "search").unwrap();
-        assert_eq!(store.get_agent_mode(session_id).unwrap(), Some("search".to_string()));
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string())
+        );
 
         // Clear mode
         store.clear_agent_mode(session_id).unwrap();
 
         // Mode should be None after clear
         let mode = store.get_agent_mode(session_id).unwrap();
-        assert!(mode.is_none() || mode == Some("".to_string()), "Mode should be cleared");
+        assert!(
+            mode.is_none() || mode == Some("".to_string()),
+            "Mode should be cleared"
+        );
     }
 
     #[test]
@@ -1428,7 +1454,12 @@ mod tests {
 
         // Create session with existing metadata
         store
-            .upsert_session(session_id, "web", "user-1", &serde_json::json!({"foo": "bar"}))
+            .upsert_session(
+                session_id,
+                "web",
+                "user-1",
+                &serde_json::json!({"foo": "bar"}),
+            )
             .unwrap();
 
         // Set mode - should preserve "foo": "bar"

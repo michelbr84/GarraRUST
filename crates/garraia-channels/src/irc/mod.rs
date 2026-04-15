@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{error, info};
 
 use crate::traits::{Channel, ChannelStatus};
@@ -71,9 +71,9 @@ impl IrcChannel {
     /// Send a raw IRC line (appends \r\n).
     async fn send_raw(writer: &SharedWriter, line: &str) -> Result<()> {
         let mut guard = writer.lock().await;
-        let w = guard.as_mut().ok_or_else(|| {
-            Error::Channel("irc: not connected".into())
-        })?;
+        let w = guard
+            .as_mut()
+            .ok_or_else(|| Error::Channel("irc: not connected".into()))?;
         let data = format!("{}\r\n", line);
         w.write_all(data.as_bytes())
             .await
@@ -142,11 +142,7 @@ impl Channel for IrcChannel {
         // Send NICK and USER
         let nick = self.config.nick.clone();
         Self::send_raw(&writer_ref, &format!("NICK {}", nick)).await?;
-        Self::send_raw(
-            &writer_ref,
-            &format!("USER {} 0 * :GarraIA Bot", nick),
-        )
-        .await?;
+        Self::send_raw(&writer_ref, &format!("USER {} 0 * :GarraIA Bot", nick)).await?;
 
         // Join channels after registration
         let channels = self.config.channels.clone();
@@ -287,9 +283,7 @@ impl Channel for IrcChannel {
             .metadata
             .get("irc_target")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::Channel("missing irc_target in metadata".into())
-            })?;
+            .ok_or_else(|| Error::Channel("missing irc_target in metadata".into()))?;
 
         let text = match &message.content {
             MessageContent::Text(t) => t.clone(),
@@ -348,10 +342,9 @@ mod tests {
 
     #[test]
     fn channel_type_is_irc() {
-        let on_msg: IrcOnMessageFn =
-            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: IrcOnMessageFn = Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = IrcConfig {
             server: "irc.libera.chat".into(),
             port: 6667,
@@ -401,10 +394,9 @@ mod tests {
 
     #[test]
     fn initial_status_is_disconnected() {
-        let on_msg: IrcOnMessageFn =
-            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: IrcOnMessageFn = Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = IrcConfig {
             server: "irc.example.com".into(),
             port: 6667,
@@ -419,10 +411,9 @@ mod tests {
 
     #[test]
     fn display_name_is_irc() {
-        let on_msg: IrcOnMessageFn =
-            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: IrcOnMessageFn = Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = IrcConfig {
             server: "irc.example.com".into(),
             port: 6667,
@@ -436,10 +427,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_without_connection_fails() {
-        let on_msg: IrcOnMessageFn =
-            Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: IrcOnMessageFn = Arc::new(|_ch, _nick, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = IrcConfig {
             server: "irc.example.com".into(),
             port: 6667,

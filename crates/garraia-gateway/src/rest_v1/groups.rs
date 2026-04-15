@@ -33,17 +33,17 @@
 //! — injection-safe by construction. All other parameters use
 //! `sqlx::query::bind` as normal.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::{DateTime, Utc};
 use garraia_auth::Principal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::problem::RestError;
 use super::RestV1FullState;
+use super::problem::RestError;
 
 /// Accepted values for `CreateGroupRequest::group_type`.
 ///
@@ -121,9 +121,7 @@ pub async fn create_group(
         ));
     }
     if req.name.trim().is_empty() {
-        return Err(RestError::BadRequest(
-            "group name must not be empty".into(),
-        ));
+        return Err(RestError::BadRequest("group name must not be empty".into()));
     }
 
     // 2a. Capture the trimmed name once so the database row and the
@@ -254,13 +252,12 @@ pub async fn get_group(
     //    if RLS is later applied and this handler is left
     //    untouched.
     let pool = state.app_pool.pool_for_handlers();
-    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
-        "SELECT id, name, type, created_at, created_by FROM groups WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> =
+        sqlx::query_as("SELECT id, name, type, created_at, created_by FROM groups WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
 

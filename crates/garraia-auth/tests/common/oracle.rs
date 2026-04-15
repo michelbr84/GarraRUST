@@ -47,8 +47,7 @@ pub fn classify_pg_error(err: &sqlx::Error) -> Option<RlsExpected> {
         || msg.starts_with("permission denied for relation")
     {
         Some(RlsExpected::InsufficientPrivilege)
-    } else if msg.contains("row-level security policy")
-        || msg.contains("row level security policy")
+    } else if msg.contains("row-level security policy") || msg.contains("row level security policy")
     {
         Some(RlsExpected::PermissionDenied)
     } else {

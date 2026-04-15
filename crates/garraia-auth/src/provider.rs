@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::types::{Credential, Identity};
 use crate::Result;
+use crate::types::{Credential, Identity};
 
 /// `IdentityProvider` is the trait every credential backend implements.
 /// The shape is FROZEN by ADR 0005 — extensions come via new variants

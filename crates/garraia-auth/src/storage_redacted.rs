@@ -223,8 +223,7 @@ mod tests {
     fn from_sqlx_error_wraps_and_display_redacts() {
         // Use a synthetic sqlx::Error::Protocol (carries an arbitrary String
         // via Display) so we can test the full newtype path end-to-end.
-        let raw =
-            "protocol error near postgres://u:p@h:5432/db while handshaking".to_string();
+        let raw = "protocol error near postgres://u:p@h:5432/db while handshaking".to_string();
         let err = sqlx::Error::Protocol(raw);
         let wrapped: RedactedStorageError = err.into();
         let disp = format!("{wrapped}");

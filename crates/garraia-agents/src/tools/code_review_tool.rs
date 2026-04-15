@@ -10,9 +10,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use super::{Tool, ToolContext, ToolOutput};
-use crate::providers::{
-    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart,
-};
+use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart};
 
 /// Default timeout for diff operations
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
@@ -62,11 +60,8 @@ impl CodeReviewTool {
             args.push(path.to_string());
         }
 
-        let result = tokio::time::timeout(
-            self.timeout,
-            Command::new("git").args(&args).output(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(self.timeout, Command::new("git").args(&args).output()).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -97,7 +92,11 @@ impl CodeReviewTool {
     }
 
     /// Send diff to LLM for review
-    async fn review_diff(&self, diff: &str, file_path: Option<&str>) -> std::result::Result<String, String> {
+    async fn review_diff(
+        &self,
+        diff: &str,
+        file_path: Option<&str>,
+    ) -> std::result::Result<String, String> {
         let file_context = file_path
             .map(|p| format!(" for file: {}", p))
             .unwrap_or_default();
@@ -198,7 +197,11 @@ impl Tool for CodeReviewTool {
         })
     }
 
-    async fn execute(&self, _context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput> {
         let commit_range = input.get("commit_range").and_then(|v| v.as_str());
         let file_path = input.get("file_path").and_then(|v| v.as_str());
 
