@@ -29,20 +29,26 @@ use super::Harness;
 ///
 /// Returns `(user_id, group_id, jwt_token)`.
 ///
-/// A fresh admin pool is opened on every call and closed on drop —
-/// same pattern as `garraia-auth/tests/common/harness.rs` uses for
-/// role promotion (opens, runs ALTER ROLE, closes). Connection pools
-/// against a local testcontainer are cheap enough for this.
+/// Uses the harness's **shared** `admin_pool` (built once in
+/// `Harness::boot`) instead of opening a fresh pool per call.
+/// Opening a fresh `PgPool` per fixture call would exhaust
+/// Postgres `max_connections` in parallel test suites — a bug
+/// discovered during plan 0016 M3-T3 when 5 `#[tokio::test]`
+/// functions each opened their own fixture pool on top of the
+/// three harness pools (48 connections).
 pub async fn seed_user_with_group(
     h: &Harness,
     email: &str,
 ) -> anyhow::Result<(Uuid, Uuid, String)> {
-    let admin_pool = sqlx::PgPool::connect(&h.admin_url)
-        .await
-        .context("fixture admin_pool connect")?;
-
     let user_id = Uuid::new_v4();
     let group_id = Uuid::new_v4();
+
+    // Single transaction: acquires ONE connection for all 3 inserts
+    // and either commits all or rolls back all. Crucial for parallel
+    // test suites — 5 `#[tokio::test]` × 3 sequential inserts against
+    // a small shared admin_pool hits the `acquire_timeout` otherwise.
+    // Discovered during plan 0016 M3-T3 debugging.
+    let mut tx = h.admin_pool.begin().await.context("fixture tx begin")?;
 
     sqlx::query(
         "INSERT INTO users (id, email, display_name, status) \
@@ -51,7 +57,7 @@ pub async fn seed_user_with_group(
     .bind(user_id)
     .bind(email)
     .bind(format!("Test {}", email))
-    .execute(&admin_pool)
+    .execute(&mut *tx)
     .await
     .context("fixture insert users")?;
 
@@ -62,7 +68,7 @@ pub async fn seed_user_with_group(
     .bind(group_id)
     .bind(format!("Test group for {}", email))
     .bind(user_id)
-    .execute(&admin_pool)
+    .execute(&mut *tx)
     .await
     .context("fixture insert groups")?;
 
@@ -72,11 +78,11 @@ pub async fn seed_user_with_group(
     )
     .bind(group_id)
     .bind(user_id)
-    .execute(&admin_pool)
+    .execute(&mut *tx)
     .await
     .context("fixture insert group_members")?;
 
-    admin_pool.close().await;
+    tx.commit().await.context("fixture tx commit")?;
 
     let token = h.jwt.issue_access_for_test(user_id);
 
