@@ -41,7 +41,11 @@ jobs:
           components: clippy
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # garraia-desktop (Tauri) is excluded because its build.rs depends on
+        # the GTK/glib system libraries and a Windows sidecar binary that are
+        # not available on GitHub-hosted runners. Desktop is built locally via
+        # scripts/build-installer.ps1.
+        run: cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
 
   # Build and test on multiple platforms
   test:
@@ -72,10 +76,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build workspace
-        run: cargo build --workspace
+        # See clippy job comment: garraia-desktop excluded on CI.
+        run: cargo build --workspace --exclude garraia-desktop
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude garraia-desktop
 
   # Build only (no test) for faster feedback on other platforms if needed
   build:
@@ -89,7 +94,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build workspace
-        run: cargo build --workspace --release
+        # See clippy job comment: garraia-desktop excluded on CI.
+        run: cargo build --workspace --exclude garraia-desktop --release
 
   # E2E integration test (GAR-216)
   e2e:
