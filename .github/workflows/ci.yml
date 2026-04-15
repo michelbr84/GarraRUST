@@ -187,7 +187,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: tests/package.json
+          cache-dependency-path: tests/package-lock.json
 
       - name: Install Playwright
         run: npm ci && npx playwright install chromium --with-deps
