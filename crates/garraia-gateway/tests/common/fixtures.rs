@@ -88,3 +88,48 @@ pub async fn seed_user_with_group(
 
     Ok((user_id, group_id, token))
 }
+
+/// Seed an authenticated user with NO group membership, then mint a
+/// JWT for that user via `Harness::jwt::issue_access_for_test`.
+///
+/// Returns `(user_id, jwt_token)`.
+///
+/// Used by the GAR-391d authz matrix (plan 0014) to exercise the
+/// "authenticated but not a member of any group" vector. Cross-group
+/// authorization cannot be validated without this actor: the
+/// `Principal` extractor's 403 path on `GET /v1/groups/{id}` only
+/// fires when the caller has a valid JWT but no matching row in
+/// `group_members` for the requested `X-Group-Id`.
+///
+/// Follows the same single-transaction pattern as
+/// `seed_user_with_group` so the test suite does not exhaust
+/// Postgres connections under parallel scenarios (lesson from
+/// plan 0016 M3-T3 pool exhaustion).
+pub async fn seed_user_without_group(h: &Harness, email: &str) -> anyhow::Result<(Uuid, String)> {
+    let user_id = Uuid::new_v4();
+
+    let mut tx = h
+        .admin_pool
+        .begin()
+        .await
+        .context("seed_user_without_group: tx begin")?;
+
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, status) \
+         VALUES ($1, $2, $3, 'active')",
+    )
+    .bind(user_id)
+    .bind(email)
+    .bind(format!("Test {}", email))
+    .execute(&mut *tx)
+    .await
+    .context("seed_user_without_group: insert users")?;
+
+    tx.commit()
+        .await
+        .context("seed_user_without_group: tx commit")?;
+
+    let token = h.jwt.issue_access_for_test(user_id);
+
+    Ok((user_id, token))
+}
