@@ -4,7 +4,7 @@
 
 **Linear issue:** [GAR-WS-API](https://linear.app/chatgpt25/team/GAR) (Fase 3.4 / API REST `/v1` + OpenAPI) — Slice 2 of the epic. Precondition for plan 0014 (GAR-391d app-layer cross-group matrix) becomes actually satisfied after **M3** of this plan ships.
 
-**Status:** ⏳ Draft — aprovado 2026-04-14 (Florida) junto do merge do plan 0015 (commit `4afb4fe`).
+**Status:** ✅ Merged 2026-04-15 (Florida) — M1 `3d2fc66` (PR #10), M2 `a6c337d` (PR #12), M3 `b139861` (PR #13), M4 `860312b` (PR #15), M5 `1404365` (PR #20). Corpo formal do plano (Tasks 0–17) entregue integralmente. Itens extras do comentário de índice original ficaram fora do escopo por decisão operacional 2026-04-15 — ver `plans/README.md`.
 
 **Goal:** Entregar a infra de pool RLS-enforced (`AppPool`), o harness de integração do `garraia-gateway` reusável com Postgres real, a cobertura autenticada completa do `GET /v1/me`, e o primeiro par write/read handler de `/v1/groups` — resolvendo simultaneamente os follow-ups do review formal do PR #8.
 
