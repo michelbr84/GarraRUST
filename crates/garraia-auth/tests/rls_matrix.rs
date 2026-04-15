@@ -169,7 +169,12 @@ async fn execute_case(h: &Harness, t: &Tenant, case: &RlsCase) -> RlsExpected {
 
     match case.tenant_ctx {
         TenantCtx::Correct => {
-            set_guc(&mut conn, "app.current_user_id", &t.member.user_id.to_string()).await;
+            set_guc(
+                &mut conn,
+                "app.current_user_id",
+                &t.member.user_id.to_string(),
+            )
+            .await;
             set_guc(&mut conn, "app.current_group_id", &t.group_id.to_string()).await;
         }
         TenantCtx::WrongGroupCorrectUser => {
@@ -181,8 +186,18 @@ async fn execute_case(h: &Harness, t: &Tenant, case: &RlsCase) -> RlsExpected {
             // who legitimately belongs to group A, but I'm claiming my
             // current group is B where I have no membership." See code-
             // review finding I-1 (2026-04-14).
-            set_guc(&mut conn, "app.current_user_id", &t.member.user_id.to_string()).await;
-            set_guc(&mut conn, "app.current_group_id", &t.cross_group_id.to_string()).await;
+            set_guc(
+                &mut conn,
+                "app.current_user_id",
+                &t.member.user_id.to_string(),
+            )
+            .await;
+            set_guc(
+                &mut conn,
+                "app.current_group_id",
+                &t.cross_group_id.to_string(),
+            )
+            .await;
         }
         TenantCtx::BothUnset => {
             // Intentionally nothing.
@@ -214,7 +229,10 @@ async fn execute_select(
     table: &str,
 ) -> RlsExpected {
     let sql = format!("SELECT count(*) FROM {table}");
-    match sqlx::query_scalar::<_, i64>(&sql).fetch_one(&mut **conn).await {
+    match sqlx::query_scalar::<_, i64>(&sql)
+        .fetch_one(&mut **conn)
+        .await
+    {
         Ok(n) => classify_count(n),
         Err(e) => classify_pg_error(&e).unwrap_or_else(|| {
             panic!("unclassified error on SELECT {table}: {e}");
@@ -274,11 +292,7 @@ async fn execute_insert(
     }
 }
 
-async fn set_guc(
-    conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
-    key: &str,
-    val: &str,
-) {
+async fn set_guc(conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>, key: &str, val: &str) {
     sqlx::query("SELECT set_config($1, $2, true)")
         .bind(key)
         .bind(val)

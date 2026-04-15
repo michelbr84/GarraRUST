@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use common::{harness_get, Harness};
+use common::{Harness, harness_get};
 
 #[tokio::test]
 async fn harness_boots_and_router_responds_to_openapi_json() {

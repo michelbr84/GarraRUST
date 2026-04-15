@@ -345,8 +345,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                     // Clear mode (reset to default)
                     if let Some(store) = &state.session_store {
                         let store = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(async { store.lock().await })
+                            tokio::runtime::Handle::current().block_on(async { store.lock().await })
                         });
                         let _ = store.clear_agent_mode(&session_id);
                     }
@@ -355,8 +354,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                     // Set mode
                     if let Some(store) = &state.session_store {
                         let store = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(async { store.lock().await })
+                            tokio::runtime::Handle::current().block_on(async { store.lock().await })
                         });
                         let _ = store.set_agent_mode(&session_id, &new_mode.to_lowercase());
                     }

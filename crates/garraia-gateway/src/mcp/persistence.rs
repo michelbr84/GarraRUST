@@ -42,7 +42,10 @@ pub struct McpPersistenceService {
 impl McpPersistenceService {
     /// Create a service that reads/writes the file at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), vault_path: None }
+        Self {
+            path: path.into(),
+            vault_path: None,
+        }
     }
 
     /// Create a service pointing to the default `mcp.json` location
@@ -235,20 +238,31 @@ impl McpPersistenceService {
             Some(p) => p.as_path(),
             None => {
                 // Check if any server has sensitive keys and warn if so.
-                let has_secrets = config.mcp_servers.values()
+                let has_secrets = config
+                    .mcp_servers
+                    .values()
                     .any(|s| s.env.keys().any(|k| is_sensitive_key(k)));
                 if has_secrets {
-                    warn!("mcp: vault not configured — saving sensitive env vars as plaintext; set GARRAIA_VAULT_PASSPHRASE to enable encryption");
+                    warn!(
+                        "mcp: vault not configured — saving sensitive env vars as plaintext; set GARRAIA_VAULT_PASSPHRASE to enable encryption"
+                    );
                 }
                 return;
             }
         };
 
-        if std::env::var("GARRAIA_VAULT_PASSPHRASE").unwrap_or_default().is_empty() {
-            let has_secrets = config.mcp_servers.values()
+        if std::env::var("GARRAIA_VAULT_PASSPHRASE")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            let has_secrets = config
+                .mcp_servers
+                .values()
                 .any(|s| s.env.keys().any(|k| is_sensitive_key(k)));
             if has_secrets {
-                warn!("mcp: GARRAIA_VAULT_PASSPHRASE not set — sensitive env vars saved as plaintext");
+                warn!(
+                    "mcp: GARRAIA_VAULT_PASSPHRASE not set — sensitive env vars saved as plaintext"
+                );
             }
             return;
         }

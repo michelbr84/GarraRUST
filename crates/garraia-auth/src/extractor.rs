@@ -9,12 +9,12 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::{request::Parts, StatusCode};
+use axum::http::{StatusCode, request::Parts};
 use uuid::Uuid;
 
 use crate::action::Action;
 use crate::can::can;
-use crate::jwt::{extract_bearer_token, JwtIssuer};
+use crate::jwt::{JwtIssuer, extract_bearer_token};
 use crate::login_pool::LoginPool;
 use crate::role::Role;
 use crate::types::Principal;

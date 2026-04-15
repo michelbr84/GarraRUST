@@ -11,19 +11,37 @@ fn pm(pat: &str) -> GlobPattern {
 }
 
 fn pm_dot(pat: &str) -> GlobPattern {
-    GlobPattern::new(pat, &GlobConfig { dot: true, ..GlobConfig::default() }).unwrap()
+    GlobPattern::new(
+        pat,
+        &GlobConfig {
+            dot: true,
+            ..GlobConfig::default()
+        },
+    )
+    .unwrap()
 }
 
 fn bash(pat: &str) -> GlobPattern {
-    GlobPattern::new(pat, &GlobConfig { mode: GlobMode::Bash, ..GlobConfig::default() }).unwrap()
+    GlobPattern::new(
+        pat,
+        &GlobConfig {
+            mode: GlobMode::Bash,
+            ..GlobConfig::default()
+        },
+    )
+    .unwrap()
 }
 
 fn bash_greedy(pat: &str) -> GlobPattern {
-    GlobPattern::new(pat, &GlobConfig {
-        mode: GlobMode::Bash,
-        bash_greedy_negated_extglob: true,
-        ..GlobConfig::default()
-    }).unwrap()
+    GlobPattern::new(
+        pat,
+        &GlobConfig {
+            mode: GlobMode::Bash,
+            bash_greedy_negated_extglob: true,
+            ..GlobConfig::default()
+        },
+    )
+    .unwrap()
 }
 
 // ── Picomatch — standard globs ─────────────────────────────────────────────
@@ -179,10 +197,10 @@ fn pm_question_optional() {
 fn pm_star_extglob_zero_or_more() {
     // Use non-dotfile baseline so dot=false doesn't interfere
     let p = pm("*(foo)test.js");
-    assert!(p.matches("test.js"));          // zero foos
-    assert!(p.matches("footest.js"));       // one foo
-    assert!(p.matches("foofootest.js"));    // two foos
-    assert!(!p.matches("bartest.js"));      // wrong prefix
+    assert!(p.matches("test.js")); // zero foos
+    assert!(p.matches("footest.js")); // one foo
+    assert!(p.matches("foofootest.js")); // two foos
+    assert!(!p.matches("bartest.js")); // wrong prefix
 }
 
 // ── Picomatch — extglob +(…) ───────────────────────────────────────────────
@@ -322,7 +340,10 @@ fn regression_brace_expansion_rs_toml() {
     assert!(p.matches("main.rs"), "*.{{rs,toml}} should match .rs");
     assert!(p.matches("Cargo.toml"), "*.{{rs,toml}} should match .toml");
     assert!(!p.matches("main.py"), "*.{{rs,toml}} should not match .py");
-    assert!(!p.matches("src/main.rs"), "brace expansion still respects /");
+    assert!(
+        !p.matches("src/main.rs"),
+        "brace expansion still respects /"
+    );
 }
 
 #[test]
@@ -331,11 +352,20 @@ fn regression_star_dotfile_default_and_dot_flag() {
     // but MUST match with dot=true.
     let p_default = pm("*");
     assert!(p_default.matches("README.md"), "* matches normal file");
-    assert!(!p_default.matches(".gitignore"), "* must not match dotfile by default");
+    assert!(
+        !p_default.matches(".gitignore"),
+        "* must not match dotfile by default"
+    );
 
     let p_dot = pm_dot("*");
-    assert!(p_dot.matches(".gitignore"), "* matches dotfile when dot=true");
-    assert!(p_dot.matches("README.md"), "* still matches normal files with dot=true");
+    assert!(
+        p_dot.matches(".gitignore"),
+        "* matches dotfile when dot=true"
+    );
+    assert!(
+        p_dot.matches("README.md"),
+        "* still matches normal files with dot=true"
+    );
 }
 
 // ── Windows path normalisation ────────────────────────────────────────────
@@ -353,13 +383,13 @@ fn backslash_paths_normalised_to_forward_slash() {
 #[test]
 fn bash_star_zero_or_more_alternation() {
     let p = bash("*(foo|bar)");
-    assert!(p.matches(""));         // zero
-    assert!(p.matches("foo"));      // one
+    assert!(p.matches("")); // zero
+    assert!(p.matches("foo")); // one
     assert!(p.matches("bar"));
-    assert!(p.matches("foobar"));   // two
+    assert!(p.matches("foobar")); // two
     assert!(p.matches("barfoo"));
     assert!(p.matches("foofoo"));
-    assert!(!p.matches("baz"));     // not in alternation
+    assert!(!p.matches("baz")); // not in alternation
 }
 
 /// `+(pat|pat)` — one or more alternations, Bash safe mode.
@@ -370,7 +400,7 @@ fn bash_plus_one_or_more_alternation() {
     assert!(p.matches("bar.rs"));
     assert!(p.matches("foobar.rs"));
     assert!(p.matches("barfoobar.rs"));
-    assert!(!p.matches(".rs"));       // zero — not allowed
+    assert!(!p.matches(".rs")); // zero — not allowed
     assert!(!p.matches("baz.rs"));
 }
 
@@ -464,8 +494,8 @@ fn bash_case_insensitive() {
 #[test]
 fn bash_star_inner_wildcard() {
     let p = bash("*(*.log)test");
-    assert!(p.matches("test"));           // zero occurrences
-    assert!(p.matches("error.logtest"));  // one
+    assert!(p.matches("test")); // zero occurrences
+    assert!(p.matches("error.logtest")); // one
     assert!(p.matches("a.logb.logtest")); // two
     assert!(!p.matches("error.txttest")); // *.log doesn't match error.txt
 }

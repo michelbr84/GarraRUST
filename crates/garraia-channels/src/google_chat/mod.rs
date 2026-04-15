@@ -15,9 +15,9 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::traits::{Channel, ChannelStatus};
-use garraia_common::{Error, Message, MessageContent, Result};
 #[cfg(test)]
-use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
+use garraia_common::{ChannelId, MessageDirection, SessionId, UserId};
+use garraia_common::{Error, Message, MessageContent, Result};
 
 pub use config::GoogleChatConfig;
 
@@ -83,10 +83,7 @@ impl GoogleChatChannel {
 
     /// Send a text message to a Google Chat space via REST API.
     pub async fn send_to_space(&self, space_name: &str, text: &str) -> Result<()> {
-        let url = format!(
-            "https://chat.googleapis.com/v1/{}/messages",
-            space_name
-        );
+        let url = format!("https://chat.googleapis.com/v1/{}/messages", space_name);
 
         let body = serde_json::json!({
             "text": text,
@@ -114,9 +111,11 @@ impl GoogleChatChannel {
 
     /// Send a message via the configured webhook URL (simple integration).
     pub async fn send_via_webhook(&self, text: &str) -> Result<()> {
-        let url = self.config.webhook_url.as_deref().ok_or_else(|| {
-            Error::Channel("google chat webhook_url not configured".into())
-        })?;
+        let url = self
+            .config
+            .webhook_url
+            .as_deref()
+            .ok_or_else(|| Error::Channel("google chat webhook_url not configured".into()))?;
 
         let body = serde_json::json!({
             "text": text,
@@ -170,9 +169,7 @@ impl Channel for GoogleChatChannel {
             .metadata
             .get("google_chat_space")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::Channel("missing google_chat_space in metadata".into())
-            })?;
+            .ok_or_else(|| Error::Channel("missing google_chat_space in metadata".into()))?;
 
         let text = match &message.content {
             MessageContent::Text(t) => t.clone(),
@@ -197,12 +194,13 @@ mod tests {
 
     #[test]
     fn channel_type_is_google_chat() {
-        let on_msg: GoogleChatOnMessageFn =
-            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: GoogleChatOnMessageFn = Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = GoogleChatConfig {
-            webhook_url: Some("https://chat.googleapis.com/v1/spaces/test/messages?key=test".into()),
+            webhook_url: Some(
+                "https://chat.googleapis.com/v1/spaces/test/messages?key=test".into(),
+            ),
             service_account_key_path: None,
             service_account_token: String::new(),
         };
@@ -214,28 +212,37 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_missing_space_metadata() {
-        let on_msg: GoogleChatOnMessageFn =
-            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: GoogleChatOnMessageFn = Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = GoogleChatConfig {
             webhook_url: Some("https://example.com/webhook".into()),
             service_account_key_path: None,
             service_account_token: String::new(),
         };
         let channel = GoogleChatChannel::new(config, on_msg);
-        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let msg = Message::text(
+            SessionId::from_string("s"),
+            ChannelId::from_string("c"),
+            UserId::from_string("u"),
+            MessageDirection::Outgoing,
+            "hello",
+        );
         let result = channel.send_message(&msg).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("google_chat_space"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("google_chat_space")
+        );
     }
 
     #[test]
     fn send_via_webhook_requires_url() {
-        let on_msg: GoogleChatOnMessageFn =
-            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: GoogleChatOnMessageFn = Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = GoogleChatConfig {
             webhook_url: None,
             service_account_key_path: None,
@@ -249,10 +256,9 @@ mod tests {
 
     #[test]
     fn initial_status_is_disconnected() {
-        let on_msg: GoogleChatOnMessageFn =
-            Arc::new(|_space, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: GoogleChatOnMessageFn = Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = GoogleChatConfig {
             webhook_url: Some("https://example.com".into()),
             service_account_key_path: None,

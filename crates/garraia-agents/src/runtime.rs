@@ -1,8 +1,8 @@
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use futures::{Stream, StreamExt};
 use futures::future::join_all;
+use futures::{Stream, StreamExt};
 use garraia_common::{Error, Result};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
 use tokio::sync::mpsc;
@@ -30,7 +30,15 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// Only scans the last 6 messages to avoid false positives from old confirmations.
 fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> bool {
     let text = user_text.trim().to_lowercase();
-    let approval_words = ["sim", "yes", "confirmar", "confirma", "proceed", "ok", "approve"];
+    let approval_words = [
+        "sim",
+        "yes",
+        "confirmar",
+        "confirma",
+        "proceed",
+        "ok",
+        "approve",
+    ];
     let is_approval = approval_words.iter().any(|w| text == *w);
     if !is_approval {
         return false;
@@ -71,7 +79,7 @@ fn resolve_provider_from_model(model: &str) -> Option<String> {
     if model.is_empty() {
         return None;
     }
-    
+
     // Check for provider prefix (e.g., "openrouter/auto", "anthropic/claude-3")
     if let Some((provider, _)) = model.split_once('/') {
         let provider = provider.to_lowercase();
@@ -519,7 +527,10 @@ impl AgentRuntime {
         } else if let Some(model) = model_override {
             if let Some(resolved_provider_id) = resolve_provider_from_model(model) {
                 if let Some(provider) = self.get_provider(&resolved_provider_id) {
-                    info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
+                    info!(
+                        "Resolved provider '{}' from model override '{}'",
+                        resolved_provider_id, model
+                    );
                     provider
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
@@ -532,12 +543,18 @@ impl AgentRuntime {
                             );
                             or_provider
                         } else {
-                            warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                            warn!(
+                                "Provider '{}' not found, falling back to default",
+                                resolved_provider_id
+                            );
                             self.default_provider()
                                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
                         }
                     } else {
-                        warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                        warn!(
+                            "Provider '{}' not found, falling back to default",
+                            resolved_provider_id
+                        );
                         self.default_provider()
                             .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
                     }
@@ -598,7 +615,8 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
+        let is_confirmation_approved =
+            detect_confirmation_approval(conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -668,8 +686,16 @@ impl AgentRuntime {
             }
 
             // Agent chose to call tools — log which ones
-            let tool_names: Vec<&str> = response.content.iter()
-                .filter_map(|b| if let ContentBlock::ToolUse { name, .. } = b { Some(name.as_str()) } else { None })
+            let tool_names: Vec<&str> = response
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if let ContentBlock::ToolUse { name, .. } = b {
+                        Some(name.as_str())
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             info!("agent calling tools: {:?}", tool_names);
 
@@ -809,7 +835,8 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
+        let is_confirmation_approved =
+            detect_confirmation_approval(conversation_history, user_text);
 
         let mut budget = match self.max_tool_calls {
             Some(limit) => ExecutionBudget::com_limite(limit),
@@ -1065,7 +1092,10 @@ impl AgentRuntime {
         } else if let Some(model) = model_override {
             if let Some(resolved_provider_id) = resolve_provider_from_model(model) {
                 if let Some(provider) = self.get_provider(&resolved_provider_id) {
-                    info!("Resolved provider '{}' from model override '{}'", resolved_provider_id, model);
+                    info!(
+                        "Resolved provider '{}' from model override '{}'",
+                        resolved_provider_id, model
+                    );
                     provider
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
@@ -1078,12 +1108,18 @@ impl AgentRuntime {
                             );
                             or_provider
                         } else {
-                            warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                            warn!(
+                                "Provider '{}' not found, falling back to default",
+                                resolved_provider_id
+                            );
                             self.default_provider()
                                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
                         }
                     } else {
-                        warn!("Provider '{}' not found, falling back to default", resolved_provider_id);
+                        warn!(
+                            "Provider '{}' not found, falling back to default",
+                            resolved_provider_id
+                        );
                         self.default_provider()
                             .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
                     }
@@ -1145,7 +1181,8 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let is_confirmation_approved = detect_confirmation_approval(conversation_history, user_text);
+        let is_confirmation_approved =
+            detect_confirmation_approval(conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -1200,7 +1237,9 @@ impl AgentRuntime {
             );
 
             // Try streaming with fallback; fall back to non-streaming if unsupported
-            let stream_result = self.stream_complete_with_fallback(&provider, &request).await;
+            let stream_result = self
+                .stream_complete_with_fallback(&provider, &request)
+                .await;
 
             match stream_result {
                 Ok(mut stream) => {
@@ -1577,7 +1616,10 @@ impl AgentRuntime {
         match primary.stream_complete(request).await {
             Ok(stream) => return Ok(stream),
             Err(e) if is_retryable_error(&e) => {
-                warn!("streaming provider '{}' failed, trying fallbacks: {}", primary_id, e);
+                warn!(
+                    "streaming provider '{}' failed, trying fallbacks: {}",
+                    primary_id, e
+                );
                 let cb = self.resilience.circuit_breaker(&primary_id).await;
                 cb.record_failure().await;
             }

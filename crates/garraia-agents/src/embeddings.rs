@@ -109,8 +109,7 @@ impl OpenAiEmbeddingProvider {
             client: reqwest::Client::new(),
             api_key,
             model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
-            base_url: base_url
-                .unwrap_or_else(|| "https://api.openai.com".to_string()),
+            base_url: base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
         }
     }
 
@@ -120,7 +119,10 @@ impl OpenAiEmbeddingProvider {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/v1/embeddings", self.base_url.trim_end_matches('/').trim_end_matches("/v1"))
+        format!(
+            "{}/v1/embeddings",
+            self.base_url.trim_end_matches('/').trim_end_matches("/v1")
+        )
     }
 }
 
@@ -164,17 +166,18 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
             data: Vec<OpenAiEmbedData>,
         }
 
-        let payload: OpenAiEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::Agent(format!("failed to decode openai embeddings response: {e}")))?;
+        let payload: OpenAiEmbedResponse = response.json().await.map_err(|e| {
+            Error::Agent(format!("failed to decode openai embeddings response: {e}"))
+        })?;
 
         Ok(payload.data.into_iter().map(|d| d.embedding).collect())
     }
 
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
         let mut results = self.embed_documents(&[text.to_string()]).await?;
-        results.pop().ok_or_else(|| Error::Agent("empty embedding response".into()))
+        results
+            .pop()
+            .ok_or_else(|| Error::Agent("empty embedding response".into()))
     }
 
     async fn health_check(&self) -> Result<bool> {

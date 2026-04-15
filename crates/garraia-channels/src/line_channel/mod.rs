@@ -112,9 +112,7 @@ impl LineChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "line reply error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("line reply error {status}: {body}")));
         }
 
         Ok(())
@@ -146,9 +144,7 @@ impl LineChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "line push error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("line push error {status}: {body}")));
         }
 
         Ok(())
@@ -200,9 +196,17 @@ impl Channel for LineChannel {
             }
         };
 
-        if let Some(reply_token) = message.metadata.get("line_reply_token").and_then(|v| v.as_str()) {
+        if let Some(reply_token) = message
+            .metadata
+            .get("line_reply_token")
+            .and_then(|v| v.as_str())
+        {
             self.reply_message(reply_token, &text).await
-        } else if let Some(to) = message.metadata.get("line_user_id").and_then(|v| v.as_str()) {
+        } else if let Some(to) = message
+            .metadata
+            .get("line_user_id")
+            .and_then(|v| v.as_str())
+        {
             self.push_message(to, &text).await
         } else {
             Err(Error::Channel(
@@ -222,10 +226,9 @@ mod tests {
 
     #[test]
     fn channel_type_is_line() {
-        let on_msg: LineOnMessageFn =
-            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: LineOnMessageFn = Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = LineConfig {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
@@ -238,10 +241,9 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_missing_reply_token() {
-        let on_msg: LineOnMessageFn =
-            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: LineOnMessageFn = Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = LineConfig {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
@@ -260,10 +262,9 @@ mod tests {
 
     #[test]
     fn initial_status_is_disconnected() {
-        let on_msg: LineOnMessageFn =
-            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: LineOnMessageFn = Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = LineConfig {
             channel_access_token: "token".into(),
             channel_secret: "secret".into(),
@@ -274,10 +275,9 @@ mod tests {
 
     #[test]
     fn display_name_is_line() {
-        let on_msg: LineOnMessageFn =
-            Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: LineOnMessageFn = Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = LineConfig {
             channel_access_token: "t".into(),
             channel_secret: "s".into(),

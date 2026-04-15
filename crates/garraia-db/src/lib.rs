@@ -10,7 +10,9 @@ pub mod vector_store;
 #[cfg(feature = "postgres")]
 pub mod postgres_db;
 
-pub use chat_sync::{ChatSessionManager, ChatSource, SessionHints, SessionKeyStrategy, SessionResolverConfig};
+pub use chat_sync::{
+    ChatSessionManager, ChatSource, SessionHints, SessionKeyStrategy, SessionResolverConfig,
+};
 pub use db_trait::GarraDb;
 pub use memory_store::{
     CompactionReport, MemoryEntry, MemoryProvider, MemoryRole, MemoryStore, NewMemoryEntry,

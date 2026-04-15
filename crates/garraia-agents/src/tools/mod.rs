@@ -20,7 +20,9 @@ pub use list_dir_tool::ListDirTool;
 pub use repo_search_tool::RepoSearchTool;
 pub use run_tests_tool::RunTestsTool;
 pub use schedule::ScheduleHeartbeat;
-pub use schedule::{EventTrigger, EventType, ScheduledTask, TaskStatus, TriggerRegistry, WebhookTrigger};
+pub use schedule::{
+    EventTrigger, EventType, ScheduledTask, TaskStatus, TriggerRegistry, WebhookTrigger,
+};
 pub use tool_context::ProjectToolContext;
 pub use web_fetch_tool::WebFetchTool;
 pub use web_search_tool::WebSearchTool;

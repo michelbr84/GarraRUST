@@ -202,7 +202,11 @@ impl Tool for RunTestsTool {
         })
     }
 
-    async fn execute(&self, _context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput> {
         let test_name = input.get("test_name").and_then(|v| v.as_str());
         let working_dir_str = input
             .get("working_dir")

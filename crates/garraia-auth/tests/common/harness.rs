@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use garraia_auth::{LoginConfig, LoginPool, SignupConfig, SignupPool};
 use garraia_workspace::{Workspace, WorkspaceConfig};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres as PgImage;
@@ -58,13 +58,7 @@ impl Harness {
     /// Subsequent calls: return the same `Arc<Harness>`.
     pub async fn get() -> Arc<Self> {
         SHARED
-            .get_or_init(|| async {
-                Arc::new(
-                    Self::boot()
-                        .await
-                        .expect("harness boot"),
-                )
-            })
+            .get_or_init(|| async { Arc::new(Self::boot().await.expect("harness boot")) })
             .await
             .clone()
     }

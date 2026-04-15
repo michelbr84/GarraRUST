@@ -38,17 +38,21 @@ fn create_quick_chat(app: &AppHandle) -> tauri::Result<()> {
         (400.0, 300.0)
     };
 
-    WebviewWindowBuilder::new(app, QUICK_CHAT_LABEL, WebviewUrl::App("quick-chat.html".into()))
-        .title("Garra Quick Chat")
-        .inner_size(WIN_W, WIN_H)
-        .position(x, y)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .center()
-        .build()?;
+    WebviewWindowBuilder::new(
+        app,
+        QUICK_CHAT_LABEL,
+        WebviewUrl::App("quick-chat.html".into()),
+    )
+    .title("Garra Quick Chat")
+    .inner_size(WIN_W, WIN_H)
+    .position(x, y)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .center()
+    .build()?;
 
     Ok(())
 }

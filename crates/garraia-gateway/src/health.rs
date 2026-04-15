@@ -304,17 +304,18 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
             let prev = cache.read().await;
             for r in &results {
                 if let Some(old) = prev.iter().find(|o| o.name == r.name)
-                    && old.ok != r.ok {
-                        if r.ok {
-                            info!(provider = %r.name, "🟢 provider recovered");
-                        } else {
-                            warn!(
-                                provider = %r.name,
-                                error = r.error.as_deref().unwrap_or("unknown"),
-                                "🔴 provider went down"
-                            );
-                        }
+                    && old.ok != r.ok
+                {
+                    if r.ok {
+                        info!(provider = %r.name, "🟢 provider recovered");
+                    } else {
+                        warn!(
+                            provider = %r.name,
+                            error = r.error.as_deref().unwrap_or("unknown"),
+                            "🔴 provider went down"
+                        );
                     }
+                }
             }
             drop(prev);
 

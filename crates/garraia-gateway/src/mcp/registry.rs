@@ -286,7 +286,9 @@ mod tests {
         let reg = McpRuntimeRegistry::new(&config);
         reg.mark_error("alpha", "connection refused").await;
         let s = reg.get("alpha").await.unwrap();
-        assert!(matches!(s.status, McpStatus::Error { ref message } if message == "connection refused"));
+        assert!(
+            matches!(s.status, McpStatus::Error { ref message } if message == "connection refused")
+        );
         assert_eq!(s.tool_count, 0);
     }
 

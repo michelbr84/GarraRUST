@@ -17,10 +17,12 @@ pub fn init_metrics(config: &TelemetryConfig) -> Result<Option<PrometheusHandle>
         return Ok(None);
     }
 
-    let addr: SocketAddr = config
-        .metrics_bind
-        .parse()
-        .map_err(|e| Error::Init(format!("invalid metrics_bind '{}': {e}", config.metrics_bind)))?;
+    let addr: SocketAddr = config.metrics_bind.parse().map_err(|e| {
+        Error::Init(format!(
+            "invalid metrics_bind '{}': {e}",
+            config.metrics_bind
+        ))
+    })?;
 
     let handle = PrometheusBuilder::new()
         .with_http_listener(addr)

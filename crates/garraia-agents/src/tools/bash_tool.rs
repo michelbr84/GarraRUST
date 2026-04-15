@@ -24,7 +24,7 @@ const DENY_LIST: &[&str] = &[
     "format d:",
     "format e:",
     "format f:",
-    "diskpart",      // Windows disk management tool — genuinely dangerous
+    "diskpart", // Windows disk management tool — genuinely dangerous
     "fdisk",
     "mkfs",
     "dd if=",
@@ -59,21 +59,21 @@ const DENY_LIST: &[&str] = &[
 ///
 /// Patterns use `.contains()` on the lowercased command string.
 const CONFIRM_LIST: &[&str] = &[
-    "rm -r",          // recursive delete (not caught by DENY_LIST which only blocks rm -rf / rm -r /)
-    "del /s",         // Windows recursive delete
-    "del /f",         // Windows force delete
-    "rd /s",          // Windows remove directory recursively
+    "rm -r",  // recursive delete (not caught by DENY_LIST which only blocks rm -rf / rm -r /)
+    "del /s", // Windows recursive delete
+    "del /f", // Windows force delete
+    "rd /s",  // Windows remove directory recursively
     "git reset --hard",
     "git push --force",
     "git push -f",
     "git clean -f",
-    "drop table",     // SQL destructive operations
+    "drop table", // SQL destructive operations
     "drop database",
     "drop schema",
     "truncate table",
     "truncate ",
-    "delete from",    // unqualified DELETE (no WHERE)
-    "kill ",          // process kill
+    "delete from", // unqualified DELETE (no WHERE)
+    "kill ",       // process kill
     "taskkill",
     "stop-process",
     "remove-item -recurse",
@@ -92,8 +92,8 @@ const ALLOW_LIST_READONLY: &[&str] = &[
     "tail",
     "grep",
     "find",
-    "date",       // Unix: get current date/time
-    "get-date",   // PowerShell: get current date/time
+    "date",     // Unix: get current date/time
+    "get-date", // PowerShell: get current date/time
     "git status",
     "git log",
     "git diff",
@@ -154,7 +154,9 @@ impl BashTool {
     /// GAR-187: Check if command matches the risky confirmation tier.
     fn is_risky(&self, command: &str) -> bool {
         let cmd_lower = command.to_lowercase();
-        CONFIRM_LIST.iter().any(|p| cmd_lower.contains(&p.to_lowercase()))
+        CONFIRM_LIST
+            .iter()
+            .any(|p| cmd_lower.contains(&p.to_lowercase()))
     }
 
     /// Check if command is in allow list (for read-only mode)
@@ -166,7 +168,8 @@ impl BashTool {
         let cmd_lower = command.to_lowercase().trim().to_string();
         for pattern in ALLOW_LIST_READONLY {
             if cmd_lower.starts_with(&pattern.to_lowercase())
-                || cmd_lower.contains(&pattern.to_lowercase()) {
+                || cmd_lower.contains(&pattern.to_lowercase())
+            {
                 return true;
             }
         }
@@ -201,11 +204,7 @@ impl Tool for BashTool {
         })
     }
 
-    async fn execute(
-        &self,
-        context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let comando = input
             .get("command")
             .and_then(|v| v.as_str())
@@ -221,7 +220,8 @@ impl Tool for BashTool {
 
         // GAR-187: Risky tier — requires user confirmation before execution.
         // Skipped if the user has already approved via ToolContext.is_confirmation_approved.
-        if self.confirmation_enabled && self.is_risky(comando) && !context.is_confirmation_approved {
+        if self.confirmation_enabled && self.is_risky(comando) && !context.is_confirmation_approved
+        {
             tracing::warn!(
                 command = %comando,
                 session = %context.session_id,
@@ -238,7 +238,8 @@ impl Tool for BashTool {
         if !self.is_allowed(comando) {
             tracing::warn!("Command not in allow list for read-only mode: {}", comando);
             return Ok(ToolOutput::error(
-                "Comando não permitido no modo read-only. Use: ls, dir, cat, git, cargo, etc.".to_string(),
+                "Comando não permitido no modo read-only. Use: ls, dir, cat, git, cargo, etc."
+                    .to_string(),
             ));
         }
 

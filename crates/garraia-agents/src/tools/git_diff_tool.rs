@@ -99,7 +99,9 @@ impl GitDiffTool {
     async fn run_git_command(&self, args: &[String]) -> Result<String> {
         let resultado = tokio::time::timeout(
             self.timeout,
-            Command::new("git").args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).output(),
+            Command::new("git")
+                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .output(),
         )
         .await;
 
@@ -123,12 +125,18 @@ impl GitDiffTool {
                 }
 
                 if combined.is_empty() {
-                    combined = format!("(sem saída, código de saída: {})", output.status.code().unwrap_or(-1));
+                    combined = format!(
+                        "(sem saída, código de saída: {})",
+                        output.status.code().unwrap_or(-1)
+                    );
                 }
 
                 if !output.status.success() {
                     // Se o comando falhou, ainda retorna o output (pode ser "no changes")
-                    tracing::warn!("git command failed with status: {}", output.status.code().unwrap_or(-1));
+                    tracing::warn!(
+                        "git command failed with status: {}",
+                        output.status.code().unwrap_or(-1)
+                    );
                 }
 
                 Ok(combined)
@@ -142,7 +150,13 @@ impl GitDiffTool {
     }
 
     /// Obtém o diff do repositório
-    async fn get_diff(&self, file_path: Option<&str>, context_lines: i32, from_commit: Option<&str>, to_commit: Option<&str>) -> Result<String> {
+    async fn get_diff(
+        &self,
+        file_path: Option<&str>,
+        context_lines: i32,
+        from_commit: Option<&str>,
+        to_commit: Option<&str>,
+    ) -> Result<String> {
         let mut args: Vec<String> = vec!["diff".to_string()];
 
         // Adiciona linhas de contexto
@@ -171,8 +185,12 @@ impl GitDiffTool {
 
     /// Obtém o status do repositório
     async fn get_status(&self) -> Result<String> {
-        let args: Vec<String> = vec!["status".to_string(), "--porcelain".to_string(), "-b".to_string()];
-        
+        let args: Vec<String> = vec![
+            "status".to_string(),
+            "--porcelain".to_string(),
+            "-b".to_string(),
+        ];
+
         let output = self.run_git_command(&args).await?;
 
         // Formata o status de forma mais legível
@@ -288,7 +306,8 @@ impl Tool for GitDiffTool {
                 let context_lines = input
                     .get("context_lines")
                     .and_then(|v| v.as_i64())
-                    .unwrap_or(DEFAULT_CONTEXT_LINES as i64) as i32;
+                    .unwrap_or(DEFAULT_CONTEXT_LINES as i64)
+                    as i32;
                 let from_commit = input.get("from_commit").and_then(|v| v.as_str());
                 let to_commit = input.get("to_commit").and_then(|v| v.as_str());
 
@@ -297,21 +316,23 @@ impl Tool for GitDiffTool {
                     || (from_commit.is_none() && to_commit.is_some())
                 {
                     return Ok(ToolOutput::error(
-                        "Para diff entre commits, especifique ambos 'from_commit' e 'to_commit'".to_string(),
+                        "Para diff entre commits, especifique ambos 'from_commit' e 'to_commit'"
+                            .to_string(),
                     ));
                 }
 
-                match self.get_diff(file_path, context_lines, from_commit, to_commit).await {
+                match self
+                    .get_diff(file_path, context_lines, from_commit, to_commit)
+                    .await
+                {
                     Ok(output) => Ok(ToolOutput::success(output)),
                     Err(e) => Ok(ToolOutput::error(e.to_string())),
                 }
             }
-            "status" => {
-                match self.get_status().await {
-                    Ok(output) => Ok(ToolOutput::success(output)),
-                    Err(e) => Ok(ToolOutput::error(e.to_string())),
-                }
-            }
+            "status" => match self.get_status().await {
+                Ok(output) => Ok(ToolOutput::success(output)),
+                Err(e) => Ok(ToolOutput::error(e.to_string())),
+            },
             _ => Ok(ToolOutput::error(format!(
                 "operação '{}' não suportada. Use 'diff' ou 'status'",
                 operation
@@ -383,10 +404,13 @@ mod tests {
 
         // Try diff on a non-existent file
         let output = tool
-            .execute(&ctx, serde_json::json!({
-                "operation": "diff",
-                "file_path": "Cargo.toml"
-            }))
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "operation": "diff",
+                    "file_path": "Cargo.toml"
+                }),
+            )
             .await
             .unwrap();
 
@@ -427,9 +451,7 @@ mod tests {
             project_id: None,
         };
 
-        let result = tool
-            .execute(&ctx, serde_json::json!({}))
-            .await;
+        let result = tool.execute(&ctx, serde_json::json!({})).await;
 
         assert!(result.is_err());
     }

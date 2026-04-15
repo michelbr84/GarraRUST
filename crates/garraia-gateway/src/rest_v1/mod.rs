@@ -36,9 +36,9 @@ pub mod problem;
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::{get, post};
-use axum::Router;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -159,10 +159,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups", post(groups::create_group))
                 .route("/v1/groups/{id}", get(groups::get_group))
                 .with_state(full)
-                .merge(
-                    SwaggerUi::new("/docs")
-                        .url("/v1/openapi.json", ApiDoc::openapi()),
-                )
+                .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
         (None, Some(auth)) => {
             // Mode 2: auth wired, AppPool missing. `/v1/me` still
@@ -175,10 +172,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups", post(unconfigured_handler))
                 .route("/v1/groups/{id}", get(unconfigured_handler))
                 .with_state(auth)
-                .merge(
-                    SwaggerUi::new("/docs")
-                        .url("/v1/openapi.json", ApiDoc::openapi()),
-                )
+                .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
         (_, None) => {
             // Mode 3: no auth at all. Every route is a stub.

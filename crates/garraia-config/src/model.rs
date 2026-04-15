@@ -111,8 +111,12 @@ pub struct GatewayConfig {
     pub tls_key_path: Option<String>,
 }
 
-fn default_session_ttl_secs() -> i64 { 86_400 }
-fn default_session_idle_secs() -> i64 { 3_600 }
+fn default_session_ttl_secs() -> i64 {
+    86_400
+}
+fn default_session_idle_secs() -> i64 {
+    3_600
+}
 
 impl Default for GatewayConfig {
     fn default() -> Self {
@@ -369,7 +373,9 @@ pub struct TypeTimeout {
 
 impl Default for TypeTimeout {
     fn default() -> Self {
-        Self { default_secs: default_llm_timeout() }
+        Self {
+            default_secs: default_llm_timeout(),
+        }
     }
 }
 
@@ -385,15 +391,13 @@ impl Default for TypeTimeout {
 ///   ignore:
 ///     use_gitignore: true
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FsConfig {
     #[serde(default)]
     pub glob: FsGlobConfig,
     #[serde(default)]
     pub ignore: FsIgnoreConfig,
 }
-
 
 /// Glob matching configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,7 +416,10 @@ fn default_glob_mode() -> String {
 
 impl Default for FsGlobConfig {
     fn default() -> Self {
-        Self { mode: default_glob_mode(), dot: false }
+        Self {
+            mode: default_glob_mode(),
+            dot: false,
+        }
     }
 }
 
@@ -424,11 +431,15 @@ pub struct FsIgnoreConfig {
     pub use_gitignore: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for FsIgnoreConfig {
     fn default() -> Self {
-        Self { use_gitignore: true }
+        Self {
+            use_gitignore: true,
+        }
     }
 }
 

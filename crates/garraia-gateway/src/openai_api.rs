@@ -7,20 +7,23 @@
 use std::convert::Infallible;
 
 use axum::{
+    Router,
     body::Body,
     extract::State,
     http::{HeaderMap, Response},
-    response::{sse::{Event, Sse}, IntoResponse, Json},
+    response::{
+        IntoResponse, Json,
+        sse::{Event, Sse},
+    },
     routing::{get, post},
-    Router,
 };
 use futures::stream::{self, StreamExt};
 use garraia_agents::{ChatMessage, ChatRole, MessagePart};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use uuid::Uuid;
-use std::time::Instant;
 
 use crate::state::SharedState;
 
@@ -232,51 +235,71 @@ pub async fn chat_completions(
     let started_at = Instant::now();
     // Extract request ID for tracing (GAR-234)
     let request_id = resolve_request_id(&headers);
-    
+
     // Extract session ID from headers or create new one
-    let session_id = resolve_session_id(&headers).await.unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let session_id = resolve_session_id(&headers)
+        .await
+        .unwrap_or_else(|_| Uuid::new_v4().to_string());
     let is_streaming = body.stream.unwrap_or(false);
 
     // Resolve user identity from Authorization header
     let user_id = resolve_user_id(&headers, &state);
-    
+
     // GAR-234/238: Extract mode from header for logging and apply to session
     let agent_mode = headers
         .get("x-agent-mode")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    
+
     // GAR-234: Also check for mode prefix in user message (fallback: "mode: debug")
-    let message_mode = body
-        .messages
-        .last()
-        .and_then(|m| {
-            let content = m.content.to_lowercase();
-            // Check for "mode: <mode>" or "/mode <mode>" patterns
-            if content.starts_with("mode: ") {
-                Some(content.strip_prefix("mode: ").unwrap_or("").trim().to_string())
-            } else if content.starts_with("/mode ") {
-                Some(content.strip_prefix("/mode ").unwrap_or("").trim().to_string())
-            } else {
-                None
-            }
-        });
-    
+    let message_mode = body.messages.last().and_then(|m| {
+        let content = m.content.to_lowercase();
+        // Check for "mode: <mode>" or "/mode <mode>" patterns
+        if content.starts_with("mode: ") {
+            Some(
+                content
+                    .strip_prefix("mode: ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            )
+        } else if content.starts_with("/mode ") {
+            Some(
+                content
+                    .strip_prefix("/mode ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    });
+
     // Use header mode first, then fall back to message mode
     let final_mode = agent_mode.or(message_mode);
-    
+
     // Apply X-Agent-Mode header to session if provided (GAR-234)
     if let Some(ref mode) = final_mode
-        && let Some(ref session_store) = state.session_store {
-            let store = session_store.lock().await;
-            let _ = store.set_agent_mode(&session_id, mode);
-        }
+        && let Some(ref session_store) = state.session_store
+    {
+        let store = session_store.lock().await;
+        let _ = store.set_agent_mode(&session_id, mode);
+    }
 
     // GAR-227: Auto-classify mode when no explicit mode was given.
     if final_mode.is_none() {
         let cfg = state.current_config();
-        let user_text_for_router = body.messages.last().map(|m| m.content.clone()).unwrap_or_default();
-        let runtime_ref = state.agents.default_provider().is_some().then_some(&state.agents);
+        let user_text_for_router = body
+            .messages
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let runtime_ref = state
+            .agents
+            .default_provider()
+            .is_some()
+            .then_some(&state.agents);
         let auto_mode = crate::auto_router::auto_classify(
             &user_text_for_router,
             cfg.agent.auto_router_llm_enabled,
@@ -292,14 +315,18 @@ pub async fn chat_completions(
             tracing::debug!(mode = %mode, session = %session_id, "auto_router: mode assigned");
         }
     }
-    
+
     // GAR-225: Extract tool_choice for standardized logging
     let _tool_choice_str = if body.tool_choice.is_null() {
         None
     } else if let Some(s) = body.tool_choice.as_str() {
         Some(s.to_string())
     } else if let Some(obj) = body.tool_choice.as_object() {
-        if let Some(name) = obj.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+        if let Some(name) = obj
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+        {
             Some(format!("function:{}", name))
         } else {
             Some(body.tool_choice.to_string())
@@ -307,22 +334,25 @@ pub async fn chat_completions(
     } else {
         Some(body.tool_choice.to_string())
     };
-    
+
     // GAR-214: Detect request source from User-Agent or X-Source header
     let source = headers
         .get("x-source")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .or_else(|| {
-            headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|ua| {
-                if ua.contains("vscode") || ua.contains("continue") || ua.contains("VSCode") {
-                    "vscode".to_string()
-                } else if ua.contains("Telegram") {
-                    "telegram".to_string()
-                } else {
-                    "http".to_string()
-                }
-            })
+            headers
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok())
+                .map(|ua| {
+                    if ua.contains("vscode") || ua.contains("continue") || ua.contains("VSCode") {
+                        "vscode".to_string()
+                    } else if ua.contains("Telegram") {
+                        "telegram".to_string()
+                    } else {
+                        "http".to_string()
+                    }
+                })
         })
         .unwrap_or_else(|| "http".to_string());
 
@@ -342,10 +372,14 @@ pub async fn chat_completions(
 
     // GAR-204: Hydrate session history from DB so the server is the source of truth.
     // This is a no-op for brand-new sessions (no-op if no session_store).
-    state.hydrate_session_history(&session_id, Some("vscode"), user_id.as_deref()).await;
+    state
+        .hydrate_session_history(&session_id, Some("vscode"), user_id.as_deref())
+        .await;
 
     // Extract the new user message from the client request (the last message is the current input)
-    let new_user_text = body.messages.last()
+    let new_user_text = body
+        .messages
+        .last()
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
@@ -375,24 +409,42 @@ pub async fn chat_completions(
     if new_user_text.starts_with('/')
         && let Some(resolved) =
             crate::slash_commands::resolve(&new_user_text, state.mcp_manager_arc.as_ref()).await
-        {
-            match resolved {
-                crate::slash_commands::ResolvedCommand::McpPrompt(prompt_msgs) => {
-                    // Replace the slash command message with the MCP prompt context.
-                    messages.pop();
-                    messages.extend(prompt_msgs);
-                }
+    {
+        match resolved {
+            crate::slash_commands::ResolvedCommand::McpPrompt(prompt_msgs) => {
+                // Replace the slash command message with the MCP prompt context.
+                messages.pop();
+                messages.extend(prompt_msgs);
             }
         }
+    }
 
     // Get continuity key based on user_id
-    let continuity_key = state.continuity_key(user_id.as_deref()).unwrap_or_else(|| "default".to_string());
+    let continuity_key = state
+        .continuity_key(user_id.as_deref())
+        .unwrap_or_else(|| "default".to_string());
 
     let response = if is_streaming {
         // Handle streaming mode (latency = setup time; LLM latency logged separately)
-        handle_streaming(state, session_id.clone(), model, messages, continuity_key, user_id).await
+        handle_streaming(
+            state,
+            session_id.clone(),
+            model,
+            messages,
+            continuity_key,
+            user_id,
+        )
+        .await
     } else {
-        handle_non_streaming(state, session_id.clone(), model, messages, continuity_key, user_id).await
+        handle_non_streaming(
+            state,
+            session_id.clone(),
+            model,
+            messages,
+            continuity_key,
+            user_id,
+        )
+        .await
     };
 
     // GAR-214: Log request completion with latency
@@ -433,7 +485,8 @@ async fn handle_streaming(
         .unwrap_or_default();
 
     // Conversation history = all messages except the last user message
-    let conversation_history: Vec<ChatMessage> = messages[..messages.len().saturating_sub(1)].to_vec();
+    let conversation_history: Vec<ChatMessage> =
+        messages[..messages.len().saturating_sub(1)].to_vec();
 
     // Clone what we need for the spawned task
     let state_clone = state.clone();
@@ -475,7 +528,8 @@ async fn handle_streaming(
             let summ_state = state_clone.clone();
             let summ_session = session_id_clone.clone();
             tokio::spawn(async move {
-                crate::context_summarizer::maybe_trigger_summarization(summ_state, summ_session).await;
+                crate::context_summarizer::maybe_trigger_summarization(summ_state, summ_session)
+                    .await;
             });
         }
     });
@@ -513,8 +567,8 @@ async fn handle_streaming(
                             finish_reason: None,
                         }],
                     };
-                    let event = Event::default()
-                        .data(serde_json::to_string(&chunk).unwrap_or_default());
+                    let event =
+                        Event::default().data(serde_json::to_string(&chunk).unwrap_or_default());
                     Some((event, (1, rx_opt, chunk_id, created, model)))
                 }
                 // Phase 1: stream content deltas; on channel close → go to phase 2
@@ -529,7 +583,10 @@ async fn handle_streaming(
                                 model: model.clone(),
                                 choices: vec![ChunkChoice {
                                     index: 0,
-                                    delta: DeltaContent { role: None, content: Some(text) },
+                                    delta: DeltaContent {
+                                        role: None,
+                                        content: Some(text),
+                                    },
                                     finish_reason: None,
                                 }],
                             };
@@ -546,7 +603,10 @@ async fn handle_streaming(
                                 model: model.clone(),
                                 choices: vec![ChunkChoice {
                                     index: 0,
-                                    delta: DeltaContent { role: None, content: None },
+                                    delta: DeltaContent {
+                                        role: None,
+                                        content: None,
+                                    },
                                     finish_reason: Some("stop".to_string()),
                                 }],
                             };
@@ -645,19 +705,25 @@ async fn handle_non_streaming(
             };
 
             // GAR-204: Persist the turn to DB via state (handles both in-memory and persistent storage)
-            state.persist_turn(
-                &session_id,
-                Some("vscode"),
-                user_id.as_deref(),
-                &user_text,
-                &response,
-            ).await;
+            state
+                .persist_turn(
+                    &session_id,
+                    Some("vscode"),
+                    user_id.as_deref(),
+                    &user_text,
+                    &response,
+                )
+                .await;
             // GAR-208: background summarization (fire-and-forget)
             {
                 let summ_state = state.clone();
                 let summ_session = session_id.clone();
                 tokio::spawn(async move {
-                    crate::context_summarizer::maybe_trigger_summarization(summ_state, summ_session).await;
+                    crate::context_summarizer::maybe_trigger_summarization(
+                        summ_state,
+                        summ_session,
+                    )
+                    .await;
                 });
             }
 
@@ -668,18 +734,22 @@ async fn handle_non_streaming(
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Agent error: {}", e),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }
 
 /// Resolve session ID from headers or create new one
-async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::StatusCode, String)> {
+async fn resolve_session_id(
+    headers: &HeaderMap,
+) -> Result<String, (axum::http::StatusCode, String)> {
     // Try X-Session-Id header first
     if let Some(session_id) = headers.get("x-session-id")
-        && let Ok(s) = session_id.to_str() {
-            return Ok(s.to_string());
-        }
+        && let Ok(s) = session_id.to_str()
+    {
+        return Ok(s.to_string());
+    }
 
     // Create new session
     Ok(Uuid::new_v4().to_string())
@@ -689,9 +759,10 @@ async fn resolve_session_id(headers: &HeaderMap) -> Result<String, (axum::http::
 /// Returns the X-Request-Id if provided, otherwise generates a new one
 fn resolve_request_id(headers: &HeaderMap) -> String {
     if let Some(request_id) = headers.get("x-request-id")
-        && let Ok(s) = request_id.to_str() {
-            return s.to_string();
-        }
+        && let Ok(s) = request_id.to_str()
+    {
+        return s.to_string();
+    }
     // Generate new request ID if not provided
     Uuid::new_v4().to_string()
 }
@@ -712,37 +783,40 @@ fn parse_role(role: &str) -> ChatRole {
 fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
     // Try Authorization header first
     if let Some(auth_header) = headers.get("authorization")
-        && let Ok(auth_str) = auth_header.to_str() {
-            // Handle "Bearer <token>" format
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                let token = token.trim();
-                
-                // Check if it's a valid API key from the config
-                // The token "garra-local" maps to the local owner
-                if token == "garra-local" {
-                    // Get the owner from allowlist
-                    if let Ok(list) = state.allowlist.lock()
-                        && let Some(owner) = list.owner() {
-                            info!("Resolved user_id={} from 'garra-local' token", owner);
-                            return Some(owner.to_string());
-                        }
-                }
-                
-                // For other tokens, use the token itself as user_id
-                // This allows custom API keys to identify users
-                if !token.is_empty() {
-                    info!("Resolved user_id={} from API token", token);
-                    return Some(token.to_string());
+        && let Ok(auth_str) = auth_header.to_str()
+    {
+        // Handle "Bearer <token>" format
+        if let Some(token) = auth_str.strip_prefix("Bearer ") {
+            let token = token.trim();
+
+            // Check if it's a valid API key from the config
+            // The token "garra-local" maps to the local owner
+            if token == "garra-local" {
+                // Get the owner from allowlist
+                if let Ok(list) = state.allowlist.lock()
+                    && let Some(owner) = list.owner()
+                {
+                    info!("Resolved user_id={} from 'garra-local' token", owner);
+                    return Some(owner.to_string());
                 }
             }
+
+            // For other tokens, use the token itself as user_id
+            // This allows custom API keys to identify users
+            if !token.is_empty() {
+                info!("Resolved user_id={} from API token", token);
+                return Some(token.to_string());
+            }
         }
-    
+    }
+
     // Try X-User-Id header
     if let Some(user_id_header) = headers.get("x-user-id")
-        && let Ok(user_id) = user_id_header.to_str() {
-            return Some(user_id.to_string());
-        }
-    
+        && let Ok(user_id) = user_id_header.to_str()
+    {
+        return Some(user_id.to_string());
+    }
+
     None
 }
 
@@ -782,7 +856,8 @@ pub async fn list_models() -> Response<Body> {
                 "owned_by": "anthropic"
             }
         ]
-    })).into_response()
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
@@ -796,7 +871,7 @@ mod tests {
         assert!(matches!(parse_role("assistant"), ChatRole::Assistant));
         assert!(matches!(parse_role("SYSTEM"), ChatRole::System));
     }
-    
+
     // GAR-225: Testes de tool_choice parsing
     #[test]
     fn test_tool_choice_none() {
@@ -806,7 +881,7 @@ mod tests {
         assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
         assert!(req.tool_choice.is_string(), "tool_choice should be string");
     }
-    
+
     #[test]
     fn test_tool_choice_auto() {
         let json = r#"{"tool_choice": "auto"}"#;
@@ -814,7 +889,7 @@ mod tests {
         println!("Parsed tool_choice: {:?}", req.tool_choice);
         assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
     }
-    
+
     #[test]
     fn test_tool_choice_required() {
         let json = r#"{"tool_choice": "required"}"#;
@@ -822,7 +897,7 @@ mod tests {
         println!("Parsed tool_choice: {:?}", req.tool_choice);
         assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
     }
-    
+
     #[test]
     fn test_tool_choice_function() {
         let json = r#"{"tool_choice": {"type": "function", "function": {"name": "my_function"}}}"#;
@@ -831,15 +906,18 @@ mod tests {
         assert!(!req.tool_choice.is_null(), "tool_choice should not be null");
         assert!(req.tool_choice.is_object(), "tool_choice should be object");
     }
-    
+
     #[test]
     fn test_tool_choice_default() {
         let json = r#"{}"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         // When not specified, should be null (default for Value)
-        assert!(req.tool_choice.is_null(), "tool_choice should be null when not specified");
+        assert!(
+            req.tool_choice.is_null(),
+            "tool_choice should be null when not specified"
+        );
     }
-    
+
     #[test]
     fn test_tools_parsing() {
         let json = r#"{

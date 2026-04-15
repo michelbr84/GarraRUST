@@ -1,3 +1,4 @@
+use axum::extract::State;
 /// WebSocket handler for the Garra Desktop overlay — GET /ws/parrot
 ///
 /// Protocol (all messages are JSON):
@@ -14,7 +15,6 @@
 /// The desktop always uses the fixed session ID "parrot-desktop" so history
 /// persists across gateway restarts and overlay reconnections.
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
 use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use tracing::{info, warn};
@@ -24,10 +24,7 @@ use crate::state::SharedState;
 const SESSION_ID: &str = "parrot-desktop";
 const CHANNEL: &str = "desktop";
 
-pub async fn parrot_ws_handler(
-    State(state): State<SharedState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn parrot_ws_handler(State(state): State<SharedState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_parrot_socket(socket, state))
 }
 
@@ -44,7 +41,9 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
     // Greet the overlay
     let _ = sender
         .send(Message::Text(
-            serde_json::json!({ "type": "connected" }).to_string().into(),
+            serde_json::json!({ "type": "connected" })
+                .to_string()
+                .into(),
         ))
         .await;
 

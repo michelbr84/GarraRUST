@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use tauri::{AppHandle, Manager};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -12,29 +12,54 @@ use crate::gateway::GatewayHandle;
 const TRAY_ID: &str = "garra_tray";
 
 fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let open       = MenuItem::with_id(app, "open",            "Open Garra",        true, None::<&str>)?;
-    let quick_chat = MenuItem::with_id(app, "quick_chat",      "Quick Chat",        true, Some("Ctrl+Space"))?;
-    let sep1       = PredefinedMenuItem::separator(app)?;
-    let restart    = MenuItem::with_id(app, "restart_gateway", "Restart Gateway",   true, None::<&str>)?;
-    let voice      = MenuItem::with_id(app, "toggle_voice",    "Toggle Voice",      true, None::<&str>)?;
-    let logs       = MenuItem::with_id(app, "open_logs",       "Open Logs",         true, None::<&str>)?;
-    let settings   = MenuItem::with_id(app, "settings",        "Settings",          true, None::<&str>)?;
-    let sep2       = PredefinedMenuItem::separator(app)?;
-    let auto_lbl   = if autostart_on { "\u{2713} Start with OS" } else { "  Start with OS" };
-    let autostart  = MenuItem::with_id(app, "autostart", auto_lbl, true, None::<&str>)?;
-    let update     = MenuItem::with_id(app, "check_update",    "Check for Updates", true, None::<&str>)?;
-    let sep3       = PredefinedMenuItem::separator(app)?;
-    let quit       = MenuItem::with_id(app, "quit",            "Quit Garra",        true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Garra", true, None::<&str>)?;
+    let quick_chat = MenuItem::with_id(app, "quick_chat", "Quick Chat", true, Some("Ctrl+Space"))?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let restart = MenuItem::with_id(
+        app,
+        "restart_gateway",
+        "Restart Gateway",
+        true,
+        None::<&str>,
+    )?;
+    let voice = MenuItem::with_id(app, "toggle_voice", "Toggle Voice", true, None::<&str>)?;
+    let logs = MenuItem::with_id(app, "open_logs", "Open Logs", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let auto_lbl = if autostart_on {
+        "\u{2713} Start with OS"
+    } else {
+        "  Start with OS"
+    };
+    let autostart = MenuItem::with_id(app, "autostart", auto_lbl, true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "check_update", "Check for Updates", true, None::<&str>)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Garra", true, None::<&str>)?;
 
-    Menu::with_items(app, &[
-        &open, &quick_chat, &sep1,
-        &restart, &voice, &logs, &settings, &sep2,
-        &autostart, &update, &sep3,
-        &quit,
-    ])
+    Menu::with_items(
+        app,
+        &[
+            &open,
+            &quick_chat,
+            &sep1,
+            &restart,
+            &voice,
+            &logs,
+            &settings,
+            &sep2,
+            &autostart,
+            &update,
+            &sep3,
+            &quit,
+        ],
+    )
 }
 
-pub fn setup_tray(app: &AppHandle, visible: Arc<AtomicBool>, gw: GatewayHandle) -> tauri::Result<()> {
+pub fn setup_tray(
+    app: &AppHandle,
+    visible: Arc<AtomicBool>,
+    gw: GatewayHandle,
+) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let menu = build_menu(app, autostart_on)?;
 

@@ -40,7 +40,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use common::fixtures::seed_user_with_group;
-use common::{harness_get, Harness};
+use common::{Harness, harness_get};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -178,7 +178,8 @@ async fn v1_me_authed_scenarios() {
             "scenario 5: bearer security scheme missing"
         );
         assert_eq!(
-            v["components"]["securitySchemes"]["bearer"]["bearerFormat"], "JWT"
+            v["components"]["securitySchemes"]["bearer"]["bearerFormat"],
+            "JWT"
         );
         assert!(
             v["paths"]["/v1/me"]["get"].is_object(),

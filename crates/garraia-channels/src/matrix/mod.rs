@@ -16,9 +16,9 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use crate::traits::{Channel, ChannelStatus};
-use garraia_common::{Error, Message, MessageContent, Result};
 #[cfg(test)]
-use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
+use garraia_common::{ChannelId, MessageDirection, SessionId, UserId};
+use garraia_common::{Error, Message, MessageContent, Result};
 
 pub use config::MatrixConfig;
 
@@ -93,9 +93,7 @@ impl MatrixChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "matrix API error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("matrix API error {status}: {body}")));
         }
 
         Ok(())
@@ -125,7 +123,10 @@ impl MatrixChannel {
             },
             "presence": { "types": [] }
         });
-        url.push_str(&format!("&filter={}", serde_json::to_string(&filter).unwrap_or_default()));
+        url.push_str(&format!(
+            "&filter={}",
+            serde_json::to_string(&filter).unwrap_or_default()
+        ));
 
         let resp = self
             .client
@@ -187,7 +188,10 @@ impl Channel for MatrixChannel {
                 .await
             {
                 if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    since = body.get("next_batch").and_then(|v| v.as_str()).map(String::from);
+                    since = body
+                        .get("next_batch")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                 }
             }
 
@@ -245,7 +249,11 @@ impl Channel for MatrixChannel {
                 }
 
                 // Process room events
-                if let Some(rooms) = body.get("rooms").and_then(|r| r.get("join")).and_then(|j| j.as_object()) {
+                if let Some(rooms) = body
+                    .get("rooms")
+                    .and_then(|r| r.get("join"))
+                    .and_then(|j| j.as_object())
+                {
                     for (room_id, room_data) in rooms {
                         // Skip rooms not in our configured list (if any configured)
                         if !config.room_ids.is_empty() && !config.room_ids.contains(room_id) {
@@ -259,10 +267,14 @@ impl Channel for MatrixChannel {
 
                         if let Some(events) = events {
                             for event in events {
-                                let sender = event.get("sender").and_then(|s| s.as_str()).unwrap_or("");
+                                let sender =
+                                    event.get("sender").and_then(|s| s.as_str()).unwrap_or("");
                                 let content = event.get("content");
-                                let msgtype = content.and_then(|c| c.get("msgtype")).and_then(|m| m.as_str());
-                                let body_text = content.and_then(|c| c.get("body")).and_then(|b| b.as_str());
+                                let msgtype = content
+                                    .and_then(|c| c.get("msgtype"))
+                                    .and_then(|m| m.as_str());
+                                let body_text =
+                                    content.and_then(|c| c.get("body")).and_then(|b| b.as_str());
 
                                 if msgtype == Some("m.text") {
                                     if let Some(text) = body_text {
@@ -279,12 +291,25 @@ impl Channel for MatrixChannel {
                                         let reply_config = config.clone();
 
                                         tokio::spawn(async move {
-                                            match cb(room.clone(), user.clone(), user.clone(), msg_text, None).await {
+                                            match cb(
+                                                room.clone(),
+                                                user.clone(),
+                                                user.clone(),
+                                                msg_text,
+                                                None,
+                                            )
+                                            .await
+                                            {
                                                 Ok(reply) => {
-                                                    let txn_id = format!("garraia-{}", chrono::Utc::now().timestamp_millis());
+                                                    let txn_id = format!(
+                                                        "garraia-{}",
+                                                        chrono::Utc::now().timestamp_millis()
+                                                    );
                                                     let url = format!(
                                                         "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
-                                                        reply_config.homeserver_url.trim_end_matches('/'),
+                                                        reply_config
+                                                            .homeserver_url
+                                                            .trim_end_matches('/'),
                                                         room,
                                                         txn_id
                                                     );
@@ -336,9 +361,7 @@ impl Channel for MatrixChannel {
             .metadata
             .get("matrix_room_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::Channel("missing matrix_room_id in metadata".into())
-            })?;
+            .ok_or_else(|| Error::Channel("missing matrix_room_id in metadata".into()))?;
 
         let text = match &message.content {
             MessageContent::Text(t) => t.clone(),
@@ -363,10 +386,9 @@ mod tests {
 
     #[test]
     fn channel_type_is_matrix() {
-        let on_msg: MatrixOnMessageFn =
-            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: MatrixOnMessageFn = Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = MatrixConfig {
             homeserver_url: "https://matrix.example.com".into(),
             access_token: "test-token".into(),
@@ -380,27 +402,31 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_missing_room_metadata() {
-        let on_msg: MatrixOnMessageFn =
-            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: MatrixOnMessageFn = Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = MatrixConfig {
             homeserver_url: "https://matrix.example.org".into(),
             access_token: "test-token".into(),
             room_ids: vec!["!room:example.org".into()],
         };
         let channel = MatrixChannel::new(config, on_msg);
-        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let msg = Message::text(
+            SessionId::from_string("s"),
+            ChannelId::from_string("c"),
+            UserId::from_string("u"),
+            MessageDirection::Outgoing,
+            "hello",
+        );
         let result = channel.send_message(&msg).await;
         assert!(result.is_err());
     }
 
     #[test]
     fn initial_status_is_disconnected() {
-        let on_msg: MatrixOnMessageFn =
-            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: MatrixOnMessageFn = Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = MatrixConfig {
             homeserver_url: "https://matrix.example.org".into(),
             access_token: "test-token".into(),
@@ -412,10 +438,9 @@ mod tests {
 
     #[test]
     fn display_name_is_matrix() {
-        let on_msg: MatrixOnMessageFn =
-            Arc::new(|_room, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: MatrixOnMessageFn = Arc::new(|_room, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = MatrixConfig {
             homeserver_url: "https://matrix.example.org".into(),
             access_token: "test".into(),

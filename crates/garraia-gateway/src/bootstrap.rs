@@ -10,15 +10,15 @@ use garraia_agents::{
 #[cfg(target_os = "macos")]
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
 use garraia_channels::{
-    SlackChannel, SlackOnMessageFn, TelegramChannel, WhatsAppChannel, WhatsAppOnMessageFn,
-    OnVoiceFn,
+    OnVoiceFn, SlackChannel, SlackOnMessageFn, TelegramChannel, WhatsAppChannel,
+    WhatsAppOnMessageFn,
 };
 use garraia_config::AppConfig;
 use garraia_db::MemoryStore;
 use garraia_security::{Allowlist, PairingManager};
 use teloxide::net::Download;
 use teloxide::prelude::Requester;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::state::SharedState;
 
@@ -110,7 +110,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             let addr = base_url
                                 .trim_start_matches("http://")
                                 .trim_start_matches("https://")
-                                .split('/').next().unwrap_or("localhost:1234");
+                                .split('/')
+                                .next()
+                                .unwrap_or("localhost:1234");
                             let sock_addr = if addr.contains(':') {
                                 addr.to_string()
                             } else {
@@ -554,9 +556,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     if let Some(ref default_id) = config.agent.default_provider {
         if unreachable_local_providers.iter().any(|p| p == default_id) {
             let providers = runtime.provider_ids();
-            let fallback = providers.iter().find(|p| {
-                !unreachable_local_providers.contains(p)
-            });
+            let fallback = providers
+                .iter()
+                .find(|p| !unreachable_local_providers.contains(p));
             if let Some(fallback_id) = fallback {
                 warn!(
                     "Default provider '{}' is unreachable — auto-switching to '{}'",
@@ -803,46 +805,54 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
                             // Nome
                             if let Some(nome) = facts.get("nome").and_then(|v| v.as_str())
-                                && !nome.is_empty() {
-                                    facts_context.push_str(&format!("Nome: {}\n", nome));
-                                }
+                                && !nome.is_empty()
+                            {
+                                facts_context.push_str(&format!("Nome: {}\n", nome));
+                            }
                             // Apelido
                             if let Some(apelido) = facts.get("apelido").and_then(|v| v.as_str())
-                                && !apelido.is_empty() {
-                                    facts_context.push_str(&format!("Apelido: {}\n", apelido));
-                                }
+                                && !apelido.is_empty()
+                            {
+                                facts_context.push_str(&format!("Apelido: {}\n", apelido));
+                            }
                             // Sobre
                             if let Some(sobre) = facts.get("sobre").and_then(|v| v.as_str())
-                                && !sobre.is_empty() {
-                                    facts_context.push_str(&format!("Sobre: {}\n", sobre));
-                                }
+                                && !sobre.is_empty()
+                            {
+                                facts_context.push_str(&format!("Sobre: {}\n", sobre));
+                            }
                             // Empresa
                             if let Some(empresa) = facts.get("empresa").and_then(|v| v.as_str())
-                                && !empresa.is_empty() {
-                                    facts_context.push_str(&format!("Empresa: {}\n", empresa));
-                                }
+                                && !empresa.is_empty()
+                            {
+                                facts_context.push_str(&format!("Empresa: {}\n", empresa));
+                            }
                             // Cargo
                             if let Some(cargo) = facts.get("cargo").and_then(|v| v.as_str())
-                                && !cargo.is_empty() {
-                                    facts_context.push_str(&format!("Cargo: {}\n", cargo));
-                                }
+                                && !cargo.is_empty()
+                            {
+                                facts_context.push_str(&format!("Cargo: {}\n", cargo));
+                            }
                             // Localização
                             if let Some(local) =
                                 facts.get("localizacao").and_then(|v| v.as_object())
                             {
                                 let mut parts = Vec::new();
                                 if let Some(v) = local.get("cidade").and_then(|v| v.as_str())
-                                    && !v.is_empty() {
-                                        parts.push(v.to_string());
-                                    }
+                                    && !v.is_empty()
+                                {
+                                    parts.push(v.to_string());
+                                }
                                 if let Some(v) = local.get("estado").and_then(|v| v.as_str())
-                                    && !v.is_empty() {
-                                        parts.push(v.to_string());
-                                    }
+                                    && !v.is_empty()
+                                {
+                                    parts.push(v.to_string());
+                                }
                                 if let Some(v) = local.get("pais").and_then(|v| v.as_str())
-                                    && !v.is_empty() {
-                                        parts.push(v.to_string());
-                                    }
+                                    && !v.is_empty()
+                                {
+                                    parts.push(v.to_string());
+                                }
                                 if !parts.is_empty() {
                                     facts_context
                                         .push_str(&format!("Localização: {}\n", parts.join(", ")));
@@ -973,14 +983,15 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                             // Fatos importantes
                             if let Some(fatos) =
                                 facts.get("fatos_importantes").and_then(|v| v.as_array())
-                                && !fatos.is_empty() {
-                                    facts_context.push_str("Fatos importantes:\n");
-                                    for fato in fatos {
-                                        if let Some(f) = fato.as_str() {
-                                            facts_context.push_str(&format!("- {}\n", f));
-                                        }
+                                && !fatos.is_empty()
+                            {
+                                facts_context.push_str("Fatos importantes:\n");
+                                for fato in fatos {
+                                    if let Some(f) = fato.as_str() {
+                                        facts_context.push_str(&format!("- {}\n", f));
                                     }
                                 }
+                            }
 
                             // Inject facts into system prompt
                             let new_prompt = match runtime.system_prompt() {
@@ -1073,7 +1084,16 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
                     );
                     continue;
                 };
-                manager.connect_http(name, url, timeout_secs, server_config.allowed_tools.clone(), max_restarts, restart_delay_secs).await
+                manager
+                    .connect_http(
+                        name,
+                        url,
+                        timeout_secs,
+                        server_config.allowed_tools.clone(),
+                        max_restarts,
+                        restart_delay_secs,
+                    )
+                    .await
             }
             other => {
                 warn!("MCP server '{name}' uses unsupported transport '{other}', skipping");
@@ -1315,163 +1335,187 @@ pub fn build_discord_channels(
 
 /// Build a voice handler for Telegram that processes voice messages.
 /// Returns None if voice mode is not enabled (no STT/TTS clients).
-pub fn build_telegram_voice_handler(
-    state: &SharedState,
-) -> Option<OnVoiceFn> {
+pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
     // Check if voice clients are available
     let stt_client = state.stt_client.clone()?;
     let voice_client = state.voice_client.clone()?;
 
     let state_for_handler = Arc::clone(state);
 
-    Some(Arc::new(move |bot: teloxide::Bot, msg: teloxide::types::Message| {
-        let stt = Arc::clone(&stt_client);
-        let tts = Arc::clone(&voice_client);
-        let state = Arc::clone(&state_for_handler);
+    Some(Arc::new(
+        move |bot: teloxide::Bot, msg: teloxide::types::Message| {
+            let stt = Arc::clone(&stt_client);
+            let tts = Arc::clone(&voice_client);
+            let state = Arc::clone(&state_for_handler);
 
-        Box::pin(async move {
-            // Extract required data from message
-            let chat_id = msg.chat.id.0;
-            let user = msg.from.as_ref().ok_or("missing user info")?;
-            let user_id = user.id.0.to_string();
-            let user_name = user.first_name.clone();
+            Box::pin(async move {
+                // Extract required data from message
+                let chat_id = msg.chat.id.0;
+                let user = msg.from.as_ref().ok_or("missing user info")?;
+                let user_id = user.id.0.to_string();
+                let user_name = user.first_name.clone();
 
-            // Get the voice file ID
-            let voice = msg.voice().ok_or("no voice in message")?;
-            let file_id = voice.file.id.clone();
+                // Get the voice file ID
+                let voice = msg.voice().ok_or("no voice in message")?;
+                let file_id = voice.file.id.clone();
 
-            info!(
-                "telegram voice: processing voice from {} [uid={}] in chat {}",
-                user_name, user_id, chat_id
-            );
+                info!(
+                    "telegram voice: processing voice from {} [uid={}] in chat {}",
+                    user_name, user_id, chat_id
+                );
 
-            // Download the voice file
-            let voice_file = bot.get_file(file_id).await.map_err(|e| {
-                error!("failed to get voice file: {}", e);
-                e.to_string()
-            })?;
-
-            // Download to a temporary file
-            let temp_dir = std::env::temp_dir();
-            let temp_path = temp_dir.join(format!("garraia_voice_{}.ogg", uuid::Uuid::new_v4()));
-
-            let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
-                error!("failed to create temp file: {}", e);
-                e.to_string()
-            })?;
-
-            bot.download_file(&voice_file.path, &mut file).await.map_err(|e| {
-                error!("failed to download voice: {}", e);
-                e.to_string()
-            })?;
-
-            // Transcribe with Whisper
-            let text = stt.transcribe(&temp_path).await.map_err(|e| {
-                error!("STT failed: {}", e);
-                e.to_string()
-            })?;
-
-            info!("telegram voice: transcribed: {}", text);
-
-            // Clean up temp file
-            let _ = tokio::fs::remove_file(&temp_path).await;
-
-            // Check allowlist
-            {
-                let allowlist = state.allowlist.lock().unwrap();
-                if !allowlist.is_allowed(&user_id) && !allowlist.is_owner(&user_id) {
-                    warn!(
-                        "telegram voice: unauthorized user {} in chat {}",
-                        user_id, chat_id
-                    );
-                    return Err("__blocked__".to_string());
-                }
-            }
-
-            // GAR-202: Resolve session via UUID-based key (replaces guessable telegram-{chat_id})
-            let session_id = if let Some(mgr) = &state.chat_session_manager {
-                let hints = garraia_db::SessionHints::from_telegram(chat_id, None);
-                mgr.resolve_session(&hints).await.unwrap_or_else(|_| format!("telegram-{chat_id}"))
-            } else {
-                format!("telegram-{chat_id}")
-            };
-            state
-                .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
-                .await;
-            let history: Vec<ChatMessage> = state.session_history(&session_id);
-            let continuity_key = state.continuity_key(Some(&user_id));
-
-            // Send typing indicator
-            let _ = bot.send_chat_action(teloxide::types::ChatId(chat_id), teloxide::types::ChatAction::Typing).await;
-
-            // Process with LLM
-            let response = state
-                .agents
-                .process_message_with_agent_config(
-                    &session_id,
-                    &text,
-                    &history,
-                    continuity_key.as_deref(),
-                    Some(&user_id),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                .map_err(|e| {
-                    error!("LLM processing failed: {}", e);
+                // Download the voice file
+                let voice_file = bot.get_file(file_id).await.map_err(|e| {
+                    error!("failed to get voice file: {}", e);
                     e.to_string()
                 })?;
 
-            info!(
-                "telegram voice: LLM response ({} chars) for user {}",
-                response.len(), user_id
-            );
+                // Download to a temporary file
+                let temp_dir = std::env::temp_dir();
+                let temp_path =
+                    temp_dir.join(format!("garraia_voice_{}.ogg", uuid::Uuid::new_v4()));
 
-            // Persist the turn
-            state
-                .persist_turn(
-                    &session_id,
-                    Some("telegram"),
-                    Some(&user_id),
-                    &text,
-                    &response,
-                )
-                .await;
+                let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+                    error!("failed to create temp file: {}", e);
+                    e.to_string()
+                })?;
 
-            // Try to synthesize voice response
-            match tts.synthesize_bytes(&response, "default").await {
-                Ok(audio_data) => {
-                    // Save audio to temp file
-                    let audio_path = temp_dir.join(format!("garraia_response_{}.wav", uuid::Uuid::new_v4()));
-                    if let Err(e) = tokio::fs::write(&audio_path, &audio_data).await {
-                        error!("failed to write audio file: {}", e);
-                        // Fallback to text
-                        let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
-                    } else {
-                        // Send voice message
-                        let input_file = teloxide::types::InputFile::file(&audio_path);
-                        if let Err(e) = bot.send_voice(teloxide::types::ChatId(chat_id), input_file).await {
-                            error!("failed to send voice: {}", e);
-                            // Fallback to text
-                            let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
-                        }
-                        // Clean up audio file
-                        let _ = tokio::fs::remove_file(&audio_path).await;
+                bot.download_file(&voice_file.path, &mut file)
+                    .await
+                    .map_err(|e| {
+                        error!("failed to download voice: {}", e);
+                        e.to_string()
+                    })?;
+
+                // Transcribe with Whisper
+                let text = stt.transcribe(&temp_path).await.map_err(|e| {
+                    error!("STT failed: {}", e);
+                    e.to_string()
+                })?;
+
+                info!("telegram voice: transcribed: {}", text);
+
+                // Clean up temp file
+                let _ = tokio::fs::remove_file(&temp_path).await;
+
+                // Check allowlist
+                {
+                    let allowlist = state.allowlist.lock().unwrap();
+                    if !allowlist.is_allowed(&user_id) && !allowlist.is_owner(&user_id) {
+                        warn!(
+                            "telegram voice: unauthorized user {} in chat {}",
+                            user_id, chat_id
+                        );
+                        return Err("__blocked__".to_string());
                     }
                 }
-                Err(e) => {
-                    error!("TTS failed: {}", e);
-                    // Fallback to text if TTS fails
-                    let _ = bot.send_message(teloxide::types::ChatId(chat_id), &response).await;
-                }
-            }
 
-            info!("telegram voice: successfully processed voice from {}", user_name);
-            Ok(())
-        })
-    }))
+                // GAR-202: Resolve session via UUID-based key (replaces guessable telegram-{chat_id})
+                let session_id = if let Some(mgr) = &state.chat_session_manager {
+                    let hints = garraia_db::SessionHints::from_telegram(chat_id, None);
+                    mgr.resolve_session(&hints)
+                        .await
+                        .unwrap_or_else(|_| format!("telegram-{chat_id}"))
+                } else {
+                    format!("telegram-{chat_id}")
+                };
+                state
+                    .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
+                    .await;
+                let history: Vec<ChatMessage> = state.session_history(&session_id);
+                let continuity_key = state.continuity_key(Some(&user_id));
+
+                // Send typing indicator
+                let _ = bot
+                    .send_chat_action(
+                        teloxide::types::ChatId(chat_id),
+                        teloxide::types::ChatAction::Typing,
+                    )
+                    .await;
+
+                // Process with LLM
+                let response = state
+                    .agents
+                    .process_message_with_agent_config(
+                        &session_id,
+                        &text,
+                        &history,
+                        continuity_key.as_deref(),
+                        Some(&user_id),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| {
+                        error!("LLM processing failed: {}", e);
+                        e.to_string()
+                    })?;
+
+                info!(
+                    "telegram voice: LLM response ({} chars) for user {}",
+                    response.len(),
+                    user_id
+                );
+
+                // Persist the turn
+                state
+                    .persist_turn(
+                        &session_id,
+                        Some("telegram"),
+                        Some(&user_id),
+                        &text,
+                        &response,
+                    )
+                    .await;
+
+                // Try to synthesize voice response
+                match tts.synthesize_bytes(&response, "default").await {
+                    Ok(audio_data) => {
+                        // Save audio to temp file
+                        let audio_path =
+                            temp_dir.join(format!("garraia_response_{}.wav", uuid::Uuid::new_v4()));
+                        if let Err(e) = tokio::fs::write(&audio_path, &audio_data).await {
+                            error!("failed to write audio file: {}", e);
+                            // Fallback to text
+                            let _ = bot
+                                .send_message(teloxide::types::ChatId(chat_id), &response)
+                                .await;
+                        } else {
+                            // Send voice message
+                            let input_file = teloxide::types::InputFile::file(&audio_path);
+                            if let Err(e) = bot
+                                .send_voice(teloxide::types::ChatId(chat_id), input_file)
+                                .await
+                            {
+                                error!("failed to send voice: {}", e);
+                                // Fallback to text
+                                let _ = bot
+                                    .send_message(teloxide::types::ChatId(chat_id), &response)
+                                    .await;
+                            }
+                            // Clean up audio file
+                            let _ = tokio::fs::remove_file(&audio_path).await;
+                        }
+                    }
+                    Err(e) => {
+                        error!("TTS failed: {}", e);
+                        // Fallback to text if TTS fails
+                        let _ = bot
+                            .send_message(teloxide::types::ChatId(chat_id), &response)
+                            .await;
+                    }
+                }
+
+                info!(
+                    "telegram voice: successfully processed voice from {}",
+                    user_name
+                );
+                Ok(())
+            })
+        },
+    ))
 }
 
 /// Build Telegram channels from config. Must be called after state is
@@ -1573,7 +1617,9 @@ pub fn build_telegram_channels(
                     let session_id = if let Some(mgr) = &state.chat_session_manager {
                         let uid_i64 = user_id.parse::<i64>().ok();
                         let hints = garraia_db::SessionHints::from_telegram(chat_id, uid_i64);
-                        mgr.resolve_session(&hints).await.unwrap_or_else(|_| format!("telegram-{chat_id}"))
+                        mgr.resolve_session(&hints)
+                            .await
+                            .unwrap_or_else(|_| format!("telegram-{chat_id}"))
                     } else {
                         format!("telegram-{chat_id}")
                     };

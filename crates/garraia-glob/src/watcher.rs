@@ -103,7 +103,12 @@ impl ActiveWatcher {
     /// to move the receiver to a background thread while keeping the guard alive
     /// in the `Debouncer` struct.
     pub fn split(self) -> (mpsc::Receiver<WatchEvent>, WatcherGuard) {
-        (self.receiver, WatcherGuard { _watcher: self._watcher })
+        (
+            self.receiver,
+            WatcherGuard {
+                _watcher: self._watcher,
+            },
+        )
     }
 }
 
@@ -204,73 +209,72 @@ impl WatcherBuilder {
 
         let (tx, rx) = mpsc::channel::<WatchEvent>();
 
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                let event = match res {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!(err = %e, "garraia_glob::watcher: notify error");
-                        return;
-                    }
-                };
-
-                let timestamp = SystemTime::now();
-
-                // ── Rename (batched) — paths[0]=from, paths[1]=to ──────────────
-                if is_rename_both(&event.kind) && event.paths.len() >= 2 {
-                    let from_rel = match relative(&event.paths[0], &root) {
-                        Some(r) => r,
-                        None => return,
-                    };
-                    let to_rel = match relative(&event.paths[1], &root) {
-                        Some(r) => r,
-                        None => return,
-                    };
-                    if passes_filters(&to_rel, &ignores, &include, &exclude) {
-                        let _ = tx.send(WatchEvent {
-                            path: to_rel,
-                            kind: WatchEventKind::Renamed { from: from_rel },
-                            timestamp,
-                        });
-                    }
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let event = match res {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(err = %e, "garraia_glob::watcher: notify error");
                     return;
                 }
+            };
 
-                // ── All other events — one kind, one or more paths ─────────────
-                let kind = match classify(&event.kind) {
-                    Some(k) => k,
-                    None => return, // access-only, metadata-only, unknown — skip
+            let timestamp = SystemTime::now();
+
+            // ── Rename (batched) — paths[0]=from, paths[1]=to ──────────────
+            if is_rename_both(&event.kind) && event.paths.len() >= 2 {
+                let from_rel = match relative(&event.paths[0], &root) {
+                    Some(r) => r,
+                    None => return,
                 };
-
-                for abs in &event.paths {
-                    let rel = match relative(abs, &root) {
-                        Some(r) => r,
-                        None => {
-                            tracing::debug!(
-                                path = %abs.display(),
-                                "garraia_glob::watcher: path outside root, skipping"
-                            );
-                            continue;
-                        }
-                    };
-
-                    if !passes_filters(&rel, &ignores, &include, &exclude) {
-                        continue;
-                    }
-
-                    tracing::debug!(path = %rel, kind = ?kind, "garraia_glob::watcher: event");
+                let to_rel = match relative(&event.paths[1], &root) {
+                    Some(r) => r,
+                    None => return,
+                };
+                if passes_filters(&to_rel, &ignores, &include, &exclude) {
                     let _ = tx.send(WatchEvent {
-                        path: rel,
-                        kind: kind.clone(),
+                        path: to_rel,
+                        kind: WatchEventKind::Renamed { from: from_rel },
                         timestamp,
                     });
                 }
-            })
-            .map_err(|e| {
-                GlobError::Io(std::io::Error::other(format!(
-                    "garraia_glob::watcher: init failed: {e}"
-                )))
-            })?;
+                return;
+            }
+
+            // ── All other events — one kind, one or more paths ─────────────
+            let kind = match classify(&event.kind) {
+                Some(k) => k,
+                None => return, // access-only, metadata-only, unknown — skip
+            };
+
+            for abs in &event.paths {
+                let rel = match relative(abs, &root) {
+                    Some(r) => r,
+                    None => {
+                        tracing::debug!(
+                            path = %abs.display(),
+                            "garraia_glob::watcher: path outside root, skipping"
+                        );
+                        continue;
+                    }
+                };
+
+                if !passes_filters(&rel, &ignores, &include, &exclude) {
+                    continue;
+                }
+
+                tracing::debug!(path = %rel, kind = ?kind, "garraia_glob::watcher: event");
+                let _ = tx.send(WatchEvent {
+                    path: rel,
+                    kind: kind.clone(),
+                    timestamp,
+                });
+            }
+        })
+        .map_err(|e| {
+            GlobError::Io(std::io::Error::other(format!(
+                "garraia_glob::watcher: init failed: {e}"
+            )))
+        })?;
 
         watcher
             .watch(&self.root, RecursiveMode::Recursive)
@@ -280,7 +284,10 @@ impl WatcherBuilder {
                 )))
             })?;
 
-        Ok(ActiveWatcher { receiver: rx, _watcher: watcher })
+        Ok(ActiveWatcher {
+            receiver: rx,
+            _watcher: watcher,
+        })
     }
 }
 

@@ -36,9 +36,7 @@ impl Modify for SecurityAddon {
         // at `GET /v1/openapi.json` in production would be a
         // 500-no-body regression that is trivial to prevent here.
         // Plan 0016 M3 review fix (security + code-reviewer).
-        let components = openapi
-            .components
-            .get_or_insert_with(Default::default);
+        let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer",
             SecurityScheme::Http(

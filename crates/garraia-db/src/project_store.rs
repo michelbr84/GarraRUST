@@ -174,10 +174,7 @@ impl SessionStore {
 
         params_vec.push(Box::new(project_id.to_string()));
 
-        let query = format!(
-            "UPDATE projects SET {} WHERE id = ?",
-            updates.join(", ")
-        );
+        let query = format!("UPDATE projects SET {} WHERE id = ?", updates.join(", "));
         let params_refs: Vec<&dyn rusqlite::ToSql> =
             params_vec.iter().map(|p| p.as_ref()).collect();
 
@@ -198,14 +195,13 @@ impl SessionStore {
     }
 
     /// Get all sessions associated with a project.
-    pub fn get_project_sessions(
-        &self,
-        project_id: &str,
-    ) -> Result<Vec<String>> {
+    pub fn get_project_sessions(&self, project_id: &str) -> Result<Vec<String>> {
         let conn = self.connection();
         let mut stmt = conn
             .prepare("SELECT id FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC")
-            .map_err(|e| Error::Database(format!("failed to prepare project sessions query: {e}")))?;
+            .map_err(|e| {
+                Error::Database(format!("failed to prepare project sessions query: {e}"))
+            })?;
 
         let rows = stmt
             .query_map(params![project_id], |row| row.get::<_, String>(0))
@@ -213,19 +209,13 @@ impl SessionStore {
 
         let mut ids = Vec::new();
         for row in rows {
-            ids.push(
-                row.map_err(|e| Error::Database(format!("failed to read session id: {e}")))?,
-            );
+            ids.push(row.map_err(|e| Error::Database(format!("failed to read session id: {e}")))?);
         }
         Ok(ids)
     }
 
     /// Associate an existing session with a project.
-    pub fn associate_session_to_project(
-        &self,
-        session_id: &str,
-        project_id: &str,
-    ) -> Result<()> {
+    pub fn associate_session_to_project(&self, session_id: &str, project_id: &str) -> Result<()> {
         self.connection()
             .execute(
                 "UPDATE sessions SET project_id = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -577,7 +567,9 @@ impl SessionStore {
             stmt.query_map(params![user_id], |row| row.get::<_, String>(0))
                 .map_err(|e| Error::Database(format!("delete_user_data session ids query: {e}")))?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| Error::Database(format!("delete_user_data session ids collect: {e}")))?
+                .map_err(|e| {
+                    Error::Database(format!("delete_user_data session ids collect: {e}"))
+                })?
         };
 
         for sid in &session_ids {
@@ -638,7 +630,10 @@ impl SessionStore {
 
         // 4. Delete custom modes
         let n = conn
-            .execute("DELETE FROM custom_modes WHERE user_id = ?1", params![user_id])
+            .execute(
+                "DELETE FROM custom_modes WHERE user_id = ?1",
+                params![user_id],
+            )
             .map_err(|e| Error::Database(format!("delete_user_data custom_modes: {e}")))?;
         total_deleted += n;
 
@@ -819,13 +814,22 @@ mod tests {
     fn create_and_get_project() {
         let store = make_store();
         let project = store
-            .create_project("test-proj", "/tmp/test", Some("a description"), Some("user-1"), None)
+            .create_project(
+                "test-proj",
+                "/tmp/test",
+                Some("a description"),
+                Some("user-1"),
+                None,
+            )
             .expect("create_project");
 
         assert_eq!(project.name, "test-proj");
         assert_eq!(project.path, "/tmp/test");
 
-        let fetched = store.get_project(&project.id).expect("get_project").unwrap();
+        let fetched = store
+            .get_project(&project.id)
+            .expect("get_project")
+            .unwrap();
         assert_eq!(fetched.name, "test-proj");
         assert_eq!(fetched.owner_id, Some("user-1".to_string()));
     }
@@ -833,9 +837,15 @@ mod tests {
     #[test]
     fn list_projects_by_owner() {
         let store = make_store();
-        store.create_project("p1", "/a", None, Some("u1"), None).unwrap();
-        store.create_project("p2", "/b", None, Some("u2"), None).unwrap();
-        store.create_project("p3", "/c", None, Some("u1"), None).unwrap();
+        store
+            .create_project("p1", "/a", None, Some("u1"), None)
+            .unwrap();
+        store
+            .create_project("p2", "/b", None, Some("u2"), None)
+            .unwrap();
+        store
+            .create_project("p3", "/c", None, Some("u1"), None)
+            .unwrap();
 
         let u1_projects = store.list_projects(Some("u1")).unwrap();
         assert_eq!(u1_projects.len(), 2);
@@ -847,7 +857,9 @@ mod tests {
     #[test]
     fn update_project() {
         let store = make_store();
-        let project = store.create_project("orig", "/orig", None, None, None).unwrap();
+        let project = store
+            .create_project("orig", "/orig", None, None, None)
+            .unwrap();
         let updated = store
             .update_project(&project.id, Some("renamed"), None, None, None)
             .unwrap()
@@ -859,7 +871,9 @@ mod tests {
     #[test]
     fn delete_project() {
         let store = make_store();
-        let project = store.create_project("del-me", "/tmp", None, None, None).unwrap();
+        let project = store
+            .create_project("del-me", "/tmp", None, None, None)
+            .unwrap();
         assert!(store.delete_project(&project.id).unwrap());
         assert!(store.get_project(&project.id).unwrap().is_none());
     }
@@ -867,11 +881,15 @@ mod tests {
     #[test]
     fn associate_session_to_project() {
         let store = make_store();
-        let project = store.create_project("proj", "/p", None, None, None).unwrap();
+        let project = store
+            .create_project("proj", "/p", None, None, None)
+            .unwrap();
         store
             .upsert_session("s1", "api", "user-1", &serde_json::json!({}))
             .unwrap();
-        store.associate_session_to_project("s1", &project.id).unwrap();
+        store
+            .associate_session_to_project("s1", &project.id)
+            .unwrap();
 
         let sessions = store.get_project_sessions(&project.id).unwrap();
         assert_eq!(sessions, vec!["s1".to_string()]);
@@ -882,7 +900,9 @@ mod tests {
     #[test]
     fn index_and_list_project_files() {
         let store = make_store();
-        let project = store.create_project("proj", "/p", None, None, None).unwrap();
+        let project = store
+            .create_project("proj", "/p", None, None, None)
+            .unwrap();
 
         store
             .index_project_file(&project.id, "src/main.rs", Some("abc123"), None, Some(1024))
@@ -898,13 +918,17 @@ mod tests {
     #[test]
     fn needs_reindex_checks_hash() {
         let store = make_store();
-        let project = store.create_project("proj", "/p", None, None, None).unwrap();
+        let project = store
+            .create_project("proj", "/p", None, None, None)
+            .unwrap();
 
         // Not indexed yet -> needs reindex
         assert!(store.needs_reindex(&project.id, "foo.rs", "hash1").unwrap());
 
         // Index it
-        store.index_project_file(&project.id, "foo.rs", Some("hash1"), None, None).unwrap();
+        store
+            .index_project_file(&project.id, "foo.rs", Some("hash1"), None, None)
+            .unwrap();
 
         // Same hash -> no reindex
         assert!(!store.needs_reindex(&project.id, "foo.rs", "hash1").unwrap());
@@ -916,7 +940,9 @@ mod tests {
     #[test]
     fn delete_project_file() {
         let store = make_store();
-        let project = store.create_project("proj", "/p", None, None, None).unwrap();
+        let project = store
+            .create_project("proj", "/p", None, None, None)
+            .unwrap();
         let file = store
             .index_project_file(&project.id, "a.rs", Some("h"), None, None)
             .unwrap();
@@ -931,7 +957,13 @@ mod tests {
     fn create_and_list_templates() {
         let store = make_store();
         let t = store
-            .create_template("rust-cli", Some("Rust CLI template"), Some("You are a Rust expert"), Some("bash,edit"), Some("code"))
+            .create_template(
+                "rust-cli",
+                Some("Rust CLI template"),
+                Some("You are a Rust expert"),
+                Some("bash,edit"),
+                Some("code"),
+            )
             .unwrap();
 
         assert_eq!(t.name, "rust-cli");
@@ -944,7 +976,9 @@ mod tests {
     #[test]
     fn get_and_delete_template() {
         let store = make_store();
-        let t = store.create_template("tmp", None, None, None, None).unwrap();
+        let t = store
+            .create_template("tmp", None, None, None, None)
+            .unwrap();
 
         let fetched = store.get_template(&t.id).unwrap().unwrap();
         assert_eq!(fetched.name, "tmp");
@@ -957,7 +991,13 @@ mod tests {
     fn create_project_from_template() {
         let store = make_store();
         let template = store
-            .create_template("tmpl", Some("a tmpl"), Some("system prompt"), Some("bash"), Some("code"))
+            .create_template(
+                "tmpl",
+                Some("a tmpl"),
+                Some("system prompt"),
+                Some("bash"),
+                Some("code"),
+            )
             .unwrap();
 
         let project = store
@@ -970,7 +1010,10 @@ mod tests {
             Some(template.id.as_str())
         );
         assert_eq!(
-            project.settings.get("system_prompt").and_then(|v| v.as_str()),
+            project
+                .settings
+                .get("system_prompt")
+                .and_then(|v| v.as_str()),
             Some("system prompt")
         );
     }
@@ -982,13 +1025,23 @@ mod tests {
         let store = make_store();
 
         // Create session + messages for user
-        store.upsert_session("s1", "api", "user-gdpr", &serde_json::json!({})).unwrap();
         store
-            .append_message("s1", "user", "hello", chrono::Utc::now(), &serde_json::json!({}))
+            .upsert_session("s1", "api", "user-gdpr", &serde_json::json!({}))
+            .unwrap();
+        store
+            .append_message(
+                "s1",
+                "user",
+                "hello",
+                chrono::Utc::now(),
+                &serde_json::json!({}),
+            )
             .unwrap();
 
         // Create a project for the user
-        store.create_project("proj", "/p", None, Some("user-gdpr"), None).unwrap();
+        store
+            .create_project("proj", "/p", None, Some("user-gdpr"), None)
+            .unwrap();
 
         let export = store.export_user_data("user-gdpr").unwrap();
         assert_eq!(export["user_id"], "user-gdpr");
@@ -1001,11 +1054,21 @@ mod tests {
     fn delete_user_data_cascades_everything() {
         let store = make_store();
 
-        store.upsert_session("s1", "api", "user-del", &serde_json::json!({})).unwrap();
         store
-            .append_message("s1", "user", "bye", chrono::Utc::now(), &serde_json::json!({}))
+            .upsert_session("s1", "api", "user-del", &serde_json::json!({}))
             .unwrap();
-        store.create_project("proj", "/p", None, Some("user-del"), None).unwrap();
+        store
+            .append_message(
+                "s1",
+                "user",
+                "bye",
+                chrono::Utc::now(),
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        store
+            .create_project("proj", "/p", None, Some("user-del"), None)
+            .unwrap();
 
         let deleted = store.delete_user_data("user-del").unwrap();
         assert!(deleted > 0);

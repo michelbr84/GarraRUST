@@ -14,11 +14,11 @@
 //! Algorithm-confusion hardening: `Validation::new(Algorithm::HS256)` rejects
 //! `none` and any asymmetric algorithm at decode time.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::TryRngCore;
 use rand::rngs::OsRng;
 use secrecy::{ExposeSecret, SecretString};
@@ -226,10 +226,9 @@ impl JwtIssuer {
     /// replaced with `?` propagation per CLAUDE.md rule 4 (no expect/unwrap
     /// in production paths).
     pub fn hmac_refresh(&self, plaintext: &str) -> Result<String, AuthError> {
-        let mut mac = HmacSha256::new_from_slice(
-            self.config.refresh_hmac_secret.expose_secret().as_bytes(),
-        )
-        .map_err(|e| AuthError::Config(format!("hmac key invalid: {e}")))?;
+        let mut mac =
+            HmacSha256::new_from_slice(self.config.refresh_hmac_secret.expose_secret().as_bytes())
+                .map_err(|e| AuthError::Config(format!("hmac key invalid: {e}")))?;
         mac.update(plaintext.as_bytes());
         let bytes = mac.finalize().into_bytes();
         Ok(hex_encode(&bytes))
@@ -241,7 +240,10 @@ impl JwtIssuer {
 /// Returns `Some(token)` if the header is present and starts with
 /// `Bearer ` (case-insensitive on the scheme). `None` otherwise.
 pub fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
-    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     // Case-insensitive "Bearer " prefix, per RFC 7235 §2.1.
     if value.len() < 7 {
         return None;
@@ -361,23 +363,32 @@ mod tests {
 
     #[test]
     fn extract_bearer_token_parses_header() {
-        use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
+        use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
         let mut h = HeaderMap::new();
         assert_eq!(extract_bearer_token(&h), None);
 
-        h.insert(AUTHORIZATION, HeaderValue::from_static("Bearer abc.def.ghi"));
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer abc.def.ghi"),
+        );
         assert_eq!(extract_bearer_token(&h), Some("abc.def.ghi"));
 
         // Case-insensitive scheme.
         h.insert(AUTHORIZATION, HeaderValue::from_static("bearer xyz"));
         assert_eq!(extract_bearer_token(&h), Some("xyz"));
 
-        h.insert(AUTHORIZATION, HeaderValue::from_static("BEARER  with-space"));
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("BEARER  with-space"),
+        );
         assert_eq!(extract_bearer_token(&h), Some("with-space"));
 
         // Wrong scheme.
-        h.insert(AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwdw=="));
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwdw=="),
+        );
         assert_eq!(extract_bearer_token(&h), None);
 
         // Too short.

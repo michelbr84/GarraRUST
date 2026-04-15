@@ -129,7 +129,8 @@ impl Metrics {
 
     /// Record a processed message (any channel).
     pub fn record_message(&self) {
-        self.messages_processed_total.fetch_add(1, Ordering::Relaxed);
+        self.messages_processed_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // ── DB helpers ────────────────────────────────────────────────────────

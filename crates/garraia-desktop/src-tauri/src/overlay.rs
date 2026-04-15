@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -10,7 +10,9 @@ const WIN_H: f64 = 320.0;
 /// Position adapts to screen resolution (bottom-right, with taskbar clearance).
 /// Returns an `Arc<AtomicBool>` tracking visibility state (true = visible).
 pub fn create_overlay(app: &AppHandle) -> tauri::Result<Arc<AtomicBool>> {
-    let monitor = app.primary_monitor()?.unwrap_or_else(|| panic!("No monitor found"));
+    let monitor = app
+        .primary_monitor()?
+        .unwrap_or_else(|| panic!("No monitor found"));
 
     let scale = monitor.scale_factor();
     let screen_w = monitor.size().width as f64 / scale;
@@ -47,7 +49,9 @@ pub fn create_overlay(app: &AppHandle) -> tauri::Result<Arc<AtomicBool>> {
 
 /// Toggles overlay visibility using an explicit state flag (avoids is_visible() unreliability).
 pub fn toggle_overlay(app: &AppHandle, visible: &Arc<AtomicBool>) {
-    let Some(win) = app.get_webview_window("parrot") else { return };
+    let Some(win) = app.get_webview_window("parrot") else {
+        return;
+    };
 
     if visible.load(Ordering::Relaxed) {
         let _ = win.hide();

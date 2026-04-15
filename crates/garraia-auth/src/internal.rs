@@ -29,14 +29,14 @@ use uuid::Uuid;
 
 use secrecy::SecretString;
 
-use crate::audit::{audit_login, AuditAction};
+use crate::Result;
+use crate::audit::{AuditAction, audit_login};
 use crate::error::AuthError;
 use crate::hashing::{consume_dummy_hash, hash_argon2id, verify_argon2id, verify_pbkdf2};
 use crate::login_pool::LoginPool;
 use crate::provider::IdentityProvider;
 use crate::signup_pool::SignupPool;
 use crate::types::{Credential, Identity, RequestCtx};
-use crate::Result;
 
 /// Verifies credentials against `user_identities` using the dedicated
 /// `LoginPool` (BYPASSRLS) exclusively.

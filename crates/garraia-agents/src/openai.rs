@@ -393,9 +393,10 @@ impl LlmProvider for OpenAiProvider {
         // OpenRouter can also send comment payloads like ": OPENROUTER PROCESSING"
         if content_type.contains("text/event-stream") {
             // First check for comment payloads (lines starting with colon)
-            let has_only_comments = body_str.lines()
+            let has_only_comments = body_str
+                .lines()
                 .all(|line| line.trim().is_empty() || line.trim().starts_with(':'));
-            
+
             if has_only_comments {
                 // All lines are comments - this is likely a processing message, not an error
                 tracing::debug!(
@@ -410,29 +411,32 @@ impl LlmProvider for OpenAiProvider {
                     if trimmed.starts_with(':') {
                         continue;
                     }
-                    
+
                     if let Some(data) = trimmed.strip_prefix("data: ")
-                        && !data.is_empty() && data != "[DONE]" {
-                            // Try to extract error message from JSON
-                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
-                                let err = json_val.get("error")
-                                    .or_else(|| json_val.get("message"))
-                                    .and_then(|e| e.as_str())
-                                    .map(|s| s.to_string());
-                                if let Some(err_msg) = err {
-                                    tracing::warn!(
-                                        "openai API returned SSE error: status={}, error={}, endpoint={}",
-                                        status_code,
-                                        &err_msg[..err_msg.len().min(200)],
-                                        self.endpoint()
-                                    );
-                                    return Err(Error::Agent(format!(
-                                        "openai API error (SSE): status={}, error={}",
-                                        status_code, err_msg
-                                    )));
-                                }
+                        && !data.is_empty()
+                        && data != "[DONE]"
+                    {
+                        // Try to extract error message from JSON
+                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
+                            let err = json_val
+                                .get("error")
+                                .or_else(|| json_val.get("message"))
+                                .and_then(|e| e.as_str())
+                                .map(|s| s.to_string());
+                            if let Some(err_msg) = err {
+                                tracing::warn!(
+                                    "openai API returned SSE error: status={}, error={}, endpoint={}",
+                                    status_code,
+                                    &err_msg[..err_msg.len().min(200)],
+                                    self.endpoint()
+                                );
+                                return Err(Error::Agent(format!(
+                                    "openai API error (SSE): status={}, error={}",
+                                    status_code, err_msg
+                                )));
                             }
                         }
+                    }
                 }
             }
         }
@@ -443,24 +447,25 @@ impl LlmProvider for OpenAiProvider {
         // keep-alive events). Detect this before attempting full parse.
         let trimmed_body = body_str.trim();
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_body)
-            && let Some(error) = json_val.get("error") {
-                let msg = error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error");
-                let code = error
-                    .get("code")
-                    .and_then(|c| c.as_u64())
-                    .map(|c| format!(", code={c}"))
-                    .unwrap_or_default();
-                tracing::warn!(
-                    "openai API returned error body with 200 status: {}{}, endpoint={}",
-                    msg,
-                    code,
-                    self.endpoint()
-                );
-                return Err(Error::Agent(format!("openai API error: {msg}")));
-            }
+            && let Some(error) = json_val.get("error")
+        {
+            let msg = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            let code = error
+                .get("code")
+                .and_then(|c| c.as_u64())
+                .map(|c| format!(", code={c}"))
+                .unwrap_or_default();
+            tracing::warn!(
+                "openai API returned error body with 200 status: {}{}, endpoint={}",
+                msg,
+                code,
+                self.endpoint()
+            );
+            return Err(Error::Agent(format!("openai API error: {msg}")));
+        }
 
         // Try to parse as JSON, with detailed error logging
         match serde_json::from_slice::<OpenAiResponse>(&body_bytes) {

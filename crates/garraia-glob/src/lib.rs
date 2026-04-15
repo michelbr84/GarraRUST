@@ -9,25 +9,25 @@
 //! - Path normalization (cross-platform)
 //! - Performance guardrails (max depth, max files)
 
-pub mod matcher;
+#[cfg(feature = "watcher")]
+pub mod debouncer;
 pub mod ignore;
+pub mod matcher;
 pub mod path;
 pub mod pattern;
 pub mod scanner;
 #[cfg(feature = "watcher")]
 pub mod watcher;
-#[cfg(feature = "watcher")]
-pub mod debouncer;
 
-pub use matcher::{GlobMatcher, MatchOptions, MatchResult};
+#[cfg(feature = "watcher")]
+pub use debouncer::Debouncer;
 pub use ignore::{IgnoreFile, IgnoreKind};
+pub use matcher::{GlobMatcher, MatchOptions, MatchResult};
 pub use path::normalize_path;
 pub use pattern::{GlobConfig, GlobMode, GlobPattern};
 pub use scanner::Scanner;
 #[cfg(feature = "watcher")]
 pub use watcher::{ActiveWatcher, WatchEvent, WatchEventKind, WatcherBuilder, WatcherGuard};
-#[cfg(feature = "watcher")]
-pub use debouncer::Debouncer;
 
 use thiserror::Error;
 
@@ -63,10 +63,7 @@ mod tests {
 
     #[test]
     fn test_basic_glob() {
-        let matcher = GlobMatcher::new(
-            vec!["*.rs".to_string()],
-            MatchOptions::default(),
-        ).unwrap();
+        let matcher = GlobMatcher::new(vec!["*.rs".to_string()], MatchOptions::default()).unwrap();
 
         assert!(matcher.matches("main.rs"));
         assert!(!matcher.matches("main.py"));
@@ -74,10 +71,7 @@ mod tests {
 
     #[test]
     fn test_path_normalization() {
-        assert_eq!(
-            normalize_path("src\\main.rs"),
-            "src/main.rs"
-        );
+        assert_eq!(normalize_path("src\\main.rs"), "src/main.rs");
     }
 
     #[test]

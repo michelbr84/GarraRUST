@@ -61,9 +61,9 @@ pub struct MeResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MobileClaims {
-    pub sub: String,   // user UUID
+    pub sub: String, // user UUID
     pub email: String,
-    pub exp: u64,      // unix timestamp
+    pub exp: u64, // unix timestamp
     pub iat: u64,
 }
 
@@ -185,7 +185,11 @@ pub async fn register(
 
     (
         StatusCode::CREATED,
-        Json(serde_json::json!(AuthResponse { token, user_id, email })),
+        Json(serde_json::json!(AuthResponse {
+            token,
+            user_id,
+            email
+        })),
     )
 }
 

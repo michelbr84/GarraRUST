@@ -91,10 +91,7 @@ impl TelemetryConfig {
 }
 
 fn parse_bool(s: &str) -> bool {
-    matches!(
-        s.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 #[cfg(test)]

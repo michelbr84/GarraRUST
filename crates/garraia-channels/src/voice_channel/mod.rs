@@ -69,10 +69,12 @@ impl VoiceChannel {
     pub async fn transcribe(&self, audio_data: &[u8], format: AudioFormat) -> Result<String> {
         match &self.config.stt_provider {
             SttProvider::WhisperApi { api_key, model } => {
-                self.transcribe_whisper_api(audio_data, format, api_key, model).await
+                self.transcribe_whisper_api(audio_data, format, api_key, model)
+                    .await
             }
             SttProvider::WhisperLocal { endpoint } => {
-                self.transcribe_whisper_local(audio_data, format, endpoint).await
+                self.transcribe_whisper_local(audio_data, format, endpoint)
+                    .await
             }
         }
     }
@@ -84,13 +86,12 @@ impl VoiceChannel {
                 api_key,
                 voice_id,
                 model_id,
-            } => self.tts_elevenlabs(text, api_key, voice_id, model_id.as_deref()).await,
-            TtsProvider::Kokoro { endpoint } => {
-                self.tts_kokoro(text, endpoint).await
+            } => {
+                self.tts_elevenlabs(text, api_key, voice_id, model_id.as_deref())
+                    .await
             }
-            TtsProvider::Chatterbox { endpoint } => {
-                self.tts_chatterbox(text, endpoint).await
-            }
+            TtsProvider::Kokoro { endpoint } => self.tts_kokoro(text, endpoint).await,
+            TtsProvider::Chatterbox { endpoint } => self.tts_chatterbox(text, endpoint).await,
         }
     }
 
@@ -104,7 +105,10 @@ impl VoiceChannel {
     ) -> Result<Vec<u8>> {
         // Step 1: Transcribe audio to text
         let transcription = self.transcribe(audio_data, input_format).await?;
-        info!("voice: transcribed {} chars from audio", transcription.len());
+        info!(
+            "voice: transcribed {} chars from audio",
+            transcription.len()
+        );
 
         if transcription.trim().is_empty() {
             return Err(Error::Channel("voice: empty transcription".into()));
@@ -228,10 +232,7 @@ impl VoiceChannel {
         voice_id: &str,
         model_id: Option<&str>,
     ) -> Result<Vec<u8>> {
-        let url = format!(
-            "https://api.elevenlabs.io/v1/text-to-speech/{}",
-            voice_id
-        );
+        let url = format!("https://api.elevenlabs.io/v1/text-to-speech/{}", voice_id);
 
         let mut body = serde_json::json!({
             "text": text,
@@ -288,9 +289,7 @@ impl VoiceChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "kokoro TTS error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("kokoro TTS error {status}: {body}")));
         }
 
         resp.bytes()
@@ -382,9 +381,7 @@ mod tests {
     #[test]
     fn channel_type_is_voice() {
         let on_msg: VoiceOnMessageFn =
-            Arc::new(|_session, _uid, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+            Arc::new(|_session, _uid, _text, _delta_tx| Box::pin(async { Ok("test".to_string()) }));
         let config = VoiceConfig {
             stt_provider: SttProvider::WhisperLocal {
                 endpoint: "http://localhost:9000/v1/audio/transcriptions".into(),

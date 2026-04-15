@@ -1,13 +1,11 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 
 use crate::state::SharedState;
 
 /// GET /api/openclaw/status — connection status of the OpenClaw bridge.
-pub async fn openclaw_status(
-    State(state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn openclaw_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let status = if let Some(ref client) = state.openclaw_client {
         let s = client.status();
         serde_json::json!({
@@ -77,9 +75,7 @@ pub async fn openclaw_disconnect(
 }
 
 /// GET /api/openclaw/channels — list platforms available through OpenClaw.
-pub async fn openclaw_channels(
-    State(state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn openclaw_channels(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let channels: Vec<&str> = if let Some(ref client) = state.openclaw_client {
         client
             .available_channels()

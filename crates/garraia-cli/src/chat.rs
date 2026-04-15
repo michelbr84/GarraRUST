@@ -8,9 +8,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, FileReadTool,
-    FileWriteTool, LlmProvider, MessagePart, OllamaProvider, OpenAiProvider,
-    tools::git_diff_tool::GitDiffTool,
+    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, FileReadTool, FileWriteTool,
+    LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
@@ -30,19 +29,33 @@ pub fn print_chat_banner(provider: &str, model: &str, mode: &str) {
     let version = env!("CARGO_PKG_VERSION");
     println!();
     println!("{CYAN}{BOLD}╭──────────────────────────────────────────────╮{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}   {YELLOW}{BOLD}\\) /  o o  \\ (/{RESET}   {GREEN}{BOLD}GarraIA v{version}{RESET}         {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}");
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}   {YELLOW}{BOLD}\\) /  o o  \\ (/{RESET}   {GREEN}{BOLD}GarraIA v{version}{RESET}         {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
     println!(
         "{CYAN}{BOLD}│{RESET}  {DIM}Provider:{RESET} {GREEN}{provider:<15}{RESET} {DIM}Mode:{RESET} {GREEN}{mode:<8}{RESET}  {CYAN}{BOLD}│{RESET}"
     );
     println!(
         "{CYAN}{BOLD}│{RESET}  {DIM}Model:{RESET}    {GREEN}{model:<33}{RESET} {CYAN}{BOLD}│{RESET}"
     );
-    println!("{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}");
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
     println!(
         "{CYAN}{BOLD}│{RESET}  {DIM}/help  /model  /provider  /clear  /exit{RESET}  {CYAN}{BOLD}│{RESET}"
     );
@@ -149,15 +162,12 @@ pub async fn detect_provider(
     }
 
     // 1. Try Ollama first (local, offline)
-    let ollama_url = std::env::var("OLLAMA_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_url =
+        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
 
     let ollama = OllamaProvider::new(None, Some(ollama_url.clone()));
     if ollama.health_check().await.unwrap_or(false) {
-        let model = ollama
-            .configured_model()
-            .unwrap_or("llama3.1")
-            .to_string();
+        let model = ollama.configured_model().unwrap_or("llama3.1").to_string();
         return (
             "ollama".to_string(),
             model,
@@ -175,7 +185,11 @@ pub async fn detect_provider(
                 .unwrap_or("claude-sonnet-4-5-20250929")
                 .to_string();
             let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
-            return ("anthropic".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
+            return (
+                "anthropic".to_string(),
+                model,
+                Arc::new(provider) as Arc<dyn LlmProvider>,
+            );
         }
     }
 
@@ -189,7 +203,11 @@ pub async fn detect_provider(
                 .unwrap_or("gpt-4o")
                 .to_string();
             let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
-            return ("openai".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
+            return (
+                "openai".to_string(),
+                model,
+                Arc::new(provider) as Arc<dyn LlmProvider>,
+            );
         }
     }
 
@@ -207,16 +225,17 @@ pub async fn detect_provider(
                 Some(model.clone()),
                 Some("https://openrouter.ai/api/v1".to_string()),
             );
-            return ("openrouter".to_string(), model, Arc::new(provider) as Arc<dyn LlmProvider>);
+            return (
+                "openrouter".to_string(),
+                model,
+                Arc::new(provider) as Arc<dyn LlmProvider>,
+            );
         }
     }
 
     // 5. Fallback: Ollama with no health check (user will see error on first message)
     let ollama = OllamaProvider::new(None, Some(ollama_url));
-    let model = ollama
-        .configured_model()
-        .unwrap_or("llama3.1")
-        .to_string();
+    let model = ollama.configured_model().unwrap_or("llama3.1").to_string();
     (
         "ollama (offline)".to_string(),
         model,
@@ -245,17 +264,17 @@ pub async fn run_chat(
                 provider = Arc::new(ollama);
             }
             "anthropic" => {
-                let key = std::env::var("ANTHROPIC_API_KEY")
-                    .context("ANTHROPIC_API_KEY not set")?;
-                let model = model_override.unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+                let key =
+                    std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?;
+                let model =
+                    model_override.unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
                 let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
                 model_name = model;
                 provider_name = "anthropic".to_string();
                 provider = Arc::new(ap);
             }
             "openai" => {
-                let key = std::env::var("OPENAI_API_KEY")
-                    .context("OPENAI_API_KEY not set")?;
+                let key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?;
                 let model = model_override.unwrap_or_else(|| "gpt-4o".to_string());
                 let op = OpenAiProvider::new(&key, Some(model.clone()), None);
                 model_name = model;
@@ -420,7 +439,9 @@ pub async fn run_chat(
             }
             _ if input.starts_with("/provider ") => {
                 let new_provider = input[10..].trim();
-                println!("{DIM}Para trocar provider, reinicie com: garraia chat --provider {new_provider}{RESET}");
+                println!(
+                    "{DIM}Para trocar provider, reinicie com: garraia chat --provider {new_provider}{RESET}"
+                );
                 continue;
             }
             _ => {}
@@ -480,9 +501,7 @@ pub async fn run_chat(
                 // Hint for common errors
                 let err_str = format!("{e}");
                 if err_str.contains("Connection refused") || err_str.contains("connect") {
-                    println!(
-                        "{DIM}Dica: Ollama nao esta rodando. Inicie com: ollama serve{RESET}"
-                    );
+                    println!("{DIM}Dica: Ollama nao esta rodando. Inicie com: ollama serve{RESET}");
                 } else if err_str.contains("401") || err_str.contains("Unauthorized") {
                     println!(
                         "{DIM}Dica: API key invalida. Verifique ANTHROPIC_API_KEY ou OPENAI_API_KEY{RESET}"

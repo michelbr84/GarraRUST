@@ -27,11 +27,13 @@ pub mod fixtures;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
-use axum::Router;
-use garraia_auth::{AppPool, AppPoolConfig, JwtIssuer, LoginConfig, LoginPool, SignupConfig, SignupPool};
+use garraia_auth::{
+    AppPool, AppPoolConfig, JwtIssuer, LoginConfig, LoginPool, SignupConfig, SignupPool,
+};
 use garraia_config::AppConfig;
 use garraia_gateway::server::build_router_for_test;
 use garraia_workspace::{Workspace, WorkspaceConfig};

@@ -2,10 +2,10 @@
 //! with optional working directory / project context.
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -66,9 +66,7 @@ pub struct CreateSessionWithProjectRequest {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// POST /api/projects — create a new project.
-pub async fn create_project(
-    Json(body): Json<CreateProjectRequest>,
-) -> impl IntoResponse {
+pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl IntoResponse {
     let now = chrono::Utc::now().to_rfc3339();
     let project = Project {
         id: Uuid::new_v4().to_string(),
@@ -81,7 +79,10 @@ pub async fn create_project(
     let id = project.id.clone();
     PROJECTS.insert(id.clone(), project.clone());
 
-    (StatusCode::CREATED, Json(serde_json::json!({ "project": project })))
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "project": project })),
+    )
 }
 
 /// GET /api/projects — list all projects.
@@ -129,16 +130,16 @@ pub async fn update_project(
     let updated = project.clone();
     drop(entry);
 
-    (StatusCode::OK, Json(serde_json::json!({ "project": updated })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "project": updated })),
+    )
 }
 
 /// DELETE /api/projects/{id} — delete a project.
 pub async fn delete_project(Path(id): Path<String>) -> impl IntoResponse {
     match PROJECTS.remove(&id) {
-        Some(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "ok": true })),
-        ),
+        Some(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "project not found" })),
@@ -191,15 +192,16 @@ async fn collect_project_files(dir: &std::path::Path) -> std::result::Result<Vec
 
         // Parse .garraignore patterns (simple line-based glob matching).
         if ignore_path.is_file()
-            && let Ok(contents) = std::fs::read_to_string(&ignore_path) {
-                for line in contents.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue;
-                    }
-                    ignored.push(trimmed.to_string());
+            && let Ok(contents) = std::fs::read_to_string(&ignore_path)
+        {
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
                 }
+                ignored.push(trimmed.to_string());
             }
+        }
 
         let mut files = Vec::new();
         collect_dir_recursive(&dir, &dir, &ignored, &mut files)?;
@@ -336,11 +338,12 @@ pub async fn create_session_with_project(
 
         // If project_id is provided, look up the project and populate fields from it.
         if let Some(ref pid) = body.project_id
-            && let Some(project) = PROJECTS.get(pid) {
-                session.project_id = Some(pid.clone());
-                session.project_name = Some(project.name.clone());
-                session.working_dir = Some(project.path.clone());
-            }
+            && let Some(project) = PROJECTS.get(pid)
+        {
+            session.project_id = Some(pid.clone());
+            session.project_name = Some(project.name.clone());
+            session.working_dir = Some(project.path.clone());
+        }
 
         // Explicit overrides take precedence over project lookups.
         if let Some(ref wd) = body.working_dir {

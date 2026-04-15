@@ -81,9 +81,7 @@ impl ListDirTool {
             return Ok(());
         }
 
-        let mut items: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let mut items: Vec<_> = std::fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
 
         // Sort: directories first, then alphabetically
         items.sort_by(|a, b| {
@@ -143,9 +141,7 @@ impl ListDirTool {
                 if let Some(pat) = pattern {
                     let pat_lower = pat.to_lowercase();
                     let name_lower = name.to_lowercase();
-                    if !name_lower.contains(&pat_lower)
-                        && !glob_match(&pat_lower, &name_lower)
-                    {
+                    if !name_lower.contains(&pat_lower) && !glob_match(&pat_lower, &name_lower) {
                         continue;
                     }
                 }
@@ -214,11 +210,12 @@ impl Tool for ListDirTool {
         })
     }
 
-    async fn execute(&self, _context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let path_str = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput> {
+        let path_str = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let depth = input
             .get("depth")
@@ -240,10 +237,7 @@ impl Tool for ListDirTool {
         }
 
         if !path.is_dir() {
-            return Ok(ToolOutput::error(format!(
-                "Not a directory: {}",
-                path_str
-            )));
+            return Ok(ToolOutput::error(format!("Not a directory: {}", path_str)));
         }
 
         let mut entries = Vec::new();
@@ -259,10 +253,7 @@ impl Tool for ListDirTool {
                 }
                 Ok(ToolOutput::success(entries.join("\n")))
             }
-            Err(e) => Ok(ToolOutput::error(format!(
-                "Error listing directory: {}",
-                e
-            ))),
+            Err(e) => Ok(ToolOutput::error(format!("Error listing directory: {}", e))),
         }
     }
 }
@@ -329,10 +320,7 @@ mod tests {
         };
 
         let output = tool
-            .execute(
-                &ctx,
-                serde_json::json!({"path": "/nonexistent_dir_12345"}),
-            )
+            .execute(&ctx, serde_json::json!({"path": "/nonexistent_dir_12345"}))
             .await
             .expect("should not error");
 

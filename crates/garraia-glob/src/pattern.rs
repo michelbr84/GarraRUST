@@ -82,8 +82,9 @@ impl GlobPattern {
             .negations
             .into_iter()
             .map(|(group_idx, inner_str)| {
-                let re = Regex::new(&inner_str)
-                    .map_err(|e| GlobError::InvalidPattern(format!("negation in '{pattern}': {e}")))?;
+                let re = Regex::new(&inner_str).map_err(|e| {
+                    GlobError::InvalidPattern(format!("negation in '{pattern}': {e}"))
+                })?;
                 Ok((group_idx, re))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -139,7 +140,8 @@ impl GlobPattern {
 }
 
 fn has_hidden_component(path: &str) -> bool {
-    path.split('/').any(|seg| seg.starts_with('.') && seg.len() > 1)
+    path.split('/')
+        .any(|seg| seg.starts_with('.') && seg.len() > 1)
 }
 
 // ── Compiler ─────────────────────────────────────────────────────────────────
@@ -160,11 +162,20 @@ struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     fn new(config: &'a GlobConfig) -> Self {
-        Compiler { config, next_group: 1, negations: Vec::new(), greedy_star: false }
+        Compiler {
+            config,
+            next_group: 1,
+            negations: Vec::new(),
+            greedy_star: false,
+        }
     }
 
     fn compile(&mut self, pattern: &str) -> Result<String> {
-        let prefix = if self.config.case_sensitive { "^" } else { "(?i)^" };
+        let prefix = if self.config.case_sensitive {
+            "^"
+        } else {
+            "(?i)^"
+        };
         let mut out = String::from(prefix);
         let chars: Vec<char> = pattern.chars().collect();
         let mut i = 0;
@@ -227,8 +238,8 @@ impl<'a> Compiler<'a> {
                 // e.g. `!(*.txt)` correctly rejects `docs/notes.txt` (the captured `(.*)`
                 // group holds `docs/notes.txt`, and the inner `*.txt` needs `.*\.txt`
                 // rather than `[^/]*\.txt` to match it).
-                let is_greedy = self.config.mode == GlobMode::Bash
-                    && self.config.bash_greedy_negated_extglob;
+                let is_greedy =
+                    self.config.mode == GlobMode::Bash && self.config.bash_greedy_negated_extglob;
 
                 let saved = self.greedy_star;
                 self.greedy_star = is_greedy;
@@ -242,7 +253,8 @@ impl<'a> Compiler<'a> {
                 out.push_str(segment_re);
 
                 // The captured segment must NOT fully match inner_re.
-                self.negations.push((group_idx, format!("^(?:{inner_re})$")));
+                self.negations
+                    .push((group_idx, format!("^(?:{inner_re})$")));
 
                 Ok(i + 2 + consumed + 1)
             }
@@ -301,8 +313,14 @@ impl<'a> Compiler<'a> {
             }
 
             // ── Regex metacharacters ─────────────────────────────────────
-            ('.', _) | ('^', _) | ('$', _) | ('+', _) | ('|', _)
-            | ('(', _) | (')', _) | ('\\', _) => {
+            ('.', _)
+            | ('^', _)
+            | ('$', _)
+            | ('+', _)
+            | ('|', _)
+            | ('(', _)
+            | (')', _)
+            | ('\\', _) => {
                 push_literal(out, c);
                 Ok(i + 1)
             }
@@ -345,8 +363,7 @@ impl<'a> Compiler<'a> {
 
 fn push_literal(out: &mut String, c: char) {
     match c {
-        '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']'
-        | '{' | '}' | '\\' | '|' => {
+        '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '|' => {
             out.push('\\');
             out.push(c);
         }
@@ -395,7 +412,9 @@ fn parse_char_class(chars: &[char], start: usize) -> Result<(String, usize)> {
             return Ok((class, i - start));
         }
     }
-    Err(GlobError::InvalidPattern("unclosed character class '['".into()))
+    Err(GlobError::InvalidPattern(
+        "unclosed character class '['".into(),
+    ))
 }
 
 fn parse_brace(chars: &[char], start: usize) -> Result<(Vec<String>, usize)> {
@@ -426,7 +445,9 @@ fn parse_brace(chars: &[char], start: usize) -> Result<(Vec<String>, usize)> {
         }
         i += 1;
     }
-    Err(GlobError::InvalidPattern("unclosed brace expansion '{'".into()))
+    Err(GlobError::InvalidPattern(
+        "unclosed brace expansion '{'".into(),
+    ))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -440,11 +461,25 @@ mod tests {
     }
 
     fn pm_dot(pat: &str) -> GlobPattern {
-        GlobPattern::new(pat, &GlobConfig { dot: true, ..GlobConfig::default() }).unwrap()
+        GlobPattern::new(
+            pat,
+            &GlobConfig {
+                dot: true,
+                ..GlobConfig::default()
+            },
+        )
+        .unwrap()
     }
 
     fn bash(pat: &str) -> GlobPattern {
-        GlobPattern::new(pat, &GlobConfig { mode: GlobMode::Bash, ..GlobConfig::default() }).unwrap()
+        GlobPattern::new(
+            pat,
+            &GlobConfig {
+                mode: GlobMode::Bash,
+                ..GlobConfig::default()
+            },
+        )
+        .unwrap()
     }
 
     fn bash_greedy(pat: &str) -> GlobPattern {
@@ -546,8 +581,8 @@ mod tests {
     #[test]
     fn extglob_star_zero_or_more() {
         let p = pm("*(foo)test.rs");
-        assert!(p.matches("test.rs"));      // zero occurrences
-        assert!(p.matches("footest.rs"));   // one
+        assert!(p.matches("test.rs")); // zero occurrences
+        assert!(p.matches("footest.rs")); // one
         assert!(p.matches("foofootest.rs")); // two
         assert!(!p.matches("bartest.rs"));
     }
@@ -628,7 +663,10 @@ mod tests {
     fn case_insensitive() {
         let p = GlobPattern::new(
             "*.RS",
-            &GlobConfig { case_sensitive: false, ..GlobConfig::default() },
+            &GlobConfig {
+                case_sensitive: false,
+                ..GlobConfig::default()
+            },
         )
         .unwrap();
         assert!(p.matches("main.rs"));

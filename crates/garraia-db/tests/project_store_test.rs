@@ -15,7 +15,13 @@ fn make_store() -> SessionStore {
 fn create_project_returns_valid_fields() {
     let store = make_store();
     let project = store
-        .create_project("my-project", "/home/user/project", Some("desc"), Some("owner-1"), None)
+        .create_project(
+            "my-project",
+            "/home/user/project",
+            Some("desc"),
+            Some("owner-1"),
+            None,
+        )
         .expect("should create project");
 
     assert!(!project.id.is_empty(), "id should be non-empty UUID");
@@ -36,13 +42,23 @@ fn get_project_returns_none_for_missing_id() {
 #[test]
 fn list_projects_filters_by_owner() {
     let store = make_store();
-    store.create_project("a", "/a", None, Some("alice"), None).unwrap();
-    store.create_project("b", "/b", None, Some("bob"), None).unwrap();
-    store.create_project("c", "/c", None, Some("alice"), None).unwrap();
+    store
+        .create_project("a", "/a", None, Some("alice"), None)
+        .unwrap();
+    store
+        .create_project("b", "/b", None, Some("bob"), None)
+        .unwrap();
+    store
+        .create_project("c", "/c", None, Some("alice"), None)
+        .unwrap();
 
     let alice_projects = store.list_projects(Some("alice")).unwrap();
     assert_eq!(alice_projects.len(), 2);
-    assert!(alice_projects.iter().all(|p| p.owner_id.as_deref() == Some("alice")));
+    assert!(
+        alice_projects
+            .iter()
+            .all(|p| p.owner_id.as_deref() == Some("alice"))
+    );
 
     let all = store.list_projects(None).unwrap();
     assert_eq!(all.len(), 3);
@@ -51,7 +67,9 @@ fn list_projects_filters_by_owner() {
 #[test]
 fn update_project_partial_fields() {
     let store = make_store();
-    let project = store.create_project("original", "/orig", Some("old desc"), None, None).unwrap();
+    let project = store
+        .create_project("original", "/orig", Some("old desc"), None, None)
+        .unwrap();
 
     // Update only name
     let updated = store
@@ -67,7 +85,9 @@ fn update_project_partial_fields() {
 #[test]
 fn update_project_with_settings() {
     let store = make_store();
-    let project = store.create_project("proj", "/p", None, None, None).unwrap();
+    let project = store
+        .create_project("proj", "/p", None, None, None)
+        .unwrap();
 
     let new_settings = serde_json::json!({"model": "gpt-4o", "temperature": 0.7});
     let updated = store
@@ -97,7 +117,9 @@ fn delete_project_returns_false_for_missing() {
 #[test]
 fn delete_project_removes_it() {
     let store = make_store();
-    let project = store.create_project("del-me", "/tmp", None, None, None).unwrap();
+    let project = store
+        .create_project("del-me", "/tmp", None, None, None)
+        .unwrap();
     assert!(store.delete_project(&project.id).unwrap());
     assert!(store.get_project(&project.id).unwrap().is_none());
 }
@@ -107,7 +129,9 @@ fn delete_project_removes_it() {
 #[test]
 fn index_file_and_retrieve() {
     let store = make_store();
-    let project = store.create_project("rag-proj", "/rag", None, None, None).unwrap();
+    let project = store
+        .create_project("rag-proj", "/rag", None, None, None)
+        .unwrap();
 
     let file = store
         .index_project_file(&project.id, "src/main.rs", Some("abc123"), None, Some(2048))
@@ -126,10 +150,16 @@ fn index_file_and_retrieve() {
 #[test]
 fn index_file_upserts_on_conflict() {
     let store = make_store();
-    let project = store.create_project("upsert-proj", "/up", None, None, None).unwrap();
+    let project = store
+        .create_project("upsert-proj", "/up", None, None, None)
+        .unwrap();
 
-    store.index_project_file(&project.id, "a.rs", Some("hash1"), None, Some(100)).unwrap();
-    store.index_project_file(&project.id, "a.rs", Some("hash2"), None, Some(200)).unwrap();
+    store
+        .index_project_file(&project.id, "a.rs", Some("hash1"), None, Some(100))
+        .unwrap();
+    store
+        .index_project_file(&project.id, "a.rs", Some("hash2"), None, Some(200))
+        .unwrap();
 
     let files = store.get_project_files(&project.id).unwrap();
     assert_eq!(files.len(), 1, "should upsert, not duplicate");
@@ -140,19 +170,27 @@ fn index_file_upserts_on_conflict() {
 #[test]
 fn needs_reindex_detects_changes() {
     let store = make_store();
-    let project = store.create_project("reindex-proj", "/r", None, None, None).unwrap();
+    let project = store
+        .create_project("reindex-proj", "/r", None, None, None)
+        .unwrap();
 
     // Not indexed -> needs reindex
     assert!(store.needs_reindex(&project.id, "foo.rs", "hash1").unwrap());
 
     // Index it
-    store.index_project_file(&project.id, "foo.rs", Some("hash1"), None, None).unwrap();
+    store
+        .index_project_file(&project.id, "foo.rs", Some("hash1"), None, None)
+        .unwrap();
 
     // Same hash -> no reindex needed
     assert!(!store.needs_reindex(&project.id, "foo.rs", "hash1").unwrap());
 
     // Different hash -> needs reindex
-    assert!(store.needs_reindex(&project.id, "foo.rs", "hash_changed").unwrap());
+    assert!(
+        store
+            .needs_reindex(&project.id, "foo.rs", "hash_changed")
+            .unwrap()
+    );
 }
 
 // ── Phase 2.4: Templates ───────────────────────────────────────────────────
@@ -172,14 +210,20 @@ fn template_crud_lifecycle() {
         .unwrap();
 
     assert_eq!(template.name, "rust-cli");
-    assert_eq!(template.system_prompt.as_deref(), Some("You are a Rust expert."));
+    assert_eq!(
+        template.system_prompt.as_deref(),
+        Some("You are a Rust expert.")
+    );
 
     // List
     let all = store.list_templates().unwrap();
     assert_eq!(all.len(), 1);
 
     // Get
-    let fetched = store.get_template(&template.id).unwrap().expect("should exist");
+    let fetched = store
+        .get_template(&template.id)
+        .unwrap()
+        .expect("should exist");
     assert_eq!(fetched.name, "rust-cli");
 
     // Delete
@@ -191,7 +235,13 @@ fn template_crud_lifecycle() {
 fn create_project_from_template_inherits_settings() {
     let store = make_store();
     let template = store
-        .create_template("tmpl", Some("desc"), Some("system prompt"), Some("bash"), Some("code"))
+        .create_template(
+            "tmpl",
+            Some("desc"),
+            Some("system prompt"),
+            Some("bash"),
+            Some("code"),
+        )
         .unwrap();
 
     let project = store
@@ -204,7 +254,10 @@ fn create_project_from_template_inherits_settings() {
         project.settings["template_id"].as_str(),
         Some(template.id.as_str())
     );
-    assert_eq!(project.settings["system_prompt"].as_str(), Some("system prompt"));
+    assert_eq!(
+        project.settings["system_prompt"].as_str(),
+        Some("system prompt")
+    );
     assert_eq!(project.settings["tools_enabled"].as_str(), Some("bash"));
     assert_eq!(project.settings["default_mode"].as_str(), Some("code"));
 }

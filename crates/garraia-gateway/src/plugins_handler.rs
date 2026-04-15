@@ -7,9 +7,9 @@
 //! - `DELETE /api/plugins/{id}` — uninstall plugin
 //! - `POST /api/plugins/{id}/toggle` — enable/disable plugin
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -167,9 +167,7 @@ pub async fn install_plugin(
 }
 
 /// GET /api/plugins — list installed plugins with status.
-pub async fn list_plugins(
-    State(_state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn list_plugins(State(_state): State<SharedState>) -> Json<serde_json::Value> {
     // Query the plugin loader if available, otherwise return empty list
     let plugins: Vec<PluginInfo> = Vec::new();
 
@@ -251,8 +249,8 @@ async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson,
         .await
         .map_err(|e| format!("failed to read response: {e}"))?;
 
-    let manifest: PluginManifestJson = serde_json::from_str(&text)
-        .map_err(|e| format!("invalid plugin manifest JSON: {e}"))?;
+    let manifest: PluginManifestJson =
+        serde_json::from_str(&text).map_err(|e| format!("invalid plugin manifest JSON: {e}"))?;
 
     // Validate semver
     if !is_valid_semver(&manifest.version) {

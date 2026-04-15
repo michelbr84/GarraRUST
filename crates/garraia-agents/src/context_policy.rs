@@ -24,7 +24,10 @@ pub struct ContextPolicy {
 
 impl ContextPolicy {
     pub fn new(max_history_messages: Option<usize>, summarize_threshold: Option<usize>) -> Self {
-        Self { max_history_messages, summarize_threshold }
+        Self {
+            max_history_messages,
+            summarize_threshold,
+        }
     }
 
     /// Return the slice of `history` that should be forwarded to the LLM.
@@ -34,9 +37,7 @@ impl ContextPolicy {
     /// (callers push that *after* calling this, so we just slice).
     pub fn apply_window<'a>(&self, history: &'a [ChatMessage]) -> &'a [ChatMessage] {
         match self.max_history_messages {
-            Some(limit) if history.len() > limit => {
-                &history[history.len() - limit..]
-            }
+            Some(limit) if history.len() > limit => &history[history.len() - limit..],
             _ => history,
         }
     }
@@ -105,9 +106,7 @@ pub async fn summarize_messages(
             role: ChatRole::User,
             content: MessagePart::Text(summary_prompt),
         }],
-        system: Some(
-            "You are a concise summarizer. Produce short, dense summaries.".to_string(),
-        ),
+        system: Some("You are a concise summarizer. Produce short, dense summaries.".to_string()),
         max_tokens: Some(512),
         temperature: Some(0.2),
         tools: vec![],

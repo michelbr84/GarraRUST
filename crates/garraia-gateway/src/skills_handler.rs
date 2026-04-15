@@ -10,9 +10,9 @@
 //! - `GET /api/skills/{name}/export` — export skill as JSON
 //! - `POST /api/skills/{name}/triggers` — set auto-triggers
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -108,9 +108,7 @@ fn build_skill_content(
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/skills — list all skills from the skills directory.
-pub async fn list_skills(
-    State(_state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn list_skills(State(_state): State<SharedState>) -> Json<serde_json::Value> {
     let scanner = garraia_skills::SkillScanner::new(skills_dir());
 
     let skills: Vec<SkillInfo> = match scanner.discover() {
@@ -177,7 +175,10 @@ pub async fn get_skill(
                 body: skill.body,
                 source_path: Some(skill_path.display().to_string()),
             };
-            (StatusCode::OK, Json(serde_json::to_value(info).unwrap_or_default()))
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(info).unwrap_or_default()),
+            )
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -195,12 +196,7 @@ pub async fn create_skill(
     Json(body): Json<CreateSkillRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // Validate name
-    if body.name.is_empty()
-        || !body
-            .name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-')
-    {
+    if body.name.is_empty() || !body.name.chars().all(|c| c.is_alphanumeric() || c == '-') {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -384,31 +380,29 @@ pub async fn import_skill(
     let installer = garraia_skills::SkillInstaller::new(skills_dir());
 
     match (&body.url, &body.content) {
-        (Some(url), _) => {
-            match installer.install_from_url(url).await {
-                Ok(skill) => {
-                    info!(skill = %skill.frontmatter.name, url = %url, "imported skill from URL");
-                    (
-                        StatusCode::CREATED,
-                        Json(serde_json::json!({
-                            "status": "ok",
-                            "message": format!("skill '{}' imported from URL", skill.frontmatter.name),
-                            "skill": {
-                                "name": skill.frontmatter.name,
-                                "description": skill.frontmatter.description,
-                            },
-                        })),
-                    )
-                }
-                Err(e) => (
-                    StatusCode::BAD_REQUEST,
+        (Some(url), _) => match installer.install_from_url(url).await {
+            Ok(skill) => {
+                info!(skill = %skill.frontmatter.name, url = %url, "imported skill from URL");
+                (
+                    StatusCode::CREATED,
                     Json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("failed to import skill: {e}"),
+                        "status": "ok",
+                        "message": format!("skill '{}' imported from URL", skill.frontmatter.name),
+                        "skill": {
+                            "name": skill.frontmatter.name,
+                            "description": skill.frontmatter.description,
+                        },
                     })),
-                ),
+                )
             }
-        }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("failed to import skill: {e}"),
+                })),
+            ),
+        },
         (_, Some(content)) => {
             // Parse the content directly and write it
             match garraia_skills::parse_skill(content) {

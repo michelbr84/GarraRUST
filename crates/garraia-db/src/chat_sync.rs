@@ -192,12 +192,7 @@ impl ChatSessionManager {
     pub async fn create_session(&self, channel_id: &str, user_id: &str) -> Result<String> {
         let store = self.store.lock().await;
         let session_id = uuid::Uuid::new_v4().to_string();
-        store.upsert_session(
-            &session_id,
-            channel_id,
-            user_id,
-            &serde_json::json!({}),
-        )?;
+        store.upsert_session(&session_id, channel_id, user_id, &serde_json::json!({}))?;
         Ok(session_id)
     }
 
@@ -214,11 +209,7 @@ impl ChatSessionManager {
     }
 
     /// Delete a session key mapping
-    pub async fn unmap_session(
-        &self,
-        source: ChatSource,
-        external_id: &str,
-    ) -> Result<()> {
+    pub async fn unmap_session(&self, source: ChatSource, external_id: &str) -> Result<()> {
         let store = self.store.lock().await;
         store.delete_session_key(source.as_str(), external_id)?;
         Ok(())
@@ -298,18 +289,14 @@ impl ChatSessionManager {
     }
 
     /// Get the latest summary for a session
-    pub async fn get_latest_summary(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<(String, i32)>> {
+    pub async fn get_latest_summary(&self, session_id: &str) -> Result<Option<(String, i32)>> {
         let store = self.store.lock().await;
         store.get_latest_session_summary(session_id)
     }
 }
 
 /// Strategy for resolving session ID from incoming requests
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum SessionKeyStrategy {
     /// Use X-Session-Id header
     #[default]
@@ -321,7 +308,6 @@ pub enum SessionKeyStrategy {
     /// Create new session if not provided
     CreateNew,
 }
-
 
 /// Session resolver configuration
 #[derive(Debug, Clone)]

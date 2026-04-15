@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use garraia_agents::{ChatMessage, ChatRole, MessagePart, McpManager};
+use garraia_agents::{ChatMessage, ChatRole, McpManager, MessagePart};
 use serde::Serialize;
 use tracing::warn;
 
@@ -65,9 +65,7 @@ pub enum ResolvedCommand {
 // ── Built-in commands ─────────────────────────────────────────────────────────
 
 /// Built-in commands that are always available. `/mode` is excluded (handled elsewhere).
-const BUILT_INS: &[(&str, &str)] = &[
-    ("help", "List all available slash commands"),
-];
+const BUILT_INS: &[(&str, &str)] = &[("help", "List all available slash commands")];
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -86,16 +84,19 @@ pub async fn list_commands(mcp: Option<&Arc<McpManager>>) -> Vec<SlashCommand> {
         .collect();
 
     // Also expose /mode as a built-in (for discovery, even though processing is elsewhere)
-    commands.insert(0, SlashCommand {
-        name: "mode".to_string(),
-        description: "Set agent mode (e.g. /mode debug)".to_string(),
-        source: CommandSource::BuiltIn,
-        args: vec![ArgDef {
+    commands.insert(
+        0,
+        SlashCommand {
             name: "mode".to_string(),
-            description: Some("Agent mode name".to_string()),
-            required: true,
-        }],
-    });
+            description: "Set agent mode (e.g. /mode debug)".to_string(),
+            source: CommandSource::BuiltIn,
+            args: vec![ArgDef {
+                name: "mode".to_string(),
+                description: Some("Agent mode name".to_string()),
+                required: true,
+            }],
+        },
+    );
 
     if let Some(manager) = mcp {
         for (server, prompts) in manager.list_all_prompts().await {
@@ -103,12 +104,18 @@ pub async fn list_commands(mcp: Option<&Arc<McpManager>>) -> Vec<SlashCommand> {
                 commands.push(SlashCommand {
                     name: p.name.clone(),
                     description: p.description.clone().unwrap_or_default(),
-                    source: CommandSource::Mcp { server: server.clone() },
-                    args: p.arguments.iter().map(|a| ArgDef {
-                        name: a.name.clone(),
-                        description: a.description.clone(),
-                        required: a.required,
-                    }).collect(),
+                    source: CommandSource::Mcp {
+                        server: server.clone(),
+                    },
+                    args: p
+                        .arguments
+                        .iter()
+                        .map(|a| ArgDef {
+                            name: a.name.clone(),
+                            description: a.description.clone(),
+                            required: a.required,
+                        })
+                        .collect(),
                 });
             }
         }
@@ -123,10 +130,7 @@ pub async fn list_commands(mcp: Option<&Arc<McpManager>>) -> Vec<SlashCommand> {
 /// - The message does not start with `/`.
 /// - The command is `/mode` (handled by `openai_api.rs`).
 /// - The command is not recognized (pass through to LLM as plain text).
-pub async fn resolve(
-    message: &str,
-    mcp: Option<&Arc<McpManager>>,
-) -> Option<ResolvedCommand> {
+pub async fn resolve(message: &str, mcp: Option<&Arc<McpManager>>) -> Option<ResolvedCommand> {
     if !message.starts_with('/') {
         return None;
     }
@@ -148,12 +152,10 @@ pub async fn resolve(
     if cmd_lower == "help" {
         let all = list_commands(mcp).await;
         let text = format_help(&all);
-        return Some(ResolvedCommand::McpPrompt(vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: MessagePart::Text(text),
-            },
-        ]));
+        return Some(ResolvedCommand::McpPrompt(vec![ChatMessage {
+            role: ChatRole::System,
+            content: MessagePart::Text(text),
+        }]));
     }
 
     // MCP prompts
@@ -162,7 +164,11 @@ pub async fn resolve(
         for (server, prompts) in &all_prompts {
             if let Some(p) = prompts.iter().find(|p| p.name.to_lowercase() == cmd_lower) {
                 let args_map = parse_args(args_str);
-                let get_args = if args_map.is_empty() { None } else { Some(args_map) };
+                let get_args = if args_map.is_empty() {
+                    None
+                } else {
+                    Some(args_map)
+                };
 
                 match manager.get_prompt(server, &p.name, get_args).await {
                     Ok(lines) => {
@@ -194,7 +200,10 @@ fn parse_args(s: &str) -> serde_json::Map<String, serde_json::Value> {
         return map;
     }
     if !s.contains('=') {
-        map.insert("input".to_string(), serde_json::Value::String(s.to_string()));
+        map.insert(
+            "input".to_string(),
+            serde_json::Value::String(s.to_string()),
+        );
         return map;
     }
     for pair in s.split_whitespace() {
@@ -229,12 +238,23 @@ fn format_help(commands: &[SlashCommand]) -> String {
         let args_hint = if cmd.args.is_empty() {
             String::new()
         } else {
-            let hints: Vec<String> = cmd.args.iter().map(|a| {
-                if a.required { format!("<{}>", a.name) } else { format!("[{}]", a.name) }
-            }).collect();
+            let hints: Vec<String> = cmd
+                .args
+                .iter()
+                .map(|a| {
+                    if a.required {
+                        format!("<{}>", a.name)
+                    } else {
+                        format!("[{}]", a.name)
+                    }
+                })
+                .collect();
             format!(" {}", hints.join(" "))
         };
-        lines.push(format!("- `/{}{}`  {}", cmd.name, args_hint, cmd.description));
+        lines.push(format!(
+            "- `/{}{}`  {}",
+            cmd.name, args_hint, cmd.description
+        ));
     }
     lines.join("\n")
 }

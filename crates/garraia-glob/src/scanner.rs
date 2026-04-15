@@ -226,7 +226,12 @@ impl Scanner {
 
     /// Convenience: scan and return only file paths (no directories).
     pub fn scan_files(&self) -> Result<Vec<String>> {
-        Ok(self.scan()?.into_iter().filter(|r| !r.is_dir).map(|r| r.path).collect())
+        Ok(self
+            .scan()?
+            .into_iter()
+            .filter(|r| !r.is_dir)
+            .map(|r| r.path)
+            .collect())
     }
 }
 
@@ -241,7 +246,11 @@ pub fn scanner_from_config(
         "bash" => crate::pattern::GlobMode::Bash,
         _ => crate::pattern::GlobMode::Picomatch,
     };
-    let config = GlobConfig { mode, dot, ..GlobConfig::default() };
+    let config = GlobConfig {
+        mode,
+        dot,
+        ..GlobConfig::default()
+    };
     Scanner::new(root, config).use_gitignore(use_gitignore)
 }
 
@@ -269,10 +278,14 @@ mod tests {
     #[test]
     fn scan_all_rs_files() {
         let tmp = TempDir::new().unwrap();
-        make_tree(&tmp, &["src/main.rs", "src/lib.rs", "Cargo.toml", "src/sub/mod.rs"]);
+        make_tree(
+            &tmp,
+            &["src/main.rs", "src/lib.rs", "Cargo.toml", "src/sub/mod.rs"],
+        );
 
         let results = Scanner::new(tmp.path(), GlobConfig::default())
-            .include("**/*.rs").unwrap()
+            .include("**/*.rs")
+            .unwrap()
             .use_gitignore(false)
             .use_garraignore(false)
             .scan_files()
@@ -289,8 +302,10 @@ mod tests {
         make_tree(&tmp, &["src/main.rs", "target/debug/garraia.exe"]);
 
         let results = Scanner::new(tmp.path(), GlobConfig::default())
-            .include("**/*.rs").unwrap()
-            .exclude("target/**").unwrap()
+            .include("**/*.rs")
+            .unwrap()
+            .exclude("target/**")
+            .unwrap()
             .use_gitignore(false)
             .use_garraignore(false)
             .scan_files()
@@ -336,7 +351,10 @@ mod tests {
     #[test]
     fn gitignore_unanchored_matches_subdirectory() {
         let tmp = TempDir::new().unwrap();
-        make_tree(&tmp, &["src/main.rs", "config/prod.key", "config/nested/db.key"]);
+        make_tree(
+            &tmp,
+            &["src/main.rs", "config/prod.key", "config/nested/db.key"],
+        );
         fs::write(tmp.path().join(".gitignore"), "*.key\n").unwrap();
 
         let results = Scanner::new(tmp.path(), GlobConfig::default())
@@ -362,8 +380,14 @@ mod tests {
             .scan_files()
             .unwrap();
 
-        assert!(!results.iter().any(|p| p == "error.log"), "error.log should be ignored");
-        assert!(results.iter().any(|p| p == "keep.log"), "keep.log should be re-included");
+        assert!(
+            !results.iter().any(|p| p == "error.log"),
+            "error.log should be ignored"
+        );
+        assert!(
+            results.iter().any(|p| p == "keep.log"),
+            "keep.log should be re-included"
+        );
         assert!(results.iter().any(|p| p == "src/main.rs"));
     }
 
@@ -383,14 +407,24 @@ mod tests {
             .scan_files()
             .unwrap();
 
-        assert!(!results.iter().any(|p| p == "secret.key"), "gitignore rule must win");
+        assert!(
+            !results.iter().any(|p| p == "secret.key"),
+            "gitignore rule must win"
+        );
     }
 
     /// Directory pattern `target/` ignores the dir entry AND all contents.
     #[test]
     fn directory_pattern_ignores_dir_and_contents() {
         let tmp = TempDir::new().unwrap();
-        make_tree(&tmp, &["src/main.rs", "target/debug/app.exe", "target/release/app.exe"]);
+        make_tree(
+            &tmp,
+            &[
+                "src/main.rs",
+                "target/debug/app.exe",
+                "target/release/app.exe",
+            ],
+        );
         fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
 
         let results = Scanner::new(tmp.path(), GlobConfig::default())

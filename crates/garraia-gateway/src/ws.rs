@@ -99,10 +99,13 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     (&resume_token, state.chat_session_manager.as_ref())
                 {
                     let idle = state.current_config().gateway.session_idle_secs;
-                    manager.validate_token(t, idle).await
+                    manager
+                        .validate_token(t, idle)
+                        .await
                         .ok()
                         .flatten()
-                        .as_deref() == Some(resume_id.as_str())
+                        .as_deref()
+                        == Some(resume_id.as_str())
                 } else {
                     true // no token provided — fall through to session existence check
                 };

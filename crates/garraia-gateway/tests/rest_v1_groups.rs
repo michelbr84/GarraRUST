@@ -33,7 +33,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use common::fixtures::seed_user_with_group;
-use common::{harness_get, Harness};
+use common::{Harness, harness_get};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -68,11 +68,7 @@ fn post_groups(token: Option<&str>, body: serde_json::Value) -> Request<Body> {
     req
 }
 
-fn get_group_by_id(
-    token: &str,
-    path_id: &str,
-    x_group_id: Option<&str>,
-) -> Request<Body> {
+fn get_group_by_id(token: &str, path_id: &str, x_group_id: Option<&str>) -> Request<Body> {
     let mut req = harness_get(&format!("/v1/groups/{path_id}"));
     req.headers_mut().insert(
         HeaderName::from_static("authorization"),
@@ -106,7 +102,11 @@ async fn v1_groups_scenarios() {
             ))
             .await
             .expect("scenario 1: oneshot");
-        assert_eq!(resp.status(), StatusCode::CREATED, "scenario 1: POST should 201");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "scenario 1: POST should 201"
+        );
         let v = body_json(resp).await;
         assert_eq!(v["name"], "M4 Scenario 1");
         assert_eq!(v["type"], "team");
@@ -150,10 +150,7 @@ async fn v1_groups_scenarios() {
         assert_eq!(v["status"], 400);
         assert_eq!(v["title"], "Bad Request");
         assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("group type"),
+            v["detail"].as_str().unwrap().contains("group type"),
             "scenario 2: detail should mention group type, got {v}"
         );
     }
@@ -176,10 +173,7 @@ async fn v1_groups_scenarios() {
         );
         let v = body_json(resp).await;
         assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("name"),
+            v["detail"].as_str().unwrap().contains("name"),
             "scenario 3: detail should mention name, got {v}"
         );
     }

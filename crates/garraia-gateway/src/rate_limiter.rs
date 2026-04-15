@@ -154,7 +154,10 @@ impl RateLimiter {
     /// Returns a `RateLimitDecision` — the caller must check `allowed` and
     /// return 429 if it is `false`.
     pub fn check(&self, key: &str) -> RateLimitDecision {
-        let mut entry = self.windows.entry(key.to_string()).or_insert_with(WindowState::new);
+        let mut entry = self
+            .windows
+            .entry(key.to_string())
+            .or_insert_with(WindowState::new);
         entry.prune(3600); // keep at most 1 hour of history
 
         let per_minute = entry.count_in_window(60);
@@ -167,7 +170,10 @@ impl RateLimiter {
             entry.record();
         }
 
-        let remaining = self.config.requests_per_minute.saturating_sub(per_minute + 1);
+        let remaining = self
+            .config
+            .requests_per_minute
+            .saturating_sub(per_minute + 1);
         let reset_at = now_secs() + 60 - (now_secs() % 60);
 
         RateLimitDecision {
@@ -239,9 +245,7 @@ pub fn rate_limit_response(decision: &RateLimitDecision) -> Response {
             "retry-after",
             (decision.reset_at.saturating_sub(now_secs())).to_string(),
         )
-        .body(Body::from(
-            r#"{"error":"rate limit exceeded","code":429}"#,
-        ))
+        .body(Body::from(r#"{"error":"rate limit exceeded","code":429}"#))
         .unwrap_or_else(|_| {
             Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
@@ -267,19 +271,19 @@ pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
 
     // Use first 8 chars of JWT subject as key (if present) — never the full token
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && let Some(token) = auth.strip_prefix("Bearer ") {
-            // Use token prefix only — enough to identify the key space
-            let prefix = &token[..token.len().min(8)];
-            return format!("jwt:{prefix}");
-        }
+        && let Some(token) = auth.strip_prefix("Bearer ")
+    {
+        // Use token prefix only — enough to identify the key space
+        let prefix = &token[..token.len().min(8)];
+        return format!("jwt:{prefix}");
+    }
 
     // Fall back to X-Forwarded-For
-    if let Some(forwarded) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        && let Some(first_ip) = forwarded.split(',').next() {
-            return format!("ip:{}", first_ip.trim());
-        }
+    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first_ip) = forwarded.split(',').next()
+    {
+        return format!("ip:{}", first_ip.trim());
+    }
 
     "ip:unknown".to_string()
 }
@@ -387,10 +391,7 @@ mod tests {
     #[test]
     fn extract_key_from_api_key_header() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_static("sk-test-1234567890"),
-        );
+        headers.insert("x-api-key", HeaderValue::from_static("sk-test-1234567890"));
         let key = extract_rate_limit_key(&headers);
         assert!(key.starts_with("apikey:"));
     }

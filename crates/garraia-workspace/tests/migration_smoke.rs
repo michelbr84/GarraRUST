@@ -10,8 +10,8 @@
 //!      `citext` unique constraint.
 
 use garraia_workspace::{Workspace, WorkspaceConfig};
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -58,11 +58,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     }
 
     // 2. Verify critical indexes exist (exact auto-generated names).
-    let indexes: Vec<(String,)> = sqlx::query_as(
-        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'",
-    )
-    .fetch_all(workspace.pool())
-    .await?;
+    let indexes: Vec<(String,)> =
+        sqlx::query_as("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
+            .fetch_all(workspace.pool())
+            .await?;
     let index_names: Vec<&str> = indexes.iter().map(|(n,)| n.as_str()).collect();
     for expected in &[
         "users_email_key",
@@ -86,13 +85,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     }
 
     // 3. Insert a fake user and verify UUID comes back.
-    let user_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind("test@example.com")
-    .bind("Test User")
-    .fetch_one(workspace.pool())
-    .await?;
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+            .bind("test@example.com")
+            .bind("Test User")
+            .fetch_one(workspace.pool())
+            .await?;
     assert!(!user_id.is_nil(), "expected non-nil UUID from INSERT");
 
     // 4. Second insert with differently-cased email must fail with the exact
@@ -156,7 +154,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'owner'")
             .fetch_one(workspace.pool())
             .await?;
-    assert_eq!(owner_perms, perms_count, "owner should have all permissions");
+    assert_eq!(
+        owner_perms, perms_count,
+        "owner should have all permissions"
+    );
 
     let admin_perms: i64 =
         sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'admin'")
@@ -171,7 +172,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'member'")
             .fetch_one(workspace.pool())
             .await?;
-    assert_eq!(member_perms, 11, "member should have exactly 11 permissions");
+    assert_eq!(
+        member_perms, 11,
+        "member should have exactly 11 permissions"
+    );
 
     let guest_perms: i64 =
         sqlx::query_scalar("SELECT count(*) FROM role_permissions WHERE role_id = 'guest'")
@@ -205,13 +209,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         .await?;
 
     // Create a second user and try to add them as another owner of the same group.
-    let user2_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind("second@example.com")
-    .bind("Second User")
-    .fetch_one(workspace.pool())
-    .await?;
+    let user2_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+            .bind("second@example.com")
+            .bind("Second User")
+            .fetch_one(workspace.pool())
+            .await?;
 
     let dup_owner =
         sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
@@ -221,9 +224,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             .await
             .expect_err("second owner for same group must be rejected");
 
-    let db_err = dup_owner
-        .as_database_error()
-        .expect("database-layer error");
+    let db_err = dup_owner.as_database_error().expect("database-layer error");
     assert_eq!(
         db_err.code().as_deref(),
         Some("23505"),
@@ -250,11 +251,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
 
     // Read-back exercises jsonb + uuid deserialization and proves the row is
     // queryable, not just writable.
-    let audit_action: String =
-        sqlx::query_scalar("SELECT action FROM audit_events WHERE id = $1")
-            .bind(audit_id)
-            .fetch_one(workspace.pool())
-            .await?;
+    let audit_action: String = sqlx::query_scalar("SELECT action FROM audit_events WHERE id = $1")
+        .bind(audit_id)
+        .fetch_one(workspace.pool())
+        .await?;
     assert_eq!(audit_action, "group.create");
 
     // NULL-actor row: documents the explicit design that audit rows survive
@@ -412,9 +412,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .await
     .expect_err("compound FK should reject cross-group message");
 
-    let db_err = mismatch
-        .as_database_error()
-        .expect("database-layer error");
+    let db_err = mismatch.as_database_error().expect("database-layer error");
     assert_eq!(
         db_err.code().as_deref(),
         Some("23503"),
@@ -424,11 +422,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // ─── Migration 005 validation ──────────────────────────────────────────
 
     // Extension `vector` is installed.
-    let has_vector: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')",
-    )
-    .fetch_one(workspace.pool())
-    .await?;
+    let has_vector: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')")
+            .fetch_one(workspace.pool())
+            .await?;
     assert!(
         has_vector,
         "pgvector extension must be installed by migration 005"
@@ -703,13 +700,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // via the superuser pool — bypassing RLS for setup is intentional
     // (tests verify the policy, not the setup path).
 
-    let user_b_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind("rls-user-b@example.com")
-    .bind("RLS User B")
-    .fetch_one(workspace.pool())
-    .await?;
+    let user_b_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+            .bind("rls-user-b@example.com")
+            .bind("RLS User B")
+            .fetch_one(workspace.pool())
+            .await?;
 
     let other_chat_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO chats (group_id, type, name, created_by) \
@@ -804,11 +800,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // ── Cenário 1 — Positive read ─────────────────────────────────────────
     {
         let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
-        let count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM messages WHERE chat_id = $1")
-                .bind(chat_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE chat_id = $1")
+            .bind(chat_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(
             count, 3,
             "cenário 1: positive read should see all 3 messages from migration 004"
@@ -1007,12 +1002,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // memory_items RLS → user-scope branch).
     {
         let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
-        let leaked: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM memory_embeddings WHERE memory_item_id = $1",
-        )
-        .bind(other_user_memory_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let leaked: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM memory_embeddings WHERE memory_item_id = $1")
+                .bind(other_user_memory_id)
+                .fetch_one(&mut *tx)
+                .await?;
         assert_eq!(
             leaked, 0,
             "cenário 7: memory_embeddings RLS must block cross-user embedding via recursive JOIN to memory_items"
@@ -1101,12 +1095,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         .bind(parent_task_id)
         .execute(workspace.pool())
         .await?;
-    let remaining_hard: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id IN ($1, $2)")
-            .bind(child1_id)
-            .bind(child2_id)
-            .fetch_one(workspace.pool())
-            .await?;
+    let remaining_hard: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id IN ($1, $2)")
+        .bind(child1_id)
+        .bind(child2_id)
+        .fetch_one(workspace.pool())
+        .await?;
     assert_eq!(
         remaining_hard, 0,
         "migration 006: hard delete must cascade via ON DELETE CASCADE to subtasks"
@@ -1163,14 +1156,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)",
-    )
-    .bind(positive_task_id)
-    .bind(user_id)
-    .bind(user_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)")
+        .bind(positive_task_id)
+        .bind(user_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
 
     let positive_label_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_labels (group_id, name, color, created_by, created_by_label) \
@@ -1181,13 +1172,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)",
-    )
-    .bind(positive_task_id)
-    .bind(positive_label_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)")
+        .bind(positive_task_id)
+        .bind(positive_label_id)
+        .execute(workspace.pool())
+        .await?;
 
     let positive_comment_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_comments (task_id, author_user_id, author_label, body_md) \
@@ -1198,13 +1187,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)",
-    )
-    .bind(positive_task_id)
-    .bind(user_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)")
+        .bind(positive_task_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
 
     let positive_activity_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_activity (task_id, group_id, actor_user_id, actor_label, kind, payload) \
@@ -1236,14 +1223,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)",
-    )
-    .bind(other_task_id)
-    .bind(user_b_id)
-    .bind(user_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_assignees (task_id, user_id, assigned_by) VALUES ($1, $2, $3)")
+        .bind(other_task_id)
+        .bind(user_b_id)
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await?;
 
     let other_label_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_labels (group_id, name, color, created_by, created_by_label) \
@@ -1254,13 +1239,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)",
-    )
-    .bind(other_task_id)
-    .bind(other_label_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2)")
+        .bind(other_task_id)
+        .bind(other_label_id)
+        .execute(workspace.pool())
+        .await?;
 
     let other_comment_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_comments (task_id, author_user_id, author_label, body_md) \
@@ -1271,13 +1254,11 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
 
-    sqlx::query(
-        "INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)",
-    )
-    .bind(other_task_id)
-    .bind(user_b_id)
-    .execute(workspace.pool())
-    .await?;
+    sqlx::query("INSERT INTO task_subscriptions (task_id, user_id) VALUES ($1, $2)")
+        .bind(other_task_id)
+        .bind(user_b_id)
+        .execute(workspace.pool())
+        .await?;
 
     let other_activity_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO task_activity (task_id, group_id, actor_user_id, actor_label, kind, payload) \
@@ -1293,11 +1274,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     {
         let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
 
-        let tl: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
-                .bind(test_list_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tl: i64 = sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
+            .bind(test_list_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tl, 1, "cenário 9: own task_list visible");
 
         let t: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id = $1")
@@ -1306,49 +1286,42 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             .await?;
         assert_eq!(t, 1, "cenário 9: own task visible");
 
-        let ta: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_assignees WHERE task_id = $1",
-        )
-        .bind(positive_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let ta: i64 = sqlx::query_scalar("SELECT count(*) FROM task_assignees WHERE task_id = $1")
+            .bind(positive_task_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(ta, 1, "cenário 9: own task_assignees visible");
 
-        let tlab: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
-                .bind(positive_label_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tlab: i64 = sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
+            .bind(positive_label_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tlab, 1, "cenário 9: own task_labels visible");
 
-        let tla: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_label_assignments WHERE task_id = $1",
-        )
-        .bind(positive_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let tla: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_label_assignments WHERE task_id = $1")
+                .bind(positive_task_id)
+                .fetch_one(&mut *tx)
+                .await?;
         assert_eq!(tla, 1, "cenário 9: own task_label_assignments visible");
 
-        let tc: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
-                .bind(positive_comment_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tc: i64 = sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
+            .bind(positive_comment_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tc, 1, "cenário 9: own task_comments visible");
 
-        let ts: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_subscriptions WHERE task_id = $1",
-        )
-        .bind(positive_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        assert_eq!(ts, 1, "cenário 9: own task_subscriptions visible");
-
-        let tact: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
-                .bind(positive_activity_id)
+        let ts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_subscriptions WHERE task_id = $1")
+                .bind(positive_task_id)
                 .fetch_one(&mut *tx)
                 .await?;
+        assert_eq!(ts, 1, "cenário 9: own task_subscriptions visible");
+
+        let tact: i64 = sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
+            .bind(positive_activity_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tact, 1, "cenário 9: own task_activity visible");
 
         tx.rollback().await?;
@@ -1358,11 +1331,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     {
         let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
 
-        let tl: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
-                .bind(other_list_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tl: i64 = sqlx::query_scalar("SELECT count(*) FROM task_lists WHERE id = $1")
+            .bind(other_list_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tl, 0, "cenário 10: cross-group task_list must not leak");
 
         let t: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id = $1")
@@ -1371,61 +1343,54 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             .await?;
         assert_eq!(t, 0, "cenário 10: cross-group task must not leak");
 
-        let ta: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_assignees WHERE task_id = $1",
-        )
-        .bind(other_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let ta: i64 = sqlx::query_scalar("SELECT count(*) FROM task_assignees WHERE task_id = $1")
+            .bind(other_task_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(
             ta, 0,
             "cenário 10: cross-group task_assignees must not leak (JOIN policy)"
         );
 
-        let tlab: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
-                .bind(other_label_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tlab: i64 = sqlx::query_scalar("SELECT count(*) FROM task_labels WHERE id = $1")
+            .bind(other_label_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(tlab, 0, "cenário 10: cross-group task_labels must not leak");
 
-        let tla: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_label_assignments WHERE task_id = $1",
-        )
-        .bind(other_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let tla: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_label_assignments WHERE task_id = $1")
+                .bind(other_task_id)
+                .fetch_one(&mut *tx)
+                .await?;
         assert_eq!(
             tla, 0,
             "cenário 10: cross-group task_label_assignments must not leak (JOIN policy)"
         );
 
-        let tc: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
-                .bind(other_comment_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tc: i64 = sqlx::query_scalar("SELECT count(*) FROM task_comments WHERE id = $1")
+            .bind(other_comment_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(
             tc, 0,
             "cenário 10: cross-group task_comments must not leak (JOIN policy)"
         );
 
-        let ts: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM task_subscriptions WHERE task_id = $1",
-        )
-        .bind(other_task_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let ts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_subscriptions WHERE task_id = $1")
+                .bind(other_task_id)
+                .fetch_one(&mut *tx)
+                .await?;
         assert_eq!(
             ts, 0,
             "cenário 10: cross-group task_subscriptions must not leak (JOIN policy)"
         );
 
-        let tact: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
-                .bind(other_activity_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let tact: i64 = sqlx::query_scalar("SELECT count(*) FROM task_activity WHERE id = $1")
+            .bind(other_activity_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(
             tact, 0,
             "cenário 10: cross-group task_activity must not leak"
@@ -1540,7 +1505,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .fetch_one(workspace.pool())
     .await?;
     assert_eq!(hash_upgraded_at.0, "timestamp with time zone");
-    assert_eq!(hash_upgraded_at.1, "YES", "hash_upgraded_at must be nullable");
+    assert_eq!(
+        hash_upgraded_at.1, "YES",
+        "hash_upgraded_at must be nullable"
+    );
     assert!(
         hash_upgraded_at.2.is_none(),
         "hash_upgraded_at must NOT have a default (NULL is the only initial state)"
@@ -1571,7 +1539,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     )
     .fetch_one(workspace.pool())
     .await?;
-    assert!(signup_role.0, "garraia_signup must have BYPASSRLS attribute");
+    assert!(
+        signup_role.0,
+        "garraia_signup must have BYPASSRLS attribute"
+    );
     assert!(!signup_role.1, "garraia_signup must be NOLOGIN by default");
 
     // Positive grants — every privilege from plan 0012 §3.1.
@@ -1591,13 +1562,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
 
     // Negative grants — signup role MUST NOT have access to any tenant data
     // or session state. Narrower than the login role's blast radius.
-    for table in &[
-        "sessions",
-        "messages",
-        "memory_items",
-        "tasks",
-        "groups",
-    ] {
+    for table in &["sessions", "messages", "memory_items", "tasks", "groups"] {
         let leaked: bool =
             sqlx::query_scalar("SELECT has_table_privilege('garraia_signup', $1, 'SELECT')")
                 .bind(table)

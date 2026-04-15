@@ -7,7 +7,13 @@ use garraia_glob::pattern::{GlobConfig, GlobMode, GlobPattern};
 
 /// Generate `n` realistic repo-like paths.
 fn make_paths(n: usize) -> Vec<String> {
-    let prefixes = ["src", "tests", "benches", "crates/foo/src", "crates/bar/src"];
+    let prefixes = [
+        "src",
+        "tests",
+        "benches",
+        "crates/foo/src",
+        "crates/bar/src",
+    ];
     let suffixes = ["rs", "toml", "md", "json", "txt", "lock", "sh"];
     let mut paths = Vec::with_capacity(n);
     for i in 0..n {
@@ -19,7 +25,14 @@ fn make_paths(n: usize) -> Vec<String> {
 }
 
 fn compile(pat: &str, mode: GlobMode) -> GlobPattern {
-    GlobPattern::new(pat, &GlobConfig { mode, ..GlobConfig::default() }).unwrap()
+    GlobPattern::new(
+        pat,
+        &GlobConfig {
+            mode,
+            ..GlobConfig::default()
+        },
+    )
+    .unwrap()
 }
 
 // ── Benchmarks ───────────────────────────────────────────────────────────
@@ -70,7 +83,8 @@ fn bench_extglob_bang(c: &mut Criterion) {
                 bash_greedy_negated_extglob: true,
                 ..GlobConfig::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         group.bench_with_input(BenchmarkId::new("bash_greedy", n), &paths, |b, paths| {
             b.iter(|| {
                 let mut count = 0usize;
@@ -119,8 +133,16 @@ fn bench_traversal(c: &mut Criterion) {
 
     // 1 000 files across 10 directories with mixed extensions.
     let dirs = [
-        "src", "tests", "benches", "crates/foo/src", "crates/bar/src",
-        "crates/baz/src", "docs", "scripts", "config", "examples",
+        "src",
+        "tests",
+        "benches",
+        "crates/foo/src",
+        "crates/bar/src",
+        "crates/baz/src",
+        "docs",
+        "scripts",
+        "config",
+        "examples",
     ];
     let exts = ["rs", "toml", "md", "json", "txt"];
     let mut total = 0usize;
@@ -141,7 +163,8 @@ fn bench_traversal(c: &mut Criterion) {
         b.iter(|| {
             use garraia_glob::{pattern::GlobConfig, scanner::Scanner};
             let n = Scanner::new(black_box(&root), GlobConfig::default())
-                .include("**/*.rs").unwrap()
+                .include("**/*.rs")
+                .unwrap()
                 .use_gitignore(false)
                 .use_garraignore(false)
                 .scan_files()
@@ -170,8 +193,10 @@ fn bench_traversal(c: &mut Criterion) {
         b.iter(|| {
             use garraia_glob::{pattern::GlobConfig, scanner::Scanner};
             let n = Scanner::new(black_box(&root), GlobConfig::default())
-                .include("**/*.rs").unwrap()
-                .exclude("crates/**").unwrap()
+                .include("**/*.rs")
+                .unwrap()
+                .exclude("crates/**")
+                .unwrap()
                 .use_gitignore(false)
                 .use_garraignore(false)
                 .scan_files()
@@ -185,5 +210,11 @@ fn bench_traversal(c: &mut Criterion) {
     drop(tmp); // explicit cleanup
 }
 
-criterion_group!(benches, bench_simple, bench_extglob_bang, bench_brace_expansion, bench_traversal);
+criterion_group!(
+    benches,
+    bench_simple,
+    bench_extglob_bang,
+    bench_brace_expansion,
+    bench_traversal
+);
 criterion_main!(benches);

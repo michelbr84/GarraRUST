@@ -104,9 +104,17 @@ fn default_timeout_secs() -> u64 {
 /// should be stored in the encrypted vault rather than in plaintext `mcp.json`.
 pub fn is_sensitive_key(k: &str) -> bool {
     let lower = k.to_lowercase();
-    ["key", "token", "secret", "password", "auth", "credential", "pass"]
-        .iter()
-        .any(|s| lower.contains(s))
+    [
+        "key",
+        "token",
+        "secret",
+        "password",
+        "auth",
+        "credential",
+        "pass",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
 }
 
 impl Default for McpServerConfig {
@@ -134,7 +142,11 @@ impl McpServerConfig {
         self.env
             .iter()
             .map(|(k, v)| {
-                let val = if is_sensitive_key(k) { "****".to_string() } else { v.clone() };
+                let val = if is_sensitive_key(k) {
+                    "****".to_string()
+                } else {
+                    v.clone()
+                };
                 (k.clone(), val)
             })
             .collect()
@@ -144,7 +156,10 @@ impl McpServerConfig {
     ///
     /// Use this when building API responses so credentials are never leaked.
     pub fn for_api(&self) -> Self {
-        Self { env: self.masked_env(), ..self.clone() }
+        Self {
+            env: self.masked_env(),
+            ..self.clone()
+        }
     }
     /// Infer the transport from the fields present in the config.
     ///
@@ -311,7 +326,12 @@ mod tests {
     fn mcp_status_is_running() {
         assert!(McpStatus::Running.is_running());
         assert!(!McpStatus::Stopped.is_running());
-        assert!(!McpStatus::Error { message: "oops".into() }.is_running());
+        assert!(
+            !McpStatus::Error {
+                message: "oops".into()
+            }
+            .is_running()
+        );
     }
 
     #[test]
@@ -362,7 +382,9 @@ mod tests {
     fn mcp_status_serde_tagged() {
         let running = McpStatus::Running;
         let stopped = McpStatus::Stopped;
-        let error = McpStatus::Error { message: "timeout".into() };
+        let error = McpStatus::Error {
+            message: "timeout".into(),
+        };
 
         let r = serde_json::to_value(&running).unwrap();
         assert_eq!(r["state"], "running");

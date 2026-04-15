@@ -1,8 +1,8 @@
 //! Per-channel latency and throughput metrics.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -54,7 +54,8 @@ impl AtomicChannelMetrics {
     /// Record a successful send with latency in microseconds.
     pub fn record_send(&self, latency_us: u64) {
         self.sent.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
     }
 
     /// Record a received message.

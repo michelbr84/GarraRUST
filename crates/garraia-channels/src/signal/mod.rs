@@ -324,9 +324,17 @@ impl Channel for SignalChannel {
         };
 
         // Try group first, then individual recipient
-        if let Some(group_id) = message.metadata.get("signal_group_id").and_then(|v| v.as_str()) {
+        if let Some(group_id) = message
+            .metadata
+            .get("signal_group_id")
+            .and_then(|v| v.as_str())
+        {
             self.send_to_group(group_id, &text).await
-        } else if let Some(recipient) = message.metadata.get("signal_recipient").and_then(|v| v.as_str()) {
+        } else if let Some(recipient) = message
+            .metadata
+            .get("signal_recipient")
+            .and_then(|v| v.as_str())
+        {
             self.send_text(recipient, &text).await
         } else {
             Err(Error::Channel(
@@ -347,9 +355,7 @@ mod tests {
     #[test]
     fn channel_type_is_signal() {
         let on_msg: SignalOnMessageFn =
-            Arc::new(|_from, _name, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+            Arc::new(|_from, _name, _text, _delta_tx| Box::pin(async { Ok("test".to_string()) }));
         let config = SignalConfig {
             signal_cli_url: "http://localhost:8080".into(),
             phone_number: "+1234567890".into(),
@@ -363,9 +369,7 @@ mod tests {
     #[tokio::test]
     async fn send_message_missing_recipient() {
         let on_msg: SignalOnMessageFn =
-            Arc::new(|_from, _name, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+            Arc::new(|_from, _name, _text, _delta_tx| Box::pin(async { Ok("test".to_string()) }));
         let config = SignalConfig {
             signal_cli_url: "http://localhost:8080".into(),
             phone_number: "+1234567890".into(),
@@ -385,9 +389,7 @@ mod tests {
     #[test]
     fn initial_status_is_disconnected() {
         let on_msg: SignalOnMessageFn =
-            Arc::new(|_from, _name, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+            Arc::new(|_from, _name, _text, _delta_tx| Box::pin(async { Ok("test".to_string()) }));
         let config = SignalConfig {
             signal_cli_url: "http://localhost:8080".into(),
             phone_number: "+0".into(),
@@ -399,9 +401,7 @@ mod tests {
     #[test]
     fn display_name_is_signal() {
         let on_msg: SignalOnMessageFn =
-            Arc::new(|_from, _name, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+            Arc::new(|_from, _name, _text, _delta_tx| Box::pin(async { Ok("test".to_string()) }));
         let config = SignalConfig {
             signal_cli_url: "http://localhost:8080".into(),
             phone_number: "+0".into(),

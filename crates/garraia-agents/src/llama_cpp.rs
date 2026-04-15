@@ -332,14 +332,9 @@ impl LlamaCppProvider {
                 let chunk: OpenAiStreamChunk = serde_json::from_str(json_str)
                     .map_err(|e| Error::Agent(format!("failed to parse stream chunk: {e}")))?;
 
-                let delta = chunk
-                    .choices
-                    .first()
-                    .and_then(|c| c.delta.as_ref());
+                let delta = chunk.choices.first().and_then(|c| c.delta.as_ref());
 
-                let content_text = delta
-                    .and_then(|d| d.content.as_deref())
-                    .unwrap_or("");
+                let content_text = delta.and_then(|d| d.content.as_deref()).unwrap_or("");
 
                 let finish_reason = chunk
                     .choices
@@ -437,9 +432,7 @@ impl LlmProvider for LlamaCppProvider {
 
         let mut content = Vec::new();
         if let Some(text) = &choice.message.content {
-            content.push(ContentBlock::Text {
-                text: text.clone(),
-            });
+            content.push(ContentBlock::Text { text: text.clone() });
         }
 
         // Parse tool calls if present
@@ -578,14 +571,8 @@ mod tests {
     #[test]
     fn from_extra_parses_config() {
         let mut extra = std::collections::HashMap::new();
-        extra.insert(
-            "cache_type_k".to_string(),
-            serde_json::json!("turbo3"),
-        );
-        extra.insert(
-            "cache_type_v".to_string(),
-            serde_json::json!("turbo2"),
-        );
+        extra.insert("cache_type_k".to_string(), serde_json::json!("turbo3"));
+        extra.insert("cache_type_v".to_string(), serde_json::json!("turbo2"));
         extra.insert("context_size".to_string(), serde_json::json!(32768));
         extra.insert("flash_attention".to_string(), serde_json::json!(true));
 

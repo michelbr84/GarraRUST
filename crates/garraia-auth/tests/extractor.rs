@@ -16,12 +16,12 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use chrono::Utc;
 use garraia_auth::{
-    require_permission, Action, JwtConfig, JwtIssuer, LoginConfig, LoginPool, Principal, Role,
+    Action, JwtConfig, JwtIssuer, LoginConfig, LoginPool, Principal, Role, require_permission,
 };
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use secrecy::SecretString;
 use serde::Serialize;
 use testcontainers::runners::AsyncRunner;
@@ -55,7 +55,8 @@ fn jwt_cfg() -> JwtConfig {
     }
 }
 
-async fn boot_login_pool() -> anyhow::Result<(ContainerAsync<PgImage>, sqlx::PgPool, Arc<LoginPool>)> {
+async fn boot_login_pool() -> anyhow::Result<(ContainerAsync<PgImage>, sqlx::PgPool, Arc<LoginPool>)>
+{
     let container = PgImage::default()
         .with_name("pgvector/pgvector")
         .with_tag("pg16")
@@ -164,7 +165,10 @@ async fn malformed_jwt_returns_401() -> anyhow::Result<()> {
     let state = make_state(issuer, pool);
 
     let req = Request::builder()
-        .header(header::AUTHORIZATION, HeaderValue::from_static("Bearer not.a.jwt"))
+        .header(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer not.a.jwt"),
+        )
         .body(())?;
     let err = extract_principal(&state, req).await.unwrap_err();
     assert_eq!(err.0, StatusCode::UNAUTHORIZED);
