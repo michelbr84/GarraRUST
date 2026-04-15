@@ -105,10 +105,7 @@ pub async fn seed_user_with_group(
 /// `seed_user_with_group` so the test suite does not exhaust
 /// Postgres connections under parallel scenarios (lesson from
 /// plan 0016 M3-T3 pool exhaustion).
-pub async fn seed_user_without_group(
-    h: &Harness,
-    email: &str,
-) -> anyhow::Result<(Uuid, String)> {
+pub async fn seed_user_without_group(h: &Harness, email: &str) -> anyhow::Result<(Uuid, String)> {
     let user_id = Uuid::new_v4();
 
     let mut tx = h

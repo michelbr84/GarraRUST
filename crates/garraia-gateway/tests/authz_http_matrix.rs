@@ -32,12 +32,12 @@ mod common;
 use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 use common::fixtures::{seed_user_with_group, seed_user_without_group};
-use common::{harness_get, Harness};
+use common::{Harness, harness_get};
 
 // ─── Actor seeding ───────────────────────────────────────────
 
@@ -54,14 +54,12 @@ struct Actors {
 }
 
 async fn seed_actors(h: &Harness) -> Actors {
-    let (alice_id, alice_group, alice_token) =
-        seed_user_with_group(h, "alice@gar-391d.test")
-            .await
-            .expect("seed alice");
-    let (bob_id, bob_group, bob_token) =
-        seed_user_with_group(h, "bob@gar-391d.test")
-            .await
-            .expect("seed bob");
+    let (alice_id, alice_group, alice_token) = seed_user_with_group(h, "alice@gar-391d.test")
+        .await
+        .expect("seed alice");
+    let (bob_id, bob_group, bob_token) = seed_user_with_group(h, "bob@gar-391d.test")
+        .await
+        .expect("seed bob");
     let (eve_id, eve_token) = seed_user_without_group(h, "eve@gar-391d.test")
         .await
         .expect("seed eve");
@@ -125,8 +123,8 @@ fn tamper_signature(token: &str) -> String {
 /// This avoids depending on implementation-detail verification
 /// order of the crate.
 fn tamper_payload_expired(token: &str, user_id: Uuid) -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let parts: Vec<&str> = token.split('.').collect();
     assert_eq!(parts.len(), 3);
     let expired_payload = json!({
@@ -141,11 +139,7 @@ fn tamper_payload_expired(token: &str, user_id: Uuid) -> String {
 
 // ─── Request builders ────────────────────────────────────────
 
-fn req_get(
-    path: &str,
-    bearer: Option<&str>,
-    x_group_id: Option<&str>,
-) -> Request<Body> {
+fn req_get(path: &str, bearer: Option<&str>, x_group_id: Option<&str>) -> Request<Body> {
     // `harness_get` already injects `ConnectInfo<SocketAddr>`
     // into the request extensions so the `tower_governor`
     // `PeerIpKeyExtractor` resolves. See plan 0016 M2.
@@ -165,11 +159,7 @@ fn req_get(
     req
 }
 
-fn req_post(
-    path: &str,
-    bearer: Option<&str>,
-    body: Value,
-) -> Request<Body> {
+fn req_post(path: &str, bearer: Option<&str>, body: Value) -> Request<Body> {
     let mut req = Request::builder()
         .method(Method::POST)
         .uri(path)
@@ -304,11 +294,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             id: 6,
             name: "POST /v1/groups without bearer -> 401",
             build: Box::new(|_a| {
-                req_post(
-                    "/v1/groups",
-                    None,
-                    json!({"name": "anon", "type": "team"}),
-                )
+                req_post("/v1/groups", None, json!({"name": "anon", "type": "team"}))
             }),
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
@@ -351,11 +337,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             name: "GET /v1/groups/{bob_group} as alice with X-Group-Id=bob_group -> 403",
             build: Box::new(|a| {
                 let path = format!("/v1/groups/{}", a.bob_group);
-                req_get(
-                    &path,
-                    Some(&a.alice_token),
-                    Some(&a.bob_group.to_string()),
-                )
+                req_get(&path, Some(&a.alice_token), Some(&a.bob_group.to_string()))
             }),
             expected_status: StatusCode::FORBIDDEN,
             expected_body_contains: None,
@@ -379,11 +361,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             name: "GET /v1/groups/{alice_group} as eve (non-member) -> 403",
             build: Box::new(|a| {
                 let path = format!("/v1/groups/{}", a.alice_group);
-                req_get(
-                    &path,
-                    Some(&a.eve_token),
-                    Some(&a.alice_group.to_string()),
-                )
+                req_get(&path, Some(&a.eve_token), Some(&a.alice_group.to_string()))
             }),
             expected_status: StatusCode::FORBIDDEN,
             expected_body_contains: None,
@@ -414,11 +392,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             name: "GET /v1/me with tampered signature -> 401",
             build: Box::new(|a| {
                 let tampered = tamper_signature(&a.alice_token);
-                req_get(
-                    "/v1/me",
-                    Some(&tampered),
-                    Some(&a.alice_group.to_string()),
-                )
+                req_get("/v1/me", Some(&tampered), Some(&a.alice_group.to_string()))
             }),
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
@@ -428,11 +402,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             name: "GET /v1/me with expired payload tamper -> 401",
             build: Box::new(|a| {
                 let expired = tamper_payload_expired(&a.alice_token, a.alice_id);
-                req_get(
-                    "/v1/me",
-                    Some(&expired),
-                    Some(&a.alice_group.to_string()),
-                )
+                req_get("/v1/me", Some(&expired), Some(&a.alice_group.to_string()))
             }),
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
