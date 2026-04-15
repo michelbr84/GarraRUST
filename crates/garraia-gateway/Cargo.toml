@@ -52,6 +52,12 @@ jsonwebtoken = { workspace = true }
 utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "reqwest"] }
 thiserror = { workspace = true }
+# Plan 0016 M4: real /v1/groups handlers operate on Postgres via
+# `AppPool::pool_for_handlers`, which returns `&sqlx::PgPool`.
+# The handlers need sqlx types (`query_as`, transactions) directly.
+# Feature set mirrors dev-dependencies so prod + test link the
+# same version.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
 dirs = "6"
 governor = "0.8"
 tower_governor = "0.8"
