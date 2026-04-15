@@ -153,6 +153,53 @@ impl JwtIssuer {
         Ok(data.claims)
     }
 
+    /// **Test-only constructor** — plan 0016 M2-T1.
+    ///
+    /// Builds a `JwtIssuer` from a single string secret used for BOTH
+    /// `jwt_secret` and `refresh_hmac_secret`. The secret is
+    /// deterministically padded to 32 bytes if shorter. This is the
+    /// only way the gateway integration harness can produce a working
+    /// `JwtIssuer` without threading the production `JwtConfig` /
+    /// `AuthConfig` plumbing through test infra.
+    ///
+    /// Gated behind `#[cfg(any(test, feature = "test-support"))]` so
+    /// it is invisible to production builds. Mirrors the pattern
+    /// already used by `LoginPool::raw` and `SignupPool::raw`.
+    ///
+    /// **Never** call this from non-test code. An audit rule:
+    /// `rg 'new_for_test' crates/` must return only hits preceded by
+    /// the `#[cfg(...)]` gate or inside `tests/` directories.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_for_test(secret: &str) -> Self {
+        // Pad the secret to 32 bytes if shorter, preserving it as
+        // a prefix. Longer secrets pass through. This keeps the
+        // test ergonomic — callers pass a short literal — while
+        // still satisfying the ≥32-byte validation that `new` enforces.
+        let mut padded = secret.to_string();
+        while padded.len() < 32 {
+            padded.push('=');
+        }
+        let cfg = JwtConfig {
+            jwt_secret: SecretString::from(padded.clone()),
+            refresh_hmac_secret: SecretString::from(padded),
+        };
+        Self::new(cfg).expect("JwtIssuer::new_for_test should always succeed after padding")
+    }
+
+    /// **Test-only access-token minter** — plan 0016 M2-T1.
+    ///
+    /// Thin wrapper over [`Self::issue_access`] that discards the
+    /// expiry timestamp and panics on error. Convenient for tests
+    /// that just want a valid bearer token for a given user.
+    ///
+    /// Gated behind `#[cfg(any(test, feature = "test-support"))]`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn issue_access_for_test(&self, user_id: Uuid) -> String {
+        self.issue_access(user_id)
+            .map(|(token, _exp)| token)
+            .expect("issue_access_for_test should always succeed on a test issuer")
+    }
+
     /// Generate a fresh opaque refresh token and its HMAC-SHA256 hash.
     /// 32 random bytes from `OsRng`, URL-safe base64 (no padding).
     pub fn issue_refresh(&self) -> Result<RefreshTokenPair, AuthError> {
@@ -351,5 +398,19 @@ mod tests {
             .hmac_refresh(pair.plaintext.expose_secret())
             .expect("hmac_refresh must not fail with a 32-byte secret");
         assert_eq!(recomputed, pair.hmac_hash);
+    }
+
+    #[test]
+    fn new_for_test_and_issue_access_for_test_roundtrip() {
+        // Short secret: padded to 32 bytes internally.
+        let issuer = JwtIssuer::new_for_test("unit-secret");
+        // Use a deterministic non-nil UUID so the `sub` claim is
+        // unmistakable in the assertion. Parsing is infallible on a
+        // literal — no v4 feature required.
+        let uid = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let token = issuer.issue_access_for_test(uid);
+        let claims = issuer.verify_access(&token).expect("verify");
+        assert_eq!(claims.sub, uid);
+        assert_eq!(claims.iss, ISSUER);
     }
 }

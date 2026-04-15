@@ -63,6 +63,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2"
 anyhow = "1"
 
+# Test isolation — plan 0016 M2-T5. Enables `#[serial_test::serial]`
+# on tests that mutate process-global state (env vars, static caches).
+serial_test = "3"
+
 # Crypto / Security
 ring = "0.17"
 base64 = "0.22"

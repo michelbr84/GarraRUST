@@ -66,9 +66,27 @@ default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
 telemetry = ["dep:garraia-telemetry"]
+# Plan 0016 M2 — exposes test-only helpers on `GatewayServer` so the
+# integration test harness (`tests/common/mod.rs`) can build a Router
+# without running the full bootstrap pipeline. WARNING: MUST NOT be
+# enabled by any production binary or non-test crate. Transitively
+# enables the `test-support` feature of `garraia-auth` so the harness
+# can call `JwtIssuer::new_for_test`.
+test-helpers = ["garraia-auth/test-support"]
+
+# Plan 0016 M2 review fix H-2 (code-reviewer): declare `harness_smoke`
+# as requiring the `test-helpers` feature so running
+# `cargo test -p garraia-gateway --test harness_smoke` without
+# `--features test-helpers` produces a clear Cargo-level error instead
+# of a confusing "unresolved import" error from rustc.
+[[test]]
+name = "harness_smoke"
+path = "tests/harness_smoke.rs"
+required-features = ["test-helpers"]
 
 [dev-dependencies]
 tempfile = "3"
+serial_test = { workspace = true }
 wiremock = "0.6"
 tokio-tungstenite = "0.26"
 tokio = { workspace = true }
