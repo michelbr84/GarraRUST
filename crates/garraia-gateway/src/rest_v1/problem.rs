@@ -31,6 +31,19 @@ pub enum RestError {
     Unauthenticated,
     #[error("forbidden")]
     Forbidden,
+    /// Plan 0016 M4: request body fails validation (empty name,
+    /// unknown enum value, header/path mismatch). The `{0}` detail
+    /// is emitted to clients in the Problem Details body, so callers
+    /// MUST NOT embed user-identifying data in it — write only
+    /// structural errors like `"invalid group type"`, not
+    /// `"user alice@example.com cannot pick ..."`.
+    #[error("{0}")]
+    BadRequest(String),
+    /// Plan 0016 M4: resource missing (e.g. group deleted between
+    /// extractor lookup and handler query). No payload — clients
+    /// only see status 404 + title "Not Found".
+    #[error("not found")]
+    NotFound,
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
     #[error("internal error")]
@@ -42,6 +55,8 @@ impl RestError {
         match self {
             RestError::Unauthenticated => StatusCode::UNAUTHORIZED,
             RestError::Forbidden => StatusCode::FORBIDDEN,
+            RestError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            RestError::NotFound => StatusCode::NOT_FOUND,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -51,6 +66,8 @@ impl RestError {
         match self {
             RestError::Unauthenticated => "Unauthenticated",
             RestError::Forbidden => "Forbidden",
+            RestError::BadRequest(_) => "Bad Request",
+            RestError::NotFound => "Not Found",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::Internal(_) => "Internal Server Error",
         }
@@ -113,5 +130,27 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], 503);
         assert_eq!(v["title"], "Service Unavailable");
+    }
+
+    #[tokio::test]
+    async fn bad_request_shape_carries_detail() {
+        let resp = RestError::BadRequest("invalid group type".into()).into_response();
+        assert_eq!(resp.status(), 400);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 400);
+        assert_eq!(v["title"], "Bad Request");
+        assert_eq!(v["detail"], "invalid group type");
+    }
+
+    #[tokio::test]
+    async fn not_found_shape() {
+        let resp = RestError::NotFound.into_response();
+        assert_eq!(resp.status(), 404);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 404);
+        assert_eq!(v["title"], "Not Found");
+        assert_eq!(v["detail"], "not found");
     }
 }
