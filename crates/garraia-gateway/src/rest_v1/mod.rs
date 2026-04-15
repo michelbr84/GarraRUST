@@ -189,6 +189,6 @@ pub fn router(app_state: Arc<AppState>) -> Router {
 /// Fail-soft handler used when `AuthConfig` / `AppPool` is missing.
 /// Routes that cannot serve in the current mode fall back here and
 /// answer 503 Problem Details via `RestError::AuthUnconfigured`.
-async fn unconfigured_handler() -> RestError {
+async fn unconfigured_handler() -> impl axum::response::IntoResponse {
     RestError::AuthUnconfigured
 }
