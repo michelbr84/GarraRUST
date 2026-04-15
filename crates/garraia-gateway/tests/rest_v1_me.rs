@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use garraia_config::AppConfig;
 use garraia_gateway::GatewayServer;
+use serial_test::serial;
 
 fn random_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind to random port");
@@ -36,7 +37,12 @@ fn clear_auth_env() {
     }
 }
 
+// `#[serial]` isolates this test from any other that reads or mutates
+// the same env vars. The `clear_auth_env()` call below uses
+// `std::env::remove_var` which is `unsafe` on Edition 2024 and races
+// any concurrent reader in the same process. Plan 0016 M2-T5.
 #[tokio::test]
+#[serial]
 async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() {
     clear_auth_env();
 

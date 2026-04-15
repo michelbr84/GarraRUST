@@ -8,6 +8,7 @@ use std::net::TcpListener;
 use garraia_config::AppConfig;
 use garraia_gateway::GatewayServer;
 use serde_json::json;
+use serial_test::serial;
 
 /// Pick a random available port.
 fn random_port() -> u16 {
@@ -60,6 +61,7 @@ async fn start_test_gateway() -> String {
 }
 
 #[tokio::test]
+#[serial]
 async fn project_crud_lifecycle() {
     let base = start_test_gateway().await;
     let client = reqwest::Client::new();
@@ -159,6 +161,7 @@ async fn project_crud_lifecycle() {
 }
 
 #[tokio::test]
+#[serial]
 async fn get_nonexistent_project_returns_404() {
     let base = start_test_gateway().await;
     let client = reqwest::Client::new();
@@ -173,6 +176,7 @@ async fn get_nonexistent_project_returns_404() {
 }
 
 #[tokio::test]
+#[serial]
 async fn update_nonexistent_project_returns_404() {
     let base = start_test_gateway().await;
     let client = reqwest::Client::new();
@@ -188,6 +192,7 @@ async fn update_nonexistent_project_returns_404() {
 }
 
 #[tokio::test]
+#[serial]
 async fn delete_nonexistent_project_returns_404() {
     let base = start_test_gateway().await;
     let client = reqwest::Client::new();
