@@ -29,6 +29,7 @@
 //! In mode 3 the routes are registered explicitly (no `.fallback()`)
 //! so the merged main router keeps its own 404 behavior.
 
+pub mod groups;
 pub mod me;
 pub mod openapi;
 pub mod problem;
@@ -149,15 +150,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // because `RestV1FullState: FromRef<Arc<JwtIssuer>>` and
             // `FromRef<Arc<LoginPool>>`.
             //
-            // TODO plan 0016 M4: replace the two
-            // `unconfigured_handler` lines below with the real
-            // handlers (`groups::create_group` + `groups::get_group`)
-            // without touching `.with_state(full)` — the state type
-            // is already correct.
+            // Plan 0016 M4: `/v1/groups` routes now point at the
+            // real handlers (`groups::create_group` + `groups::get_group`).
+            // Modes 2 and 3 still answer 503 via `unconfigured_handler`
+            // because they lack `Arc<AppPool>` in state.
             Router::new()
                 .route("/v1/me", get(me::get_me))
-                .route("/v1/groups", post(unconfigured_handler))
-                .route("/v1/groups/{id}", get(unconfigured_handler))
+                .route("/v1/groups", post(groups::create_group))
+                .route("/v1/groups/{id}", get(groups::get_group))
                 .with_state(full)
                 .merge(
                     SwaggerUi::new("/docs")

@@ -12,6 +12,7 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
+use super::groups::{CreateGroupRequest, GroupReadResponse, GroupResponse};
 use super::me::MeResponse;
 use super::problem::ProblemDetails;
 
@@ -57,8 +58,18 @@ impl Modify for SecurityAddon {
         version = "0.1.0",
         description = "Versioned GarraIA gateway REST surface (Fase 3.4)."
     ),
-    paths(super::me::get_me),
-    components(schemas(MeResponse, ProblemDetails)),
+    paths(
+        super::me::get_me,
+        super::groups::create_group,
+        super::groups::get_group,
+    ),
+    components(schemas(
+        MeResponse,
+        ProblemDetails,
+        CreateGroupRequest,
+        GroupResponse,
+        GroupReadResponse,
+    )),
     modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;

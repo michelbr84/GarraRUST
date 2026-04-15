@@ -250,8 +250,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Grupos**
 
-- [ ] `POST /v1/groups`
-- [ ] `GET /v1/groups/{group_id}`
+- [x] `POST /v1/groups` — plan 0016 M4, entregue 2026-04-14
+- [x] `GET /v1/groups/{group_id}` — plan 0016 M4, entregue 2026-04-14
 - [ ] `PATCH /v1/groups/{group_id}`
 - [ ] `POST /v1/groups/{group_id}/invites`
 - [ ] `POST /v1/groups/{group_id}/members/{user_id}:setRole`
