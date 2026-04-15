@@ -126,11 +126,16 @@ pub async fn create_group(
         ));
     }
 
-    // 2. Open transaction on `app_pool`. The SET LOCAL below is
-    //    transaction-scoped — if we skipped `begin()` and used the
-    //    pool directly, auto-commit would wrap each statement in
-    //    its own transaction and the tenant context would be lost.
-    //    (team-coordinator M4 gate risk #6)
+    // 2a. Capture the trimmed name once so the database row and the
+    //     response body cannot diverge if someone later adds another
+    //     use site.
+    let trimmed_name = req.name.trim().to_string();
+
+    // 2b. Open transaction on `app_pool`. The SET LOCAL below is
+    //     transaction-scoped — if we skipped `begin()` and used the
+    //     pool directly, auto-commit would wrap each statement in
+    //     its own transaction and the tenant context would be lost.
+    //     (team-coordinator M4 gate risk #6)
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
         .begin()
@@ -154,7 +159,7 @@ pub async fn create_group(
          VALUES ($1, $2, $3) \
          RETURNING id, created_at",
     )
-    .bind(req.name.trim())
+    .bind(&trimmed_name)
     .bind(&req.group_type)
     .bind(principal.user_id)
     .fetch_one(&mut *tx)
@@ -183,7 +188,7 @@ pub async fn create_group(
         StatusCode::CREATED,
         Json(GroupResponse {
             id,
-            name: req.name.trim().to_string(),
+            name: trimmed_name,
             group_type: req.group_type,
             created_at,
         }),
@@ -234,9 +239,20 @@ pub async fn get_group(
         }
     }
 
-    // 2. Fetch the group row. `groups` is not under RLS, so no
-    //    tenant-context SET LOCAL is needed. `garraia_app` has
-    //    direct SELECT grants.
+    // 2. Fetch the group row. `groups` is not under FORCE RLS today
+    //    (migration 001 line 100 + migration 007), so no
+    //    tenant-context `SET LOCAL` is needed for this SELECT and
+    //    `fetch_optional` runs directly on the pool without a
+    //    transaction wrapper. `garraia_app` has direct SELECT
+    //    grants on `groups`.
+    //
+    //    FIXME(plan-0016-M5 or whenever `groups` gains FORCE RLS):
+    //    convert this to a `tx = pool.begin()` + `SET LOCAL
+    //    app.current_user_id` sequence mirroring `create_group`
+    //    above. The M4 security-auditor flagged this as a
+    //    forward-compat hazard — silent `groups` SELECT bypass
+    //    if RLS is later applied and this handler is left
+    //    untouched.
     let pool = state.app_pool.pool_for_handlers();
     let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
         "SELECT id, name, type, created_at, created_by FROM groups WHERE id = $1",
@@ -248,14 +264,28 @@ pub async fn get_group(
 
     let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
 
-    // 3. Assemble response. The caller's role is whatever the
-    //    `Principal` extractor stored — always `Some(_)` here
-    //    because the extractor only populates `group_id` when
-    //    membership exists.
+    // 3. Assemble response. The caller's `Principal.role` MUST be
+    //    `Some(_)` here: the extractor only populates `group_id`
+    //    when the `group_members` membership lookup found an
+    //    active row, which by definition includes a role. If this
+    //    invariant ever breaks (e.g. a refactor that populates
+    //    `group_id` without pairing a role), we want to fail loud
+    //    with a 500 rather than silently emitting `role: ""` to
+    //    the client. Plan 0016 M4 review fix (code-reviewer HIGH).
     let role = principal
         .role
-        .map(|r| r.as_str().to_string())
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            tracing::error!(
+                user_id = %principal.user_id,
+                group_id = ?principal.group_id,
+                "Principal.role is None with group_id Some — invariant violated by extractor"
+            );
+            RestError::Internal(anyhow::anyhow!(
+                "Principal.role is None despite group_id being Some"
+            ))
+        })?
+        .as_str()
+        .to_string();
 
     Ok(Json(GroupReadResponse {
         id,

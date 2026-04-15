@@ -109,6 +109,13 @@ required-features = ["test-helpers"]
 tempfile = "3"
 serial_test = { workspace = true }
 wiremock = "0.6"
+# Plan 0016 M4 review fix: the sqlx dep was previously listed in
+# BOTH [dependencies] and [dev-dependencies] with identical feature
+# sets. Cargo deduplicates when features match, so there is no
+# linkage conflict, but the dev-dependencies entry is now redundant
+# because production code imports sqlx directly (via `groups.rs`
+# handlers). The prod entry above carries the canonical feature set;
+# tests inherit it transitively. Removed the dev-dependencies line.
 tokio-tungstenite = "0.26"
 tokio = { workspace = true }
 futures = { workspace = true }
@@ -123,7 +130,6 @@ tower = { workspace = true, features = ["util"] }
 # enumeration. Plan reference: plans/0012-gar-391c-extractor-and-wiring.md.
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
 secrecy = "0.10"
 garraia-workspace = { path = "../garraia-workspace" }
 garraia-auth = { workspace = true }
