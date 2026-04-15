@@ -98,6 +98,13 @@ name = "rest_v1_me_authed"
 path = "tests/rest_v1_me_authed.rs"
 required-features = ["test-helpers"]
 
+# Plan 0016 M4-T4: real /v1/groups handlers integration tests.
+# Same gating as harness_smoke / rest_v1_me_authed.
+[[test]]
+name = "rest_v1_groups"
+path = "tests/rest_v1_groups.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 tempfile = "3"
 serial_test = { workspace = true }
