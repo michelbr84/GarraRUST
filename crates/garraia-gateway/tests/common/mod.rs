@@ -64,11 +64,12 @@ pub struct Harness {
 
     /// Shared superuser `PgPool` built once in `boot()` and reused
     /// by every fixture call (`seed_user_with_group`, future seed
-    /// helpers). Sized at `max_connections = 8` — fixtures bundle
-    /// their multi-row inserts into a single transaction so one
-    /// fixture call acquires one connection for the duration of
-    /// the inserts, making 8 comfortable headroom for any parallel
-    /// test suite.
+    /// helpers). Sized at `max_connections = 16` for comfortable
+    /// headroom under parallel test suites — fixtures bundle their
+    /// multi-row inserts into a single transaction so one fixture
+    /// call acquires one connection for the duration of the inserts.
+    /// 16 is well under Postgres default `max_connections = 100` and
+    /// absorbs any realistic combination of parallel seeds.
     ///
     /// Why shared rather than opened-per-fixture: opening a fresh
     /// `PgPool` per fixture call exhausts Postgres `max_connections`

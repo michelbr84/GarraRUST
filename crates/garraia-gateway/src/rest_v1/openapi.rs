@@ -26,10 +26,18 @@ pub struct SecurityAddon;
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        // Use `get_or_insert_with(Default::default)` rather than
+        // `.expect("...")` so this modifier is robust to any future
+        // refactor that strips `components(schemas(...))` from the
+        // `ApiDoc` derive. The current derive always yields
+        // `Some(Components { .. })` at macro expansion time, but
+        // the invariant is not compiler-enforced — a silent panic
+        // at `GET /v1/openapi.json` in production would be a
+        // 500-no-body regression that is trivial to prevent here.
+        // Plan 0016 M3 review fix (security + code-reviewer).
         let components = openapi
             .components
-            .as_mut()
-            .expect("ApiDoc always has components");
+            .get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer",
             SecurityScheme::Http(
