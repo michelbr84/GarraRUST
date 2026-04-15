@@ -22,6 +22,8 @@
 
 #![allow(dead_code)]
 
+pub mod fixtures;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
