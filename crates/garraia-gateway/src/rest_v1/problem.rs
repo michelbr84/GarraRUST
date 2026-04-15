@@ -46,6 +46,11 @@ pub enum RestError {
     NotFound,
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
+    /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
+    /// user-identifying data (email, user_id, hashes)** before converting
+    /// to `RestError::Internal`: the `Display` impl of `anyhow::Error` will
+    /// print the outermost context in the log span created by
+    /// `IntoResponse`, and that log line is operator-visible.
     #[error("internal error")]
     Internal(#[source] anyhow::Error),
 }
@@ -90,7 +95,10 @@ impl IntoResponse for RestError {
             status: status.as_u16(),
             detail,
         };
-        let json = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+        let json = serde_json::to_vec(&body).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "problem.rs: fallback empty JSON body used");
+            b"{}".to_vec()
+        });
         (status, [("content-type", "application/problem+json")], json).into_response()
     }
 }
