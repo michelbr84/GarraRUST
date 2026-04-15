@@ -175,10 +175,14 @@ fn req_post(
 
 // ─── Matrix case type ────────────────────────────────────────
 
+/// Type alias for the request-builder closure on each `MatrixCase`.
+/// Factored out to keep `MatrixCase::build` below `clippy::type_complexity`.
+type RequestBuilder = Box<dyn Fn(&Actors) -> Request<Body> + Send + Sync>;
+
 struct MatrixCase {
     id: u8,
     name: &'static str,
-    build: Box<dyn Fn(&Actors) -> Request<Body> + Send + Sync>,
+    build: RequestBuilder,
     expected_status: StatusCode,
     /// Optional substring that the response body MUST contain.
     /// Applied only when `Some`. Matched against the raw UTF-8
@@ -210,13 +214,13 @@ async fn run_case(h: &Harness, c: &MatrixCase, actors: &Actors) -> Result<(), St
             c.id, c.name, c.expected_status, status, body_str
         ));
     }
-    if let Some(needle) = c.expected_body_contains {
-        if !body_str.contains(needle) {
-            return Err(format!(
-                "case #{} ({}): body missing '{}'. body: {}",
-                c.id, c.name, needle, body_str
-            ));
-        }
+    if let Some(needle) = c.expected_body_contains
+        && !body_str.contains(needle)
+    {
+        return Err(format!(
+            "case #{} ({}): body missing '{}'. body: {}",
+            c.id, c.name, needle, body_str
+        ));
     }
     Ok(())
 }
