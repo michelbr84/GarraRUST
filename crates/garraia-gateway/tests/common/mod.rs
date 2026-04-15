@@ -22,6 +22,8 @@
 
 #![allow(dead_code)]
 
+pub mod fixtures;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -56,7 +58,26 @@ pub struct Harness {
 
     /// Superuser URL (`postgres:postgres@...`). Only used by tests
     /// that legitimately need RLS-bypass (fixture setup in M3).
+    /// Prefer `admin_pool` below — it is the sanctioned accessor
+    /// for fixture inserts.
     pub admin_url: String,
+
+    /// Shared superuser `PgPool` built once in `boot()` and reused
+    /// by every fixture call (`seed_user_with_group`, future seed
+    /// helpers). Sized at `max_connections = 16` for comfortable
+    /// headroom under parallel test suites — fixtures bundle their
+    /// multi-row inserts into a single transaction so one fixture
+    /// call acquires one connection for the duration of the inserts.
+    /// 16 is well under Postgres default `max_connections = 100` and
+    /// absorbs any realistic combination of parallel seeds.
+    ///
+    /// Why shared rather than opened-per-fixture: opening a fresh
+    /// `PgPool` per fixture call exhausts Postgres `max_connections`
+    /// (default 100) when combined with the three test pools at
+    /// `max_connections = 16` each and a handful of parallel
+    /// `#[tokio::test]` functions — an issue discovered during
+    /// plan 0016 M3-T3 (timeout in LoginPool extractor lookup).
+    pub admin_pool: sqlx::PgPool,
 
     /// Typed `garraia_app` RLS-enforced pool.
     pub app_pool: Arc<AppPool>,
@@ -130,7 +151,18 @@ impl Harness {
         // 4. Promote the three NOLOGIN roles to LOGIN with
         //    deterministic passwords. Test-only: container is
         //    ephemeral and the URLs never leave the process.
-        let admin_pool = sqlx::PgPool::connect(&admin_url).await?;
+        //
+        //    The admin_pool is kept alive on the Harness struct
+        //    (not closed here) so fixture helpers can reuse it
+        //    without opening a fresh pool per call — see the
+        //    doc comment on `Harness::admin_pool` for the
+        //    rationale.
+        // admin_pool: sized at 16 for safe headroom when fixtures
+        // run concurrently. Acquire timeout kept at sqlx default.
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(16)
+            .connect(&admin_url)
+            .await?;
         sqlx::query("ALTER ROLE garraia_app    WITH LOGIN PASSWORD 'app-pw'")
             .execute(&admin_pool)
             .await?;
@@ -140,16 +172,24 @@ impl Harness {
         sqlx::query("ALTER ROLE garraia_signup WITH LOGIN PASSWORD 'signup-pw'")
             .execute(&admin_pool)
             .await?;
-        admin_pool.close().await;
 
         // 5. Build the three typed pools via their production
         //    constructors — validates the `SELECT current_user`
         //    guards identically to how production builds them.
+        //
+        //    Pool sizes: bumped to 16 after the first parallel run
+        //    of the M3 authed /v1/me tests hit transient pool-timeout
+        //    errors on the LoginPool (5 #[tokio::test] functions each
+        //    firing one extractor lookup in parallel while the
+        //    production LoginPool is sized for 4 concurrent logins).
+        //    16 is comfortable headroom for any reasonable parallel
+        //    test suite without exhausting Postgres max_connections
+        //    (default 100 in pgvector/pg16).
         let app_url = admin_url.replace("postgres:postgres@", "garraia_app:app-pw@");
         let app_pool = Arc::new(
             AppPool::from_dedicated_config(&AppPoolConfig {
                 database_url: app_url,
-                max_connections: 4,
+                max_connections: 16,
             })
             .await?,
         );
@@ -158,7 +198,7 @@ impl Harness {
         let login_pool = Arc::new(
             LoginPool::from_dedicated_config(&LoginConfig {
                 database_url: login_url,
-                max_connections: 4,
+                max_connections: 16,
             })
             .await?,
         );
@@ -167,7 +207,7 @@ impl Harness {
         let signup_pool = Arc::new(
             SignupPool::from_dedicated_config(&SignupConfig {
                 database_url: signup_url,
-                max_connections: 4,
+                max_connections: 16,
             })
             .await?,
         );
@@ -194,6 +234,7 @@ impl Harness {
             _container: container,
             _config_tempdir: config_tempdir,
             admin_url,
+            admin_pool,
             app_pool,
             login_pool,
             signup_pool,

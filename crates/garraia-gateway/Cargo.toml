@@ -84,6 +84,14 @@ name = "harness_smoke"
 path = "tests/harness_smoke.rs"
 required-features = ["test-helpers"]
 
+# Plan 0016 M3-T3: authed /v1/me integration tests. Same gating as
+# harness_smoke — requires the test-helpers feature so
+# `GatewayServer::build_router_for_test` is visible.
+[[test]]
+name = "rest_v1_me_authed"
+path = "tests/rest_v1_me_authed.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 tempfile = "3"
 serial_test = { workspace = true }
