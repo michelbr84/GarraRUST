@@ -90,7 +90,24 @@ jobs:
         run: cargo build --workspace --exclude garraia-desktop
 
       - name: Run tests
-        run: cargo test --workspace --exclude garraia-desktop
+        # On Linux runners Docker is preinstalled, so testcontainers-based
+        # integration tests in garraia-auth / garraia-workspace /
+        # garraia-gateway run normally. GitHub-hosted macOS and Windows
+        # runners do NOT ship Docker, so attempting to `Pg::default()` a
+        # pgvector container fails with:
+        #   Error: failed to initialize a docker client:
+        #          Socket not found: /var/run/docker.sock
+        # On those platforms we compile the entire test matrix (`--no-run`)
+        # so we still catch cross-platform compile regressions, but do not
+        # execute the Docker-dependent binaries. Pure unit tests on Linux
+        # provide the runtime coverage.
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo test --workspace --exclude garraia-desktop
+          else
+            cargo test --workspace --exclude garraia-desktop --no-run
+          fi
+        shell: bash
 
   # Build only (no test) for faster feedback on other platforms if needed
   build:
