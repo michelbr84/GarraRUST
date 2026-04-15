@@ -182,6 +182,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{id}", get(unconfigured_handler))
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
+                .route("/docs/{*rest}", get(unconfigured_handler))
         }
     }
 }
