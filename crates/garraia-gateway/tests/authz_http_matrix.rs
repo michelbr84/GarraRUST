@@ -79,35 +79,51 @@ async fn seed_actors(h: &Harness) -> Actors {
 
 // ─── JWT tampering helpers ───────────────────────────────────
 
-/// Flip the last base64 character of the SIGNATURE segment of a
-/// JWT. The signature no longer matches the `header.payload` HMAC
-/// so `JwtIssuer::verify_access` fails with `InvalidSignature`
-/// and the `Principal` extractor maps that to `401 Unauthenticated`.
+/// Tamper the signature segment of a JWT so it no longer matches
+/// the HMAC of `header.payload`. `JwtIssuer::verify_access` fails
+/// with `InvalidSignature` and the `Principal` extractor maps that
+/// to `401 Unauthenticated`.
+///
+/// Implementation: XOR the middle byte of the signature segment
+/// with `0x01`. This is a deterministic mutation that always
+/// produces a different byte regardless of the original value
+/// (no special-case branches), and flipping a bit in the middle of
+/// the signature guarantees the HMAC comparison fails. The
+/// alternative (flip last char between 'A' and 'B') was rejected in
+/// review because even though the code path was actually always a
+/// mutation, the semantic was ambiguous and fragile to refactor.
 fn tamper_signature(token: &str) -> String {
     let parts: Vec<&str> = token.split('.').collect();
     assert_eq!(parts.len(), 3, "JWT must have 3 segments");
     let sig = parts[2];
     let mut bytes = sig.as_bytes().to_vec();
-    let last = *bytes.last().unwrap();
-    // 'A' (base64 value 0) and 'B' (base64 value 1) are both valid
-    // base64 alphabet chars. Flipping between them always produces
-    // a valid but different base64 decoding, so the tamper is
-    // guaranteed to fail HMAC verification. Team-coordinator gate
-    // question 3 validated this approach.
-    let flipped = if last == b'A' { b'B' } else { b'A' };
-    *bytes.last_mut().unwrap() = flipped;
-    let tampered_sig = String::from_utf8(bytes).unwrap();
+    assert!(
+        bytes.len() >= 2,
+        "JWT signature segment must be at least 2 bytes"
+    );
+    let mid = bytes.len() / 2;
+    // XOR with 0x01 on an ASCII base64 alphabet char.  The result
+    // may land outside the base64 alphabet (ex: 'A' ^ 0x01 = '@'),
+    // which makes the decode step reject the segment — that is
+    // equally a signature failure from `jsonwebtoken`'s perspective
+    // and still maps to `AuthError::JwtIssue` -> 401.
+    bytes[mid] ^= 0x01;
+    let tampered_sig = String::from_utf8_lossy(&bytes).into_owned();
     format!("{}.{}.{}", parts[0], parts[1], tampered_sig)
 }
 
 /// Replace the PAYLOAD segment of a JWT with a new JSON that has
-/// `exp` in the past. The original signature was computed over
-/// the original payload, so `JwtIssuer::verify_access` computes
-/// HMAC over `header.new_payload` and finds a mismatch — failing
-/// with `InvalidSignature` BEFORE `exp` is parsed. Both errors
-/// map to `401 Unauthenticated` in the extractor, so the observed
-/// status is the same; the distinction matters for documenting
-/// the semantic vector, not for the assertion.
+/// `exp` in the past.
+///
+/// The token fails with `401 Unauthenticated` regardless of whether
+/// `jsonwebtoken` rejects it for `InvalidSignature` (HMAC computed
+/// over the new payload does not match the original signature) or
+/// for `ExpiredSignature` (the `exp=1` claim is in the past). Both
+/// paths collapse into `AuthError::JwtIssue` in the extractor. The
+/// assertion is on `StatusCode::UNAUTHORIZED` so the test is not
+/// coupled to which failure mode `jsonwebtoken` reports internally.
+/// This avoids depending on implementation-detail verification
+/// order of the crate.
 fn tamper_payload_expired(token: &str, user_id: Uuid) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
@@ -308,7 +324,12 @@ fn build_matrix() -> Vec<MatrixCase> {
                 )
             }),
             expected_status: StatusCode::BAD_REQUEST,
-            expected_body_contains: Some("name"),
+            // Discriminative substring: matches the exact validation
+            // message in `rest_v1::groups::create_group`. Loose
+            // substrings like `"name"` were rejected in review
+            // (security F-1) because the word "name" could appear in
+            // other 400 bodies and mask a regression.
+            expected_body_contains: Some("group name must not be empty"),
         },
         // ── GET /v1/groups/{id} (cases 8–13) ─────────────────
         MatrixCase {
