@@ -114,19 +114,6 @@ impl Harness {
     }
 
     async fn boot() -> anyhow::Result<Self> {
-        // 0. Init a global tracing subscriber so extractor error logs
-        //    (e.g. `group_members_lookup_failed`) surface in test
-        //    output under `cargo test -- --nocapture`. Idempotent:
-        //    `try_init` silently returns Err if a subscriber is
-        //    already installed, which is fine.
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,garraia_auth=debug")),
-            )
-            .with_test_writer()
-            .try_init();
-
         // 1. Divert GARRAIA_CONFIG_DIR to a tempdir BEFORE anything
         //    in the gateway touches `default_config_dir()`. This
         //    prevents `McpPersistenceService::with_default_path()`
@@ -169,8 +156,10 @@ impl Harness {
         //    without opening a fresh pool per call — see the
         //    doc comment on `Harness::admin_pool` for the
         //    rationale.
+        // admin_pool: sized at 16 for safe headroom when fixtures
+        // run concurrently. Acquire timeout kept at sqlx default.
         let admin_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(8)
+            .max_connections(16)
             .connect(&admin_url)
             .await?;
         sqlx::query("ALTER ROLE garraia_app    WITH LOGIN PASSWORD 'app-pw'")
