@@ -71,17 +71,17 @@ pub fn build_router(
         if origins.is_empty() {
             cors.allow_origin(Any)
         } else {
-            let parsed: Vec<axum::http::HeaderValue> = origins
-                .iter()
-                .filter_map(|o| o.parse().ok())
-                .collect();
+            let parsed: Vec<axum::http::HeaderValue> =
+                origins.iter().filter_map(|o| o.parse().ok()).collect();
             cors.allow_origin(parsed)
         }
     };
 
     // EU AI Act compliance: inject X-AI-Model and X-AI-Provider headers.
     let default_provider = state.agents.default_provider_id().unwrap_or_default();
-    let default_model = state.agents.get_provider(&default_provider)
+    let default_model = state
+        .agents
+        .get_provider(&default_provider)
         .and_then(|p| p.configured_model().map(|m| m.to_string()))
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -110,7 +110,10 @@ pub fn build_router(
         )
         .route("/api/sessions/{id}/messages", post(api::send_message))
         .route("/api/sessions/{id}/history", get(api::session_history))
-        .route("/api/sessions/{id}", axum::routing::delete(api::delete_session))
+        .route(
+            "/api/sessions/{id}",
+            axum::routing::delete(api::delete_session),
+        )
         .route(
             "/api/memory",
             axum::routing::delete(crate::memory_handler::clear_memory),
@@ -137,8 +140,16 @@ pub fn build_router(
         .route("/api/mode/select", post(api::select_mode))
         .route("/api/mode/current", get(api::current_mode))
         // GAR-232: Custom Mode API endpoints
-        .route("/api/modes/custom", get(api::list_custom_modes).post(api::create_custom_mode))
-        .route("/api/modes/custom/{id}", get(api::get_custom_mode).patch(api::update_custom_mode).delete(api::delete_custom_mode))
+        .route(
+            "/api/modes/custom",
+            get(api::list_custom_modes).post(api::create_custom_mode),
+        )
+        .route(
+            "/api/modes/custom/{id}",
+            get(api::get_custom_mode)
+                .patch(api::update_custom_mode)
+                .delete(api::delete_custom_mode),
+        )
         // Runtime endpoints - temporarily disabled
         // .route(
         //     "/api/runtime/run",
@@ -157,44 +168,119 @@ pub fn build_router(
                 .route("/auth/login", post(mobile_auth::login))
                 .route("/auth/oauth/providers", get(oauth::list_oauth_providers))
                 .route("/auth/oauth/{provider}", get(oauth::oauth_redirect))
-                .route("/auth/oauth/{provider}/callback", get(oauth::oauth_callback))
+                .route(
+                    "/auth/oauth/{provider}/callback",
+                    get(oauth::oauth_callback),
+                )
                 .route("/auth/2fa/setup", post(totp::setup_2fa))
                 .route("/auth/2fa/verify", post(totp::verify_2fa))
                 .route("/auth/2fa/disable", post(totp::disable_2fa))
-                .layer(axum::middleware::from_fn_with_state(auth_limiter, crate::rate_limiter::rate_limit_layer))
+                .layer(axum::middleware::from_fn_with_state(
+                    auth_limiter,
+                    crate::rate_limiter::rate_limit_layer,
+                ))
                 .with_state(state.clone())
         })
         .route("/me", get(mobile_auth::me))
         .route("/chat", post(mobile_chat::chat))
         .route("/chat/history", get(mobile_chat::history))
         // OpenClaw bridge endpoints
-        .route("/api/openclaw/status", get(crate::openclaw_handler::openclaw_status))
-        .route("/api/openclaw/connect", post(crate::openclaw_handler::openclaw_connect))
-        .route("/api/openclaw/disconnect", post(crate::openclaw_handler::openclaw_disconnect))
-        .route("/api/openclaw/channels", get(crate::openclaw_handler::openclaw_channels))
+        .route(
+            "/api/openclaw/status",
+            get(crate::openclaw_handler::openclaw_status),
+        )
+        .route(
+            "/api/openclaw/connect",
+            post(crate::openclaw_handler::openclaw_connect),
+        )
+        .route(
+            "/api/openclaw/disconnect",
+            post(crate::openclaw_handler::openclaw_disconnect),
+        )
+        .route(
+            "/api/openclaw/channels",
+            get(crate::openclaw_handler::openclaw_channels),
+        )
         // Phase 3.1: Plugin Registry
-        .route("/api/plugins/install", post(crate::plugins_handler::install_plugin))
+        .route(
+            "/api/plugins/install",
+            post(crate::plugins_handler::install_plugin),
+        )
         .route("/api/plugins", get(crate::plugins_handler::list_plugins))
-        .route("/api/plugins/{id}", get(crate::plugins_handler::get_plugin).delete(crate::plugins_handler::uninstall_plugin))
-        .route("/api/plugins/{id}/toggle", post(crate::plugins_handler::toggle_plugin))
+        .route(
+            "/api/plugins/{id}",
+            get(crate::plugins_handler::get_plugin)
+                .delete(crate::plugins_handler::uninstall_plugin),
+        )
+        .route(
+            "/api/plugins/{id}/toggle",
+            post(crate::plugins_handler::toggle_plugin),
+        )
         // Phase 3.2: MCP Marketplace
-        .route("/api/mcp/marketplace", get(crate::mcp_marketplace::marketplace_catalog))
-        .route("/api/mcp/marketplace/install", post(crate::mcp_marketplace::marketplace_install))
-        .route("/api/mcp/{id}/health", get(crate::mcp_marketplace::mcp_server_health))
-        .route("/api/mcp/{id}/config-schema", get(crate::mcp_marketplace::mcp_config_schema))
+        .route(
+            "/api/mcp/marketplace",
+            get(crate::mcp_marketplace::marketplace_catalog),
+        )
+        .route(
+            "/api/mcp/marketplace/install",
+            post(crate::mcp_marketplace::marketplace_install),
+        )
+        .route(
+            "/api/mcp/{id}/health",
+            get(crate::mcp_marketplace::mcp_server_health),
+        )
+        .route(
+            "/api/mcp/{id}/config-schema",
+            get(crate::mcp_marketplace::mcp_config_schema),
+        )
         // Phase 3.3: Skills Editor
-        .route("/api/skills", get(crate::skills_handler::list_skills).post(crate::skills_handler::create_skill))
-        .route("/api/skills/import", post(crate::skills_handler::import_skill))
-        .route("/api/skills/{name}", get(crate::skills_handler::get_skill).put(crate::skills_handler::update_skill).delete(crate::skills_handler::delete_skill))
-        .route("/api/skills/{name}/export", get(crate::skills_handler::export_skill))
-        .route("/api/skills/{name}/triggers", post(crate::skills_handler::set_skill_triggers))
+        .route(
+            "/api/skills",
+            get(crate::skills_handler::list_skills).post(crate::skills_handler::create_skill),
+        )
+        .route(
+            "/api/skills/import",
+            post(crate::skills_handler::import_skill),
+        )
+        .route(
+            "/api/skills/{name}",
+            get(crate::skills_handler::get_skill)
+                .put(crate::skills_handler::update_skill)
+                .delete(crate::skills_handler::delete_skill),
+        )
+        .route(
+            "/api/skills/{name}/export",
+            get(crate::skills_handler::export_skill),
+        )
+        .route(
+            "/api/skills/{name}/triggers",
+            post(crate::skills_handler::set_skill_triggers),
+        )
         // Phase 1.3: Projects
-        .route("/api/projects", get(crate::projects_handler::list_projects).post(crate::projects_handler::create_project))
-        .route("/api/projects/{id}", get(crate::projects_handler::get_project).put(crate::projects_handler::update_project).delete(crate::projects_handler::delete_project))
-        .route("/api/projects/{id}/files", get(crate::projects_handler::list_project_files))
+        .route(
+            "/api/projects",
+            get(crate::projects_handler::list_projects)
+                .post(crate::projects_handler::create_project),
+        )
+        .route(
+            "/api/projects/{id}",
+            get(crate::projects_handler::get_project)
+                .put(crate::projects_handler::update_project)
+                .delete(crate::projects_handler::delete_project),
+        )
+        .route(
+            "/api/projects/{id}/files",
+            get(crate::projects_handler::list_project_files),
+        )
         // Phase 1.3: Skins
-        .route("/api/skins", get(crate::skins_handler::list_skins).post(crate::skins_handler::create_skin))
-        .route("/api/skins/{name}", get(crate::skins_handler::get_skin).delete(crate::skins_handler::delete_skin))
+        .route(
+            "/api/skins",
+            get(crate::skins_handler::list_skins).post(crate::skins_handler::create_skin),
+        )
+        .route(
+            "/api/skins/{name}",
+            get(crate::skins_handler::get_skin).delete(crate::skins_handler::delete_skin),
+        )
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))
@@ -226,16 +312,28 @@ pub fn build_router(
         .layer({
             let model = default_model.clone();
             let provider = default_provider.clone();
-            axum::middleware::from_fn(move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-                let model = model.clone();
-                let provider = provider.clone();
-                async move {
-                    let mut resp = next.run(req).await;
-                    resp.headers_mut().insert("X-AI-Provider", axum::http::HeaderValue::from_str(&provider).unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown")));
-                    resp.headers_mut().insert("X-AI-Model", axum::http::HeaderValue::from_str(&model).unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown")));
-                    resp
-                }
-            })
+            axum::middleware::from_fn(
+                move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+                    let model = model.clone();
+                    let provider = provider.clone();
+                    async move {
+                        let mut resp = next.run(req).await;
+                        resp.headers_mut().insert(
+                            "X-AI-Provider",
+                            axum::http::HeaderValue::from_str(&provider).unwrap_or_else(|_| {
+                                axum::http::HeaderValue::from_static("unknown")
+                            }),
+                        );
+                        resp.headers_mut().insert(
+                            "X-AI-Model",
+                            axum::http::HeaderValue::from_str(&model).unwrap_or_else(|_| {
+                                axum::http::HeaderValue::from_static("unknown")
+                            }),
+                        );
+                        resp
+                    }
+                },
+            )
         });
 
     apply_telemetry_layers(router)
@@ -836,9 +934,15 @@ async fn mcp_health(
     let all_runtime_tools = state.agents.tool_names();
     let overall_status = if servers.is_empty() {
         "no_mcp_configured"
-    } else if servers.iter().all(|s| s["connected"].as_bool().unwrap_or(false)) {
+    } else if servers
+        .iter()
+        .all(|s| s["connected"].as_bool().unwrap_or(false))
+    {
         "all_connected"
-    } else if servers.iter().any(|s| s["connected"].as_bool().unwrap_or(false)) {
+    } else if servers
+        .iter()
+        .any(|s| s["connected"].as_bool().unwrap_or(false))
+    {
         "partial"
     } else {
         "all_disconnected"
@@ -859,8 +963,7 @@ async fn mcp_health(
 async fn list_slash_commands(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let commands =
-        crate::slash_commands::list_commands(state.mcp_manager_arc.as_ref()).await;
+    let commands = crate::slash_commands::list_commands(state.mcp_manager_arc.as_ref()).await;
     axum::Json(serde_json::json!({ "commands": commands }))
 }
 

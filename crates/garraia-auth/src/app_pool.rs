@@ -238,7 +238,10 @@ mod tests {
         };
         let dbg = format!("{cfg:?}");
         assert!(!dbg.contains("topsecret"), "Debug must not leak: {dbg}");
-        assert!(!dbg.contains("garraia_app:topsecret"), "Debug must not leak creds: {dbg}");
+        assert!(
+            !dbg.contains("garraia_app:topsecret"),
+            "Debug must not leak creds: {dbg}"
+        );
         assert!(dbg.contains("[REDACTED]"));
         assert!(dbg.contains("max_connections: 10"));
     }

@@ -5,12 +5,7 @@
 //! Each skin file contains CSS variable overrides that the desktop/web
 //! frontend consumes to re-theme the UI.
 
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::warn;
@@ -126,10 +121,7 @@ pub async fn delete_skin(Path(name): Path<String>) -> impl IntoResponse {
     }
 
     match tokio::fs::remove_file(&file_path).await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "ok": true })),
-        ),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("failed to delete skin: {e}") })),
@@ -151,9 +143,10 @@ async fn read_skins(dir: &std::path::Path) -> std::result::Result<Vec<Skin>, Str
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("json")
                 && let Ok(contents) = std::fs::read_to_string(&path)
-                    && let Ok(skin) = serde_json::from_str::<Skin>(&contents) {
-                        skins.push(skin);
-                    }
+                && let Ok(skin) = serde_json::from_str::<Skin>(&contents)
+            {
+                skins.push(skin);
+            }
         }
         Ok(skins)
     })

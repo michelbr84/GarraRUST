@@ -239,9 +239,7 @@ async fn login_handler(
         password: SecretString::from(body.password),
     };
 
-    let outcome = provider
-        .verify_credential_with_ctx(&credential, &ctx)
-        .await;
+    let outcome = provider.verify_credential_with_ctx(&credential, &ctx).await;
     let elapsed = started.elapsed().as_secs_f64();
 
     match outcome {
@@ -359,8 +357,9 @@ async fn logout_handler(
     };
 
     // Idempotent: unknown / already-revoked tokens still return 204.
-    if let Ok(Some((session_id, _user_id))) =
-        sessions.verify_refresh(&body.refresh_token, jwt.as_ref()).await
+    if let Ok(Some((session_id, _user_id))) = sessions
+        .verify_refresh(&body.refresh_token, jwt.as_ref())
+        .await
     {
         let _ = sessions.revoke(session_id).await;
     }
@@ -431,4 +430,3 @@ async fn signup_handler(
         }
     }
 }
-

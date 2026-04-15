@@ -83,7 +83,9 @@ impl WhisperClient {
             )));
         }
 
-        let body = resp.text().await
+        let body = resp
+            .text()
+            .await
             .map_err(|e| VoiceError::Stt(format!("Failed to read response: {e}")))?;
 
         // whisper.cpp pode retornar JSON {"text": "..."} ou texto puro

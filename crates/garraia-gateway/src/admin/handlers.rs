@@ -1112,9 +1112,10 @@ pub fn derive_encryption_key() -> Vec<u8> {
         .join("master.key");
 
     if let Ok(data) = std::fs::read(&key_path)
-        && data.len() == 32 {
-            return data;
-        }
+        && data.len() == 32
+    {
+        return data;
+    }
 
     let rng = SystemRandom::new();
     let mut key = vec![0u8; 32];
@@ -1268,26 +1269,26 @@ pub async fn migrate_secrets(
         for (key, val) in &ch.settings {
             let lower = key.to_lowercase();
             if (lower.contains("token") || lower.contains("key") || lower.contains("secret"))
-                && let Some(s) = val.as_str() {
-                    if s.is_empty() || s == "***REDACTED***" {
-                        continue;
-                    }
-                    if let Ok((encrypted, nonce)) =
-                        encrypt_value(s.as_bytes(), &state.encryption_key)
-                        && guard
-                            .set_secret(
-                                "default",
-                                &format!("channel:{name}"),
-                                key,
-                                &encrypted,
-                                &nonce,
-                                Some(&admin.username),
-                            )
-                            .is_ok()
-                        {
-                            migrated.push(format!("channel:{name}/{key}"));
-                        }
+                && let Some(s) = val.as_str()
+            {
+                if s.is_empty() || s == "***REDACTED***" {
+                    continue;
                 }
+                if let Ok((encrypted, nonce)) = encrypt_value(s.as_bytes(), &state.encryption_key)
+                    && guard
+                        .set_secret(
+                            "default",
+                            &format!("channel:{name}"),
+                            key,
+                            &encrypted,
+                            &nonce,
+                            Some(&admin.username),
+                        )
+                        .is_ok()
+                {
+                    migrated.push(format!("channel:{name}/{key}"));
+                }
+            }
         }
     }
 
@@ -1360,16 +1361,15 @@ pub async fn admin_list_providers(
             guard.get_secret_meta("default", id, "api_key").is_some()
         };
 
-        if active
-            && let Some(provider) = state.app_state.agents.get_provider(id) {
-                model = provider.configured_model().map(|m| m.to_string());
-                if let Ok(mut available) = provider.available_models().await {
-                    available.retain(|m| !m.trim().is_empty());
-                    available.sort();
-                    available.dedup();
-                    models = available;
-                }
+        if active && let Some(provider) = state.app_state.agents.get_provider(id) {
+            model = provider.configured_model().map(|m| m.to_string());
+            if let Ok(mut available) = provider.available_models().await {
+                available.retain(|m| !m.trim().is_empty());
+                available.sort();
+                available.dedup();
+                models = available;
             }
+        }
 
         let config_entry = config.llm.get(*id);
 
@@ -2704,7 +2704,11 @@ pub async fn admin_create_mcp(
     };
 
     // Add to registry
-    state.app_state.mcp_registry.add_server(name.clone(), config).await;
+    state
+        .app_state
+        .mcp_registry
+        .add_server(name.clone(), config)
+        .await;
 
     // Persist to mcp.json (GAR-291: with vault for credential encryption).
     let svc = McpPersistenceService::with_default_path();
@@ -2782,7 +2786,11 @@ pub async fn admin_restart_mcp(
     manager.disconnect(&server_name).await;
     // GAR-293: reset the crash counter so the server gets a fresh restart budget.
     manager.reset_restart_state(&server_name).await;
-    state.app_state.mcp_registry.set_status(&server_name, crate::mcp::McpStatus::Stopped, 0).await;
+    state
+        .app_state
+        .mcp_registry
+        .set_status(&server_name, crate::mcp::McpStatus::Stopped, 0)
+        .await;
 
     // GAR-293: read resource limits from config.
     let memory_limit_mb = config.memory_limit_mb;
@@ -2802,7 +2810,17 @@ pub async fn admin_restart_mcp(
                 }
             };
             manager
-                .connect(&server_name, &command, &config.args, &config.env, config.timeout_secs, vec![], memory_limit_mb, max_restarts, restart_delay_secs)
+                .connect(
+                    &server_name,
+                    &command,
+                    &config.args,
+                    &config.env,
+                    config.timeout_secs,
+                    vec![],
+                    memory_limit_mb,
+                    max_restarts,
+                    restart_delay_secs,
+                )
                 .await
         }
         #[cfg(feature = "mcp-http")]
@@ -2816,7 +2834,16 @@ pub async fn admin_restart_mcp(
                     );
                 }
             };
-            manager.connect_http(&server_name, &url, config.timeout_secs, vec![], max_restarts, restart_delay_secs).await
+            manager
+                .connect_http(
+                    &server_name,
+                    &url,
+                    config.timeout_secs,
+                    vec![],
+                    max_restarts,
+                    restart_delay_secs,
+                )
+                .await
         }
         #[cfg(not(feature = "mcp-http"))]
         McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
@@ -2855,10 +2882,16 @@ pub async fn admin_restart_mcp(
         Err(e) => {
             let msg = e.to_string();
             tracing::error!(server = %server_name, error = %msg, "admin: MCP server restart failed");
-            state.app_state.mcp_registry.mark_error(&server_name, &msg).await;
+            state
+                .app_state
+                .mcp_registry
+                .mark_error(&server_name, &msg)
+                .await;
             (
                 StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error": format!("failed to restart '{}': {}", server_name, msg)})),
+                Json(
+                    serde_json::json!({"error": format!("failed to restart '{}': {}", server_name, msg)}),
+                ),
             )
         }
     }
@@ -2884,7 +2917,11 @@ pub async fn admin_delete_mcp(
         );
     }
 
-    let removed = state.app_state.mcp_registry.remove_server(&server_name).await;
+    let removed = state
+        .app_state
+        .mcp_registry
+        .remove_server(&server_name)
+        .await;
     if !removed {
         return (
             StatusCode::NOT_FOUND,
@@ -2996,7 +3033,9 @@ pub async fn admin_glob_test(
         }
     };
 
-    let matches: Vec<&str> = body.paths.iter()
+    let matches: Vec<&str> = body
+        .paths
+        .iter()
         .filter(|p| matcher.matches(p))
         .map(String::as_str)
         .collect();
@@ -3049,7 +3088,8 @@ fn builtin_templates() -> Vec<McpTemplate> {
             name: "Filesystem MCP".into(),
             description: "Acesso a arquivos locais: ler, escrever e listar diretórios. \
                           Substitua o último argumento pelo caminho que deseja permitir \
-                          (ex: /home/user ou C:\\Users\\user).".into(),
+                          (ex: /home/user ou C:\\Users\\user)."
+                .into(),
             transport: "stdio".into(),
             command: Some("npx".into()),
             args: vec![
@@ -3075,7 +3115,10 @@ fn builtin_templates() -> Vec<McpTemplate> {
             url: None,
             env: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("GITHUB_PERSONAL_ACCESS_TOKEN".into(), "<your-github-token>".into());
+                m.insert(
+                    "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+                    "<your-github-token>".into(),
+                );
                 m
             },
             timeout_secs: 30,
@@ -3100,7 +3143,8 @@ fn builtin_templates() -> Vec<McpTemplate> {
         McpTemplate {
             id: "lmstudio".into(),
             name: "LM Studio MCP".into(),
-            description: "Conecta ao LM Studio rodando localmente (modelos locais via HTTP).".into(),
+            description: "Conecta ao LM Studio rodando localmente (modelos locais via HTTP)."
+                .into(),
             transport: "http".into(),
             command: None,
             args: vec![],
@@ -3135,7 +3179,9 @@ fn user_templates_path() -> std::path::PathBuf {
 
 fn load_user_templates() -> Vec<McpTemplate> {
     let path = user_templates_path();
-    let Ok(content) = std::fs::read_to_string(&path) else { return vec![]; };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return vec![];
+    };
     serde_json::from_str(&content).unwrap_or_default()
 }
 
@@ -3161,7 +3207,10 @@ pub async fn list_mcp_templates(
     }
     let mut templates = builtin_templates();
     templates.extend(load_user_templates());
-    (StatusCode::OK, Json(serde_json::json!({ "templates": templates })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "templates": templates })),
+    )
 }
 
 /// POST /admin/api/mcp/templates — save a user MCP template (GAR-297).
@@ -3204,7 +3253,10 @@ pub async fn save_mcp_template(
             Json(serde_json::json!({"error": "failed to persist template"})),
         );
     }
-    (StatusCode::CREATED, Json(serde_json::json!({ "template": body })))
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "template": body })),
+    )
 }
 
 /// DELETE /admin/api/mcp/templates/{id} — remove a user MCP template (GAR-297).
@@ -3223,7 +3275,10 @@ pub async fn delete_mcp_template(
     let before = templates.len();
     templates.retain(|t| t.id != id);
     if templates.len() == before {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "template not found"})));
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "template not found"})),
+        );
     }
     if let Err(e) = save_user_templates(&templates) {
         tracing::warn!("failed to save user templates after delete: {e}");

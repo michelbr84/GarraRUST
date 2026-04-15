@@ -79,57 +79,62 @@ impl ProjectToolContext {
     pub fn validate_path(&self, path: &Path) -> Result<()> {
         // Always reject `..` components to prevent path traversal.
         if path.components().any(|c| matches!(c, Component::ParentDir)) {
-            return Err(Error::Security("path traversal not allowed (contains '..')".into()));
+            return Err(Error::Security(
+                "path traversal not allowed (contains '..')".into(),
+            ));
         }
 
         // When sandboxing with a working directory, ensure the resolved path
         // stays within the working directory.
         if self.sandbox_enabled
-            && let Some(ref wd) = self.working_dir {
-                // Canonicalize both paths for comparison. If the file doesn't
-                // exist yet (e.g. write target), canonicalize the parent
-                // directory instead.
-                let wd_canonical = wd.canonicalize().map_err(|e| {
+            && let Some(ref wd) = self.working_dir
+        {
+            // Canonicalize both paths for comparison. If the file doesn't
+            // exist yet (e.g. write target), canonicalize the parent
+            // directory instead.
+            let wd_canonical = wd.canonicalize().map_err(|e| {
+                Error::Agent(format!(
+                    "cannot canonicalize working directory '{}': {e}",
+                    wd.display()
+                ))
+            })?;
+
+            let path_canonical = if path.exists() {
+                path.canonicalize().map_err(|e| {
                     Error::Agent(format!(
-                        "cannot canonicalize working directory '{}': {e}",
-                        wd.display()
+                        "cannot canonicalize path '{}': {e}",
+                        path.display()
                     ))
-                })?;
-
-                let path_canonical = if path.exists() {
-                    path.canonicalize().map_err(|e| {
+                })?
+            } else if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    let parent_canonical = parent.canonicalize().map_err(|e| {
                         Error::Agent(format!(
-                            "cannot canonicalize path '{}': {e}",
-                            path.display()
+                            "cannot canonicalize parent '{}': {e}",
+                            parent.display()
                         ))
-                    })?
-                } else if let Some(parent) = path.parent() {
-                    if parent.exists() {
-                        let parent_canonical = parent.canonicalize().map_err(|e| {
-                            Error::Agent(format!(
-                                "cannot canonicalize parent '{}': {e}",
-                                parent.display()
-                            ))
-                        })?;
-                        parent_canonical.join(path.file_name().unwrap_or_default())
-                    } else {
-                        // Neither path nor parent exist — reject when sandboxed.
-                        return Err(Error::Security(
-                            "path parent directory does not exist inside sandbox".into(),
-                        ));
-                    }
+                    })?;
+                    parent_canonical.join(path.file_name().unwrap_or_default())
                 } else {
-                    return Err(Error::Security("invalid path for sandbox validation".into()));
-                };
-
-                if !path_canonical.starts_with(&wd_canonical) {
-                    return Err(Error::Security(format!(
-                        "path '{}' escapes working directory '{}'",
-                        path.display(),
-                        wd.display()
-                    )));
+                    // Neither path nor parent exist — reject when sandboxed.
+                    return Err(Error::Security(
+                        "path parent directory does not exist inside sandbox".into(),
+                    ));
                 }
+            } else {
+                return Err(Error::Security(
+                    "invalid path for sandbox validation".into(),
+                ));
+            };
+
+            if !path_canonical.starts_with(&wd_canonical) {
+                return Err(Error::Security(format!(
+                    "path '{}' escapes working directory '{}'",
+                    path.display(),
+                    wd.display()
+                )));
             }
+        }
 
         Ok(())
     }

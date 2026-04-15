@@ -20,8 +20,8 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 /// variable that lives until end of main scope so Drop flushes exporters.
 #[cfg(feature = "telemetry")]
 fn init_telemetry_guard() -> Option<garraia_gateway::garraia_telemetry::Guard> {
-    let telemetry_config = garraia_gateway::garraia_telemetry::TelemetryConfig::from_env()
-        .unwrap_or_default();
+    let telemetry_config =
+        garraia_gateway::garraia_telemetry::TelemetryConfig::from_env().unwrap_or_default();
     garraia_gateway::garraia_telemetry::init(telemetry_config)
         .map_err(|e| {
             eprintln!("telemetry init failed (continuing without): {e}");
@@ -468,7 +468,8 @@ fn main() -> Result<()> {
         //   RUST_LOG=garraia_gateway=debug,garraia_voice=trace
         //   RUST_LOG=garraia_agents::tools=debug
         // GAR-214: GARRAIA_LOG_FORMAT=json emits structured JSON lines (stdout/file)
-        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
         if std::env::var("GARRAIA_LOG_FORMAT").as_deref() == Ok("json") {
             tracing_subscriber::fmt()
                 .json()
@@ -1053,7 +1054,11 @@ async fn async_main(
                 }
             }
         }
-        Commands::Chat { provider, model, url } => {
+        Commands::Chat {
+            provider,
+            model,
+            url,
+        } => {
             chat::run_chat(config, provider, model, url).await?;
         }
     }

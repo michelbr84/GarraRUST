@@ -42,8 +42,10 @@ fn total_case_count_at_least_80() {
 #[test]
 fn rls_role_coverage_check() {
     let mut seen_roles: HashSet<DbRole> = HashSet::new();
-    let mut outcomes_by_role: std::collections::HashMap<DbRole, HashSet<std::mem::Discriminant<RlsExpected>>> =
-        Default::default();
+    let mut outcomes_by_role: std::collections::HashMap<
+        DbRole,
+        HashSet<std::mem::Discriminant<RlsExpected>>,
+    > = Default::default();
 
     for case in RLS_MATRIX {
         seen_roles.insert(case.db_role);
@@ -58,7 +60,10 @@ fn rls_role_coverage_check() {
             seen_roles.contains(&expected_role),
             "coverage gap: DbRole::{expected_role:?} has zero cases in RLS_MATRIX",
         );
-        let outcomes = outcomes_by_role.get(&expected_role).cloned().unwrap_or_default();
+        let outcomes = outcomes_by_role
+            .get(&expected_role)
+            .cloned()
+            .unwrap_or_default();
         assert!(
             outcomes.len() >= 2,
             "coverage gap: DbRole::{expected_role:?} exercises only {} RlsExpected variant(s), \

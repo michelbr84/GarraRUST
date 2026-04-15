@@ -39,7 +39,10 @@ mod tests {
 
     #[test]
     fn strips_authorization_header_case_insensitive() {
-        assert_eq!(redact_header_value("Authorization", "Bearer abc"), "[REDACTED]");
+        assert_eq!(
+            redact_header_value("Authorization", "Bearer abc"),
+            "[REDACTED]"
+        );
         assert_eq!(redact_header_value("AUTHORIZATION", "x"), "[REDACTED]");
         assert_eq!(redact_header_value("authorization", "x"), "[REDACTED]");
         assert_eq!(redact_header_value("Cookie", "s=1"), "[REDACTED]");

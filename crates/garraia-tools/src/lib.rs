@@ -43,7 +43,9 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     pub fn register<T: Tool + 'static>(mut self, tool: T) -> Self {
@@ -103,8 +105,12 @@ pub struct RepoSearchInput {
     pub path: Option<String>,
 }
 
-fn default_max_results() -> usize { 20 }
-fn default_context_lines() -> usize { 3 }
+fn default_max_results() -> usize {
+    20
+}
+fn default_context_lines() -> usize {
+    3
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ListDirInput {
@@ -119,25 +125,29 @@ pub struct RepoSearchTool {
 
 impl RepoSearchTool {
     pub fn new(root_path: &str) -> Self {
-        Self { root_path: root_path.to_string() }
+        Self {
+            root_path: root_path.to_string(),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for RepoSearchTool {
-    fn name(&self) -> &'static str { "repo_search" }
+    fn name(&self) -> &'static str {
+        "repo_search"
+    }
 
     async fn execute(&self, _ctx: &ToolContext, input: ToolInput) -> Result<ToolOutput, ToolError> {
         let input: RepoSearchInput = serde_json::from_value(input.payload)
             .map_err(|e| ToolError::Failed(format!("Invalid input: {}", e)))?;
-        
+
         let search_path = input.path.as_deref().unwrap_or(&self.root_path);
         let query_lower = input.query.to_lowercase();
         let mut results = Vec::new();
-        
+
         self.search_recursive(search_path, &query_lower, &input, &mut results);
         results.truncate(input.max_results);
-        
+
         Ok(ToolOutput {
             name: "repo_search".to_string(),
             payload: serde_json::json!({ "query": input.query, "results": results, "total": results.len() }),
@@ -146,27 +156,49 @@ impl Tool for RepoSearchTool {
 }
 
 impl RepoSearchTool {
-    fn search_recursive(&self, path: &str, query: &str, input: &RepoSearchInput, results: &mut Vec<serde_json::Value>) {
-        if results.len() >= input.max_results { return; }
-        
-        let entries = match fs::read_dir(path) { Ok(e) => e, Err(_) => return };
-        
+    fn search_recursive(
+        &self,
+        path: &str,
+        query: &str,
+        input: &RepoSearchInput,
+        results: &mut Vec<serde_json::Value>,
+    ) {
+        if results.len() >= input.max_results {
+            return;
+        }
+
+        let entries = match fs::read_dir(path) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
         for entry in entries.flatten() {
-            if results.len() >= input.max_results { break; }
+            if results.len() >= input.max_results {
+                break;
+            }
             let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.starts_with('.') || file_name == "node_modules" || file_name == "target" { continue; }
-            
+            if file_name.starts_with('.') || file_name == "node_modules" || file_name == "target" {
+                continue;
+            }
+
             let file_path = entry.path();
             if file_path.is_dir() {
                 self.search_recursive(&file_path.to_string_lossy(), query, input, results);
             } else if file_path.is_file() {
-                let matches_glob = input.globs.is_empty() || input.globs.iter().any(|g| {
-                    if g.starts_with("*.") { file_name.ends_with(&g[1..]) } else { file_name.contains(g) }
-                });
+                let matches_glob = input.globs.is_empty()
+                    || input.globs.iter().any(|g| {
+                        if g.starts_with("*.") {
+                            file_name.ends_with(&g[1..])
+                        } else {
+                            file_name.contains(g)
+                        }
+                    });
                 if matches_glob {
                     if let Ok(content) = fs::read_to_string(&file_path) {
                         if content.to_lowercase().contains(query) {
-                            let lines: Vec<_> = content.lines().enumerate()
+                            let lines: Vec<_> = content
+                                .lines()
+                                .enumerate()
                                 .filter(|(_, line)| line.to_lowercase().contains(query))
                                 .collect();
                             let snippets: Vec<_> = lines.iter().take(input.context_lines)
@@ -183,39 +215,55 @@ impl RepoSearchTool {
     }
 }
 
-pub struct ListDirTool { root_path: String }
+pub struct ListDirTool {
+    root_path: String,
+}
 
 impl ListDirTool {
-    pub fn new(root_path: &str) -> Self { Self { root_path: root_path.to_string() } }
+    pub fn new(root_path: &str) -> Self {
+        Self {
+            root_path: root_path.to_string(),
+        }
+    }
 }
 
 #[async_trait]
 impl Tool for ListDirTool {
-    fn name(&self) -> &'static str { "list_dir" }
+    fn name(&self) -> &'static str {
+        "list_dir"
+    }
 
     async fn execute(&self, _ctx: &ToolContext, input: ToolInput) -> Result<ToolOutput, ToolError> {
         let input: ListDirInput = serde_json::from_value(input.payload)
             .map_err(|e| ToolError::Failed(format!("Invalid input: {}", e)))?;
-        
+
         let path = if input.path.starts_with('/') || input.path.contains(':') {
             input.path.clone()
         } else {
             format!("{}/{}", self.root_path, input.path)
         };
-        
+
         let mut entries = Vec::new();
-        let dir_entries = fs::read_dir(&path).map_err(|e| ToolError::Failed(format!("Cannot read directory: {}", e)))?;
-        
+        let dir_entries = fs::read_dir(&path)
+            .map_err(|e| ToolError::Failed(format!("Cannot read directory: {}", e)))?;
+
         for entry in dir_entries.flatten().take(100) {
             let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.starts_with('.') { continue; }
+            if file_name.starts_with('.') {
+                continue;
+            }
             let file_path = entry.path();
             let is_dir = file_path.is_dir();
-            if !input.include_files && !is_dir { continue; }
+            if !input.include_files && !is_dir {
+                continue;
+            }
             entries.push(serde_json::json!({ "name": file_name, "type": if is_dir { "dir" } else { "file" }, "path": file_path.to_string_lossy() }));
         }
-        
-        Ok(ToolOutput { name: "list_dir".to_string(), payload: serde_json::json!({ "path": path, "entries": entries, "total": entries.len() }) })
+
+        Ok(ToolOutput {
+            name: "list_dir".to_string(),
+            payload: serde_json::json!({ "path": path, "entries": entries, "total": entries.len() }),
+        })
     }
 }
 
@@ -226,9 +274,18 @@ mod tests {
     struct FerramentaEco;
     #[async_trait]
     impl Tool for FerramentaEco {
-        fn name(&self) -> &'static str { "eco" }
-        async fn execute(&self, _ctx: &ToolContext, input: ToolInput) -> Result<ToolOutput, ToolError> {
-            Ok(ToolOutput { name: input.name, payload: input.payload })
+        fn name(&self) -> &'static str {
+            "eco"
+        }
+        async fn execute(
+            &self,
+            _ctx: &ToolContext,
+            input: ToolInput,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput {
+                name: input.name,
+                payload: input.payload,
+            })
         }
     }
 

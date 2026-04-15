@@ -19,15 +19,13 @@
 
 use std::sync::Arc;
 
-use garraia_auth::{
-    signup_user, AuthError, LoginConfig, LoginPool, SignupConfig, SignupPool,
-};
+use garraia_auth::{AuthError, LoginConfig, LoginPool, SignupConfig, SignupPool, signup_user};
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use secrecy::SecretString;
 use sqlx::Row;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
 use uuid::Uuid;
 
@@ -220,10 +218,9 @@ async fn signup_duplicate_email() -> anyhow::Result<()> {
     let before_users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(&fx.admin_pool)
         .await?;
-    let before_identities: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM user_identities")
-            .fetch_one(&fx.admin_pool)
-            .await?;
+    let before_identities: i64 = sqlx::query_scalar("SELECT count(*) FROM user_identities")
+        .fetch_one(&fx.admin_pool)
+        .await?;
 
     let password = SecretString::from("whatever".to_owned());
     let result = signup_user(
@@ -244,10 +241,9 @@ async fn signup_duplicate_email() -> anyhow::Result<()> {
     let after_users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(&fx.admin_pool)
         .await?;
-    let after_identities: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM user_identities")
-            .fetch_one(&fx.admin_pool)
-            .await?;
+    let after_identities: i64 = sqlx::query_scalar("SELECT count(*) FROM user_identities")
+        .fetch_one(&fx.admin_pool)
+        .await?;
     assert_eq!(before_users, after_users, "users row count changed");
     assert_eq!(
         before_identities, after_identities,

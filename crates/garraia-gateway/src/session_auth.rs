@@ -30,19 +30,21 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
         for part in cookie_hdr.split(';') {
             let part = part.trim();
             if let Some(val) = part.strip_prefix("garraia_session=")
-                && !val.is_empty() {
-                    return Some(val.to_string());
-                }
+                && !val.is_empty()
+            {
+                return Some(val.to_string());
+            }
         }
     }
     // 2. Authorization: Bearer <token>
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && let Some(t) = auth.strip_prefix("Bearer ") {
-            let t = t.trim();
-            if !t.is_empty() {
-                return Some(t.to_string());
-            }
+        && let Some(t) = auth.strip_prefix("Bearer ")
+    {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
         }
+    }
     // 3. X-Session-Key: <token>
     if let Some(key) = headers.get("x-session-key").and_then(|v| v.to_str().ok()) {
         let key = key.trim();
@@ -85,10 +87,9 @@ pub async fn require_session_auth(
         if let Some(manager) = &state.chat_session_manager {
             match manager.validate_token(&token, idle).await {
                 Ok(Some(session_id)) => {
-                    request.extensions_mut().insert(ValidatedSession {
-                        session_id,
-                        token,
-                    });
+                    request
+                        .extensions_mut()
+                        .insert(ValidatedSession { session_id, token });
                 }
                 Ok(None) => {
                     if required {

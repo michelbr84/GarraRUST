@@ -146,7 +146,10 @@ pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminSt
             "/api/mcp/templates",
             get(handlers::list_mcp_templates).post(handlers::save_mcp_template),
         )
-        .route("/api/mcp/templates/{id}", delete(handlers::delete_mcp_template))
+        .route(
+            "/api/mcp/templates/{id}",
+            delete(handlers::delete_mcp_template),
+        )
         .layer(axum_mw::from_fn(require_csrf))
         .layer(axum_mw::from_fn(require_admin_auth))
         .layer(axum::Extension(admin_store))

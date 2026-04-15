@@ -1,5 +1,5 @@
 //! Módulo de Modos de Execução do GarraIA
-//! 
+//!
 //! Define o contrato de modo, perfis e resolução automática.
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,6 @@ pub enum AgentMode {
     Edit,
 }
 
-
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -50,7 +49,7 @@ impl std::fmt::Display for AgentMode {
 
 impl std::str::FromStr for AgentMode {
     type Err = String;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "auto" => Ok(AgentMode::Auto),
@@ -68,8 +67,7 @@ impl std::str::FromStr for AgentMode {
 }
 
 /// Políticas de tools por modo
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolPolicy {
     /// Tools explicitamente permitidas
     pub allowed: Vec<String>,
@@ -80,7 +78,6 @@ pub struct ToolPolicy {
     /// Tool requerida por intenção (opcional)
     pub required: Option<String>,
 }
-
 
 /// Parâmetros LLM padrão por modo
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -138,18 +135,21 @@ impl ModeEngine {
     /// Cria um novo ModeEngine com perfis padrão
     pub fn new() -> Self {
         let mut profiles = HashMap::new();
-        
+
         // Perfil AUTO
-        profiles.insert(AgentMode::Auto, ModeProfile {
-            mode: AgentMode::Auto,
-            name: "Auto",
-            description: "Decide automaticamente baseado no contexto",
-            system_prompt_template: "Você é o GarraIA, um assistente de IA inteligente.",
-            tool_policy: ToolPolicy::default(),
-            llm_defaults: LlmDefaults::default(),
-            limits: ModeLimits::default(),
-        });
-        
+        profiles.insert(
+            AgentMode::Auto,
+            ModeProfile {
+                mode: AgentMode::Auto,
+                name: "Auto",
+                description: "Decide automaticamente baseado no contexto",
+                system_prompt_template: "Você é o GarraIA, um assistente de IA inteligente.",
+                tool_policy: ToolPolicy::default(),
+                llm_defaults: LlmDefaults::default(),
+                limits: ModeLimits::default(),
+            },
+        );
+
         // Perfil SEARCH
         profiles.insert(AgentMode::Search, ModeProfile {
             mode: AgentMode::Search,
@@ -172,99 +172,123 @@ impl ModeEngine {
                 timeout_secs: 60,
             },
         });
-        
+
         // Perfil ARCHITECT
-        profiles.insert(AgentMode::Architect, ModeProfile {
-            mode: AgentMode::Architect,
-            name: "Architect",
-            description: "Análise de arquitetura e design",
-            system_prompt_template: "Você é um arquiteto de software. Analise a arquitetura e sugira melhorias.",
-            tool_policy: ToolPolicy {
-                allowed: vec!["file_read".to_string(), "repo_search".to_string()],
-                denied: vec!["file_write".to_string(), "bash".to_string()],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Architect,
+            ModeProfile {
+                mode: AgentMode::Architect,
+                name: "Architect",
+                description: "Análise de arquitetura e design",
+                system_prompt_template:
+                    "Você é um arquiteto de software. Analise a arquitetura e sugira melhorias.",
+                tool_policy: ToolPolicy {
+                    allowed: vec!["file_read".to_string(), "repo_search".to_string()],
+                    denied: vec!["file_write".to_string(), "bash".to_string()],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.5,
+                    max_tokens: 4096,
+                    top_p: 0.9,
+                },
+                limits: ModeLimits {
+                    max_loops: 3,
+                    timeout_secs: 60,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.5,
-                max_tokens: 4096,
-                top_p: 0.9,
-            },
-            limits: ModeLimits {
-                max_loops: 3,
-                timeout_secs: 60,
-            },
-        });
-        
+        );
+
         // Perfil CODE
-        profiles.insert(AgentMode::Code, ModeProfile {
-            mode: AgentMode::Code,
-            name: "Code",
-            description: "Desenvolvimento e implementação",
-            system_prompt_template: "Você é um desenvolvedor. Escreva código limpo, eficiente e bem documentado.",
-            tool_policy: ToolPolicy {
-                allowed: vec!["file_read".to_string(), "file_write".to_string(), "bash".to_string()],
-                denied: vec![],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Code,
+            ModeProfile {
+                mode: AgentMode::Code,
+                name: "Code",
+                description: "Desenvolvimento e implementação",
+                system_prompt_template:
+                    "Você é um desenvolvedor. Escreva código limpo, eficiente e bem documentado.",
+                tool_policy: ToolPolicy {
+                    allowed: vec![
+                        "file_read".to_string(),
+                        "file_write".to_string(),
+                        "bash".to_string(),
+                    ],
+                    denied: vec![],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.4,
+                    max_tokens: 8192,
+                    top_p: 0.95,
+                },
+                limits: ModeLimits {
+                    max_loops: 15,
+                    timeout_secs: 300,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.4,
-                max_tokens: 8192,
-                top_p: 0.95,
-            },
-            limits: ModeLimits {
-                max_loops: 15,
-                timeout_secs: 300,
-            },
-        });
-        
+        );
+
         // Perfil ASK (padrão para Telegram)
-        profiles.insert(AgentMode::Ask, ModeProfile {
-            mode: AgentMode::Ask,
-            name: "Ask",
-            description: "Consulta e explicação",
-            system_prompt_template: "Você é o GarraIA, um assistente prestativo. Forneça explicações claras.",
-            tool_policy: ToolPolicy {
-                allowed: vec![],
-                denied: vec![],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Ask,
+            ModeProfile {
+                mode: AgentMode::Ask,
+                name: "Ask",
+                description: "Consulta e explicação",
+                system_prompt_template:
+                    "Você é o GarraIA, um assistente prestativo. Forneça explicações claras.",
+                tool_policy: ToolPolicy {
+                    allowed: vec![],
+                    denied: vec![],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.7,
+                    max_tokens: 2048,
+                    top_p: 1.0,
+                },
+                limits: ModeLimits {
+                    max_loops: 1,
+                    timeout_secs: 30,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.7,
-                max_tokens: 2048,
-                top_p: 1.0,
-            },
-            limits: ModeLimits {
-                max_loops: 1,
-                timeout_secs: 30,
-            },
-        });
-        
+        );
+
         // Perfil DEBUG
-        profiles.insert(AgentMode::Debug, ModeProfile {
-            mode: AgentMode::Debug,
-            name: "Debug",
-            description: "Debugging e análise de erros",
-            system_prompt_template: "Você é um especialista em debugging. Analise erros e forneça soluções.",
-            tool_policy: ToolPolicy {
-                allowed: vec!["file_read".to_string(), "bash".to_string(), "repo_search".to_string()],
-                denied: vec!["file_write".to_string()],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Debug,
+            ModeProfile {
+                mode: AgentMode::Debug,
+                name: "Debug",
+                description: "Debugging e análise de erros",
+                system_prompt_template:
+                    "Você é um especialista em debugging. Analise erros e forneça soluções.",
+                tool_policy: ToolPolicy {
+                    allowed: vec![
+                        "file_read".to_string(),
+                        "bash".to_string(),
+                        "repo_search".to_string(),
+                    ],
+                    denied: vec!["file_write".to_string()],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.2,
+                    max_tokens: 4096,
+                    top_p: 0.9,
+                },
+                limits: ModeLimits {
+                    max_loops: 10,
+                    timeout_secs: 120,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.2,
-                max_tokens: 4096,
-                top_p: 0.9,
-            },
-            limits: ModeLimits {
-                max_loops: 10,
-                timeout_secs: 120,
-            },
-        });
-        
+        );
+
         // Perfil ORCHESTRATOR
         profiles.insert(AgentMode::Orchestrator, ModeProfile {
             mode: AgentMode::Orchestrator,
@@ -282,53 +306,61 @@ impl ModeEngine {
                 timeout_secs: 600,
             },
         });
-        
+
         // Perfil REVIEW
-        profiles.insert(AgentMode::Review, ModeProfile {
-            mode: AgentMode::Review,
-            name: "Review",
-            description: "Revisão de código e diffs",
-            system_prompt_template: "Você é um revisor de código. Analise mudanças e forneça feedback construtivo.",
-            tool_policy: ToolPolicy {
-                allowed: vec!["file_read".to_string(), "git_diff".to_string()],
-                denied: vec!["file_write".to_string(), "bash".to_string()],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Review,
+            ModeProfile {
+                mode: AgentMode::Review,
+                name: "Review",
+                description: "Revisão de código e diffs",
+                system_prompt_template:
+                    "Você é um revisor de código. Analise mudanças e forneça feedback construtivo.",
+                tool_policy: ToolPolicy {
+                    allowed: vec!["file_read".to_string(), "git_diff".to_string()],
+                    denied: vec!["file_write".to_string(), "bash".to_string()],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.3,
+                    max_tokens: 4096,
+                    top_p: 0.9,
+                },
+                limits: ModeLimits {
+                    max_loops: 5,
+                    timeout_secs: 60,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.3,
-                max_tokens: 4096,
-                top_p: 0.9,
-            },
-            limits: ModeLimits {
-                max_loops: 5,
-                timeout_secs: 60,
-            },
-        });
-        
+        );
+
         // Perfil EDIT
-        profiles.insert(AgentMode::Edit, ModeProfile {
-            mode: AgentMode::Edit,
-            name: "Edit",
-            description: "Edição focada",
-            system_prompt_template: "Você está em modo de edição. Faça modificações precisas e eficientes.",
-            tool_policy: ToolPolicy {
-                allowed: vec!["file_read".to_string(), "file_write".to_string()],
-                denied: vec!["bash".to_string()],
-                read_only: vec![],
-                required: None,
+        profiles.insert(
+            AgentMode::Edit,
+            ModeProfile {
+                mode: AgentMode::Edit,
+                name: "Edit",
+                description: "Edição focada",
+                system_prompt_template:
+                    "Você está em modo de edição. Faça modificações precisas e eficientes.",
+                tool_policy: ToolPolicy {
+                    allowed: vec!["file_read".to_string(), "file_write".to_string()],
+                    denied: vec!["bash".to_string()],
+                    read_only: vec![],
+                    required: None,
+                },
+                llm_defaults: LlmDefaults {
+                    temperature: 0.3,
+                    max_tokens: 4096,
+                    top_p: 0.9,
+                },
+                limits: ModeLimits {
+                    max_loops: 5,
+                    timeout_secs: 60,
+                },
             },
-            llm_defaults: LlmDefaults {
-                temperature: 0.3,
-                max_tokens: 4096,
-                top_p: 0.9,
-            },
-            limits: ModeLimits {
-                max_loops: 5,
-                timeout_secs: 60,
-            },
-        });
-        
+        );
+
         // Channel defaults - Telegram deve manter Ask para compatibilidade
         let mut channel_defaults = HashMap::new();
         channel_defaults.insert("telegram".to_string(), AgentMode::Ask);
@@ -337,25 +369,26 @@ impl ModeEngine {
         channel_defaults.insert("web".to_string(), AgentMode::Auto);
         channel_defaults.insert("api".to_string(), AgentMode::Auto);
         channel_defaults.insert("continue".to_string(), AgentMode::Auto);
-        
+
         Self {
             profiles,
             channel_defaults,
         }
     }
-    
+
     /// Obtém o perfil de um modo
     pub fn get_profile(&self, mode: AgentMode) -> &ModeProfile {
         self.profiles.get(&mode).expect("Modo não encontrado")
     }
-    
+
     /// Lista todos os modos disponíveis
     pub fn list_modes(&self) -> Vec<(AgentMode, &'static str, &'static str)> {
-        self.profiles.values()
+        self.profiles
+            .values()
             .map(|p| (p.mode, p.name, p.description))
             .collect()
     }
-    
+
     /// Resolve o modo final considerando precedência
     /// Precedência: Header > Comando > Canal > Usuário > Default
     pub fn resolve_mode(
@@ -371,7 +404,7 @@ impl ModeEngine {
                 return mode;
             }
         }
-        
+
         // 2. Comando do chat
         if let Some(mode_str) = command_mode {
             if let Ok(mode) = mode_str.parse::<AgentMode>() {
@@ -379,114 +412,219 @@ impl ModeEngine {
                 return mode;
             }
         }
-        
+
         // 3. Default por canal
         if let Some(&default) = self.channel_defaults.get(channel) {
             tracing::debug!("Modo resolvido por canal {}: {:?}", channel, default);
             return default;
         }
-        
+
         // 4. Padrão global
         tracing::debug!("Modo usando padrão: Ask");
         AgentMode::Ask
     }
-    
+
     /// Obtém o default do canal
     pub fn get_channel_default(&self, channel: &str) -> AgentMode {
-        self.channel_defaults.get(channel).copied().unwrap_or(AgentMode::Ask)
+        self.channel_defaults
+            .get(channel)
+            .copied()
+            .unwrap_or(AgentMode::Ask)
     }
-    
+
     /// Resolve o modo automaticamente baseado no conteúdo da mensagem
     /// Usa heurísticas determinísticas para determinar o modo apropriado
     pub fn resolve_auto_mode(&self, message: &str) -> AgentMode {
         let msg_lower = message.to_lowercase();
-        
+
         // Debug patterns - erros, stacktrace, panic
-        if Self::matches_any(&msg_lower, &[
-            "erro", "error", "bug", "panic", "stacktrace", "exception",
-            "falha", "não funciona", "não está funcionando", "não roda",
-            "debug", "problema", "issue", "crash", "travou", "trava"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "erro",
+                "error",
+                "bug",
+                "panic",
+                "stacktrace",
+                "exception",
+                "falha",
+                "não funciona",
+                "não está funcionando",
+                "não roda",
+                "debug",
+                "problema",
+                "issue",
+                "crash",
+                "travou",
+                "trava",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: debug (error patterns)");
             return AgentMode::Debug;
         }
-        
+
         // Code patterns - criar, implementar, refatorar
-        if Self::matches_any(&msg_lower, &[
-            "criar", "implementar", "refatorar", "escrever código", "make new",
-            "add function", "add method", "create file", "criar arquivo",
-            "modificar", "alterar código", "update code", "fix code",
-            "build", "compile", "rust", "typescript", "javascript",
-            ".rs", "Cargo.toml", "package.json", "main.py"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "criar",
+                "implementar",
+                "refatorar",
+                "escrever código",
+                "make new",
+                "add function",
+                "add method",
+                "create file",
+                "criar arquivo",
+                "modificar",
+                "alterar código",
+                "update code",
+                "fix code",
+                "build",
+                "compile",
+                "rust",
+                "typescript",
+                "javascript",
+                ".rs",
+                "Cargo.toml",
+                "package.json",
+                "main.py",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: code (code patterns)");
             return AgentMode::Code;
         }
-        
+
         // Search patterns - buscar, encontrar, onde está
-        if Self::matches_any(&msg_lower, &[
-            "buscar", "procurar", "encontrar", "onde está", "onde fica",
-            "search", "find", "look for", "show me", "list files",
-            "liste", "mostrar arquivos", "pesquisar"
-        ]) && !Self::matches_any(&msg_lower, &["criar", "implementar"]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "buscar",
+                "procurar",
+                "encontrar",
+                "onde está",
+                "onde fica",
+                "search",
+                "find",
+                "look for",
+                "show me",
+                "list files",
+                "liste",
+                "mostrar arquivos",
+                "pesquisar",
+            ],
+        ) && !Self::matches_any(&msg_lower, &["criar", "implementar"])
+        {
             tracing::debug!("Auto mode resolved: search (search patterns)");
             return AgentMode::Search;
         }
-        
+
         // Architect patterns - arquitetura, design, roadmap
-        if Self::matches_any(&msg_lower, &[
-            "arquitetura", "design", "roadmap", "planejamento", "estrutura",
-            "architecture", "design", "plan", "structure", "refactor",
-            "melhorar o design", "sugestão de arquitetura"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "arquitetura",
+                "design",
+                "roadmap",
+                "planejamento",
+                "estrutura",
+                "architecture",
+                "design",
+                "plan",
+                "structure",
+                "refactor",
+                "melhorar o design",
+                "sugestão de arquitetura",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: architect (architecture patterns)");
             return AgentMode::Architect;
         }
-        
+
         // Review patterns - revisar, review, diff, analisar
-        if Self::matches_any(&msg_lower, &[
-            "revisar", "review", "analisar código", "check code",
-            "diff", "pull request", "merge", "analisar changes",
-            "code review", "revisão", "verificar código"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "revisar",
+                "review",
+                "analisar código",
+                "check code",
+                "diff",
+                "pull request",
+                "merge",
+                "analisar changes",
+                "code review",
+                "revisão",
+                "verificar código",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: review (review patterns)");
             return AgentMode::Review;
         }
-        
+
         // Edit patterns - editar, modificar arquivo específico
-        if Self::matches_any(&msg_lower, &[
-            "editar", "alterar arquivo", "modificar arquivo", "update file",
-            "change file", "corrigir arquivo", "fix in"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "editar",
+                "alterar arquivo",
+                "modificar arquivo",
+                "update file",
+                "change file",
+                "corrigir arquivo",
+                "fix in",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: edit (edit patterns)");
             return AgentMode::Edit;
         }
-        
+
         // Ask patterns (default) - explicar, o que é, como funciona
-        if Self::matches_any(&msg_lower, &[
-            "o que é", "como funciona", "explique", "explicar",
-            "what is", "how does", "explain", "tell me about",
-            "definição", "conceito", "entender", "difference between"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "o que é",
+                "como funciona",
+                "explique",
+                "explicar",
+                "what is",
+                "how does",
+                "explain",
+                "tell me about",
+                "definição",
+                "conceito",
+                "entender",
+                "difference between",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: ask (question patterns)");
             return AgentMode::Ask;
         }
-        
+
         // Orchestrator patterns - múltiplas tarefas
-        if Self::matches_any(&msg_lower, &[
-            "faça isso e aquilo", "faça múltiplas", "várias tarefas",
-            "execute isso e", "complete workflow", "pipeline",
-            "atualize tudo", "refatore e teste", "crie e configure"
-        ]) {
+        if Self::matches_any(
+            &msg_lower,
+            &[
+                "faça isso e aquilo",
+                "faça múltiplas",
+                "várias tarefas",
+                "execute isso e",
+                "complete workflow",
+                "pipeline",
+                "atualize tudo",
+                "refatore e teste",
+                "crie e configure",
+            ],
+        ) {
             tracing::debug!("Auto mode resolved: orchestrator (multi-task patterns)");
             return AgentMode::Orchestrator;
         }
-        
+
         // Default para Ask (compatível com Telegram)
         tracing::debug!("Auto mode resolved: ask (default)");
         AgentMode::Ask
     }
-    
+
     /// Helper para verificar múltiplos padrões
     fn matches_any(text: &str, patterns: &[&str]) -> bool {
         patterns.iter().any(|p| text.contains(p))
@@ -507,7 +645,7 @@ pub fn get_mode_engine() -> ModeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_mode_parsing() {
         assert_eq!("code".parse::<AgentMode>().unwrap(), AgentMode::Code);
@@ -515,202 +653,256 @@ mod tests {
         assert_eq!("DEBUG".parse::<AgentMode>().unwrap(), AgentMode::Debug);
         assert!("invalid".parse::<AgentMode>().is_err());
     }
-    
+
     #[test]
     fn test_mode_engine() {
         let engine = ModeEngine::new();
-        
+
         // Test list modes
         let modes = engine.list_modes();
         assert_eq!(modes.len(), 9);
-        
+
         // Test get profile
         let profile = engine.get_profile(AgentMode::Code);
         assert_eq!(profile.name, "Code");
-        
+
         // Test resolve mode - header takes precedence
         let mode = engine.resolve_mode(Some("debug"), None, "telegram");
         assert_eq!(mode, AgentMode::Debug);
-        
+
         // Test resolve mode - channel default
         let mode = engine.resolve_mode(None, None, "telegram");
         assert_eq!(mode, AgentMode::Ask);
-        
+
         // Test resolve mode - web defaults to auto
         let mode = engine.resolve_mode(None, None, "web");
         assert_eq!(mode, AgentMode::Auto);
     }
-    
+
     // GAR-239: Testes de políticas de tools por modo
     #[test]
     fn test_tool_policy_search_mode() {
         let engine = ModeEngine::new();
         let profile = engine.get_profile(AgentMode::Search);
-        
+
         // Search mode: allowed tools
-        assert!(profile.tool_policy.allowed.contains(&"file_read".to_string()));
-        assert!(profile.tool_policy.allowed.contains(&"repo_search".to_string()));
-        
+        assert!(profile
+            .tool_policy
+            .allowed
+            .contains(&"file_read".to_string()));
+        assert!(profile
+            .tool_policy
+            .allowed
+            .contains(&"repo_search".to_string()));
+
         // Search mode: denied tools
-        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
-        
+        assert!(profile
+            .tool_policy
+            .denied
+            .contains(&"file_write".to_string()));
+
         // Search mode: read-only bash
         assert!(profile.tool_policy.read_only.contains(&"bash".to_string()));
     }
-    
+
     #[test]
     fn test_tool_policy_code_mode() {
         let engine = ModeEngine::new();
         let profile = engine.get_profile(AgentMode::Code);
-        
+
         // Code mode: allows file_write
-        assert!(profile.tool_policy.allowed.contains(&"file_write".to_string()));
+        assert!(profile
+            .tool_policy
+            .allowed
+            .contains(&"file_write".to_string()));
         assert!(profile.tool_policy.allowed.contains(&"bash".to_string()));
-        
+
         // Code mode: no denied tools
         assert!(profile.tool_policy.denied.is_empty());
     }
-    
+
     #[test]
     fn test_tool_policy_ask_mode() {
         let engine = ModeEngine::new();
         let profile = engine.get_profile(AgentMode::Ask);
-        
+
         // Ask mode: minimal tools
         assert!(profile.tool_policy.allowed.is_empty());
         assert!(profile.tool_policy.denied.is_empty());
     }
-    
+
     #[test]
     fn test_tool_policy_debug_mode() {
         let engine = ModeEngine::new();
         let profile = engine.get_profile(AgentMode::Debug);
-        
+
         // Debug mode: denies file_write
-        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
+        assert!(profile
+            .tool_policy
+            .denied
+            .contains(&"file_write".to_string()));
         assert!(profile.tool_policy.allowed.contains(&"bash".to_string()));
     }
-    
+
     #[test]
     fn test_tool_policy_review_mode() {
         let engine = ModeEngine::new();
         let profile = engine.get_profile(AgentMode::Review);
-        
+
         // Review mode: denies write operations
-        assert!(profile.tool_policy.denied.contains(&"file_write".to_string()));
+        assert!(profile
+            .tool_policy
+            .denied
+            .contains(&"file_write".to_string()));
         assert!(profile.tool_policy.denied.contains(&"bash".to_string()));
     }
-    
+
     // GAR-239: Testes de auto mode resolution
     #[test]
     fn test_auto_mode_debug_patterns() {
         let engine = ModeEngine::new();
-        
-        assert_eq!(engine.resolve_auto_mode("tenho um erro no código"), AgentMode::Debug);
-        assert_eq!(engine.resolve_auto_mode("debug this panic"), AgentMode::Debug);
-        assert_eq!(engine.resolve_auto_mode("não está funcionando"), AgentMode::Debug);
+
+        assert_eq!(
+            engine.resolve_auto_mode("tenho um erro no código"),
+            AgentMode::Debug
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("debug this panic"),
+            AgentMode::Debug
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("não está funcionando"),
+            AgentMode::Debug
+        );
     }
-    
+
     #[test]
     fn test_auto_mode_code_patterns() {
         let engine = ModeEngine::new();
-        
-        assert_eq!(engine.resolve_auto_mode("criar um novo arquivo.rs"), AgentMode::Code);
-        assert_eq!(engine.resolve_auto_mode("implementar função"), AgentMode::Code);
-        assert_eq!(engine.resolve_auto_mode("refatorar o código"), AgentMode::Code);
+
+        assert_eq!(
+            engine.resolve_auto_mode("criar um novo arquivo.rs"),
+            AgentMode::Code
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("implementar função"),
+            AgentMode::Code
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("refatorar o código"),
+            AgentMode::Code
+        );
     }
-    
+
     #[test]
     fn test_auto_mode_search_patterns() {
         let engine = ModeEngine::new();
-        
+
         // Test search patterns - usando frases específicas que não capturam código
-        assert_eq!(engine.resolve_auto_mode("procurar occurrences de função"), AgentMode::Search);
-        assert_eq!(engine.resolve_auto_mode("onde fica a variável"), AgentMode::Search);
+        assert_eq!(
+            engine.resolve_auto_mode("procurar occurrences de função"),
+            AgentMode::Search
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("onde fica a variável"),
+            AgentMode::Search
+        );
     }
-    
+
     #[test]
     fn test_auto_mode_architect_patterns() {
         let engine = ModeEngine::new();
-        
+
         // Test patterns que só capturam architecture
-        assert_eq!(engine.resolve_auto_mode("qual a arquitetura do sistema"), AgentMode::Architect);
-        assert_eq!(engine.resolve_auto_mode("desenhar a estrutura"), AgentMode::Architect);
+        assert_eq!(
+            engine.resolve_auto_mode("qual a arquitetura do sistema"),
+            AgentMode::Architect
+        );
+        assert_eq!(
+            engine.resolve_auto_mode("desenhar a estrutura"),
+            AgentMode::Architect
+        );
     }
-    
+
     #[test]
     fn test_auto_mode_review_patterns() {
         let engine = ModeEngine::new();
-        
-        assert_eq!(engine.resolve_auto_mode("revisar o código"), AgentMode::Review);
+
+        assert_eq!(
+            engine.resolve_auto_mode("revisar o código"),
+            AgentMode::Review
+        );
         assert_eq!(engine.resolve_auto_mode("analisar diff"), AgentMode::Review);
         assert_eq!(engine.resolve_auto_mode("code review"), AgentMode::Review);
     }
-    
+
     #[test]
     fn test_auto_mode_ask_patterns() {
         let engine = ModeEngine::new();
-        
+
         assert_eq!(engine.resolve_auto_mode("o que é async"), AgentMode::Ask);
-        assert_eq!(engine.resolve_auto_mode("explique o conceito"), AgentMode::Ask);
+        assert_eq!(
+            engine.resolve_auto_mode("explique o conceito"),
+            AgentMode::Ask
+        );
     }
-    
+
     #[test]
     fn test_auto_mode_default_ask() {
         let engine = ModeEngine::new();
-        
+
         // Unknown patterns fall back to Ask
         assert_eq!(engine.resolve_auto_mode("hello world"), AgentMode::Ask);
     }
-    
+
     // GAR-239: Testes de channel defaults
     #[test]
     fn test_channel_defaults_telegram() {
         let engine = ModeEngine::new();
         assert_eq!(engine.get_channel_default("telegram"), AgentMode::Ask);
     }
-    
+
     #[test]
     fn test_channel_defaults_web() {
         let engine = ModeEngine::new();
         assert_eq!(engine.get_channel_default("web"), AgentMode::Auto);
     }
-    
+
     #[test]
     fn test_channel_defaults_api() {
         let engine = ModeEngine::new();
         assert_eq!(engine.get_channel_default("api"), AgentMode::Auto);
     }
-    
+
     #[test]
     fn test_channel_defaults_continue() {
         let engine = ModeEngine::new();
         assert_eq!(engine.get_channel_default("continue"), AgentMode::Auto);
     }
-    
+
     // GAR-239: Testes de precedência de modo
     #[test]
     fn test_mode_precedence_header_over_channel() {
         let engine = ModeEngine::new();
-        
+
         // Header takes precedence over channel default
         let mode = engine.resolve_mode(Some("code"), None, "telegram");
         assert_eq!(mode, AgentMode::Code);
     }
-    
+
     #[test]
     fn test_mode_precedence_command_over_channel() {
         let engine = ModeEngine::new();
-        
+
         // Command takes precedence over channel default
         let mode = engine.resolve_mode(None, Some("debug"), "web");
         assert_eq!(mode, AgentMode::Debug);
     }
-    
+
     #[test]
     fn test_mode_precedence_header_over_command() {
         let engine = ModeEngine::new();
-        
+
         // Header takes precedence over command
         let mode = engine.resolve_mode(Some("architect"), Some("code"), "web");
         assert_eq!(mode, AgentMode::Architect);

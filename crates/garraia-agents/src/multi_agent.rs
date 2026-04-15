@@ -15,9 +15,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::modes::AgentMode;
-use crate::providers::{
-    ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart,
-};
+use crate::providers::{ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart};
 
 /// Result of a single agent execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,7 +162,9 @@ impl AgentCoordinator {
         Self {
             provider,
             model: model.into(),
-            default_system_prompt: "You are an AI assistant. Complete the assigned task precisely and concisely.".to_string(),
+            default_system_prompt:
+                "You are an AI assistant. Complete the assigned task precisely and concisely."
+                    .to_string(),
             max_concurrent: 5,
         }
     }
@@ -215,9 +215,7 @@ impl AgentCoordinator {
                 };
             }
 
-            let system_prompt = config
-                .system_prompt
-                .unwrap_or(default_prompt);
+            let system_prompt = config.system_prompt.unwrap_or(default_prompt);
 
             let messages = vec![ChatMessage {
                 role: ChatRole::User,

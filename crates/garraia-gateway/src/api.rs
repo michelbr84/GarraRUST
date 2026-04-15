@@ -1,8 +1,8 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use garraia_agents::{AgentMode, ContentBlock, MessagePart, ModeEngine};
 use serde::{Deserialize, Serialize};
@@ -67,20 +67,28 @@ pub async fn create_session(
     let mut response_headers = HeaderMap::new();
     let cfg = state.current_config();
     if let Some(manager) = &state.chat_session_manager {
-        let ip = headers.get("x-forwarded-for")
+        let ip = headers
+            .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
-        let ua = headers.get("user-agent")
+        let ua = headers
+            .get("user-agent")
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
         if let Ok(token) = manager
-            .create_token(&session_id, "api", cfg.gateway.session_ttl_secs,
-                          ip.as_deref(), ua.as_deref())
+            .create_token(
+                &session_id,
+                "api",
+                cfg.gateway.session_ttl_secs,
+                ip.as_deref(),
+                ua.as_deref(),
+            )
             .await
         {
             let secure = cfg.gateway.api_key.is_some(); // use Secure only if TLS implied
-            let cookie = crate::session_auth::session_cookie(&token, cfg.gateway.session_ttl_secs, secure);
+            let cookie =
+                crate::session_auth::session_cookie(&token, cfg.gateway.session_ttl_secs, secure);
             if let Ok(val) = HeaderValue::from_str(&cookie) {
                 response_headers.insert("set-cookie", val);
             }
@@ -434,10 +442,7 @@ pub async fn current_mode(
             Ok(mode) => {
                 return (
                     StatusCode::OK,
-                    Json(serde_json::json!(CurrentModeResponse {
-                        mode,
-                        session_id,
-                    })),
+                    Json(serde_json::json!(CurrentModeResponse { mode, session_id })),
                 );
             }
             Err(e) => {

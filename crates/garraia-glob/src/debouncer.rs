@@ -80,7 +80,11 @@ impl Debouncer {
             .spawn(move || debounce_loop(raw_rx, tx, window))
             .expect("failed to spawn debouncer thread");
 
-        Debouncer { receiver: rx, _guard: guard, _thread: thread }
+        Debouncer {
+            receiver: rx,
+            _guard: guard,
+            _thread: thread,
+        }
     }
 
     /// Block until the next debounced event arrives, or return `None` if the
@@ -119,7 +123,10 @@ impl Pending {
     /// Merge a new raw event into this pending entry.
     fn merge(&mut self, new_kind: WatchEventKind) {
         self.last_seen = Instant::now();
-        self.kind = coalesce(std::mem::replace(&mut self.kind, PendingKind::Transient), new_kind);
+        self.kind = coalesce(
+            std::mem::replace(&mut self.kind, PendingKind::Transient),
+            new_kind,
+        );
     }
 
     /// Convert to a `WatchEvent` for emission. Returns `None` for transient entries.
@@ -131,7 +138,11 @@ impl Pending {
             PendingKind::Renamed { from } => WatchEventKind::Renamed { from },
             PendingKind::Transient => return None,
         };
-        Some(WatchEvent { path, kind, timestamp: self.timestamp })
+        Some(WatchEvent {
+            path,
+            kind,
+            timestamp: self.timestamp,
+        })
     }
 }
 
@@ -141,7 +152,9 @@ enum PendingKind {
     Created,
     Modified,
     Removed,
-    Renamed { from: String },
+    Renamed {
+        from: String,
+    },
     /// Created then immediately removed — drop, don't emit.
     Transient,
 }
@@ -284,27 +297,42 @@ mod tests {
 
     #[test]
     fn coalesce_created_then_modified_stays_created() {
-        assert!(matches!(coal(PendingKind::Created, W::Modified), PendingKind::Created));
+        assert!(matches!(
+            coal(PendingKind::Created, W::Modified),
+            PendingKind::Created
+        ));
     }
 
     #[test]
     fn coalesce_created_then_removed_is_transient() {
-        assert!(matches!(coal(PendingKind::Created, W::Removed), PendingKind::Transient));
+        assert!(matches!(
+            coal(PendingKind::Created, W::Removed),
+            PendingKind::Transient
+        ));
     }
 
     #[test]
     fn coalesce_modified_then_modified_stays_modified() {
-        assert!(matches!(coal(PendingKind::Modified, W::Modified), PendingKind::Modified));
+        assert!(matches!(
+            coal(PendingKind::Modified, W::Modified),
+            PendingKind::Modified
+        ));
     }
 
     #[test]
     fn coalesce_modified_then_removed_is_removed() {
-        assert!(matches!(coal(PendingKind::Modified, W::Removed), PendingKind::Removed));
+        assert!(matches!(
+            coal(PendingKind::Modified, W::Removed),
+            PendingKind::Removed
+        ));
     }
 
     #[test]
     fn coalesce_removed_then_created_is_modified() {
-        assert!(matches!(coal(PendingKind::Removed, W::Created), PendingKind::Modified));
+        assert!(matches!(
+            coal(PendingKind::Removed, W::Created),
+            PendingKind::Modified
+        ));
     }
 
     #[test]
@@ -317,7 +345,9 @@ mod tests {
     #[test]
     fn coalesce_renamed_then_removed_is_removed() {
         let result = coal(
-            PendingKind::Renamed { from: "old.rs".into() },
+            PendingKind::Renamed {
+                from: "old.rs".into(),
+            },
             W::Removed,
         );
         assert!(matches!(result, PendingKind::Removed));
@@ -325,9 +355,18 @@ mod tests {
 
     #[test]
     fn coalesce_transient_absorbs_all() {
-        assert!(matches!(coal(PendingKind::Transient, W::Created), PendingKind::Transient));
-        assert!(matches!(coal(PendingKind::Transient, W::Modified), PendingKind::Transient));
-        assert!(matches!(coal(PendingKind::Transient, W::Removed), PendingKind::Transient));
+        assert!(matches!(
+            coal(PendingKind::Transient, W::Created),
+            PendingKind::Transient
+        ));
+        assert!(matches!(
+            coal(PendingKind::Transient, W::Modified),
+            PendingKind::Transient
+        ));
+        assert!(matches!(
+            coal(PendingKind::Transient, W::Removed),
+            PendingKind::Transient
+        ));
     }
 
     #[test]

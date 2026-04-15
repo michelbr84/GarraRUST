@@ -176,7 +176,8 @@ impl McpManager {
         // `cmd /c <command> [args...]` so the shell resolves the extension.
         #[cfg(windows)]
         let mut cmd = {
-            let needs_shell = !command.ends_with(".exe") && !std::path::Path::new(command).is_absolute();
+            let needs_shell =
+                !command.ends_with(".exe") && !std::path::Path::new(command).is_absolute();
             if needs_shell {
                 let mut c = Command::new("cmd");
                 c.args(["/c", command]).args(args);
@@ -287,7 +288,15 @@ impl McpManager {
 
     /// Connect to an MCP server via HTTP (Streamable HTTP transport).
     #[cfg(feature = "mcp-http")]
-    pub async fn connect_http(&self, name: &str, url: &str, timeout_secs: u64, allowed_tools: Vec<String>, max_restarts: u32, restart_delay_secs: u64) -> Result<()> {
+    pub async fn connect_http(
+        &self,
+        name: &str,
+        url: &str,
+        timeout_secs: u64,
+        allowed_tools: Vec<String>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
+    ) -> Result<()> {
         use rmcp::transport::StreamableHttpClientTransport;
 
         let transport = StreamableHttpClientTransport::from_uri(url);
@@ -392,9 +401,7 @@ impl McpManager {
 
         conn.tools
             .iter()
-            .filter(|t| {
-                conn.allowed_tools.is_empty() || conn.allowed_tools.contains(&t.name)
-            })
+            .filter(|t| conn.allowed_tools.is_empty() || conn.allowed_tools.contains(&t.name))
             .map(|t| {
                 Box::new(McpTool::new(
                     &conn.server_name,
@@ -661,7 +668,13 @@ impl McpManager {
             conns
                 .iter()
                 .filter(|(_, conn)| conn.service.is_closed())
-                .map(|(name, conn)| (name.clone(), conn.params.clone(), conn.allowed_tools.clone()))
+                .map(|(name, conn)| {
+                    (
+                        name.clone(),
+                        conn.params.clone(),
+                        conn.allowed_tools.clone(),
+                    )
+                })
                 .collect()
         };
 
@@ -685,7 +698,8 @@ impl McpManager {
                     info!(
                         "MCP server '{name}' waiting for backoff delay ({delay}s) before retry \
                          (attempt {}/{})",
-                        state.count + 1, state.max_restarts
+                        state.count + 1,
+                        state.max_restarts
                     );
                     (false, state.count, state.max_restarts)
                 } else {
@@ -718,17 +732,35 @@ impl McpManager {
                     // Fetch max_restarts / restart_delay from saved state.
                     let (mr, rd) = {
                         let states = self.restart_states.read().await;
-                        states.get(&name).map(|s| (s.max_restarts, s.base_delay_secs)).unwrap_or((5, 5))
+                        states
+                            .get(&name)
+                            .map(|s| (s.max_restarts, s.base_delay_secs))
+                            .unwrap_or((5, 5))
                     };
-                    self.connect(&name, command, args, env, *timeout_secs, allowed_tools, *memory_limit_mb, mr, rd).await
+                    self.connect(
+                        &name,
+                        command,
+                        args,
+                        env,
+                        *timeout_secs,
+                        allowed_tools,
+                        *memory_limit_mb,
+                        mr,
+                        rd,
+                    )
+                    .await
                 }
                 #[cfg(feature = "mcp-http")]
                 ConnectionParams::Http { url, timeout_secs } => {
                     let (mr, rd) = {
                         let states = self.restart_states.read().await;
-                        states.get(&name).map(|s| (s.max_restarts, s.base_delay_secs)).unwrap_or((5, 5))
+                        states
+                            .get(&name)
+                            .map(|s| (s.max_restarts, s.base_delay_secs))
+                            .unwrap_or((5, 5))
                     };
-                    self.connect_http(&name, url, *timeout_secs, allowed_tools, mr, rd).await
+                    self.connect_http(&name, url, *timeout_secs, allowed_tools, mr, rd)
+                        .await
                 }
             };
 

@@ -50,7 +50,11 @@ pub fn run_glob_test(
     }
 
     // --- build GlobConfig ---
-    let glob_mode = if mode == "bash" { GlobMode::Bash } else { GlobMode::Picomatch };
+    let glob_mode = if mode == "bash" {
+        GlobMode::Bash
+    } else {
+        GlobMode::Picomatch
+    };
     let config = GlobConfig {
         mode: glob_mode,
         dot,
@@ -76,7 +80,10 @@ pub fn run_glob_test(
     } else if !paths.is_empty() {
         paths
             .iter()
-            .map(|p| MatchResult { path: p.clone(), is_dir: false })
+            .map(|p| MatchResult {
+                path: p.clone(),
+                is_dir: false,
+            })
             .collect()
     } else {
         collect_from_stdin()?
@@ -134,7 +141,9 @@ fn collect_from_dir(
         .use_gitignore(use_gitignore)
         .use_garraignore(use_garraignore);
 
-    scanner.scan().with_context(|| format!("scanning directory: {}", root.display()))
+    scanner
+        .scan()
+        .with_context(|| format!("scanning directory: {}", root.display()))
 }
 
 /// Read one path per line from stdin and return as `MatchResult` list.
@@ -146,7 +155,14 @@ fn collect_from_stdin() -> Result<Vec<MatchResult>> {
         .lines()
         .filter_map(|line| {
             let path = line.ok()?.trim().to_string();
-            if path.is_empty() { None } else { Some(MatchResult { path, is_dir: false }) }
+            if path.is_empty() {
+                None
+            } else {
+                Some(MatchResult {
+                    path,
+                    is_dir: false,
+                })
+            }
         })
         .collect();
     Ok(entries)

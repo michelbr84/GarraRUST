@@ -10,9 +10,7 @@
 
 use std::sync::Arc;
 
-use garraia_agents::{
-    context_policy::summarize_messages, ChatMessage, ChatRole, MessagePart,
-};
+use garraia_agents::{ChatMessage, ChatRole, MessagePart, context_policy::summarize_messages};
 use tracing::{info, warn};
 
 /// After a turn is persisted, check if summarization should fire and run it.
@@ -119,9 +117,7 @@ pub async fn maybe_trigger_summarization(state: Arc<crate::state::AppState>, ses
                 providers
                     .into_iter()
                     .find(|p| p.provider_id() == prefix)
-                    .unwrap_or_else(|| {
-                        state.agents.list_providers().into_iter().next().unwrap()
-                    })
+                    .unwrap_or_else(|| state.agents.list_providers().into_iter().next().unwrap())
             } else {
                 providers.into_iter().next().unwrap()
             }

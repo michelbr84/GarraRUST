@@ -106,29 +106,18 @@ impl GarraDb for PostgresDb {
         Ok(())
     }
 
-    async fn append_message(
-        &self,
-        session_id: &str,
-        direction: &str,
-        content: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO messages (session_id, direction, content) VALUES ($1, $2, $3)",
-        )
-        .bind(session_id)
-        .bind(direction)
-        .bind(content)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| Error::Database(format!("append_message: {e}")))?;
+    async fn append_message(&self, session_id: &str, direction: &str, content: &str) -> Result<()> {
+        sqlx::query("INSERT INTO messages (session_id, direction, content) VALUES ($1, $2, $3)")
+            .bind(session_id)
+            .bind(direction)
+            .bind(content)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Database(format!("append_message: {e}")))?;
         Ok(())
     }
 
-    async fn list_messages(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> Result<Vec<StoredMessage>> {
+    async fn list_messages(&self, session_id: &str, limit: usize) -> Result<Vec<StoredMessage>> {
         use sqlx::Row as _;
 
         let rows = sqlx::query(

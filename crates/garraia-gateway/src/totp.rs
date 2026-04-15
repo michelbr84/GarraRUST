@@ -273,7 +273,10 @@ pub async fn verify_2fa(
             Json(serde_json::json!({"status": "2fa verified", "enabled": true})),
         )
     } else {
-        warn!("2fa verify: invalid code for user={}", &claims.sub[..8.min(claims.sub.len())]);
+        warn!(
+            "2fa verify: invalid code for user={}",
+            &claims.sub[..8.min(claims.sub.len())]
+        );
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "invalid code"})),
@@ -300,7 +303,10 @@ pub async fn disable_2fa(
     };
 
     if !verify_totp(&secret, &req.code) {
-        warn!("2fa disable: invalid code for user={}", &claims.sub[..8.min(claims.sub.len())]);
+        warn!(
+            "2fa disable: invalid code for user={}",
+            &claims.sub[..8.min(claims.sub.len())]
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "invalid code"})),
@@ -387,19 +393,22 @@ mod tests {
     #[test]
     fn verify_totp_rejects_wrong_code() {
         let secret = generate_totp_secret().unwrap();
-        assert!(!verify_totp(&secret, "000000") || verify_totp(&secret, "000000"),
+        assert!(
+            !verify_totp(&secret, "000000") || verify_totp(&secret, "000000"),
             // This could theoretically be valid; just check it doesn't panic
         );
         assert!(!verify_totp(&secret, "abc123")); // non-digit
-        assert!(!verify_totp(&secret, "12345"));  // too short
+        assert!(!verify_totp(&secret, "12345")); // too short
     }
 
     #[test]
     fn hotp_known_vector() {
         // RFC 4226 Appendix D — key = b"12345678901234567890", counter 0..=9
         let key = b"12345678901234567890";
-        let expected = ["755224", "287082", "359152", "969429", "338314",
-                        "254676", "287922", "162583", "399871", "520489"];
+        let expected = [
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+            "399871", "520489",
+        ];
         for (i, &exp) in expected.iter().enumerate() {
             assert_eq!(hotp(key, i as u64), exp, "HOTP mismatch at counter={i}");
         }

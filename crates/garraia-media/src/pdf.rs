@@ -188,10 +188,11 @@ impl PdfProcessor {
         let mut full_text = String::new();
         for page_num in start_page..=end_page {
             if let Ok(page_text) = doc.extract_text(&[page_num as u32])
-                && !page_text.trim().is_empty() {
-                    full_text.push_str(&page_text);
-                    full_text.push('\n');
-                }
+                && !page_text.trim().is_empty()
+            {
+                full_text.push_str(&page_text);
+                full_text.push('\n');
+            }
         }
 
         Ok(ParsedDocument {

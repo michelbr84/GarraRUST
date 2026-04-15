@@ -58,9 +58,10 @@ impl GatewayServer {
         state.mcp_manager = Some(mcp_manager);
 
         // Sync MCP registry with live manager state (populates Running/Stopped statuses).
-        state.mcp_registry.sync_from_manager(
-            state.mcp_manager.as_ref().unwrap()
-        ).await;
+        state
+            .mcp_registry
+            .sync_from_manager(state.mcp_manager.as_ref().unwrap())
+            .await;
 
         // Register MCP tools as slash commands (must be done before Arc-wrapping)
         state.register_mcp_tools().await;
@@ -116,14 +117,10 @@ impl GatewayServer {
                 }
                 _ => {
                     // Default: Chatterbox
-                    let client =
-                        garraia_voice::ChatterboxClient::new(tts_endpoint, language);
+                    let client = garraia_voice::ChatterboxClient::new(tts_endpoint, language);
                     match client.health_check().await {
                         Ok(true) => {
-                            info!(
-                                "🔊 Voice mode enabled — Chatterbox TTS at {}",
-                                tts_endpoint
-                            );
+                            info!("🔊 Voice mode enabled — Chatterbox TTS at {}", tts_endpoint);
                         }
                         Ok(false) => {
                             warn!(
@@ -168,7 +165,9 @@ impl GatewayServer {
                 let store = Arc::new(Mutex::new(store));
                 state.set_session_store(Arc::clone(&store));
                 // GAR-201: Create ChatSessionManager from the same store for multi-channel session resolution
-                state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(&store))));
+                state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(
+                    &store,
+                ))));
                 state
                     .agents
                     .register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));
@@ -210,47 +209,47 @@ impl GatewayServer {
                 // Only attempted when GARRAIA_APP_DATABASE_URL is set.
                 // Failures degrade /v1/groups-style handlers to 503
                 // but never block the rest of the auth wiring.
-                let app_pool_opt: Option<Arc<garraia_auth::AppPool>> =
-                    if let Some(app_url) = auth_cfg.app_database_url.as_ref() {
-                        use garraia_auth::AppPoolConfig;
-                        match garraia_auth::AppPool::from_dedicated_config(&AppPoolConfig {
-                            database_url: app_url.expose_secret().to_string(),
-                            max_connections: 10,
-                        })
-                        .await
-                        {
-                            Ok(p) => {
-                                info!("garraia-auth AppPool wired (garraia_app role)");
-                                Some(Arc::new(p))
-                            }
-                            Err(e) => {
-                                // Security review plan 0016 M1 (M-1):
-                                // route the sqlx::Error through the
-                                // RedactedStorageError wrapper so the
-                                // Postgres connection URL cannot leak
-                                // into the warn! log line. Some sqlx
-                                // 0.8 connect failure variants embed
-                                // substrings of the URL in Display.
-                                let redacted = match e {
-                                    garraia_auth::AuthError::Storage(sqlx_err) => {
-                                        garraia_auth::RedactedStorageError::from(sqlx_err)
-                                            .to_string()
-                                    }
-                                    other => other.to_string(),
-                                };
-                                warn!(
-                                    error = %redacted,
-                                    "AppPool connect failed; /v1/groups-style handlers will answer 503"
-                                );
-                                None
-                            }
+                let app_pool_opt: Option<Arc<garraia_auth::AppPool>> = if let Some(app_url) =
+                    auth_cfg.app_database_url.as_ref()
+                {
+                    use garraia_auth::AppPoolConfig;
+                    match garraia_auth::AppPool::from_dedicated_config(&AppPoolConfig {
+                        database_url: app_url.expose_secret().to_string(),
+                        max_connections: 10,
+                    })
+                    .await
+                    {
+                        Ok(p) => {
+                            info!("garraia-auth AppPool wired (garraia_app role)");
+                            Some(Arc::new(p))
                         }
-                    } else {
-                        info!(
-                            "GARRAIA_APP_DATABASE_URL not set; /v1/groups-style handlers will answer 503"
-                        );
-                        None
-                    };
+                        Err(e) => {
+                            // Security review plan 0016 M1 (M-1):
+                            // route the sqlx::Error through the
+                            // RedactedStorageError wrapper so the
+                            // Postgres connection URL cannot leak
+                            // into the warn! log line. Some sqlx
+                            // 0.8 connect failure variants embed
+                            // substrings of the URL in Display.
+                            let redacted = match e {
+                                garraia_auth::AuthError::Storage(sqlx_err) => {
+                                    garraia_auth::RedactedStorageError::from(sqlx_err).to_string()
+                                }
+                                other => other.to_string(),
+                            };
+                            warn!(
+                                error = %redacted,
+                                "AppPool connect failed; /v1/groups-style handlers will answer 503"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    info!(
+                        "GARRAIA_APP_DATABASE_URL not set; /v1/groups-style handlers will answer 503"
+                    );
+                    None
+                };
 
                 match (login_pool_result, signup_pool_result, jwt_result) {
                     (Ok(login_pool), Ok(signup_pool), Ok(jwt)) => {
@@ -502,10 +501,14 @@ impl GatewayServer {
                 let cert_path = tls_cert.as_ref().unwrap();
                 let key_path = tls_key.as_ref().unwrap();
                 info!("TLS enabled: cert={}, key={}", cert_path, key_path);
-                let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-                    .await
-                    .map_err(|e| garraia_common::Error::Gateway(format!("TLS config error: {e}")))?;
-                let sock_addr: std::net::SocketAddr = addr.parse()
+                let tls_config =
+                    axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                        .await
+                        .map_err(|e| {
+                            garraia_common::Error::Gateway(format!("TLS config error: {e}"))
+                        })?;
+                let sock_addr: std::net::SocketAddr = addr
+                    .parse()
                     .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
                 info!("GarraIA gateway listening on https://{}", sock_addr);
                 axum_server::bind_rustls(sock_addr, tls_config)
@@ -515,21 +518,29 @@ impl GatewayServer {
             }
             #[cfg(not(feature = "tls"))]
             {
-                warn!("TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP");
+                warn!(
+                    "TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP"
+                );
                 let listener = TcpListener::bind(&addr).await?;
                 info!("GarraIA gateway listening on http://{}", addr);
-                axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                    .with_graceful_shutdown(shutdown_signal())
-                    .await
-                    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
             }
         } else {
             let listener = TcpListener::bind(&addr).await?;
             info!("GarraIA gateway listening on http://{}", addr);
-            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
         }
 
         // Disconnect MCP servers on shutdown
@@ -591,22 +602,16 @@ pub async fn build_router_for_test(
     // Zero-config minimal runtime + channel registry. No providers,
     // no tools, no channels wired. Confirmed by team-coordinator gate
     // against state.rs unit tests.
-    let mut state = AppState::new(
-        config,
-        AgentRuntime::new(),
-        ChannelRegistry::new(),
-    );
+    let mut state = AppState::new(config, AgentRuntime::new(), ChannelRegistry::new());
 
     // Inject the auth pieces the harness built against testcontainer.
     state.set_auth_components(login_pool, signup_pool, jwt_issuer, app_pool);
     let state: crate::state::SharedState = Arc::new(state);
 
     // Minimal collaborators expected by the production router.
-    let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
-        Arc::new(Vec::new());
+    let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState = Arc::new(Vec::new());
     let admin_store = Arc::new(Mutex::new(
-        admin::store::AdminStore::in_memory()
-            .expect("in-memory admin store should work"),
+        admin::store::AdminStore::in_memory().expect("in-memory admin store should work"),
     ));
 
     build_router(state, whatsapp_state, admin_store)

@@ -5,5 +5,7 @@ pub mod state;
 
 pub use executor::{run_turn, RuntimeSettings};
 pub use meta_controller::MetaController;
-pub use mode::{AgentMode, ModeEngine, ModeProfile, ModeLimits, LlmDefaults, ToolPolicy, get_mode_engine};
+pub use mode::{
+    get_mode_engine, AgentMode, LlmDefaults, ModeEngine, ModeLimits, ModeProfile, ToolPolicy,
+};
 pub use state::TaskState;

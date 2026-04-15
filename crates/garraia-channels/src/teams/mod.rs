@@ -15,9 +15,9 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::traits::{Channel, ChannelStatus};
-use garraia_common::{Error, Message, MessageContent, Result};
 #[cfg(test)]
-use garraia_common::{MessageDirection, SessionId, ChannelId, UserId};
+use garraia_common::{ChannelId, MessageDirection, SessionId, UserId};
+use garraia_common::{Error, Message, MessageContent, Result};
 
 pub use config::TeamsConfig;
 
@@ -110,9 +110,7 @@ impl TeamsChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "teams auth error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("teams auth error {status}: {body}")));
         }
 
         let body: serde_json::Value = resp
@@ -164,9 +162,7 @@ impl TeamsChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "teams send error {status}: {body}"
-            )));
+            return Err(Error::Channel(format!("teams send error {status}: {body}")));
         }
 
         Ok(())
@@ -203,17 +199,13 @@ impl Channel for TeamsChannel {
             .metadata
             .get("teams_service_url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::Channel("missing teams_service_url in metadata".into())
-            })?;
+            .ok_or_else(|| Error::Channel("missing teams_service_url in metadata".into()))?;
 
         let conversation_id = message
             .metadata
             .get("teams_conversation_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                Error::Channel("missing teams_conversation_id in metadata".into())
-            })?;
+            .ok_or_else(|| Error::Channel("missing teams_conversation_id in metadata".into()))?;
 
         let text = match &message.content {
             MessageContent::Text(t) => t.clone(),
@@ -224,7 +216,8 @@ impl Channel for TeamsChannel {
             }
         };
 
-        self.send_activity(service_url, conversation_id, &text).await
+        self.send_activity(service_url, conversation_id, &text)
+            .await
     }
 
     fn status(&self) -> ChannelStatus {
@@ -238,10 +231,9 @@ mod tests {
 
     #[test]
     fn channel_type_is_teams() {
-        let on_msg: TeamsOnMessageFn =
-            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: TeamsOnMessageFn = Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = TeamsConfig {
             app_id: "test-app-id".into(),
             app_secret: "test-secret".into(),
@@ -255,27 +247,31 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_missing_metadata() {
-        let on_msg: TeamsOnMessageFn =
-            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: TeamsOnMessageFn = Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = TeamsConfig {
             app_id: "test-app".into(),
             app_secret: "test-secret".into(),
             tenant_id: "test-tenant".into(),
         };
         let channel = TeamsChannel::new(config, on_msg);
-        let msg = Message::text(SessionId::from_string("s"), ChannelId::from_string("c"), UserId::from_string("u"), MessageDirection::Outgoing, "hello");
+        let msg = Message::text(
+            SessionId::from_string("s"),
+            ChannelId::from_string("c"),
+            UserId::from_string("u"),
+            MessageDirection::Outgoing,
+            "hello",
+        );
         let result = channel.send_message(&msg).await;
         assert!(result.is_err());
     }
 
     #[test]
     fn initial_status_is_disconnected() {
-        let on_msg: TeamsOnMessageFn =
-            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: TeamsOnMessageFn = Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = TeamsConfig {
             app_id: "test".into(),
             app_secret: "secret".into(),
@@ -287,10 +283,9 @@ mod tests {
 
     #[test]
     fn display_name_is_microsoft_teams() {
-        let on_msg: TeamsOnMessageFn =
-            Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
-            });
+        let on_msg: TeamsOnMessageFn = Arc::new(|_conv, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
         let config = TeamsConfig {
             app_id: "a".into(),
             app_secret: "b".into(),

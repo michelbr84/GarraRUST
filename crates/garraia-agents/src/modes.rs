@@ -102,7 +102,6 @@ impl AgentMode {
     }
 }
 
-
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
@@ -571,11 +570,21 @@ impl ModeEngine {
         }
 
         // Definir defaults por canal
-        engine.channel_defaults.insert("telegram".to_string(), "ask".to_string());
-        engine.channel_defaults.insert("web".to_string(), "auto".to_string());
-        engine.channel_defaults.insert("vscode".to_string(), "auto".to_string());
-        engine.channel_defaults.insert("discord".to_string(), "ask".to_string());
-        engine.channel_defaults.insert("whatsapp".to_string(), "ask".to_string());
+        engine
+            .channel_defaults
+            .insert("telegram".to_string(), "ask".to_string());
+        engine
+            .channel_defaults
+            .insert("web".to_string(), "auto".to_string());
+        engine
+            .channel_defaults
+            .insert("vscode".to_string(), "auto".to_string());
+        engine
+            .channel_defaults
+            .insert("discord".to_string(), "ask".to_string());
+        engine
+            .channel_defaults
+            .insert("whatsapp".to_string(), "ask".to_string());
 
         engine
     }
@@ -604,22 +613,27 @@ impl ModeEngine {
     ) -> AgentMode {
         // 1. Header tem maior precedência
         if let Some(mode_str) = header_mode
-            && let Some(mode) = AgentMode::from_str(mode_str) {
-                return mode;
-            }
+            && let Some(mode) = AgentMode::from_str(mode_str)
+        {
+            return mode;
+        }
 
         // 2. Modo salvo na sessão (via comando /mode)
         if let Some(mode_str) = session_mode
-            && let Some(mode) = AgentMode::from_str(mode_str) {
-                return mode;
-            }
+            && let Some(mode) = AgentMode::from_str(mode_str)
+        {
+            return mode;
+        }
 
         // 3. Default por canal
         if let Some(channel_str) = channel
-            && let Some(default_mode) = self.channel_defaults.get(channel_str.to_lowercase().as_str())
-                && let Some(mode) = AgentMode::from_str(default_mode) {
-                    return mode;
-                }
+            && let Some(default_mode) = self
+                .channel_defaults
+                .get(channel_str.to_lowercase().as_str())
+            && let Some(mode) = AgentMode::from_str(default_mode)
+        {
+            return mode;
+        }
 
         // 4. Default global
         AgentMode::default()
@@ -630,12 +644,18 @@ impl ModeEngine {
         let input_lower = user_input.to_lowercase();
 
         // Contains file path → search ou debug
-        if input_lower.contains("c:\\") || input_lower.contains("g:\\") 
-            || input_lower.contains("/home/") || input_lower.contains("src/") 
-            || input_lower.contains("crates/") {
+        if input_lower.contains("c:\\")
+            || input_lower.contains("g:\\")
+            || input_lower.contains("/home/")
+            || input_lower.contains("src/")
+            || input_lower.contains("crates/")
+        {
             // Dependendo do verbo
-            if input_lower.contains("erro") || input_lower.contains("panic") 
-                || input_lower.contains("stacktrace") || input_lower.contains("bug") {
+            if input_lower.contains("erro")
+                || input_lower.contains("panic")
+                || input_lower.contains("stacktrace")
+                || input_lower.contains("bug")
+            {
                 return AgentMode::Debug;
             }
             return AgentMode::Search;
@@ -643,9 +663,20 @@ impl ModeEngine {
 
         // Palavras-chave de implementação → code
         let code_keywords = [
-            "implementar", "criar arquivo", "refatorar", "escrever código",
-            "implement", "create file", "refactor", "write code",
-            "crie", "faça", "make", "build", "add", "fix",
+            "implementar",
+            "criar arquivo",
+            "refatorar",
+            "escrever código",
+            "implement",
+            "create file",
+            "refactor",
+            "write code",
+            "crie",
+            "faça",
+            "make",
+            "build",
+            "add",
+            "fix",
         ];
         if code_keywords.iter().any(|kw| input_lower.contains(kw)) {
             return AgentMode::Code;
@@ -653,9 +684,17 @@ impl ModeEngine {
 
         // Palavras-chave de perguntas → ask
         let ask_keywords = [
-            "o que é", "explique", "como funciona", "defina",
-            "what is", "explain", "how does", "define",
-            "?", "qual é", "quais são",
+            "o que é",
+            "explique",
+            "como funciona",
+            "defina",
+            "what is",
+            "explain",
+            "how does",
+            "define",
+            "?",
+            "qual é",
+            "quais são",
         ];
         if ask_keywords.iter().any(|kw| input_lower.contains(kw)) {
             return AgentMode::Ask;
@@ -663,8 +702,16 @@ impl ModeEngine {
 
         // Palavras-chave de debug → debug
         let debug_keywords = [
-            "erro", "stacktrace", "panic", "exception", "falha",
-            "error", "stack trace", "crash", "bug", "problema",
+            "erro",
+            "stacktrace",
+            "panic",
+            "exception",
+            "falha",
+            "error",
+            "stack trace",
+            "crash",
+            "bug",
+            "problema",
         ];
         if debug_keywords.iter().any(|kw| input_lower.contains(kw)) {
             return AgentMode::Debug;
@@ -672,8 +719,14 @@ impl ModeEngine {
 
         // Palavras-chave de arquitetura → architect
         let arch_keywords = [
-            "roadmap", "design", "arquitetura", "planejamento",
-            "roadmap", "design", "architecture", "plan",
+            "roadmap",
+            "design",
+            "arquitetura",
+            "planejamento",
+            "roadmap",
+            "design",
+            "architecture",
+            "plan",
         ];
         if arch_keywords.iter().any(|kw| input_lower.contains(kw)) {
             return AgentMode::Architect;
@@ -681,8 +734,13 @@ impl ModeEngine {
 
         // Palavras-chave de review → review
         let review_keywords = [
-            "review", "revisar", "analisar diff", "analise",
-            "revise", "analyze", "check",
+            "review",
+            "revisar",
+            "analisar diff",
+            "analise",
+            "revise",
+            "analyze",
+            "check",
         ];
         if review_keywords.iter().any(|kw| input_lower.contains(kw)) {
             return AgentMode::Review;
@@ -699,7 +757,8 @@ impl ModeEngine {
 
     /// Define default por canal
     pub fn set_channel_default(&mut self, channel: &str, mode: &str) {
-        self.channel_defaults.insert(channel.to_lowercase(), mode.to_string());
+        self.channel_defaults
+            .insert(channel.to_lowercase(), mode.to_string());
     }
 
     /// Habilita/desabilita router LLM (P1)
@@ -717,7 +776,7 @@ impl ModeEngine {
         // Se whitelist_mode, nega tudo que não está na lista de allowed
         if profile.tool_policy.whitelist_mode {
             // Permite se está na lista de allowed OU se allowed está vazia
-            profile.tool_policy.allowed.is_empty() 
+            profile.tool_policy.allowed.is_empty()
                 || profile.tool_policy.allowed.iter().any(|t| t == tool_name)
         } else {
             // Se não tem whitelist, nega apenas se está na lista de denied
@@ -732,9 +791,10 @@ impl ModeEngine {
         }
 
         if let Some(profile) = self.get_profile(mode.as_str())
-            && let Some(template) = &profile.system_prompt_template {
-                return template.clone();
-            }
+            && let Some(template) = &profile.system_prompt_template
+        {
+            return template.clone();
+        }
 
         // Fallback para ask
         "You are a helpful AI assistant.".to_string()

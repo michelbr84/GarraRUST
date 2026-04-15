@@ -14,9 +14,9 @@ use garraia_auth::{
 };
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use secrecy::SecretString;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
 
 /// Boot a pgvector/pg16 container, return the container handle and the
@@ -89,7 +89,10 @@ async fn login_pool_accepts_garraia_login_role() -> anyhow::Result<()> {
     let pool = LoginPool::from_dedicated_config(&good_config).await?;
     // Debug must not leak the URL.
     let dbg = format!("{pool:?}");
-    assert!(!dbg.contains("test-password"), "Debug leaked password: {dbg}");
+    assert!(
+        !dbg.contains("test-password"),
+        "Debug leaked password: {dbg}"
+    );
     assert!(dbg.contains("garraia_login"));
     Ok(())
 }

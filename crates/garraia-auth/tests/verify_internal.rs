@@ -26,15 +26,15 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use garraia_auth::{
-    audit::AuditAction, hash_argon2id, AuthError, Credential, IdentityProvider, InternalProvider,
-    LoginConfig, LoginPool, RequestCtx,
+    AuthError, Credential, IdentityProvider, InternalProvider, LoginConfig, LoginPool, RequestCtx,
+    audit::AuditAction, hash_argon2id,
 };
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use secrecy::SecretString;
 use sqlx::Row;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
 use uuid::Uuid;
 
@@ -70,8 +70,7 @@ async fn boot() -> anyhow::Result<Fixture> {
         .execute(&admin_pool)
         .await?;
 
-    let login_url =
-        postgres_url.replace("postgres:postgres@", "garraia_login:test-password@");
+    let login_url = postgres_url.replace("postgres:postgres@", "garraia_login:test-password@");
     let pool = Arc::new(
         LoginPool::from_dedicated_config(&LoginConfig {
             database_url: login_url,
@@ -162,11 +161,10 @@ async fn last_audit_for(admin: &sqlx::PgPool, action: &str) -> anyhow::Result<Au
 }
 
 async fn count_audit_action(admin: &sqlx::PgPool, action: &str) -> anyhow::Result<i64> {
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action = $1")
-            .bind(action)
-            .fetch_one(admin)
-            .await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action = $1")
+        .bind(action)
+        .fetch_one(admin)
+        .await?;
     Ok(count)
 }
 
@@ -190,10 +188,7 @@ async fn argon2id_happy_path_emits_login_success_audit() -> anyhow::Result<()> {
         email: "alice@example.com".into(),
         password: pw.clone(),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, Some(user_id));
 
     let row = last_audit_for(&f.admin_pool, AuditAction::LoginSuccess.as_str()).await?;
@@ -201,7 +196,10 @@ async fn argon2id_happy_path_emits_login_success_audit() -> anyhow::Result<()> {
     assert_eq!(row.actor_label.as_deref(), Some("alice@example.com"));
     assert_eq!(row.action, "login.success");
     assert_eq!(row.resource_type, "user_identities");
-    assert_eq!(row.resource_id.as_deref(), Some(identity_id.to_string().as_str()));
+    assert_eq!(
+        row.resource_id.as_deref(),
+        Some(identity_id.to_string().as_str())
+    );
     assert!(row.ip.is_some(), "ip column populated from RequestCtx");
     assert_eq!(row.user_agent.as_deref(), Some("integration-test/1.0"));
     assert_eq!(
@@ -234,20 +232,16 @@ async fn pbkdf2_happy_path_lazy_upgrades_to_argon2id() -> anyhow::Result<()> {
         email: "bob@example.com".into(),
         password: SecretString::from(plaintext.to_owned()),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, Some(user_id));
 
     // Stored hash must now be an Argon2id PHC and `hash_upgraded_at` must
     // be set.
-    let row = sqlx::query(
-        "SELECT password_hash, hash_upgraded_at FROM user_identities WHERE id = $1",
-    )
-    .bind(identity_id)
-    .fetch_one(&f.admin_pool)
-    .await?;
+    let row =
+        sqlx::query("SELECT password_hash, hash_upgraded_at FROM user_identities WHERE id = $1")
+            .bind(identity_id)
+            .fetch_one(&f.admin_pool)
+            .await?;
     let new_hash: String = row.try_get("password_hash")?;
     assert!(new_hash.starts_with("$argon2id$"));
     let upgraded_at: Option<DateTime<Utc>> = row.try_get("hash_upgraded_at")?;
@@ -287,21 +281,20 @@ async fn wrong_password_returns_none_with_failure_audit() -> anyhow::Result<()> 
     let f = boot().await?;
     let pw = SecretString::from("right".to_owned());
     let phc = hash_argon2id(&pw)?;
-    let (user_id, _) =
-        seed_user(&f.admin_pool, "carol@example.com", Some(&phc), "active").await?;
+    let (user_id, _) = seed_user(&f.admin_pool, "carol@example.com", Some(&phc), "active").await?;
 
     let cred = Credential::Internal {
         email: "carol@example.com".into(),
         password: SecretString::from("wrong".to_owned()),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, None);
 
-    let row = last_audit_for(&f.admin_pool, AuditAction::LoginFailureWrongPassword.as_str())
-        .await?;
+    let row = last_audit_for(
+        &f.admin_pool,
+        AuditAction::LoginFailureWrongPassword.as_str(),
+    )
+    .await?;
     assert_eq!(row.actor_user_id, Some(user_id));
     Ok(())
 }
@@ -313,14 +306,14 @@ async fn user_not_found_returns_none_with_null_actor_audit() -> anyhow::Result<(
         email: "ghost@example.com".into(),
         password: SecretString::from("anything".to_owned()),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, None);
 
-    let row = last_audit_for(&f.admin_pool, AuditAction::LoginFailureUserNotFound.as_str())
-        .await?;
+    let row = last_audit_for(
+        &f.admin_pool,
+        AuditAction::LoginFailureUserNotFound.as_str(),
+    )
+    .await?;
     assert!(
         row.actor_user_id.is_none(),
         "actor_user_id MUST be NULL for user_not_found"
@@ -335,17 +328,13 @@ async fn suspended_account_returns_none_with_account_audit() -> anyhow::Result<(
     let f = boot().await?;
     let pw = SecretString::from("ok".to_owned());
     let phc = hash_argon2id(&pw)?;
-    let (user_id, _) =
-        seed_user(&f.admin_pool, "dan@example.com", Some(&phc), "suspended").await?;
+    let (user_id, _) = seed_user(&f.admin_pool, "dan@example.com", Some(&phc), "suspended").await?;
 
     let cred = Credential::Internal {
         email: "dan@example.com".into(),
         password: pw.clone(),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, None);
 
     let row = last_audit_for(
@@ -362,17 +351,13 @@ async fn deleted_account_takes_same_path_as_suspended() -> anyhow::Result<()> {
     let f = boot().await?;
     let pw = SecretString::from("ok".to_owned());
     let phc = hash_argon2id(&pw)?;
-    let (user_id, _) =
-        seed_user(&f.admin_pool, "erin@example.com", Some(&phc), "deleted").await?;
+    let (user_id, _) = seed_user(&f.admin_pool, "erin@example.com", Some(&phc), "deleted").await?;
 
     let cred = Credential::Internal {
         email: "erin@example.com".into(),
         password: pw.clone(),
     };
-    let result = f
-        .provider
-        .verify_credential_with_ctx(&cred, &ctx())
-        .await?;
+    let result = f.provider.verify_credential_with_ctx(&cred, &ctx()).await?;
     assert_eq!(result, None);
 
     let row = last_audit_for(
@@ -406,11 +391,7 @@ async fn unknown_hash_format_returns_err_with_audit() -> anyhow::Result<()> {
 
     // Audit row must still be present (insertion happened before the
     // tx commit on the err path).
-    let row = last_audit_for(
-        &f.admin_pool,
-        AuditAction::LoginFailureUnknownHash.as_str(),
-    )
-    .await?;
+    let row = last_audit_for(&f.admin_pool, AuditAction::LoginFailureUnknownHash.as_str()).await?;
     assert_eq!(row.actor_user_id, Some(user_id));
     Ok(())
 }
@@ -420,8 +401,7 @@ async fn find_by_provider_sub_returns_identity() -> anyhow::Result<()> {
     let f = boot().await?;
     let pw = SecretString::from("ok".to_owned());
     let phc = hash_argon2id(&pw)?;
-    let (user_id, _) =
-        seed_user(&f.admin_pool, "gina@example.com", Some(&phc), "active").await?;
+    let (user_id, _) = seed_user(&f.admin_pool, "gina@example.com", Some(&phc), "active").await?;
 
     let id = f
         .provider

@@ -47,31 +47,17 @@ impl OAuthProvider {
 
     fn authorization_endpoint(&self, config: &OAuthConfig) -> String {
         match self {
-            OAuthProvider::Google => {
-                "https://accounts.google.com/o/oauth2/v2/auth".to_string()
-            }
-            OAuthProvider::GitHub => {
-                "https://github.com/login/oauth/authorize".to_string()
-            }
-            OAuthProvider::Oidc => config
-                .authorization_endpoint
-                .clone()
-                .unwrap_or_default(),
+            OAuthProvider::Google => "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            OAuthProvider::GitHub => "https://github.com/login/oauth/authorize".to_string(),
+            OAuthProvider::Oidc => config.authorization_endpoint.clone().unwrap_or_default(),
         }
     }
 
     fn token_endpoint(&self, config: &OAuthConfig) -> String {
         match self {
-            OAuthProvider::Google => {
-                "https://oauth2.googleapis.com/token".to_string()
-            }
-            OAuthProvider::GitHub => {
-                "https://github.com/login/oauth/access_token".to_string()
-            }
-            OAuthProvider::Oidc => config
-                .token_endpoint
-                .clone()
-                .unwrap_or_default(),
+            OAuthProvider::Google => "https://oauth2.googleapis.com/token".to_string(),
+            OAuthProvider::GitHub => "https://github.com/login/oauth/access_token".to_string(),
+            OAuthProvider::Oidc => config.token_endpoint.clone().unwrap_or_default(),
         }
     }
 
@@ -80,9 +66,7 @@ impl OAuthProvider {
             OAuthProvider::Google => {
                 Some("https://www.googleapis.com/oauth2/v3/userinfo".to_string())
             }
-            OAuthProvider::GitHub => {
-                Some("https://api.github.com/user".to_string())
-            }
+            OAuthProvider::GitHub => Some("https://api.github.com/user".to_string()),
             OAuthProvider::Oidc => config.userinfo_endpoint.clone(),
         }
     }
@@ -121,7 +105,11 @@ pub struct OAuthConfig {
 }
 
 impl OAuthConfig {
-    pub fn google(client_id: impl Into<String>, client_secret: impl Into<String>, redirect_uri: impl Into<String>) -> Self {
+    pub fn google(
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Self {
         Self {
             provider: OAuthProvider::Google,
             client_id: client_id.into(),
@@ -134,7 +122,11 @@ impl OAuthConfig {
         }
     }
 
-    pub fn github(client_id: impl Into<String>, client_secret: impl Into<String>, redirect_uri: impl Into<String>) -> Self {
+    pub fn github(
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Self {
         Self {
             provider: OAuthProvider::GitHub,
             client_id: client_id.into(),
@@ -263,7 +255,7 @@ struct UserInfo {
     /// GitHub: numeric id as string
     id: Option<serde_json::Value>,
     email: Option<String>,
-    login: Option<String>,    // GitHub username
+    login: Option<String>, // GitHub username
     #[allow(dead_code)]
     name: Option<String>,
 }
@@ -320,8 +312,8 @@ fn load_oauth_configs() -> HashMap<String, OAuthConfig> {
     ) {
         let redirect = std::env::var("GARRAIA_OIDC_REDIRECT_URI")
             .unwrap_or_else(|_| "http://localhost:3888/auth/oauth/oidc/callback".into());
-        let userinfo = std::env::var("GARRAIA_OIDC_USERINFO_ENDPOINT")
-            .unwrap_or_else(|_| "".into());
+        let userinfo =
+            std::env::var("GARRAIA_OIDC_USERINFO_ENDPOINT").unwrap_or_else(|_| "".into());
         configs.insert(
             "oidc".into(),
             OAuthConfig::oidc(id, secret, redirect, auth_ep, token_ep, userinfo),
@@ -393,7 +385,8 @@ async fn exchange_code_for_token(
         .await
         .map_err(|e| format!("failed to parse token response: {e}"))?;
 
-    body.access_token.ok_or_else(|| "no access_token in response".into())
+    body.access_token
+        .ok_or_else(|| "no access_token in response".into())
 }
 
 async fn fetch_userinfo(
@@ -470,7 +463,10 @@ pub async fn oauth_callback(
 ) -> impl IntoResponse {
     // Handle provider-side errors
     if let Some(err) = &params.error {
-        let desc = params.error_description.as_deref().unwrap_or("no description");
+        let desc = params
+            .error_description
+            .as_deref()
+            .unwrap_or("no description");
         warn!("oauth callback error from {provider}: {err} — {desc}");
         return (
             StatusCode::BAD_REQUEST,
@@ -508,7 +504,9 @@ pub async fn oauth_callback(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("oauth provider '{provider}' not configured")})),
+                Json(
+                    serde_json::json!({"error": format!("oauth provider '{provider}' not configured")}),
+                ),
             );
         }
     };
@@ -647,9 +645,7 @@ pub async fn oauth_callback(
 
 // ── GET /auth/oauth/providers — list configured OAuth providers ───────────────
 
-pub async fn list_oauth_providers(
-    State(_state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_oauth_providers(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     let configs = load_oauth_configs();
     let providers: Vec<serde_json::Value> = configs
         .keys()
@@ -711,8 +707,14 @@ mod tests {
 
     #[test]
     fn provider_from_str_roundtrip() {
-        assert_eq!(OAuthProvider::from_str("google"), Some(OAuthProvider::Google));
-        assert_eq!(OAuthProvider::from_str("github"), Some(OAuthProvider::GitHub));
+        assert_eq!(
+            OAuthProvider::from_str("google"),
+            Some(OAuthProvider::Google)
+        );
+        assert_eq!(
+            OAuthProvider::from_str("github"),
+            Some(OAuthProvider::GitHub)
+        );
         assert_eq!(OAuthProvider::from_str("azure"), Some(OAuthProvider::Oidc));
         assert!(OAuthProvider::from_str("unknown").is_none());
     }

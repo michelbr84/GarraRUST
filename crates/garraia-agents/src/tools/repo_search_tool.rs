@@ -91,7 +91,11 @@ impl Tool for RepoSearchTool {
         })
     }
 
-    async fn execute(&self, _context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
+    async fn execute(
+        &self,
+        _context: &ToolContext,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput> {
         let query = input
             .get("query")
             .and_then(|v| v.as_str())
@@ -213,10 +217,7 @@ mod tests {
         let tool = RepoSearchTool::new(None, None);
         let schema = tool.input_schema();
         assert!(schema.get("properties").is_some());
-        assert_eq!(
-            schema["required"].as_array().map(|a| a.len()),
-            Some(1)
-        );
+        assert_eq!(schema["required"].as_array().map(|a| a.len()), Some(1));
     }
 
     #[tokio::test]
