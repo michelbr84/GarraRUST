@@ -12,7 +12,10 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use super::groups::{CreateGroupRequest, GroupReadResponse, GroupResponse, UpdateGroupRequest};
+use super::groups::{
+    CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
+    UpdateGroupRequest,
+};
 use super::me::MeResponse;
 use super::problem::ProblemDetails;
 
@@ -61,14 +64,17 @@ impl Modify for SecurityAddon {
         super::groups::create_group,
         super::groups::get_group,
         super::groups::patch_group,
+        super::groups::create_invite,
     ),
     components(schemas(
         MeResponse,
         ProblemDetails,
         CreateGroupRequest,
         UpdateGroupRequest,
+        CreateInviteRequest,
         GroupResponse,
         GroupReadResponse,
+        InviteResponse,
     )),
     modifiers(&SecurityAddon)
 )]
