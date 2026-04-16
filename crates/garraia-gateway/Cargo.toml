@@ -46,7 +46,9 @@ futures = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 base64 = { workspace = true }
-rand = { workspace = true }
+# Plan 0018: Argon2id hashing for invite tokens.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["getrandom"] }
 ring = { workspace = true }
 jsonwebtoken = { workspace = true }
 # Fase 3.4 REST /v1 (plan 0015): OpenAPI generation + Swagger UI.

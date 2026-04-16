@@ -36,11 +36,12 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use argon2::PasswordHasher;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, can};
-use rand::TryRngCore;
+use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -563,6 +564,155 @@ pub async fn patch_group(
         created_by,
         role,
     }))
+}
+
+/// `POST /v1/groups/{id}/invites` — create a pending invite.
+///
+/// Generates a 32-byte random token, hashes it with Argon2id, stores the
+/// hash in `group_invites.token_hash`, and returns the plaintext token
+/// exactly once in the response body.
+///
+/// Duplicate check: if a pending invite (`accepted_at IS NULL`) already
+/// exists for the same `(group_id, invited_email)`, returns 409 Conflict.
+///
+/// ## Error matrix
+///
+/// | Condition                                    | Status | Guard          |
+/// |----------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                          | 401    | Principal      |
+/// | Non-member                                   | 403    | Principal      |
+/// | X-Group-Id / path id mismatch                | 400    | handler        |
+/// | Role is Member/Guest/Child                   | 403    | `can()`        |
+/// | Invalid body (email, role)                   | 400    | validate()     |
+/// | Duplicate pending invite                     | 409    | SELECT check   |
+/// | Happy path                                   | 201    |                |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{id}/invites",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+    ),
+    request_body = CreateInviteRequest,
+    responses(
+        (status = 201, description = "Invite created; response carries the plaintext token (returned once).", body = InviteResponse),
+        (status = 400, description = "Invalid body, header/path mismatch, or reserved role.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` capability.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Pending invite already exists for this email+group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_invite(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateInviteRequest>,
+) -> Result<(StatusCode, Json<InviteResponse>), RestError> {
+    // 1. Header/path coherence (same pattern as get_group/patch_group).
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check. Owner/Admin pass; Member/Guest/Child get 403.
+    if !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural body validation.
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    // 4. Generate invite token: 32 random bytes → URL-safe base64.
+    //    Uses `password_hash::rand_core::OsRng` (rand_core 0.6) to
+    //    avoid version conflict with argon2 0.5's rand_core dep.
+    let mut token_bytes = [0u8; 32];
+    password_hash::rand_core::OsRng.fill_bytes(&mut token_bytes);
+    let token_plaintext = URL_SAFE_NO_PAD.encode(token_bytes);
+
+    // 5. Hash the token with Argon2id. The token is a random secret,
+    //    not a user password, so we use default Argon2 params directly
+    //    rather than the garraia-auth RFC 9106 tuned params.
+    let salt = password_hash::SaltString::generate(&mut password_hash::rand_core::OsRng);
+    let token_hash = argon2::Argon2::default()
+        .hash_password(token_plaintext.as_bytes(), &salt)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("argon2 hash failure: {e}")))?
+        .to_string();
+
+    // 6. Transactional INSERT with duplicate check.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6a. Check for existing pending invite.
+    let existing: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM group_invites \
+         WHERE group_id = $1 AND invited_email = $2 AND accepted_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(id)
+    .bind(body.email.trim())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if existing.is_some() {
+        return Err(RestError::Conflict(
+            "a pending invite already exists for this email in this group".into(),
+        ));
+    }
+
+    // 6b. INSERT the invite. expires_at = now() + 7 days.
+    let row: (Uuid, String, DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO group_invites \
+             (group_id, invited_email, proposed_role, token_hash, expires_at, created_by) \
+         VALUES ($1, $2, $3, $4, now() + interval '7 days', $5) \
+         RETURNING id, invited_email, expires_at, created_at",
+    )
+    .bind(id)
+    .bind(body.email.trim())
+    .bind(&body.role)
+    .bind(&token_hash)
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(InviteResponse {
+            id: row.0,
+            group_id: id,
+            invited_email: row.1,
+            proposed_role: body.role,
+            token: token_plaintext,
+            expires_at: row.2,
+            created_at: row.3,
+        }),
+    ))
 }
 
 #[cfg(test)]
