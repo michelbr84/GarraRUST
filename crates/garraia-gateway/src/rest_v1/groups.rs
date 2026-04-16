@@ -110,17 +110,15 @@ impl UpdateGroupRequest {
         if self.is_empty() {
             return Err("patch body must set at least one field");
         }
-        if let Some(name) = &self.name {
-            if name.trim().is_empty() {
-                return Err("name must not be empty");
-            }
+        if let Some(name) = &self.name
+            && name.trim().is_empty()
+        {
+            return Err("name must not be empty");
         }
-        if let Some(t) = &self.group_type {
-            if !ALLOWED_GROUP_TYPES.contains(&t.as_str()) {
-                // This covers both "personal" (reserved) and any
-                // other unknown value with the same 400 response.
-                return Err("group type must be 'family' or 'team'");
-            }
+        if let Some(t) = &self.group_type
+            && !ALLOWED_GROUP_TYPES.contains(&t.as_str())
+        {
+            return Err("group type must be 'family' or 'team'");
         }
         Ok(())
     }
