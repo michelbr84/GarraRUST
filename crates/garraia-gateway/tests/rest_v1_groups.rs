@@ -23,6 +23,10 @@
 //!      the path id.
 //!   7. GET /v1/groups/{id} 403 — caller is not a member of the
 //!      requested group.
+//!
+//!  P1-P6: PATCH /v1/groups/{id} scenarios (plan 0017).
+//!
+//!  I1-I6: POST /v1/groups/{id}/invites scenarios (plan 0018).
 
 mod common;
 
@@ -105,6 +109,37 @@ fn get_group_by_id(token: &str, path_id: &str, x_group_id: Option<&str>) -> Requ
         HeaderName::from_static("authorization"),
         HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
     );
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
+fn post_invite(
+    token: Option<&str>,
+    group_path_id: &str,
+    x_group_id: Option<&str>,
+    body: serde_json::Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/groups/{group_path_id}/invites"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builder");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = token {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
     if let Some(g) = x_group_id {
         req.headers_mut().insert(
             HeaderName::from_static("x-group-id"),
@@ -452,5 +487,175 @@ async fn v1_groups_scenarios() {
         assert_eq!(resp.status(), StatusCode::OK, "P6: type change");
         let v = body_json(resp).await;
         assert_eq!(v["type"], "family", "P6: type reflected in response");
+    }
+
+    // ─── POST /v1/groups/{id}/invites — plan 0018 Task 5 ─────
+
+    // Scenario I1: owner creates invite → 201, response has token + invite_id.
+    let invite_email = "invited-i1@0018.test";
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"email": invite_email, "role": "member"}),
+            ))
+            .await
+            .expect("I1: oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED, "I1: owner creates invite");
+        let v = body_json(resp).await;
+        assert_eq!(v["group_id"], created_group_id.to_string());
+        assert_eq!(v["invited_email"], invite_email);
+        assert_eq!(v["proposed_role"], "member");
+        assert!(
+            v["token"].is_string(),
+            "I1: response must include plaintext token"
+        );
+        assert!(
+            !v["token"].as_str().unwrap().is_empty(),
+            "I1: token must not be empty"
+        );
+        assert!(v["id"].is_string(), "I1: invite id must be present");
+        assert!(
+            v["expires_at"].is_string(),
+            "I1: expires_at must be present"
+        );
+        assert!(
+            v["created_at"].is_string(),
+            "I1: created_at must be present"
+        );
+
+        // Verify the invite row exists in DB (via admin_pool to bypass any restrictions).
+        let invite_id: uuid::Uuid = v["id"].as_str().unwrap().parse().unwrap();
+        let (db_email,): (String,) =
+            sqlx::query_as("SELECT invited_email FROM group_invites WHERE id = $1")
+                .bind(invite_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("I1: invite row must exist");
+        assert_eq!(db_email, invite_email);
+    }
+
+    // Scenario I2: duplicate pending invite for same email → 409.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"email": invite_email, "role": "admin"}),
+            ))
+            .await
+            .expect("I2: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CONFLICT,
+            "I2: duplicate pending invite must 409"
+        );
+        let v = body_json(resp).await;
+        assert!(
+            v["detail"].as_str().unwrap().contains("pending invite"),
+            "I2: detail must mention pending invite"
+        );
+    }
+
+    // Scenario I3: invalid role "owner" → 400.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"email": "i3@0018.test", "role": "owner"}),
+            ))
+            .await
+            .expect("I3: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "I3: role=owner must 400"
+        );
+        let v = body_json(resp).await;
+        assert!(
+            v["detail"].as_str().unwrap().contains("role must be"),
+            "I3: detail must mention valid roles"
+        );
+    }
+
+    // Scenario I4: empty email → 400.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"email": "  ", "role": "member"}),
+            ))
+            .await
+            .expect("I4: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "I4: empty email must 400"
+        );
+    }
+
+    // Scenario I5: non-member tries to create invite → 403 (Principal extractor).
+    {
+        let path = created_group_id.to_string();
+        let (_outsider_id, _outsider_group, outsider_token) =
+            seed_user_with_group(&h, "i5-outsider@0018.test")
+                .await
+                .expect("I5: seed outsider");
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                Some(&outsider_token),
+                &path,
+                Some(&path),
+                json!({"email": "victim@0018.test", "role": "member"}),
+            ))
+            .await
+            .expect("I5: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "I5: non-member invite must 403 (extractor)"
+        );
+    }
+
+    // Scenario I6: missing bearer token → 401.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_invite(
+                None,
+                &path,
+                Some(&path),
+                json!({"email": "i6@0018.test", "role": "member"}),
+            ))
+            .await
+            .expect("I6: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "I6: missing bearer must 401"
+        );
     }
 }
