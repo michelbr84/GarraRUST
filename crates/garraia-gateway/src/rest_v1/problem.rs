@@ -44,6 +44,10 @@ pub enum RestError {
     /// only see status 404 + title "Not Found".
     #[error("not found")]
     NotFound,
+    /// Plan 0018: resource-level conflict (e.g. duplicate pending invite).
+    /// The `{0}` detail is emitted to clients — MUST NOT embed PII.
+    #[error("{0}")]
+    Conflict(String),
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
@@ -62,6 +66,7 @@ impl RestError {
             RestError::Forbidden => StatusCode::FORBIDDEN,
             RestError::BadRequest(_) => StatusCode::BAD_REQUEST,
             RestError::NotFound => StatusCode::NOT_FOUND,
+            RestError::Conflict(_) => StatusCode::CONFLICT,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -73,6 +78,7 @@ impl RestError {
             RestError::Forbidden => "Forbidden",
             RestError::BadRequest(_) => "Bad Request",
             RestError::NotFound => "Not Found",
+            RestError::Conflict(_) => "Conflict",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::Internal(_) => "Internal Server Error",
         }
@@ -155,5 +161,16 @@ mod tests {
         assert_eq!(v["status"], 404);
         assert_eq!(v["title"], "Not Found");
         assert_eq!(v["detail"], "not found");
+    }
+
+    #[tokio::test]
+    async fn conflict_shape() {
+        let resp = RestError::Conflict("invite already pending".into()).into_response();
+        assert_eq!(resp.status(), 409);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 409);
+        assert_eq!(v["title"], "Conflict");
+        assert_eq!(v["detail"], "invite already pending");
     }
 }

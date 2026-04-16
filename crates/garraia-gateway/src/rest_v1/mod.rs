@@ -161,6 +161,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{id}",
                     get(groups::get_group).patch(groups::patch_group),
                 )
+                .route("/v1/groups/{id}/invites", post(groups::create_invite))
                 .with_state(full)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -177,6 +178,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
+                .route("/v1/groups/{id}/invites", post(unconfigured_handler))
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -189,6 +191,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
+                .route("/v1/groups/{id}/invites", post(unconfigured_handler))
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
                 .route("/docs/{*rest}", get(unconfigured_handler))

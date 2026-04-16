@@ -8,7 +8,7 @@
 //!   * `POST /v1/groups`         — plan 0016 M4
 //!   * `GET /v1/groups/{id}`     — plan 0016 M4
 //!
-//! 15 scenarios, bundled into ONE `#[tokio::test]` to avoid the
+//! 23 scenarios, bundled into ONE `#[tokio::test]` to avoid the
 //! sqlx runtime-teardown race documented in plan 0016 M3 fixup
 //! (commit `4f8be37`). Every scenario runs against the shared
 //! `Harness` via `tower::ServiceExt::oneshot`.
@@ -187,6 +187,37 @@ fn req_patch(
 ) -> Request<Body> {
     let mut req = Request::builder()
         .method(Method::PATCH)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = bearer {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
+fn req_post_grouped(
+    path: &str,
+    bearer: Option<&str>,
+    x_group_id: Option<&str>,
+    body: Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method(Method::POST)
         .uri(path)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
@@ -499,6 +530,67 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
         },
+        // ── POST /v1/groups/{id}/invites (plan 0018, cases 20-23) ──
+        MatrixCase {
+            id: 20,
+            name: "POST invite as alice(owner) -> 201",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}/invites", a.alice_group);
+                req_post_grouped(
+                    &path,
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"email": "matrix-20@0018.test", "role": "member"}),
+                )
+            }),
+            expected_status: StatusCode::CREATED,
+            expected_body_contains: Some("matrix-20@0018.test"),
+        },
+        MatrixCase {
+            id: 21,
+            name: "POST invite as alice(owner) different email -> 201",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}/invites", a.alice_group);
+                req_post_grouped(
+                    &path,
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"email": "matrix-21@0018.test", "role": "guest"}),
+                )
+            }),
+            expected_status: StatusCode::CREATED,
+            expected_body_contains: Some("matrix-21@0018.test"),
+        },
+        MatrixCase {
+            id: 22,
+            name: "POST invite as bob(non-member of alice group) -> 403",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}/invites", a.alice_group);
+                req_post_grouped(
+                    &path,
+                    Some(&a.bob_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"email": "matrix-22@0018.test", "role": "member"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 23,
+            name: "POST invite as eve(no group) -> 403",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}/invites", a.alice_group);
+                req_post_grouped(
+                    &path,
+                    Some(&a.eve_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"email": "matrix-23@0018.test", "role": "member"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -510,8 +602,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        19,
-        "GAR-391d + plan 0017 matrix must have exactly 19 cases; got {}",
+        23,
+        "GAR-391d + plan 0017 + plan 0018 matrix must have exactly 23 cases; got {}",
         matrix.len()
     );
 
