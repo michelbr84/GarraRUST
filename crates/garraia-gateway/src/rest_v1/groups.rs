@@ -33,10 +33,10 @@
 //! — injection-safe by construction. All other parameters use
 //! `sqlx::query::bind` as normal.
 
+use argon2::PasswordHasher;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use argon2::PasswordHasher;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};

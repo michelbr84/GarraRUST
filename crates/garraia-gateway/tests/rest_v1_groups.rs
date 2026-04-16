@@ -506,7 +506,11 @@ async fn v1_groups_scenarios() {
             ))
             .await
             .expect("I1: oneshot");
-        assert_eq!(resp.status(), StatusCode::CREATED, "I1: owner creates invite");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "I1: owner creates invite"
+        );
         let v = body_json(resp).await;
         assert_eq!(v["group_id"], created_group_id.to_string());
         assert_eq!(v["invited_email"], invite_email);
