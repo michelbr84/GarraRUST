@@ -37,7 +37,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use garraia_auth::Principal;
+use garraia_auth::{Action, Principal, can};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -335,6 +335,169 @@ pub async fn get_group(
         })?
         .as_str()
         .to_string();
+
+    Ok(Json(GroupReadResponse {
+        id,
+        name,
+        group_type,
+        created_at,
+        created_by,
+        role,
+    }))
+}
+
+/// `PATCH /v1/groups/{id}` — partial modification of an existing group (plan 0017).
+///
+/// Authz model (mirrors `get_group`'s extractor-first approach):
+///
+/// 1. The `Principal` extractor requires an `X-Group-Id` header and 403's
+///    any caller who is not a member of the target group — so by the time
+///    this handler runs, `principal.group_id` is `Some(_)` and
+///    `principal.role` is `Some(_)`. **Non-members never reach this code.**
+/// 2. This handler then validates `principal.group_id == path_id` (400 if
+///    mismatch, same rule as `get_group`).
+/// 3. Authz capability check via `can(&principal, Action::GroupSettings)`:
+///    - Owner, Admin → allowed (200 on success)
+///    - Member, Guest, Child → 403 Forbidden
+/// 4. Request body is validated structurally before any DB access (empty
+///    body, bad name, reserved `type = "personal"` → 400).
+/// 5. UPDATE runs inside a transaction with `SET LOCAL app.current_user_id`
+///    as the first statement (same pattern as `create_group`). `updated_at
+///    = now()` is set **explicitly** because `groups` has no trigger
+///    (see migration 001 line 115). COALESCE($new, column) implements PATCH
+///    partial-update semantics — only fields the caller sent are overwritten.
+/// 6. UPDATE ... RETURNING fetches the fresh row in the same roundtrip. If
+///    the row vanished between the extractor's membership lookup and this
+///    statement (group hard-deleted), RETURNING is empty → 404.
+///
+/// ## Error response status table
+///
+/// | Condition                                  | Status | Source         |
+/// |--------------------------------------------|--------|----------------|
+/// | No JWT                                     | 401    | JWT extractor  |
+/// | Non-member of target group                 | 403    | Principal ext. |
+/// | `X-Group-Id` header missing / mismatched   | 400    | this handler   |
+/// | Body is `{}` or all-None                   | 400    | validate()     |
+/// | `name` present but blank                   | 400    | validate()     |
+/// | `type` is `"personal"` or unknown          | 400    | validate()     |
+/// | Role is Member/Guest/Child                 | 403    | `can()`        |
+/// | Group row deleted concurrently             | 404    | UPDATE RETURN. |
+/// | Happy path                                 | 200    |                |
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+    ),
+    request_body = UpdateGroupRequest,
+    responses(
+        (status = 200, description = "Group updated; response carries the fresh row + caller's role.", body = GroupReadResponse),
+        (status = 400, description = "Invalid body, header/path mismatch, or reserved group type.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `group.settings` capability.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Group vanished between extractor lookup and UPDATE.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_group(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateGroupRequest>,
+) -> Result<Json<GroupReadResponse>, RestError> {
+    // 1. Header/path coherence (same rule as `get_group`).
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check. Owner/Admin pass; Member/Guest/Child get 403.
+    //    Non-members already got 403 at the extractor.
+    if !can(&principal, Action::GroupSettings) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural body validation (no DB access, PII-safe messages).
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    // 4. Resolve role once for the response payload. Same invariant as
+    //    `get_group`: if `group_id` is Some then `role` must be Some —
+    //    the extractor guarantees it, and breaking that invariant is
+    //    a 500, not a silent empty-role leak.
+    let role = principal
+        .role
+        .ok_or_else(|| {
+            tracing::error!(
+                user_id = %principal.user_id,
+                group_id = ?principal.group_id,
+                "Principal.role is None with group_id Some — invariant violated by extractor"
+            );
+            RestError::Internal(anyhow::anyhow!(
+                "Principal.role is None despite group_id being Some"
+            ))
+        })?
+        .as_str()
+        .to_string();
+
+    // 5. Transactional UPDATE. `SET LOCAL` must be the first statement
+    //    inside the tx — plan 0016 M4 pattern. This handler mirrors
+    //    `create_group` (not `get_group`, which has a FIXME about the
+    //    same hazard) so the tenant context is already correct when
+    //    `groups` eventually gains FORCE RLS.
+    //
+    //    SET LOCAL does not accept bind params in Postgres; Uuid Display
+    //    is 36 hex-dashed chars, injection-safe by construction.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. UPDATE with COALESCE ($new, column) — partial modification:
+    //    only fields the caller set are overwritten, the rest stay
+    //    untouched. `updated_at = now()` is ALWAYS in the SET clause
+    //    because `groups` has no trigger (migration 001 line 115).
+    //    RETURNING gives us the fresh row in the same roundtrip.
+    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
+        r#"
+        UPDATE groups
+           SET name       = COALESCE($1, name),
+               type       = COALESCE($2, type),
+               updated_at = now()
+         WHERE id = $3
+     RETURNING id, name, type, created_at, created_by
+        "#,
+    )
+    .bind(body.name.as_deref())
+    .bind(body.group_type.as_deref())
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(Json(GroupReadResponse {
         id,
