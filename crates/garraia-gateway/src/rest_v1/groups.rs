@@ -36,8 +36,11 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, can};
+use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -53,6 +56,13 @@ use super::problem::RestError;
 /// SQLite→Postgres migration fallback and must not be exposed
 /// via the API layer (see migration 001 line 114 comment).
 const ALLOWED_GROUP_TYPES: &[&str] = &["family", "team"];
+
+/// Accepted values for `CreateInviteRequest::role`.
+///
+/// Mirrors the `CHECK (proposed_role IN ('admin','member','guest','child'))`
+/// on `group_invites.proposed_role` in migration 001 line 141. `"owner"` is
+/// excluded — owners are created during group bootstrap only (comment line 155).
+const ALLOWED_INVITE_ROLES: &[&str] = &["admin", "member", "guest", "child"];
 
 /// Request body for `POST /v1/groups`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -140,6 +150,54 @@ pub struct GroupReadResponse {
     /// Caller's role in the group, e.g. `"owner"`, `"admin"`,
     /// `"member"`, `"guest"`, `"child"`.
     pub role: String,
+}
+
+/// Request body for `POST /v1/groups/{id}/invites` (plan 0018).
+///
+/// Creates a pending invite for the given email. The caller must have
+/// `Action::MembersManage` (Owner or Admin).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateInviteRequest {
+    /// Email address to invite. Stored as `citext` (case-insensitive).
+    pub email: String,
+    /// Role to grant on acceptance. Must be one of: `admin`, `member`,
+    /// `guest`, `child`. `owner` is not invitable.
+    pub role: String,
+}
+
+impl CreateInviteRequest {
+    /// Structural validation. PII-safe error messages only.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let trimmed = self.email.trim();
+        if trimmed.is_empty() {
+            return Err("email must not be empty");
+        }
+        if !trimmed.contains('@') {
+            return Err("email must contain '@'");
+        }
+        if !ALLOWED_INVITE_ROLES.contains(&self.role.as_str()) {
+            return Err("role must be one of: admin, member, guest, child");
+        }
+        Ok(())
+    }
+}
+
+/// Response body for `POST /v1/groups/{id}/invites` (201 Created).
+///
+/// `token` is the **plaintext** invite token — returned exactly once.
+/// The database stores only the Argon2id hash. Callers should forward
+/// this token to the invitee (e.g. via email or direct link).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InviteResponse {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub invited_email: String,
+    pub proposed_role: String,
+    /// Opaque plaintext token. Share with the invitee. Returned once.
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// `POST /v1/groups` — create a new group. The authenticated caller
@@ -632,5 +690,69 @@ mod tests {
         // drops when they misspell `name`/`type`.
         let err = serde_json::from_str::<UpdateGroupRequest>(r#"{"nmae":"typo"}"#);
         assert!(err.is_err(), "deny_unknown_fields should reject `nmae`");
+    }
+
+    // ── CreateInviteRequest validation (plan 0018 t2) ────────
+
+    #[test]
+    fn create_invite_request_valid() {
+        let req = CreateInviteRequest {
+            email: "alice@example.com".into(),
+            role: "member".into(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn create_invite_request_rejects_empty_email() {
+        let req = CreateInviteRequest {
+            email: "   ".into(),
+            role: "member".into(),
+        };
+        assert_eq!(req.validate().unwrap_err(), "email must not be empty");
+    }
+
+    #[test]
+    fn create_invite_request_rejects_missing_at() {
+        let req = CreateInviteRequest {
+            email: "not-an-email".into(),
+            role: "member".into(),
+        };
+        assert_eq!(req.validate().unwrap_err(), "email must contain '@'");
+    }
+
+    #[test]
+    fn create_invite_request_rejects_owner_role() {
+        let req = CreateInviteRequest {
+            email: "bob@example.com".into(),
+            role: "owner".into(),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: admin, member, guest, child"
+        );
+    }
+
+    #[test]
+    fn create_invite_request_rejects_unknown_role() {
+        let req = CreateInviteRequest {
+            email: "bob@example.com".into(),
+            role: "superadmin".into(),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: admin, member, guest, child"
+        );
+    }
+
+    #[test]
+    fn create_invite_request_all_valid_roles() {
+        for role in &["admin", "member", "guest", "child"] {
+            let req = CreateInviteRequest {
+                email: "x@y.com".into(),
+                role: role.to_string(),
+            };
+            assert!(req.validate().is_ok(), "role '{role}' should be valid");
+        }
     }
 }
