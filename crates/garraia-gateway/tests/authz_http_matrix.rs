@@ -179,6 +179,37 @@ fn req_post(path: &str, bearer: Option<&str>, body: Value) -> Request<Body> {
     req
 }
 
+fn req_patch(
+    path: &str,
+    bearer: Option<&str>,
+    x_group_id: Option<&str>,
+    body: Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method(Method::PATCH)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = bearer {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
 // ─── Matrix case type ────────────────────────────────────────
 
 /// Type alias for the request-builder closure on each `MatrixCase`.
@@ -407,6 +438,67 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
         },
+        // ── PATCH /v1/groups/{id} (cases 16–19, plan 0017 Task 6) ──
+        MatrixCase {
+            id: 16,
+            name: "PATCH /v1/groups/{alice_group} as alice (owner) -> 200",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}", a.alice_group);
+                req_patch(
+                    &path,
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"name": "alice-renamed-by-matrix"}),
+                )
+            }),
+            expected_status: StatusCode::OK,
+            expected_body_contains: Some("alice-renamed-by-matrix"),
+        },
+        MatrixCase {
+            id: 17,
+            name: "PATCH /v1/groups/{alice_group} as bob (non-member) -> 403",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}", a.alice_group);
+                req_patch(
+                    &path,
+                    Some(&a.bob_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"name": "bob-hack"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 18,
+            name: "PATCH /v1/groups/{alice_group} as eve (no group) -> 403",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}", a.alice_group);
+                req_patch(
+                    &path,
+                    Some(&a.eve_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"name": "eve-hack"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 19,
+            name: "PATCH /v1/groups/{alice_group} without bearer -> 401",
+            build: Box::new(|a| {
+                let path = format!("/v1/groups/{}", a.alice_group);
+                req_patch(
+                    &path,
+                    None,
+                    Some(&a.alice_group.to_string()),
+                    json!({"name": "anon-hack"}),
+                )
+            }),
+            expected_status: StatusCode::UNAUTHORIZED,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -418,8 +510,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        15,
-        "GAR-391d matrix must have exactly 15 cases; got {}",
+        19,
+        "GAR-391d + plan 0017 matrix must have exactly 19 cases; got {}",
         matrix.len()
     );
 
