@@ -663,39 +663,43 @@ pub async fn create_invite(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 6a. Check for existing pending invite.
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM group_invites \
-         WHERE group_id = $1 AND invited_email = $2 AND accepted_at IS NULL \
-         LIMIT 1",
-    )
-    .bind(id)
-    .bind(body.email.trim())
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    // 6. INSERT the invite with conflict-safe duplicate detection.
+    //
+    //    Migration 011 adds a partial unique index:
+    //      CREATE UNIQUE INDEX group_invites_pending_unique
+    //        ON group_invites(group_id, invited_email)
+    //        WHERE accepted_at IS NULL;
+    //
+    //    If a concurrent request inserts the same (group_id, email)
+    //    pair, Postgres raises SQLSTATE 23505 (unique_violation) which
+    //    we catch and map to 409 Conflict. This is race-free — the
+    //    database enforces uniqueness atomically, no TOCTOU.
+    let email = body.email.trim();
 
-    if existing.is_some() {
-        return Err(RestError::Conflict(
-            "a pending invite already exists for this email in this group".into(),
-        ));
-    }
+    let insert_result: Result<(Uuid, String, DateTime<Utc>, DateTime<Utc>), sqlx::Error> =
+        sqlx::query_as(
+            "INSERT INTO group_invites \
+                 (group_id, invited_email, proposed_role, token_hash, expires_at, created_by) \
+             VALUES ($1, $2, $3, $4, now() + interval '7 days', $5) \
+             RETURNING id, invited_email, expires_at, created_at",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(&body.role)
+        .bind(&token_hash)
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await;
 
-    // 6b. INSERT the invite. expires_at = now() + 7 days.
-    let row: (Uuid, String, DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
-        "INSERT INTO group_invites \
-             (group_id, invited_email, proposed_role, token_hash, expires_at, created_by) \
-         VALUES ($1, $2, $3, $4, now() + interval '7 days', $5) \
-         RETURNING id, invited_email, expires_at, created_at",
-    )
-    .bind(id)
-    .bind(body.email.trim())
-    .bind(&body.role)
-    .bind(&token_hash)
-    .bind(principal.user_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let row = match insert_result {
+        Ok(r) => r,
+        Err(sqlx::Error::Database(ref db_err)) if db_err.code().as_deref() == Some("23505") => {
+            return Err(RestError::Conflict(
+                "a pending invite already exists for this email in this group".into(),
+            ));
+        }
+        Err(e) => return Err(RestError::Internal(e.into())),
+    };
 
     tx.commit()
         .await
