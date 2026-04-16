@@ -68,6 +68,37 @@ fn post_groups(token: Option<&str>, body: serde_json::Value) -> Request<Body> {
     req
 }
 
+fn patch_group_by_id(
+    token: Option<&str>,
+    path_id: &str,
+    x_group_id: Option<&str>,
+    body: serde_json::Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/groups/{path_id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builder");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = token {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
 fn get_group_by_id(token: &str, path_id: &str, x_group_id: Option<&str>) -> Request<Body> {
     let mut req = harness_get(&format!("/v1/groups/{path_id}"));
     req.headers_mut().insert(
@@ -267,5 +298,157 @@ async fn v1_groups_scenarios() {
             StatusCode::FORBIDDEN,
             "scenario 7: non-member reading foreign group must 403"
         );
+    }
+
+    // ─── PATCH /v1/groups/{id} — plan 0017 Task 5 ─────────
+
+    // Scenario P1: owner renames group → 200, response carries new name.
+    // Also validates that `updated_at` was bumped in the database
+    // (groups has no trigger — handler must set it explicitly per
+    // migration 001 line 115).
+    {
+        let path = created_group_id.to_string();
+        // Capture updated_at BEFORE the PATCH.
+        let (before_ts,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
+            "SELECT updated_at FROM groups WHERE id = $1",
+        )
+        .bind(created_group_id)
+        .fetch_one(&h.admin_pool)
+        .await
+        .expect("P1: pre-PATCH updated_at");
+
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"name": "Renamed by P1"}),
+            ))
+            .await
+            .expect("P1: oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "P1: owner rename");
+        let v = body_json(resp).await;
+        assert_eq!(v["name"], "Renamed by P1");
+        assert_eq!(v["role"], "owner");
+
+        // Verify updated_at was bumped in the DB.
+        let (after_ts,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
+            "SELECT updated_at FROM groups WHERE id = $1",
+        )
+        .bind(created_group_id)
+        .fetch_one(&h.admin_pool)
+        .await
+        .expect("P1: post-PATCH updated_at");
+        assert!(
+            after_ts > before_ts,
+            "P1: updated_at must increase after PATCH; before={before_ts}, after={after_ts}"
+        );
+    }
+
+    // Scenario P2: empty body → 400 deterministic detail.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({}),
+            ))
+            .await
+            .expect("P2: oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "P2: empty body");
+        let v = body_json(resp).await;
+        assert_eq!(
+            v["detail"], "patch body must set at least one field",
+            "P2: deterministic detail"
+        );
+    }
+
+    // Scenario P3: type=personal → 400.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"type": "personal"}),
+            ))
+            .await
+            .expect("P3: oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "P3: personal rejected");
+        let v = body_json(resp).await;
+        assert!(
+            v["detail"].as_str().unwrap().contains("group type"),
+            "P3: detail mentions group type, got {v}"
+        );
+    }
+
+    // Scenario P4: non-member PATCH → 403 (Principal extractor).
+    {
+        let path = created_group_id.to_string();
+        let (_other_id, _other_group, other_token) =
+            seed_user_with_group(&h, "p4-outsider@0017.test")
+                .await
+                .expect("P4: seed outsider");
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                Some(&other_token),
+                &path,
+                Some(&path),
+                json!({"name": "hacked"}),
+            ))
+            .await
+            .expect("P4: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "P4: non-member PATCH must 403 (extractor)"
+        );
+    }
+
+    // Scenario P5: unauthenticated → 401.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                None,
+                &path,
+                Some(&path),
+                json!({"name": "anon"}),
+            ))
+            .await
+            .expect("P5: oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "P5: no JWT");
+    }
+
+    // Scenario P6: owner changes type team → family → 200.
+    {
+        let path = created_group_id.to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(patch_group_by_id(
+                Some(&creator_token),
+                &path,
+                Some(&path),
+                json!({"type": "family"}),
+            ))
+            .await
+            .expect("P6: oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "P6: type change");
+        let v = body_json(resp).await;
+        assert_eq!(v["type"], "family", "P6: type reflected in response");
     }
 }
