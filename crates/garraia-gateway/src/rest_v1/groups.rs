@@ -570,8 +570,7 @@ mod tests {
 
     #[test]
     fn update_group_request_deserializes_type_with_rename() {
-        let req: UpdateGroupRequest =
-            serde_json::from_str(r#"{"type":"family"}"#).unwrap();
+        let req: UpdateGroupRequest = serde_json::from_str(r#"{"type":"family"}"#).unwrap();
         assert_eq!(req.group_type.as_deref(), Some("family"));
         assert!(req.name.is_none());
         assert!(!req.is_empty());
@@ -579,8 +578,7 @@ mod tests {
 
     #[test]
     fn update_group_request_name_only_is_not_empty() {
-        let req: UpdateGroupRequest =
-            serde_json::from_str(r#"{"name":"new name"}"#).unwrap();
+        let req: UpdateGroupRequest = serde_json::from_str(r#"{"name":"new name"}"#).unwrap();
         assert_eq!(req.name.as_deref(), Some("new name"));
         assert!(req.group_type.is_none());
         assert!(!req.is_empty());
@@ -632,9 +630,7 @@ mod tests {
     fn update_group_request_rejects_unknown_fields() {
         // deny_unknown_fields: typo-protects clients from silent
         // drops when they misspell `name`/`type`.
-        let err = serde_json::from_str::<UpdateGroupRequest>(
-            r#"{"nmae":"typo"}"#,
-        );
+        let err = serde_json::from_str::<UpdateGroupRequest>(r#"{"nmae":"typo"}"#);
         assert!(err.is_err(), "deny_unknown_fields should reject `nmae`");
     }
 }

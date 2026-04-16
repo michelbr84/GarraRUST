@@ -309,13 +309,12 @@ async fn v1_groups_scenarios() {
     {
         let path = created_group_id.to_string();
         // Capture updated_at BEFORE the PATCH.
-        let (before_ts,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
-            "SELECT updated_at FROM groups WHERE id = $1",
-        )
-        .bind(created_group_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("P1: pre-PATCH updated_at");
+        let (before_ts,): (chrono::DateTime<chrono::Utc>,) =
+            sqlx::query_as("SELECT updated_at FROM groups WHERE id = $1")
+                .bind(created_group_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("P1: pre-PATCH updated_at");
 
         let resp = h
             .router
@@ -334,13 +333,12 @@ async fn v1_groups_scenarios() {
         assert_eq!(v["role"], "owner");
 
         // Verify updated_at was bumped in the DB.
-        let (after_ts,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
-            "SELECT updated_at FROM groups WHERE id = $1",
-        )
-        .bind(created_group_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("P1: post-PATCH updated_at");
+        let (after_ts,): (chrono::DateTime<chrono::Utc>,) =
+            sqlx::query_as("SELECT updated_at FROM groups WHERE id = $1")
+                .bind(created_group_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("P1: post-PATCH updated_at");
         assert!(
             after_ts > before_ts,
             "P1: updated_at must increase after PATCH; before={before_ts}, after={after_ts}"
@@ -383,7 +381,11 @@ async fn v1_groups_scenarios() {
             ))
             .await
             .expect("P3: oneshot");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "P3: personal rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "P3: personal rejected"
+        );
         let v = body_json(resp).await;
         assert!(
             v["detail"].as_str().unwrap().contains("group type"),
