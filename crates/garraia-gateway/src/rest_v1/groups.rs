@@ -74,6 +74,58 @@ pub struct GroupResponse {
     pub created_at: DateTime<Utc>,
 }
 
+/// Request body for `PATCH /v1/groups/{group_id}` (plan 0017).
+///
+/// All fields are `Option<T>` — only the fields explicitly set in the
+/// JSON body are applied via `COALESCE($new, column)` in the UPDATE.
+/// Empty body `{}` (all-None) is rejected by [`UpdateGroupRequest::validate`]
+/// with a 400: a no-op PATCH is always a client mistake.
+///
+/// `type = "personal"` is rejected with 400 — same rule as
+/// [`CreateGroupRequest`] (see [`ALLOWED_GROUP_TYPES`] and migration
+/// 001 line 114).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateGroupRequest {
+    /// New display name. Rejected if empty after trim.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New group type. Must be `"family"` or `"team"`. `"personal"` is
+    /// reserved programmatic-only and rejected with 400.
+    #[serde(default, rename = "type")]
+    pub group_type: Option<String>,
+}
+
+impl UpdateGroupRequest {
+    /// True when no field was set. Empty body = client error = 400.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.group_type.is_none()
+    }
+
+    /// Structural validation. Returns `Ok(())` if the body is coherent,
+    /// `Err(&'static str)` with a PII-safe detail otherwise. The error
+    /// string is emitted verbatim to clients in the Problem Details
+    /// body, so it must not contain user-identifying data.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.is_empty() {
+            return Err("patch body must set at least one field");
+        }
+        if let Some(name) = &self.name {
+            if name.trim().is_empty() {
+                return Err("name must not be empty");
+            }
+        }
+        if let Some(t) = &self.group_type {
+            if !ALLOWED_GROUP_TYPES.contains(&t.as_str()) {
+                // This covers both "personal" (reserved) and any
+                // other unknown value with the same 400 response.
+                return Err("group type must be 'family' or 'team'");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Response body for `GET /v1/groups/{id}` (200 OK).
 ///
 /// Includes the caller's `role` (from the `Principal` extractor)
@@ -343,5 +395,85 @@ mod tests {
         let parsed: CreateGroupRequest = serde_json::from_str(s).unwrap();
         assert_eq!(parsed.name, "alpha");
         assert_eq!(parsed.group_type, "team");
+    }
+
+    // ─── plan 0017 Task 1: UpdateGroupRequest ──────────────────────────
+
+    #[test]
+    fn update_group_request_empty_body_all_none() {
+        let req: UpdateGroupRequest = serde_json::from_str("{}").unwrap();
+        assert!(req.name.is_none());
+        assert!(req.group_type.is_none());
+        assert!(req.is_empty());
+    }
+
+    #[test]
+    fn update_group_request_deserializes_type_with_rename() {
+        let req: UpdateGroupRequest =
+            serde_json::from_str(r#"{"type":"family"}"#).unwrap();
+        assert_eq!(req.group_type.as_deref(), Some("family"));
+        assert!(req.name.is_none());
+        assert!(!req.is_empty());
+    }
+
+    #[test]
+    fn update_group_request_name_only_is_not_empty() {
+        let req: UpdateGroupRequest =
+            serde_json::from_str(r#"{"name":"new name"}"#).unwrap();
+        assert_eq!(req.name.as_deref(), Some("new name"));
+        assert!(req.group_type.is_none());
+        assert!(!req.is_empty());
+    }
+
+    #[test]
+    fn update_group_request_validate_rejects_personal_type() {
+        let req = UpdateGroupRequest {
+            name: None,
+            group_type: Some("personal".into()),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "group type must be 'family' or 'team'"
+        );
+    }
+
+    #[test]
+    fn update_group_request_validate_rejects_empty_name() {
+        let req = UpdateGroupRequest {
+            name: Some("   ".into()),
+            group_type: None,
+        };
+        assert_eq!(req.validate().unwrap_err(), "name must not be empty");
+    }
+
+    #[test]
+    fn update_group_request_validate_rejects_empty_body() {
+        let req = UpdateGroupRequest {
+            name: None,
+            group_type: None,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "patch body must set at least one field"
+        );
+    }
+
+    #[test]
+    fn update_group_request_validate_accepts_valid_family_rename() {
+        let req = UpdateGroupRequest {
+            name: Some("Updated".into()),
+            group_type: Some("family".into()),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn update_group_request_rejects_unknown_fields() {
+        // deny_unknown_fields: typo-protects clients from silent
+        // drops when they misspell `name`/`type`.
+        let err = serde_json::from_str::<UpdateGroupRequest>(
+            r#"{"nmae":"typo"}"#,
+        );
+        assert!(err.is_err(), "deny_unknown_fields should reject `nmae`");
     }
 }
