@@ -48,6 +48,10 @@ pub enum RestError {
     /// The `{0}` detail is emitted to clients — MUST NOT embed PII.
     #[error("{0}")]
     Conflict(String),
+    /// Plan 0019: resource permanently unavailable (e.g. expired invite).
+    /// The `{0}` detail is emitted to clients — MUST NOT embed PII.
+    #[error("{0}")]
+    Gone(String),
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
@@ -67,6 +71,7 @@ impl RestError {
             RestError::BadRequest(_) => StatusCode::BAD_REQUEST,
             RestError::NotFound => StatusCode::NOT_FOUND,
             RestError::Conflict(_) => StatusCode::CONFLICT,
+            RestError::Gone(_) => StatusCode::GONE,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -79,6 +84,7 @@ impl RestError {
             RestError::BadRequest(_) => "Bad Request",
             RestError::NotFound => "Not Found",
             RestError::Conflict(_) => "Conflict",
+            RestError::Gone(_) => "Gone",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::Internal(_) => "Internal Server Error",
         }
@@ -172,5 +178,16 @@ mod tests {
         assert_eq!(v["status"], 409);
         assert_eq!(v["title"], "Conflict");
         assert_eq!(v["detail"], "invite already pending");
+    }
+
+    #[tokio::test]
+    async fn gone_shape() {
+        let resp = RestError::Gone("invite has expired".into()).into_response();
+        assert_eq!(resp.status(), 410);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], 410);
+        assert_eq!(v["title"], "Gone");
+        assert_eq!(v["detail"], "invite has expired");
     }
 }

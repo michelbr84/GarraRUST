@@ -591,6 +591,80 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::FORBIDDEN,
             expected_body_contains: None,
         },
+        // ── POST /v1/invites/{token}/accept (plan 0019, cases 24-26) ──
+        //
+        // The matrix does not seed a real invite token, so these
+        // cases exercise only the authz/error paths:
+        //   24: valid JWT (alice) + bogus token -> 404 (handler runs,
+        //       no hash match in pending set)
+        //   25: no JWT -> 401 (Principal extractor short-circuits)
+        //   26: valid JWT (eve, not a member of anything) + bogus
+        //       token -> 404 (accept is not gated by membership)
+        //
+        // Happy-path and 409/410 coverage live in the dedicated
+        // rest_v1_invites.rs integration test (plan 0019 T4).
+        MatrixCase {
+            id: 24,
+            name: "POST accept invite as alice + bogus token -> 404",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/invites/bogus-token-24/accept")
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {}", a.alice_token)).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::NOT_FOUND,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 25,
+            name: "POST accept invite no bearer -> 401",
+            build: Box::new(|_a| {
+                let mut req = Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/invites/bogus-token-25/accept")
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req
+            }),
+            expected_status: StatusCode::UNAUTHORIZED,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 26,
+            name: "POST accept invite as eve(no group) + bogus token -> 404",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/invites/bogus-token-26/accept")
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {}", a.eve_token)).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::NOT_FOUND,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -602,8 +676,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        23,
-        "GAR-391d + plan 0017 + plan 0018 matrix must have exactly 23 cases; got {}",
+        26,
+        "GAR-391d + plans 0017/0018/0019 matrix must have exactly 26 cases; got {}",
         matrix.len()
     );
 
