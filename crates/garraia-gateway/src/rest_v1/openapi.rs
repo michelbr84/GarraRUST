@@ -16,6 +16,7 @@ use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     UpdateGroupRequest,
 };
+use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
 use super::problem::ProblemDetails;
 
@@ -65,6 +66,7 @@ impl Modify for SecurityAddon {
         super::groups::get_group,
         super::groups::patch_group,
         super::groups::create_invite,
+        super::invites::accept_invite,
     ),
     components(schemas(
         MeResponse,
@@ -75,6 +77,7 @@ impl Modify for SecurityAddon {
         GroupResponse,
         GroupReadResponse,
         InviteResponse,
+        AcceptInviteResponse,
     )),
     modifiers(&SecurityAddon)
 )]
