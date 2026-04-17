@@ -1,9 +1,18 @@
 //! `/v1/invites` handlers (plan 0019).
 //!
-//! ## `POST /v1/invites/{token}:accept`
+//! ## `POST /v1/invites/{token}/accept`
 //!
 //! Accepts a pending group invite. The caller provides the plaintext
 //! token in the path. The handler:
+//!
+//! ## Route shape note
+//!
+//! Plan 0019 drafted the path as `/v1/invites/{token}:accept` (Google
+//! Cloud custom-action style). Axum 0.8 / `matchit` rejects mixed
+//! `{param}:literal` in the same segment ("Only one parameter is
+//! allowed per path segment"), so the delivered path is two segments:
+//! `/v1/invites/{token}/accept`. Semantics unchanged — token is still
+//! the primary resource identifier and `accept` is the verb sub-path.
 //!
 //! 1. Fetches all pending invites (`accepted_at IS NULL`).
 //! 2. Verifies the token against each `token_hash` (Argon2id).
@@ -70,7 +79,7 @@ pub struct AcceptInviteResponse {
 /// `sqlx::query::bind` as normal. Same pattern as `groups.rs`.
 #[utoipa::path(
     post,
-    path = "/v1/invites/{token}:accept",
+    path = "/v1/invites/{token}/accept",
     params(
         ("token" = String, Path, description = "Plaintext invite token (URL-safe base64)."),
     ),

@@ -118,6 +118,14 @@ name = "authz_http_matrix"
 path = "tests/authz_http_matrix.rs"
 required-features = ["test-helpers"]
 
+# Plan 0019 — GAR-393 slice 3: POST /v1/invites/{token}:accept.
+# 6 scenarios in one bundled `#[tokio::test]`. Same gating as the
+# other integration binaries.
+[[test]]
+name = "rest_v1_invites"
+path = "tests/rest_v1_invites.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 tempfile = "3"
 serial_test = { workspace = true }
