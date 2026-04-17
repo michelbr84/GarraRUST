@@ -163,10 +163,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(groups::get_group).patch(groups::patch_group),
                 )
                 .route("/v1/groups/{id}/invites", post(groups::create_invite))
-                .route(
-                    "/v1/invites/{token}/accept",
-                    post(invites::accept_invite),
-                )
+                .route("/v1/invites/{token}/accept", post(invites::accept_invite))
                 .with_state(full)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }

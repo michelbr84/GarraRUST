@@ -1,4 +1,4 @@
-//! Integration tests for `POST /v1/invites/{token}:accept` (plan 0019).
+//! Integration tests for `POST /v1/invites/{token}/accept` (plan 0019).
 //!
 //! Scenarios:
 //!   A1. Happy path — owner creates invite, second user accepts → 200.
@@ -56,11 +56,7 @@ fn post_create_group(bearer: &str, body: serde_json::Value) -> Request<Body> {
     req
 }
 
-fn post_invite_create(
-    bearer: &str,
-    group_id: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
+fn post_invite_create(bearer: &str, group_id: &str, body: serde_json::Value) -> Request<Body> {
     let mut req = req_with_peer(
         Request::builder()
             .method("POST")
@@ -118,7 +114,11 @@ async fn v1_invites_accept_scenarios() {
             .await
             .expect("create group");
         assert_eq!(resp.status(), StatusCode::CREATED);
-        body_json(resp).await["id"].as_str().unwrap().parse().unwrap()
+        body_json(resp).await["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
     };
     let gid = group_id.to_string();
 
@@ -135,10 +135,7 @@ async fn v1_invites_accept_scenarios() {
             .await
             .expect("create invite");
         assert_eq!(resp.status(), StatusCode::CREATED, "invite created");
-        body_json(resp).await["token"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        body_json(resp).await["token"].as_str().unwrap().to_string()
     };
 
     // Seed: the user who will accept the invite.
@@ -243,11 +240,7 @@ async fn v1_invites_accept_scenarios() {
             .oneshot(post_accept(Some(&joiner_token), "totally-bogus-token"))
             .await
             .expect("A4: oneshot");
-        assert_eq!(
-            resp.status(),
-            StatusCode::NOT_FOUND,
-            "A4: bad token → 404"
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "A4: bad token → 404");
     }
 
     // ─── A5: already a member → 409 ─────────────────────────
@@ -266,10 +259,7 @@ async fn v1_invites_accept_scenarios() {
                 .await
                 .expect("A5: create invite");
             assert_eq!(resp.status(), StatusCode::CREATED);
-            body_json(resp).await["token"]
-                .as_str()
-                .unwrap()
-                .to_string()
+            body_json(resp).await["token"].as_str().unwrap().to_string()
         };
 
         // Joiner (already member from A1) tries to accept a different
@@ -326,10 +316,7 @@ async fn v1_invites_accept_scenarios() {
                 .await
                 .expect("A6: create invite");
             assert_eq!(resp.status(), StatusCode::CREATED);
-            body_json(resp).await["token"]
-                .as_str()
-                .unwrap()
-                .to_string()
+            body_json(resp).await["token"].as_str().unwrap().to_string()
         };
 
         let resp = h
