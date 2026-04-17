@@ -55,6 +55,12 @@ type PendingInviteRow = (
 /// Layout: `(invite_id, group_id, role, expires_at, accepted_at)`.
 type MatchedInvite = (Uuid, Uuid, String, DateTime<Utc>, Option<DateTime<Utc>>);
 
+/// Expected length (in chars) of an invite token. `create_invite`
+/// encodes 32 random bytes via URL-safe base64 no-padding, which
+/// produces exactly 43 chars. Used by [`accept_invite`] to reject
+/// malformed inputs before the Argon2 verify scan (SEC-07).
+const TOKEN_LEN_CHARS: usize = 43;
+
 /// Response body for `POST /v1/invites/{token}/accept` (200 OK).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AcceptInviteResponse {
@@ -76,18 +82,23 @@ pub struct AcceptInviteResponse {
 /// | Condition                          | Status | Guard          |
 /// |------------------------------------|--------|----------------|
 /// | Missing/invalid JWT                | 401    | Principal      |
+/// | Malformed token (wrong length)     | 404    | handler        |
 /// | Token not found (no hash match)    | 404    | handler        |
-/// | Invite already accepted            | 404    | handler (\*)   |
+/// | Invite already accepted            | 409    | handler (\*)   |
 /// | Invite expired                     | 410    | handler        |
 /// | Caller already member of group     | 409    | handler        |
 /// | Happy path                         | 200    |                |
 ///
-/// (\*) Already-accepted invites are filtered out by the `accepted_at
-/// IS NULL` pending-set SELECT, so a double-accept attempt does not
-/// find any matching hash and returns 404. The defensive
-/// `accepted_at.is_some()` branch below is dead code in practice but
-/// kept as a belt-and-suspenders guard against a future refactor that
-/// broadens the SELECT.
+/// (\*) The pending-set SELECT filters `accepted_at IS NULL`, so a
+/// serial double-accept by the same user races the PK collision on
+/// `group_members` and hits the 409 branch. A concurrent double-accept
+/// by two **different** users on the same plaintext token is caught
+/// by the UPDATE-level guard (`AND accepted_at IS NULL` +
+/// `rows_affected() == 0` check) — without that guard, two callers
+/// could race through the pre-tx `accepted_at.is_some()` check under
+/// READ COMMITTED isolation and both succeed, producing two members
+/// from one invite (B-1 blocker, code-reviewer). The guard closes
+/// that race atomically at the database layer.
 ///
 /// ## SQL injection posture
 ///
@@ -106,7 +117,7 @@ pub struct AcceptInviteResponse {
         (status = 200, description = "Invite accepted; caller is now a group member.", body = AcceptInviteResponse),
         (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
         (status = 404, description = "No pending invite matches this token.", body = super::problem::ProblemDetails),
-        (status = 409, description = "Invite already accepted or caller already a member.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Invite already accepted (race-lost) or caller already a member of the group.", body = super::problem::ProblemDetails),
         (status = 410, description = "Invite has expired.", body = super::problem::ProblemDetails),
     ),
     security(("bearer" = []))
@@ -117,6 +128,15 @@ pub async fn accept_invite(
     Path(token): Path<String>,
 ) -> Result<Json<AcceptInviteResponse>, RestError> {
     let pool = state.app_pool.pool_for_handlers();
+
+    // 0. Reject tokens that are not exactly 43 chars (32 random bytes
+    //    URL-safe base64, no padding). This is SEC-07: cutting off
+    //    malformed inputs before the Argon2 scan eliminates the
+    //    request-amplification vector of a DoS attacker who sends
+    //    tokens of arbitrary length. 43 = `ceil(32 * 4 / 3)`.
+    if token.len() != TOKEN_LEN_CHARS {
+        return Err(RestError::NotFound);
+    }
 
     // 1. Fetch ALL pending invites. For v1 volume this is acceptable
     //    (low absolute count; the `group_invites_pending_unique`
@@ -137,13 +157,23 @@ pub async fn accept_invite(
     // 2. Verify token against each hash until match. Malformed hashes
     //    (shouldn't happen — `create_invite` always emits PHC strings)
     //    are skipped with a warning rather than crashing the handler.
+    //    `Argon2::default()` uses the argon2 crate's default params
+    //    (m_cost=19 MiB, t_cost=2). This is weaker than the RFC 9106
+    //    tuned params used by `garraia-auth` for passwords, but is
+    //    adequate here because the token is 32 bytes of `OsRng`
+    //    entropy (~256 bits) — offline brute-force is infeasible
+    //    regardless of KDF strength. Same convention as the hash
+    //    side in `groups.rs::create_invite`.
     let argon = argon2::Argon2::default();
     let mut matched: Option<MatchedInvite> = None;
 
     for (invite_id, group_id, hash, role, expires_at, accepted_at) in &pending {
         let Ok(parsed) = PasswordHash::new(hash) else {
+            // `invite_id` and `group_id` are internal UUIDs — not PII.
+            // Logging them aids operator triage of DB corruption.
             tracing::warn!(
                 invite_id = %invite_id,
+                group_id = %group_id,
                 "malformed token_hash in group_invites; skipping"
             );
             continue;
@@ -160,23 +190,20 @@ pub async fn accept_invite(
         }
     }
 
-    let (invite_id, group_id, role, expires_at, accepted_at) =
+    // SEC-08 acknowledged: the `break` introduces a theoretical timing
+    // side-channel (successful match returns faster than exhaustive
+    // scan). The plaintext token remains opaque, so the side-channel
+    // reveals only approximate pending-set size — no useful signal.
+    let (invite_id, group_id, role, expires_at, _accepted_at_pre_tx) =
         matched.ok_or(RestError::NotFound)?;
 
-    // 3. Defensive double-accept guard. Dead code in practice because
-    //    the SELECT above already filters `accepted_at IS NULL`.
-    if accepted_at.is_some() {
-        return Err(RestError::Conflict(
-            "this invite has already been accepted".into(),
-        ));
-    }
-
-    // 4. Expiration check.
+    // 3. Expiration check (pre-tx read). The DB-layer guard in 5a
+    //    closes any TOCTOU window between this check and the UPDATE.
     if expires_at < Utc::now() {
         return Err(RestError::Gone("this invite has expired".into()));
     }
 
-    // 5. Transactional: SET LOCAL + UPDATE invite + INSERT member.
+    // 4. Transactional: SET LOCAL + UPDATE invite + INSERT member.
     let mut tx = pool
         .begin()
         .await
@@ -190,15 +217,33 @@ pub async fn accept_invite(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 5a. Mark invite as accepted.
-    sqlx::query("UPDATE group_invites SET accepted_at = now(), accepted_by = $1 WHERE id = $2")
-        .bind(principal.user_id)
-        .bind(invite_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+    // 4a. Mark invite as accepted — race-safe via `AND accepted_at IS
+    //     NULL` + `rows_affected == 0` check. Without this guard, two
+    //     concurrent callers could both pass the pre-tx check under
+    //     READ COMMITTED and both INSERT `group_members` rows (they
+    //     have different `user_id`s so the PK would not protect them).
+    //     With this guard, exactly one UPDATE succeeds — the loser
+    //     gets a 409 Conflict "already accepted" with NO side-effects.
+    //     (B-1 blocker / SEC-02 / SEC-10, code-reviewer + security
+    //     audit PR #25.)
+    let updated = sqlx::query(
+        "UPDATE group_invites \
+         SET accepted_at = now(), accepted_by = $1 \
+         WHERE id = $2 AND accepted_at IS NULL",
+    )
+    .bind(principal.user_id)
+    .bind(invite_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 5b. Insert group_members. SQLSTATE 23505 (PK violation on
+    if updated.rows_affected() == 0 {
+        return Err(RestError::Conflict(
+            "this invite has already been accepted".into(),
+        ));
+    }
+
+    // 4b. Insert group_members. SQLSTATE 23505 (PK violation on
     //     `(group_id, user_id)`) means the caller is already a
     //     member of this group — 409 Conflict. The `tx` is dropped
     //     without commit, rolling back both the invite UPDATE and

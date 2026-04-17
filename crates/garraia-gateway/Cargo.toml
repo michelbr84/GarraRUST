@@ -118,9 +118,10 @@ name = "authz_http_matrix"
 path = "tests/authz_http_matrix.rs"
 required-features = ["test-helpers"]
 
-# Plan 0019 — GAR-393 slice 3: POST /v1/invites/{token}:accept.
-# 6 scenarios in one bundled `#[tokio::test]`. Same gating as the
-# other integration binaries.
+# Plan 0019 — GAR-393 slice 3: POST /v1/invites/{token}/accept.
+# 6 scenarios in one bundled `#[tokio::test]`. Path shape was adjusted
+# from `:accept` to `/accept` due to Axum 0.8 / matchit limitation
+# (one parameter per segment). Same feature gating as other suites.
 [[test]]
 name = "rest_v1_invites"
 path = "tests/rest_v1_invites.rs"

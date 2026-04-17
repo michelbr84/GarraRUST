@@ -21,11 +21,14 @@
 **Design invariants:**
 
 1. **Token é verificado via Argon2id, nunca por comparação direta.** O DB armazena apenas hashes. O handler busca invites pendentes e verifica o token contra cada hash até match ou exaustão.
-2. **Double-accept é 409 Conflict.** Se `accepted_at IS NOT NULL`, retornar 409 com detail PII-safe.
+2. **Double-accept:**
+   - *Serial* (mesmo caller re-submete após sucesso): 404. O SELECT filtra `accepted_at IS NULL`, então a segunda chamada não encontra hash e retorna 404 NotFound. Comportamento aceitável — a primeira chamada já disse 200 ao cliente.
+   - *Concorrente* (dois callers corridos sobre o mesmo token): 409. O UPDATE usa `AND accepted_at IS NULL` + check `rows_affected() == 0` — o caller que perde a corrida recebe 409 Conflict com nenhum side-effect. Decisão tomada durante review do PR #25 (B-1 blocker): sem esse guard, dois usuários distintos poderiam ambos INSERTar `group_members` a partir de um único invite.
 3. **Expiração é 410 Gone.** Se `expires_at < now()`, retornar 410 com detail PII-safe. (Novo variant `RestError::Gone`.)
-4. **Membro já existente é 409 Conflict.** Se o `user_id` já é membro ativo do grupo, retornar 409 em vez de INSERT duplicado.
-5. **O invite row é atualizado atomicamente com a inserção do membro.** Mesma transação: `UPDATE group_invites SET accepted_at, accepted_by` + `INSERT INTO group_members`.
+4. **Membro já existente é 409 Conflict.** Se o `user_id` já é membro ativo do grupo, retornar 409 em vez de INSERT duplicado (SQLSTATE 23505).
+5. **O invite row é atualizado atomicamente com a inserção do membro.** Mesma transação: `UPDATE group_invites SET accepted_at, accepted_by WHERE id = $2 AND accepted_at IS NULL` + `INSERT INTO group_members`.
 6. **`X-Group-Id` header NÃO é exigido.** O `Principal` extractor retorna `group_id: None, role: None` quando o header está ausente — isso é correto para este endpoint.
+7. **Token length guard antes do Argon2 scan.** O token do `create_invite` tem exatamente 43 chars (32 bytes × 4/3 via URL-safe base64 no-padding). Qualquer outro tamanho retorna 404 sem custo de CPU (SEC-07).
 
 **Validações pré-plano (gate 2):**
 - ✅ `group_invites` schema: `accepted_at` (nullable timestamptz), `accepted_by` (nullable uuid FK to users) — ambos prontos para o UPDATE.
@@ -891,18 +894,19 @@ git commit -m "style(gateway): validation pass fixes (plan 0019 t6)"
 
 ## Acceptance criteria
 
-1. `POST /v1/invites/{token}:accept` returns 200 with `AcceptInviteResponse` on happy path.
+1. `POST /v1/invites/{token}/accept` returns 200 with `AcceptInviteResponse` on happy path.
 2. Token is verified via Argon2id against stored hashes — never by direct string comparison.
 3. Expired invite returns 410 Gone.
-4. Already-accepted invite returns 404 (no longer in pending set).
+4. Serial double-accept returns 404 (filtered by `accepted_at IS NULL` SELECT); concurrent double-accept by two different users returns 409 for the loser (UPDATE-level race guard).
 5. Caller already a member of the group returns 409 Conflict.
 6. Invalid/unknown token returns 404.
 7. Missing JWT returns 401.
-8. `group_members` row created with correct `role`, `status = 'active'`, `invited_by`.
-9. `group_invites` row updated with `accepted_at` and `accepted_by`.
-10. All existing tests continue to pass.
-11. `cargo fmt --check --all` clean.
-12. OpenAPI spec at `/docs` shows the new endpoint.
+8. Token with wrong length (≠ 43 chars) returns 404 without entering the Argon2 scan (SEC-07).
+9. `group_members` row created with correct `role`, `status = 'active'`, `invited_by`.
+10. `group_invites` row updated with `accepted_at` and `accepted_by`.
+11. All existing tests continue to pass.
+12. `cargo fmt --check --all` clean.
+13. OpenAPI spec at `/docs` shows the new endpoint.
 
 ## Rollback plan
 
