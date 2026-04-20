@@ -8,6 +8,7 @@
 //! `DashMap<String, WindowState>`. A background task periodically evicts
 //! expired keys to prevent unbounded memory growth.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,6 +18,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use dashmap::DashMap;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -351,6 +353,90 @@ pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
     "ip:unknown".to_string()
 }
 
+// ── Trusted-proxy handling (plan 0022 T2 / GAR-426) ───────────────────────────
+
+/// Environment variable that configures which upstream proxies are allowed to
+/// set `X-Forwarded-For` on our behalf. Comma-separated list of IPs or CIDRs.
+///
+/// Examples:
+///   `GARRAIA_TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8`
+///   `GARRAIA_TRUSTED_PROXIES=::1,fc00::/7`
+///
+/// **Fail-closed default:** when the variable is unset OR empty, no proxy is
+/// trusted and `X-Forwarded-For` is ignored entirely. The `peer_addr` (from the
+/// TCP socket) becomes the sole client identifier. This is safer than the
+/// pre-0022 behavior (header accepted unconditionally), at the cost of
+/// requiring deployments behind real proxies to set the var explicitly.
+pub const TRUSTED_PROXIES_ENV: &str = "GARRAIA_TRUSTED_PROXIES";
+
+/// Parse `GARRAIA_TRUSTED_PROXIES` into a `Vec<IpNet>`. Bare IPs are promoted
+/// to `/32` (IPv4) or `/128` (IPv6) CIDRs automatically.
+///
+/// Malformed entries are skipped with a tracing warning — the goal is best-
+/// effort (a typo in one entry should not disable trust for the others) while
+/// preserving the fail-closed semantics (empty / all-invalid ⇒ empty Vec ⇒
+/// XFF ignored).
+pub fn parse_trusted_proxies(value: &str) -> Vec<IpNet> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| match s.parse::<IpNet>() {
+            Ok(net) => Some(net),
+            Err(_) => match s.parse::<IpAddr>() {
+                Ok(ip) => Some(IpNet::from(ip)),
+                Err(e) => {
+                    warn!(
+                        entry = s,
+                        error = %e,
+                        "ignoring malformed entry in {TRUSTED_PROXIES_ENV}"
+                    );
+                    None
+                }
+            },
+        })
+        .collect()
+}
+
+/// Derive the real client IP, honoring `X-Forwarded-For` **only** when the
+/// immediate peer is in the `trusted_proxies` allowlist.
+///
+/// Rules (plan 0022 T2 / GAR-426):
+/// 1. If `trusted_proxies` is empty (env unset or all-invalid) ⇒ return
+///    `peer_addr` unconditionally. XFF is ignored (fail-closed).
+/// 2. If `peer_addr` is NOT in any entry of `trusted_proxies` ⇒ return
+///    `peer_addr`. The peer is not an authorized proxy, so its XFF header is
+///    untrusted.
+/// 3. If `peer_addr` IS in `trusted_proxies` ⇒ try to parse the first IP from
+///    `X-Forwarded-For`. If present and valid ⇒ return that. If absent or
+///    malformed ⇒ fall back to `peer_addr`.
+///
+/// **Note:** this helper is currently used only by the rate-limiter's fallback
+/// key-extractor branch (unauthenticated / no-JWT requests). The other two
+/// gateway sites that read `X-Forwarded-For` (`api.rs:71` session token IP
+/// stamp, `admin/middleware.rs:168` admin extract_ip) are intentionally out
+/// of scope for plan 0022 — see GAR-426 description. A later plan (0023+)
+/// should consolidate all three through this helper.
+pub fn real_client_ip(
+    headers: &HeaderMap,
+    peer_addr: IpAddr,
+    trusted_proxies: &[IpNet],
+) -> IpAddr {
+    if trusted_proxies.is_empty() {
+        return peer_addr;
+    }
+    if !trusted_proxies.iter().any(|net| net.contains(&peer_addr)) {
+        return peer_addr;
+    }
+    // Peer is a trusted proxy — honor XFF.
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .unwrap_or(peer_addr)
+}
+
 /// Axum middleware that applies a shared `RateLimiter` to every request.
 ///
 /// On limit exceeded: returns 429 with X-RateLimit-* headers.
@@ -404,6 +490,109 @@ mod tests {
             requests_per_hour: 1000,
             burst_size: 1,
         })
+    }
+
+    // ── Plan 0022 T2: TRUSTED_PROXIES + real_client_ip tests ────────────────
+
+    fn peer_v4() -> IpAddr {
+        "10.0.0.5".parse().unwrap()
+    }
+
+    fn peer_v6() -> IpAddr {
+        "fc00::1".parse().unwrap()
+    }
+
+    fn xff_header(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    #[test]
+    fn trusted_proxies_empty_env_ignores_xff() {
+        // Fail-closed: when GARRAIA_TRUSTED_PROXIES is unset or empty, no
+        // proxy is trusted and X-Forwarded-For is ignored. `peer_addr`
+        // becomes the sole source of truth.
+        let trusted = parse_trusted_proxies("");
+        assert!(trusted.is_empty(), "empty env must produce empty Vec");
+
+        let headers = xff_header("203.0.113.99"); // forged upstream IP
+        let resolved = real_client_ip(&headers, peer_v4(), &trusted);
+        assert_eq!(
+            resolved,
+            peer_v4(),
+            "empty trusted list ⇒ XFF is ignored, peer_addr wins"
+        );
+    }
+
+    #[test]
+    fn trusted_proxies_peer_in_allowlist_accepts_xff() {
+        // Peer is a listed proxy ⇒ XFF is honored. Exact-IP form `/32`
+        // and CIDR form `10.0.0.0/8` both match `peer_v4() = 10.0.0.5`.
+        let trusted = parse_trusted_proxies("10.0.0.0/8, ::1");
+        assert_eq!(trusted.len(), 2);
+
+        let headers = xff_header("203.0.113.99");
+        let resolved = real_client_ip(&headers, peer_v4(), &trusted);
+        assert_eq!(
+            resolved.to_string(),
+            "203.0.113.99",
+            "trusted proxy peer ⇒ XFF.first_hop wins"
+        );
+    }
+
+    #[test]
+    fn trusted_proxies_peer_outside_allowlist_ignores_xff() {
+        // Only a different CIDR listed; peer_v4 = 10.0.0.5 is NOT inside it.
+        // ⇒ peer is not a trusted proxy ⇒ XFF ignored, peer_addr returned.
+        let trusted = parse_trusted_proxies("172.16.0.0/12");
+        assert_eq!(trusted.len(), 1);
+
+        let headers = xff_header("203.0.113.99");
+        let resolved = real_client_ip(&headers, peer_v4(), &trusted);
+        assert_eq!(
+            resolved,
+            peer_v4(),
+            "untrusted peer ⇒ XFF ignored, peer_addr wins (spoofing defense)"
+        );
+    }
+
+    #[test]
+    fn trusted_proxies_cidr_ipv4_and_ipv6_parse() {
+        // Exercises (a) bare IPv4 → /32 promotion, (b) IPv4 CIDR,
+        // (c) bare IPv6 → /128 promotion, (d) IPv6 CIDR,
+        // (e) malformed entry skipped silently.
+        let trusted = parse_trusted_proxies(
+            "127.0.0.1, 10.0.0.0/8, ::1, fc00::/7, not-an-ip, , 999.999.999.999",
+        );
+        assert_eq!(
+            trusted.len(),
+            4,
+            "exactly 4 valid CIDRs (bare IPv4+IPv6 + 2 CIDRs); malformed/empty dropped. got: {trusted:?}"
+        );
+
+        // IPv6 peer inside fc00::/7.
+        let headers = xff_header("2001:db8::1");
+        let resolved = real_client_ip(&headers, peer_v6(), &trusted);
+        assert_eq!(
+            resolved.to_string(),
+            "2001:db8::1",
+            "IPv6 peer inside fc00::/7 ⇒ XFF honored"
+        );
+    }
+
+    #[test]
+    fn trusted_proxies_malformed_xff_falls_back_to_peer() {
+        // Peer IS trusted, but XFF body is unparseable ⇒ fallback to peer.
+        // Guards against a trusted proxy sending garbage XFF.
+        let trusted = parse_trusted_proxies("10.0.0.0/8");
+        let headers = xff_header("not-an-ip");
+        let resolved = real_client_ip(&headers, peer_v4(), &trusted);
+        assert_eq!(
+            resolved,
+            peer_v4(),
+            "malformed XFF ⇒ fallback to peer_addr"
+        );
     }
 
     #[test]
