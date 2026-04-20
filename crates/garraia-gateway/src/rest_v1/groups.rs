@@ -65,6 +65,16 @@ const ALLOWED_GROUP_TYPES: &[&str] = &["family", "team"];
 /// excluded — owners are created during group bootstrap only (comment line 155).
 const ALLOWED_INVITE_ROLES: &[&str] = &["admin", "member", "guest", "child"];
 
+/// Accepted values for `SetRoleRequest::role` (plan 0020 slice 4).
+///
+/// Same subset as [`ALLOWED_INVITE_ROLES`]: excludes `"owner"` because
+/// ownership transfer is a distinct operation (future endpoint). Excludes
+/// `"personal"` — reserved type marker (see [`ALLOWED_GROUP_TYPES`]).
+/// The partial unique index `group_members_single_owner_idx`
+/// (migration 002 line 146) defensively rejects promote-to-owner at the
+/// DB layer, but the handler filters first for a clearer 400 message.
+const ALLOWED_SETROLE_VALUES: &[&str] = &["admin", "member", "guest", "child"];
+
 /// Request body for `POST /v1/groups`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateGroupRequest {
@@ -199,6 +209,62 @@ pub struct InviteResponse {
     pub token: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Request body for `POST /v1/groups/{id}/members/{user_id}/setRole` (plan 0020 slice 4).
+///
+/// Changes a member's role inside the group. The caller must either be
+/// acting on themselves (self-demote) or hold `Action::MembersManage`
+/// (Owner/Admin). Hierarchy rules — Admin cannot modify Owner or another
+/// Admin (non-self) — are enforced inside the handler, not here.
+///
+/// Accepted values: `admin`, `member`, `guest`, `child`. `owner` is
+/// explicitly rejected (400 `cannot promote to owner via setRole`) —
+/// ownership transfer is a separate operation. See [`ALLOWED_SETROLE_VALUES`].
+///
+/// ## Path convention
+///
+/// Linear canonical notation uses Google Cloud custom-verb `:setRole`;
+/// Axum 0.8 / `matchit` does not support `{param}:literal` in the same
+/// segment (same constraint that forced `/accept` over `:accept` in plan
+/// 0019). Delivered path is `/setRole` as a literal segment.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetRoleRequest {
+    /// New role. Must be one of: `admin`, `member`, `guest`, `child`.
+    /// `owner` is rejected — ownership transfer is a separate operation.
+    pub role: String,
+}
+
+impl SetRoleRequest {
+    /// Structural validation. PII-safe error messages only.
+    ///
+    /// Order of checks matters: the `"owner"` rejection produces a clearer
+    /// error message ("cannot promote to owner via setRole") than the
+    /// generic `"role must be one of ..."`, so we filter `"owner"` first.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.role == "owner" {
+            return Err("cannot promote to owner via setRole");
+        }
+        if !ALLOWED_SETROLE_VALUES.contains(&self.role.as_str()) {
+            return Err("role must be one of: admin, member, guest, child");
+        }
+        Ok(())
+    }
+}
+
+/// Response body for setRole (200 OK).
+///
+/// DELETE member returns 204 No Content without a body. This struct is
+/// used only by setRole. Fields mirror the shape of a `group_members`
+/// row plus the `updated_at` timestamp set by the UPDATE.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberResponse {
+    pub group_id: Uuid,
+    pub user_id: Uuid,
+    pub role: String,
+    pub status: String,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// `POST /v1/groups` — create a new group. The authenticated caller
@@ -908,5 +974,53 @@ mod tests {
             };
             assert!(req.validate().is_ok(), "role '{role}' should be valid");
         }
+    }
+
+    // ── SetRoleRequest validation (plan 0020 t1) ────────
+
+    #[test]
+    fn set_role_request_rejects_owner() {
+        let req: SetRoleRequest = serde_json::from_str(r#"{"role":"owner"}"#).unwrap();
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "cannot promote to owner via setRole"
+        );
+    }
+
+    #[test]
+    fn set_role_request_rejects_unknown_role() {
+        let req: SetRoleRequest = serde_json::from_str(r#"{"role":"superadmin"}"#).unwrap();
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: admin, member, guest, child"
+        );
+    }
+
+    #[test]
+    fn set_role_request_accepts_admin_member_guest_child() {
+        for role in &["admin", "member", "guest", "child"] {
+            let req = SetRoleRequest {
+                role: role.to_string(),
+            };
+            assert!(req.validate().is_ok(), "role '{role}' should be valid");
+        }
+    }
+
+    #[test]
+    fn set_role_request_rejects_unknown_field() {
+        // deny_unknown_fields: typo-protects clients from silent
+        // drops when they misspell `role` (same pattern as
+        // UpdateGroupRequest/CreateInviteRequest).
+        let err = serde_json::from_str::<SetRoleRequest>(r#"{"rle":"admin"}"#);
+        assert!(err.is_err(), "deny_unknown_fields should reject `rle`");
+    }
+
+    #[test]
+    fn allowed_setrole_values_mirror_invite_roles() {
+        // Invariant: setRole accepts the same subset as create-invite.
+        // Owner and personal stay excluded. If this ever changes,
+        // re-evaluate the plan 0020 design invariants §6 and the
+        // hierarchy model before accepting the divergence.
+        assert_eq!(ALLOWED_SETROLE_VALUES, ALLOWED_INVITE_ROLES);
     }
 }
