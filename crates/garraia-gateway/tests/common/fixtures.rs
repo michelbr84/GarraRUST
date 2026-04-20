@@ -19,9 +19,41 @@
 //! `crates/garraia-auth/tests/common/harness.rs` (plan 0013 path C).
 
 use anyhow::Context;
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::Harness;
+
+/// Fetch all `audit_events` rows for a given `group_id`, ordered
+/// newest-first. Reads via `admin_pool` (bypassing RLS) for assertion
+/// purposes — tests need to see audit rows regardless of the caller's
+/// tenant context.
+///
+/// Returns `(action, actor_user_id, resource_type, resource_id, metadata)`
+/// tuples so tests can match on specific fields. `actor_user_id` is
+/// always `Some` for workspace audit rows (per plan 0021 design);
+/// it's kept Optional here so the helper can also be used with
+/// login-flow events (which have `actor_user_id = NULL` for
+/// `LoginFailureUserNotFound`) if ever needed.
+///
+/// Added in plan 0021 T8 for asserting audit-row emission in
+/// accept_invite / set_member_role / delete_member scenarios.
+pub async fn fetch_audit_events_for_group(
+    h: &Harness,
+    group_id: Uuid,
+) -> anyhow::Result<Vec<(String, Option<Uuid>, String, Option<String>, Value)>> {
+    let rows: Vec<(String, Option<Uuid>, String, Option<String>, Value)> = sqlx::query_as(
+        "SELECT action, actor_user_id, resource_type, resource_id, metadata \
+           FROM audit_events \
+          WHERE group_id = $1 \
+          ORDER BY created_at DESC",
+    )
+    .bind(group_id)
+    .fetch_all(&h.admin_pool)
+    .await
+    .context("fetch_audit_events_for_group: SELECT")?;
+    Ok(rows)
+}
 
 /// Seed one user + one group + one `group_members` row with role
 /// `owner`, then mint a JWT for that user via
