@@ -30,19 +30,32 @@ use super::Harness;
 /// tenant context.
 ///
 /// Returns `(action, actor_user_id, resource_type, resource_id, metadata)`
-/// tuples so tests can match on specific fields. `actor_user_id` is
-/// always `Some` for workspace audit rows (per plan 0021 design);
-/// it's kept Optional here so the helper can also be used with
-/// login-flow events (which have `actor_user_id = NULL` for
-/// `LoginFailureUserNotFound`) if ever needed.
+/// tuples so tests can match on specific fields.
+///
+/// **Column nullability** (mirrors migration 002:114-126):
+///
+/// - `action` — NOT NULL (`String`).
+/// - `actor_user_id` — nullable (`Option<Uuid>`). `None` only for
+///   `login.failure_user_not_found` events; every workspace audit
+///   row has `Some` by plan 0021 design.
+/// - `resource_type` — NOT NULL (`String`).
+/// - `resource_id` — NOT NULL (`String`) for all workspace audit
+///   rows written by `audit_workspace_event` (the helper always
+///   passes a `String`; schema allows NULL for login events).
+///   The helper here declares it non-null because every known
+///   code path emits a value; if a future audit category writes
+///   NULL, this signature will need to widen.
+/// - `metadata` — NOT NULL, `jsonb` with default `'{}'`.
 ///
 /// Added in plan 0021 T8 for asserting audit-row emission in
 /// accept_invite / set_member_role / delete_member scenarios.
+/// Plan 0021 review follow-up tightened `resource_id` from
+/// `Option<String>` to `String` to reflect the actual write pattern.
 pub async fn fetch_audit_events_for_group(
     h: &Harness,
     group_id: Uuid,
-) -> anyhow::Result<Vec<(String, Option<Uuid>, String, Option<String>, Value)>> {
-    let rows: Vec<(String, Option<Uuid>, String, Option<String>, Value)> = sqlx::query_as(
+) -> anyhow::Result<Vec<(String, Option<Uuid>, String, String, Value)>> {
+    let rows: Vec<(String, Option<Uuid>, String, String, Value)> = sqlx::query_as(
         "SELECT action, actor_user_id, resource_type, resource_id, metadata \
            FROM audit_events \
           WHERE group_id = $1 \

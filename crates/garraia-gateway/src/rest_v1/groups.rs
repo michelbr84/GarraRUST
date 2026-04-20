@@ -1006,15 +1006,10 @@ pub async fn set_member_role(
     //    abort and return 409. Dropping `tx` without `.commit()`
     //    rolls back the UPDATE automatically.
     //
-    //    TODO(plan-0021): `group_members_single_owner_idx` (migration
-    //    002:146) is a partial UNIQUE `WHERE role = 'owner'` — it does
-    //    NOT filter by `status = 'active'`, which means the DB-level
-    //    constraint diverges from this COUNT's predicate. The gap is
-    //    safe today (API has no way to create two active owners —
-    //    setRole rejects role='owner') but a follow-up plan should
-    //    amend the partial index to `WHERE role = 'owner' AND status =
-    //    'active'` via forward-only migration so DB and app-layer
-    //    invariants stay aligned.
+    //    Plan 0021 migration 012 aligned the partial UNIQUE
+    //    `group_members_single_owner_idx` to also filter
+    //    `status = 'active'`, so this COUNT's predicate matches
+    //    the DB-level constraint exactly — no more divergence.
     let (owners_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
            FROM group_members \

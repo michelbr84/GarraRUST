@@ -199,7 +199,7 @@ async fn v1_invites_accept_scenarios() {
         );
         assert_eq!(resource_type, "group_invites");
         assert!(
-            resource_id.is_some(),
+            !resource_id.is_empty(),
             "A1: resource_id must carry the invite UUID"
         );
         assert_eq!(
