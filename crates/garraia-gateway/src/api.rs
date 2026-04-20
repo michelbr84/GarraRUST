@@ -1,6 +1,8 @@
+use std::net::SocketAddr;
+
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
@@ -9,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::agent_router;
+use crate::rate_limiter::{TRUSTED_PROXIES_ENV, parse_trusted_proxies, real_client_ip};
 use crate::state::SharedState;
 
 #[derive(Deserialize)]
@@ -49,8 +52,16 @@ pub struct SessionInfo {
 /// POST /api/sessions — create a new session.
 ///
 /// GAR-202: Issues a session token and sets it as `garraia_session` cookie.
+///
+/// GAR-427 (plan 0023): derives the session-token IP via
+/// `rate_limiter::real_client_ip` with the `GARRAIA_TRUSTED_PROXIES` fail-
+/// closed default. Production Axum always injects `ConnectInfo` via
+/// `into_make_service_with_connect_info` (see `server.rs:515`); any future
+/// `oneshot()`-based test must attach it manually — identical convention to
+/// `auth_routes::login_handler`.
 pub async fn create_session(
     State(state): State<SharedState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
@@ -67,15 +78,15 @@ pub async fn create_session(
     let mut response_headers = HeaderMap::new();
     let cfg = state.current_config();
     if let Some(manager) = &state.chat_session_manager {
-        // TODO(plan-0023+): this reads `X-Forwarded-For` without
-        // trusted-proxy validation — same pre-0022 issue closed for
-        // rate_limiter in plan 0022 T2. Consolidate with
-        // `rate_limiter::real_client_ip` once plan 0023 lifts the
-        // helper into a shared module. Out-of-scope for plan 0022.
-        let ip = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+        // GAR-427 (plan 0023): XFF honored only when the immediate peer is in
+        // `GARRAIA_TRUSTED_PROXIES`. Empty env ⇒ XFF ignored, peer_addr wins.
+        // The per-request parse is cheap for this low-traffic endpoint; a
+        // SharedState cache is deferred until profiling flags it.
+        let trusted = std::env::var(TRUSTED_PROXIES_ENV)
+            .ok()
+            .map(|v| parse_trusted_proxies(&v))
+            .unwrap_or_default();
+        let ip = Some(real_client_ip(&headers, peer_addr.ip(), &trusted).to_string());
         let ua = headers
             .get("user-agent")
             .and_then(|v| v.to_str().ok())

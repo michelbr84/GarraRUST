@@ -464,12 +464,12 @@ pub fn parse_trusted_proxies(value: &str) -> Vec<IpNet> {
 ///    `X-Forwarded-For`. If present and valid ⇒ return that. If absent or
 ///    malformed ⇒ fall back to `peer_addr`.
 ///
-/// **Note:** this helper is currently used only by the rate-limiter's fallback
-/// key-extractor branch (unauthenticated / no-JWT requests). The other two
-/// gateway sites that read `X-Forwarded-For` (`api.rs:71` session token IP
-/// stamp, `admin/middleware.rs:168` admin extract_ip) are intentionally out
-/// of scope for plan 0022 — see GAR-426 description. A later plan (0023+)
-/// should consolidate all three through this helper.
+/// **Consolidation status** (as of plan 0023 / GAR-427):
+/// * rate-limiter fallback key-extractor — ✅ migrated (plan 0022 T2)
+/// * `api.rs::create_session` session-token IP stamp — ✅ migrated (plan 0023)
+/// * `admin/middleware.rs::extract_ip` + ~20 `admin/handlers.rs` call sites
+///   — deferred to plan 0024 (requires `connect_info` propagation + product
+///   decision about admin audit-trail IP format change).
 pub fn real_client_ip(headers: &HeaderMap, peer_addr: IpAddr, trusted_proxies: &[IpNet]) -> IpAddr {
     if trusted_proxies.is_empty() {
         return peer_addr;
