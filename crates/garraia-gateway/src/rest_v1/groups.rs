@@ -40,9 +40,10 @@ use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use garraia_auth::{Action, Principal, can};
+use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -940,6 +941,15 @@ pub async fn set_member_role(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Plan 0021 T4: also set `app.current_group_id` — required by the
+    // `audit_events_group_or_self` RLS policy (migration 007:161-168)
+    // for the audit INSERT at the end of this handler. Uuid Display
+    // is injection-safe.
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     // 6. Fetch target's current role under FOR UPDATE lock. Serializes
     //    concurrent setRole/delete on the same member — the second
     //    caller blocks here until the first commits, then sees the
@@ -996,15 +1006,10 @@ pub async fn set_member_role(
     //    abort and return 409. Dropping `tx` without `.commit()`
     //    rolls back the UPDATE automatically.
     //
-    //    TODO(plan-0021): `group_members_single_owner_idx` (migration
-    //    002:146) is a partial UNIQUE `WHERE role = 'owner'` — it does
-    //    NOT filter by `status = 'active'`, which means the DB-level
-    //    constraint diverges from this COUNT's predicate. The gap is
-    //    safe today (API has no way to create two active owners —
-    //    setRole rejects role='owner') but a follow-up plan should
-    //    amend the partial index to `WHERE role = 'owner' AND status =
-    //    'active'` via forward-only migration so DB and app-layer
-    //    invariants stay aligned.
+    //    Plan 0021 migration 012 aligned the partial UNIQUE
+    //    `group_members_single_owner_idx` to also filter
+    //    `status = 'active'`, so this COUNT's predicate matches
+    //    the DB-level constraint exactly — no more divergence.
     let (owners_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
            FROM group_members \
@@ -1020,6 +1025,29 @@ pub async fn set_member_role(
             "cannot leave the group without an owner".into(),
         ));
     }
+
+    // Plan 0021 T4: audit_events row for member.role_changed. Runs
+    // AFTER the COUNT guard so a 409 rolls back without emitting an
+    // audit row for a mutation that did not stick (consistent with
+    // the login flow's "audit only for committed events" policy).
+    //
+    // Metadata carries the diff (old/new role) and the target. No
+    // PII — only UUIDs and role enum strings.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemberRoleChanged,
+        principal.user_id,
+        id,
+        "group_members",
+        format!("{id}:{target_user_id}"),
+        json!({
+            "target_user_id": target_user_id,
+            "old_role": target_role,
+            "new_role": body.role,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     // 10. Commit. If the commit fails, the UPDATE rolls back and the
     //     caller sees a 500 — never a partial state.
@@ -1162,6 +1190,14 @@ pub async fn delete_member(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Plan 0021 T5: also set `app.current_group_id` — required by the
+    // `audit_events_group_or_self` RLS policy for the audit INSERT
+    // below. Uuid Display is injection-safe.
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     // 5. Fetch target role under FOR UPDATE lock (same serialization
     //    guarantee as set_member_role). Filters `status = 'active'`
     //    — already-removed targets ⇒ 404.
@@ -1226,6 +1262,25 @@ pub async fn delete_member(
             "cannot leave the group without an owner".into(),
         ));
     }
+
+    // Plan 0021 T5: audit_events row for member.removed. Same positioning
+    // as set_member_role (plan 0021 T4) — AFTER the COUNT guard so a 409
+    // rolls back without emitting an audit row. PII-safe metadata:
+    // UUIDs + role string only.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemberRemoved,
+        principal.user_id,
+        id,
+        "group_members",
+        format!("{id}:{target_user_id}"),
+        json!({
+            "target_user_id": target_user_id,
+            "old_role": target_role,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     // 9. Commit.
     tx.commit()

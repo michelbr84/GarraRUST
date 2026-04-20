@@ -19,9 +19,54 @@
 //! `crates/garraia-auth/tests/common/harness.rs` (plan 0013 path C).
 
 use anyhow::Context;
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::Harness;
+
+/// Fetch all `audit_events` rows for a given `group_id`, ordered
+/// newest-first. Reads via `admin_pool` (bypassing RLS) for assertion
+/// purposes — tests need to see audit rows regardless of the caller's
+/// tenant context.
+///
+/// Returns `(action, actor_user_id, resource_type, resource_id, metadata)`
+/// tuples so tests can match on specific fields.
+///
+/// **Column nullability** (mirrors migration 002:114-126):
+///
+/// - `action` — NOT NULL (`String`).
+/// - `actor_user_id` — nullable (`Option<Uuid>`). `None` only for
+///   `login.failure_user_not_found` events; every workspace audit
+///   row has `Some` by plan 0021 design.
+/// - `resource_type` — NOT NULL (`String`).
+/// - `resource_id` — NOT NULL (`String`) for all workspace audit
+///   rows written by `audit_workspace_event` (the helper always
+///   passes a `String`; schema allows NULL for login events).
+///   The helper here declares it non-null because every known
+///   code path emits a value; if a future audit category writes
+///   NULL, this signature will need to widen.
+/// - `metadata` — NOT NULL, `jsonb` with default `'{}'`.
+///
+/// Added in plan 0021 T8 for asserting audit-row emission in
+/// accept_invite / set_member_role / delete_member scenarios.
+/// Plan 0021 review follow-up tightened `resource_id` from
+/// `Option<String>` to `String` to reflect the actual write pattern.
+pub async fn fetch_audit_events_for_group(
+    h: &Harness,
+    group_id: Uuid,
+) -> anyhow::Result<Vec<(String, Option<Uuid>, String, String, Value)>> {
+    let rows: Vec<(String, Option<Uuid>, String, String, Value)> = sqlx::query_as(
+        "SELECT action, actor_user_id, resource_type, resource_id, metadata \
+           FROM audit_events \
+          WHERE group_id = $1 \
+          ORDER BY created_at DESC",
+    )
+    .bind(group_id)
+    .fetch_all(&h.admin_pool)
+    .await
+    .context("fetch_audit_events_for_group: SELECT")?;
+    Ok(rows)
+}
 
 /// Seed one user + one group + one `group_members` row with role
 /// `owner`, then mint a JWT for that user via
@@ -172,10 +217,16 @@ pub async fn seed_second_owner_via_admin(
 ///
 /// Idempotent: uses `CREATE UNIQUE INDEX IF NOT EXISTS` so callers
 /// don't need to track whether the index was actually dropped.
+///
+/// Predicate mirrors migration 012 (plan 0021) — `WHERE role = 'owner'
+/// AND status = 'active'`. Previous predicate (pre-012) was
+/// `WHERE role = 'owner'` alone; recreating with the old predicate
+/// after a soft-deleted owner exists would fail because two
+/// `role = 'owner'` rows (one removed, one active) would satisfy it.
 pub async fn restore_single_owner_idx(h: &Harness) -> anyhow::Result<()> {
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS group_members_single_owner_idx \
-         ON group_members(group_id) WHERE role = 'owner'",
+         ON group_members(group_id) WHERE role = 'owner' AND status = 'active'",
     )
     .execute(&h.admin_pool)
     .await

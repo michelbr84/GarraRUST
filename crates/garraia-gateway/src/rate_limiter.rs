@@ -62,6 +62,31 @@ impl RateLimitConfig {
             burst_size: 20,
         }
     }
+
+    /// Stricter config for privileged members-management endpoints
+    /// (plan 0021 / GAR-425). Covers:
+    ///
+    /// - `POST /v1/invites/{token}/accept` — defends against
+    ///   brute-force / enumeration of invite tokens (SEC-01 from
+    ///   plan 0019 security review).
+    /// - `POST /v1/groups/{id}/members/{user_id}/setRole` —
+    ///   defends against excessive role-change churn (plan 0020
+    ///   security review).
+    /// - `DELETE /v1/groups/{id}/members/{user_id}` — same.
+    ///
+    /// Positioned between `auth()` (10/min, very strict) and
+    /// `default()` (60/min). The 20/min ceiling is conservative
+    /// for legitimate UX (a user managing a group typically
+    /// does 1-5 operations in a burst; 20 leaves headroom) while
+    /// keeping brute-force attacks expensive (token enumeration
+    /// at 20 probes/min on a 256-bit search space is infeasible).
+    pub fn members_manage() -> Self {
+        Self {
+            requests_per_minute: 20,
+            requests_per_hour: 200,
+            burst_size: 5,
+        }
+    }
 }
 
 // ── Internal window state ─────────────────────────────────────────────────────
@@ -147,6 +172,13 @@ impl RateLimiter {
     /// Auth-specific strict limiter.
     pub fn auth_limiter() -> Arc<Self> {
         Arc::new(Self::new(RateLimitConfig::auth()))
+    }
+
+    /// Members-management limiter for the 3 privileged
+    /// `/v1/invites/.../accept`, `/v1/groups/.../setRole`,
+    /// `/v1/groups/.../members/{user_id}` routes (plan 0021).
+    pub fn members_manage_limiter() -> Arc<Self> {
+        Arc::new(Self::new(RateLimitConfig::members_manage()))
     }
 
     /// Check and record a request for `key` (IP, user_id, or API key).
@@ -261,7 +293,35 @@ pub fn rate_limit_response(decision: &RateLimitDecision) -> Response {
 
 /// Extract the best available client identifier from a request.
 ///
-/// Priority: Authorization bearer sub-prefix > X-API-Key > X-Forwarded-For > remote IP.
+/// Priority: X-API-Key > Authorization bearer token-prefix >
+/// X-Forwarded-For > `"ip:unknown"` sentinel.
+///
+/// # Known limitations (plan 0021 security review follow-ups)
+///
+/// - **Token-prefix, not decoded `sub` claim.** For JWTs, this uses
+///   the first 8 chars of the serialized bearer token — NOT the
+///   `sub` claim decoded from the payload. All HS256 JWTs emitted
+///   by the same `JwtIssuer` share an identical header segment
+///   (`eyJhbGci...` base64 of `{"alg":"HS256"`), so every
+///   authenticated caller collides into one bucket `jwt:eyJhbGci`.
+///   This is documented as a **plan 0022+ follow-up**: the
+///   extractor should decode the token and key by `sub` (user_id)
+///   for true per-user isolation. Until then, the jwt-keyed
+///   bucket behaves as a coarse global limit for authenticated
+///   traffic, which is a net-positive over no rate-limit at all
+///   but insufficient for multi-tenant production load.
+///
+/// - **`X-Forwarded-For` is client-controlled without a trusted-proxy
+///   allowlist.** Any caller can forge the header and shift their
+///   bucket to an arbitrary IP, evading IP-keyed rate limits. The
+///   value is used here as-is — plan 0022+ will introduce a
+///   `TRUSTED_PROXIES` env var and strip the header when the
+///   immediate peer is not in the list. For the current wiring
+///   (rate-limit applied to authenticated endpoints only), the
+///   exposure is small because the JWT bucket takes precedence
+///   whenever `Authorization` is present, but the vector exists
+///   for unauthenticated paths and MUST be closed before prod
+///   deploy at scale.
 pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
     // Use API key prefix if present
     if let Some(api_key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
@@ -269,16 +329,19 @@ pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
         return format!("apikey:{prefix}");
     }
 
-    // Use first 8 chars of JWT subject as key (if present) — never the full token
+    // Token-prefix keying — see the function docstring's "Known
+    // limitations" for why this collides across HS256 JWTs.
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
         && let Some(token) = auth.strip_prefix("Bearer ")
     {
-        // Use token prefix only — enough to identify the key space
         let prefix = &token[..token.len().min(8)];
         return format!("jwt:{prefix}");
     }
 
-    // Fall back to X-Forwarded-For
+    // WARNING: X-Forwarded-For is client-controlled here (no
+    // trusted-proxy validation). Spoofable — see docstring for
+    // the plan 0022 follow-up. Left in place as a best-effort
+    // fallback until TRUSTED_PROXIES arrives.
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
         && let Some(first_ip) = forwarded.split(',').next()
     {

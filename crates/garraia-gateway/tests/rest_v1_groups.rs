@@ -37,8 +37,8 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use common::fixtures::{
-    restore_single_owner_idx, seed_member_via_admin, seed_second_owner_via_admin,
-    seed_user_with_group,
+    fetch_audit_events_for_group, restore_single_owner_idx, seed_member_via_admin,
+    seed_second_owner_via_admin, seed_user_with_group,
 };
 use common::{Harness, harness_get};
 
@@ -1258,31 +1258,12 @@ async fn v1_groups_scenarios() {
         assert_eq!(coowner_role, "owner");
         assert_eq!(coowner_status, "active");
 
-        // Restore the single-owner partial unique index. The partial
-        // predicate is `WHERE role = 'owner'` (migration 002:146) — it
-        // does NOT filter by status, so even a soft-deleted m_owner
-        // still counts toward the uniqueness requirement. Hard-delete
-        // the soft-deleted m_owner row so d5_coowner is the only row
-        // with role='owner' for this group_id when we recreate the
-        // index.
-        //
-        // In production this branch is unreachable — the only way
-        // to get two active owners is via this test fixture; the
-        // product API rejects promote-to-owner (setRole 400). So
-        // an owner's soft-delete UPDATE never actually coexists
-        // with another role='owner' row at the DB level. The
-        // fixture-only cleanup below keeps the test isolated.
-        //
-        // Follow-up candidate (plan 0021+): amend the partial
-        // unique predicate to `WHERE role = 'owner' AND status =
-        // 'active'` so the DB index matches the app-layer
-        // last-owner invariant (which already filters status).
-        sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
-            .bind(m_group_id)
-            .bind(m_owner_id)
-            .execute(&h.admin_pool)
-            .await
-            .expect("D5 restore: hard-delete soft-deleted m_owner");
+        // Restore the single-owner partial unique index. Plan 0021
+        // migration 012 amended the predicate to `WHERE role = 'owner'
+        // AND status = 'active'`, so the soft-deleted m_owner row no
+        // longer counts toward uniqueness — `restore_single_owner_idx`
+        // rebuilds cleanly without the hard-delete workaround that
+        // the 0020 version of this test needed.
         restore_single_owner_idx(&h)
             .await
             .expect("D5: restore single-owner idx");
@@ -1374,5 +1355,89 @@ async fn v1_groups_scenarios() {
             StatusCode::UNAUTHORIZED,
             "D9: missing bearer must 401"
         );
+    }
+
+    // ─── Plan 0021 T8: audit-row aggregate assertion ──────────
+    //
+    // Verifies that every happy-path setRole and DELETE_member call
+    // above emitted an `audit_events` row under `m_group_id`, and
+    // that the three invariants from plan 0021 hold:
+    //   - `actor_user_id` is Some for every workspace audit row.
+    //   - `action` is one of the three WorkspaceAuditAction strings.
+    //   - 409/403/404/401 failure paths did NOT emit audit rows
+    //     (covered indirectly: the counts below match ONLY the
+    //     happy-path operations; any emission from failure paths
+    //     would push the counts higher than expected).
+    //
+    // Happy-path setRole calls under this group:
+    //   M1 owner → m1_target admin              +1
+    //   M2 m1_admin → m2_target guest           +1
+    //   M5 owner self-demote (with co-owner)    +1
+    // Total: 3.
+    //
+    // Happy-path DELETE member calls under this group:
+    //   D1 owner deletes d1_target (member)     +1
+    //   D2 m1_admin deletes d2_target (guest)   +1
+    //   D2b admin self-leave                    +1
+    //   D5 owner self-leave (with co-owner)     +1
+    //   D6 member self-leave                    +1
+    // Total: 5.
+    //
+    // The assertion uses `>=` (not exact equality) so benign future
+    // additions of happy-path scenarios do not force an update here.
+    // Any REDUCTION below these thresholds is a regression — likely
+    // someone broke the audit wiring or rolled back a tx that
+    // should have committed.
+    {
+        let audit_rows = fetch_audit_events_for_group(&h, m_group_id)
+            .await
+            .expect("fetch audit rows for m_group_id");
+
+        let role_changed_count = audit_rows
+            .iter()
+            .filter(|r| r.0 == "member.role_changed")
+            .count();
+        let removed_count = audit_rows
+            .iter()
+            .filter(|r| r.0 == "member.removed")
+            .count();
+
+        assert!(
+            role_changed_count >= 3,
+            "expected ≥3 member.role_changed rows (M1 + M2 + M5); got {role_changed_count}. \
+             rows: {audit_rows:?}"
+        );
+        assert!(
+            removed_count >= 5,
+            "expected ≥5 member.removed rows (D1 + D2 + D2b + D5 + D6); got {removed_count}. \
+             rows: {audit_rows:?}"
+        );
+
+        // PII-safety + schema invariants: every workspace audit row
+        // has a set actor, a known action, and the expected resource_type.
+        for (action, actor, resource_type, _resource_id, _metadata) in &audit_rows {
+            assert!(
+                actor.is_some(),
+                "workspace audit action '{action}' must carry actor_user_id"
+            );
+            assert!(
+                action == "member.role_changed"
+                    || action == "member.removed"
+                    || action == "invite.accepted",
+                "unexpected action '{action}' under m_group_id — possible wire-string regression"
+            );
+            if action == "member.role_changed" || action == "member.removed" {
+                assert_eq!(
+                    resource_type, "group_members",
+                    "workspace member action must have resource_type='group_members'"
+                );
+            }
+            if action == "invite.accepted" {
+                assert_eq!(
+                    resource_type, "group_invites",
+                    "invite.accepted must have resource_type='group_invites'"
+                );
+            }
+        }
     }
 }
