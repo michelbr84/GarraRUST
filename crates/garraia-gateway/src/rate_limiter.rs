@@ -13,11 +13,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use dashmap::DashMap;
+use garraia_auth::JwtIssuer;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -526,6 +527,144 @@ pub async fn rate_limit_layer(
     next: Next,
 ) -> Response {
     rate_limit_middleware(limiter, headers, req, next).await
+}
+
+// ── Plan 0022 T3 (GAR-426): per-user authenticated rate-limit ────────────────
+
+/// State for [`rate_limit_layer_authenticated`] — combines a shared
+/// `RateLimiter` with a `JwtIssuer` for per-user keying and a
+/// pre-parsed `trusted_proxies` list for the unauthenticated fallback.
+///
+/// The trio is cloned into middleware scope via axum's
+/// `from_fn_with_state`. All fields are `Arc<T>` / `Vec<IpNet>` (cheap
+/// clone) so per-request copy cost is ~pointer-sized.
+#[derive(Clone)]
+pub struct RateLimitLayerState {
+    pub limiter: Arc<RateLimiter>,
+    pub jwt_issuer: Arc<JwtIssuer>,
+    pub trusted_proxies: Vec<IpNet>,
+}
+
+impl RateLimitLayerState {
+    pub fn new(
+        limiter: Arc<RateLimiter>,
+        jwt_issuer: Arc<JwtIssuer>,
+        trusted_proxies: Vec<IpNet>,
+    ) -> Self {
+        Self {
+            limiter,
+            jwt_issuer,
+            trusted_proxies,
+        }
+    }
+}
+
+/// Derive a per-user rate-limit key from a verified JWT's `sub` claim.
+///
+/// Plan 0022 T3: fixes the shared-bucket problem documented as SEC-HIGH
+/// F-03 in the PR #30 security audit. The pre-0022 `extract_rate_limit_key`
+/// used the first 8 chars of the Bearer token as the bucket key; all
+/// HS256 JWTs issued by the same `JwtIssuer` share the same header
+/// segment (`eyJhbGci...`), so every authenticated caller collided on
+/// one bucket. This function decodes + verifies the HMAC and returns
+/// `jwt-sub:{uuid}` — a real per-user key.
+///
+/// Returns `None` when the `Authorization` header is absent, malformed,
+/// or the signature / expiration check fails. Callers decide the fallback
+/// (typically IP-keyed via `real_client_ip`).
+///
+/// **Double-verify trade-off (v1 accepted):** this function calls
+/// `JwtIssuer::verify_access` in the rate-limit middleware, and the
+/// `Principal` extractor downstream calls it again to materialize the
+/// handler's `Principal`. HMAC-SHA256 on a compact JWT is ~µs, negligible
+/// vs the handler itself (~ms for a DB tx + audit INSERT), so the
+/// duplicate cost is acceptable in v1. Optimization path — stash the
+/// decoded claims in `Request::extensions()` so the extractor can reuse
+/// them — is deferred to plan 0023+ if p95 monitoring shows >5% regression.
+pub fn extract_authenticated_key(headers: &HeaderMap, jwt: &JwtIssuer) -> Option<String> {
+    let auth = headers.get("authorization")?.to_str().ok()?;
+    let token = auth.strip_prefix("Bearer ")?;
+    let claims = jwt.verify_access(token).ok()?;
+    Some(format!("jwt-sub:{}", claims.sub))
+}
+
+/// Extract the best client identifier for an **authenticated** rate-limit
+/// bucket, with a trusted-proxy-aware IP fallback.
+///
+/// Priority:
+/// 1. Verified JWT `sub` claim ⇒ `jwt-sub:{uuid}` (real per-user bucket).
+/// 2. API key prefix ⇒ `apikey:{prefix}` (same as the unauthenticated
+///    extractor; preserved so machine-to-machine callers are not demoted
+///    to an IP bucket when they happen to miss a bearer).
+/// 3. Real client IP via [`real_client_ip`] ⇒ `ip:{addr}`.
+/// 4. Sentinel `ip:unknown`.
+fn extract_authenticated_rate_limit_key(
+    headers: &HeaderMap,
+    jwt: &JwtIssuer,
+    peer_addr: Option<std::net::IpAddr>,
+    trusted_proxies: &[IpNet],
+) -> String {
+    if let Some(key) = extract_authenticated_key(headers, jwt) {
+        return key;
+    }
+    if let Some(api_key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+        let prefix = &api_key[..api_key.len().min(16)];
+        return format!("apikey:{prefix}");
+    }
+    if let Some(peer) = peer_addr {
+        let real = real_client_ip(headers, peer, trusted_proxies);
+        return format!("ip:{real}");
+    }
+    "ip:unknown".to_string()
+}
+
+/// Axum middleware layer for **authenticated** rate limiting.
+///
+/// Uses [`extract_authenticated_rate_limit_key`] so each JWT-authenticated
+/// caller gets an isolated bucket keyed by the verified `sub` claim.
+/// Unauthenticated callers fall through to API-key prefix or IP keying
+/// (see function docstring for the priority order).
+///
+/// Wire with `axum::middleware::from_fn_with_state`:
+///
+/// ```ignore
+/// let state = RateLimitLayerState::new(limiter, jwt, trusted);
+/// Router::new()
+///     .route("/v1/...", post(handler))
+///     .layer(axum::middleware::from_fn_with_state(
+///         state,
+///         rate_limit_layer_authenticated,
+///     ))
+/// ```
+pub async fn rate_limit_layer_authenticated(
+    axum::extract::State(state): axum::extract::State<RateLimitLayerState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Pull ConnectInfo + headers from the Request instead of listing them
+    // as separate middleware extractors. axum's `from_fn_with_state`
+    // caps the total param count including State/Request/Next, and
+    // splitting headers/peer_info into dedicated params hit that cap.
+    let peer_addr = req
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(sa)| sa.ip());
+    let key = extract_authenticated_rate_limit_key(
+        req.headers(),
+        &state.jwt_issuer,
+        peer_addr,
+        &state.trusted_proxies,
+    );
+    let decision = state.limiter.check(&key);
+
+    if !decision.allowed {
+        warn!("rate limit exceeded for key={}", &key[..key.len().min(32)]);
+        return rate_limit_response(&decision);
+    }
+
+    let mut response = next.run(req).await;
+    apply_rate_limit_headers(response.headers_mut(), &decision);
+    response
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

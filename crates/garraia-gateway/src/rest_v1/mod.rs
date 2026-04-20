@@ -44,7 +44,9 @@ use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::rate_limiter::{RateLimiter, rate_limit_layer};
+use crate::rate_limiter::{
+    RateLimitLayerState, RateLimiter, parse_trusted_proxies, rate_limit_layer_authenticated,
+};
 use crate::state::AppState;
 
 use self::openapi::ApiDoc;
@@ -156,13 +158,25 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // real handlers (`groups::create_group` + `groups::get_group`).
             // Modes 2 and 3 still answer 503 via `unconfigured_handler`
             // because they lack `Arc<AppPool>` in state.
-            // Plan 0021: dedicated rate-limit (20/min, burst 5) on the
-            // 3 privileged members-management endpoints. Separate
-            // sub-router so the layer applies only to these routes;
-            // read/create endpoints keep the global governor. Key
-            // extractor (`extract_rate_limit_key`) prefers JWT
-            // token-prefix over IP so NAT-bucketing is avoided.
+            // Plan 0022 T3 (GAR-426): per-user authenticated rate-limit
+            // (20/min, burst 5) on the 3 privileged endpoints. Replaces
+            // the pre-0022 `rate_limit_layer` that keyed by JWT token-
+            // prefix (all HS256 tokens collided on `jwt:eyJhbGci`). The
+            // new `rate_limit_layer_authenticated` verifies the JWT and
+            // keys by the `sub` claim (`jwt-sub:{uuid}`), giving each
+            // user an isolated bucket. Unauthenticated fallback uses
+            // `real_client_ip` with trusted-proxy stripping (plan 0022
+            // T2, env `GARRAIA_TRUSTED_PROXIES`).
             let members_manage_rl = RateLimiter::members_manage_limiter();
+            let trusted_proxies = std::env::var("GARRAIA_TRUSTED_PROXIES")
+                .ok()
+                .map(|v| parse_trusted_proxies(&v))
+                .unwrap_or_default();
+            let rate_limit_state = RateLimitLayerState::new(
+                members_manage_rl,
+                full.auth.jwt_issuer.clone(),
+                trusted_proxies,
+            );
             let rate_limited_routes = Router::new()
                 .route(
                     "/v1/groups/{id}/members/{user_id}/setRole",
@@ -174,8 +188,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/invites/{token}/accept", post(invites::accept_invite))
                 .layer(axum::middleware::from_fn_with_state(
-                    members_manage_rl,
-                    rate_limit_layer,
+                    rate_limit_state,
+                    rate_limit_layer_authenticated,
                 ));
 
             Router::new()
