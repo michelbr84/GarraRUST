@@ -65,6 +65,16 @@ const ALLOWED_GROUP_TYPES: &[&str] = &["family", "team"];
 /// excluded — owners are created during group bootstrap only (comment line 155).
 const ALLOWED_INVITE_ROLES: &[&str] = &["admin", "member", "guest", "child"];
 
+/// Accepted values for `SetRoleRequest::role` (plan 0020 slice 4).
+///
+/// Same subset as [`ALLOWED_INVITE_ROLES`]: excludes `"owner"` because
+/// ownership transfer is a distinct operation (future endpoint). Excludes
+/// `"personal"` — reserved type marker (see [`ALLOWED_GROUP_TYPES`]).
+/// The partial unique index `group_members_single_owner_idx`
+/// (migration 002 line 146) defensively rejects promote-to-owner at the
+/// DB layer, but the handler filters first for a clearer 400 message.
+const ALLOWED_SETROLE_VALUES: &[&str] = &["admin", "member", "guest", "child"];
+
 /// Request body for `POST /v1/groups`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateGroupRequest {
@@ -199,6 +209,62 @@ pub struct InviteResponse {
     pub token: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Request body for `POST /v1/groups/{id}/members/{user_id}/setRole` (plan 0020 slice 4).
+///
+/// Changes a member's role inside the group. The caller must either be
+/// acting on themselves (self-demote) or hold `Action::MembersManage`
+/// (Owner/Admin). Hierarchy rules — Admin cannot modify Owner or another
+/// Admin (non-self) — are enforced inside the handler, not here.
+///
+/// Accepted values: `admin`, `member`, `guest`, `child`. `owner` is
+/// explicitly rejected (400 `cannot promote to owner via setRole`) —
+/// ownership transfer is a separate operation. See [`ALLOWED_SETROLE_VALUES`].
+///
+/// ## Path convention
+///
+/// Linear canonical notation uses Google Cloud custom-verb `:setRole`;
+/// Axum 0.8 / `matchit` does not support `{param}:literal` in the same
+/// segment (same constraint that forced `/accept` over `:accept` in plan
+/// 0019). Delivered path is `/setRole` as a literal segment.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetRoleRequest {
+    /// New role. Must be one of: `admin`, `member`, `guest`, `child`.
+    /// `owner` is rejected — ownership transfer is a separate operation.
+    pub role: String,
+}
+
+impl SetRoleRequest {
+    /// Structural validation. PII-safe error messages only.
+    ///
+    /// Order of checks matters: the `"owner"` rejection produces a clearer
+    /// error message ("cannot promote to owner via setRole") than the
+    /// generic `"role must be one of ..."`, so we filter `"owner"` first.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.role == "owner" {
+            return Err("cannot promote to owner via setRole");
+        }
+        if !ALLOWED_SETROLE_VALUES.contains(&self.role.as_str()) {
+            return Err("role must be one of: admin, member, guest, child");
+        }
+        Ok(())
+    }
+}
+
+/// Response body for setRole (200 OK).
+///
+/// DELETE member returns 204 No Content without a body. This struct is
+/// used only by setRole. Fields mirror the shape of a `group_members`
+/// row plus the `updated_at` timestamp set by the UPDATE.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberResponse {
+    pub group_id: Uuid,
+    pub user_id: Uuid,
+    pub role: String,
+    pub status: String,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// `POST /v1/groups` — create a new group. The authenticated caller
@@ -719,6 +785,456 @@ pub async fn create_invite(
     ))
 }
 
+/// `POST /v1/groups/{id}/members/{user_id}/setRole` — change a member's role (plan 0020 slice 4).
+///
+/// ## Authz model
+///
+/// Two layers:
+///
+/// 1. **Capability gate:** caller must hold `Action::MembersManage`
+///    (Owner/Admin) — *unless* `target_user_id == principal.user_id`,
+///    in which case the capability check is bypassed (self-demote /
+///    self-action path). This preserves the ability for any member to
+///    self-demote subject to the last-owner invariant below.
+/// 2. **Hierarchy gate (non-self only):** Admin callers cannot modify
+///    Owner or other Admins. Owner callers can modify any role.
+///
+/// ## Self-action bypass — intent
+///
+/// Both gates skip their check when `target == caller`. This is
+/// **deliberate**: a Member/Guest/Child must be able to self-downgrade
+/// (e.g. drop their own role before a leave in a future endpoint), an
+/// Admin must be able to self-demote without contacting an Owner, and
+/// an Owner must be able to self-demote to transfer de-facto control to
+/// a co-owner. The safety net for all these paths is the **last-owner
+/// invariant** enforced post-UPDATE inside the same transaction — not
+/// the capability/hierarchy gates. This separation means that even
+/// though self-setRole is broadly permissive, the system can never end
+/// up in a zero-active-owner state (returns 409 and rolls back). Plan
+/// 0020 security review (SEC-MED) confirmed this design; any future
+/// tightening of self-demotion (e.g. Admin → Guest/Child) should live
+/// in a dedicated check with its own test matrix rather than a blanket
+/// restriction on the bypass.
+///
+/// ## Last-owner invariant
+///
+/// After the UPDATE, the handler counts active owners in the same
+/// transaction. If the count drops to zero (the last Owner was demoted
+/// — possibly via self-demote), the transaction is aborted without
+/// commit and 409 Conflict is returned. The UPDATE is rolled back.
+///
+/// ## Promote-to-owner rejection
+///
+/// Body with `role = "owner"` is rejected with 400 at the
+/// [`SetRoleRequest::validate`] gate before any DB access.
+/// `group_members_single_owner_idx` (migration 002 line 146) provides
+/// defense-in-depth at the DB layer.
+///
+/// ## Serialization / concurrency
+///
+/// `SELECT ... FOR UPDATE` on the target's active membership row
+/// acquires a per-row lock; concurrent setRole/delete calls on the
+/// same `(group_id, user_id)` serialize through this lock and each
+/// re-evaluates hierarchy + last-owner rules against a consistent
+/// snapshot.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status | Guard          |
+/// |------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                            | 401    | Principal ext. |
+/// | Non-member of target group                     | 403    | Principal ext. |
+/// | `X-Group-Id` missing / mismatched              | 400    | this handler   |
+/// | Invalid body (unknown role, `role = "owner"`)  | 400    | validate()     |
+/// | Non-self caller lacks `MembersManage`          | 403    | `can()`        |
+/// | Admin caller tries to modify Owner/Admin       | 403    | hierarchy      |
+/// | Target not found / not active                  | 404    | SELECT/UPDATE  |
+/// | Would demote last Owner                        | 409    | post-UPDATE    |
+/// | Happy path                                     | 200    |                |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{id}/members/{user_id}/setRole",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+        ("user_id" = Uuid, Path, description = "Target member's user id."),
+    ),
+    request_body = SetRoleRequest,
+    responses(
+        (status = 200, description = "Role updated; response carries the fresh member row.", body = MemberResponse),
+        (status = 400, description = "Invalid body, header/path mismatch, or `role = owner`.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` or violates hierarchy.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Target member not found or not active.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Would leave the group without an owner.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn set_member_role(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, target_user_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SetRoleRequest>,
+) -> Result<Json<MemberResponse>, RestError> {
+    // 1. Header/path coherence (same pattern as get_group/patch_group).
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Structural body validation (no DB access, PII-safe messages).
+    //    Rejects `role = "owner"` with a dedicated message and unknown
+    //    roles with the generic subset message.
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    // 3. Camada 1 — capability gate with self-action bypass.
+    //    Self (caller == target) may always attempt the operation;
+    //    the last-owner invariant below catches the dangerous case.
+    let is_self = principal.user_id == target_user_id;
+    if !is_self && !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 4. Resolve caller's role for the hierarchy gate. Same invariant
+    //    as `get_group` / `patch_group`: if `group_id` is Some then
+    //    `role` must be Some — extractor guarantees it; break = 500.
+    let caller_role = principal
+        .role
+        .as_ref()
+        .ok_or_else(|| {
+            tracing::error!(
+                user_id = %principal.user_id,
+                group_id = ?principal.group_id,
+                "Principal.role is None with group_id Some — invariant violated by extractor"
+            );
+            RestError::Internal(anyhow::anyhow!(
+                "Principal.role is None despite group_id being Some"
+            ))
+        })?
+        .as_str()
+        .to_string();
+
+    // 5. Open tx and set tenant context. `SET LOCAL` MUST be the first
+    //    statement — plan 0016 M4 pattern. `Uuid::Display` is 36 hex
+    //    chars with dashes, injection-safe.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. Fetch target's current role under FOR UPDATE lock. Serializes
+    //    concurrent setRole/delete on the same member — the second
+    //    caller blocks here until the first commits, then sees the
+    //    new role and can re-apply hierarchy + last-owner rules.
+    //    Filters `status = 'active'` — soft-deleted targets → 404.
+    let target_row: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM group_members \
+         WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+         FOR UPDATE",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let target_role = match target_row {
+        Some((r,)) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 7. Camada 2 — hierarchy gate (non-self only). Admin cannot modify
+    //    Owner nor other Admins. Owner may modify any role (the
+    //    last-owner invariant below still applies).
+    if !is_self && caller_role == "admin" && (target_role == "owner" || target_role == "admin") {
+        return Err(RestError::Forbidden);
+    }
+
+    // 8. UPDATE the role. `now()` in RETURNING yields the statement
+    //    timestamp of this tx — used as `updated_at` in the response
+    //    since `group_members` has no persisted updated_at column.
+    //    Filter `status = 'active'` defends against a race where the
+    //    row becomes 'removed' between the SELECT FOR UPDATE and now
+    //    (not possible under the current lock, but the redundant
+    //    guard is cheap insurance).
+    let updated: Option<(Uuid, Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+        "UPDATE group_members \
+            SET role = $3 \
+          WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+      RETURNING group_id, user_id, role, status, now() AS updated_at",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .bind(&body.role)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (group_id, user_id, role, status, updated_at) = updated.ok_or(RestError::NotFound)?;
+
+    // 9. Last-owner invariant (post-UPDATE). Because the UPDATE is
+    //    visible inside its own tx, this COUNT reflects the state
+    //    that *would* be committed if we proceeded. Zero owners =>
+    //    abort and return 409. Dropping `tx` without `.commit()`
+    //    rolls back the UPDATE automatically.
+    //
+    //    TODO(plan-0021): `group_members_single_owner_idx` (migration
+    //    002:146) is a partial UNIQUE `WHERE role = 'owner'` — it does
+    //    NOT filter by `status = 'active'`, which means the DB-level
+    //    constraint diverges from this COUNT's predicate. The gap is
+    //    safe today (API has no way to create two active owners —
+    //    setRole rejects role='owner') but a follow-up plan should
+    //    amend the partial index to `WHERE role = 'owner' AND status =
+    //    'active'` via forward-only migration so DB and app-layer
+    //    invariants stay aligned.
+    let (owners_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint \
+           FROM group_members \
+          WHERE group_id = $1 AND role = 'owner' AND status = 'active'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if owners_count == 0 {
+        return Err(RestError::Conflict(
+            "cannot leave the group without an owner".into(),
+        ));
+    }
+
+    // 10. Commit. If the commit fails, the UPDATE rolls back and the
+    //     caller sees a 500 — never a partial state.
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(MemberResponse {
+        group_id,
+        user_id,
+        role,
+        status,
+        updated_at,
+    }))
+}
+
+/// `DELETE /v1/groups/{id}/members/{user_id}` — soft-delete a member (plan 0020 slice 4).
+///
+/// The row is not physically deleted — `status` is flipped to `'removed'`
+/// so FKs in `messages.author_id`, `tasks.created_by`, etc. continue to
+/// resolve. Reactivation is out of scope for v1 (plan 0022+).
+///
+/// ## Authz model
+///
+/// Same two layers as [`set_member_role`]:
+///
+/// 1. **Capability gate:** `Action::MembersManage` (Owner/Admin) — bypassed
+///    when `target_user_id == principal.user_id` (leave-group path).
+/// 2. **Hierarchy gate (non-self only):** Admin cannot delete Owner or
+///    another Admin. Owner can delete any role.
+///
+/// ## Self-action bypass — intent
+///
+/// Both gates skip their check for self-DELETE so any member (regardless
+/// of role) can leave the group. The last-owner invariant post-UPDATE
+/// catches the only dangerous self-path (sole Owner leaving an otherwise
+/// empty of owners group → 409 + rollback). See the equivalent note on
+/// [`set_member_role`] for the full design rationale.
+///
+/// ## Last-owner invariant
+///
+/// Post-UPDATE, active owners count must be ≥ 1. If the DELETE
+/// removed the last Owner (possibly via self-leave), the transaction
+/// aborts without commit and 409 is returned.
+///
+/// ## Idempotence
+///
+/// DELETE on an already-removed (`status = 'removed'`) or non-existent
+/// member returns 404, not 204 — this matches plan 0019's convention for
+/// `accept`: callers can distinguish "I performed the removal" (204) from
+/// "already gone or never existed" (404). Re-invite + accept of a soft-
+/// deleted user will 409 on PK collision (`(group_id, user_id)` unique)
+/// — limitation documented in plan 0020 §out of scope.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status | Guard          |
+/// |------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                            | 401    | Principal ext. |
+/// | Non-member of target group                     | 403    | Principal ext. |
+/// | `X-Group-Id` missing / mismatched              | 400    | this handler   |
+/// | Non-self caller lacks `MembersManage`          | 403    | `can()`        |
+/// | Admin caller tries to delete Owner/Admin       | 403    | hierarchy      |
+/// | Target not found / already removed             | 404    | SELECT/UPDATE  |
+/// | Would leave group ownerless                    | 409    | post-UPDATE    |
+/// | Happy path                                     | 204    |                |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{id}/members/{user_id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+        ("user_id" = Uuid, Path, description = "Target member's user id."),
+    ),
+    responses(
+        (status = 204, description = "Member soft-deleted (`status = 'removed'`). No response body."),
+        (status = 400, description = "`X-Group-Id` header missing or mismatched.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` or violates hierarchy.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Target member not found or already removed.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Would leave the group without an owner.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    // 1. Header/path coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Camada 1 — capability gate with self-action bypass.
+    let is_self = principal.user_id == target_user_id;
+    if !is_self && !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Resolve caller's role for hierarchy gate (same invariant as
+    //    set_member_role / patch_group: Principal.role is Some here).
+    let caller_role = principal
+        .role
+        .as_ref()
+        .ok_or_else(|| {
+            tracing::error!(
+                user_id = %principal.user_id,
+                group_id = ?principal.group_id,
+                "Principal.role is None with group_id Some — invariant violated by extractor"
+            );
+            RestError::Internal(anyhow::anyhow!(
+                "Principal.role is None despite group_id being Some"
+            ))
+        })?
+        .as_str()
+        .to_string();
+
+    // 4. Open tx + SET LOCAL tenant context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Fetch target role under FOR UPDATE lock (same serialization
+    //    guarantee as set_member_role). Filters `status = 'active'`
+    //    — already-removed targets ⇒ 404.
+    let target_row: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM group_members \
+         WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+         FOR UPDATE",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let target_role = match target_row {
+        Some((r,)) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 6. Camada 2 — hierarchy gate (non-self only).
+    if !is_self && caller_role == "admin" && (target_role == "owner" || target_role == "admin") {
+        return Err(RestError::Forbidden);
+    }
+
+    // 7. Soft-delete: UPDATE status = 'removed'. `RETURNING 1` so we
+    //    can detect the zero-row case (concurrent removal between
+    //    SELECT FOR UPDATE and here — effectively impossible under
+    //    the lock but cheap guard).
+    let removed: Option<(i32,)> = sqlx::query_as(
+        "UPDATE group_members \
+            SET status = 'removed' \
+          WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+      RETURNING 1",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if removed.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // 8. Last-owner invariant (post-UPDATE). If we just removed an
+    //    Owner and there are no other active Owners left, abort
+    //    and return 409. Running the COUNT unconditionally (rather
+    //    than only when `target_role == "owner"`) keeps the logic
+    //    uniform and the cost is negligible.
+    let (owners_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint \
+           FROM group_members \
+          WHERE group_id = $1 AND role = 'owner' AND status = 'active'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if owners_count == 0 {
+        return Err(RestError::Conflict(
+            "cannot leave the group without an owner".into(),
+        ));
+    }
+
+    // 9. Commit.
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -908,5 +1424,53 @@ mod tests {
             };
             assert!(req.validate().is_ok(), "role '{role}' should be valid");
         }
+    }
+
+    // ── SetRoleRequest validation (plan 0020 t1) ────────
+
+    #[test]
+    fn set_role_request_rejects_owner() {
+        let req: SetRoleRequest = serde_json::from_str(r#"{"role":"owner"}"#).unwrap();
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "cannot promote to owner via setRole"
+        );
+    }
+
+    #[test]
+    fn set_role_request_rejects_unknown_role() {
+        let req: SetRoleRequest = serde_json::from_str(r#"{"role":"superadmin"}"#).unwrap();
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: admin, member, guest, child"
+        );
+    }
+
+    #[test]
+    fn set_role_request_accepts_admin_member_guest_child() {
+        for role in &["admin", "member", "guest", "child"] {
+            let req = SetRoleRequest {
+                role: role.to_string(),
+            };
+            assert!(req.validate().is_ok(), "role '{role}' should be valid");
+        }
+    }
+
+    #[test]
+    fn set_role_request_rejects_unknown_field() {
+        // deny_unknown_fields: typo-protects clients from silent
+        // drops when they misspell `role` (same pattern as
+        // UpdateGroupRequest/CreateInviteRequest).
+        let err = serde_json::from_str::<SetRoleRequest>(r#"{"rle":"admin"}"#);
+        assert!(err.is_err(), "deny_unknown_fields should reject `rle`");
+    }
+
+    #[test]
+    fn allowed_setrole_values_mirror_invite_roles() {
+        // Invariant: setRole accepts the same subset as create-invite.
+        // Owner and personal stay excluded. If this ever changes,
+        // re-evaluate the plan 0020 design invariants §6 and the
+        // hierarchy model before accepting the divergence.
+        assert_eq!(ALLOWED_SETROLE_VALUES, ALLOWED_INVITE_ROLES);
     }
 }
