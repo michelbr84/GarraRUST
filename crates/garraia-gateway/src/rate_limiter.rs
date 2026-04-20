@@ -62,6 +62,31 @@ impl RateLimitConfig {
             burst_size: 20,
         }
     }
+
+    /// Stricter config for privileged members-management endpoints
+    /// (plan 0021 / GAR-425). Covers:
+    ///
+    /// - `POST /v1/invites/{token}/accept` — defends against
+    ///   brute-force / enumeration of invite tokens (SEC-01 from
+    ///   plan 0019 security review).
+    /// - `POST /v1/groups/{id}/members/{user_id}/setRole` —
+    ///   defends against excessive role-change churn (plan 0020
+    ///   security review).
+    /// - `DELETE /v1/groups/{id}/members/{user_id}` — same.
+    ///
+    /// Positioned between `auth()` (10/min, very strict) and
+    /// `default()` (60/min). The 20/min ceiling is conservative
+    /// for legitimate UX (a user managing a group typically
+    /// does 1-5 operations in a burst; 20 leaves headroom) while
+    /// keeping brute-force attacks expensive (token enumeration
+    /// at 20 probes/min on a 256-bit search space is infeasible).
+    pub fn members_manage() -> Self {
+        Self {
+            requests_per_minute: 20,
+            requests_per_hour: 200,
+            burst_size: 5,
+        }
+    }
 }
 
 // ── Internal window state ─────────────────────────────────────────────────────
@@ -147,6 +172,13 @@ impl RateLimiter {
     /// Auth-specific strict limiter.
     pub fn auth_limiter() -> Arc<Self> {
         Arc::new(Self::new(RateLimitConfig::auth()))
+    }
+
+    /// Members-management limiter for the 3 privileged
+    /// `/v1/invites/.../accept`, `/v1/groups/.../setRole`,
+    /// `/v1/groups/.../members/{user_id}` routes (plan 0021).
+    pub fn members_manage_limiter() -> Arc<Self> {
+        Arc::new(Self::new(RateLimitConfig::members_manage()))
     }
 
     /// Check and record a request for `key` (IP, user_id, or API key).
