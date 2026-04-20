@@ -742,10 +742,9 @@ async fn v1_groups_scenarios() {
     // Re-using `created_group_id` from above would couple M/D scenarios to
     // the mutations done by P/I scenarios; a fresh group keeps the invariants
     // local to this section and easier to reason about.
-    let (m_owner_id, m_group_id, m_owner_token) =
-        seed_user_with_group(&h, "m-owner@0020.test")
-            .await
-            .expect("M setup: seed owner+group");
+    let (m_owner_id, m_group_id, m_owner_token) = seed_user_with_group(&h, "m-owner@0020.test")
+        .await
+        .expect("M setup: seed owner+group");
     let m_group_path = m_group_id.to_string();
 
     // Scenario M1: Owner demotes a member → admin. 200 + MemberResponse.role=="admin".
@@ -775,24 +774,22 @@ async fn v1_groups_scenarios() {
         assert!(v["updated_at"].is_string(), "M1: updated_at must be set");
 
         // DB assertion via admin_pool.
-        let (db_role,): (String,) = sqlx::query_as(
-            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
-        )
-        .bind(m_group_id)
-        .bind(m1_target_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("M1: DB row check");
+        let (db_role,): (String,) =
+            sqlx::query_as("SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(m_group_id)
+                .bind(m1_target_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("M1: DB row check");
         assert_eq!(db_role, "admin", "M1: DB role must be admin");
     }
 
     // Scenario M2: Admin setRole of another member → guest. 200.
     // Uses m1_target_id (now an admin from M1) as the caller.
     let m1_admin_token = h.jwt.issue_access_for_test(m1_target_id);
-    let (m2_target_id, _) =
-        seed_member_via_admin(&h, m_group_id, "member", "m2-target@0020.test")
-            .await
-            .expect("M2: seed target");
+    let (m2_target_id, _) = seed_member_via_admin(&h, m_group_id, "member", "m2-target@0020.test")
+        .await
+        .expect("M2: seed target");
     {
         let resp = h
             .router
@@ -937,21 +934,17 @@ async fn v1_groups_scenarios() {
         );
         let v = body_json(resp).await;
         assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("without an owner"),
+            v["detail"].as_str().unwrap().contains("without an owner"),
             "M6: detail mentions last-owner, got {v}"
         );
         // DB invariant: m_owner STILL owner (tx was rolled back).
-        let (db_role,): (String,) = sqlx::query_as(
-            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
-        )
-        .bind(m_group_id)
-        .bind(m_owner_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("M6: DB role check");
+        let (db_role,): (String,) =
+            sqlx::query_as("SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(m_group_id)
+                .bind(m_owner_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("M6: DB role check");
         assert_eq!(db_role, "owner", "M6: owner must remain after 409 rollback");
     }
 
@@ -986,10 +979,9 @@ async fn v1_groups_scenarios() {
         seed_member_via_admin(&h, m_group_id, "member", "m8-member@0020.test")
             .await
             .expect("M8: seed member caller");
-    let (m8_other_id, _) =
-        seed_member_via_admin(&h, m_group_id, "member", "m8-other@0020.test")
-            .await
-            .expect("M8: seed target");
+    let (m8_other_id, _) = seed_member_via_admin(&h, m_group_id, "member", "m8-other@0020.test")
+        .await
+        .expect("M8: seed target");
     let _ = m8_member_id; // silence unused warning
     {
         let resp = h
@@ -1061,10 +1053,9 @@ async fn v1_groups_scenarios() {
     // (the user promoted to admin in M1).
 
     // Scenario D1: Owner DELETEs a member → 204 + DB row `status = 'removed'`.
-    let (d1_target_id, _) =
-        seed_member_via_admin(&h, m_group_id, "member", "d1-target@0020.test")
-            .await
-            .expect("D1: seed target");
+    let (d1_target_id, _) = seed_member_via_admin(&h, m_group_id, "member", "d1-target@0020.test")
+        .await
+        .expect("D1: seed target");
     {
         let resp = h
             .router
@@ -1092,22 +1083,20 @@ async fn v1_groups_scenarios() {
         assert!(bytes.is_empty(), "D1: 204 must have empty body");
 
         // DB row must now be status='removed'.
-        let (db_status,): (String,) = sqlx::query_as(
-            "SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2",
-        )
-        .bind(m_group_id)
-        .bind(d1_target_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("D1: post-DELETE DB read");
+        let (db_status,): (String,) =
+            sqlx::query_as("SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(m_group_id)
+                .bind(d1_target_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("D1: post-DELETE DB read");
         assert_eq!(db_status, "removed", "D1: soft-delete flips status");
     }
 
     // Scenario D2: Admin DELETEs a guest → 204.
-    let (d2_target_id, _) =
-        seed_member_via_admin(&h, m_group_id, "guest", "d2-target@0020.test")
-            .await
-            .expect("D2: seed guest");
+    let (d2_target_id, _) = seed_member_via_admin(&h, m_group_id, "guest", "d2-target@0020.test")
+        .await
+        .expect("D2: seed guest");
     {
         let resp = h
             .router
@@ -1168,10 +1157,7 @@ async fn v1_groups_scenarios() {
         );
         let v = body_json(resp).await;
         assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("without an owner"),
+            v["detail"].as_str().unwrap().contains("without an owner"),
             "D4: detail mentions last-owner, got {v}"
         );
         // Invariant check: m_owner still active owner.
@@ -1213,14 +1199,13 @@ async fn v1_groups_scenarios() {
             "D5: owner self-DELETE OK with co-owner"
         );
         // m_owner should now be status='removed'; d5_coowner remains owner.
-        let (m_owner_status,): (String,) = sqlx::query_as(
-            "SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2",
-        )
-        .bind(m_group_id)
-        .bind(m_owner_id)
-        .fetch_one(&h.admin_pool)
-        .await
-        .expect("D5: m_owner DB read");
+        let (m_owner_status,): (String,) =
+            sqlx::query_as("SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(m_group_id)
+                .bind(m_owner_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("D5: m_owner DB read");
         assert_eq!(m_owner_status, "removed", "D5: m_owner soft-deleted");
 
         let (coowner_role, coowner_status): (String, String) = sqlx::query_as(
@@ -1273,10 +1258,9 @@ async fn v1_groups_scenarios() {
         // We need the member to look themselves up by their own user_id.
         // Mint the path target from the token's subject — the fixture
         // returns the seeded user_id directly.
-        let (d6_id, _) =
-            seed_member_via_admin(&h, m_group_id, "member", "d6-self@0020.test")
-                .await
-                .expect("D6: seed self");
+        let (d6_id, _) = seed_member_via_admin(&h, m_group_id, "member", "d6-self@0020.test")
+            .await
+            .expect("D6: seed self");
         let d6_self_token = h.jwt.issue_access_for_test(d6_id);
         let resp = h
             .router

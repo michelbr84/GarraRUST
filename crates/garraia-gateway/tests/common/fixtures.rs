@@ -160,9 +160,7 @@ pub async fn seed_second_owner_via_admin(
     .await
     .context("seed_second_owner: insert group_members")?;
 
-    tx.commit()
-        .await
-        .context("seed_second_owner: tx commit")?;
+    tx.commit().await.context("seed_second_owner: tx commit")?;
 
     let token = h.jwt.issue_access_for_test(user_id);
     Ok((user_id, token))
@@ -237,9 +235,7 @@ pub async fn seed_member_via_admin(
     .await
     .context("seed_member: insert group_members")?;
 
-    tx.commit()
-        .await
-        .context("seed_member: tx commit")?;
+    tx.commit().await.context("seed_member: tx commit")?;
 
     let token = h.jwt.issue_access_for_test(user_id);
     Ok((user_id, token))

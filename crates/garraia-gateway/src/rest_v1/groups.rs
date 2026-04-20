@@ -947,10 +947,7 @@ pub async fn set_member_role(
     // 7. Camada 2 — hierarchy gate (non-self only). Admin cannot modify
     //    Owner nor other Admins. Owner may modify any role (the
     //    last-owner invariant below still applies).
-    if !is_self
-        && caller_role == "admin"
-        && (target_role == "owner" || target_role == "admin")
-    {
+    if !is_self && caller_role == "admin" && (target_role == "owner" || target_role == "admin") {
         return Err(RestError::Forbidden);
     }
 
@@ -1150,10 +1147,7 @@ pub async fn delete_member(
     };
 
     // 6. Camada 2 — hierarchy gate (non-self only).
-    if !is_self
-        && caller_role == "admin"
-        && (target_role == "owner" || target_role == "admin")
-    {
+    if !is_self && caller_role == "admin" && (target_role == "owner" || target_role == "admin") {
         return Err(RestError::Forbidden);
     }
 

@@ -678,10 +678,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             id: 27,
             name: "POST setRole as alice(owner) on bob(non-member of alice_group) -> 404",
             build: Box::new(|a| {
-                let path = format!(
-                    "/v1/groups/{}/members/{}/setRole",
-                    a.alice_group, a.bob_id
-                );
+                let path = format!("/v1/groups/{}/members/{}/setRole", a.alice_group, a.bob_id);
                 req_post_grouped(
                     &path,
                     Some(&a.alice_token),
@@ -753,10 +750,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             build: Box::new(|a| {
                 let mut req = Request::builder()
                     .method(Method::DELETE)
-                    .uri(format!(
-                        "/v1/groups/{}/members/{}",
-                        a.alice_group, a.bob_id
-                    ))
+                    .uri(format!("/v1/groups/{}/members/{}", a.alice_group, a.bob_id))
                     .body(Body::empty())
                     .unwrap();
                 req.extensions_mut()
