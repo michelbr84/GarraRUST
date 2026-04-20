@@ -116,9 +116,17 @@ impl WindowState {
     }
 
     /// Count requests in the last `window_secs` seconds.
+    ///
+    /// Plan 0022 T5: returns `u32` via `try_from` saturated at `u32::MAX`.
+    /// The cap is defensive only — `prune(3600)` bounds `timestamps.len()`
+    /// to the number of requests observed in the last hour, which even
+    /// at 100k req/s would saturate `Vec<u64>` memory long before
+    /// overflowing `u32`. Previously cast `as u32`, which would silently
+    /// truncate in the unreachable overflow case.
     fn count_in_window(&self, window_secs: u64) -> u32 {
         let cutoff = now_secs().saturating_sub(window_secs);
-        self.timestamps.iter().filter(|&&t| t >= cutoff).count() as u32
+        let count = self.timestamps.iter().filter(|&&t| t >= cutoff).count();
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
     /// Record a new request timestamp.
@@ -187,28 +195,60 @@ impl RateLimiter {
     ///
     /// Returns a `RateLimitDecision` — the caller must check `allowed` and
     /// return 429 if it is `false`.
+    ///
+    /// ## Lock discipline (plan 0022 T4, addressing code-review HIGH of PR #30)
+    ///
+    /// The method is split into two phases to avoid holding a write lock on
+    /// the DashMap shard for the entire window-count computation:
+    ///
+    /// 1. **Read phase:** probe via `get()`, clone the `WindowState`, drop
+    ///    the read guard immediately. Prune + count happen on the clone —
+    ///    the shard lock is not held across those loops.
+    /// 2. **Write phase (only when `allowed`):** re-acquire via `entry()`
+    ///    or `get_mut()` to record the new timestamp. Brief write lock.
+    ///
+    /// The split accepts a benign race: two callers can both observe
+    /// `allowed = true` in phase 1 and both record in phase 2, producing
+    /// one extra request above the nominal ceiling per race window. For
+    /// the soft-limit semantics of a sliding-window rate limiter this is
+    /// acceptable — the alternative (locking the shard around the full
+    /// compute+write path, pre-0022 behavior) serialized all throughput
+    /// to the rate of a single `count_in_window` loop even for unrelated
+    /// keys sharing a DashMap shard.
     pub fn check(&self, key: &str) -> RateLimitDecision {
-        let mut entry = self
-            .windows
-            .entry(key.to_string())
-            .or_insert_with(WindowState::new);
-        entry.prune(3600); // keep at most 1 hour of history
+        let now = now_secs();
 
-        let per_minute = entry.count_in_window(60);
-        let per_hour = entry.count_in_window(3600);
+        // Phase 1: read-only snapshot. Cloning the WindowState limits the
+        // read guard to a single shard-touch and lets us prune/count on
+        // our local copy.
+        let (per_minute, per_hour) = match self.windows.get(key) {
+            Some(entry) => {
+                let mut snapshot = entry.clone();
+                drop(entry);
+                snapshot.prune(3600);
+                (snapshot.count_in_window(60), snapshot.count_in_window(3600))
+            }
+            None => (0, 0),
+        };
 
         let allowed = per_minute < self.config.requests_per_minute
             && per_hour < self.config.requests_per_hour;
 
+        // Phase 2: brief write if allowed.
         if allowed {
+            let mut entry = self
+                .windows
+                .entry(key.to_string())
+                .or_insert_with(WindowState::new);
+            entry.prune(3600);
             entry.record();
         }
 
         let remaining = self
             .config
             .requests_per_minute
-            .saturating_sub(per_minute + 1);
-        let reset_at = now_secs() + 60 - (now_secs() % 60);
+            .saturating_sub(u32::try_from(per_minute.saturating_add(1)).unwrap_or(u32::MAX));
+        let reset_at = now + 60 - (now % 60);
 
         RateLimitDecision {
             allowed,
