@@ -1195,6 +1195,14 @@ pub async fn delete_member(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Plan 0021 T5: also set `app.current_group_id` — required by the
+    // `audit_events_group_or_self` RLS policy for the audit INSERT
+    // below. Uuid Display is injection-safe.
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     // 5. Fetch target role under FOR UPDATE lock (same serialization
     //    guarantee as set_member_role). Filters `status = 'active'`
     //    — already-removed targets ⇒ 404.
@@ -1259,6 +1267,25 @@ pub async fn delete_member(
             "cannot leave the group without an owner".into(),
         ));
     }
+
+    // Plan 0021 T5: audit_events row for member.removed. Same positioning
+    // as set_member_role (plan 0021 T4) — AFTER the COUNT guard so a 409
+    // rolls back without emitting an audit row. PII-safe metadata:
+    // UUIDs + role string only.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemberRemoved,
+        principal.user_id,
+        id,
+        "group_members",
+        format!("{id}:{target_user_id}"),
+        json!({
+            "target_user_id": target_user_id,
+            "old_role": target_role,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     // 9. Commit.
     tx.commit()
