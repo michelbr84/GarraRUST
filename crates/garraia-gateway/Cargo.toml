@@ -64,6 +64,11 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chro
 dirs = "6"
 governor = "0.8"
 tower_governor = "0.8"
+# Plan 0022 T2 (GAR-426): CIDR parsing for GARRAIA_TRUSTED_PROXIES env var.
+# Used by `real_client_ip` helper to decide whether to honor `X-Forwarded-For`.
+# Version pinned to match the transitive resolution already in Cargo.lock
+# (introduced by other workspace crates).
+ipnet = "2"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
@@ -125,6 +130,16 @@ required-features = ["test-helpers"]
 [[test]]
 name = "rest_v1_invites"
 path = "tests/rest_v1_invites.rs"
+required-features = ["test-helpers"]
+
+# Plan 0022 T7 — F-05 regression guard for audit_events_group_or_self
+# policy branch 2. Uses the same harness as other integration tests
+# and needs the same feature gate so CI's default `cargo test`
+# (without --features test-helpers) skips it instead of failing to
+# compile `JwtIssuer::new_for_test` / `build_router_for_test`.
+[[test]]
+name = "audit_workspace_branch_two"
+path = "tests/audit_workspace_branch_two.rs"
 required-features = ["test-helpers"]
 
 [dev-dependencies]

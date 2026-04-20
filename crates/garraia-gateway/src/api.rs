@@ -67,6 +67,11 @@ pub async fn create_session(
     let mut response_headers = HeaderMap::new();
     let cfg = state.current_config();
     if let Some(manager) = &state.chat_session_manager {
+        // TODO(plan-0023+): this reads `X-Forwarded-For` without
+        // trusted-proxy validation — same pre-0022 issue closed for
+        // rate_limiter in plan 0022 T2. Consolidate with
+        // `rate_limiter::real_client_ip` once plan 0023 lifts the
+        // helper into a shared module. Out-of-scope for plan 0022.
         let ip = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())

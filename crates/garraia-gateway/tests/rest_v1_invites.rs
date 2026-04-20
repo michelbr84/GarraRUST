@@ -399,80 +399,88 @@ async fn v1_invites_accept_scenarios() {
         );
     }
 
-    // ─── A7: rate-limit 429 is reachable on /accept (plan 0021) ───
+    // ─── A7: rate-limit deterministic 429 on /accept (plan 0022 T6) ───
     //
-    // Smoke-tests that the members_manage rate-limit middleware is
-    // actually wired on `POST /v1/invites/{token}/accept`. A regression
-    // that removed the `.layer(rate_limit_layer)` would make this test
-    // fail by exhausting a 1000+ loop without ever seeing 429.
+    // Verifies that `rate_limit_layer_authenticated` (plan 0022 T3)
+    // keys by the verified JWT `sub` claim, giving each user an
+    // isolated bucket. With the per-user key in place this test can
+    // assert **deterministically** that the 21st request returns 429
+    // (vs the plan 0021 version that had to loop up to 40 times and
+    // accept "eventually" because all JWT tokens collided on one
+    // bucket — SEC-HIGH F-03 in the plan 0021 security review).
     //
-    // **Key-extractor caveat (plan 0021 follow-up):** the current
-    // `extract_rate_limit_key` (rate_limiter.rs:265-289) uses the first
-    // 8 chars of the Bearer token as the bucket key. Every HS256 JWT
-    // starts with the same header segment (`eyJhbGci...`) → all JWT-
-    // authenticated callers in this test binary share ONE rate-limit
-    // bucket for `/accept`. Our plan 0021 invariant 3 said "JWT
-    // user_id > IP", but the existing extractor does NOT decode the
-    // JWT — it uses the token prefix. Fixing the extractor to decode
-    // the `sub` claim (or take a later slice of the token payload) is
-    // deferred to a dedicated plan (candidate for 0022+). For the test
-    // we therefore don't assert an exact budget (A1-A6 and internal
-    // fixture requests already consumed part of the window); we just
-    // assert that rate-limiting IS enforced — i.e. at least one 429
-    // appears within a small number of rapid-fire requests.
-    //
-    // If the middleware were missing, this loop would return 404 every
-    // time (handler runs with bogus token) and the assertion at the
-    // bottom would fail with zero 429s observed.
+    // Regression guards:
+    // 1. First 20 requests must ALL return 404 (bogus token, handler
+    //    ran under-limit). Any 429 inside the first 20 proves the
+    //    bucket is still shared — plan 0022 T3 regressed.
+    // 2. The 21st request must return 429 exactly. Any other status
+    //    proves the middleware is missing.
+    // 3. The 429 must carry `Retry-After` + `X-RateLimit-Limit` +
+    //    `X-RateLimit-Remaining`, but MUST NOT carry `X-RateLimit-
+    //    Reset` (plan 0022 T5 removed it — timing leak).
     {
-        let (_burster_id, burster_token) = seed_user_without_group(&h, "a7-burster@0021.test")
+        let (_burster_id, burster_token) = seed_user_without_group(&h, "a7-burster@0022.test")
             .await
             .expect("A7: seed burster");
-        // Reuse any bogus token — the handler never reaches token
-        // resolution under rate-limit pressure (the middleware returns
-        // early). Using a known-bogus value also makes the 404 path
-        // deterministic for under-limit requests.
+        // 43-char bogus token so TOKEN_LEN_CHARS guard inside
+        // accept_invite passes; the handler then fails hash match
+        // and returns 404. This makes the under-limit behavior
+        // deterministic (always 404) when the rate-limit is off.
         let bogus = "a7-bogus-token-len43-chars-aaaaaaaaaaaaaaaaa";
 
-        let mut observed_429: Option<axum::response::Response> = None;
-        // Cap the loop at 40 — generous margin over the 20/min budget
-        // so even if the earlier scenarios consumed part of the window
-        // the 429 should arrive well within this count.
-        for i in 0..40 {
+        // 20 under-limit requests MUST all be 404 (members_manage
+        // preset = 20/min).
+        for i in 0..20 {
             let resp = h
                 .router
                 .clone()
                 .oneshot(post_accept(Some(&burster_token), bogus))
                 .await
                 .expect("A7: oneshot");
-            if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-                observed_429 = Some(resp);
-                break;
-            }
-            // Non-429 responses should be 404 (bogus token, handler ran).
             assert_eq!(
                 resp.status(),
                 StatusCode::NOT_FOUND,
-                "A7 req {i}: expected 404 (bogus token) or 429 (limit); got {}",
-                resp.status()
+                "A7 req {i} (zero-indexed, so 1-{n}-th under-limit): expected 404 (bogus token); \
+                 got {}. Likely regression: per-user bucket not working — check plan 0022 T3.",
+                resp.status(),
+                n = i + 1
             );
         }
 
-        let resp = observed_429.expect(
-            "A7: rate-limit middleware MUST be wired on /accept — saw no 429 in 40 requests",
+        // 21st request: MUST be 429.
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_accept(Some(&burster_token), bogus))
+            .await
+            .expect("A7: 21st oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "A7: 21st request MUST return 429 (members_manage preset = 20/min \
+             per jwt-sub bucket). Got {}. Likely regression: middleware \
+             unwired or bucket still shared.",
+            resp.status()
         );
-        // Verify the IETF rate-limit headers are present on 429.
+        let headers = resp.headers();
         assert!(
-            resp.headers().contains_key("x-ratelimit-limit"),
+            headers.contains_key("retry-after"),
+            "A7: 429 must carry Retry-After (IETF canonical)"
+        );
+        assert!(
+            headers.contains_key("x-ratelimit-limit"),
             "A7: 429 must carry X-RateLimit-Limit"
         );
         assert!(
-            resp.headers().contains_key("x-ratelimit-remaining"),
+            headers.contains_key("x-ratelimit-remaining"),
             "A7: 429 must carry X-RateLimit-Remaining"
         );
+        // Plan 0022 T5: X-RateLimit-Reset intentionally removed
+        // (timing leak). Retry-After covers the signal in a
+        // relative-duration form that does not leak absolute time.
         assert!(
-            resp.headers().contains_key("retry-after"),
-            "A7: 429 must carry Retry-After"
+            !headers.contains_key("x-ratelimit-reset"),
+            "A7: X-RateLimit-Reset MUST NOT be emitted (plan 0022 T5 removed it)"
         );
     }
 }
