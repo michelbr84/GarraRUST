@@ -2,7 +2,11 @@
 //!
 //! Provides per-user, per-IP, and per-API-key rate limiting with configurable
 //! windows. Headers returned to the client follow the IETF draft standard:
-//!   X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+//!   X-RateLimit-Limit, X-RateLimit-Remaining
+//! Plus `Retry-After` on 429 responses. **Note:** `X-RateLimit-Reset`
+//! (Unix-timestamp form) was removed in plan 0022 (SEC-LOW F-06) because
+//! it leaked the absolute reset instant; clients should use `Retry-After`
+//! (relative-duration form) instead.
 //!
 //! The implementation uses an in-memory sliding-window counter backed by a
 //! `DashMap<String, WindowState>`. A background task periodically evicts
@@ -245,6 +249,14 @@ impl RateLimiter {
             entry.record();
         }
 
+        // `remaining` reports "what's left AFTER this request" from the
+        // caller's perspective. For the allowed path this is accurate
+        // (the +1 accounts for the record we just wrote). For the
+        // blocked path, `per_minute + 1 >= requests_per_minute` so
+        // `saturating_sub` bottoms out at 0 — still semantically correct
+        // ("you have 0 remaining; Retry-After tells you when"). The +1
+        // does NOT observably leak information on the blocked path.
+        // Plan 0022 code-review NIT S-01: kept unified for simplicity.
         let remaining = self
             .config
             .requests_per_minute
@@ -346,35 +358,25 @@ pub fn rate_limit_response(decision: &RateLimitDecision) -> Response {
 
 /// Extract the best available client identifier from a request.
 ///
-/// Priority: X-API-Key > Authorization bearer token-prefix >
-/// X-Forwarded-For > `"ip:unknown"` sentinel.
+/// **⚠️ DEPRECATED (plan 0022).** This function has two security issues
+/// inherited from pre-0022 code:
 ///
-/// # Known limitations (plan 0021 security review follow-ups)
+/// - Token-prefix keying (F-03) — all HS256 JWTs collide on the same
+///   header segment `eyJhbGci...`, so every authenticated caller
+///   shares one bucket.
+/// - `X-Forwarded-For` without trusted-proxy validation (F-02) —
+///   clients can forge the header to shift their bucket.
 ///
-/// - **Token-prefix, not decoded `sub` claim.** For JWTs, this uses
-///   the first 8 chars of the serialized bearer token — NOT the
-///   `sub` claim decoded from the payload. All HS256 JWTs emitted
-///   by the same `JwtIssuer` share an identical header segment
-///   (`eyJhbGci...` base64 of `{"alg":"HS256"`), so every
-///   authenticated caller collides into one bucket `jwt:eyJhbGci`.
-///   This is documented as a **plan 0022+ follow-up**: the
-///   extractor should decode the token and key by `sub` (user_id)
-///   for true per-user isolation. Until then, the jwt-keyed
-///   bucket behaves as a coarse global limit for authenticated
-///   traffic, which is a net-positive over no rate-limit at all
-///   but insufficient for multi-tenant production load.
-///
-/// - **`X-Forwarded-For` is client-controlled without a trusted-proxy
-///   allowlist.** Any caller can forge the header and shift their
-///   bucket to an arbitrary IP, evading IP-keyed rate limits. The
-///   value is used here as-is — plan 0022+ will introduce a
-///   `TRUSTED_PROXIES` env var and strip the header when the
-///   immediate peer is not in the list. For the current wiring
-///   (rate-limit applied to authenticated endpoints only), the
-///   exposure is small because the JWT bucket takes precedence
-///   whenever `Authorization` is present, but the vector exists
-///   for unauthenticated paths and MUST be closed before prod
-///   deploy at scale.
+/// Prefer [`rate_limit_layer_authenticated`] + [`RateLimitLayerState`]
+/// for any NEW route. This function is kept only so the legacy
+/// unauthenticated `rate_limit_layer` (if still wired somewhere)
+/// continues to compile. Plan 0023+ is expected to remove it once
+/// the last unauthenticated route is migrated.
+#[deprecated(
+    since = "0.2.0",
+    note = "Plan 0022: collides HS256 JWTs on one bucket and trusts XFF \
+            unconditionally. Use rate_limit_layer_authenticated instead."
+)]
 pub fn extract_rate_limit_key(headers: &HeaderMap) -> String {
     // Use API key prefix if present
     if let Some(api_key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
@@ -486,14 +488,26 @@ pub fn real_client_ip(headers: &HeaderMap, peer_addr: IpAddr, trusted_proxies: &
 
 /// Axum middleware that applies a shared `RateLimiter` to every request.
 ///
+/// **⚠️ DEPRECATED (plan 0022).** Uses the legacy
+/// [`extract_rate_limit_key`] which suffers from the shared-bucket
+/// and XFF-spoofing issues. Kept public only to keep the old
+/// [`rate_limit_layer`] wrapper compiling. Use
+/// [`rate_limit_layer_authenticated`] instead for new routes.
+///
 /// On limit exceeded: returns 429 with X-RateLimit-* headers.
 /// On allowed: forwards the request and appends headers to the response.
+#[deprecated(
+    since = "0.2.0",
+    note = "Plan 0022: uses the deprecated extract_rate_limit_key. \
+            Use rate_limit_layer_authenticated instead."
+)]
 pub async fn rate_limit_middleware(
     limiter: Arc<RateLimiter>,
     headers: HeaderMap,
     req: Request,
     next: Next,
 ) -> Response {
+    #[allow(deprecated)]
     let key = extract_rate_limit_key(&headers);
     let decision = limiter.check(&key);
 
@@ -516,12 +530,20 @@ pub async fn rate_limit_middleware(
 ///     .route("/auth/login", post(login_handler))
 ///     .layer(axum::middleware::from_fn_with_state(limiter, rate_limit_layer))
 /// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Plan 0022: wraps the deprecated rate_limit_middleware \
+            (shared-bucket + XFF spoofable). Use \
+            rate_limit_layer_authenticated + RateLimitLayerState \
+            for new routes."
+)]
 pub async fn rate_limit_layer(
     axum::extract::State(limiter): axum::extract::State<Arc<RateLimiter>>,
     headers: HeaderMap,
     req: Request,
     next: Next,
 ) -> Response {
+    #[allow(deprecated)]
     rate_limit_middleware(limiter, headers, req, next).await
 }
 
@@ -639,8 +661,14 @@ pub async fn rate_limit_layer_authenticated(
 ) -> Response {
     // Pull ConnectInfo + headers from the Request instead of listing them
     // as separate middleware extractors. axum's `from_fn_with_state`
-    // caps the total param count including State/Request/Next, and
-    // splitting headers/peer_info into dedicated params hit that cap.
+    // impl-ladder has `FromFn<F, S, I, T>` implementations where `T` is
+    // a tuple of up to 16 `FromRequestParts` extractors (see axum-0.8
+    // `middleware/from_fn.rs` macro_rules expansion). Our first cut
+    // had State + Option<ConnectInfo> + HeaderMap + Request + Next and
+    // failed with E0277 ("FromFn is not Service") because the specific
+    // 5-extractor combination wasn't resolved; consolidating via
+    // `req.extensions()` + `req.headers()` avoids the issue entirely
+    // and reads more naturally.
     let peer_addr = req
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -666,6 +694,9 @@ pub async fn rate_limit_layer_authenticated(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)] // Tests still exercise the legacy `extract_rate_limit_key`
+// for regression coverage; new routes must use
+// `rate_limit_layer_authenticated` per plan 0022 T3.
 mod tests {
     use super::*;
 
@@ -774,6 +805,114 @@ mod tests {
         let headers = xff_header("not-an-ip");
         let resolved = real_client_ip(&headers, peer_v4(), &trusted);
         assert_eq!(resolved, peer_v4(), "malformed XFF ⇒ fallback to peer_addr");
+    }
+
+    // ── Plan 0022 review follow-up: cover `extract_authenticated_rate_limit_key`
+    //    fallback ladder. The JWT-valid happy path is exercised by the A7
+    //    integration test; these unit tests cover the 3 fallback branches
+    //    (apikey, IP via real_client_ip, sentinel) explicitly.
+    //
+    //    Feature-gated because constructing a real `JwtIssuer` requires
+    //    `JwtIssuer::new_for_test`, which lives behind
+    //    `garraia-auth/test-support`. The `test-helpers` feature of this
+    //    crate enables it transitively.
+    #[cfg(feature = "test-helpers")]
+    mod auth_extractor_ladder {
+        use super::*;
+
+        fn jwt_issuer_for_test() -> garraia_auth::JwtIssuer {
+            garraia_auth::JwtIssuer::new_for_test("plan-0022-test-secret-32-chars-long")
+        }
+
+        #[test]
+        fn apikey_fallback_when_no_bearer() {
+            // No Authorization header, but X-API-Key present ⇒ `apikey:{prefix}`.
+            let jwt = jwt_issuer_for_test();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_static("sk-test-0022-abc123xyz"),
+            );
+
+            let key = extract_authenticated_rate_limit_key(&headers, &jwt, None, &[]);
+            assert!(
+                key.starts_with("apikey:"),
+                "expected apikey fallback, got: {key}"
+            );
+            // 16-char prefix (matches the legacy extractor's policy).
+            assert_eq!(key, "apikey:sk-test-0022-abc");
+        }
+
+        #[test]
+        fn ip_fallback_with_peer_addr() {
+            // No bearer, no apikey, but peer_addr is present ⇒ `ip:{peer}`.
+            // XFF is ignored because trusted_proxies is empty (fail-closed).
+            let jwt = jwt_issuer_for_test();
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.99"));
+            let peer: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+
+            let key = extract_authenticated_rate_limit_key(&headers, &jwt, Some(peer), &[]);
+            assert_eq!(key, "ip:10.0.0.5", "fail-closed XFF ⇒ peer_addr wins");
+        }
+
+        #[test]
+        fn unknown_sentinel_when_no_peer() {
+            // No bearer, no apikey, no peer_addr ⇒ `ip:unknown` sentinel.
+            // Conservative: rate-limits callers we cannot identify at all
+            // rather than skipping the limit.
+            let jwt = jwt_issuer_for_test();
+            let headers = HeaderMap::new();
+
+            let key = extract_authenticated_rate_limit_key(&headers, &jwt, None, &[]);
+            assert_eq!(key, "ip:unknown");
+        }
+
+        #[test]
+        fn jwt_sub_wins_over_apikey_and_ip() {
+            // Priority order: all three sources present ⇒ `jwt-sub:{uuid}` wins.
+            let jwt = jwt_issuer_for_test();
+            let user_id = uuid::Uuid::new_v4();
+            let token = jwt.issue_access_for_test(user_id);
+
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "authorization",
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            );
+            headers.insert("x-api-key", HeaderValue::from_static("sk-ignored"));
+            headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.99"));
+
+            let peer: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+            let key = extract_authenticated_rate_limit_key(&headers, &jwt, Some(peer), &[]);
+            assert_eq!(
+                key,
+                format!("jwt-sub:{user_id}"),
+                "JWT sub must have highest priority"
+            );
+        }
+
+        #[test]
+        fn invalid_jwt_falls_through_to_apikey() {
+            // Bearer present but HMAC-invalid ⇒ verify fails silently and
+            // we fall through to the apikey branch.
+            let jwt = jwt_issuer_for_test();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "authorization",
+                HeaderValue::from_static("Bearer eyJ.not.valid"),
+            );
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_static("sk-after-invalid-jwt"),
+            );
+
+            let key = extract_authenticated_rate_limit_key(&headers, &jwt, None, &[]);
+            assert!(
+                key.starts_with("apikey:"),
+                "invalid JWT must fall through to apikey, got: {key}"
+            );
+        }
     }
 
     #[test]

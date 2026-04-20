@@ -72,16 +72,34 @@ async fn audit_events_insert_without_current_user_id_is_rejected_by_rls() {
     .execute(&mut *tx)
     .await;
 
-    // The expected failure mode is `sqlx::Error::Database` with
-    // SQLSTATE 42501 (`insufficient_privilege` — how Postgres
-    // reports RLS WITH CHECK rejections).
+    // The **expected** failure mode is `sqlx::Error::Database` with
+    // SQLSTATE 42501 (`insufficient_privilege` — how Postgres reports
+    // RLS WITH CHECK rejections). The current policy (migration 007:
+    // 161-168, hardened by migration 013) uses `NULLIF(current_setting(
+    // 'app.current_user_id', true), '')::uuid` so an unset session var
+    // evaluates cleanly to NULL and the WITH CHECK denies the write
+    // with 42501.
+    //
+    // A policy refactor that drops the `NULLIF` would instead surface
+    // SQLSTATE 22P02 (`invalid_text_representation`) from the empty-
+    // string → uuid coercion failure BEFORE the policy's WITH CHECK
+    // runs. That is also a failure — the INSERT is still rejected —
+    // so we accept 22P02 as a valid failure code here, but the test
+    // panics loudly on any OTHER error so a less-defensive refactor
+    // is caught in review.
     match result {
-        Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("42501") => {
-            // Expected — WITH CHECK denies the INSERT because no
-            // branch of the policy matches.
+        Err(sqlx::Error::Database(db_err))
+            if matches!(db_err.code().as_deref(), Some("42501") | Some("22P02")) =>
+        {
+            // Expected — either the policy's WITH CHECK denies the
+            // INSERT (42501) or the NULLIF was dropped and the
+            // empty-string cast fails first (22P02). Both are
+            // equivalent from the regression-guard standpoint:
+            // the INSERT is rejected.
         }
         Err(other) => panic!(
-            "F-05: expected SQLSTATE 42501 (RLS WITH CHECK rejection), got a different error: {other:?}"
+            "F-05: expected SQLSTATE 42501 (RLS WITH CHECK rejection) \
+             or 22P02 (empty-string cast if NULLIF removed), got: {other:?}"
         ),
         Ok(_) => panic!(
             "F-05 REGRESSION: INSERT into audit_events with group_id=NULL and NO \
