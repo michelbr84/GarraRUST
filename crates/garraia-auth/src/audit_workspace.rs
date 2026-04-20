@@ -136,12 +136,18 @@ mod tests {
     fn workspace_audit_action_as_str_stable() {
         // These strings are on the wire — consumers match by value.
         // Changing them is a breaking change.
-        assert_eq!(WorkspaceAuditAction::InviteAccepted.as_str(), "invite.accepted");
+        assert_eq!(
+            WorkspaceAuditAction::InviteAccepted.as_str(),
+            "invite.accepted"
+        );
         assert_eq!(
             WorkspaceAuditAction::MemberRoleChanged.as_str(),
             "member.role_changed"
         );
-        assert_eq!(WorkspaceAuditAction::MemberRemoved.as_str(), "member.removed");
+        assert_eq!(
+            WorkspaceAuditAction::MemberRemoved.as_str(),
+            "member.removed"
+        );
     }
 
     #[test]

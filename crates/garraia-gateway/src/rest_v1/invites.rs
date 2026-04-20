@@ -221,12 +221,10 @@ pub async fn accept_invite(
     // Plan 0021: also set `app.current_group_id` — required by the
     // `audit_events_group_or_self` RLS policy (migration 007:161-168)
     // for the audit INSERT below. Uuid Display is injection-safe.
-    sqlx::query(&format!(
-        "SET LOCAL app.current_group_id = '{group_id}'"
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 4a. Mark invite as accepted — race-safe via `AND accepted_at IS
     //     NULL` + `rows_affected == 0` check. Without this guard, two
