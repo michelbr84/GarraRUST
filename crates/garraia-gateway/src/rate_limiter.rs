@@ -295,6 +295,15 @@ impl RateLimiter {
 // ── Rate-limit headers ────────────────────────────────────────────────────────
 
 /// Append standard X-RateLimit-* headers to a response.
+///
+/// Plan 0022 T5 (SEC-LOW F-06): `X-RateLimit-Reset` was removed because
+/// its absolute-Unix-timestamp form leaked the exact window-reset instant,
+/// which an attacker could use to synchronize brute-force bursts right
+/// after each reset. `Retry-After` (set on 429 responses) is the IETF-
+/// canonical signal for clients and carries the same information in a
+/// relative-duration form that does not leak absolute time. The
+/// `RateLimitDecision::reset_at` field is kept for internal use
+/// (computing `Retry-After`) but is no longer emitted to the wire.
 pub fn apply_rate_limit_headers(headers: &mut HeaderMap, decision: &RateLimitDecision) {
     if let Ok(v) = HeaderValue::from_str(&decision.limit.to_string()) {
         headers.insert("x-ratelimit-limit", v);
@@ -302,23 +311,24 @@ pub fn apply_rate_limit_headers(headers: &mut HeaderMap, decision: &RateLimitDec
     if let Ok(v) = HeaderValue::from_str(&decision.remaining.to_string()) {
         headers.insert("x-ratelimit-remaining", v);
     }
-    if let Ok(v) = HeaderValue::from_str(&decision.reset_at.to_string()) {
-        headers.insert("x-ratelimit-reset", v);
-    }
+    // `x-ratelimit-reset` intentionally NOT emitted (plan 0022 T5).
 }
 
 /// Build a 429 Too Many Requests response with rate-limit headers.
+///
+/// Plan 0022 T5 (code-review NIT): headers are now applied **once** via
+/// `apply_rate_limit_headers` after the body is built, instead of the
+/// pre-0022 pattern that inserted `x-ratelimit-*` inline in the builder
+/// AND then re-applied via the helper (resulting in inocuous but confusing
+/// duplicate insertions). `Retry-After` remains in the builder because it
+/// is 429-specific and not part of the generic allowed-path header set.
 pub fn rate_limit_response(decision: &RateLimitDecision) -> Response {
+    let retry_after = decision.reset_at.saturating_sub(now_secs());
+
     let mut resp = Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
-        .header("x-ratelimit-limit", decision.limit.to_string())
-        .header("x-ratelimit-remaining", "0")
-        .header("x-ratelimit-reset", decision.reset_at.to_string())
-        .header(
-            "retry-after",
-            (decision.reset_at.saturating_sub(now_secs())).to_string(),
-        )
+        .header("retry-after", retry_after.to_string())
         .body(Body::from(r#"{"error":"rate limit exceeded","code":429}"#))
         .unwrap_or_else(|_| {
             Response::builder()
@@ -677,7 +687,40 @@ mod tests {
 
         assert!(headers.contains_key("x-ratelimit-limit"));
         assert!(headers.contains_key("x-ratelimit-remaining"));
-        assert!(headers.contains_key("x-ratelimit-reset"));
+        // Plan 0022 T5: X-RateLimit-Reset intentionally NOT emitted
+        // (timing leak → brute-force planning). Retry-After on 429
+        // responses is the canonical signal.
+        assert!(
+            !headers.contains_key("x-ratelimit-reset"),
+            "X-RateLimit-Reset must not be emitted (plan 0022 T5)"
+        );
+    }
+
+    #[test]
+    fn rate_limit_response_has_retry_after_but_not_reset() {
+        // Plan 0022 T5 regression guard: 429 responses carry
+        // Retry-After (IETF canonical), Content-Type, and the
+        // X-RateLimit-Limit/Remaining pair — but NOT X-RateLimit-Reset.
+        let limiter = strict_limiter(1);
+        limiter.check("x"); // consume
+        let decision = limiter.check("x");
+        assert!(!decision.allowed, "second call must hit the limit");
+
+        let resp = rate_limit_response(&decision);
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let headers = resp.headers();
+        assert!(headers.contains_key("retry-after"), "Retry-After missing");
+        assert!(headers.contains_key("x-ratelimit-limit"));
+        assert!(headers.contains_key("x-ratelimit-remaining"));
+        assert!(
+            !headers.contains_key("x-ratelimit-reset"),
+            "X-RateLimit-Reset leaked into 429 response"
+        );
+        // Content-Type JSON so clients parse the body error envelope.
+        assert_eq!(
+            headers.get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
     }
 
     #[test]
