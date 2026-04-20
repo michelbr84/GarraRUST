@@ -1012,6 +1012,200 @@ pub async fn set_member_role(
     }))
 }
 
+/// `DELETE /v1/groups/{id}/members/{user_id}` — soft-delete a member (plan 0020 slice 4).
+///
+/// The row is not physically deleted — `status` is flipped to `'removed'`
+/// so FKs in `messages.author_id`, `tasks.created_by`, etc. continue to
+/// resolve. Reactivation is out of scope for v1 (plan 0022+).
+///
+/// ## Authz model
+///
+/// Same two layers as [`set_member_role`]:
+///
+/// 1. **Capability gate:** `Action::MembersManage` (Owner/Admin) — bypassed
+///    when `target_user_id == principal.user_id` (leave-group path).
+/// 2. **Hierarchy gate (non-self only):** Admin cannot delete Owner or
+///    another Admin. Owner can delete any role.
+///
+/// ## Last-owner invariant
+///
+/// Post-UPDATE, active owners count must be ≥ 1. If the DELETE
+/// removed the last Owner (possibly via self-leave), the transaction
+/// aborts without commit and 409 is returned.
+///
+/// ## Idempotence
+///
+/// DELETE on an already-removed (`status = 'removed'`) or non-existent
+/// member returns 404, not 204 — this matches plan 0019's convention for
+/// `accept`: callers can distinguish "I performed the removal" (204) from
+/// "already gone or never existed" (404). Re-invite + accept of a soft-
+/// deleted user will 409 on PK collision (`(group_id, user_id)` unique)
+/// — limitation documented in plan 0020 §out of scope.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status | Guard          |
+/// |------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                            | 401    | Principal ext. |
+/// | Non-member of target group                     | 403    | Principal ext. |
+/// | `X-Group-Id` missing / mismatched              | 400    | this handler   |
+/// | Non-self caller lacks `MembersManage`          | 403    | `can()`        |
+/// | Admin caller tries to delete Owner/Admin       | 403    | hierarchy      |
+/// | Target not found / already removed             | 404    | SELECT/UPDATE  |
+/// | Would leave group ownerless                    | 409    | post-UPDATE    |
+/// | Happy path                                     | 204    |                |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{id}/members/{user_id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+        ("user_id" = Uuid, Path, description = "Target member's user id."),
+    ),
+    responses(
+        (status = 204, description = "Member soft-deleted (`status = 'removed'`). No response body."),
+        (status = 400, description = "`X-Group-Id` header missing or mismatched.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` or violates hierarchy.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Target member not found or already removed.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Would leave the group without an owner.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    // 1. Header/path coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Camada 1 — capability gate with self-action bypass.
+    let is_self = principal.user_id == target_user_id;
+    if !is_self && !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Resolve caller's role for hierarchy gate (same invariant as
+    //    set_member_role / patch_group: Principal.role is Some here).
+    let caller_role = principal
+        .role
+        .as_ref()
+        .ok_or_else(|| {
+            tracing::error!(
+                user_id = %principal.user_id,
+                group_id = ?principal.group_id,
+                "Principal.role is None with group_id Some — invariant violated by extractor"
+            );
+            RestError::Internal(anyhow::anyhow!(
+                "Principal.role is None despite group_id being Some"
+            ))
+        })?
+        .as_str()
+        .to_string();
+
+    // 4. Open tx + SET LOCAL tenant context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Fetch target role under FOR UPDATE lock (same serialization
+    //    guarantee as set_member_role). Filters `status = 'active'`
+    //    — already-removed targets ⇒ 404.
+    let target_row: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM group_members \
+         WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+         FOR UPDATE",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let target_role = match target_row {
+        Some((r,)) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 6. Camada 2 — hierarchy gate (non-self only).
+    if !is_self
+        && caller_role == "admin"
+        && (target_role == "owner" || target_role == "admin")
+    {
+        return Err(RestError::Forbidden);
+    }
+
+    // 7. Soft-delete: UPDATE status = 'removed'. `RETURNING 1` so we
+    //    can detect the zero-row case (concurrent removal between
+    //    SELECT FOR UPDATE and here — effectively impossible under
+    //    the lock but cheap guard).
+    let removed: Option<(i32,)> = sqlx::query_as(
+        "UPDATE group_members \
+            SET status = 'removed' \
+          WHERE group_id = $1 AND user_id = $2 AND status = 'active' \
+      RETURNING 1",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if removed.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // 8. Last-owner invariant (post-UPDATE). If we just removed an
+    //    Owner and there are no other active Owners left, abort
+    //    and return 409. Running the COUNT unconditionally (rather
+    //    than only when `target_role == "owner"`) keeps the logic
+    //    uniform and the cost is negligible.
+    let (owners_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint \
+           FROM group_members \
+          WHERE group_id = $1 AND role = 'owner' AND status = 'active'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if owners_count == 0 {
+        return Err(RestError::Conflict(
+            "cannot leave the group without an owner".into(),
+        ));
+    }
+
+    // 9. Commit.
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
