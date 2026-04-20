@@ -27,9 +27,10 @@ use argon2::PasswordVerifier;
 use axum::Json;
 use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
-use garraia_auth::Principal;
+use garraia_auth::{Principal, WorkspaceAuditAction, audit_workspace_event};
 use password_hash::PasswordHash;
 use serde::Serialize;
+use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -217,6 +218,16 @@ pub async fn accept_invite(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Plan 0021: also set `app.current_group_id` — required by the
+    // `audit_events_group_or_self` RLS policy (migration 007:161-168)
+    // for the audit INSERT below. Uuid Display is injection-safe.
+    sqlx::query(&format!(
+        "SET LOCAL app.current_group_id = '{group_id}'"
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
     // 4a. Mark invite as accepted — race-safe via `AND accepted_at IS
     //     NULL` + `rows_affected == 0` check. Without this guard, two
     //     concurrent callers could both pass the pre-tx check under
@@ -268,6 +279,30 @@ pub async fn accept_invite(
         }
         Err(e) => return Err(RestError::Internal(e.into())),
     }
+
+    // Plan 0021 T3: audit_events row for invite.accepted. Runs INSIDE
+    // the same tx as the mutation, so a subsequent COMMIT failure
+    // (or any later error that drops `tx`) rolls back both the
+    // membership insert and the audit row — consistent atomicity.
+    //
+    // Metadata is intentionally minimal + PII-safe: `proposed_role`
+    // is a role string enum value. `invited_email` is PII and lives
+    // in `group_invites` already (joinable offline via `resource_id`);
+    // not duplicated here. `actor_user_id`, `group_id`, `resource_id`
+    // are carried in dedicated columns — not re-emitted in metadata.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::InviteAccepted,
+        principal.user_id,
+        group_id,
+        "group_invites",
+        invite_id.to_string(),
+        json!({
+            "proposed_role": role,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     tx.commit()
         .await
