@@ -468,11 +468,7 @@ pub fn parse_trusted_proxies(value: &str) -> Vec<IpNet> {
 /// stamp, `admin/middleware.rs:168` admin extract_ip) are intentionally out
 /// of scope for plan 0022 — see GAR-426 description. A later plan (0023+)
 /// should consolidate all three through this helper.
-pub fn real_client_ip(
-    headers: &HeaderMap,
-    peer_addr: IpAddr,
-    trusted_proxies: &[IpNet],
-) -> IpAddr {
+pub fn real_client_ip(headers: &HeaderMap, peer_addr: IpAddr, trusted_proxies: &[IpNet]) -> IpAddr {
     if trusted_proxies.is_empty() {
         return peer_addr;
     }
@@ -777,11 +773,7 @@ mod tests {
         let trusted = parse_trusted_proxies("10.0.0.0/8");
         let headers = xff_header("not-an-ip");
         let resolved = real_client_ip(&headers, peer_v4(), &trusted);
-        assert_eq!(
-            resolved,
-            peer_v4(),
-            "malformed XFF ⇒ fallback to peer_addr"
-        );
+        assert_eq!(resolved, peer_v4(), "malformed XFF ⇒ fallback to peer_addr");
     }
 
     #[test]

@@ -52,10 +52,7 @@ async fn audit_events_insert_without_current_user_id_is_rejected_by_rls() {
     // `SET LOCAL app.current_user_id`. The policy branch 2
     // (`group_id IS NULL ...`) then has no matching user_id and
     // the WITH CHECK (migration 013) rejects the INSERT.
-    let mut tx = pool
-        .begin()
-        .await
-        .expect("F-05: begin tx on app_pool");
+    let mut tx = pool.begin().await.expect("F-05: begin tx on app_pool");
 
     let actor = Uuid::new_v4();
 
@@ -79,9 +76,7 @@ async fn audit_events_insert_without_current_user_id_is_rejected_by_rls() {
     // SQLSTATE 42501 (`insufficient_privilege` — how Postgres
     // reports RLS WITH CHECK rejections).
     match result {
-        Err(sqlx::Error::Database(db_err))
-            if db_err.code().as_deref() == Some("42501") =>
-        {
+        Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("42501") => {
             // Expected — WITH CHECK denies the INSERT because no
             // branch of the policy matches.
         }
