@@ -172,10 +172,16 @@ pub async fn seed_second_owner_via_admin(
 ///
 /// Idempotent: uses `CREATE UNIQUE INDEX IF NOT EXISTS` so callers
 /// don't need to track whether the index was actually dropped.
+///
+/// Predicate mirrors migration 012 (plan 0021) — `WHERE role = 'owner'
+/// AND status = 'active'`. Previous predicate (pre-012) was
+/// `WHERE role = 'owner'` alone; recreating with the old predicate
+/// after a soft-deleted owner exists would fail because two
+/// `role = 'owner'` rows (one removed, one active) would satisfy it.
 pub async fn restore_single_owner_idx(h: &Harness) -> anyhow::Result<()> {
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS group_members_single_owner_idx \
-         ON group_members(group_id) WHERE role = 'owner'",
+         ON group_members(group_id) WHERE role = 'owner' AND status = 'active'",
     )
     .execute(&h.admin_pool)
     .await

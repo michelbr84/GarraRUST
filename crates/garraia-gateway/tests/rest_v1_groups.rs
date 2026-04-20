@@ -1258,31 +1258,12 @@ async fn v1_groups_scenarios() {
         assert_eq!(coowner_role, "owner");
         assert_eq!(coowner_status, "active");
 
-        // Restore the single-owner partial unique index. The partial
-        // predicate is `WHERE role = 'owner'` (migration 002:146) — it
-        // does NOT filter by status, so even a soft-deleted m_owner
-        // still counts toward the uniqueness requirement. Hard-delete
-        // the soft-deleted m_owner row so d5_coowner is the only row
-        // with role='owner' for this group_id when we recreate the
-        // index.
-        //
-        // In production this branch is unreachable — the only way
-        // to get two active owners is via this test fixture; the
-        // product API rejects promote-to-owner (setRole 400). So
-        // an owner's soft-delete UPDATE never actually coexists
-        // with another role='owner' row at the DB level. The
-        // fixture-only cleanup below keeps the test isolated.
-        //
-        // Follow-up candidate (plan 0021+): amend the partial
-        // unique predicate to `WHERE role = 'owner' AND status =
-        // 'active'` so the DB index matches the app-layer
-        // last-owner invariant (which already filters status).
-        sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
-            .bind(m_group_id)
-            .bind(m_owner_id)
-            .execute(&h.admin_pool)
-            .await
-            .expect("D5 restore: hard-delete soft-deleted m_owner");
+        // Restore the single-owner partial unique index. Plan 0021
+        // migration 012 amended the predicate to `WHERE role = 'owner'
+        // AND status = 'active'`, so the soft-deleted m_owner row no
+        // longer counts toward uniqueness — `restore_single_owner_idx`
+        // rebuilds cleanly without the hard-delete workaround that
+        // the 0020 version of this test needed.
         restore_single_owner_idx(&h)
             .await
             .expect("D5: restore single-owner idx");
