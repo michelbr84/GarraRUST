@@ -36,7 +36,10 @@ use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt;
 
-use common::fixtures::seed_user_with_group;
+use common::fixtures::{
+    restore_single_owner_idx, seed_member_via_admin, seed_second_owner_via_admin,
+    seed_user_with_group,
+};
 use common::{Harness, harness_get};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
@@ -129,6 +132,76 @@ fn post_invite(
         .uri(format!("/v1/groups/{group_path_id}/invites"))
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
+        .expect("request builder");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = token {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
+/// Request builder for `POST /v1/groups/{id}/members/{user_id}/setRole`
+/// (plan 0020 slice 4 — setRole endpoint).
+fn post_setrole(
+    token: Option<&str>,
+    group_path_id: &str,
+    target_user_id: &str,
+    x_group_id: Option<&str>,
+    body: serde_json::Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/v1/groups/{group_path_id}/members/{target_user_id}/setRole"
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builder");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(token) = token {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
+/// Request builder for `DELETE /v1/groups/{id}/members/{user_id}`
+/// (plan 0020 slice 4 — soft-delete endpoint).
+fn delete_member_req(
+    token: Option<&str>,
+    group_path_id: &str,
+    target_user_id: &str,
+    x_group_id: Option<&str>,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/v1/groups/{group_path_id}/members/{target_user_id}"
+        ))
+        .body(Body::empty())
         .expect("request builder");
     req.extensions_mut()
         .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
@@ -660,6 +733,324 @@ async fn v1_groups_scenarios() {
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "I6: missing bearer must 401"
+        );
+    }
+
+    // ─── POST /v1/groups/{id}/members/{user_id}/setRole — plan 0020 Task 5 ─────
+
+    // Seed a fresh group with its own owner for the setRole scenarios.
+    // Re-using `created_group_id` from above would couple M/D scenarios to
+    // the mutations done by P/I scenarios; a fresh group keeps the invariants
+    // local to this section and easier to reason about.
+    let (m_owner_id, m_group_id, m_owner_token) =
+        seed_user_with_group(&h, "m-owner@0020.test")
+            .await
+            .expect("M setup: seed owner+group");
+    let m_group_path = m_group_id.to_string();
+
+    // Scenario M1: Owner demotes a member → admin. 200 + MemberResponse.role=="admin".
+    let (m1_target_id, _m1_token) =
+        seed_member_via_admin(&h, m_group_id, "member", "m1-target@0020.test")
+            .await
+            .expect("M1: seed target");
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m_owner_token),
+                &m_group_path,
+                &m1_target_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "admin"}),
+            ))
+            .await
+            .expect("M1: oneshot");
+        assert_eq!(resp.status(), StatusCode::OK, "M1: owner→admin promote");
+        let v = body_json(resp).await;
+        assert_eq!(v["role"], "admin");
+        assert_eq!(v["status"], "active");
+        assert_eq!(v["group_id"], m_group_path);
+        assert_eq!(v["user_id"], m1_target_id.to_string());
+        assert!(v["updated_at"].is_string(), "M1: updated_at must be set");
+
+        // DB assertion via admin_pool.
+        let (db_role,): (String,) = sqlx::query_as(
+            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
+        )
+        .bind(m_group_id)
+        .bind(m1_target_id)
+        .fetch_one(&h.admin_pool)
+        .await
+        .expect("M1: DB row check");
+        assert_eq!(db_role, "admin", "M1: DB role must be admin");
+    }
+
+    // Scenario M2: Admin setRole of another member → guest. 200.
+    // Uses m1_target_id (now an admin from M1) as the caller.
+    let m1_admin_token = h.jwt.issue_access_for_test(m1_target_id);
+    let (m2_target_id, _) =
+        seed_member_via_admin(&h, m_group_id, "member", "m2-target@0020.test")
+            .await
+            .expect("M2: seed target");
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m1_admin_token),
+                &m_group_path,
+                &m2_target_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "guest"}),
+            ))
+            .await
+            .expect("M2: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "M2: admin can modify members"
+        );
+        let v = body_json(resp).await;
+        assert_eq!(v["role"], "guest");
+    }
+
+    // Scenario M3: Admin tries to setRole of the Owner (non-self) → 403.
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m1_admin_token),
+                &m_group_path,
+                &m_owner_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "member"}),
+            ))
+            .await
+            .expect("M3: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "M3: admin cannot modify owner"
+        );
+    }
+
+    // Scenario M4: Admin tries to setRole of another Admin (non-self) → 403.
+    // Seed a second admin, then have m1 try to demote them.
+    let (m4_other_admin_id, _) =
+        seed_member_via_admin(&h, m_group_id, "admin", "m4-other-admin@0020.test")
+            .await
+            .expect("M4: seed second admin");
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m1_admin_token),
+                &m_group_path,
+                &m4_other_admin_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "member"}),
+            ))
+            .await
+            .expect("M4: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "M4: admin cannot modify another admin (non-self)"
+        );
+    }
+
+    // Scenario M5: Owner self-demote WITH a second owner existing → 200.
+    // Seed a second owner via admin_pool (the only way, since setRole
+    // rejects role=owner). Then the first owner demotes themselves to admin.
+    let (m5_coowner_id, _m5_coowner_token) =
+        seed_second_owner_via_admin(&h, m_group_id, "m5-coowner@0020.test")
+            .await
+            .expect("M5: seed co-owner");
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m_owner_token),
+                &m_group_path,
+                &m_owner_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "admin"}),
+            ))
+            .await
+            .expect("M5: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "M5: owner self-demote OK when co-owner exists"
+        );
+        let v = body_json(resp).await;
+        assert_eq!(v["role"], "admin", "M5: response role reflects the demote");
+
+        // Restore state for subsequent scenarios. After the setRole
+        // call, the group has: m_owner=admin (just demoted), m5_coowner=owner.
+        // The partial unique index is still dropped (fixture's contract).
+        // We need to flip back to: m_owner=owner, m5_coowner=admin, and
+        // recreate the index. The order matters — flip coowner FIRST to
+        // admin (now 0 owners momentarily, but admin_pool bypasses the app
+        // checks), then promote m_owner, then recreate the index on the
+        // single-owner state.
+        sqlx::query("UPDATE group_members SET role = 'admin' WHERE group_id = $1 AND user_id = $2")
+            .bind(m_group_id)
+            .bind(m5_coowner_id)
+            .execute(&h.admin_pool)
+            .await
+            .expect("M5 restore: demote co-owner to admin");
+        sqlx::query("UPDATE group_members SET role = 'owner' WHERE group_id = $1 AND user_id = $2")
+            .bind(m_group_id)
+            .bind(m_owner_id)
+            .execute(&h.admin_pool)
+            .await
+            .expect("M5 restore: re-promote original owner");
+        restore_single_owner_idx(&h)
+            .await
+            .expect("M5 restore: recreate single-owner idx");
+    }
+
+    // Scenario M6: Owner self-demote WITHOUT a second owner → 409 last-owner.
+    // DB state after M5 restore: m_owner is the sole owner. Self-demote must 409.
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m_owner_token),
+                &m_group_path,
+                &m_owner_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "admin"}),
+            ))
+            .await
+            .expect("M6: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::CONFLICT,
+            "M6: owner self-demote must 409 without co-owner"
+        );
+        let v = body_json(resp).await;
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("without an owner"),
+            "M6: detail mentions last-owner, got {v}"
+        );
+        // DB invariant: m_owner STILL owner (tx was rolled back).
+        let (db_role,): (String,) = sqlx::query_as(
+            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
+        )
+        .bind(m_group_id)
+        .bind(m_owner_id)
+        .fetch_one(&h.admin_pool)
+        .await
+        .expect("M6: DB role check");
+        assert_eq!(db_role, "owner", "M6: owner must remain after 409 rollback");
+    }
+
+    // Scenario M7: body role="owner" → 400 promote-to-owner rejected.
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m_owner_token),
+                &m_group_path,
+                &m1_target_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "owner"}),
+            ))
+            .await
+            .expect("M7: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "M7: role=owner must 400"
+        );
+        let v = body_json(resp).await;
+        assert_eq!(
+            v["detail"], "cannot promote to owner via setRole",
+            "M7: deterministic detail"
+        );
+    }
+
+    // Scenario M8: Member tries setRole of another member (non-self) → 403.
+    let (m8_member_id, m8_member_token) =
+        seed_member_via_admin(&h, m_group_id, "member", "m8-member@0020.test")
+            .await
+            .expect("M8: seed member caller");
+    let (m8_other_id, _) =
+        seed_member_via_admin(&h, m_group_id, "member", "m8-other@0020.test")
+            .await
+            .expect("M8: seed target");
+    let _ = m8_member_id; // silence unused warning
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m8_member_token),
+                &m_group_path,
+                &m8_other_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "guest"}),
+            ))
+            .await
+            .expect("M8: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "M8: member without MembersManage must 403 (non-self)"
+        );
+    }
+
+    // Scenario M9: target user_id is not a member of the group → 404.
+    {
+        let ghost = uuid::Uuid::new_v4().to_string();
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                Some(&m_owner_token),
+                &m_group_path,
+                &ghost,
+                Some(&m_group_path),
+                json!({"role": "admin"}),
+            ))
+            .await
+            .expect("M9: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "M9: non-member target must 404"
+        );
+    }
+
+    // Scenario M10: no bearer → 401.
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(post_setrole(
+                None,
+                &m_group_path,
+                &m1_target_id.to_string(),
+                Some(&m_group_path),
+                json!({"role": "admin"}),
+            ))
+            .await
+            .expect("M10: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "M10: missing bearer must 401"
         );
     }
 }
