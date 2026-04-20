@@ -165,6 +165,13 @@ pub fn extract_ip(
     headers: &HeaderMap,
     connect_info: Option<&std::net::SocketAddr>,
 ) -> Option<String> {
+    // TODO(plan-0023+): this helper accepts `X-Forwarded-For` without
+    // validating whether the immediate peer is an allowlisted proxy
+    // (same pre-0022 bug fixed for rate_limiter.rs in plan 0022 T2).
+    // Migrate to `crate::rate_limiter::real_client_ip` once plan 0023
+    // lifts that helper into a shared module and introduces
+    // `TRUSTED_PROXIES` into the admin surface. Deliberately
+    // out-of-scope for plan 0022 (GAR-426 description).
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
         && let Some(first) = forwarded.split(',').next()
     {

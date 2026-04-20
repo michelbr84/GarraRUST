@@ -85,6 +85,17 @@ impl WorkspaceAuditAction {
     }
 }
 
+/// Display delegates to [`WorkspaceAuditAction::as_str`] so
+/// `tracing::info!(action = %action, ...)` works ergonomically
+/// without wrapping `.as_str()` at every log site.
+///
+/// Plan 0022 T1 (GAR-426) — addressed code-review NIT from PR #30.
+impl std::fmt::Display for WorkspaceAuditAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Insert one `audit_events` row inside the caller's transaction.
 ///
 /// **Caller contract:**
@@ -160,5 +171,41 @@ mod tests {
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
+    }
+
+    #[test]
+    fn workspace_audit_action_display_delegates_to_as_str() {
+        // Plan 0022 T1 — Display impl delegates to as_str(), so
+        // `tracing::info!(action = %action, ...)` produces the same
+        // on-the-wire string as direct INSERT via audit_workspace_event.
+        // Any divergence between Display and as_str would create a
+        // silent mismatch between logged events and DB rows.
+        use std::fmt::Write;
+
+        let mut buf = String::new();
+        write!(&mut buf, "{}", WorkspaceAuditAction::InviteAccepted).unwrap();
+        assert_eq!(buf, "invite.accepted");
+
+        assert_eq!(
+            format!("{}", WorkspaceAuditAction::MemberRoleChanged),
+            "member.role_changed"
+        );
+        assert_eq!(
+            format!("{}", WorkspaceAuditAction::MemberRemoved),
+            "member.removed"
+        );
+
+        // Concat test — verifies `format!` composition (common tracing
+        // scenario with multiple placeholders).
+        let combined = format!(
+            "{} + {} + {}",
+            WorkspaceAuditAction::InviteAccepted,
+            WorkspaceAuditAction::MemberRoleChanged,
+            WorkspaceAuditAction::MemberRemoved,
+        );
+        assert_eq!(
+            combined,
+            "invite.accepted + member.role_changed + member.removed"
+        );
     }
 }

@@ -160,10 +160,18 @@ pub fn build_router(
         //     get(runtime_handler::list_tools_handler),
         // )
         // GAR-335/339: Mobile Cloud Alpha — auth + chat endpoints
-        // Auth routes with strict rate limiting (10 req/min, burst 3)
+        // Auth routes with strict rate limiting (10 req/min, burst 3).
+        //
+        // TODO(plan-0023+): migrate these routes from the deprecated
+        // `rate_limit_layer` to `rate_limit_layer_authenticated` once
+        // the `/auth/*` handlers reliably have a Bearer token on the
+        // request (register/login today don't — they MINT the token).
+        // For now the #[allow(deprecated)] is the compatibility shim.
         .merge({
+            #[allow(deprecated)]
             let auth_limiter = crate::rate_limiter::RateLimiter::auth_limiter();
-            Router::new()
+            #[allow(deprecated)]
+            let router = Router::new()
                 .route("/auth/register", post(mobile_auth::register))
                 .route("/auth/login", post(mobile_auth::login))
                 .route("/auth/oauth/providers", get(oauth::list_oauth_providers))
@@ -179,7 +187,8 @@ pub fn build_router(
                     auth_limiter,
                     crate::rate_limiter::rate_limit_layer,
                 ))
-                .with_state(state.clone())
+                .with_state(state.clone());
+            router
         })
         .route("/me", get(mobile_auth::me))
         .route("/chat", post(mobile_chat::chat))
