@@ -665,6 +665,200 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::NOT_FOUND,
             expected_body_contains: None,
         },
+        // ── POST /v1/groups/{id}/members/{user_id}/setRole (plan 0020, cases 27-30) ──
+        //
+        // Path-level authz for the new setRole endpoint. Happy-path and
+        // 400/409 coverage live in rest_v1_groups.rs (M1-M10). These
+        // cases exercise ONLY:
+        //   27: owner + non-member target -> 404 (handler SELECT empty)
+        //   28: non-member caller -> 403 (Principal extractor)
+        //   29: no-group caller -> 403 (Principal extractor)
+        //   30: no bearer -> 401 (Principal short-circuit)
+        MatrixCase {
+            id: 27,
+            name: "POST setRole as alice(owner) on bob(non-member of alice_group) -> 404",
+            build: Box::new(|a| {
+                let path = format!(
+                    "/v1/groups/{}/members/{}/setRole",
+                    a.alice_group, a.bob_id
+                );
+                req_post_grouped(
+                    &path,
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"role": "admin"}),
+                )
+            }),
+            expected_status: StatusCode::NOT_FOUND,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 28,
+            name: "POST setRole as bob(non-member of alice_group) on alice -> 403",
+            build: Box::new(|a| {
+                let path = format!(
+                    "/v1/groups/{}/members/{}/setRole",
+                    a.alice_group, a.alice_id
+                );
+                req_post_grouped(
+                    &path,
+                    Some(&a.bob_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"role": "admin"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 29,
+            name: "POST setRole as eve(no group) on alice -> 403",
+            build: Box::new(|a| {
+                let path = format!(
+                    "/v1/groups/{}/members/{}/setRole",
+                    a.alice_group, a.alice_id
+                );
+                req_post_grouped(
+                    &path,
+                    Some(&a.eve_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"role": "admin"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 30,
+            name: "POST setRole no bearer -> 401",
+            build: Box::new(|a| {
+                let path = format!(
+                    "/v1/groups/{}/members/{}/setRole",
+                    a.alice_group, a.alice_id
+                );
+                req_post_grouped(
+                    &path,
+                    None,
+                    Some(&a.alice_group.to_string()),
+                    json!({"role": "admin"}),
+                )
+            }),
+            expected_status: StatusCode::UNAUTHORIZED,
+            expected_body_contains: None,
+        },
+        // ── DELETE /v1/groups/{id}/members/{user_id} (plan 0020, cases 31-34) ──
+        MatrixCase {
+            id: 31,
+            name: "DELETE member as alice(owner) on bob(non-member of alice_group) -> 404",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!(
+                        "/v1/groups/{}/members/{}",
+                        a.alice_group, a.bob_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {}", a.alice_token)).unwrap(),
+                );
+                req.headers_mut().insert(
+                    HeaderName::from_static("x-group-id"),
+                    HeaderValue::from_str(&a.alice_group.to_string()).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::NOT_FOUND,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 32,
+            name: "DELETE member as bob(non-member of alice_group) on alice -> 403",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!(
+                        "/v1/groups/{}/members/{}",
+                        a.alice_group, a.alice_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {}", a.bob_token)).unwrap(),
+                );
+                req.headers_mut().insert(
+                    HeaderName::from_static("x-group-id"),
+                    HeaderValue::from_str(&a.alice_group.to_string()).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 33,
+            name: "DELETE member as eve(no group) on alice -> 403",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!(
+                        "/v1/groups/{}/members/{}",
+                        a.alice_group, a.alice_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&format!("Bearer {}", a.eve_token)).unwrap(),
+                );
+                req.headers_mut().insert(
+                    HeaderName::from_static("x-group-id"),
+                    HeaderValue::from_str(&a.alice_group.to_string()).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 34,
+            name: "DELETE member no bearer -> 401",
+            build: Box::new(|a| {
+                let mut req = Request::builder()
+                    .method(Method::DELETE)
+                    .uri(format!(
+                        "/v1/groups/{}/members/{}",
+                        a.alice_group, a.alice_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut()
+                    .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                        "127.0.0.1:1".parse().unwrap(),
+                    ));
+                req.headers_mut().insert(
+                    HeaderName::from_static("x-group-id"),
+                    HeaderValue::from_str(&a.alice_group.to_string()).unwrap(),
+                );
+                req
+            }),
+            expected_status: StatusCode::UNAUTHORIZED,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -676,8 +870,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        26,
-        "GAR-391d + plans 0017/0018/0019 matrix must have exactly 26 cases; got {}",
+        34,
+        "GAR-391d + plans 0017/0018/0019/0020 matrix must have exactly 34 cases; got {}",
         matrix.len()
     );
 
