@@ -1116,6 +1116,45 @@ async fn v1_groups_scenarios() {
         );
     }
 
+    // Scenario D2b: Admin self-DELETE (leave group) → 204.
+    // Closes the gap flagged by plan 0020 security review (SEC-LOW):
+    // the M/D scenarios explicitly covered every caller-role × action
+    // combination except an admin leaving the group via self-DELETE.
+    // Happy-path positive test: admin is self-acting, capability gate
+    // is bypassed, hierarchy gate is bypassed (self), last-owner
+    // invariant does not apply (m_owner is still the sole owner), so
+    // the UPDATE to status='removed' succeeds.
+    let (d2b_admin_id, d2b_admin_token) =
+        seed_member_via_admin(&h, m_group_id, "admin", "d2b-leaver-admin@0020.test")
+            .await
+            .expect("D2b: seed admin");
+    {
+        let resp = h
+            .router
+            .clone()
+            .oneshot(delete_member_req(
+                Some(&d2b_admin_token),
+                &m_group_path,
+                &d2b_admin_id.to_string(),
+                Some(&m_group_path),
+            ))
+            .await
+            .expect("D2b: oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "D2b: admin self-DELETE (leave) must 204"
+        );
+        let (db_status,): (String,) =
+            sqlx::query_as("SELECT status FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(m_group_id)
+                .bind(d2b_admin_id)
+                .fetch_one(&h.admin_pool)
+                .await
+                .expect("D2b: DB read");
+        assert_eq!(db_status, "removed");
+    }
+
     // Scenario D3: Admin tries DELETE Owner (non-self) → 403.
     {
         let resp = h
@@ -1250,25 +1289,18 @@ async fn v1_groups_scenarios() {
     }
 
     // Scenario D6: Member self-DELETE (leave group) → 204.
-    let (_d6_member_id, d6_member_token) =
+    let (d6_member_id, d6_member_token) =
         seed_member_via_admin(&h, m_group_id, "member", "d6-leaver@0020.test")
             .await
             .expect("D6: seed leaver");
     {
-        // We need the member to look themselves up by their own user_id.
-        // Mint the path target from the token's subject — the fixture
-        // returns the seeded user_id directly.
-        let (d6_id, _) = seed_member_via_admin(&h, m_group_id, "member", "d6-self@0020.test")
-            .await
-            .expect("D6: seed self");
-        let d6_self_token = h.jwt.issue_access_for_test(d6_id);
         let resp = h
             .router
             .clone()
             .oneshot(delete_member_req(
-                Some(&d6_self_token),
+                Some(&d6_member_token),
                 &m_group_path,
-                &d6_id.to_string(),
+                &d6_member_id.to_string(),
                 Some(&m_group_path),
             ))
             .await
@@ -1278,7 +1310,6 @@ async fn v1_groups_scenarios() {
             StatusCode::NO_CONTENT,
             "D6: member self-DELETE (leave group) must 204"
         );
-        let _ = d6_member_token;
     }
 
     // Scenario D7: DELETE of already-removed member → 404.

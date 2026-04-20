@@ -799,6 +799,23 @@ pub async fn create_invite(
 /// 2. **Hierarchy gate (non-self only):** Admin callers cannot modify
 ///    Owner or other Admins. Owner callers can modify any role.
 ///
+/// ## Self-action bypass — intent
+///
+/// Both gates skip their check when `target == caller`. This is
+/// **deliberate**: a Member/Guest/Child must be able to self-downgrade
+/// (e.g. drop their own role before a leave in a future endpoint), an
+/// Admin must be able to self-demote without contacting an Owner, and
+/// an Owner must be able to self-demote to transfer de-facto control to
+/// a co-owner. The safety net for all these paths is the **last-owner
+/// invariant** enforced post-UPDATE inside the same transaction — not
+/// the capability/hierarchy gates. This separation means that even
+/// though self-setRole is broadly permissive, the system can never end
+/// up in a zero-active-owner state (returns 409 and rolls back). Plan
+/// 0020 security review (SEC-MED) confirmed this design; any future
+/// tightening of self-demotion (e.g. Admin → Guest/Child) should live
+/// in a dedicated check with its own test matrix rather than a blanket
+/// restriction on the bypass.
+///
 /// ## Last-owner invariant
 ///
 /// After the UPDATE, the handler counts active owners in the same
@@ -978,6 +995,16 @@ pub async fn set_member_role(
     //    that *would* be committed if we proceeded. Zero owners =>
     //    abort and return 409. Dropping `tx` without `.commit()`
     //    rolls back the UPDATE automatically.
+    //
+    //    TODO(plan-0021): `group_members_single_owner_idx` (migration
+    //    002:146) is a partial UNIQUE `WHERE role = 'owner'` — it does
+    //    NOT filter by `status = 'active'`, which means the DB-level
+    //    constraint diverges from this COUNT's predicate. The gap is
+    //    safe today (API has no way to create two active owners —
+    //    setRole rejects role='owner') but a follow-up plan should
+    //    amend the partial index to `WHERE role = 'owner' AND status =
+    //    'active'` via forward-only migration so DB and app-layer
+    //    invariants stay aligned.
     let (owners_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
            FROM group_members \
@@ -1023,6 +1050,14 @@ pub async fn set_member_role(
 ///    when `target_user_id == principal.user_id` (leave-group path).
 /// 2. **Hierarchy gate (non-self only):** Admin cannot delete Owner or
 ///    another Admin. Owner can delete any role.
+///
+/// ## Self-action bypass — intent
+///
+/// Both gates skip their check for self-DELETE so any member (regardless
+/// of role) can leave the group. The last-owner invariant post-UPDATE
+/// catches the only dangerous self-path (sole Owner leaving an otherwise
+/// empty of owners group → 409 + rollback). See the equivalent note on
+/// [`set_member_role`] for the full design rationale.
 ///
 /// ## Last-owner invariant
 ///
