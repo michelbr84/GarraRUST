@@ -14,7 +14,7 @@ use utoipa::{Modify, OpenApi};
 
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
-    UpdateGroupRequest,
+    MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
@@ -66,6 +66,8 @@ impl Modify for SecurityAddon {
         super::groups::get_group,
         super::groups::patch_group,
         super::groups::create_invite,
+        super::groups::set_member_role,
+        super::groups::delete_member,
         super::invites::accept_invite,
     ),
     components(schemas(
@@ -74,9 +76,11 @@ impl Modify for SecurityAddon {
         CreateGroupRequest,
         UpdateGroupRequest,
         CreateInviteRequest,
+        SetRoleRequest,
         GroupResponse,
         GroupReadResponse,
         InviteResponse,
+        MemberResponse,
         AcceptInviteResponse,
     )),
     modifiers(&SecurityAddon)
