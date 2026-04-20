@@ -15,6 +15,7 @@
 //! See [`docs/adr/0005-identity-provider.md`](../../docs/adr/0005-identity-provider.md).
 
 pub mod audit;
+pub mod audit_workspace;
 pub mod error;
 pub mod hashing;
 pub mod internal;
@@ -25,6 +26,7 @@ pub mod sessions;
 pub mod types;
 
 pub use audit::{AuditAction, audit_login};
+pub use audit_workspace::{WorkspaceAuditAction, audit_workspace_event};
 pub use error::AuthError;
 pub use hashing::{hash_argon2id, verify_argon2id, verify_pbkdf2};
 pub use internal::InternalProvider;

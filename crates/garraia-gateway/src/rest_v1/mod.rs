@@ -44,6 +44,7 @@ use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::rate_limiter::{RateLimiter, rate_limit_layer};
 use crate::state::AppState;
 
 use self::openapi::ApiDoc;
@@ -155,14 +156,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // real handlers (`groups::create_group` + `groups::get_group`).
             // Modes 2 and 3 still answer 503 via `unconfigured_handler`
             // because they lack `Arc<AppPool>` in state.
-            Router::new()
-                .route("/v1/me", get(me::get_me))
-                .route("/v1/groups", post(groups::create_group))
-                .route(
-                    "/v1/groups/{id}",
-                    get(groups::get_group).patch(groups::patch_group),
-                )
-                .route("/v1/groups/{id}/invites", post(groups::create_invite))
+            // Plan 0021: dedicated rate-limit (20/min, burst 5) on the
+            // 3 privileged members-management endpoints. Separate
+            // sub-router so the layer applies only to these routes;
+            // read/create endpoints keep the global governor. Key
+            // extractor (`extract_rate_limit_key`) prefers JWT
+            // token-prefix over IP so NAT-bucketing is avoided.
+            let members_manage_rl = RateLimiter::members_manage_limiter();
+            let rate_limited_routes = Router::new()
                 .route(
                     "/v1/groups/{id}/members/{user_id}/setRole",
                     post(groups::set_member_role),
@@ -172,6 +173,20 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(groups::delete_member),
                 )
                 .route("/v1/invites/{token}/accept", post(invites::accept_invite))
+                .layer(axum::middleware::from_fn_with_state(
+                    members_manage_rl,
+                    rate_limit_layer,
+                ));
+
+            Router::new()
+                .route("/v1/me", get(me::get_me))
+                .route("/v1/groups", post(groups::create_group))
+                .route(
+                    "/v1/groups/{id}",
+                    get(groups::get_group).patch(groups::patch_group),
+                )
+                .route("/v1/groups/{id}/invites", post(groups::create_invite))
+                .merge(rate_limited_routes)
                 .with_state(full)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }

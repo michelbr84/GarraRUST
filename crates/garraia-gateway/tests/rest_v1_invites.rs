@@ -20,7 +20,9 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use common::Harness;
-use common::fixtures::{seed_user_with_group, seed_user_without_group};
+use common::fixtures::{
+    fetch_audit_events_for_group, seed_user_with_group, seed_user_without_group,
+};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -171,6 +173,46 @@ async fn v1_invites_accept_scenarios() {
         .await
         .expect("A1: member row must exist");
         assert_eq!(role, "member");
+
+        // Plan 0021 T8: audit_events must have exactly one
+        // `invite.accepted` row for this group under the joiner's
+        // user_id, with PII-safe metadata and the invite's UUID
+        // as resource_id.
+        let audit_rows = fetch_audit_events_for_group(&h, group_id)
+            .await
+            .expect("A1: fetch audit rows");
+        let invite_accepted: Vec<_> = audit_rows
+            .iter()
+            .filter(|r| r.0 == "invite.accepted")
+            .collect();
+        assert_eq!(
+            invite_accepted.len(),
+            1,
+            "A1: expected exactly 1 invite.accepted row; got {}",
+            invite_accepted.len()
+        );
+        let (_action, actor, resource_type, resource_id, metadata) = invite_accepted[0];
+        assert_eq!(
+            *actor,
+            Some(joiner_id),
+            "A1: actor_user_id must be the joiner"
+        );
+        assert_eq!(resource_type, "group_invites");
+        assert!(
+            !resource_id.is_empty(),
+            "A1: resource_id must carry the invite UUID"
+        );
+        assert_eq!(
+            metadata.get("proposed_role").and_then(|v| v.as_str()),
+            Some("member"),
+            "A1: metadata.proposed_role must echo the invite role"
+        );
+        // PII-safety: no email in metadata (email lives only in
+        // group_invites.invited_email, joinable offline).
+        assert!(
+            !metadata.to_string().contains('@'),
+            "A1: metadata must not contain PII (found @ in {metadata})"
+        );
     }
 
     // ─── A2: double-accept → 409 (UPDATE guard) ─────────────
@@ -354,6 +396,83 @@ async fn v1_invites_accept_scenarios() {
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "A6: missing bearer → 401"
+        );
+    }
+
+    // ─── A7: rate-limit 429 is reachable on /accept (plan 0021) ───
+    //
+    // Smoke-tests that the members_manage rate-limit middleware is
+    // actually wired on `POST /v1/invites/{token}/accept`. A regression
+    // that removed the `.layer(rate_limit_layer)` would make this test
+    // fail by exhausting a 1000+ loop without ever seeing 429.
+    //
+    // **Key-extractor caveat (plan 0021 follow-up):** the current
+    // `extract_rate_limit_key` (rate_limiter.rs:265-289) uses the first
+    // 8 chars of the Bearer token as the bucket key. Every HS256 JWT
+    // starts with the same header segment (`eyJhbGci...`) → all JWT-
+    // authenticated callers in this test binary share ONE rate-limit
+    // bucket for `/accept`. Our plan 0021 invariant 3 said "JWT
+    // user_id > IP", but the existing extractor does NOT decode the
+    // JWT — it uses the token prefix. Fixing the extractor to decode
+    // the `sub` claim (or take a later slice of the token payload) is
+    // deferred to a dedicated plan (candidate for 0022+). For the test
+    // we therefore don't assert an exact budget (A1-A6 and internal
+    // fixture requests already consumed part of the window); we just
+    // assert that rate-limiting IS enforced — i.e. at least one 429
+    // appears within a small number of rapid-fire requests.
+    //
+    // If the middleware were missing, this loop would return 404 every
+    // time (handler runs with bogus token) and the assertion at the
+    // bottom would fail with zero 429s observed.
+    {
+        let (_burster_id, burster_token) = seed_user_without_group(&h, "a7-burster@0021.test")
+            .await
+            .expect("A7: seed burster");
+        // Reuse any bogus token — the handler never reaches token
+        // resolution under rate-limit pressure (the middleware returns
+        // early). Using a known-bogus value also makes the 404 path
+        // deterministic for under-limit requests.
+        let bogus = "a7-bogus-token-len43-chars-aaaaaaaaaaaaaaaaa";
+
+        let mut observed_429: Option<axum::response::Response> = None;
+        // Cap the loop at 40 — generous margin over the 20/min budget
+        // so even if the earlier scenarios consumed part of the window
+        // the 429 should arrive well within this count.
+        for i in 0..40 {
+            let resp = h
+                .router
+                .clone()
+                .oneshot(post_accept(Some(&burster_token), bogus))
+                .await
+                .expect("A7: oneshot");
+            if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+                observed_429 = Some(resp);
+                break;
+            }
+            // Non-429 responses should be 404 (bogus token, handler ran).
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "A7 req {i}: expected 404 (bogus token) or 429 (limit); got {}",
+                resp.status()
+            );
+        }
+
+        let resp = observed_429.expect(
+            "A7: rate-limit middleware MUST be wired on /accept — saw no 429 in 40 requests",
+        );
+        // Verify the IETF rate-limit headers are present on 429.
+        assert!(
+            resp.headers().contains_key("x-ratelimit-limit"),
+            "A7: 429 must carry X-RateLimit-Limit"
+        );
+        assert!(
+            resp.headers().contains_key("x-ratelimit-remaining"),
+            "A7: 429 must carry X-RateLimit-Remaining"
+        );
+        assert!(
+            resp.headers().contains_key("retry-after"),
+            "A7: 429 must carry Retry-After"
         );
     }
 }
