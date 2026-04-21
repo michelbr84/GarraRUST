@@ -1,5 +1,39 @@
 //! PII redaction helpers for headers and structured fields.
 
+/// Headers whose values must never appear in structured logs or trace
+/// attributes.
+///
+/// Plan 0025 (GAR-411 M5): expanded to cover reverse-proxy variants.
+/// nginx, AWS ALB, Traefik, and corporate SSO gateways commonly rewrite
+/// the original `Authorization` into `X-Forwarded-Authorization` or
+/// `X-Original-Authorization` before forwarding. Without redaction those
+/// survive into tracing spans and Prometheus labels.
+///
+/// `X-Amzn-Trace-Id` is not credential data, but it leaks **infrastructure
+/// topology**: the value embeds a creation timestamp (`1-{hex-seconds}-
+/// {random}` format used by AWS X-Ray / ALB) and a sub-ID that correlates
+/// back to load-balancer / backend identifiers. Stripping it keeps internal
+/// topology out of third-party observability pipelines that the operator
+/// does not control.
+///
+/// # Consumption (plan 0025 / security audit M-B)
+///
+/// This list is **pre-protective**, not reactive. `layers::http_trace_layer`
+/// today uses `include_headers(false)` (see `layers.rs`), so request /
+/// response headers never flow into spans — `REDACT_HEADERS` is currently
+/// a dormant defense. It kicks in when a future caller (or a v2 of the
+/// trace layer) sets `include_headers(true)` or captures headers via a
+/// custom `MakeSpan`. Callers that *do* capture headers MUST route them
+/// through [`redact_header_value`] before emitting.
+///
+/// # Known gaps (plan 0026+)
+///
+/// Cloud-LB IAP headers carry full JWT assertions and are NOT yet covered,
+/// because the project does not declare support for those deploy targets.
+/// When added, extend this list with: `x-goog-iap-jwt-assertion` (GCP IAP),
+/// `cf-access-jwt-assertion` (Cloudflare Access), `x-ms-client-principal`
+/// (Azure Front Door), and `x-forwarded-user` (generic SSO via oauth2-proxy
+/// or nginx auth_request).
 pub const REDACT_HEADERS: &[&str] = &[
     "authorization",
     "cookie",
@@ -7,6 +41,9 @@ pub const REDACT_HEADERS: &[&str] = &[
     "x-api-key",
     "x-auth-token",
     "proxy-authorization",
+    "x-forwarded-authorization",
+    "x-original-authorization",
+    "x-amzn-trace-id",
 ];
 
 pub fn redact_header_value(name: &str, value: &str) -> String {
@@ -46,6 +83,28 @@ mod tests {
         assert_eq!(redact_header_value("AUTHORIZATION", "x"), "[REDACTED]");
         assert_eq!(redact_header_value("authorization", "x"), "[REDACTED]");
         assert_eq!(redact_header_value("Cookie", "s=1"), "[REDACTED]");
+    }
+
+    #[test]
+    fn strips_reverse_proxy_authorization_variants() {
+        // Plan 0025 (GAR-411 M5). These headers are what nginx/ALB/Traefik
+        // typically inject when they rewrite the original Authorization —
+        // missing them here would leak JWT/session cookies to logs.
+        for raw in [
+            "X-Forwarded-Authorization",
+            "x-forwarded-authorization",
+            "X-FORWARDED-AUTHORIZATION",
+            "X-Original-Authorization",
+            "x-original-authorization",
+            "X-Amzn-Trace-Id",
+            "x-amzn-trace-id",
+        ] {
+            assert_eq!(
+                redact_header_value(raw, "Bearer leaked-token"),
+                "[REDACTED]",
+                "header {raw} must redact"
+            );
+        }
     }
 
     #[test]
