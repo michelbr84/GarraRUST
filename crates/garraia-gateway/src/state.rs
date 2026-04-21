@@ -101,6 +101,14 @@ pub struct AppState {
     /// `rest_v1` constructs a `RestV1FullState` from it. Absent when
     /// `GARRAIA_APP_DATABASE_URL` is not configured (plan 0016 M1-T3).
     pub(crate) app_pool: Option<Arc<AppPool>>,
+
+    // ── Plan 0024 (GAR-412): /metrics auth ─────────────────────────────────
+    /// Shared runtime config for the `metrics_auth_layer` middleware. Used
+    /// by both the embedded `/metrics` route on the main listener and the
+    /// dedicated listener spawned by `metrics_exporter`. Default
+    /// (loopback-only, no token, no allowlist) preserves dev ergonomics
+    /// when `GARRAIA_METRICS_TOKEN` / `GARRAIA_METRICS_ALLOW` are unset.
+    pub metrics_auth_cfg: crate::metrics_auth::MetricsAuthConfig,
 }
 
 /// Per-connection session tracking.
@@ -190,7 +198,21 @@ impl AppState {
             // connects successfully. Independent of the other three
             // pools: absence only degrades /v1/groups-style handlers.
             app_pool: None,
+            // Plan 0024 (GAR-412) — default config is "loopback-only"
+            // which preserves the dev ergonomics of the pre-0024
+            // gateway (bind default 127.0.0.1, no token, no allowlist
+            // ⇒ 200 OK). Overwritten by `set_metrics_auth_cfg` at
+            // bootstrap when env vars are set.
+            metrics_auth_cfg: crate::metrics_auth::MetricsAuthConfig::default(),
         }
+    }
+
+    /// Plan 0024 (GAR-412): attach the metrics-auth configuration
+    /// built from `TelemetryConfig` at bootstrap. Fail-soft: if
+    /// telemetry is off, the gateway never calls this and the default
+    /// loopback-only config sits behind the embedded `/metrics` route.
+    pub fn set_metrics_auth_cfg(&mut self, cfg: crate::metrics_auth::MetricsAuthConfig) {
+        self.metrics_auth_cfg = cfg;
     }
 
     /// Attach the garraia-auth components built from `AuthConfig` at bootstrap
