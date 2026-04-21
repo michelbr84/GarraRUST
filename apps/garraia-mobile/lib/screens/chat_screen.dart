@@ -138,6 +138,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             tooltip: 'Parear dispositivos',
             onPressed: () => context.push('/pair'),
           ),
+          IconButton(
+            // Plan 0029 / GAR-358 — dedicated Settings screen entry point.
+            icon: const Icon(Icons.settings_rounded),
+            tooltip: 'Configurações',
+            onPressed: () => context.push('/settings'),
+          ),
           PopupMenuButton<String>(
             onSelected: (v) async {
               if (v == 'logout') {

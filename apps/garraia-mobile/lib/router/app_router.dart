@@ -8,6 +8,7 @@ import '../screens/chat_screen.dart';
 import '../screens/login_screen.dart';
 import '../screens/pair_screen.dart';
 import '../screens/register_screen.dart';
+import '../screens/settings_screen.dart';
 import '../screens/splash_screen.dart';
 
 part 'app_router.g.dart';
@@ -55,6 +56,9 @@ GoRouter appRouter(Ref ref) {
 
       // Device pairing screen
       GoRoute(path: '/pair', builder: (_, __) => const PairScreen()),
+
+      // Settings screen (plan 0029 / GAR-358) — account info + logout.
+      GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
     ],
   );
 
