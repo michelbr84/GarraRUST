@@ -129,8 +129,14 @@ pub fn init(config: TelemetryConfig) -> Result<Guard, Error> {
     }
     let tracer_provider = tracer::init_tracer(&config)?;
     let metrics_handle = metrics::init_metrics(&config)?;
-    // `set` returning Err means another thread won the race; safe to ignore
-    // because both call sites installed the same provider state.
+    // `set` returning Err means another thread won the race. This thread
+    // still ran the full install block: the tracer provider was clobbered
+    // by the winner's `global::set_tracer_provider`; the metrics recorder
+    // install above returned `Err` if the winner already installed one,
+    // bubbling up through `?` before we ever reach this line. If we reach
+    // here, installation succeeded; set the flag so subsequent *serial*
+    // callers short-circuit correctly. See `INIT_ONCE` docblock for full
+    // race semantics (plan 0025 / security audit M-A).
     let _ = INIT_ONCE.set(());
     Ok(Guard {
         tracer_provider,

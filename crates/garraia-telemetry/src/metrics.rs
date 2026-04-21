@@ -88,6 +88,17 @@ pub fn set_active_sessions(n: f64) {
 ///
 /// Templates like `/v1/groups/{group_id}/members/{user_id}` pass because
 /// curly braces are never present in concrete paths.
+///
+/// # Known coverage gaps (plan 0025 security audit L-B)
+///
+/// The canonical UUID form matches the project's current schema (all tenant
+/// IDs use UUID v4/v7). The guard does NOT detect:
+/// - **ULID** (26 chars Crockford base32, e.g. `01ARZ3NDEKTSV4RRFFQ69G5FAV`)
+/// - **nanoid / base62** (variable-length alphanumeric, no fixed pattern)
+/// - **MongoDB ObjectID** (24 hex chars, no dashes)
+/// - **Truncated hashes** (e.g. `sha256[:16]` = 32 hex, no dashes)
+///
+/// Extend the heuristic if any of these enter the ID mix.
 #[cfg(debug_assertions)]
 pub fn debug_assert_route_template(route: &str) {
     for seg in route.split('/') {

@@ -14,6 +14,7 @@
    GARRAIA_METRICS_ENABLED=true \
    cargo run -p garraia-gateway
    ```
+   > **Production:** see [§1.1 TLS for OTLP exports](#11-tls-for-otlp-exports-production) before pointing at a non-loopback collector — `tonic` defaults to cleartext.
 3. Open Jaeger at http://localhost:16686, select service `garraia-gateway`, and click "Find Traces" to see the latest trace.
 
 ---

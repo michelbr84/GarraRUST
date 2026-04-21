@@ -15,6 +15,25 @@
 /// back to load-balancer / backend identifiers. Stripping it keeps internal
 /// topology out of third-party observability pipelines that the operator
 /// does not control.
+///
+/// # Consumption (plan 0025 / security audit M-B)
+///
+/// This list is **pre-protective**, not reactive. `layers::http_trace_layer`
+/// today uses `include_headers(false)` (see `layers.rs`), so request /
+/// response headers never flow into spans — `REDACT_HEADERS` is currently
+/// a dormant defense. It kicks in when a future caller (or a v2 of the
+/// trace layer) sets `include_headers(true)` or captures headers via a
+/// custom `MakeSpan`. Callers that *do* capture headers MUST route them
+/// through [`redact_header_value`] before emitting.
+///
+/// # Known gaps (plan 0026+)
+///
+/// Cloud-LB IAP headers carry full JWT assertions and are NOT yet covered,
+/// because the project does not declare support for those deploy targets.
+/// When added, extend this list with: `x-goog-iap-jwt-assertion` (GCP IAP),
+/// `cf-access-jwt-assertion` (Cloudflare Access), `x-ms-client-principal`
+/// (Azure Front Door), and `x-forwarded-user` (generic SSO via oauth2-proxy
+/// or nginx auth_request).
 pub const REDACT_HEADERS: &[&str] = &[
     "authorization",
     "cookie",
