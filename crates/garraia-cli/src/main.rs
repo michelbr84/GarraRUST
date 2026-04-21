@@ -15,9 +15,14 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// Initialize OpenTelemetry tracing + Prometheus metrics if enabled.
-/// Fail-soft: any init error is logged to stderr and the gateway continues
-/// without telemetry. The returned `Option<Guard>` must be bound to a named
-/// variable that lives until end of main scope so Drop flushes exporters.
+///
+/// Fail-soft invariant: any init error is logged internally by
+/// `garraia_telemetry::init` via `tracing::warn!` and the gateway continues
+/// without telemetry. The returned `Guard` must be bound to a named variable
+/// that lives until end of main scope so Drop flushes exporters; the outer
+/// `Option` is retained for symmetry with existing call-site patterns but
+/// is always `Some(_)` after plan 0026 (GAR-411 M3 signature change —
+/// `init()` no longer returns `Result`).
 ///
 /// Plan 0024 (GAR-412) amends the return type to `(Option<Guard>, TelemetryConfig)`
 /// so the gateway can consume the same single-snapshot config used here
@@ -29,13 +34,8 @@ fn init_telemetry_guard() -> (
 ) {
     let telemetry_config =
         garraia_gateway::garraia_telemetry::TelemetryConfig::from_env().unwrap_or_default();
-    let guard = garraia_gateway::garraia_telemetry::init(telemetry_config.clone())
-        .map_err(|e| {
-            eprintln!("telemetry init failed (continuing without): {e}");
-            e
-        })
-        .ok();
-    (guard, telemetry_config)
+    let guard = garraia_gateway::garraia_telemetry::init(telemetry_config.clone());
+    (Some(guard), telemetry_config)
 }
 
 #[derive(Parser)]
