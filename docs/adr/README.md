@@ -46,8 +46,8 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0004](0004-object-storage.md) | Object storage (S3 compatible, MinIO default) | ✅ accepted | 2026-04-21 | [GAR-374](https://linear.app/chatgpt25/issue/GAR-374) |
 | [0005](0005-identity-provider.md) | Identity Provider (BYPASSRLS role + Argon2id + HS256 + lazy upgrade) | ✅ accepted | 2026-04-13 | [GAR-375](https://linear.app/chatgpt25/issue/GAR-375) |
 | [0006](0006-search-strategy.md) | Search strategy (Postgres FTS → Tantivy → Meilisearch) | ✅ accepted | 2026-04-21 | [GAR-376](https://linear.app/chatgpt25/issue/GAR-376) |
-| 0007 | Desktop frontend (SvelteKit vs Solid vs HTML puro) | 🔒 blocked | — | [GAR-377](https://linear.app/chatgpt25/issue/GAR-377) |
-| 0008 | Doc collaboration (CRDT y-crdt vs OT) | 🔒 blocked | — | [GAR-378](https://linear.app/chatgpt25/issue/GAR-378) |
+| [0007](0007-desktop-frontend.md) | Desktop frontend (HTML+Vanilla baseline → SolidJS trigger) | ✅ accepted | 2026-04-21 | [GAR-377](https://linear.app/chatgpt25/issue/GAR-377) |
+| [0008](0008-doc-collaboration.md) | Doc collaboration (Tier 1 single-editor → y-crdt Tier 2) | ✅ accepted | 2026-04-21 | [GAR-378](https://linear.app/chatgpt25/issue/GAR-378) |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 
