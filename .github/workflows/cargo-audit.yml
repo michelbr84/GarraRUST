@@ -1,0 +1,47 @@
+name: Security — cargo audit
+
+# Plan 0026 (GAR-411 L5). Nightly scheduled scan of the workspace's Cargo
+# lockfile against the RustSec advisory database. Runs off the PR path to
+# avoid gating merges on third-party advisory churn; failures surface as
+# a red run in the Actions tab (and via the default GitHub notification
+# channel) for operator triage.
+
+on:
+  schedule:
+    # 07:00 UTC nightly = 03:00 America/New_York — after the main CI
+    # quiet window, avoiding contention with the push-triggered job.
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  # Only one audit run at a time; a newer manual dispatch cancels an
+  # in-flight scheduled run.
+  group: cargo-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        # `--locked` pins the transitive deps of cargo-audit itself so this
+        # job doesn't silently drift when a new cargo-audit release lands.
+        # Version range tracks the 0.21.x line (MSRV-aligned).
+        run: cargo install --locked --version '^0.21' cargo-audit
+
+      - name: Run cargo audit
+        # --deny unsound: fail on deprecated `rustsec` "unsound" advisories.
+        # --deny yanked: fail if any crate in the lockfile is yanked.
+        # Plain vulnerabilities (Informational, Low, Medium, High, Critical)
+        # already fail by default; the --deny flags widen the failure set
+        # to cover soundness bugs and yanked deps even when the advisory
+        # database has not yet classified them as vulns.
+        run: cargo audit --deny unsound --deny yanked

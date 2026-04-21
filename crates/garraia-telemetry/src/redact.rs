@@ -44,6 +44,14 @@ pub const REDACT_HEADERS: &[&str] = &[
     "x-forwarded-authorization",
     "x-original-authorization",
     "x-amzn-trace-id",
+    // Plan 0026 (GAR-411 SA-L-A) — cloud-LB IAP variants.
+    // These carry full JWT assertions or serialized identity tokens that
+    // would leak into span attributes if `include_headers(true)` is ever
+    // enabled on the trace layer.
+    "x-goog-iap-jwt-assertion",
+    "cf-access-jwt-assertion",
+    "x-ms-client-principal",
+    "x-forwarded-user",
 ];
 
 pub fn redact_header_value(name: &str, value: &str) -> String {
@@ -103,6 +111,30 @@ mod tests {
                 redact_header_value(raw, "Bearer leaked-token"),
                 "[REDACTED]",
                 "header {raw} must redact"
+            );
+        }
+    }
+
+    #[test]
+    fn strips_cloud_iap_jwt_headers() {
+        // Plan 0026 (GAR-411 SA-L-A). These headers carry full JWT
+        // assertions or serialized identity tokens when the gateway sits
+        // behind GCP IAP, Cloudflare Access, Azure Front Door, or a
+        // generic oauth2-proxy / nginx auth_request fronting SSO.
+        for raw in [
+            "X-Goog-IAP-JWT-Assertion",
+            "x-goog-iap-jwt-assertion",
+            "CF-Access-JWT-Assertion",
+            "cf-access-jwt-assertion",
+            "X-Ms-Client-Principal",
+            "x-ms-client-principal",
+            "X-Forwarded-User",
+            "x-forwarded-user",
+        ] {
+            assert_eq!(
+                redact_header_value(raw, "eyJhbGciOi...leaked"),
+                "[REDACTED]",
+                "cloud IAP header {raw} must redact"
             );
         }
     }
