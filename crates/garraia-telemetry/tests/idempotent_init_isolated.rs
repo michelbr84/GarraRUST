@@ -20,8 +20,15 @@
 
 use garraia_telemetry::{TelemetryConfig, init};
 
+// Test name reflects the observable contract post-M3 (plan 0026 CR-NIT-3):
+// the isolated process guarantees the first-install code path is exercised
+// without panic, but the silent-drop of `tracing::warn!` in a no-subscriber
+// process means the original strong-RED signal (Err return) is no longer
+// observable here. The test still fails hard if any of the three involved
+// globals (INIT_ONCE, Prometheus recorder, OTLP tracer provider) panic on
+// double-install — which is the genuine safety net.
 #[test]
-fn first_init_installs_then_second_short_circuits_in_isolation() {
+fn first_init_in_isolated_process_does_not_panic() {
     let cfg = TelemetryConfig {
         metrics_enabled: true,
         ..TelemetryConfig::default()

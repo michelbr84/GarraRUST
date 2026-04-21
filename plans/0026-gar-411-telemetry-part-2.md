@@ -14,7 +14,7 @@ Completar o espírito original de GAR-411 fechando todos os 6 follow-ups do secu
 
 1. **M3 — `init()` signature change:** `pub fn init(config: TelemetryConfig) -> Result<Guard, Error>` → `pub fn init(config: TelemetryConfig) -> Guard`. Internamente: qualquer erro do tracer ou recorder é convertido em `tracing::warn!` + `Guard { tracer_provider: None, metrics_handle: None }` (degraded no-op guard). Alinha com o contrato fail-soft que o CLI já implementa via `.map_err(log).ok()`. Impacto: 3 call sites (CLI + 2 test files).
 
-2. **L5 — Nightly `cargo audit` CI workflow:** novo arquivo `.github/workflows/cargo-audit.yml` rodando em `schedule: cron '0 7 * * *'` (3 AM America/New_York = ~7 UTC) + `workflow_dispatch`. Usa `rustsec/audit-check@v2` action oficial. Falha na presença de vulnerabilidades HIGH/CRITICAL, emite warning em MEDIUM/LOW. Pull requests não disparam (evita block) — é job noturno de observabilidade.
+2. **L5 — Nightly `cargo audit` CI workflow:** novo arquivo `.github/workflows/cargo-audit.yml` rodando em `schedule: cron '0 7 * * *'` (3 AM America/New_York = ~7 UTC) + `workflow_dispatch`. **Usa `cargo install --locked cargo-audit` + `cargo audit --deny unsound --deny yanked`** em vez da action `rustsec/audit-check@v2` originalmente considerada — trade-off deliberado: a abordagem manual zera a superfície de supply-chain de action externa (zero `uses:` de terceiros além de `actions/checkout` + `dtolnay/rust-toolchain`, já usados no projeto), em troca de perder integração com GitHub Security tab (SARIF). O output continua visível como run vermelha no Actions tab + default email notification. Falha em qualquer vulnerabilidade detectada, em deps com aviso `unsound`, ou em crates yanked. Pull requests não disparam (evita block) — é job noturno de observabilidade.
 
 3. **SA-L-A — Cloud-LB IAP headers:** adicionar `x-goog-iap-jwt-assertion` (GCP IAP), `cf-access-jwt-assertion` (Cloudflare Access), `x-ms-client-principal` (Azure Front Door), `x-forwarded-user` (generic SSO) à `REDACT_HEADERS`. Cobertura pré-protetiva para quando deploy target cloud-LB for declarado.
 
@@ -30,8 +30,8 @@ Completar o espírito original de GAR-411 fechando todos os 6 follow-ups do secu
 ## Tech stack
 
 - `std::sync::OnceLock<()>` (já presente, plan 0025).
-- `tracing::warn!` (já usado).
-- `rustsec/audit-check@v2` (GitHub Action oficial do rustsec team — zero dep Rust).
+- `tracing::warn!` + `eprintln!` dual-emit (plan 0026 security audit F-1 — garante observabilidade mesmo sem subscriber configurado).
+- `cargo install --locked cargo-audit` em `ubuntu-latest` GitHub-hosted runner (zero action de supply-chain externa).
 - **Nenhuma nova dependência** em `Cargo.toml`.
 
 ## File structure
@@ -162,37 +162,11 @@ fn first_init_installs_then_second_short_circuits_in_isolation() {
 
 ### Task 5 — GREEN: `cargo-audit` workflow
 
-Create `.github/workflows/cargo-audit.yml`:
+Create `.github/workflows/cargo-audit.yml` using `cargo install` + `cargo audit` (deliberate deviation from `rustsec/audit-check@v2` — see §Scope L5 for rationale). Hardening additions endereçando security audit F-2B + F-6 + NIT-2/4 do code review:
 
-```yaml
-name: Security — cargo audit
-
-on:
-  schedule:
-    # 07:00 UTC nightly = 03:00 America/New_York — after CI quiet hours.
-    - cron: '0 7 * * *'
-  workflow_dispatch: {}
-
-jobs:
-  audit:
-    name: cargo audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install --locked --version ^0.21 cargo-audit
-
-      - name: Run cargo audit
-        # --deny warnings would fail on any advisory. We want HIGH/CRITICAL
-        # failures to be visible but not gate merges (workflow is scheduled,
-        # not on PR). `cargo audit` exits non-zero when vulnerabilities are
-        # found; GitHub surfaces the run as failing, which fires the default
-        # email notification.
-        run: cargo audit --deny unsound --deny yanked
-```
+- `permissions: contents: read` explicit (least-privilege principle, OSSF Scorecard).
+- `concurrency: group: cargo-audit` (fixed string, not `${{ github.ref }}`) + `cancel-in-progress: false` (scheduled runs complete instead of being canceled by manual dispatch).
+- `--version` pin documenta exatamente por que existe (reduz drift no CLI de `cargo-audit` entre releases).
 
 ### Task 6 — DOCS + index
 

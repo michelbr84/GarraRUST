@@ -26,14 +26,19 @@
 /// custom `MakeSpan`. Callers that *do* capture headers MUST route them
 /// through [`redact_header_value`] before emitting.
 ///
-/// # Known gaps (plan 0026+)
+/// # Known gaps (plan 0027+)
 ///
-/// Cloud-LB IAP headers carry full JWT assertions and are NOT yet covered,
-/// because the project does not declare support for those deploy targets.
-/// When added, extend this list with: `x-goog-iap-jwt-assertion` (GCP IAP),
-/// `cf-access-jwt-assertion` (Cloudflare Access), `x-ms-client-principal`
-/// (Azure Front Door), and `x-forwarded-user` (generic SSO via oauth2-proxy
-/// or nginx auth_request).
+/// The 4 cloud-LB IAP headers listed at the tail of `REDACT_HEADERS`
+/// (`x-goog-iap-jwt-assertion`, `cf-access-jwt-assertion`, `x-ms-client-
+/// principal`, `x-forwarded-user`) were added by plan 0026 (GAR-411
+/// SA-L-A). Remaining deploy targets NOT yet covered — extend this list
+/// in a future plan when the target is declared:
+/// - **Envoy / Istio service mesh:** `x-forwarded-client-cert` (mTLS cert
+///   SPIFFE/X.509 serialized), `x-envoy-external-address`.
+/// - **Okta SWA:** `x-okta-*` headers (token-in-header, prefix match).
+/// - **HAProxy:** `x-forwarded-ssl` (low risk, topology only).
+/// - **nginx auth_request alternates:** `x-real-ip` (PII risk via
+///   geolocation / fingerprinting; not credential data).
 pub const REDACT_HEADERS: &[&str] = &[
     "authorization",
     "cookie",
