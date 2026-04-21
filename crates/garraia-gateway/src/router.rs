@@ -297,9 +297,20 @@ pub fn build_router(
         .route("/a2a/tasks/{id}/cancel", post(a2a::cancel_task))
         .nest_service("/assets", ServeDir::new("crates/garraia-gateway/assets"))
         .nest_service("/static", ServeDir::new("assets"))
+        // Plan 0024 (GAR-412): the embedded `/metrics` route is guarded
+        // by `metrics_auth_layer` at runtime. With the default
+        // loopback-only config (no token, no allowlist) loopback peers
+        // still get `200` without friction; non-loopback peers without
+        // auth receive `503` (not-configured), `401` (bad token), or
+        // `403` (allowlist miss).
         .route(
             "/metrics",
-            get(crate::observability::prometheus_metrics_handler),
+            get(crate::observability::prometheus_metrics_handler).layer(
+                axum::middleware::from_fn_with_state(
+                    state.metrics_auth_cfg.clone(),
+                    crate::metrics_auth::metrics_auth_layer,
+                ),
+            ),
         )
         .route("/admin", get(admin_page))
         .with_state(state.clone())

@@ -69,6 +69,10 @@ tower_governor = "0.8"
 # Version pinned to match the transitive resolution already in Cargo.lock
 # (introduced by other workspace crates).
 ipnet = "2"
+# Plan 0024 T2 (GAR-412): constant-time comparison for the metrics auth
+# Bearer token. Same version as `garraia-auth` — transitively present in
+# Cargo.lock but we declare it directly so the dep is tracked explicitly.
+subtle = "2.6"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
@@ -142,7 +146,25 @@ name = "audit_workspace_branch_two"
 path = "tests/audit_workspace_branch_two.rs"
 required-features = ["test-helpers"]
 
+# Plan 0024 T6 (GAR-412): dedicated /metrics listener integration.
+# Six scenarios bound to real TcpListeners — exercises the Axum
+# router + middleware + fail-closed startup check end-to-end. Does
+# not rely on the testcontainer harness, so strictly the feature
+# gate isn't required for compilation, but we keep it aligned with
+# the other integration binaries so plain `cargo test -p garraia-gateway`
+# continues to skip network-binding tests by default.
+[[test]]
+name = "metrics_auth_integration"
+path = "tests/metrics_auth_integration.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
+# Plan 0024 T4 (GAR-412): metrics_exporter tests and the
+# metrics_auth_integration binary build a `PrometheusRecorder` directly
+# (via `PrometheusBuilder::build_recorder`) to obtain a handle without
+# installing the global recorder. Kept in sync with the version pin in
+# `garraia-telemetry`.
+metrics-exporter-prometheus = "0.15"
 tempfile = "3"
 serial_test = { workspace = true }
 wiremock = "0.6"

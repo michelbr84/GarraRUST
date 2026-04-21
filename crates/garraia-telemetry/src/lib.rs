@@ -9,6 +9,10 @@ pub mod tracer;
 pub use config::TelemetryConfig;
 pub use layers::{http_trace_layer, propagate_request_id_layer, request_id_layer};
 pub use metrics::{inc_errors, inc_requests, record_latency, set_active_sessions};
+// Plan 0024 (GAR-412): re-export `PrometheusHandle` so the gateway can
+// build a dedicated `/metrics` listener without depending on the
+// `metrics-exporter-prometheus` crate directly.
+pub use metrics_exporter_prometheus::PrometheusHandle;
 
 /// Backwards-compatible alias for [`TelemetryConfig`].
 pub type Config = TelemetryConfig;
@@ -17,14 +21,30 @@ pub type Config = TelemetryConfig;
 ///
 /// Drop order is deliberate: the tracer provider is shut down explicitly
 /// (flushes in-flight spans via the OTLP batch processor), then the
-/// `metrics_handle` drops implicitly. `metrics-exporter-prometheus` does not
-/// need an async flush — the HTTP listener exposes a live snapshot — so the
-/// implicit drop order is correct and no coordination with the tracer is
-/// required.
+/// `metrics_handle` drops implicitly. `metrics-exporter-prometheus` does
+/// not need an async flush — the recorder holds metrics in memory — so
+/// the implicit drop order is correct and no coordination with the
+/// tracer is required.
+///
+/// Plan 0024 (GAR-412): the guard exposes [`Guard::metrics_handle`]
+/// so the gateway can spawn its dedicated `/metrics` listener against
+/// the same globally-installed recorder.
 pub struct Guard {
     tracer_provider: Option<opentelemetry_sdk::trace::TracerProvider>,
-    #[allow(dead_code)]
-    metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+    metrics_handle: Option<PrometheusHandle>,
+}
+
+impl Guard {
+    /// Return a cloned handle to the globally-installed Prometheus
+    /// recorder, if metrics are enabled.
+    ///
+    /// `PrometheusHandle` is `Clone` by design — the gateway takes one
+    /// clone to serve `/metrics` over HTTP (auth'd by the metrics auth
+    /// middleware), while the guard keeps the original to tie recorder
+    /// shutdown to drop order.
+    pub fn metrics_handle(&self) -> Option<PrometheusHandle> {
+        self.metrics_handle.clone()
+    }
 }
 
 impl Drop for Guard {
