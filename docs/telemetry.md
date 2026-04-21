@@ -14,6 +14,7 @@
    GARRAIA_METRICS_ENABLED=true \
    cargo run -p garraia-gateway
    ```
+   > **Production:** see [§1.1 TLS for OTLP exports](#11-tls-for-otlp-exports-production) before pointing at a non-loopback collector — `tonic` defaults to cleartext.
 3. Open Jaeger at http://localhost:16686, select service `garraia-gateway`, and click "Find Traces" to see the latest trace.
 
 ---
@@ -49,6 +50,41 @@ GARRAIA_METRICS_BIND=127.0.0.1:9464
 ### Disabled by default
 
 All variables default to a safe, zero-overhead state. A production binary with no telemetry env vars set emits no spans, makes no network connections to a collector, and exposes no metrics endpoint. Opt in explicitly per environment.
+
+### 1.1 TLS for OTLP exports (production)
+
+> ⚠️ **Plaintext by default.** `opentelemetry-otlp` uses `tonic` as the gRPC
+> transport, which defaults to HTTP/2 **cleartext** (`http://`). Any span
+> attribute — including `http.target`, `http.url`, request IDs, or custom
+> fields you attach — traverses the wire unencrypted unless you configure
+> TLS explicitly.
+
+**Production recommendation:**
+
+```env
+# Force TLS by using the https:// scheme. tonic picks up the scheme
+# automatically and negotiates TLS against the collector's cert.
+GARRAIA_OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com:4317
+```
+
+Your collector (Jaeger-as-OTLP, OpenTelemetry Collector, Grafana Tempo, etc.)
+must be configured to terminate TLS on that port. See the collector's docs
+for serving TLS — typically a `tls:` block under the OTLP receiver with
+`cert_file` / `key_file` paths or an ACME integration.
+
+**Development / loopback:** `http://localhost:4317` is fine when the
+collector runs on the same host — the traffic never leaves the local
+network interface.
+
+**Why no auto-TLS?** `opentelemetry-otlp` defers to the scheme declared in
+the endpoint URL — `http://` negotiates cleartext, `https://` negotiates TLS
+against the collector's cert. A "TLS by default unless explicitly disabled"
+knob does not exist in the current `opentelemetry-otlp` API (0.14.x series,
+built on `tonic 0.12`) and would conflict with service-mesh sidecar deploys
+(where the sidecar terminates TLS and forwards cleartext on loopback). We
+rely on this docs warning to keep the matrix simple. Revisit when
+`opentelemetry-otlp` exposes a first-class TLS opt-in independent of the
+endpoint scheme (tracked in GAR-411 M2 follow-up notes).
 
 ---
 
