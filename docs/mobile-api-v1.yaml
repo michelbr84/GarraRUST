@@ -1,0 +1,356 @@
+openapi: 3.1.0
+info:
+  title: GarraIA Mobile API
+  version: 1.0.0
+  description: |
+    Contract for the Garra Cloud Alpha mobile endpoints — authenticated
+    chat surface consumed by `apps/garraia-mobile/` (Flutter) and by
+    end-to-end curl tests (`tests/e2e_mobile_api.sh`).
+
+    Formalizes GAR-332. The endpoints have been in production since cycle
+    11 (2026-03-10, GAR-334/335/336/337/338/339/340, plan 0027 documents
+    the contract — it does not change it).
+
+    Schemas here match 1:1 the Rust structs in
+    `crates/garraia-gateway/src/mobile_auth.rs` and `mobile_chat.rs`.
+
+  contact:
+    name: GarraIA team
+    url: https://github.com/michelbr84/GarraRUST
+
+servers:
+  - url: https://api.garraia.org
+    description: Production cloud (Alpha)
+  - url: http://localhost:3888
+    description: Local dev gateway (`cargo run -p garraia-gateway`)
+  - url: http://10.0.2.2:3888
+    description: Android emulator localhost bridge
+
+tags:
+  - name: auth
+    description: Registration, login, and identity endpoints (mobile scope)
+  - name: chat
+    description: Authenticated chat surface for mobile users
+
+security:
+  # Global default — every path that doesn't explicitly override inherits
+  # this. Endpoints under /auth/* opt out by setting `security: []`.
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Create a mobile user account
+      operationId: registerMobileUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRequest'
+      responses:
+        '201':
+          description: Account created; JWT issued (30-day expiry)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Invalid email (empty or missing @) or password shorter than 8 chars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (hashing or DB failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database unavailable (SessionStore not configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate a mobile user and return a JWT
+      operationId: loginMobileUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRequest'
+      responses:
+        '200':
+          description: JWT issued (30-day expiry)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid credentials (byte-identical response between unknown email and bad password)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (DB failure or JWT issue failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /me:
+    get:
+      tags: [auth]
+      summary: Return the authenticated user's profile
+      operationId: getMe
+      responses:
+        '200':
+          description: Authenticated identity info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: Missing, invalid, or expired JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: JWT valid but user deleted from DB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (DB failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /chat:
+    post:
+      tags: [chat]
+      summary: Send a chat message and get an assistant reply
+      operationId: sendChatMessage
+      description: |
+        Sends `message` through the AgentRuntime pipeline with the Garra
+        persona (overridable via `GARRA_MOBILE_PERSONA` env var). Session
+        ID is derived from the JWT `sub` claim (`mobile-{user_id}`),
+        hydrated from the database on each call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Assistant reply produced and persisted to the session history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          description: Empty `message` (after trim)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, or expired JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: AgentRuntime failure (provider unreachable, model error, or persistence error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /chat/history:
+    get:
+      tags: [chat]
+      summary: Retrieve recent chat history for the authenticated user
+      operationId: getChatHistory
+      responses:
+        '200':
+          description: Recent message list (most recent first) from the user's session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResponse'
+        '401':
+          description: Missing, invalid, or expired JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (DB failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        HS256 JWT issued by `/auth/register` or `/auth/login`. 30-day expiry.
+        Signed with secret from `GARRAIA_JWT_SECRET` (fallback:
+        `GarraIA_VAULT_PASSPHRASE`). Claims: `{ sub, email, iat, exp }`.
+
+  schemas:
+    AuthRequest:
+      type: object
+      description: Common request body for `/auth/register` and `/auth/login`.
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Normalized lowercase after trim on the server.
+          example: user@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Plaintext in the request body; hashed with PBKDF2-HMAC-SHA256 (600k iterations) before storage.
+          example: hunter2-secure
+
+    AuthResponse:
+      type: object
+      description: Returned by `/auth/register` (201) and `/auth/login` (200).
+      required: [token, user_id, email]
+      properties:
+        token:
+          type: string
+          description: Bearer JWT (HS256, 30-day expiry).
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        user_id:
+          type: string
+          format: uuid
+          description: UUID v4 assigned at registration.
+          example: 8f2c7e1a-1234-4abc-9def-0123456789ab
+        email:
+          type: string
+          format: email
+          example: user@example.com
+
+    MeResponse:
+      type: object
+      description: Returned by `/me` (200).
+      required: [user_id, email, created_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: 8f2c7e1a-1234-4abc-9def-0123456789ab
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        created_at:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp.
+          example: '2026-03-10T12:34:56Z'
+
+    ChatRequest:
+      type: object
+      description: Body for `POST /chat`.
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          description: User text; trimmed server-side. Empty after trim returns 400.
+          example: oi garra, me ajuda com rust?
+
+    ChatResponse:
+      type: object
+      description: Returned by `POST /chat` (200).
+      required: [reply, session_id]
+      properties:
+        reply:
+          type: string
+          description: Assistant response.
+          example: Claro! Qual parte do Rust está te travando?
+        session_id:
+          type: string
+          description: Derived from JWT `sub` — stable `mobile-{user_id}` format.
+          example: mobile-8f2c7e1a-1234-4abc-9def-0123456789ab
+
+    HistoryMessage:
+      type: object
+      required: [role, content, timestamp]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+          description: Speaker tag.
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC.
+
+    HistoryResponse:
+      type: object
+      description: Returned by `GET /chat/history` (200).
+      required: [messages, session_id]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryMessage'
+          description: Recent messages, most recent first. Empty array if the user has no history yet.
+        session_id:
+          type: string
+          example: mobile-8f2c7e1a-1234-4abc-9def-0123456789ab
+
+    ErrorResponse:
+      type: object
+      description: Uniform error shape across every non-2xx response.
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error summary. Intentionally byte-identical between some failure modes (e.g. unknown email vs. bad password both return `invalid credentials`) to resist account enumeration.
+          example: invalid credentials
