@@ -58,7 +58,17 @@ async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() 
 
     // Wait for the listener to actually bind. Gateway bootstrap pulls
     // in channels, MCP registry and tools, so 500ms is not enough — poll
-    // the port with exponential backoff up to ~10s.
+    // the port with exponential backoff up to ~20s.
+    //
+    // History: the budget was 40×250ms (~10s) until a ubuntu-latest runner
+    // flaked on commit fe087e4 (2026-04-21) where bootstrap took longer
+    // than 10s. The flake was caught only in scheduled CI on main (not in
+    // PR CI where the same commit passed first try), indicating a resource-
+    // sensitive timing issue, not a product regression. Bumped to 80×250ms
+    // (~20s) to eat the long tail of slow-runner cold-starts without
+    // materially changing test wall-clock on the happy path (the loop
+    // breaks on first successful send, so extra budget only kicks in on
+    // slow boots).
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -68,7 +78,7 @@ async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() 
     let resp = loop {
         match client.get(&url).send().await {
             Ok(resp) => break resp,
-            Err(err) if attempt < 40 => {
+            Err(err) if attempt < 80 => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let _ = err;
