@@ -132,7 +132,11 @@ class _SettingsBody extends ConsumerWidget {
   }
 
   static String _shortId(String uuid) {
-    // `8f2c7e1a-1234-4abc-9def-0123456789ab` → `8f2c7e1a…89ab`
+    // `8f2c7e1a-1234-4abc-9def-0123456789ab` → `8f2c7e1a…89ab`.
+    // Minimum length for the shortening to make sense: 8 (prefix) + 1
+    // (ellipsis) + 4 (suffix) = 13. Shorter inputs (including empty
+    // strings from a misbehaving backend) fall through as-is so we
+    // never render a negative-length `substring`.
     if (uuid.length < 13) return uuid;
     return '${uuid.substring(0, 8)}…${uuid.substring(uuid.length - 4)}';
   }

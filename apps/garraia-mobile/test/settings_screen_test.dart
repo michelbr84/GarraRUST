@@ -130,9 +130,17 @@ void main() {
       // Re-open and confirm.
       await tester.tap(find.text('Sair da conta'));
       await tester.pumpAndSettle();
-      // Button inside dialog has label "Sair"; the page button is "Sair da conta".
-      // We tap the dialog action explicitly.
-      await tester.tap(find.widgetWithText(FilledButton, 'Sair'));
+      // Button inside dialog has label "Sair"; the page button is
+      // "Sair da conta". We scope the finder to the `AlertDialog` subtree
+      // explicitly so a future rename of either button to an overlapping
+      // label (e.g. both "Sair") won't make this finder ambiguous.
+      // Review NIT-2 (plan 0029 code review, 2026-04-21).
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('Sair'),
+        ),
+      );
       await tester.pumpAndSettle();
 
       expect(api.logoutCalled, isTrue,
