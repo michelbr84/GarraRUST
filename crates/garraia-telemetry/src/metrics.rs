@@ -181,9 +181,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "UUID-looking segment")]
     fn cardinality_guard_rejects_uuid_segment() {
-        debug_assert_route_template(
-            "/api/sessions/8f2c7e1a-1234-4abc-9def-0123456789ab/messages",
-        );
+        debug_assert_route_template("/api/sessions/8f2c7e1a-1234-4abc-9def-0123456789ab/messages");
     }
 
     #[cfg(debug_assertions)]

@@ -92,6 +92,5 @@ fn second_init_with_metrics_enabled_does_not_retry_install() {
     // BEFORE fix: this line returned Err("failed to install prometheus recorder:
     // attempted to set a recorder after the metrics system was already initialized").
     // AFTER fix: returns Ok(empty_guard).
-    let _g2 =
-        init(cfg).expect("second init must short-circuit, not re-attempt recorder install");
+    let _g2 = init(cfg).expect("second init must short-circuit, not re-attempt recorder install");
 }
