@@ -40,12 +40,12 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 
 | # | Title | Status | Date | Issue |
 |---|---|---|---|---|
-| [0001](0001-local-inference-backend.md) | Local inference backend (candle vs mistral.rs vs llama.cpp) | 📋 proposed | — | [GAR-371](https://linear.app/chatgpt25/issue/GAR-371) |
-| [0002](0002-vector-store.md) | Vector store (lancedb vs qdrant embedded) | 📋 proposed | — | [GAR-372](https://linear.app/chatgpt25/issue/GAR-372) |
+| [0001](0001-local-inference-backend.md) | Local inference backend (candle vs mistral.rs vs llama.cpp) | ✅ accepted | 2026-04-21 | [GAR-371](https://linear.app/chatgpt25/issue/GAR-371) |
+| [0002](0002-vector-store.md) | Vector store (pgvector vs lancedb vs qdrant embedded) | ✅ accepted | 2026-04-21 | [GAR-372](https://linear.app/chatgpt25/issue/GAR-372) |
 | [0003](0003-database-for-workspace.md) | Database para Group Workspace (Postgres vs SQLite) | ✅ accepted | 2026-04-13 | [GAR-373](https://linear.app/chatgpt25/issue/GAR-373) |
-| 0004 | Object storage (S3 compatible, MinIO default) | 🔒 blocked | — | [GAR-374](https://linear.app/chatgpt25/issue/GAR-374) |
+| [0004](0004-object-storage.md) | Object storage (S3 compatible, MinIO default) | ✅ accepted | 2026-04-21 | [GAR-374](https://linear.app/chatgpt25/issue/GAR-374) |
 | [0005](0005-identity-provider.md) | Identity Provider (BYPASSRLS role + Argon2id + HS256 + lazy upgrade) | ✅ accepted | 2026-04-13 | [GAR-375](https://linear.app/chatgpt25/issue/GAR-375) |
-| 0006 | Search strategy (Postgres FTS → Tantivy → Meilisearch) | 🔒 blocked | — | [GAR-376](https://linear.app/chatgpt25/issue/GAR-376) |
+| [0006](0006-search-strategy.md) | Search strategy (Postgres FTS → Tantivy → Meilisearch) | ✅ accepted | 2026-04-21 | [GAR-376](https://linear.app/chatgpt25/issue/GAR-376) |
 | 0007 | Desktop frontend (SvelteKit vs Solid vs HTML puro) | 🔒 blocked | — | [GAR-377](https://linear.app/chatgpt25/issue/GAR-377) |
 | 0008 | Doc collaboration (CRDT y-crdt vs OT) | 🔒 blocked | — | [GAR-378](https://linear.app/chatgpt25/issue/GAR-378) |
 
