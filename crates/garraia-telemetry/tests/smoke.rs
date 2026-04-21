@@ -40,7 +40,8 @@ fn smoke_in_memory_exporter_captures_span() {
 
 #[test]
 fn disabled_init_is_noop() {
-    let guard = garraia_telemetry::init(garraia_telemetry::TelemetryConfig::default())
-        .expect("disabled init should never fail");
+    // Plan 0026 (GAR-411 M3): `init()` no longer returns `Result` — any
+    // failure mode is logged internally and converted to an empty guard.
+    let guard = garraia_telemetry::init(garraia_telemetry::TelemetryConfig::default());
     drop(guard);
 }

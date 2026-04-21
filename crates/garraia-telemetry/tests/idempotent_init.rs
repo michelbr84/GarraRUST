@@ -43,9 +43,12 @@ fn three_inits_do_not_panic_with_default_config() {
     let _guard = lock();
     let cfg = TelemetryConfig::default(); // enabled=false, metrics_enabled=false
 
-    let g1 = init(cfg.clone()).expect("first init ok");
-    let g2 = init(cfg.clone()).expect("second init must not error");
-    let g3 = init(cfg).expect("third init must not error");
+    // Plan 0026 (GAR-411 M3): `init()` returns `Guard` directly — any
+    // internal failure is logged via `tracing::warn!` and yields an
+    // empty guard. The three calls here should all produce valid guards.
+    let g1 = init(cfg.clone());
+    let g2 = init(cfg.clone());
+    let g3 = init(cfg);
 
     // Dropping in reverse order must also be safe — each guard either owns
     // a (now idle) provider or nothing at all. None of them should double-
@@ -58,12 +61,11 @@ fn three_inits_do_not_panic_with_default_config() {
 #[test]
 fn second_init_is_a_noop_guard_when_tracer_was_disabled() {
     let _guard = lock();
-    // With tracer + metrics both disabled, both guards carry None. The
-    // assertion just proves neither call errored and the second did not
-    // spuriously allocate a tracer provider.
+    // With tracer + metrics both disabled, both guards carry None. Plan
+    // 0026 (M3): `init()` returns `Guard` directly.
     let cfg = TelemetryConfig::default();
-    let _g1 = init(cfg.clone()).expect("first init ok");
-    let _g2 = init(cfg).expect("second init must return Guard");
+    let _g1 = init(cfg.clone());
+    let _g2 = init(cfg);
 }
 
 #[test]
@@ -88,9 +90,11 @@ fn second_init_with_metrics_enabled_does_not_retry_install() {
         ..TelemetryConfig::default()
     };
 
-    let _g1 = init(cfg.clone()).expect("first init installs recorder");
-    // BEFORE fix: this line returned Err("failed to install prometheus recorder:
-    // attempted to set a recorder after the metrics system was already initialized").
-    // AFTER fix: returns Ok(empty_guard).
-    let _g2 = init(cfg).expect("second init must short-circuit, not re-attempt recorder install");
+    // Plan 0026 (M3): `init()` returns `Guard` directly. The idempotency
+    // invariant from plan 0025 (L3) still holds: if this test is the first
+    // to run in lock order, the first call installs the recorder; the
+    // second call short-circuits to an empty guard without re-attempting
+    // `install_recorder` (which would have panic'd in the pre-0025 world).
+    let _g1 = init(cfg.clone());
+    let _g2 = init(cfg);
 }

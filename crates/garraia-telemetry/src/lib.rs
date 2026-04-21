@@ -58,6 +58,20 @@ impl Drop for Guard {
 }
 
 /// Telemetry errors.
+///
+/// After plan 0026 (M3 signature change), `init()` public API no longer
+/// surfaces `Error` directly — but `TelemetryConfig::from_env()`,
+/// `tracer::init_tracer()` and `metrics::init_metrics()` continue to
+/// expose it on their `Result`. The first is called by the CLI to parse
+/// env config; the other two are part of the crate's public submodule
+/// API and could be used by future callers that want granular control
+/// over which subsystem installs.
+///
+/// CR-MEDIUM-2 from the plan 0026 review proposed rebaixar para
+/// `pub(crate)`; that was reverted when the compiler flagged the visibility
+/// cascade on `TelemetryConfig::from_env` and siblings. The type stays
+/// `pub` as a detail of the submodule APIs even though `init()` itself
+/// no longer returns it.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("telemetry init failed: {0}")]
@@ -111,35 +125,81 @@ static INIT_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// Initialize the telemetry pipeline.
 ///
-/// Fail-soft by contract: callers should treat an `Err` as "telemetry is off,
-/// keep serving traffic." The CLI wraps this in `unwrap_or_else(|e| { log; None })`.
+/// **Fail-soft contract (plan 0026 / GAR-411 M3):** this function never
+/// returns `Err`. Any internal init failure (tracer OTLP endpoint unreachable,
+/// Prometheus recorder already installed by a sibling process, validation
+/// error) is logged via `tracing::warn!` **and** duplicated to `stderr` via
+/// `eprintln!` (see F-1 from plan 0026 security audit), then converted to
+/// `None` fields on the returned `Guard`. The gateway keeps serving traffic
+/// with degraded (or absent) telemetry — the invariant of GAR-384 ("telemetry
+/// must never crash the main process") applies end-to-end without ceremony
+/// at each call site.
 ///
-/// **Idempotency (plan 0025):** subsequent calls after a successful first
+/// **Observability note (security audit F-1):** `tracing::warn!` is only
+/// visible when a `tracing_subscriber` has been installed globally. In
+/// contexts that call `init()` before the subscriber is wired (integration
+/// tests, daemon pre-fork, first-run CLI), the warn event would be silently
+/// dropped by `tracing`'s default `NoSubscriber`. The dual `eprintln!` line
+/// below ensures the failure is always observable on stderr — the worst
+/// case is that the message appears twice when a subscriber *is* configured.
+///
+/// Rationale for dropping `Result`: the 3 real callers (CLI `main.rs`, the
+/// `smoke.rs` / `idempotent_init*.rs` integration tests) all either log-and-
+/// discard the error or `.expect()` it away. Forcing each caller to spell
+/// out fail-soft boilerplate added noise and an opportunity for accidental
+/// `?`-propagation that would abort the gateway. The signature change is
+/// the M3 follow-up from the plan 0024 / 0025 security review.
+///
+/// **Idempotency (plan 0025 L3):** subsequent calls after a successful first
 /// init return an empty `Guard` (both `tracer_provider` and `metrics_handle`
 /// are `None`) and log a warning. No provider or recorder is re-installed.
-pub fn init(config: TelemetryConfig) -> Result<Guard, Error> {
+pub fn init(config: TelemetryConfig) -> Guard {
     if INIT_ONCE.get().is_some() {
         tracing::warn!(
             "garraia_telemetry::init called more than once; returning no-op guard (first call wins)"
         );
-        return Ok(Guard {
+        return Guard {
             tracer_provider: None,
             metrics_handle: None,
-        });
+        };
     }
-    let tracer_provider = tracer::init_tracer(&config)?;
-    let metrics_handle = metrics::init_metrics(&config)?;
+    let tracer_provider = match tracer::init_tracer(&config) {
+        Ok(provider) => provider,
+        Err(e) => {
+            // Dual-emit: tracing::warn! for normal operation (subscriber
+            // configured) + eprintln! for pre-subscriber contexts (daemon
+            // pre-fork, integration tests, first-run CLI before log setup).
+            // See security audit F-1 on plan 0026.
+            tracing::warn!(
+                error = %e,
+                "OTLP tracer init failed; continuing without tracing"
+            );
+            eprintln!(
+                "garraia_telemetry: OTLP tracer init failed ({e}); continuing without tracing"
+            );
+            None
+        }
+    };
+    let metrics_handle = match metrics::init_metrics(&config) {
+        Ok(handle) => handle,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Prometheus recorder init failed; continuing without metrics"
+            );
+            eprintln!(
+                "garraia_telemetry: Prometheus recorder init failed ({e}); continuing without metrics"
+            );
+            None
+        }
+    };
     // `set` returning Err means another thread won the race. This thread
-    // still ran the full install block: the tracer provider was clobbered
-    // by the winner's `global::set_tracer_provider`; the metrics recorder
-    // install above returned `Err` if the winner already installed one,
-    // bubbling up through `?` before we ever reach this line. If we reach
-    // here, installation succeeded; set the flag so subsequent *serial*
-    // callers short-circuit correctly. See `INIT_ONCE` docblock for full
-    // race semantics (plan 0025 / security audit M-A).
+    // still ran the full install block above (subject to the race semantics
+    // documented on INIT_ONCE). Either way, mark as initialized so subsequent
+    // *serial* callers short-circuit correctly.
     let _ = INIT_ONCE.set(());
-    Ok(Guard {
+    Guard {
         tracer_provider,
         metrics_handle,
-    })
+    }
 }
