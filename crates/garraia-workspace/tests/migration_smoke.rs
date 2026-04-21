@@ -1714,14 +1714,12 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     for role in &["garraia_login", "garraia_signup"] {
         for table in &["folders", "files", "file_versions"] {
             for priv_ in &["SELECT", "INSERT", "UPDATE", "DELETE"] {
-                let leaked: bool = sqlx::query_scalar(
-                    "SELECT has_table_privilege($1, $2, $3)",
-                )
-                .bind(role)
-                .bind(table)
-                .bind(priv_)
-                .fetch_one(workspace.pool())
-                .await?;
+                let leaked: bool = sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)")
+                    .bind(role)
+                    .bind(table)
+                    .bind(priv_)
+                    .fetch_one(workspace.pool())
+                    .await?;
                 assert!(
                     !leaked,
                     "{role} MUST NOT have {priv_} on {table} (privilege leak)"
@@ -1841,11 +1839,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             .fetch_one(&mut *tx)
             .await?;
         assert_eq!(fl, 0, "cenário 12: cross-group file must not leak");
-        let fv: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM file_versions WHERE file_id = $1")
-                .bind(file_b_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let fv: i64 = sqlx::query_scalar("SELECT count(*) FROM file_versions WHERE file_id = $1")
+            .bind(file_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
         assert_eq!(fv, 0, "cenário 12: cross-group file_version must not leak");
         tx.rollback().await?;
     }
@@ -1862,7 +1859,9 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .execute(workspace.pool())
     .await
     .expect_err("migration 003: compound FK must block cross-group drift on files");
-    let db_err = drift_file.as_database_error().expect("database-layer error");
+    let db_err = drift_file
+        .as_database_error()
+        .expect("database-layer error");
     assert_eq!(
         db_err.code().as_deref(),
         Some("23503"),
@@ -2021,9 +2020,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .execute(workspace.pool())
     .await
     .expect_err("migration 003: duplicate object_key must be rejected by UNIQUE");
-    let db_err = collision
-        .as_database_error()
-        .expect("database-layer error");
+    let db_err = collision.as_database_error().expect("database-layer error");
     assert_eq!(
         db_err.code().as_deref(),
         Some("23505"),
@@ -2048,9 +2045,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await
         .expect_err("migration 003: RLS WITH CHECK must block cross-group folder INSERT");
-        let db_err = blocked
-            .as_database_error()
-            .expect("database-layer error");
+        let db_err = blocked.as_database_error().expect("database-layer error");
         // 42501 = insufficient_privilege (RLS policy WITH CHECK refused).
         assert_eq!(
             db_err.code().as_deref(),
