@@ -104,7 +104,7 @@ Existem **duas superfícies `/metrics` distintas**, cada uma com seu **modo pró
 
 **Por que assim:** o listener dedicado existe *só* para scrape Prometheus — se ele não pode ser auth'd, não faz sentido subir. O main listener serve o produto inteiro — derrubar o boot por config de observabilidade seria regressão operacional. Ambos cumprem "fail-closed", mas em camadas apropriadas.
 
-**Consistência verificada:** `§B.1.4`, `§H` (acceptance criteria), `Task 4` e o integration test `non_loopback_no_auth_startup_err` referem exclusivamente o **listener dedicado**. A rota embedded é coberta por testes de runtime (401/403/503 response) no mesmo integration binary.
+**Consistência verificada:** §"File structure", §"Task 4" (dedicated listener spawn), §"Acceptance criteria" #1–#4 e o integration test `dedicated_non_loopback_no_auth_startup_err` referem exclusivamente o **listener dedicado**. A rota embedded é coberta pelo invariant #5 de "Acceptance criteria" + pelo bonus scenario em "Task 6" (runtime 503/401/403 response) no mesmo integration binary.
 
 ### Listener spawn (reference implementation em `garraia-gateway`)
 
