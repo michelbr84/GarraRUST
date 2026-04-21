@@ -18,16 +18,24 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 /// Fail-soft: any init error is logged to stderr and the gateway continues
 /// without telemetry. The returned `Option<Guard>` must be bound to a named
 /// variable that lives until end of main scope so Drop flushes exporters.
+///
+/// Plan 0024 (GAR-412) amends the return type to `(Option<Guard>, TelemetryConfig)`
+/// so the gateway can consume the same single-snapshot config used here
+/// (no second `from_env()` read in `server.rs`, per code review MEDIUM).
 #[cfg(feature = "telemetry")]
-fn init_telemetry_guard() -> Option<garraia_gateway::garraia_telemetry::Guard> {
+fn init_telemetry_guard() -> (
+    Option<garraia_gateway::garraia_telemetry::Guard>,
+    garraia_gateway::garraia_telemetry::TelemetryConfig,
+) {
     let telemetry_config =
         garraia_gateway::garraia_telemetry::TelemetryConfig::from_env().unwrap_or_default();
-    garraia_gateway::garraia_telemetry::init(telemetry_config)
+    let guard = garraia_gateway::garraia_telemetry::init(telemetry_config.clone())
         .map_err(|e| {
             eprintln!("telemetry init failed (continuing without): {e}");
             e
         })
-        .ok()
+        .ok();
+    (guard, telemetry_config)
 }
 
 #[derive(Parser)]
@@ -554,7 +562,7 @@ async fn async_main(
             // and shuts down the exporter) runs at the end of this scope.
             // Telemetry init failures must NOT prevent the gateway from starting.
             #[cfg(feature = "telemetry")]
-            let _telemetry_guard = init_telemetry_guard();
+            let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
             banner::print_banner(
                 &config.gateway.host,
                 config.gateway.port,
@@ -563,12 +571,13 @@ async fn async_main(
             );
             update::spawn_background_check();
             let server = garraia_gateway::GatewayServer::new(config);
-            // Plan 0024 (GAR-412): pipe the PrometheusHandle into the
-            // server so it can spawn the dedicated auth'd /metrics
-            // listener when telemetry is enabled.
+            // Plan 0024 (GAR-412): pipe the PrometheusHandle and
+            // TelemetryConfig into the server. One consistent snapshot
+            // flows through: no second `from_env()` read in the gateway.
             #[cfg(feature = "telemetry")]
             let server = server
-                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()));
+                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()))
+                .with_telemetry_config(Some(telemetry_config));
             server.run().await?;
         }
         Commands::Stop => {
@@ -583,7 +592,7 @@ async fn async_main(
         } => {
             init_tracing(&effective_level);
             #[cfg(feature = "telemetry")]
-            let _telemetry_guard = init_telemetry_guard();
+            let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
             try_stop_daemon(port);
             let mut config = config;
             config.gateway.host = host;
@@ -599,11 +608,12 @@ async fn async_main(
             );
             update::spawn_background_check();
             let server = garraia_gateway::GatewayServer::new(config);
-            // Plan 0024 (GAR-412): pipe the PrometheusHandle into the
-            // server for the dedicated /metrics listener (restart path).
+            // Plan 0024 (GAR-412): pipe the PrometheusHandle + TelemetryConfig
+            // into the server for the dedicated /metrics listener (restart path).
             #[cfg(feature = "telemetry")]
             let server = server
-                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()));
+                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()))
+                .with_telemetry_config(Some(telemetry_config));
             server.run().await?;
         }
         Commands::Status => {
@@ -1116,7 +1126,7 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
 
             // GAR-384: telemetry guard must outlive the server run.
             #[cfg(feature = "telemetry")]
-            let _telemetry_guard = init_telemetry_guard();
+            let (_telemetry_guard, telemetry_config_for_daemon) = init_telemetry_guard();
             // Plan 0024 (GAR-412): pass the Prometheus handle (if any) into
             // the server so it can spawn the auth'd dedicated listener.
             #[cfg(feature = "telemetry")]
@@ -1131,7 +1141,9 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
             rt.block_on(async {
                 let server = garraia_gateway::GatewayServer::new(config);
                 #[cfg(feature = "telemetry")]
-                let server = server.with_metrics_handle(metrics_handle_for_daemon);
+                let server = server
+                    .with_metrics_handle(metrics_handle_for_daemon)
+                    .with_telemetry_config(Some(telemetry_config_for_daemon));
                 if let Err(e) = server.run().await {
                     tracing::error!("gateway error: {e}");
                 }

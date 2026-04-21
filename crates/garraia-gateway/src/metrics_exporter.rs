@@ -13,10 +13,9 @@
 use std::net::SocketAddr;
 
 use axum::Router;
-use axum::body::Body;
 use axum::http::{StatusCode, header};
 use axum::middleware::from_fn_with_state;
-use axum::response::Response;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use garraia_telemetry::PrometheusHandle;
 use thiserror::Error;
@@ -84,14 +83,18 @@ pub async fn spawn_dedicated_metrics_listener(
             get(move || {
                 let handle = render_handle.clone();
                 async move {
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(
+                    // Build the response via tuple → `IntoResponse`; the
+                    // tuple form is infallible and honors regra absoluta
+                    // #4 (no `unwrap`/`expect` in production code).
+                    (
+                        StatusCode::OK,
+                        [(
                             header::CONTENT_TYPE,
                             "text/plain; version=0.0.4; charset=utf-8",
-                        )
-                        .body(Body::from(handle.render()))
-                        .expect("building a static Prometheus response cannot fail")
+                        )],
+                        handle.render(),
+                    )
+                        .into_response()
                 }
             }),
         )

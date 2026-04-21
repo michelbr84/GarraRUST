@@ -89,7 +89,7 @@ Para evitar acoplamento ruim ou dependência circular entre `garraia-telemetry` 
 | Spawn do listener dedicado em `GARRAIA_METRICS_BIND` | `garraia-gateway::server` | Boot unificado junto com o listener principal |
 | Startup fail-closed **do listener dedicado** | `garraia-gateway::server` | Mesmo crate que faz o spawn; decisão atômica |
 
-**Consequência direta:** `garraia-telemetry` fica **sem dependência de axum/hyper/tower**. O crate `garraia-gateway` já depende de `garraia-telemetry` (relação vigente); a nova direção se mantém, sem ciclo.
+**Consequência direta:** o módulo `garraia-telemetry::metrics` fica **livre de HTTP** (sem `with_http_listener`, sem `axum::serve`). O crate como um todo **já dependia** de `axum`/`tower`/`tower-http` desde GAR-384 (plan 0001) para o módulo `layers.rs` (`http_trace_layer`, `request_id_layer`, etc.) — esse uso é ortogonal ao escopo deste plano e não é introduzido aqui. O crate `garraia-gateway` já depende de `garraia-telemetry` (relação vigente); a nova direção se mantém, sem ciclo. Ver revisão do code-reviewer do PR 0024 (2026-04-21) — a claim literal "sem dependência" do draft v1 foi flexibilizada para refletir a realidade herdada do baseline.
 
 **Anti-padrão rejeitado:** fazer `garraia-telemetry` importar `garraia-gateway::metrics_auth` — criaria ciclo e poluiria a telemetria com runtime HTTP. **Anti-padrão rejeitado #2:** criar crate novo `garraia-metrics-auth` só para o middleware — scope creep desnecessário para um slice narrow de ~200-300 LoC.
 
@@ -157,7 +157,7 @@ O `server.rs` chama `spawn_dedicated_metrics_listener(...)` dentro de um `if cfg
 1. **Dev ergonomics preservado** — bind default `127.0.0.1:9464` sem token/ACL = 200 OK sem fricção.
 2. **Fail-soft do gateway principal** — erro na inicialização do metrics listener dedicado NÃO derruba o gateway; main listener sobe independente.
 3. **Fail-closed em 2 camadas (intencional)** — **listener dedicado** faz fail-closed no **startup** (não spawna quando insegura); **rota embedded** faz fail-closed em **runtime** (middleware retorna 401/403/503). Ambas são "negam acesso quando config inseguro", em camadas apropriadas a cada listener.
-4. **Sem dependência reversa** — `garraia-telemetry` **não** depende de axum/hyper/tower nem de `garraia-gateway`. Toda lógica HTTP/auth vive em `garraia-gateway`. Zero ciclo de crate.
+4. **Sem nova dependência reversa** — `garraia-telemetry` **não depende de `garraia-gateway`** e este plano não adiciona nenhuma dependência HTTP nova no crate de telemetria. O uso pré-existente de `axum`/`tower`/`tower-http` em `layers.rs` (herdado de GAR-384 / plan 0001, escopo ortogonal) permanece intocado. Zero ciclo de crate entre `telemetry` ↔ `gateway`.
 5. **Timing-safe token comparison** — `subtle::ConstantTimeEq`, não `==` em `&[u8]`.
 6. **Reuso total de CIDR logic** — `rate_limiter::parse_trusted_proxies` (pub desde plan 0022); zero nova lógica CIDR.
 7. **Zero mudança observável no gateway principal** — `AppState`, `SharedState`, rotas `/v1/*`, `/admin/*`, `/auth/*` não tocadas (exceto por `SharedState.metrics_auth_cfg: Arc<MetricsAuthConfig>` adicional, opacamente aplicado à rota `/metrics`).
@@ -315,7 +315,7 @@ O `server.rs` chama `spawn_dedicated_metrics_listener(...)` dentro de um `if cfg
 3. **Listener dedicado**: retorna **200** em deploy default (`127.0.0.1:9464`, sem token/ACL) — dev ergonomics preservado.
 4. **Listener dedicado**: `spawn_dedicated_metrics_listener` retorna **`Err(MetricsExporterError::AuthNotConfigured)`** quando bind não-loopback + auth não configurada; **nenhum socket é aberto**; gateway principal continua saudável (fail-soft).
 5. **Rota embedded `/metrics`** do main listener: o main gateway **sobe normalmente** com config insegura; requests não-loopback sem auth recebem **503 em runtime** via middleware; com auth configurada, 401/403/200 aplicam-se simétricos ao listener dedicado.
-6. Nenhum ciclo de dependência: `garraia-telemetry` continua sem axum/hyper/tower (`cargo check -p garraia-telemetry --no-default-features` passa).
+6. Nenhum ciclo de dependência entre `garraia-telemetry` ↔ `garraia-gateway`. Este plano **não adiciona** dependência HTTP nova em `garraia-telemetry` — o uso pré-existente de `axum`/`tower`/`tower-http` em `layers.rs` (herdado de GAR-384) é ortogonal e fica intocado. O módulo `metrics.rs` em particular deixa de usar `with_http_listener`.
 7. `cargo fmt --check --all` clean.
 8. `cargo clippy --workspace --no-deps --tests -- -D warnings` clean.
 9. `cargo test -p garraia-telemetry` + `cargo test -p garraia-gateway --lib` + `cargo test -p garraia-gateway --features test-helpers --test metrics_auth_integration` PASS.

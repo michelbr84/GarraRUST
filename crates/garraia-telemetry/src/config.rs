@@ -156,6 +156,11 @@ mod tests {
     use super::*;
 
     // Single sequential test function — avoids env-var races across parallel tests.
+    // All `unsafe { set_var / remove_var }` blocks below are required by Rust
+    // edition 2024: `std::env::set_var` / `std::env::remove_var` are now `unsafe`
+    // because they are not thread-safe. Keeping every mutation inside one
+    // `#[test]` function means the test is single-threaded by construction,
+    // satisfying the safety contract.
     #[test]
     fn env_loading_and_validation() {
         // Use unique prefix-scoped vars by temporarily setting and removing.

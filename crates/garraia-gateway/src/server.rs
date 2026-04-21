@@ -28,6 +28,13 @@ pub struct GatewayServer {
     /// `None`, only the embedded main-listener route is active.
     #[cfg(feature = "telemetry")]
     metrics_handle: Option<garraia_telemetry::PrometheusHandle>,
+    /// Plan 0024 (GAR-412): telemetry config loaded by the CLI
+    /// alongside `garraia_telemetry::init()`. Passed in rather than
+    /// re-read here (code review MEDIUM) so the auth config for
+    /// `/metrics` and the tracing config come from one consistent
+    /// snapshot of the environment.
+    #[cfg(feature = "telemetry")]
+    telemetry_config: Option<garraia_telemetry::TelemetryConfig>,
 }
 
 impl GatewayServer {
@@ -36,6 +43,8 @@ impl GatewayServer {
             config,
             #[cfg(feature = "telemetry")]
             metrics_handle: None,
+            #[cfg(feature = "telemetry")]
+            telemetry_config: None,
         }
     }
 
@@ -48,6 +57,19 @@ impl GatewayServer {
         handle: Option<garraia_telemetry::PrometheusHandle>,
     ) -> Self {
         self.metrics_handle = handle;
+        self
+    }
+
+    /// Plan 0024 (GAR-412): attach the `TelemetryConfig` the CLI
+    /// already loaded. Avoids a second `TelemetryConfig::from_env()`
+    /// call inside `run()` and the transient env-var inconsistency
+    /// that pattern would introduce (code review MEDIUM).
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry_config(
+        mut self,
+        cfg: Option<garraia_telemetry::TelemetryConfig>,
+    ) -> Self {
+        self.telemetry_config = cfg;
         self
     }
 
@@ -328,63 +350,63 @@ impl GatewayServer {
             state.mcp_manager_arc = Some(Arc::clone(arc));
         }
 
-        // Plan 0024 (GAR-412): build the metrics auth config from env vars
-        // and attach it to state so the embedded /metrics route picks it up.
-        // Spawn the dedicated /metrics listener (startup fail-closed) when
-        // telemetry is on AND a Prometheus handle was wired through from
-        // the CLI. Any failure here is logged and swallowed — the gateway
-        // main listener stays healthy (fail-soft invariant of GAR-384).
+        // Plan 0024 (GAR-412): build the metrics auth config from the
+        // TelemetryConfig the CLI already loaded (single snapshot —
+        // no second `from_env()` call here per code-review MEDIUM) and
+        // attach it to state so the embedded /metrics route picks it up.
+        // Spawn the dedicated /metrics listener (startup fail-closed)
+        // when telemetry is on AND a Prometheus handle was wired through
+        // from the CLI. Any failure here is logged and swallowed — the
+        // gateway main listener stays healthy (fail-soft invariant of GAR-384).
         #[cfg(feature = "telemetry")]
-        {
-            match garraia_telemetry::TelemetryConfig::from_env() {
-                Ok(tcfg) => {
-                    let auth_cfg = crate::metrics_auth::MetricsAuthConfig::from_telemetry_raw(
-                        tcfg.metrics_token.as_deref(),
-                        &tcfg.metrics_allowlist,
-                    );
-                    info!(
-                        mode = auth_cfg.describe_mode(),
-                        "metrics auth configured for embedded /metrics route"
-                    );
-                    state.set_metrics_auth_cfg(auth_cfg.clone());
+        if let Some(tcfg) = self.telemetry_config.as_ref() {
+            let auth_cfg = crate::metrics_auth::MetricsAuthConfig::from_telemetry_raw(
+                tcfg.metrics_token.as_deref(),
+                &tcfg.metrics_allowlist,
+            );
+            info!(
+                mode = auth_cfg.describe_mode(),
+                "metrics auth configured for embedded /metrics route"
+            );
+            state.set_metrics_auth_cfg(auth_cfg.clone());
 
-                    if tcfg.metrics_enabled {
-                        if let Some(handle) = self.metrics_handle.clone() {
-                            match tcfg.metrics_bind.parse::<std::net::SocketAddr>() {
-                                Ok(bind) => {
-                                    match crate::metrics_exporter::spawn_dedicated_metrics_listener(
-                                        auth_cfg, bind, handle,
-                                    )
-                                    .await
-                                    {
-                                        Ok(addr) => info!(
-                                            addr = %addr,
-                                            "dedicated /metrics listener spawned (plan 0024)"
-                                        ),
-                                        Err(e) => warn!(
-                                            error = %e,
-                                            "dedicated /metrics listener disabled; gateway continues"
-                                        ),
-                                    }
-                                }
+            if tcfg.metrics_enabled {
+                if let Some(handle) = self.metrics_handle.clone() {
+                    match tcfg.metrics_bind.parse::<std::net::SocketAddr>() {
+                        Ok(bind) => {
+                            match crate::metrics_exporter::spawn_dedicated_metrics_listener(
+                                auth_cfg, bind, handle,
+                            )
+                            .await
+                            {
+                                Ok(addr) => info!(
+                                    addr = %addr,
+                                    "dedicated /metrics listener spawned (plan 0024)"
+                                ),
                                 Err(e) => warn!(
-                                    bind = %tcfg.metrics_bind,
                                     error = %e,
-                                    "invalid GARRAIA_METRICS_BIND; dedicated listener disabled"
+                                    "dedicated /metrics listener disabled; gateway continues"
                                 ),
                             }
-                        } else {
-                            warn!(
-                                "metrics enabled but no PrometheusHandle wired; skipping dedicated listener"
-                            );
                         }
+                        Err(e) => warn!(
+                            bind = %tcfg.metrics_bind,
+                            error = %e,
+                            "invalid GARRAIA_METRICS_BIND; dedicated listener disabled"
+                        ),
                     }
+                } else {
+                    warn!(
+                        "metrics enabled but no PrometheusHandle wired; skipping dedicated listener"
+                    );
                 }
-                Err(e) => warn!(
-                    error = %e,
-                    "failed to load TelemetryConfig; metrics auth using defaults"
-                ),
             }
+        } else {
+            // `telemetry_config` is `None` only when the CLI didn't wire
+            // it through (future test harness, edge configs). Embedded
+            // `/metrics` keeps the loopback-only default on `AppState`.
+            #[cfg(feature = "telemetry")]
+            info!("no TelemetryConfig wired into GatewayServer; metrics auth defaults used");
         }
 
         // Initialize health cache before wrapping state in Arc

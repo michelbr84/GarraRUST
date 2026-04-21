@@ -140,6 +140,14 @@ async fn allowlist_match_ok() {
 }
 
 // ─── Scenario 6 — dedicated, allowlist miss: 403 ────────────────────────────
+//
+// Premise (code-review LOW note): the listener binds on `0.0.0.0:0` — every
+// interface, OS-assigned port — and the test's reqwest client connects via
+// `127.0.0.1:<port>`, so the peer IP that `ConnectInfo` observes inside the
+// middleware is `127.0.0.1`. The allowlist is `10.0.0.0/8`, which does NOT
+// include the loopback range, so the middleware returns 403. If a future
+// test environment forced the client to use another interface, this
+// assertion still holds as long as the peer IP is outside `10/8`.
 
 #[tokio::test(flavor = "multi_thread")]
 async fn allowlist_miss_403() {

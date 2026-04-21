@@ -28,11 +28,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
+use ring::digest::{SHA256, digest};
 use subtle::ConstantTimeEq;
+use tracing::warn;
 
 use crate::rate_limiter::parse_trusted_proxies;
 
@@ -133,8 +135,22 @@ pub async fn metrics_auth_layer(
 
     // (b) Allowlist (when configured): peer must match or we 403.
     if !cfg.allowlist.is_empty() {
-        let ok = peer_ip.is_some_and(|ip| cfg.allowlist.iter().any(|net| net.contains(&ip)));
-        if !ok {
+        // Code-review MEDIUM: if `ConnectInfo` was not populated (e.g. the
+        // middleware is reused over a Unix socket or a synthetic test
+        // request without the extension), `peer_ip` is `None`. Returning
+        // 403 would be misleading — we can't evaluate the allowlist. Log
+        // + 503 so operators can distinguish "wrong peer" from "peer
+        // unavailable". Both `/metrics` surfaces today are wired with
+        // `into_make_service_with_connect_info`, so this path is
+        // defensive.
+        let Some(ip) = peer_ip else {
+            warn!("metrics_auth_layer: peer address unavailable (no ConnectInfo)");
+            return deny(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "metrics: peer address unavailable",
+            );
+        };
+        if !cfg.allowlist.iter().any(|net| net.contains(&ip)) {
             return deny(StatusCode::FORBIDDEN, "metrics: peer not allowed");
         }
     }
@@ -142,10 +158,10 @@ pub async fn metrics_auth_layer(
     // (c) Token (when configured): Authorization: Bearer <token> required.
     if let Some(expected) = cfg.token.as_deref() {
         match extract_bearer(&headers) {
-            Some(got) if got.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1 => {
+            Some(got) if constant_time_token_eq(got.as_bytes(), expected.as_bytes()) => {
                 // authorized, fall through
             }
-            _ => return deny(StatusCode::UNAUTHORIZED, "metrics: invalid token"),
+            _ => return deny_unauthorized("metrics: invalid token"),
         }
     } else if cfg.allowlist.is_empty() && !is_loopback {
         // Safety net — the dedicated listener's startup check should
@@ -162,6 +178,34 @@ pub async fn metrics_auth_layer(
 
 fn deny(status: StatusCode, body: &'static str) -> Response {
     (status, body).into_response()
+}
+
+/// RFC 7235 §4.1 requires `WWW-Authenticate` on 401 so clients (and
+/// Prometheus scrapers) know to retry with a Bearer token. The header
+/// value is a constant — no secret leaks into the response.
+fn deny_unauthorized(body: &'static str) -> Response {
+    let mut resp = (StatusCode::UNAUTHORIZED, body).into_response();
+    resp.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static(r#"Bearer realm="metrics""#),
+    );
+    resp
+}
+
+/// Compare two byte slices for equality in a way that is constant-time
+/// with respect to **both** the content and the input lengths.
+///
+/// `subtle::ConstantTimeEq::ct_eq` on raw `[u8]` returns `Choice::zero()`
+/// immediately when the slices have different lengths — that early-exit
+/// exposes a length oracle to callers who can measure response timing
+/// (security audit M-1, plan 0024 review). Hashing both inputs to a
+/// fixed-size SHA-256 digest and `ct_eq`'ing the digests removes the
+/// length dependency entirely; the cost (two SHA-256 of <64 bytes) is
+/// in the noise compared to the HTTP round trip.
+fn constant_time_token_eq(a: &[u8], b: &[u8]) -> bool {
+    let a_hash = digest(&SHA256, a);
+    let b_hash = digest(&SHA256, b);
+    a_hash.as_ref().ct_eq(b_hash.as_ref()).unwrap_u8() == 1
 }
 
 /// Extract a bearer token from an `Authorization` header. Case-sensitive
@@ -279,6 +323,66 @@ mod tests {
         let (status, body) = oneshot_status(router(cfg), req).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(body.contains("invalid token"));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_carries_www_authenticate_header() {
+        // Security audit M-2: 401 must carry `WWW-Authenticate` (RFC 7235 §4.1).
+        let cfg = MetricsAuthConfig::from_telemetry_raw(Some("dev-token"), &[]);
+        let req = request_with_peer(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), Some("WRONG"));
+        let resp = router(cfg).oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let wa = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("WWW-Authenticate must be set on 401");
+        assert_eq!(wa.to_str().unwrap(), r#"Bearer realm="metrics""#);
+    }
+
+    #[tokio::test]
+    async fn different_length_token_is_still_rejected() {
+        // Security audit M-1 regression guard: tokens of different lengths
+        // must be rejected without panicking or early-returning. The
+        // hash-based compare in `constant_time_token_eq` handles any
+        // length pair safely.
+        let cfg = MetricsAuthConfig::from_telemetry_raw(Some("short"), &[]);
+        let req = request_with_peer(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
+            Some("a-much-longer-token-that-would-panic-on-naive-ct_eq"),
+        );
+        let (status, _) = oneshot_status(router(cfg), req).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn allowlist_configured_but_peer_missing_returns_503() {
+        // Code-review MEDIUM: when ConnectInfo is absent, we cannot
+        // evaluate the allowlist — return 503 with a clear body instead
+        // of 403 ("peer not allowed"), which would mislead the operator.
+        let cfg = MetricsAuthConfig::from_telemetry_raw(None, &["10.0.0.0/8".to_string()]);
+        // Do NOT insert ConnectInfo → peer_ip = None inside the middleware.
+        let req = HttpRequest::builder()
+            .uri("/metrics")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = oneshot_status(router(cfg), req).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            body.contains("peer address unavailable"),
+            "expected clear error body, got: {body}"
+        );
+    }
+
+    #[test]
+    fn constant_time_token_eq_handles_any_length() {
+        // Sanity: equal bytes return true; unequal return false. Any
+        // length combination is safe (no panic, no early-exit).
+        assert!(constant_time_token_eq(b"abc", b"abc"));
+        assert!(!constant_time_token_eq(b"abc", b"abd"));
+        assert!(!constant_time_token_eq(b"a", b"aaaaaaaaaaaaaaa"));
+        assert!(!constant_time_token_eq(b"", b"nonempty"));
+        assert!(constant_time_token_eq(b"", b""));
     }
 
     #[tokio::test]
