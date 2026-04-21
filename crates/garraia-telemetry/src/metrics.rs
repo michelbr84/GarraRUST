@@ -1,6 +1,10 @@
-//! Prometheus metrics exporter + baseline metric helpers.
-
-use std::net::SocketAddr;
+//! Prometheus metrics recorder + baseline metric helpers.
+//!
+//! Plan 0024 (GAR-412): this module installs the Prometheus *recorder*
+//! only — it no longer binds an HTTP listener. Serving `/metrics` over
+//! HTTP is the gateway's responsibility (`garraia-gateway::metrics_exporter`),
+//! which owns the auth middleware and startup fail-closed check.
+//! Telemetry stays decoupled from Axum/Tower at the metrics level.
 
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -12,20 +16,18 @@ pub const METRIC_HTTP_LATENCY_SECONDS: &str = "garraia_http_latency_seconds";
 pub const METRIC_ERRORS_TOTAL: &str = "garraia_errors_total";
 pub const METRIC_ACTIVE_SESSIONS: &str = "garraia_active_sessions";
 
+/// Install the global Prometheus recorder and return its handle.
+///
+/// Returns `Ok(None)` when `metrics_enabled` is false (fail-soft — the
+/// gateway still boots). The handle is `Clone`, so callers can share it
+/// between the dedicated listener and any future render site without
+/// re-installing the global recorder.
 pub fn init_metrics(config: &TelemetryConfig) -> Result<Option<PrometheusHandle>, Error> {
     if !config.metrics_enabled {
         return Ok(None);
     }
 
-    let addr: SocketAddr = config.metrics_bind.parse().map_err(|e| {
-        Error::Init(format!(
-            "invalid metrics_bind '{}': {e}",
-            config.metrics_bind
-        ))
-    })?;
-
     let handle = PrometheusBuilder::new()
-        .with_http_listener(addr)
         .install_recorder()
         .map_err(|e| Error::Init(format!("failed to install prometheus recorder: {e}")))?;
 

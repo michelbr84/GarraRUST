@@ -29,7 +29,9 @@
 | `GARRAIA_OTEL_SERVICE_NAME` | `garraia-gateway` | Service name shown in Jaeger |
 | `GARRAIA_OTEL_SAMPLE_RATIO` | `1.0` | Fraction of traces to sample (0.0–1.0) |
 | `GARRAIA_METRICS_ENABLED` | `false` | Enable Prometheus metrics scrape endpoint |
-| `GARRAIA_METRICS_BIND` | `127.0.0.1:9464` | Socket address for `/metrics` |
+| `GARRAIA_METRICS_BIND` | `127.0.0.1:9464` | Socket address for the dedicated `/metrics` listener |
+| `GARRAIA_METRICS_TOKEN` | *(unset)* | Bearer token required on `/metrics` (plan 0024 / GAR-412) |
+| `GARRAIA_METRICS_ALLOW` | *(unset)* | Comma-separated CIDR allowlist for `/metrics` peers (plan 0024 / GAR-412) |
 
 ### .env example
 
@@ -158,7 +160,42 @@ garraia_telemetry::inc_errors(kind);
 garraia_telemetry::set_active_sessions(n);
 ```
 
-The `/metrics` endpoint binds to `127.0.0.1` only. To expose it to a remote Prometheus scraper, set `GARRAIA_METRICS_BIND` explicitly (e.g., `0.0.0.0:9464`) and ensure the network is appropriately restricted.
+The `/metrics` endpoint binds to `127.0.0.1` only by default. To expose it to a remote Prometheus scraper, set `GARRAIA_METRICS_BIND` explicitly (e.g., `0.0.0.0:9464`) **and** configure either `GARRAIA_METRICS_TOKEN` or `GARRAIA_METRICS_ALLOW` per §6.1 below. Without one of those the dedicated listener refuses to spawn (fail-closed startup) and the embedded route returns `503` for every non-loopback caller.
+
+## 6.1 Security (plan 0024 / GAR-412)
+
+The gateway exposes `/metrics` on two surfaces:
+
+- **Dedicated listener** — spawned when `GARRAIA_METRICS_ENABLED=true`. Serves `handle.render()` from the globally-installed `metrics-exporter-prometheus` recorder. Bound to `GARRAIA_METRICS_BIND` (default `127.0.0.1:9464`).
+- **Embedded route** — `GET /metrics` on the main gateway listener (port `3888` by default). Serves the legacy `observability::Metrics` snapshot — always on, always behind the same auth middleware.
+
+Both surfaces share one `metrics_auth_layer` (crate `garraia-gateway::metrics_auth`). The middleware enforces the following matrix:
+
+| Peer | Token configured | Allowlist configured | Outcome |
+|---|---|---|---|
+| loopback (`127.0.0.1`, `::1`) | no | empty | **200** — dev ergonomics |
+| loopback | yes | — | **200** only with `Authorization: Bearer <token>`; otherwise **401** |
+| loopback | no | configured | **200** when loopback is in the allowlist; otherwise **403** |
+| non-loopback | no | empty | **503** (`metrics: auth not configured`) — safety net |
+| non-loopback | yes | — | **200** only with correct token; otherwise **401** |
+| non-loopback | — | configured | **200** only when peer IP ∈ allowlist; otherwise **403** |
+
+**Fail-closed semantics — 2 listeners, 2 layers (intentional):**
+
+- **Dedicated listener** fails closed at **startup**: if `GARRAIA_METRICS_ENABLED=true` **and** the bind is non-loopback **and** neither token nor allowlist is configured, `spawn_dedicated_metrics_listener` returns `Err(MetricsExporterError::AuthNotConfigured)` and no socket is opened. The gateway main listener stays healthy — telemetry is fail-soft by GAR-384 contract.
+- **Embedded route** fails closed at **runtime**: the main listener always binds (it serves `/v1/*`, `/admin/*`, `/auth/*`, `/ws`) but the middleware returns `503`/`401`/`403` for any caller that doesn't satisfy the matrix above.
+
+**Deploy recommendations:**
+
+| Scenario | Recommended config |
+|---|---|
+| Local dev | *(leave unset)* — loopback-only defaults |
+| Prometheus scraper on same host | `GARRAIA_METRICS_BIND=127.0.0.1:9464` (no auth needed) |
+| Scraper behind VPN / private LAN | `GARRAIA_METRICS_BIND=0.0.0.0:9464` + `GARRAIA_METRICS_ALLOW=10.0.0.0/8,192.168.0.0/16` |
+| Scraper with internet path | `GARRAIA_METRICS_BIND=0.0.0.0:9464` + `GARRAIA_METRICS_TOKEN=<random hex>` (and TLS terminator in front) |
+| Escape hatch for a legacy scraper | `GARRAIA_METRICS_ALLOW=0.0.0.0/0` — explicit opt-in to the pre-0024 behavior |
+
+**Secret hygiene:** `GARRAIA_METRICS_TOKEN` is redacted in `TelemetryConfig`'s `Debug` impl. It is listed alongside `GARRAIA_JWT_SECRET` in `CLAUDE.md` regra #6 — never log its value, never commit it to configs.
 
 ---
 
@@ -179,7 +216,19 @@ Check that `GARRAIA_OTEL_ENABLED=true` is set. Verify the OTLP endpoint is reach
 The gateway continues without telemetry and logs the underlying error to stderr. Fix the configuration error and restart. The process does not abort.
 
 **/metrics returns 404:**
-`GARRAIA_METRICS_ENABLED=true` is required. Also confirm you are hitting `127.0.0.1:9464` and not `0.0.0.0:9464` — the listener binds to loopback by default.
+`GARRAIA_METRICS_ENABLED=true` is required for the **dedicated** listener on `GARRAIA_METRICS_BIND`. The **embedded** `/metrics` route on the main listener (port `3888` by default) is always registered. Also confirm you are hitting `127.0.0.1:9464` and not `0.0.0.0:9464` — the dedicated listener binds to loopback by default.
+
+**/metrics returns 401 (`metrics: invalid token`):**
+`GARRAIA_METRICS_TOKEN` is configured on the gateway side and the request is missing `Authorization: Bearer <token>` or the value does not match. Fix the scraper config.
+
+**/metrics returns 403 (`metrics: peer not allowed`):**
+`GARRAIA_METRICS_ALLOW` is configured and the peer IP (the immediate TCP peer — not `X-Forwarded-For`) is not inside any CIDR on the allowlist. Add the scraper's IP or broaden the CIDR.
+
+**/metrics returns 503 (`metrics: auth not configured`):**
+The main listener is serving the embedded route but the peer is non-loopback and neither token nor allowlist is configured. Set one of `GARRAIA_METRICS_TOKEN` or `GARRAIA_METRICS_ALLOW` and restart, or proxy the scrape through loopback.
+
+**Dedicated metrics subsystem refused to start (`metrics auth not configured for non-loopback bind; listener disabled`):**
+`GARRAIA_METRICS_BIND` is non-loopback and neither `GARRAIA_METRICS_TOKEN` nor `GARRAIA_METRICS_ALLOW` is set — plan 0024's startup fail-closed check refuses to expose unauth'd metrics. Configure one and restart. The gateway main listener is unaffected.
 
 ---
 

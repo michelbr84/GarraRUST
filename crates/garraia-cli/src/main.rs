@@ -563,6 +563,12 @@ async fn async_main(
             );
             update::spawn_background_check();
             let server = garraia_gateway::GatewayServer::new(config);
+            // Plan 0024 (GAR-412): pipe the PrometheusHandle into the
+            // server so it can spawn the dedicated auth'd /metrics
+            // listener when telemetry is enabled.
+            #[cfg(feature = "telemetry")]
+            let server = server
+                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()));
             server.run().await?;
         }
         Commands::Stop => {
@@ -593,6 +599,11 @@ async fn async_main(
             );
             update::spawn_background_check();
             let server = garraia_gateway::GatewayServer::new(config);
+            // Plan 0024 (GAR-412): pipe the PrometheusHandle into the
+            // server for the dedicated /metrics listener (restart path).
+            #[cfg(feature = "telemetry")]
+            let server = server
+                .with_metrics_handle(_telemetry_guard.as_ref().and_then(|g| g.metrics_handle()));
             server.run().await?;
         }
         Commands::Status => {
@@ -1106,6 +1117,11 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
             // GAR-384: telemetry guard must outlive the server run.
             #[cfg(feature = "telemetry")]
             let _telemetry_guard = init_telemetry_guard();
+            // Plan 0024 (GAR-412): pass the Prometheus handle (if any) into
+            // the server so it can spawn the auth'd dedicated listener.
+            #[cfg(feature = "telemetry")]
+            let metrics_handle_for_daemon =
+                _telemetry_guard.as_ref().and_then(|g| g.metrics_handle());
 
             // Build a fresh tokio runtime in the daemon child process.
             // This is safe because daemonization happened before any runtime
@@ -1114,6 +1130,8 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
                 .context("failed to create tokio runtime in daemon")?;
             rt.block_on(async {
                 let server = garraia_gateway::GatewayServer::new(config);
+                #[cfg(feature = "telemetry")]
+                let server = server.with_metrics_handle(metrics_handle_for_daemon);
                 if let Err(e) = server.run().await {
                     tracing::error!("gateway error: {e}");
                 }

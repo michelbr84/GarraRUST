@@ -17,6 +17,8 @@ pub mod mcp;
 pub mod mcp_commands;
 pub mod mcp_marketplace;
 pub mod memory_handler;
+pub mod metrics_auth;
+pub mod metrics_exporter;
 pub mod mobile_auth;
 pub mod mobile_chat;
 pub mod oauth;

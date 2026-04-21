@@ -148,7 +148,7 @@ benches/
 3. **NUNCA** force push para `main`
 4. **NUNCA** usar `unwrap()` em código de produção (apenas em testes)
 5. **NUNCA** concatenar strings em SQL queries — `params!` (rusqlite) ou `sqlx::query!` (Postgres)
-6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`, etc.)
+6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`, `ANTHROPIC_API_KEY`, etc.)
 7. **NUNCA** ignorar erros de compilação do `cargo check`
 8. **SEMPRE** escrever ADR em `docs/adr/NNNN-*.md` antes de decisão arquitetural irreversível (Postgres vs SQLite, vector store, storage backend, etc.) — ver `ROADMAP.md` §3.1
 9. **SEMPRE** migrations Postgres forward-only (colunas novas → backfill → NOT NULL depois)
