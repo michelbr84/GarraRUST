@@ -59,11 +59,13 @@ crates/
   garraia-config/     — schema unificado de config (serde + validator + notify)
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
-                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c).
-                        25 tabelas em 9 migrations, 18 sob FORCE RLS, 7 tenant-root
+                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
+                        + GAR-387). 28 tabelas em 13 migrations, 21 sob FORCE RLS, 7 tenant-root
                         sob app-layer:
                         • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
                         • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
+                        • 003 folders/files/file_versions (GAR-387) — compound FK + object_key UNIQUE
+                              + HMAC integrity + FORCE RLS com WITH CHECK explícito
                         • 004 chats/chat_members/messages (FTS) /message_threads com compound FK
                         • 005 memory_items/memory_embeddings (pgvector HNSW cosine)
                         • 006 tasks Tier 1 Notion-like (8 tabelas com RLS embedded + subtasks)
@@ -72,9 +74,10 @@ crates/
                         • 009 user_identities.hash_upgraded_at (GAR-391b prereq, plan 0011.5)
                         • 010 garraia_signup NOLOGIN BYPASSRLS + GRANT SELECT ON sessions/group_members
                               TO garraia_login (GAR-391c, Gaps A+B+C closed)
-                        Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004).
+                        • 011 group_invites pending UNIQUE, 012 single-owner idx active-only,
+                          013 audit_events WITH CHECK explícito (padrão seguido por 003).
                         Handle PII-safe via skip(config) + custom Debug redaction.
-                        Decisão: docs/adr/0003-database-for-workspace.md.
+                        Decisão: docs/adr/0003-database-for-workspace.md + 0004-object-storage.md.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
   garraia-media/      — processamento de PDF, imagens, mídia

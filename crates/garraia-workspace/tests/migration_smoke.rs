@@ -627,8 +627,9 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         Ok(tx)
     }
 
-    // Metadata check: all 18 tables must have relforcerowsecurity = true.
-    // 10 from migration 007 + 8 from migration 006 (tasks Tier 1).
+    // Metadata check: all 21 tables must have relforcerowsecurity = true.
+    // 10 from migration 007 + 8 from migration 006 (tasks Tier 1) +
+    // 3 from migration 003 (files/folders, GAR-387).
     // Complements Cenário 4 (empirical FORCE proof) with a direct pg_class
     // query — two orthogonal evidence paths.
     let forced_tables: Vec<(String,)> = sqlx::query_as(
@@ -639,15 +640,16 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
                          'sessions','api_keys','user_identities',\
                          'task_lists','tasks','task_assignees','task_labels',\
                          'task_label_assignments','task_comments',\
-                         'task_subscriptions','task_activity') \
+                         'task_subscriptions','task_activity',\
+                         'folders','files','file_versions') \
          ORDER BY relname",
     )
     .fetch_all(workspace.pool())
     .await?;
     assert_eq!(
         forced_tables.len(),
-        18,
-        "expected all 18 tenant-scoped tables to have FORCE RLS (10 from migration 007 + 8 from migration 006), got: {forced_tables:?}"
+        21,
+        "expected all 21 tenant-scoped tables to have FORCE RLS (10 from migration 007 + 8 from migration 006 + 3 from migration 003), got: {forced_tables:?}"
     );
 
     // Migration 006 tables exist.
@@ -832,8 +834,9 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // breaks one table's NULLIF would now surface immediately.
     {
         let mut tx = rls_scope(workspace.pool(), None, None).await?;
-        // All 18 tenant-scoped tables must fail closed when app.current_*_id
-        // is unset: 10 from migration 007 + 8 from migration 006.
+        // All 21 tenant-scoped tables must fail closed when app.current_*_id
+        // is unset: 10 from migration 007 + 8 from migration 006 +
+        // 3 from migration 003 (GAR-387 files/folders).
         // JOIN-class tables (chat_members, message_threads, task_assignees,
         // task_label_assignments, task_comments, task_subscriptions,
         // memory_embeddings) are implicitly covered via their recursive
@@ -865,6 +868,10 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             "task_comments",
             "task_subscriptions",
             "task_activity",
+            // migration 003 (3)
+            "folders",
+            "files",
+            "file_versions",
         ] {
             let sql = format!("SELECT count(*) FROM {table}");
             let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut *tx).await?;
@@ -1609,6 +1616,483 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     assert!(
         !signup_members_leaked,
         "garraia_signup MUST NOT have SELECT on group_members"
+    );
+
+    // ─── Migration 003 validation (GAR-387: folders, files, file_versions) ──
+    //
+    // Three new tenant-scoped tables under FORCE RLS with direct policies on
+    // a denormalized group_id column. Compound FK (folder_id, group_id) and
+    // (file_id, group_id) prevent cross-tenant drift at the DB layer.
+
+    // ── 003.1: tables exist ────────────────────────────────────────────────
+    for expected in &["folders", "files", "file_versions"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1 \
+             )",
+        )
+        .bind(expected)
+        .fetch_one(workspace.pool())
+        .await?;
+        assert!(exists, "missing table from migration 003: {expected}");
+    }
+
+    // ── 003.2: critical indexes exist ──────────────────────────────────────
+    let m003_indexes: Vec<(String,)> =
+        sqlx::query_as("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
+            .fetch_all(workspace.pool())
+            .await?;
+    let m003_index_names: Vec<&str> = m003_indexes.iter().map(|(n,)| n.as_str()).collect();
+    for expected in &[
+        "folders_group_parent_idx",
+        "folders_parent_idx",
+        "folders_unique_name_per_parent_idx",
+        "files_group_folder_idx",
+        "files_group_created_idx",
+        "files_folder_idx",
+        "file_versions_file_idx",
+        "file_versions_group_created_idx",
+    ] {
+        assert!(
+            m003_index_names.contains(expected),
+            "missing index from migration 003: {expected}"
+        );
+    }
+
+    // ── 003.3: policies exist AND have explicit WITH CHECK (migration 013 pattern)
+    //
+    // Any policy with qual <> with_check would be a regression: without
+    // explicit WITH CHECK, a future conversion to AS RESTRICTIVE makes the
+    // write-guard silently TRUE. Assert the two predicates are identical
+    // for each of the 3 new policies.
+    let policy_rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT tablename::text, policyname::text, qual::text, with_check::text \
+         FROM pg_policies \
+         WHERE schemaname = 'public' \
+           AND tablename IN ('folders','files','file_versions') \
+         ORDER BY tablename, policyname",
+    )
+    .fetch_all(workspace.pool())
+    .await?;
+    assert_eq!(
+        policy_rows.len(),
+        3,
+        "expected exactly 3 policies on migration 003 tables (one per table), got: {policy_rows:?}"
+    );
+    for (table, policy, qual, with_check) in &policy_rows {
+        assert!(
+            qual.is_some() && with_check.is_some(),
+            "migration 003 policy {policy} on {table} must have both USING and WITH CHECK"
+        );
+        assert_eq!(
+            qual, with_check,
+            "migration 003 policy {policy} on {table} must have identical USING and WITH CHECK (migration 013 pattern); qual={qual:?}, with_check={with_check:?}"
+        );
+    }
+
+    // ── 003.4: garraia_app grants ──────────────────────────────────────────
+    for table in &["folders", "files", "file_versions"] {
+        let granted: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege('garraia_app', $1, 'SELECT, INSERT, UPDATE, DELETE')",
+        )
+        .bind(table)
+        .fetch_one(workspace.pool())
+        .await?;
+        assert!(
+            granted,
+            "garraia_app must have SELECT/INSERT/UPDATE/DELETE on {table}"
+        );
+    }
+
+    // ── 003.4b: garraia_login and garraia_signup MUST NOT have access ──────
+    //
+    // Regression guard — neither role needs to touch file metadata.
+    // Migration 003 only grants to garraia_app. Any future migration that
+    // widens default privileges or accidentally grants to login/signup
+    // would surface here. Security review SEC-M-2 / code review I-3.
+    for role in &["garraia_login", "garraia_signup"] {
+        for table in &["folders", "files", "file_versions"] {
+            for priv_ in &["SELECT", "INSERT", "UPDATE", "DELETE"] {
+                let leaked: bool = sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)")
+                    .bind(role)
+                    .bind(table)
+                    .bind(priv_)
+                    .fetch_one(workspace.pool())
+                    .await?;
+                assert!(
+                    !leaked,
+                    "{role} MUST NOT have {priv_} on {table} (privilege leak)"
+                );
+            }
+        }
+    }
+
+    // ── 003.5: fixtures in group A and group B (bypass via superuser) ──────
+    let folder_a_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO folders (group_id, parent_id, name, created_by, created_by_label) \
+         VALUES ($1, NULL, 'docs', $2, 'Test User') RETURNING id",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let file_a_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO files (group_id, folder_id, name, current_version, total_versions, \
+             size_bytes, mime_type, created_by, created_by_label) \
+         VALUES ($1, $2, 'readme.md', 1, 1, 1024, 'text/markdown', $3, 'Test User') \
+         RETURNING id",
+    )
+    .bind(group_id)
+    .bind(folder_a_id)
+    .bind(user_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+             checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 1, $3, $4, $5, $6, 1024, 'text/markdown', $7, 'Test User')",
+    )
+    .bind(file_a_id)
+    .bind(group_id)
+    .bind(format!("{group_id}/{file_a_id}/v1"))
+    .bind("abc123")
+    .bind("a".repeat(64)) // 64 lowercase hex chars
+    .bind("b".repeat(64))
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await?;
+
+    let folder_b_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO folders (group_id, parent_id, name, created_by, created_by_label) \
+         VALUES ($1, NULL, 'other-docs', $2, 'RLS User B') RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    let file_b_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO files (group_id, folder_id, name, current_version, total_versions, \
+             size_bytes, mime_type, created_by, created_by_label) \
+         VALUES ($1, $2, 'secret.pdf', 1, 1, 2048, 'application/pdf', $3, 'RLS User B') \
+         RETURNING id",
+    )
+    .bind(other_group_id)
+    .bind(folder_b_id)
+    .bind(user_b_id)
+    .fetch_one(workspace.pool())
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+             checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 1, $3, $4, $5, $6, 2048, 'application/pdf', $7, 'RLS User B')",
+    )
+    .bind(file_b_id)
+    .bind(other_group_id)
+    .bind(format!("{other_group_id}/{file_b_id}/v1"))
+    .bind("def456")
+    .bind("c".repeat(64))
+    .bind("d".repeat(64))
+    .bind(user_b_id)
+    .execute(workspace.pool())
+    .await?;
+
+    // ── Cenário 11 — positive read (same group) ────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let f: i64 = sqlx::query_scalar("SELECT count(*) FROM folders WHERE id = $1")
+            .bind(folder_a_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(f, 1, "cenário 11: own folder visible");
+        let fl: i64 = sqlx::query_scalar("SELECT count(*) FROM files WHERE id = $1")
+            .bind(file_a_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(fl, 1, "cenário 11: own file visible");
+        let fv: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM file_versions WHERE file_id = $1 AND version = 1",
+        )
+        .bind(file_a_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert_eq!(fv, 1, "cenário 11: own file_version visible");
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 12 — cross-group blocked ───────────────────────────────────
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let f: i64 = sqlx::query_scalar("SELECT count(*) FROM folders WHERE id = $1")
+            .bind(folder_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(f, 0, "cenário 12: cross-group folder must not leak");
+        let fl: i64 = sqlx::query_scalar("SELECT count(*) FROM files WHERE id = $1")
+            .bind(file_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(fl, 0, "cenário 12: cross-group file must not leak");
+        let fv: i64 = sqlx::query_scalar("SELECT count(*) FROM file_versions WHERE file_id = $1")
+            .bind(file_b_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(fv, 0, "cenário 12: cross-group file_version must not leak");
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 13 — compound FK drift on files (folder_id in other group) ─
+    let drift_file = sqlx::query(
+        "INSERT INTO files (group_id, folder_id, name, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 'drift.txt', 10, 'text/plain', $3, 'Test User')",
+    )
+    .bind(group_id) // claims group A
+    .bind(folder_b_id) // but folder lives in group B
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 003: compound FK must block cross-group drift on files");
+    let db_err = drift_file
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23503"),
+        "expected SQLSTATE 23503 (foreign_key_violation) for files cross-group drift"
+    );
+
+    // ── Cenário 14 — compound FK drift on file_versions ────────────────────
+    let drift_version = sqlx::query(
+        "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+             checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 2, $3, $4, $5, $6, 10, 'text/plain', $7, 'Test User')",
+    )
+    .bind(file_a_id) // file lives in group A
+    .bind(other_group_id) // claims group B
+    .bind(format!("drift/{file_a_id}/v2"))
+    .bind("drift")
+    .bind("e".repeat(64))
+    .bind("f".repeat(64))
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 003: compound FK must block cross-group drift on file_versions");
+    let db_err = drift_version
+        .as_database_error()
+        .expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23503"),
+        "expected SQLSTATE 23503 for file_versions cross-group drift"
+    );
+
+    // ── Cenário 15 — files.deleted_at (soft delete) does NOT cascade ───────
+    sqlx::query("UPDATE files SET deleted_at = now() WHERE id = $1")
+        .bind(file_a_id)
+        .execute(workspace.pool())
+        .await?;
+    let surviving_versions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM file_versions WHERE file_id = $1")
+            .bind(file_a_id)
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        surviving_versions, 1,
+        "migration 003: soft-delete of files must NOT cascade to file_versions (audit invariant)"
+    );
+    // Restore for subsequent scenarios that still expect this file.
+    sqlx::query("UPDATE files SET deleted_at = NULL WHERE id = $1")
+        .bind(file_a_id)
+        .execute(workspace.pool())
+        .await?;
+
+    // ── Cenário 16 — DELETE files cascades to file_versions (hard delete) ──
+    // Use file_b_id so we don't destroy fixtures for other scenarios above.
+    sqlx::query("DELETE FROM files WHERE id = $1")
+        .bind(file_b_id)
+        .execute(workspace.pool())
+        .await?;
+    let remaining_versions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM file_versions WHERE file_id = $1")
+            .bind(file_b_id)
+            .fetch_one(workspace.pool())
+            .await?;
+    assert_eq!(
+        remaining_versions, 0,
+        "migration 003: hard DELETE of files must cascade to file_versions via compound FK ON DELETE CASCADE"
+    );
+
+    // ── Cenário 17 — CHECK rejects malformed checksum_sha256 ───────────────
+    for bad_checksum in &[
+        "A".repeat(64), // uppercase hex (regex is lowercase-only)
+        "0".repeat(63), // too short
+        "0".repeat(65), // too long
+        "z".repeat(64), // not hex
+    ] {
+        let bad = sqlx::query(
+            "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+                 checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+                 created_by, created_by_label) \
+             VALUES ($1, $2, 99, $3, 'e', $4, $5, 10, 'text/plain', $6, 'Test User')",
+        )
+        .bind(file_a_id)
+        .bind(group_id)
+        .bind(format!("bad-checksum/{bad_checksum}"))
+        .bind(bad_checksum.as_str())
+        .bind("f".repeat(64))
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await
+        .expect_err("migration 003: invalid checksum_sha256 must be rejected by CHECK");
+        let db_err = bad.as_database_error().expect("database-layer error");
+        assert_eq!(
+            db_err.code().as_deref(),
+            Some("23514"),
+            "expected SQLSTATE 23514 (check_violation) for checksum_sha256 = {bad_checksum}"
+        );
+    }
+
+    // ── Cenário 17b — CHECK rejects malformed integrity_hmac (symmetry) ────
+    //
+    // The schema uses the same regex for both checksum_sha256 and
+    // integrity_hmac (security review SEC-L-1). Exercise the hmac CHECK
+    // independently so a future ALTER that desyncs the two constraints
+    // would surface here.
+    for bad_hmac in &[
+        "A".repeat(64), // uppercase
+        "0".repeat(63), // short
+        "0".repeat(65), // long
+        "z".repeat(64), // non-hex
+    ] {
+        let bad = sqlx::query(
+            "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+                 checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+                 created_by, created_by_label) \
+             VALUES ($1, $2, 99, $3, 'e', $4, $5, 10, 'text/plain', $6, 'Test User')",
+        )
+        .bind(file_a_id)
+        .bind(group_id)
+        .bind(format!("bad-hmac/{bad_hmac}"))
+        .bind("a".repeat(64)) // valid checksum so only hmac CHECK fires
+        .bind(bad_hmac.as_str())
+        .bind(user_id)
+        .execute(workspace.pool())
+        .await
+        .expect_err("migration 003: invalid integrity_hmac must be rejected by CHECK");
+        let db_err = bad.as_database_error().expect("database-layer error");
+        assert_eq!(
+            db_err.code().as_deref(),
+            Some("23514"),
+            "expected SQLSTATE 23514 (check_violation) for integrity_hmac = {bad_hmac}"
+        );
+    }
+
+    // ── Cenário 18 — object_key UNIQUE collision ───────────────────────────
+    // Insert a second version row that reuses the existing v1 object_key of
+    // file_a. The PRIMARY KEY (file_id, version) allows a different version
+    // number, but the UNIQUE constraint on object_key must still reject it.
+    let existing_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM file_versions WHERE file_id = $1 AND version = 1",
+    )
+    .bind(file_a_id)
+    .fetch_one(workspace.pool())
+    .await?;
+    let collision = sqlx::query(
+        "INSERT INTO file_versions (file_id, group_id, version, object_key, etag, \
+             checksum_sha256, integrity_hmac, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 2, $3, 'e', $4, $5, 10, 'text/plain', $6, 'Test User')",
+    )
+    .bind(file_a_id)
+    .bind(group_id)
+    .bind(existing_key.as_str())
+    .bind("0".repeat(64))
+    .bind("1".repeat(64))
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 003: duplicate object_key must be rejected by UNIQUE");
+    let db_err = collision.as_database_error().expect("database-layer error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23505"),
+        "expected SQLSTATE 23505 (unique_violation) for object_key collision"
+    );
+
+    // ── Cenário 18b — RLS WITH CHECK blocks cross-group INSERT ─────────────
+    //
+    // Migration 013 pattern: WITH CHECK is explicit and identical to USING,
+    // so an INSERT from garraia_app scoped to group_A that claims
+    // group_id = group_B must fail even though the row would be "visible"
+    // to group_B readers. This exercises the write-side of the policy that
+    // cenários 11-12 (read-side) leave implicit. Code review S-1.
+    {
+        let mut tx = rls_scope(workspace.pool(), Some(group_id), Some(user_id)).await?;
+        let blocked = sqlx::query(
+            "INSERT INTO folders (group_id, parent_id, name, created_by, created_by_label) \
+             VALUES ($1, NULL, 'rls-write-block', $2, 'Test User')",
+        )
+        .bind(other_group_id) // claim group B while scope = group A
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .expect_err("migration 003: RLS WITH CHECK must block cross-group folder INSERT");
+        let db_err = blocked.as_database_error().expect("database-layer error");
+        // 42501 = insufficient_privilege (RLS policy WITH CHECK refused).
+        assert_eq!(
+            db_err.code().as_deref(),
+            Some("42501"),
+            "expected SQLSTATE 42501 (RLS WITH CHECK refusal) for cross-group folder INSERT"
+        );
+        tx.rollback().await?;
+    }
+
+    // ── Cenário 19 — size_bytes CHECK boundaries ───────────────────────────
+    // Reject negative size.
+    let negative = sqlx::query(
+        "INSERT INTO files (group_id, folder_id, name, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 'neg.txt', -1, 'text/plain', $3, 'Test User')",
+    )
+    .bind(group_id)
+    .bind(folder_a_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 003: negative size_bytes must be rejected");
+    assert_eq!(
+        negative
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected CHECK violation for negative size_bytes"
+    );
+    // Reject size > 5 GiB (5368709120 bytes).
+    let oversize = sqlx::query(
+        "INSERT INTO files (group_id, folder_id, name, size_bytes, mime_type, \
+             created_by, created_by_label) \
+         VALUES ($1, $2, 'huge.bin', 5368709121, 'application/octet-stream', $3, 'Test User')",
+    )
+    .bind(group_id)
+    .bind(folder_a_id)
+    .bind(user_id)
+    .execute(workspace.pool())
+    .await
+    .expect_err("migration 003: oversize size_bytes must be rejected");
+    assert_eq!(
+        oversize
+            .as_database_error()
+            .and_then(|e| e.code().map(|c| c.into_owned())),
+        Some("23514".to_string()),
+        "expected CHECK violation for size_bytes > 5 GiB"
     );
 
     Ok(())
