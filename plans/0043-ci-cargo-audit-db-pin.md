@@ -1,4 +1,4 @@
-# Plan 0043 — CI hygiene: pin RustSec advisory-db SHA (cargo-audit scheduled fix)
+# Plan 0043 — CI hygiene: strip CVSS v4 entries from advisory-db (cargo-audit scheduled fix)
 
 **Status:** Em execução
 **Autor:** Claude Opus 4.7 (sessão autônoma 2026-04-22, ClaudeMaxPower + Superpowers skills inline)
@@ -8,11 +8,17 @@
 **Pré-requisitos:** nenhum.
 **Unblocks:** nada no caminho funcional; destrava apenas o sinal de segurança nightly, que é pré-condição para confiar em CI nos próximos slices do Lote A/B.
 
+## Revision log
+
+- **v1 (2026-04-22 13:45 ET) — pin-SHA approach:** primeira tentativa foi pinar a `advisory-db` ao SHA `1dc467507294` (último commit antes do batch libcrux CVSS v4 em 2026-03-24T08:19Z). Validado localmente que `crates/libcrux-poly1305/` não existia nesse SHA. Commitado como `2c6c7ce`.
+- **v2 (2026-04-22 13:55 ET) — workflow_dispatch FAILED:** run `24793600828` mostrou que o pin não foi suficiente. Falha secundária: `crates/deno/RUSTSEC-2025-0138.md` (adicionado 2025-12-29) também usa `cvss = "CVSS:4.0/..."`. O erro exato foi `unsupported CVSS version: 4.0`. Grep global no SHA pinado encontrou **26 entries CVSS v4 pré-existentes**. Pin por SHA teria que ir antes de 2025-12-29 — 4+ meses atrás — perdendo quase um semestre de advisories legítimos.
+- **v2 (2026-04-22 14:00 ET) — pivot para strip approach:** fetch HEAD da `advisory-db` + remoção cirúrgica de todos os arquivos com `^cvss = "CVSS:4.0/`. Safety net: aborta se remoção > 50 arquivos. Reteve este mesmo plan file para não inflacionar o numbering — §5.3 abaixo reescrito; v1 preservado em `§Revision log` + §5.7.
+
 ---
 
 ## 1. Goal
 
-Restaurar o workflow scheduled `Security — cargo audit` ao verde sem esperar 24–72h por correção upstream. Fazer isso **pinando a RustSec advisory database a um SHA conhecidamente bom** e documentando critério de expiração do pin para que a pinagem não vire bit-rot.
+Restaurar o workflow scheduled `Security — cargo audit` ao verde sem esperar 24–72h por correção upstream. Fazer isso com **fetch HEAD da advisory-db + remoção cirúrgica das entries CVSS v4** que o `rustsec 0.30.x` não consegue deserializar, preservando 100% da cobertura CVSS v3 (4+ meses de advisories). Trade-off: perdemos audit em 6 deps nossos (cap-primitives, cmov, quinn-proto, tar, time, wasmtime) que recebem CVSS v4 — follow-up manual em Lote B-2+.
 
 ## 2. Non-goals
 
@@ -25,7 +31,7 @@ Restaurar o workflow scheduled `Security — cargo audit` ao verde sem esperar 2
 
 **Arquivos modificados:**
 
-- `.github/workflows/cargo-audit.yml` — novo env `ADVISORY_DB_SHA`, novo step "Fetch pinned advisory database", step "Run cargo audit" adiciona `--no-fetch`.
+- `.github/workflows/cargo-audit.yml` — novo env `MAX_STRIPPED_CVSS_V4`, novo step "Fetch advisory database and strip CVSS v4 entries", step "Run cargo audit" adiciona `--no-fetch`.
 - `plans/0043-ci-cargo-audit-db-pin.md` (este).
 - `plans/README.md` — entrada 0043 (inserida antes de 0042 mantendo ordem narrativa cronológica da sessão).
 
@@ -35,13 +41,14 @@ Zero alteração em `Cargo.toml`, `Cargo.lock`, crates de runtime, testes ou doc
 
 1. Manual `gh workflow run cargo-audit.yml --ref feat/0043-cargo-audit-db-pin` retorna **success**.
 2. Após merge, o scheduled run `0 7 * * *` do dia seguinte também retorna **success**.
-3. Log do job exibe linha `Advisory DB pinned to: 1dc46750` (ou equivalente) confirmando que o fetch do SHA correto aconteceu.
-4. `cargo audit` não faz fetch adicional (verificável pela ausência da mensagem `Fetching advisory database from https://github.com/RustSec/advisory-db.git`).
-5. Zero novo `continue-on-error: true` introduzido.
-6. `@security-auditor` APPROVE (cerimônia obrigatória CLAUDE.md regra 10 — workflow + security surface).
-7. `@code-reviewer` APPROVE.
-8. Comentário em `GAR-NEW-01` do Linear com link para o PR.
-9. Plan file existe e está linkado no `plans/README.md`.
+3. Log do job exibe linha `Advisory DB HEAD: <short-sha>` + `Stripping N CVSS v4 advisories` + lista completa dos arquivos removidos.
+4. `N` na stripping log está abaixo de `MAX_STRIPPED_CVSS_V4` (50 como configurado).
+5. `cargo audit` não faz fetch adicional (verificável pela ausência da mensagem `Fetching advisory database from https://github.com/RustSec/advisory-db.git`).
+6. Zero novo `continue-on-error: true` introduzido.
+7. `@security-auditor` APPROVE (cerimônia obrigatória CLAUDE.md regra 10 — workflow + security surface).
+8. `@code-reviewer` APPROVE.
+9. Comentário em `GAR-NEW-01` do Linear com link para o PR + lista explícita dos 6 deps nossos que perdem audit coverage (follow-up para B-2+).
+10. Plan file existe e está linkado no `plans/README.md`.
 
 ## 5. Design rationale
 
@@ -81,34 +88,51 @@ O plano aprovado pela sessão (`plans/.../synchronous-baking-hippo.md` §3.3) de
 
 A aprovação do usuário 2026-04-22 13:30 ajustou: **se ainda vermelho no momento do início, ir direto para Camada 2, não esperar 24–72h**. Verificação via WebFetch do HEAD de `advisory-db` (2026-04-22 ~14:00 UTC) confirmou que o arquivo `RUSTSEC-2026-0073.md` continua com `cvss = "CVSS:4.0/..."`. Portanto, Camada 2 é o caminho correto.
 
-### 5.3 Escolha do SHA
+### 5.3 Estratégia strip (pivotagem v2)
 
-Critérios para o pin:
+A primeira tentativa (§Revision log v1) pinou o DB ao SHA `1dc467507294` (último commit imediatamente antes do batch libcrux CVSS v4 em 2026-03-24T08:19Z). Verificação no próprio CI mostrou que o arquivo `crates/deno/RUSTSEC-2025-0138.md` (adicionado **2025-12-29**) também usa `cvss = "CVSS:4.0/..."`. Grep no SHA pinado encontrou 26 entries CVSS v4 (24 dos quais fora do diretório libcrux). Pin por SHA teria que voltar a antes de 2025-12-29, perdendo 4+ meses de advisories legítimos — trade-off inaceitável.
 
-1. **Posterior** ao último verde conhecido (maximizar cobertura de advisories recentes).
-2. **Anterior** ao primeiro advisory com CVSS v4 (evitar o parse error).
-3. **Commit determinístico** (não uma tag, que pode ser force-moved).
-4. Texto do commit legível — dá contexto em `git log -1` nos logs de CI.
+Nova estratégia adotada:
 
-Pesquisa via `gh api repos/rustsec/advisory-db/commits` com filtros de data:
+1. **Fetch HEAD** da `advisory-db` (máxima cobertura de advisories CVSS v3 recentes).
+2. **Strip** todos os arquivos cuja linha TOML `cvss = "CVSS:4.0/` bate com regex `^cvss = "CVSS:4\.0/`.
+3. **Safety net**: se N stripado > 50, abortar o job — força re-triage quando upstream eventualmente bulk-migrar para v4.
+4. Log explícito de cada arquivo removido — auditor vê exatamente o que ficamos cegos.
 
-- Primeiro commit introduzindo `cvss = "CVSS:4.0/..."`: `410feb087a8f` / `dd4ff9f3ff4c` / `543c3046fe61` às `2026-03-24T08:19:00Z` (libcrux-ml-dsa placeholders).
-- Último commit imediatamente anterior: **`1dc467507294adffdc8e0a5548d97a58f77d111f`** às `2026-03-24T08:16:07Z` (*"Assigned RUSTSEC-2026-0069 to hpke-rs, RUSTSEC-2026-0070 to hpke-rs, RUSTSEC-2026-0071 to hpke-rs, RUSTSEC-2026-0072 to hpke-rs-rust-crypto"*).
+Medição atual (2026-04-22 ao meio-dia ET): `39` arquivos CVSS v4 no HEAD da advisory-db.
 
-Verificação explícita: `gh api repos/rustsec/advisory-db/git/trees/1dc467507294?recursive=1` **não** lista `crates/libcrux-poly1305/*`. Fetch local do SHA (`git fetch --depth=1 origin 1dc4675...`) também confirma ausência do diretório offending. **SHA escolhido: `1dc467507294adffdc8e0a5548d97a58f77d111f`.**
+### 5.3.1 Cobertura que perdemos (deps GarraRUST)
 
-### 5.4 Por que usar `git fetch --depth=1 <sha>` e não `git clone`
+Intersecção entre os 39 arquivos CVSS v4 stripados e nossa `Cargo.lock`:
 
-`git clone --depth=1 <url>` só funciona com branches/tags (HEAD rastreado). Para checkout de um SHA arbitrário antigo com shallow clone, o caminho oficial Git é:
+| Crate | Versão em lock | Ação futura |
+|---|---|---|
+| cap-primitives | 3.4.5 | Verificar advisories manualmente em B-2+ |
+| cmov | 0.5.3 | idem |
+| quinn-proto | 0.11.13 | **já listado no ci.yml TODO para bump** (B-2) — dupla-visibilidade |
+| tar | 0.4.45 | manual |
+| time | 0.3.47 | manual |
+| wasmtime | 28.0.1 | manual (crate grande, WASM sandbox) |
+
+Follow-up: após o fix deste PR, Lote B-2 (RUSTSEC bumps) deve incluir revisão manual dos advisories CVSS v4 desses 6 crates para decidir bump ou ignore justificado. Registrado em `GAR-NEW-01` comment + no plano mestre da sessão.
+
+### 5.4 Fetch shallow + regex strip + `rm` seguro
+
+Desde a pivotagem v2, não usamos mais pin por SHA — apenas fetch de HEAD (`git fetch --depth=1 origin main`). A manipulação subsequente:
 
 ```bash
-git init
-git remote add origin <url>
-git fetch --depth=1 origin <full-sha>  # GitHub permite via uploadpack.allowReachableSHA1InWant
-git checkout FETCH_HEAD
+mapfile -t stripped < <(grep -rlE '^cvss = "CVSS:4\.0/' crates/ || true)
+if [ "${#stripped[@]}" -gt 0 ]; then
+  rm -- "${stripped[@]}"
+fi
 ```
 
-Testado localmente (2026-04-22) contra `github.com/rustsec/advisory-db` — funciona para o SHA completo (40 chars). Short SHAs (12 chars) **não funcionam** nesse fetch path (GitHub retorna `fatal: couldn't find remote ref`). Por isso a var `ADVISORY_DB_SHA` no workflow usa o SHA completo.
+Decisões:
+
+- **Regex ancorada** em `^cvss = "CVSS:4\.0/` evita matches espúrios em prose (descrições podem mencionar "CVSS v4" textualmente).
+- **`mapfile`** (bash 4+) garante split correto de paths com espaços (zero no advisory-db hoje, mas defesa).
+- **`rm --`** força que nenhum filename começando com `-` seja interpretado como flag.
+- **`|| true`** na composição com grep evita bash set -euo abortar quando o grep retorna zero matches (ideal quando rustsec eventualmente corrigir).
 
 ### 5.5 Flag `--no-fetch` para `cargo audit`
 
@@ -122,10 +146,10 @@ Pin deve ser temporário, nunca permanente — senão o audit vira teatro ao lon
 
 ### 6.1 Local (Windows + git bash)
 
-- Executado `rm -rf /tmp/adb-test && mkdir -p /tmp/adb-test && cd /tmp/adb-test && git init --quiet && git remote add origin https://github.com/rustsec/advisory-db.git && git fetch --depth=1 --quiet origin 1dc467507294adffdc8e0a5548d97a58f77d111f && git checkout --quiet FETCH_HEAD` — SUCCESS.
-- `ls crates/libcrux-poly1305/ || echo "ausente"` → **ausente** (confirma SHA safe).
-- `git log -1 --oneline` → `1dc4675 Assigned RUSTSEC-2026-0069 to hpke-rs, ...` — commit message esperado.
-- `cargo audit` local pulado (cargo-audit não está instalado no Windows, e instalá-lo exige compilar várias deps crypto — custo não justifica vs. `workflow_dispatch` imediato pós-PR open).
+- **Fetch HEAD** de advisory-db reproduzido com sucesso em `/tmp/adb-head`.
+- **Strip regex** validada: `grep -lrE '^cvss = "CVSS:4\.0/' crates/` retornou 39 arquivos, cada um iniciando com `crates/<pkg>/RUSTSEC-*.md` conforme esperado.
+- **Intersecção com Cargo.lock** feita via shell loop: 6 deps presentes (ver §5.3.1).
+- **`cargo audit` local pulado:** cargo-audit não está instalado no Windows, e instalá-lo exige compilar várias deps crypto. Custo não justifica vs. `workflow_dispatch` imediato pós-push.
 
 ### 6.2 CI (GitHub Actions)
 
@@ -134,12 +158,13 @@ Pin deve ser temporário, nunca permanente — senão o audit vira teatro ao lon
 
 ### 6.3 Verificação que o fix é correto (e não só "verde")
 
-Dois sinais no log do job:
+Três sinais no log do job:
 
-- Step `Fetch pinned advisory database` imprime `Advisory DB pinned to: 1dc46750` e `Commit date: 2026-03-24T08:16:07+00:00`.
+- Step `Fetch advisory database and strip CVSS v4 entries` imprime `Advisory DB HEAD: <sha>` + `Commit date: <iso>`.
+- Mesmo step imprime `Stripping N CVSS v4 advisories (threshold 50):` seguido da lista completa de arquivos removidos.
 - Step `Run cargo audit` **não** exibe `Fetching advisory database from https://github.com/RustSec/advisory-db.git` (`--no-fetch` corta esse caminho).
 
-Se algum dos dois falhar, o workflow pode ficar "verde por acidente" (ex: fallback silencioso a algum cache). Ambos são gates manuais no review.
+Se algum dos três falhar, o workflow pode ficar "verde por acidente" (ex: fallback silencioso a algum cache). Todos são gates manuais no review.
 
 ## 7. Security review triggers
 
