@@ -96,6 +96,9 @@ crates/
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
+  garraia-storage/    — Fase 3.5 (GAR-394 slice 1, plan 0037) — trait ObjectStore
+                        + LocalFs baseline + path_sanitize compartilhado. Presigned
+                        URLs + S3/MinIO ficam para slice 2.
 apps/
   garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
 ```
@@ -104,7 +107,6 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
-garraia-storage/     — Fase 3.5 (GAR-394) — trait ObjectStore (LocalFs/S3/MinIO) + presigned + tus
 ```
 
 ### PoCs efêmeros
@@ -122,7 +124,10 @@ benches/
 
 - `AppState` é `Arc<AppState>` — import via `crate::state::AppState`
 - DB via `SessionStore` (rusqlite, sync, `tokio::sync::Mutex`)
-- Axum 0.8: `FromRequestParts` usa AFIT nativo — **sem** `#[async_trait]`
+- Axum 0.8: `FromRequestParts` usa AFIT nativo — **sem** `#[async_trait]`.
+  Exceção documentada: traits que são usados como `dyn Trait` (ex.:
+  `garraia_storage::ObjectStore`) usam `#[async_trait]` por causa de
+  limitação de AFIT + `dyn` em Rust stable. Ver plan 0037 §5.1.
 - Usar `?` operator para tratamento de erros (não `unwrap()` em produção)
 - SQL queries via `params!` macro (nunca concatenar strings)
 - `cargo check -p <crate>` antes de qualquer commit
