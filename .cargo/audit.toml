@@ -70,10 +70,15 @@ ignore = [
     # between 0.8 and 0.9 family are semver-incompatible).
     "RUSTSEC-2026-0097",
 
-    # --- Yanked warnings (deny due to --deny yanked) — 1 unique ID ---
+    # --- Yanked/unmaintained advisory IDs — 1 unique ID ---
 
-    # core2 — unmaintained AND all versions yanked. Pulled transitively
-    # (likely through a tokio/mio subdep). B-2 to trace the dep chain
-    # and swap or pin to a live alternative.
+    # core2 — unmaintained AND all versions yanked. Pulled through
+    # image → rav1e → bitstream-io → core2 (garraia-media). B-2 to
+    # swap bitstream-io for a live alternative OR feature-gate
+    # garraia-media image support. Note: the yanked-at-crates.io
+    # status is caught by `--deny yanked` (separate code path from
+    # ignore list). Since all versions are yanked with no fix,
+    # `--deny yanked` was dropped from the workflow until B-2; yanked
+    # crates still show as yellow warnings in the log.
     "RUSTSEC-2026-0105",
 ]
