@@ -1,9 +1,14 @@
-//! `garraia migrate workspace` — SQLite → Postgres migration (Stage 1).
+//! `garraia migrate workspace` — SQLite → Postgres migration (Stages 1–3).
 //!
-//! Plan 0039 — implements §7.1 (users) + §7.2 (user_identities + atomic
-//! audit) of [plan 0034](../../plans/0034-gar-413-migrate-workspace-spec.md).
-//! Subsequent stages (groups, chats, messages, memory, sessions, api_keys,
-//! audit retrofit) land in follow-up slices.
+//! - Plan 0039 implemented §7.1 (users) + §7.2 (user_identities + atomic
+//!   audit) of [plan 0034](../../plans/0034-gar-413-migrate-workspace-spec.md).
+//! - Plan 0040 (this slice) adds §7.4 (groups + group_members): the
+//!   legacy bucket is auto-created under `--target-group-name` /
+//!   `--target-group-type`, the oldest migrated user becomes owner, the
+//!   rest become members, and each write emits an atomic audit row in
+//!   the same transaction.
+//! - Subsequent stages (chats, messages, memory, sessions, api_keys,
+//!   audit retrofit) land in follow-up slices.
 //!
 //! # Security invariants
 //!
@@ -43,6 +48,17 @@
 //! Operator-side rollback of migrated data:
 //!
 //! ```sql
+//! -- Stage 3 artefacts first (must precede user deletion because of FK).
+//! DELETE FROM group_members
+//! WHERE user_id IN (SELECT id FROM users WHERE legacy_sqlite_id IS NOT NULL)
+//!   AND group_id IN (
+//!       SELECT id FROM groups
+//!       WHERE name = 'Legacy Personal Workspace' AND type = 'personal'
+//!   );
+//! DELETE FROM groups
+//! WHERE name = 'Legacy Personal Workspace' AND type = 'personal';
+//!
+//! -- Stages 1–2 artefacts.
 //! DELETE FROM users WHERE legacy_sqlite_id IS NOT NULL;
 //! -- Cascades to user_identities (FK ON DELETE CASCADE).
 //! -- audit_events rows persist by design (plan 0034 §8, LGPD art. 37).
@@ -95,30 +111,78 @@ const PBKDF2_OUTPUT_LEN: u32 = 32;
 
 /// Report produced by a successful `run` (or a failed one — fields
 /// populated up to the point of failure).
+///
+/// Covers stages 1 (users), 2 (identities + audit) and 3 (groups +
+/// group_members). Stage-specific callers are responsible for bumping
+/// only their own fields; the outer `run` aggregates.
 #[derive(Debug, Default)]
-pub struct Stage1Report {
+pub struct StageReport {
+    // Stage 1.
     pub users_inserted: u64,
     pub users_upserted: u64,
+    // Stage 2.
     pub identities_inserted: u64,
     pub identities_skipped_conflict: u64,
     pub audit_events_inserted: u64,
+    // Stage 3 (plan 0040).
+    pub groups_inserted: u64,
+    pub groups_reused: u64,
+    pub group_members_inserted: u64,
+    pub group_members_skipped_conflict: u64,
+    pub group_audit_events_inserted: u64,
     pub dry_run: bool,
 }
 
-impl Stage1Report {
+impl StageReport {
     pub fn print_summary(&self) {
         let mode = if self.dry_run { " (dry run)" } else { "" };
-        println!("Workspace Migration Report — Stage 1{mode}");
+        println!("Workspace Migration Report — Stages 1–3{mode}");
         println!("──────────────────────────────────────");
         println!(
-            "  users:       {} inserted, {} upserted-on-existing",
+            "  users:            {} inserted, {} upserted-on-existing",
             self.users_inserted, self.users_upserted
         );
         println!(
-            "  identities:  {} inserted, {} skipped (conflict)",
+            "  identities:       {} inserted, {} skipped (conflict)",
             self.identities_inserted, self.identities_skipped_conflict
         );
-        println!("  audit rows:  {}", self.audit_events_inserted);
+        println!(
+            "  groups:           {} inserted, {} reused",
+            self.groups_inserted, self.groups_reused
+        );
+        println!(
+            "  group_members:    {} inserted, {} skipped (conflict)",
+            self.group_members_inserted, self.group_members_skipped_conflict
+        );
+        println!(
+            "  audit rows:       {} (users) + {} (groups/members)",
+            self.audit_events_inserted, self.group_audit_events_inserted
+        );
+    }
+}
+
+/// CLI options accepted by [`run`]. Grouping them in a struct keeps the
+/// call-site stable as future slices add `--only`/`--skip`/`--batch-size`.
+#[derive(Clone, Debug)]
+pub struct RunOptions {
+    pub dry_run: bool,
+    pub confirm_backup: bool,
+    /// Plan 0040 §5.5 — `--target-group-name`.
+    pub target_group_name: String,
+    /// Plan 0040 §5.5 — `--target-group-type`. Validated against
+    /// `groups.type` CHECK (`'family' | 'team' | 'personal'`). Operator
+    /// mistake bubbles up as exit 65 via SQLSTATE 23514 handling.
+    pub target_group_type: String,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            confirm_backup: false,
+            target_group_name: "Legacy Personal Workspace".to_string(),
+            target_group_type: "personal".to_string(),
+        }
     }
 }
 
@@ -130,22 +194,23 @@ impl Stage1Report {
 /// * `sqlite_path` — legacy SQLite file (read-only).
 /// * `postgres_url` — target Postgres DSN (user must have BYPASSRLS or
 ///   superuser).
-/// * `dry_run` — when `true`, rolls back the transaction at the end.
-/// * `confirm_backup` — gate against running against a non-empty Postgres
-///   without explicit operator opt-in.
+/// * `opts` — CLI flags (dry-run, confirmation, group target).
 #[instrument(
     name = "migrate_workspace.run",
-    skip(postgres_url, sqlite_path),
-    fields(dry_run = dry_run, confirm_backup = confirm_backup)
+    skip(postgres_url, sqlite_path, opts),
+    fields(
+        dry_run = opts.dry_run,
+        confirm_backup = opts.confirm_backup,
+        target_group_type = %opts.target_group_type
+    )
 )]
 pub async fn run(
     sqlite_path: &Path,
     postgres_url: &str,
-    dry_run: bool,
-    confirm_backup: bool,
-) -> Result<(Stage1Report, i32)> {
+    opts: RunOptions,
+) -> Result<(StageReport, i32)> {
     if let Some(code) = preflight_sqlite(sqlite_path)? {
-        return Ok((Stage1Report::default(), code));
+        return Ok((StageReport::default(), code));
     }
 
     let pool = PgPoolOptions::new()
@@ -155,13 +220,15 @@ pub async fn run(
         .context("connect to Postgres")?;
 
     if let Some(code) = preflight_bypassrls(&pool).await? {
-        return Ok((Stage1Report::default(), code));
+        return Ok((StageReport::default(), code));
     }
     if let Some(code) = preflight_schema_version(&pool).await? {
-        return Ok((Stage1Report::default(), code));
+        return Ok((StageReport::default(), code));
     }
-    if let Some(code) = preflight_confirmation_gate(&pool, dry_run, confirm_backup).await? {
-        return Ok((Stage1Report::default(), code));
+    if let Some(code) =
+        preflight_confirmation_gate(&pool, opts.dry_run, opts.confirm_backup).await?
+    {
+        return Ok((StageReport::default(), code));
     }
 
     let legacy_rows = load_mobile_users(sqlite_path)?;
@@ -170,18 +237,18 @@ pub async fn run(
         "loaded mobile_users rows from SQLite"
     );
 
-    let mut report = Stage1Report {
-        dry_run,
+    let mut report = StageReport {
+        dry_run: opts.dry_run,
         ..Default::default()
     };
 
-    let mut tx = pool.begin().await.context("begin stage1 tx")?;
+    let mut tx = pool.begin().await.context("begin stages 1..3 tx")?;
 
     // SEC-H-1: re-check BYPASSRLS inside the first data tx on the same
     // connection pool (PgPool with max_connections=1 keeps us on the
     // same connection).
     if !bypass_rls_or_super(&mut *tx).await? {
-        return Ok((Stage1Report::default(), exit_codes::NO_USER));
+        return Ok((StageReport::default(), exit_codes::NO_USER));
     }
 
     for row in &legacy_rows {
@@ -208,11 +275,22 @@ pub async fn run(
         }
     }
 
-    if dry_run {
+    // Stage 7.4 — groups + group_members. Runs inside the same tx so a
+    // failure here rolls back the users/identities too. No-op when the
+    // SQLite was empty.
+    run_stage3_groups(
+        &mut *tx,
+        &opts.target_group_name,
+        &opts.target_group_type,
+        &mut report,
+    )
+    .await?;
+
+    if opts.dry_run {
         tx.rollback().await.context("rollback dry-run tx")?;
         info!("dry run: rolled back; no rows persisted");
     } else {
-        tx.commit().await.context("commit stage1 tx")?;
+        tx.commit().await.context("commit stages 1..3 tx")?;
     }
 
     Ok((report, exit_codes::OK))
@@ -525,6 +603,249 @@ async fn insert_identity_with_audit(
     Ok((id_inserted, audit_inserted))
 }
 
+/// Stage 3 — populate `groups` + `group_members` per plan 0034 §7.4 and
+/// plan 0040 §5. Runs inside the caller's transaction so any failure
+/// rolls back the entire migration (including stages 1–2). Emits audit
+/// rows (`groups.imported_from_sqlite` once per created group +
+/// `group_members.imported_from_sqlite` once per membership) in the same
+/// transaction.
+///
+/// The first user migrated (ordered by `users.created_at ASC`) becomes
+/// `role='owner'`; every other migrated user becomes `role='member'`.
+/// Both bucket resolution and membership INSERT are idempotent:
+///
+/// - Group is located by `(name, type)` with `SELECT … FOR UPDATE` so
+///   the second concurrent run sees the just-inserted row.
+/// - Memberships use `ON CONFLICT (group_id, user_id) DO NOTHING`.
+/// - Audit rows use `WHERE NOT EXISTS` (audit_events has no unique
+///   index we can pivot on).
+///
+/// No-op when zero users carry `legacy_sqlite_id` (SQLite source was
+/// empty) — emits WARN and returns early without touching any tables.
+#[instrument(
+    name = "migrate_workspace.stage3_groups",
+    skip(tx, report),
+    fields(target_group_type = %target_group_type)
+)]
+async fn run_stage3_groups(
+    tx: &mut sqlx::PgConnection,
+    target_group_name: &str,
+    target_group_type: &str,
+    report: &mut StageReport,
+) -> Result<()> {
+    // Plan 0040 risk table — "Primeiro user migrado não existe em
+    // Postgres". If legacy users missing, skip silently with WARN and
+    // exit 0.
+    let owner_candidate: Option<(uuid::Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT id, created_at FROM users
+         WHERE legacy_sqlite_id IS NOT NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .context("select owner candidate")?;
+
+    let Some((owner_user_id, _owner_created_at)) = owner_candidate else {
+        tracing::warn!(
+            target: "garraia_cli::migrate_workspace",
+            "no migrated users; skipping stage 3 (groups/group_members)"
+        );
+        return Ok(());
+    };
+
+    // Resolve group — SELECT … FOR UPDATE so we serialise with any
+    // concurrent would-be creator on the same (name, type) pair. If it
+    // exists, reuse; otherwise INSERT with `created_by = owner_user_id`.
+    // Note on concurrency: plan 0040 §5.2 documents that `READ
+    // COMMITTED` cannot fully serialise INSERT-after-missing in absence
+    // of a UNIQUE constraint. Known limitation; runs are non-concurrent
+    // per plan 0039 F-02.
+    let existing_group: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM groups
+         WHERE name = $1 AND type = $2
+         FOR UPDATE",
+    )
+    .bind(target_group_name)
+    .bind(target_group_type)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_sqlstate_error)
+    .context("resolve target group")?;
+
+    let (group_id, group_created_now) = if let Some(gid) = existing_group {
+        report.groups_reused += 1;
+        (gid, false)
+    } else {
+        let new_group_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO groups (id, name, type, created_by, settings)
+             VALUES ($1, $2, $3, $4, '{}'::jsonb)",
+        )
+        .bind(new_group_id)
+        .bind(target_group_name)
+        .bind(target_group_type)
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlstate_error)
+        .context("insert group")?;
+        report.groups_inserted += 1;
+        (new_group_id, true)
+    };
+
+    if group_created_now {
+        // Audit row for the group itself. `WHERE NOT EXISTS` idempotency
+        // mirrors the stage 2 pattern.
+        let audit_id = uuid::Uuid::now_v7();
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO audit_events
+                (id, group_id, actor_user_id, actor_label, action,
+                 resource_type, resource_id, metadata, created_at)
+            SELECT $1, $2, NULL, 'system.migrate_workspace',
+                   'groups.imported_from_sqlite', 'group', $2::text,
+                   jsonb_build_object(
+                       'source', 'mobile_users',
+                       'target_group_name', $3::text,
+                       'target_group_type', $4::text,
+                       'created_by_user_id', $5::text),
+                   NOW()
+            WHERE NOT EXISTS (
+                SELECT 1 FROM audit_events
+                WHERE action = 'groups.imported_from_sqlite'
+                  AND resource_id = $2::text
+            )
+            "#,
+        )
+        .bind(audit_id)
+        .bind(group_id)
+        .bind(target_group_name)
+        .bind(target_group_type)
+        .bind(owner_user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .context("insert groups.imported_from_sqlite audit row")?
+        .rows_affected();
+        if inserted > 0 {
+            report.group_audit_events_inserted += 1;
+        }
+    }
+
+    // Memberships — iterate over every migrated user in deterministic
+    // order. First-seen becomes owner; rest become member.
+    //
+    // Query deliberately scopes to `legacy_sqlite_id IS NOT NULL` so a
+    // hypothetical signup user sharing the same email (via the stage 1
+    // UPSERT) doesn't accidentally receive Stage 3 membership.
+    #[derive(sqlx::FromRow)]
+    struct MigratedUser {
+        id: uuid::Uuid,
+    }
+    let migrated: Vec<MigratedUser> = sqlx::query_as(
+        "SELECT id FROM users
+         WHERE legacy_sqlite_id IS NOT NULL
+         ORDER BY created_at ASC, id ASC",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .context("list migrated users for membership insert")?;
+
+    for (idx, user) in migrated.iter().enumerate() {
+        let role = if idx == 0 && group_created_now {
+            // Only the freshly-created group gets the migration's owner;
+            // a reused group keeps its own owner to avoid stomping on
+            // an operator-crafted bucket.
+            "owner"
+        } else {
+            "member"
+        };
+
+        let res = sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role, status)
+             VALUES ($1, $2, $3, 'active')
+             ON CONFLICT (group_id, user_id) DO NOTHING",
+        )
+        .bind(group_id)
+        .bind(user.id)
+        .bind(role)
+        .execute(&mut *tx)
+        .await
+        .context("insert group_members row")?;
+
+        if res.rows_affected() > 0 {
+            report.group_members_inserted += 1;
+
+            // Audit the membership in the same tx.
+            let audit_id = uuid::Uuid::now_v7();
+            // Compose the audit resource_id as `{group_id}:{user_id}`
+            // so `WHERE NOT EXISTS` stays per-membership.
+            let resource_id = format!("{group_id}:{}", user.id);
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO audit_events
+                    (id, group_id, actor_user_id, actor_label, action,
+                     resource_type, resource_id, metadata, created_at)
+                SELECT $1, $2, NULL, 'system.migrate_workspace',
+                       'group_members.imported_from_sqlite',
+                       'group_member', $3::text,
+                       jsonb_build_object(
+                           'source', 'mobile_users',
+                           'role', $4::text,
+                           'user_id', $5::text,
+                           'group_id', $2::text),
+                       NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM audit_events
+                    WHERE action = 'group_members.imported_from_sqlite'
+                      AND resource_id = $3::text
+                )
+                "#,
+            )
+            .bind(audit_id)
+            .bind(group_id)
+            .bind(&resource_id)
+            .bind(role)
+            .bind(user.id.to_string())
+            .execute(&mut *tx)
+            .await
+            .context("insert group_members.imported_from_sqlite audit row")?
+            .rows_affected();
+            if inserted > 0 {
+                report.group_audit_events_inserted += 1;
+            }
+        } else {
+            report.group_members_skipped_conflict += 1;
+        }
+    }
+
+    info!(
+        group_id = %group_id,
+        members_new = report.group_members_inserted,
+        members_reused = report.group_members_skipped_conflict,
+        "stage 3 complete"
+    );
+    Ok(())
+}
+
+/// Map common Postgres SQLSTATE codes to actionable CLI exit paths.
+/// Currently narrow: only 23514 (CHECK violation) is surfaced because
+/// the caller is most likely to mis-type `--target-group-type`.
+/// `anyhow::Error` preserves the original context for the user.
+fn map_sqlstate_error(err: sqlx::Error) -> sqlx::Error {
+    if let sqlx::Error::Database(ref db_err) = err {
+        if db_err.code().as_deref() == Some("23514") {
+            eprintln!(
+                "error: Postgres CHECK constraint violated — \
+                 verify --target-group-type is one of 'family', \
+                 'team', 'personal' ({})",
+                db_err.message()
+            );
+        }
+    }
+    err
+}
+
 /// Reassemble a legacy PBKDF2 `(hash_b64_standard, salt_b64_standard)`
 /// pair into a PHC string accepted by `password-hash`'s `pbkdf2` crate.
 ///
@@ -660,11 +981,25 @@ mod tests {
     }
 
     #[test]
-    fn stage1_report_default_is_zero_and_dry_run_false() {
-        let r = Stage1Report::default();
+    fn stage_report_default_is_zero_and_dry_run_false() {
+        let r = StageReport::default();
         assert_eq!(r.users_inserted, 0);
         assert_eq!(r.identities_inserted, 0);
         assert_eq!(r.audit_events_inserted, 0);
+        assert_eq!(r.groups_inserted, 0);
+        assert_eq!(r.groups_reused, 0);
+        assert_eq!(r.group_members_inserted, 0);
+        assert_eq!(r.group_members_skipped_conflict, 0);
+        assert_eq!(r.group_audit_events_inserted, 0);
         assert!(!r.dry_run);
+    }
+
+    #[test]
+    fn run_options_defaults_match_plan_0040() {
+        let o = RunOptions::default();
+        assert_eq!(o.target_group_name, "Legacy Personal Workspace");
+        assert_eq!(o.target_group_type, "personal");
+        assert!(!o.dry_run);
+        assert!(!o.confirm_backup);
     }
 }

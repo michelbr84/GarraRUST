@@ -28,8 +28,15 @@ crates/
                         --from-sqlite … --to-postgres …` implementando users +
                         user_identities + PHC reassembly PBKDF2-SHA256 → PHC
                         format aceito por `garraia_auth::hashing::verify_pbkdf2`
-                        + audit atômico in-tx. Stages 3+ (groups, chats,
-                        messages, memory, sessions) em slices futuros.
+                        + audit atômico in-tx. Plan 0040 (GAR-413 Stage 3) adiciona
+                        groups + group_members: auto-cria (ou reusa) bucket
+                        `--target-group-name` / `--target-group-type` (defaults
+                        `'Legacy Personal Workspace'` / `'personal'`), primeiro user
+                        migrado (`created_at ASC`) vira `owner`, demais `member`,
+                        audit `groups.imported_from_sqlite` + N×
+                        `group_members.imported_from_sqlite` atômico no mesmo tx
+                        dos stages 1+2. Stages 5+ (chats, messages, memory,
+                        sessions, api_keys) em slices futuros.
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).

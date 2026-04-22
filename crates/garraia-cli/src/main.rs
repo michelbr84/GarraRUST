@@ -307,8 +307,9 @@ enum MigrateCommands {
     },
 
     /// Migrate workspace data from SQLite (single-user) to Postgres
-    /// (multi-tenant). Plan 0039 — Stage 1: users + user_identities with
-    /// PHC reassembly + atomic audit.
+    /// (multi-tenant). Plan 0039 — Stages 1–2 (users + identities with
+    /// PHC reassembly + atomic audit). Plan 0040 — Stage 3 (groups +
+    /// group_members with first migrated user as owner).
     Workspace {
         /// Path to the legacy SQLite file (read-only).
         #[arg(long)]
@@ -327,6 +328,19 @@ enum MigrateCommands {
         /// source (ADR 0003 §Migration Step 1, plan 0034 §6.6).
         #[arg(long)]
         confirm_backup: bool,
+
+        /// Plan 0040 §5 — name of the bucket group created (or reused)
+        /// for the migrated users. Defaults to the legacy personal
+        /// workspace label.
+        #[arg(long, default_value = "Legacy Personal Workspace")]
+        target_group_name: String,
+
+        /// Plan 0040 §5 — `groups.type` for the bucket. Must be one of
+        /// `'family'`, `'team'`, or `'personal'`. Default `'personal'`
+        /// matches the comment on migration 001 `groups.type` reserving
+        /// that value for this very tool.
+        #[arg(long, default_value = "personal")]
+        target_group_type: String,
     },
 }
 
@@ -1094,15 +1108,16 @@ async fn async_main(
                     to_postgres,
                     dry_run,
                     confirm_backup,
+                    target_group_name,
+                    target_group_type,
                 } => {
-                    match migrate_workspace::run(
-                        &from_sqlite,
-                        &to_postgres,
+                    let opts = migrate_workspace::RunOptions {
                         dry_run,
                         confirm_backup,
-                    )
-                    .await
-                    {
+                        target_group_name,
+                        target_group_type,
+                    };
+                    match migrate_workspace::run(&from_sqlite, &to_postgres, opts).await {
                         Ok((report, exit_code)) => {
                             report.print_summary();
                             if exit_code != 0 {
