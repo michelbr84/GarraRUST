@@ -12,7 +12,8 @@
 
 - **v1 (2026-04-22 13:45 ET) — pin-SHA approach:** primeira tentativa foi pinar a `advisory-db` ao SHA `1dc467507294` (último commit antes do batch libcrux CVSS v4 em 2026-03-24T08:19Z). Validado localmente que `crates/libcrux-poly1305/` não existia nesse SHA. Commitado como `2c6c7ce`.
 - **v2 (2026-04-22 13:55 ET) — workflow_dispatch FAILED:** run `24793600828` mostrou que o pin não foi suficiente. Falha secundária: `crates/deno/RUSTSEC-2025-0138.md` (adicionado 2025-12-29) também usa `cvss = "CVSS:4.0/..."`. O erro exato foi `unsupported CVSS version: 4.0`. Grep global no SHA pinado encontrou **26 entries CVSS v4 pré-existentes**. Pin por SHA teria que ir antes de 2025-12-29 — 4+ meses atrás — perdendo quase um semestre de advisories legítimos.
-- **v2 (2026-04-22 14:00 ET) — pivot para strip approach:** fetch HEAD da `advisory-db` + remoção cirúrgica de todos os arquivos com `^cvss = "CVSS:4.0/`. Safety net: aborta se remoção > 50 arquivos. Reteve este mesmo plan file para não inflacionar o numbering — §5.3 abaixo reescrito; v1 preservado em `§Revision log` + §5.7.
+- **v2 (2026-04-22 14:00 ET) — pivot para strip approach:** fetch HEAD da `advisory-db` + remoção cirúrgica de todos os arquivos com `^cvss = "CVSS:4.0/`. Safety net: aborta se remoção > 50 arquivos. Reteve este mesmo plan file para não inflacionar o numbering — §5.3 abaixo reescrito; v1 preservado em `§Revision log`.
+- **v3 (2026-04-22 14:05 ET) — `--no-fetch` bloqueia yanked check:** segunda run `24794024068` falhou com cascata de `couldn't check if the package is yanked: not found: No such crate in crates.io index` para cada crate da workspace. Investigação: `cargo audit --no-fetch` suprime tanto o pull do advisory-db quanto o refresh do índice crates.io usado pelo yanked-check (single flag, dupla ação). Fix aditivo: novo step `Prime crates.io index for workspace deps` executando `cargo fetch --locked` antes do audit, populando o sparse index cache localmente. `--no-fetch` preservado (necessário para proteger o strip). Commit separado.
 
 ---
 
@@ -115,6 +116,23 @@ Intersecção entre os 39 arquivos CVSS v4 stripados e nossa `Cargo.lock`:
 | wasmtime | 28.0.1 | manual (crate grande, WASM sandbox) |
 
 Follow-up: após o fix deste PR, Lote B-2 (RUSTSEC bumps) deve incluir revisão manual dos advisories CVSS v4 desses 6 crates para decidir bump ou ignore justificado. Registrado em `GAR-NEW-01` comment + no plano mestre da sessão.
+
+### 5.5 `--no-fetch` + `cargo fetch --locked`
+
+`cargo audit --no-fetch` é crítico: sem ele, cargo-audit faz `git pull` no advisory-db automaticamente quando detecta um repo local, **sobrescrevendo nosso strip step**. Verificado empiricamente no código fonte (v0.21.2) do rustsec crate.
+
+Efeito colateral: `--no-fetch` também suprime o refresh do sparse index `~/.cargo/registry/index/`, usado internamente pela verificação de yanked (`--deny yanked`). Sem o refresh, o index contém apenas as deps de `cargo-audit` (baixadas por `cargo install`), não as nossas — daí o erro cascata "No such crate in crates.io index: <nossa-dep>".
+
+Fix: novo step `Prime crates.io index for workspace deps` que executa `cargo fetch --locked` em `$GITHUB_WORKSPACE`. Isso popula o sparse index cache para TODAS as crates da nossa Cargo.lock, satisfazendo o yanked-check sem precisar que o cargo-audit re-fetch o index.
+
+Ordem de steps é crítica:
+
+1. `cargo install cargo-audit`
+2. `cargo fetch --locked` **(nosso índice primeiro)**
+3. Fetch advisory-db + strip CVSS v4
+4. `cargo audit --no-fetch --deny unsound --deny yanked`
+
+Se steps 2 e 3 forem invertidos, funciona igualmente, mas manter essa ordem espelha o fluxo mental "primeiro deps nossas, depois DB externa".
 
 ### 5.4 Fetch shallow + regex strip + `rm` seguro
 

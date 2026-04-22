@@ -84,6 +84,13 @@ jobs:
         # exit codes, report format).
         run: cargo install --locked --version '^0.21' cargo-audit
 
+      - name: Prime crates.io index for workspace deps
+        # cargo-audit --no-fetch disables BOTH the advisory-db git fetch
+        # AND the crates.io index refresh used by the yanked-crate check.
+        # Pre-populate the local sparse index via `cargo fetch --locked`
+        # so `--deny yanked` has data to work with. Plan 0043 §5.5.
+        run: cargo fetch --locked
+
       - name: Fetch advisory database and strip CVSS v4 entries
         # Fetch HEAD of the RustSec advisory database, then remove entries
         # that use CVSS v4 notation. rustsec 0.30.x fails to load the
