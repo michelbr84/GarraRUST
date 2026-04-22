@@ -23,7 +23,13 @@ Atualizado após GAR-391a (2026-04-13). **19 crates ativos** no workspace + 1 Po
 crates/
   garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate,
                         `config check` (GAR-379 slice 1) com validation + precedence
-                        report + exit codes sysexits (0/2/65)
+                        report + exit codes sysexits (0/2/65). Plan 0039 (GAR-413
+                        Stage 1): novo subcomando `garraia migrate workspace
+                        --from-sqlite … --to-postgres …` implementando users +
+                        user_identities + PHC reassembly PBKDF2-SHA256 → PHC
+                        format aceito por `garraia_auth::hashing::verify_pbkdf2`
+                        + audit atômico in-tx. Stages 3+ (groups, chats,
+                        messages, memory, sessions) em slices futuros.
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
