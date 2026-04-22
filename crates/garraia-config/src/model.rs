@@ -47,6 +47,12 @@ pub struct AppConfig {
     /// GAR-261: File-system glob and ignore configuration.
     #[serde(default)]
     pub fs: FsConfig,
+
+    /// GAR-379 slice 2 (plan 0042) — typed overrides for the mobile
+    /// chat stack. Currently carries only the assistant persona; future
+    /// slices will fold in more mobile-specific runtime knobs.
+    #[serde(default)]
+    pub mobile: MobileConfig,
 }
 
 impl Default for AppConfig {
@@ -65,8 +71,24 @@ impl Default for AppConfig {
             voice: VoiceConfig::default(),
             timeouts: TimeoutConfig::default(),
             fs: FsConfig::default(),
+            mobile: MobileConfig::default(),
         }
     }
+}
+
+/// Mobile-chat runtime overrides (plan 0042).
+///
+/// Currently carries only the assistant `persona` — a multi-line
+/// system prompt injected into the agent runtime for the mobile
+/// app's `/chat` endpoint. When absent, the gateway falls back to
+/// the `GARRA_MOBILE_PERSONA` env var, then to a built-in default
+/// shipped with the binary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MobileConfig {
+    /// Plan 0042 §5.1 — authoritative persona string. When `Some`,
+    /// precedence is config > env > default.
+    #[serde(default)]
+    pub persona: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
