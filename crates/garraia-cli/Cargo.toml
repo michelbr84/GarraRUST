@@ -15,6 +15,7 @@ garraia-config = { workspace = true }
 garraia-gateway = { workspace = true }
 garraia-channels = { workspace = true }
 garraia-agents = { workspace = true, features = ["mcp"] }
+garraia-auth = { workspace = true }
 garraia-db = { workspace = true }
 garraia-plugins = { workspace = true, optional = true }
 garraia-security = { workspace = true }
@@ -38,10 +39,25 @@ ring = { workspace = true }
 tracing-appender = "0.2.4"
 dotenvy.workspace = true
 
+# Plan 0039 — `migrate workspace` deps.
+# Use workspace-pinned versions where available to avoid drift.
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
+rusqlite = { workspace = true }
+base64 = "0.22"
+secrecy = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+
 [features]
 default = ["telemetry"]
 plugins = ["dep:garraia-plugins"]
 telemetry = ["garraia-gateway/telemetry"]
+
+[dev-dependencies]
+tempfile = "3"
+testcontainers = "0.23"
+# Integration tests run as their own bin crates, so they need explicit
+# access to some deps from the test file. Reuse workspace pins.
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
