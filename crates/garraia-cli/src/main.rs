@@ -3,6 +3,7 @@ mod chat;
 mod config_cmd;
 mod glob_cmd;
 mod migrate;
+mod migrate_workspace;
 mod update;
 mod wizard;
 
@@ -303,6 +304,29 @@ enum MigrateCommands {
         /// Path to OpenClaw config directory (default: ~/.config/openclaw/)
         #[arg(long)]
         source: Option<String>,
+    },
+
+    /// Migrate workspace data from SQLite (single-user) to Postgres
+    /// (multi-tenant). Plan 0039 — Stage 1: users + user_identities with
+    /// PHC reassembly + atomic audit.
+    Workspace {
+        /// Path to the legacy SQLite file (read-only).
+        #[arg(long)]
+        from_sqlite: PathBuf,
+
+        /// Postgres DSN — user must have BYPASSRLS or SUPERUSER.
+        #[arg(long)]
+        to_postgres: String,
+
+        /// Preview the migration without committing the transaction.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Required when the target Postgres `users` table already has
+        /// rows — evidence that the operator has a backup of the SQLite
+        /// source (ADR 0003 §Migration Step 1, plan 0034 §6.6).
+        #[arg(long)]
+        confirm_backup: bool,
     },
 }
 
@@ -1063,6 +1087,32 @@ async fn async_main(
                     match migrate::migrate_openclaw(source.as_deref(), dry_run, &garraia_dir) {
                         Ok(report) => report.print_summary(),
                         Err(e) => println!("migration failed: {}", e),
+                    }
+                }
+                MigrateCommands::Workspace {
+                    from_sqlite,
+                    to_postgres,
+                    dry_run,
+                    confirm_backup,
+                } => {
+                    match migrate_workspace::run(
+                        &from_sqlite,
+                        &to_postgres,
+                        dry_run,
+                        confirm_backup,
+                    )
+                    .await
+                    {
+                        Ok((report, exit_code)) => {
+                            report.print_summary();
+                            if exit_code != 0 {
+                                std::process::exit(exit_code);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("workspace migration failed: {e:#}");
+                            std::process::exit(migrate_workspace::exit_codes::IO_ERR);
+                        }
                     }
                 }
             }
