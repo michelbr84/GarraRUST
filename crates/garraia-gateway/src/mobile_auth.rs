@@ -24,7 +24,7 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use garraia_auth::hashing::{consume_dummy_hash, hash_argon2id, verify_argon2id};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ring::pbkdf2;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,11 @@ impl FromRequestParts<Arc<AppState>> for MobileAuth {
         let token = &auth_header["Bearer ".len()..];
         let secret = jwt_secret();
         let key = DecodingKey::from_secret(secret.as_bytes());
-        let mut validation = Validation::default();
+        // SEC-H-1 (plan 0036 audit): pin the algorithm list explicitly so the
+        // guard against algorithm-confusion (e.g. `alg: none`) is closed
+        // regardless of future jsonwebtoken defaults. The fluxo Postgres em
+        // `garraia-auth/jwt.rs` já faz isso; aqui espelhamos.
+        let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
 
         match decode::<MobileClaims>(token, &key, &validation) {
@@ -364,7 +368,9 @@ async fn verify_password_and_maybe_upgrade(
             match store.update_mobile_user_hash(user_id, &new_phc) {
                 Ok(n) if n >= 1 => {}
                 Ok(_) => {
-                    warn!("lazy_upgrade: zero rows affected for user_id (best-effort; proceeding)");
+                    // SEC-M-1 (plan 0036 audit): include the user_id (UUID, not
+                    // PII) so operators can correlate orphan warnings.
+                    warn!("lazy_upgrade: zero rows for uid={user_id} (best-effort; proceeding)");
                 }
                 Err(e) => {
                     warn!("lazy_upgrade: DB update failed: {e}");
@@ -424,10 +430,20 @@ pub fn legacy_hash_password_for_tests(password: &str) -> (String, String) {
 }
 
 fn jwt_secret() -> String {
-    std::env::var("GARRAIA_JWT_SECRET").unwrap_or_else(|_| {
-        std::env::var("GarraIA_VAULT_PASSPHRASE")
-            .unwrap_or_else(|_| "garraia-insecure-default-jwt-secret-change-me".to_string())
-    })
+    if let Ok(v) = std::env::var("GARRAIA_JWT_SECRET") {
+        return v;
+    }
+    if let Ok(v) = std::env::var("GarraIA_VAULT_PASSPHRASE") {
+        return v;
+    }
+    // SEC-H-2 (plan 0036 audit): both env vars are unset. Loudly emit a
+    // `warn!` so operators see the misconfiguration in logs — the hardcoded
+    // fallback is insecure and exists only so dev workflows keep working.
+    // Production deployments MUST set `GARRAIA_JWT_SECRET`.
+    warn!(
+        "mobile_auth::jwt_secret: neither GARRAIA_JWT_SECRET nor GarraIA_VAULT_PASSPHRASE is set; using insecure fallback — NOT SAFE FOR PRODUCTION"
+    );
+    "garraia-insecure-default-jwt-secret-change-me".to_string()
 }
 
 /// Public re-export so that oauth.rs and totp.rs can issue tokens without duplicating logic.
