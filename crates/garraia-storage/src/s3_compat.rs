@@ -12,6 +12,17 @@
 //! 2. **MIME allow-list** (shared with `LocalFs`) — opt-out explicit via
 //!    `PutOptions::allow_unsafe_mime`.
 //! 3. **Presigned URL TTL range** — `[30s, 900s]` enforced pre-call.
+//!
+//! **Slice 3+ follow-ups (ADR 0004 §Security gaps, plan 0038 audit):**
+//! - `audit_events` emission (`file.uploaded`, `file.deleted`,
+//!   `file.presign_get_issued`) belongs in the gateway handler, not
+//!   this crate.
+//! - Cross-tenant isolation (handler validates `file.group_id =
+//!   caller.group_id` before `put`/`get`/presign) — gateway slice 3.
+//! - Short-lived IAM credentials (prefer role over static keys) —
+//!   deploy docs slice 3.
+//! - Bucket-level default encryption + `Deny` policy on non-SSE
+//!   uploads — deploy docs slice 3.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +44,7 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::error::{Result, StorageError};
+use crate::hash_util::sha256_hex;
 use crate::object_store::{
     GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist, check_presign_ttl,
     maybe_compute_integrity_hmac,
@@ -172,12 +184,6 @@ impl S3Compatible {
             other => StorageError::Backend(format!("s3 head: {other}")),
         }
     }
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
 }
 
 fn sha256_base64(data: &[u8]) -> String {
@@ -328,6 +334,22 @@ impl ObjectStore for S3Compatible {
         }
     }
 
+    /// Issue a presigned PUT URL. The URL is scoped to the bucket + key
+    /// + TTL; the caller PUTs bytes directly against it without holding
+    /// AWS credentials.
+    ///
+    /// **Security note (plan 0038 audit SEC-H):** the
+    /// `x-amz-server-side-encryption` header requested here is included
+    /// in the signed query string the SDK produces, but the exact
+    /// contract depends on SDK/provider behaviour. MinIO, R2 and AWS all
+    /// accept client PUTs *without* that header when the bucket has no
+    /// default encryption configured — the SDK-side signing does not
+    /// prevent omission. The production deployment MUST therefore
+    /// enable bucket-level default encryption OR enforce via bucket
+    /// policy (`"Deny": "PutObject" when "x-amz-server-side-encryption"
+    /// is absent`). The storage layer does NOT attempt to detect or
+    /// configure bucket policy — that is a deploy-time concern
+    /// documented in `docs/storage.md` (slice 3).
     async fn presign_put(&self, key: &str, ttl: Duration) -> Result<Url> {
         check_presign_ttl(ttl)?;
         let key = sanitise_key(key)?;
@@ -374,27 +396,12 @@ impl ObjectStore for S3Compatible {
 mod tests {
     use super::*;
 
-    #[test]
-    fn from_env_requires_bucket() {
-        // Ensure we hit the error path when GARRAIA_STORAGE_S3_BUCKET is
-        // absent. This test MUST clear the var first to be independent.
-        let had = std::env::var("GARRAIA_STORAGE_S3_BUCKET").ok();
-        // SAFETY: tests are single-threaded here (no parallelism contract)
-        // SAFETY: std::env::remove_var is safe on single-threaded unit tests.
-        unsafe {
-            std::env::remove_var("GARRAIA_STORAGE_S3_BUCKET");
-        }
-        let err = S3Config::from_env().unwrap_err();
-        match err {
-            StorageError::Backend(msg) => assert!(msg.contains("GARRAIA_STORAGE_S3_BUCKET")),
-            other => panic!("expected Backend, got {other:?}"),
-        }
-        if let Some(v) = had {
-            unsafe {
-                std::env::set_var("GARRAIA_STORAGE_S3_BUCKET", v);
-            }
-        }
-    }
+    // NOTE: we avoid writing a `from_env_requires_bucket` test that
+    // mutates process-wide env state because `cargo test` runs tests in
+    // parallel inside the same process and `std::env::remove_var` is
+    // `unsafe` + racy (code review NIT). The happy-path validation
+    // happens in the MinIO integration test instead — it asserts that a
+    // fully-specified client can put/get bytes.
 
     #[test]
     fn s3_config_debug_redacts_credentials() {

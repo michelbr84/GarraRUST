@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, warn};
 use url::Url;
 
 use crate::error::{Result, StorageError};
+use crate::hash_util::sha256_hex;
 use crate::object_store::{
     GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist,
     maybe_compute_integrity_hmac,
@@ -82,12 +82,6 @@ impl LocalFs {
         }
         Ok(path)
     }
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
 }
 
 #[async_trait]

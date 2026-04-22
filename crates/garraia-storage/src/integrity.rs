@@ -22,6 +22,19 @@ type HmacSha256 = Hmac<Sha256>;
 ///
 /// Exposed (not just used internally) so tests and the gateway can assert
 /// the exact contract without re-implementing the formatter.
+///
+/// **Separator invariant (plan 0038 audit SEC-M):** `:` separates the
+/// three components because [`crate::path_sanitize::sanitise_key`]
+/// forbids `:` in `object_key`, and the storage layer expects
+/// `version_id` to match `^v[0-9]+$` at the caller boundary. With both
+/// invariants, no two distinct `(object_key, version_id, sha256_hex)`
+/// tuples can collapse to the same canonical string. Callers that
+/// accept free-form `version_id` MUST validate the pattern before
+/// calling [`compute_hmac`] — otherwise a crafted input like
+/// `version_id = "v1:00" + sha…` would collide with
+/// `version_id = "v1"` followed by the payload. The storage layer
+/// refuses to enforce `version_id` format here because it cannot know
+/// the caller's naming scheme in advance.
 pub fn canonical_input(object_key: &str, version_id: &str, sha256_hex: &str) -> String {
     format!("{object_key}:{version_id}:{sha256_hex}")
 }
@@ -44,6 +57,17 @@ pub fn compute_hmac(secret: &[u8], object_key: &str, version_id: &str, sha256_he
 ///
 /// Returns `Ok(())` on match. On mismatch returns a stable error message
 /// that does NOT leak the expected/actual values.
+///
+/// **Security note (plan 0038 audit):** `compute_hmac` always produces
+/// exactly 64 hex chars (32 raw bytes). The early return on length
+/// mismatch leaks only whether `expected_hex` is the correct length —
+/// which is public information (a spec-compliant caller always sends 64
+/// chars). An adversary cannot convert this into a key recovery or
+/// forgery oracle. The byte-level comparison uses
+/// [`subtle::ConstantTimeEq::ct_eq`] which, per the crate's own source,
+/// short-circuits on length mismatch when applied to slices — so
+/// performing the length check here explicitly is merely clearer
+/// documentation, not a timing regression.
 pub fn verify_hmac(
     secret: &[u8],
     object_key: &str,
@@ -52,8 +76,6 @@ pub fn verify_hmac(
     expected_hex: &str,
 ) -> Result<(), &'static str> {
     let got = compute_hmac(secret, object_key, version_id, sha256_hex);
-    // Decode both to bytes so we compare fixed-length arrays. Different
-    // lengths already signal tampering — return fail-closed.
     let lhs = match hex::decode(&got) {
         Ok(b) => b,
         Err(_) => return Err("internal HMAC hex decode failed"),

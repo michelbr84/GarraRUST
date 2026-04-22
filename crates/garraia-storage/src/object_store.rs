@@ -168,7 +168,14 @@ pub const PRESIGN_TTL_MAX: Duration = Duration::from_secs(15 * 60);
 
 /// Guard helper used by backends that support presigned URLs. Returns
 /// `StorageError::TtlOutOfRange` when `ttl` is not in `[30s, 900s]`.
-pub fn check_presign_ttl(ttl: Duration) -> Result<()> {
+///
+/// Visibility is `pub(crate)` because only backend `impl`s call this —
+/// consumers (`garraia-gateway` slice 3) rely on `presign_*` which
+/// enforces the range internally. When only the `LocalFs` backend is
+/// compiled (default), the helper is unused — suppress the warning
+/// via `#[allow(dead_code)]` on that path.
+#[cfg_attr(not(feature = "storage-s3"), allow(dead_code))]
+pub(crate) fn check_presign_ttl(ttl: Duration) -> Result<()> {
     if ttl < PRESIGN_TTL_MIN || ttl > PRESIGN_TTL_MAX {
         return Err(StorageError::TtlOutOfRange {
             requested_secs: ttl.as_secs(),
@@ -182,7 +189,10 @@ pub fn check_presign_ttl(ttl: Duration) -> Result<()> {
 /// Shared helper used by backends to either reject based on MIME
 /// allow-list or let the upload proceed. Centralised here so LocalFs and
 /// S3Compatible apply the exact same rule (plan 0038 §5.2).
-pub fn check_mime_allowlist(opts: &PutOptions) -> Result<()> {
+///
+/// Visibility is `pub(crate)` — callers interact via `put`, which
+/// delegates to this helper.
+pub(crate) fn check_mime_allowlist(opts: &PutOptions) -> Result<()> {
     let Some(ct) = opts.content_type.as_deref() else {
         // No type declared — the backend cannot classify. Downstream
         // slice may switch to deny-by-default; for now log at the
@@ -198,9 +208,7 @@ pub fn check_mime_allowlist(opts: &PutOptions) -> Result<()> {
         return Ok(());
     }
     if !crate::mime_allowlist::is_mime_allowed(ct) {
-        return Err(StorageError::DisallowedMime {
-            content_type: ct.to_owned(),
-        });
+        return Err(StorageError::disallowed_mime(ct));
     }
     Ok(())
 }
@@ -244,13 +252,13 @@ mod tests {
     #[test]
     fn check_ttl_rejects_too_short() {
         let err = check_presign_ttl(Duration::from_secs(5)).unwrap_err();
-        matches!(err, StorageError::TtlOutOfRange { .. });
+        assert!(matches!(err, StorageError::TtlOutOfRange { .. }));
     }
 
     #[test]
     fn check_ttl_rejects_too_long() {
         let err = check_presign_ttl(Duration::from_secs(3600)).unwrap_err();
-        matches!(err, StorageError::TtlOutOfRange { .. });
+        assert!(matches!(err, StorageError::TtlOutOfRange { .. }));
     }
 
     #[test]

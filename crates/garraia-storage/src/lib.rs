@@ -29,6 +29,7 @@
 //! ```
 
 pub mod error;
+mod hash_util;
 pub mod integrity;
 pub mod local_fs;
 pub mod mime_allowlist;
@@ -42,7 +43,7 @@ pub use error::{Result, StorageError};
 pub use local_fs::LocalFs;
 pub use object_store::{
     GetOptions, GetResult, ObjectMetadata, ObjectStore, PRESIGN_TTL_MAX, PRESIGN_TTL_MIN,
-    PutOptions, check_mime_allowlist, check_presign_ttl, maybe_compute_integrity_hmac,
+    PutOptions,
 };
 pub use path_sanitize::{SanitizeError, sanitise_key};
 

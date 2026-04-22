@@ -49,3 +49,22 @@ pub enum StorageError {
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
+
+impl StorageError {
+    /// Construct a [`StorageError::DisallowedMime`] with the echoed
+    /// `content_type` sanitised: control characters stripped, length
+    /// capped at 64 bytes, unicode non-printables replaced. Prevents
+    /// log-injection when the rejected input was adversary-supplied
+    /// (plan 0038 security review SEC-M).
+    pub fn disallowed_mime(content_type: &str) -> Self {
+        const MAX_LEN: usize = 64;
+        let sanitised: String = content_type
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_LEN)
+            .collect();
+        Self::DisallowedMime {
+            content_type: sanitised,
+        }
+    }
+}

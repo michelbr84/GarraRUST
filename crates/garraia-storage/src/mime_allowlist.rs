@@ -12,18 +12,21 @@
 /// are case-insensitive per RFC 6838 §4.2) and strips any `;parameter`
 /// suffix before matching.
 pub const DEFAULT_ALLOWED: &[&str] = &[
-    // image/*: png, jpeg, webp, gif, svg+xml
+    // image/*: png, jpeg, webp, gif, svg+xml, heic/heif (iOS default)
     "image/png",
     "image/jpeg",
     "image/webp",
     "image/gif",
     "image/svg+xml",
+    "image/heic",
+    "image/heif",
     // documents
     "application/pdf",
     "application/json",
     "application/zip",
-    // video / audio
+    // video / audio (webm added for VP9/AV1 browser recorders)
     "video/mp4",
+    "video/webm",
     "audio/mpeg",
     "audio/ogg",
     "audio/wav",
