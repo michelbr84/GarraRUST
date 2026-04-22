@@ -124,7 +124,10 @@ benches/
 
 - `AppState` é `Arc<AppState>` — import via `crate::state::AppState`
 - DB via `SessionStore` (rusqlite, sync, `tokio::sync::Mutex`)
-- Axum 0.8: `FromRequestParts` usa AFIT nativo — **sem** `#[async_trait]`
+- Axum 0.8: `FromRequestParts` usa AFIT nativo — **sem** `#[async_trait]`.
+  Exceção documentada: traits que são usados como `dyn Trait` (ex.:
+  `garraia_storage::ObjectStore`) usam `#[async_trait]` por causa de
+  limitação de AFIT + `dyn` em Rust stable. Ver plan 0037 §5.1.
 - Usar `?` operator para tratamento de erros (não `unwrap()` em produção)
 - SQL queries via `params!` macro (nunca concatenar strings)
 - `cargo check -p <crate>` antes de qualquer commit

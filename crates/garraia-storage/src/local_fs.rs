@@ -31,28 +31,46 @@ pub struct LocalFs {
 
 impl LocalFs {
     /// Create the base directory if absent and return a ready-to-use store.
+    ///
+    /// **Code review #1 (plan 0037):** `base_dir` is `canonicalize`d so the
+    /// prefix check in [`Self::resolve`] compares apples-to-apples even when
+    /// the caller passes a non-canonical path (e.g. via `TempDir::path()` on
+    /// Windows which can carry a `\\?\` prefix, or via a symlink-to-dir).
     pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
-        let base_dir = base_dir.into();
-        if !base_dir.exists() {
-            std::fs::create_dir_all(&base_dir)?;
+        let requested = base_dir.into();
+        if !requested.exists() {
+            std::fs::create_dir_all(&requested)?;
         }
-        if !base_dir.is_dir() {
+        if !requested.is_dir() {
             return Err(StorageError::Backend(format!(
                 "base_dir `{}` exists and is not a directory",
-                base_dir.display()
+                requested.display()
             )));
         }
+        let base_dir = std::fs::canonicalize(&requested).map_err(|e| {
+            StorageError::Backend(format!(
+                "failed to canonicalize base_dir `{}`: {e}",
+                requested.display()
+            ))
+        })?;
         Ok(Self { base_dir })
     }
 
+    /// Build an absolute path under [`Self::base_dir`] for `key`.
+    ///
+    /// **SEC-F-01 (plan 0037 audit):** symlinks *within* `base_dir` are not
+    /// followed by this check — a pre-existing symlink like `base_dir/link
+    /// → /etc` would have its logical path pass the prefix guard and then
+    /// resolve outside the base at the OS layer during `File::open`. Callers
+    /// MUST ensure `base_dir` is not world-writable and contains no
+    /// adversarial symlinks. Slice 2 (S3 backend) eliminates this surface
+    /// entirely because object keys there are virtual, not filesystem paths.
     fn resolve(&self, key: &str) -> Result<PathBuf> {
         let key = sanitise_key(key)?;
         let mut path = self.base_dir.clone();
         for seg in key.split('/') {
             path.push(seg);
         }
-        // Defense in depth: canonicalize would resolve symlinks, so instead
-        // we assert the joined path stays under base_dir via prefix check.
         if !path.starts_with(&self.base_dir) {
             return Err(StorageError::InvalidKey(format!(
                 "resolved path `{}` escapes base_dir",
@@ -130,6 +148,14 @@ impl ObjectStore for LocalFs {
         // `head` could in principle be cheaper than reading the file, but
         // `etag_sha256` requires hashing content. We fall back to full read
         // here to preserve the invariant that put/head return the same etag.
+        // TODO(slice-2): persist the etag in a sidecar (e.g. `key.meta`) or
+        // move etag computation out of `head` for large files — current
+        // implementation loads the entire object into RAM for every call.
+        // SEC-F-04 (plan 0037 audit).
+        // TODO(slice-2): `content_type` is not persisted on disk today, so
+        // `head` always returns `None` even when `put` was called with a
+        // `content_type`. Code review MEDIUM #2 — sidecar `.meta` file or
+        // filesystem xattr would close the gap.
         let bytes = tokio::fs::read(&path).await?;
         let etag = sha256_hex(&bytes);
         Ok(ObjectMetadata {

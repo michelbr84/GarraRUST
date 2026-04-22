@@ -17,11 +17,15 @@ pub enum SanitizeError {
     ContainsNul,
     #[error("key contains a parent-directory segment (`..`)")]
     ParentSegment,
+    #[error("key contains a current-directory segment (`.`)")]
+    CurrentSegment,
+    #[error("key contains an empty segment (e.g. `a//b` or trailing `/`)")]
+    EmptySegment,
     #[error("key starts with a path separator — absolute paths are rejected")]
     Absolute,
     #[error("key uses a backslash; forward-slash-only is required")]
     Backslash,
-    #[error("key starts with a Windows drive letter (`C:/`)")]
+    #[error("key starts with a Windows drive letter (`C:/` or `C:foo`)")]
     WindowsDrive,
     #[error("key contains a reserved Windows name (`{0}`)")]
     ReservedWindowsName(&'static str),
@@ -84,19 +88,28 @@ pub fn sanitise_key(key: &str) -> Result<&str, SanitizeError> {
     if key.starts_with('/') {
         return Err(SanitizeError::Absolute);
     }
-    // Windows drive letters: `C:/`, `Z:/`, case-insensitive.
-    if key.len() >= 3 {
+    // Windows drive letters: `C:/`, `Z:/`, or `C:foo` (drive-relative, which
+    // resolves against the per-drive current working directory on Windows).
+    // SEC-F-02 (plan 0037 audit): even without a separator, `C:` prefix must
+    // be rejected because Windows interprets it as a drive-scoped path.
+    if key.len() >= 2 {
         let bytes = key.as_bytes();
-        if bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes[2] == b'/' || bytes[2] == b'\\')
-        {
+        if bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
             return Err(SanitizeError::WindowsDrive);
         }
     }
     for seg in key.split('/') {
+        if seg.is_empty() {
+            // SEC-F-03 (plan 0037 audit): rejects `a//b`, trailing `/`, and `/a`.
+            return Err(SanitizeError::EmptySegment);
+        }
         if seg == ".." {
             return Err(SanitizeError::ParentSegment);
+        }
+        if seg == "." {
+            // SEC-F-03: rejects `./foo` and `foo/.` — equivalent but
+            // distinct-looking keys confuse downstream caches.
+            return Err(SanitizeError::CurrentSegment);
         }
         // Strip extension for reserved-name comparison: CON.txt is also reserved on Windows.
         let base = seg.split('.').next().unwrap_or(seg);
@@ -180,6 +193,41 @@ mod tests {
             sanitise_key(k),
             Err(SanitizeError::ControlChar { byte: 0x7f })
         ));
+    }
+
+    #[test]
+    fn rejects_drive_relative_without_separator() {
+        // SEC-F-02: `C:foo` on Windows is drive-current-dir relative.
+        assert_eq!(sanitise_key("C:foo"), Err(SanitizeError::WindowsDrive));
+        assert_eq!(sanitise_key("z:file"), Err(SanitizeError::WindowsDrive));
+        // But `a:b` is accepted if first char is not alphabetic? First check is
+        // `is_ascii_alphabetic`, so `1:b` would pass — that's fine because `1:`
+        // is not a valid Windows drive.
+        // `a:` alone (2 bytes) is rejected.
+        assert_eq!(sanitise_key("a:"), Err(SanitizeError::WindowsDrive));
+    }
+
+    #[test]
+    fn rejects_empty_segment() {
+        // SEC-F-03: trailing slash, consecutive slashes.
+        for k in ["a/", "a//b", "foo///bar"] {
+            assert_eq!(
+                sanitise_key(k),
+                Err(SanitizeError::EmptySegment),
+                "key `{k}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_current_segment() {
+        for k in ["./foo", "foo/.", "foo/./bar", "."] {
+            assert_eq!(
+                sanitise_key(k),
+                Err(SanitizeError::CurrentSegment),
+                "key `{k}` should be rejected"
+            );
+        }
     }
 
     #[test]
