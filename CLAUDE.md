@@ -109,6 +109,13 @@ crates/
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
+  garraia-gateway/    — Fase 3.5 (GAR-395 slice 1 plan 0041) adiciona
+                        `rest_v1::uploads` com `POST /v1/uploads` (tus 1.0
+                        Creation) + `HEAD /v1/uploads/{id}` (Resume probe)
+                        atrás de `Tus-Resumable: 1.0.0` precondition. Stored
+                        em `tus_uploads` (migration 014, FORCE RLS).
+                        PATCH + ObjectStore commit ficam para slice 2;
+                        termination + expiration worker para slice 3.
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature

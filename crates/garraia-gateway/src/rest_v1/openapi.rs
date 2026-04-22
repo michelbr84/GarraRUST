@@ -19,6 +19,7 @@ use super::groups::{
 use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
 use super::problem::ProblemDetails;
+use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
 /// Plan 0016 M3-T1 — registers a bearer JWT `SecurityScheme` in the
 /// generated OpenAPI document's `components.securitySchemes`. Applied
@@ -69,6 +70,8 @@ impl Modify for SecurityAddon {
         super::groups::set_member_role,
         super::groups::delete_member,
         super::invites::accept_invite,
+        super::uploads::create_upload,
+        super::uploads::head_upload,
     ),
     components(schemas(
         MeResponse,
@@ -82,6 +85,8 @@ impl Modify for SecurityAddon {
         InviteResponse,
         MemberResponse,
         AcceptInviteResponse,
+        CreateUploadRequest,
+        CreateUploadResponse,
     )),
     modifiers(&SecurityAddon)
 )]
