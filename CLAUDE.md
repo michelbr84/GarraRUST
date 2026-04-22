@@ -21,7 +21,9 @@ Atualizado após GAR-391a (2026-04-13). **19 crates ativos** no workspace + 1 Po
 
 ```text
 crates/
-  garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate
+  garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate,
+                        `config check` (GAR-379 slice 1) com validation + precedence
+                        report + exit codes sysexits (0/2/65)
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
@@ -56,7 +58,12 @@ crates/
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
-  garraia-config/     — schema unificado de config (serde + validator + notify)
+  garraia-config/     — schema unificado de config (serde + validator + notify).
+                        Plan 0035 (GAR-379 slice 1): novo módulo `check` com `run_check`
+                        + `ConfigCheck`/`Finding`/`Severity`/`SourceReport` alimentando o
+                        subcomando CLI `garraia config check [--json] [--strict]`.
+                        Redaction invariant: output (humano + JSON) só reporta presença
+                        de secrets (`api_key_set: true`), nunca valores.
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
                         (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
