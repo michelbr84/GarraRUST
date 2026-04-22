@@ -26,9 +26,45 @@ pub enum StorageError {
     #[error("integrity check failed for {key}: {reason}")]
     IntegrityMismatch { key: String, reason: String },
 
+    /// The caller-supplied `content_type` is not in the allow-list and
+    /// `PutOptions::allow_unsafe_mime` was false. Plan 0038 §3, ADR 0004
+    /// §Security 3.
+    #[error(
+        "content-type `{content_type}` is not in the allow-list; set allow_unsafe_mime to override"
+    )]
+    DisallowedMime { content_type: String },
+
+    /// Presigned URL TTL fell outside the `[30s, 900s]` range mandated by
+    /// ADR 0004 §Security 1 + §Security 10.
+    #[error("presigned URL ttl of {requested_secs}s is out of range [{min_secs}s, {max_secs}s]")]
+    TtlOutOfRange {
+        requested_secs: u64,
+        min_secs: u64,
+        max_secs: u64,
+    },
+
     /// A catch-all for backend-specific failures that are none of the above.
     #[error("backend error: {0}")]
     Backend(String),
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
+
+impl StorageError {
+    /// Construct a [`StorageError::DisallowedMime`] with the echoed
+    /// `content_type` sanitised: control characters stripped, length
+    /// capped at 64 bytes, unicode non-printables replaced. Prevents
+    /// log-injection when the rejected input was adversary-supplied
+    /// (plan 0038 security review SEC-M).
+    pub fn disallowed_mime(content_type: &str) -> Self {
+        const MAX_LEN: usize = 64;
+        let sanitised: String = content_type
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_LEN)
+            .collect();
+        Self::DisallowedMime {
+            content_type: sanitised,
+        }
+    }
+}
