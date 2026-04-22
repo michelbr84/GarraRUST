@@ -35,6 +35,10 @@ Thumbs.db
 .claude/worktrees/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
+# Git worktrees — isolated workspaces used by parallel agent execution
+# (superpowers `using-git-worktrees` skill). Never commit worktree contents.
+.worktrees/
+
 # GarraIA SuperPowers — estado e outputs de automação
 .garra-estado.md
 .dream-state.json
