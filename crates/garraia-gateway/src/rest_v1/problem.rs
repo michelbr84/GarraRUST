@@ -52,6 +52,16 @@ pub enum RestError {
     /// The `{0}` detail is emitted to clients — MUST NOT embed PII.
     #[error("{0}")]
     Gone(String),
+    /// Plan 0041 (GAR-395): `Tus-Resumable` header missing or mismatch.
+    /// The response builder is responsible for attaching
+    /// `Tus-Version: 1.0.0` before sending. The `{0}` detail is emitted
+    /// to clients — MUST NOT embed PII.
+    #[error("{0}")]
+    PreconditionFailed(String),
+    /// Plan 0041 (GAR-395): `Upload-Length` outside the `[1, 5 GiB]`
+    /// range. The `{0}` detail is emitted — MUST NOT embed PII.
+    #[error("{0}")]
+    PayloadTooLarge(String),
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
@@ -64,7 +74,7 @@ pub enum RestError {
 }
 
 impl RestError {
-    fn status(&self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self {
             RestError::Unauthenticated => StatusCode::UNAUTHORIZED,
             RestError::Forbidden => StatusCode::FORBIDDEN,
@@ -72,6 +82,8 @@ impl RestError {
             RestError::NotFound => StatusCode::NOT_FOUND,
             RestError::Conflict(_) => StatusCode::CONFLICT,
             RestError::Gone(_) => StatusCode::GONE,
+            RestError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
+            RestError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -85,6 +97,8 @@ impl RestError {
             RestError::NotFound => "Not Found",
             RestError::Conflict(_) => "Conflict",
             RestError::Gone(_) => "Gone",
+            RestError::PreconditionFailed(_) => "Precondition Failed",
+            RestError::PayloadTooLarge(_) => "Payload Too Large",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::Internal(_) => "Internal Server Error",
         }
