@@ -15,7 +15,10 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::error::{Result, StorageError};
-use crate::object_store::{GetResult, ObjectMetadata, ObjectStore, PutOptions};
+use crate::object_store::{
+    GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist,
+    maybe_compute_integrity_hmac,
+};
 use crate::path_sanitize::sanitise_key;
 
 /// Store each object under `<base_dir>/<key>`.
@@ -90,12 +93,14 @@ fn sha256_hex(data: &[u8]) -> String {
 #[async_trait]
 impl ObjectStore for LocalFs {
     async fn put(&self, key: &str, bytes: Bytes, opts: PutOptions) -> Result<ObjectMetadata> {
+        check_mime_allowlist(&opts)?;
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         let size_bytes = bytes.len() as u64;
         let etag = sha256_hex(&bytes);
+        let integrity_hmac = maybe_compute_integrity_hmac(&opts, key, &etag);
         let mut file = tokio::fs::File::create(&path).await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
@@ -105,6 +110,7 @@ impl ObjectStore for LocalFs {
             size_bytes,
             etag_sha256: etag,
             content_type: opts.content_type,
+            integrity_hmac,
         })
     }
 
@@ -130,6 +136,7 @@ impl ObjectStore for LocalFs {
                 size_bytes,
                 etag_sha256: etag,
                 content_type: None,
+                integrity_hmac: None,
             },
         })
     }
@@ -163,6 +170,7 @@ impl ObjectStore for LocalFs {
             size_bytes: meta.len(),
             etag_sha256: etag,
             content_type: None,
+            integrity_hmac: None,
         })
     }
 
@@ -344,12 +352,138 @@ mod tests {
                 Bytes::from_static(b"img"),
                 PutOptions {
                     content_type: Some("image/png".into()),
-                    cache_control: None,
+                    ..Default::default()
                 },
             )
             .await
             .unwrap();
         assert_eq!(meta.content_type.as_deref(), Some("image/png"));
+    }
+
+    #[tokio::test]
+    async fn put_rejects_disallowed_mime() {
+        let (_dir, store) = fresh();
+        let err = store
+            .put(
+                "bad",
+                Bytes::from_static(b"x"),
+                PutOptions {
+                    content_type: Some("application/x-msdownload".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::DisallowedMime { .. }));
+    }
+
+    #[tokio::test]
+    async fn put_allows_disallowed_mime_when_opted_in() {
+        let (_dir, store) = fresh();
+        let meta = store
+            .put(
+                "archive.exe",
+                Bytes::from_static(b"pe"),
+                PutOptions {
+                    content_type: Some("application/x-msdownload".into()),
+                    allow_unsafe_mime: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            meta.content_type.as_deref(),
+            Some("application/x-msdownload")
+        );
+    }
+
+    #[tokio::test]
+    async fn put_computes_integrity_hmac_when_material_present() {
+        let (_dir, store) = fresh();
+        let meta = store
+            .put(
+                "group/file/v1",
+                Bytes::from_static(b"payload"),
+                PutOptions {
+                    version_id: Some("v1".into()),
+                    hmac_secret: Some(b"storage-secret".to_vec()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let hmac = meta.integrity_hmac.expect("integrity_hmac populated");
+        assert_eq!(hmac.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn put_integrity_hmac_absent_without_material() {
+        let (_dir, store) = fresh();
+        let meta = store
+            .put("g/f/v1", Bytes::from_static(b"p"), PutOptions::default())
+            .await
+            .unwrap();
+        assert!(meta.integrity_hmac.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_with_verifies_matching_hmac() {
+        let (_dir, store) = fresh();
+        let put_meta = store
+            .put(
+                "g/f/v1",
+                Bytes::from_static(b"bytes"),
+                PutOptions {
+                    version_id: Some("v1".into()),
+                    hmac_secret: Some(b"key".to_vec()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let expected = put_meta.integrity_hmac.clone().unwrap();
+        let got = store
+            .get_with(
+                "g/f/v1",
+                crate::GetOptions {
+                    expected_integrity_hmac: Some(expected),
+                    version_id: Some("v1".into()),
+                    hmac_secret: Some(b"key".to_vec()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(&got.bytes[..], b"bytes");
+    }
+
+    #[tokio::test]
+    async fn get_with_rejects_tampered_hmac() {
+        let (_dir, store) = fresh();
+        store
+            .put(
+                "g/f/v1",
+                Bytes::from_static(b"bytes"),
+                PutOptions {
+                    version_id: Some("v1".into()),
+                    hmac_secret: Some(b"key".to_vec()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let err = store
+            .get_with(
+                "g/f/v1",
+                crate::GetOptions {
+                    expected_integrity_hmac: Some("00".repeat(32)),
+                    version_id: Some("v1".into()),
+                    hmac_secret: Some(b"key".to_vec()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::IntegrityMismatch { .. }));
     }
 
     #[test]

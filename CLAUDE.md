@@ -96,9 +96,17 @@ crates/
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
-  garraia-storage/    — Fase 3.5 (GAR-394 slice 1, plan 0037) — trait ObjectStore
-                        + LocalFs baseline + path_sanitize compartilhado. Presigned
-                        URLs + S3/MinIO ficam para slice 2.
+  garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
+                        trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
+                        adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
+                        `storage-s3` com SSE-S3 obrigatório, MIME allow-list
+                        compartilhada com LocalFs (ADR 0004 §Security 3), HMAC-SHA256
+                        integrity sobre `{key}:{version_id}:{sha256_hex}` via
+                        `PutOptions::hmac_secret` (ADR 0004 §Security 4), presigned
+                        URLs reais com TTL range [30s, 900s]. MinIO coberto via
+                        endpoint override. Integration tests: MinIO testcontainer
+                        gated pela feature. Wiring no `garraia-gateway` +
+                        `garraia-config::StorageConfig` fica para slice 3.
 apps/
   garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
 ```
