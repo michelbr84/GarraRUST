@@ -995,8 +995,9 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Error
-                && f.field == "storage.max_patch_bytes"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "storage.max_patch_bytes"),
             "expected error on tiny max_patch_bytes: {findings:?}"
         );
     }
@@ -1012,8 +1013,9 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Error
-                && f.field == "storage.s3"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "storage.s3"),
             "expected error on missing s3 block: {findings:?}"
         );
     }
@@ -1028,8 +1030,9 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Warning
-                && f.field == "storage.backend"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.field == "storage.backend"),
             "expected warning on backend=none: {findings:?}"
         );
     }
