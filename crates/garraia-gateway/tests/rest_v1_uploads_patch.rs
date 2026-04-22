@@ -20,7 +20,6 @@ use bytes::Bytes;
 use garraia_gateway::rest_v1::uploads::UploadStaging;
 use garraia_gateway::server::build_router_for_test_with_storage;
 use garraia_storage::LocalFs;
-use http_body_util::BodyExt;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -504,15 +503,9 @@ async fn v1_uploads_patch_scenarios() {
         );
     }
 
-    // Drain body just so the test doesn't hold unread body streams.
-    let _ = audit
-        .into_iter()
-        .map(|r| r.4.to_string())
-        .collect::<Vec<_>>();
-    // Ensure tempdir still exists until the end.
+    // Ensure the staging tempdir survives until all router requests
+    // have finished. `TempDir::drop` removes the directory, so dropping
+    // it at the end of the function guarantees the staging LocalFs
+    // root stayed alive for every `put`.
     drop(tmp);
-
-    // Collecting the body of a few unconsumed response bodies to
-    // appease http-body-util's debt (strictly optional, but cheap).
-    let _ = BodyExt::collect(Body::empty()).await;
 }
