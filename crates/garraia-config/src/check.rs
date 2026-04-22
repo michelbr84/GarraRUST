@@ -132,6 +132,11 @@ const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
     "GARRAIA_SIGNUP_DATABASE_URL",
     "GARRAIA_TRUSTED_PROXIES",
     "GARRAIA_VAULT_PASSPHRASE",
+    // Plan 0046 slice 3: legacy mixed-case alias accepted by
+    // `AuthConfig::from_env` as a fallback for `GARRAIA_JWT_SECRET`.
+    // Distinct from the all-caps `GARRAIA_VAULT_PASSPHRASE` used by
+    // the credential vault in `garraia-security`.
+    "GarraIA_VAULT_PASSPHRASE",
 ];
 
 fn detect_env_vars() -> Vec<String> {
@@ -454,16 +459,119 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     }
 
     // storage (plan 0044): validate the object storage backend config.
-    validate_storage(&config.storage, &mut findings, push_err, push_warn);
+    validate_storage(&config.storage, &mut findings, &push_err, &push_warn);
+
+    // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
+    // knobs. Secret env vars remain enforced at AuthConfig::from_env.
+    validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
 
     findings
+}
+
+fn validate_auth(
+    auth: &crate::model::AuthSection,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::{
+        AUTH_ACCESS_TTL_MAX_SECS, AUTH_ACCESS_TTL_MIN_SECS, AUTH_REFRESH_TTL_MAX_SECS,
+        AUTH_REFRESH_TTL_MIN_SECS, AUTH_SUPPORTED_JWT_ALGORITHMS,
+    };
+
+    // jwt_algorithm: only HS256 accepted today. Plan 0046 §5.5.
+    if !AUTH_SUPPORTED_JWT_ALGORITHMS
+        .iter()
+        .any(|a| auth.jwt_algorithm.eq_ignore_ascii_case(a))
+    {
+        push_err(
+            findings,
+            "auth.jwt_algorithm",
+            format!(
+                "auth.jwt_algorithm=`{}` is not a recognised algorithm; expected one of {:?}",
+                auth.jwt_algorithm, AUTH_SUPPORTED_JWT_ALGORITHMS
+            ),
+        );
+    }
+
+    // access_token_ttl_secs: must be in [60, 86_400].
+    if auth.access_token_ttl_secs < AUTH_ACCESS_TTL_MIN_SECS
+        || auth.access_token_ttl_secs > AUTH_ACCESS_TTL_MAX_SECS
+    {
+        push_err(
+            findings,
+            "auth.access_token_ttl_secs",
+            format!(
+                "auth.access_token_ttl_secs ({}) must be in [{AUTH_ACCESS_TTL_MIN_SECS}, {AUTH_ACCESS_TTL_MAX_SECS}] seconds",
+                auth.access_token_ttl_secs
+            ),
+        );
+    }
+
+    // refresh_token_ttl_secs: must be in [60, 2_592_000] AND >= access TTL.
+    if auth.refresh_token_ttl_secs < AUTH_REFRESH_TTL_MIN_SECS
+        || auth.refresh_token_ttl_secs > AUTH_REFRESH_TTL_MAX_SECS
+    {
+        push_err(
+            findings,
+            "auth.refresh_token_ttl_secs",
+            format!(
+                "auth.refresh_token_ttl_secs ({}) must be in [{AUTH_REFRESH_TTL_MIN_SECS}, {AUTH_REFRESH_TTL_MAX_SECS}] seconds",
+                auth.refresh_token_ttl_secs
+            ),
+        );
+    } else if auth.refresh_token_ttl_secs < auth.access_token_ttl_secs {
+        push_err(
+            findings,
+            "auth.refresh_token_ttl_secs",
+            format!(
+                "auth.refresh_token_ttl_secs ({}) must be >= auth.access_token_ttl_secs ({})",
+                auth.refresh_token_ttl_secs, auth.access_token_ttl_secs
+            ),
+        );
+    }
+
+    // Cross-check: if GARRAIA_JWT_SECRET or GarraIA_VAULT_PASSPHRASE are
+    // present in the process env AND `[auth]` is populated in the file,
+    // emit an Info-ish Warning so operators know the file entry is
+    // non-load-bearing for the secret (secrets are env-only by design
+    // — plan 0046 §5.1). We only check presence, never values.
+    let jwt_env_set = std::env::var_os("GARRAIA_JWT_SECRET").is_some()
+        || std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+    // Heuristic for "auth section is populated" — any field that
+    // differs from default indicates the operator put a `[auth]` in
+    // the file. Comparing against defaults avoids a false positive
+    // when the file has no `[auth]` (serde `default` fills it in).
+    let default_auth = crate::model::AuthSection::default();
+    let auth_file_populated = auth.jwt_algorithm != default_auth.jwt_algorithm
+        || auth.access_token_ttl_secs != default_auth.access_token_ttl_secs
+        || auth.refresh_token_ttl_secs != default_auth.refresh_token_ttl_secs
+        || auth.metrics_token_ttl_hint_secs != default_auth.metrics_token_ttl_hint_secs;
+    if jwt_env_set && auth_file_populated {
+        push_warn(
+            findings,
+            "auth",
+            "env secret (GARRAIA_JWT_SECRET / GarraIA_VAULT_PASSPHRASE) is set alongside [auth] overrides; non-secret fields apply but secrets remain env-only (plan 0046 §5.1)".into(),
+        );
+    }
+
+    // Cross-check: if NEITHER env var is set, the gateway will run in
+    // fail-soft mode and /auth/* + /v1/auth/* will answer 503. Surface
+    // as a warning so operators see the state clearly in `config check`.
+    if !jwt_env_set {
+        push_warn(
+            findings,
+            "auth",
+            "neither GARRAIA_JWT_SECRET nor GarraIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+        );
+    }
 }
 
 fn validate_storage(
     storage: &crate::model::StorageConfig,
     findings: &mut Vec<Finding>,
-    push_err: impl Fn(&mut Vec<Finding>, &str, String),
-    push_warn: impl Fn(&mut Vec<Finding>, &str, String),
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
 ) {
     use crate::model::{MAX_PATCH_BYTES_MAX, MAX_PATCH_BYTES_MIN, StorageBackend};
 
@@ -988,10 +1096,12 @@ mod tests {
     #[test]
     fn storage_max_patch_bytes_below_min_is_error() {
         use crate::model::StorageConfig;
-        let mut cfg = AppConfig::default();
-        cfg.storage = StorageConfig {
-            max_patch_bytes: 1024, // < 1 MiB
-            ..StorageConfig::default()
+        let cfg = AppConfig {
+            storage: StorageConfig {
+                max_patch_bytes: 1024, // < 1 MiB
+                ..StorageConfig::default()
+            },
+            ..AppConfig::default()
         };
         let findings = validate(&cfg);
         assert!(
@@ -1005,11 +1115,13 @@ mod tests {
     #[test]
     fn storage_s3_missing_block_is_error() {
         use crate::model::{StorageBackend, StorageConfig};
-        let mut cfg = AppConfig::default();
-        cfg.storage = StorageConfig {
-            backend: StorageBackend::S3,
-            s3: None,
-            ..StorageConfig::default()
+        let cfg = AppConfig {
+            storage: StorageConfig {
+                backend: StorageBackend::S3,
+                s3: None,
+                ..StorageConfig::default()
+            },
+            ..AppConfig::default()
         };
         let findings = validate(&cfg);
         assert!(
@@ -1023,10 +1135,12 @@ mod tests {
     #[test]
     fn storage_none_backend_is_warning() {
         use crate::model::{StorageBackend, StorageConfig};
-        let mut cfg = AppConfig::default();
-        cfg.storage = StorageConfig {
-            backend: StorageBackend::None,
-            ..StorageConfig::default()
+        let cfg = AppConfig {
+            storage: StorageConfig {
+                backend: StorageBackend::None,
+                ..StorageConfig::default()
+            },
+            ..AppConfig::default()
         };
         let findings = validate(&cfg);
         assert!(
@@ -1034,6 +1148,76 @@ mod tests {
                 .iter()
                 .any(|f| f.severity == Severity::Warning && f.field == "storage.backend"),
             "expected warning on backend=none: {findings:?}"
+        );
+    }
+
+    // ── Plan 0046 slice 3: AuthSection validation ─────────────────────────
+
+    #[test]
+    fn auth_unknown_jwt_algorithm_is_error() {
+        let mut cfg = AppConfig::default();
+        cfg.auth.jwt_algorithm = "RS256".into();
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "auth.jwt_algorithm"),
+            "expected error on RS256: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn auth_access_ttl_too_low_is_error() {
+        let mut cfg = AppConfig::default();
+        cfg.auth.access_token_ttl_secs = 30;
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "auth.access_token_ttl_secs"),
+            "expected error on 30s access TTL: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn auth_access_ttl_too_high_is_error() {
+        let mut cfg = AppConfig::default();
+        cfg.auth.access_token_ttl_secs = 86_401;
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "auth.access_token_ttl_secs"),
+            "expected error on 86401s access TTL: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn auth_refresh_shorter_than_access_is_error() {
+        let mut cfg = AppConfig::default();
+        cfg.auth.access_token_ttl_secs = 3600;
+        cfg.auth.refresh_token_ttl_secs = 1800;
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "auth.refresh_token_ttl_secs"),
+            "expected error when refresh < access: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn auth_defaults_produce_no_auth_errors() {
+        // The default AuthSection must pass all error-severity rules.
+        // (A warning about missing env vars may appear and is acceptable.)
+        let cfg = AppConfig::default();
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .filter(|f| f.severity == Severity::Error)
+                .all(|f| !f.field.starts_with("auth")),
+            "default AuthSection produced auth error(s): {findings:?}"
         );
     }
 }

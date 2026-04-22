@@ -303,6 +303,14 @@ impl GatewayServer {
                             Arc::new(jwt),
                             app_pool_opt,
                         );
+                        // Plan 0046 (GAR-379 slice 3): stash the canonical
+                        // AuthConfig on AppState so mobile_auth + any
+                        // future JWT issuer reach the secret via
+                        // `AppState::jwt_signing_secret` instead of
+                        // `std::env::var`. Cloning the struct into an
+                        // Arc keeps the `SecretString` fields
+                        // zero-copy at runtime.
+                        state.set_auth_config(Arc::new(auth_cfg.clone()));
                         info!("garraia-auth wired (login + signup pools + jwt)");
                     }
                     (lp, sp, jwt) => {

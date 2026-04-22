@@ -11,7 +11,8 @@
 //!
 //! | Variable | Required | Notes |
 //! |---|---|---|
-//! | `GARRAIA_JWT_SECRET` | yes | ≥32 bytes; **same env var as `mobile_auth.rs` legacy** so both flows share one secret in dev. |
+//! | `GARRAIA_JWT_SECRET` | yes | ≥32 bytes; **same env var as `mobile_auth.rs` legacy** so both flows share one secret in dev. When absent, `from_env` falls back to `GarraIA_VAULT_PASSPHRASE` (plan 0046 slice 3 — legacy compat). |
+//! | `GarraIA_VAULT_PASSPHRASE` | fallback | Legacy alias accepted by `from_env` when `GARRAIA_JWT_SECRET` is missing. Preserved for zero-breaking-change dev workflows (plan 0046). Prefer `GARRAIA_JWT_SECRET` for new deployments. |
 //! | `GARRAIA_REFRESH_HMAC_SECRET` | yes | ≥32 bytes; **distinct** from `GARRAIA_JWT_SECRET`. |
 //! | `GARRAIA_LOGIN_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_login` BYPASSRLS role. |
 //! | `GARRAIA_SIGNUP_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_signup` BYPASSRLS role. |
@@ -121,8 +122,15 @@ impl AuthConfig {
     /// Fail-soft env loader. Returns `Ok(None)` when any required variable
     /// is missing (gateway boots without auth endpoints + warns), `Ok(Some)`
     /// when all are present and valid, `Err` on validation failure.
+    ///
+    /// Plan 0046 slice 3: `GARRAIA_JWT_SECRET` takes precedence over the
+    /// legacy `GarraIA_VAULT_PASSPHRASE` fallback. The fallback exists
+    /// solely to preserve dev workflows that predate GAR-379 —
+    /// production deployments SHOULD set `GARRAIA_JWT_SECRET` explicitly.
     pub fn from_env() -> Result<Option<Self>, AuthConfigError> {
-        let jwt = match std::env::var("GARRAIA_JWT_SECRET") {
+        let jwt = match std::env::var("GARRAIA_JWT_SECRET")
+            .or_else(|_| std::env::var("GarraIA_VAULT_PASSPHRASE"))
+        {
             Ok(v) => v,
             Err(_) => return Ok(None),
         };
@@ -159,8 +167,13 @@ impl AuthConfig {
     }
 
     /// Strict env loader for production. Errors on missing or invalid vars.
+    ///
+    /// Plan 0046 slice 3: `GARRAIA_JWT_SECRET` takes precedence over the
+    /// legacy `GarraIA_VAULT_PASSPHRASE` fallback. When neither is set,
+    /// the error surfaces `GARRAIA_JWT_SECRET` as the canonical name.
     pub fn require_from_env() -> Result<Self, AuthConfigError> {
         let jwt = std::env::var("GARRAIA_JWT_SECRET")
+            .or_else(|_| std::env::var("GarraIA_VAULT_PASSPHRASE"))
             .map_err(|_| AuthConfigError::MissingEnv("GARRAIA_JWT_SECRET"))?;
         let refresh = std::env::var("GARRAIA_REFRESH_HMAC_SECRET")
             .map_err(|_| AuthConfigError::MissingEnv("GARRAIA_REFRESH_HMAC_SECRET"))?;
@@ -238,5 +251,149 @@ mod tests {
         let mut bad = mk(32);
         bad.login_database_url = SecretString::from("mysql://x/y".to_string());
         assert!(bad.validate_secrets().is_err());
+    }
+
+    // ── Plan 0046 slice 3: env-var fallback tests ─────────────────────────
+    //
+    // These tests mutate process-global environment state, so they MUST
+    // run serially. A `LazyLock<Mutex<()>>` guard forces serialization
+    // even when cargo launches tests in parallel. Every test takes the
+    // lock, snapshots + clears the env vars it cares about, runs the
+    // assertion, and restores the original values on exit.
+
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    /// Snapshot of the env vars this test module touches. Used to restore
+    /// the outer environment when a test exits so concurrent non-auth
+    /// suites never observe a half-cleared state.
+    struct EnvSnapshot {
+        jwt: Option<String>,
+        vault: Option<String>,
+        refresh: Option<String>,
+        login_db: Option<String>,
+        signup_db: Option<String>,
+        app_db: Option<String>,
+    }
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self {
+                jwt: std::env::var("GARRAIA_JWT_SECRET").ok(),
+                vault: std::env::var("GarraIA_VAULT_PASSPHRASE").ok(),
+                refresh: std::env::var("GARRAIA_REFRESH_HMAC_SECRET").ok(),
+                login_db: std::env::var("GARRAIA_LOGIN_DATABASE_URL").ok(),
+                signup_db: std::env::var("GARRAIA_SIGNUP_DATABASE_URL").ok(),
+                app_db: std::env::var("GARRAIA_APP_DATABASE_URL").ok(),
+            }
+        }
+
+        fn restore(self) {
+            // SAFETY: all env mutations in this module are serialized by
+            // ENV_LOCK; restoring happens while the lock is still held.
+            unsafe fn set_or_clear(key: &str, v: Option<String>) {
+                unsafe {
+                    match v {
+                        Some(val) => std::env::set_var(key, val),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            unsafe {
+                set_or_clear("GARRAIA_JWT_SECRET", self.jwt);
+                set_or_clear("GarraIA_VAULT_PASSPHRASE", self.vault);
+                set_or_clear("GARRAIA_REFRESH_HMAC_SECRET", self.refresh);
+                set_or_clear("GARRAIA_LOGIN_DATABASE_URL", self.login_db);
+                set_or_clear("GARRAIA_SIGNUP_DATABASE_URL", self.signup_db);
+                set_or_clear("GARRAIA_APP_DATABASE_URL", self.app_db);
+            }
+        }
+    }
+
+    fn clear_all_auth_env() {
+        // SAFETY: ENV_LOCK held by caller.
+        unsafe {
+            std::env::remove_var("GARRAIA_JWT_SECRET");
+            std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
+            std::env::remove_var("GARRAIA_REFRESH_HMAC_SECRET");
+            std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
+            std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
+            std::env::remove_var("GARRAIA_APP_DATABASE_URL");
+        }
+    }
+
+    fn set_required_except_jwt() {
+        // SAFETY: ENV_LOCK held by caller.
+        unsafe {
+            std::env::set_var("GARRAIA_REFRESH_HMAC_SECRET", "r".repeat(32));
+            std::env::set_var(
+                "GARRAIA_LOGIN_DATABASE_URL",
+                "postgres://garraia_login:pw@localhost/garraia",
+            );
+            std::env::set_var(
+                "GARRAIA_SIGNUP_DATABASE_URL",
+                "postgres://garraia_signup:pw@localhost/garraia",
+            );
+        }
+    }
+
+    #[test]
+    fn from_env_prefers_jwt_secret_over_vault_passphrase() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("GARRAIA_JWT_SECRET", "J".repeat(32));
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "V".repeat(32));
+        }
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env()
+            .expect("should parse")
+            .expect("should be Some");
+        assert_eq!(
+            cfg.jwt_secret.expose_secret(),
+            "J".repeat(32),
+            "GARRAIA_JWT_SECRET must win over GarraIA_VAULT_PASSPHRASE"
+        );
+
+        snapshot.restore();
+    }
+
+    #[test]
+    fn from_env_accepts_only_vault_passphrase_when_jwt_secret_missing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "V".repeat(32));
+        }
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env()
+            .expect("should parse")
+            .expect("legacy fallback should be accepted");
+        assert_eq!(cfg.jwt_secret.expose_secret(), "V".repeat(32));
+
+        snapshot.restore();
+    }
+
+    #[test]
+    fn from_env_returns_none_when_neither_jwt_env_is_set() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env().expect("should parse");
+        assert!(
+            cfg.is_none(),
+            "absence of both env vars must return Ok(None), got Some"
+        );
+
+        snapshot.restore();
     }
 }

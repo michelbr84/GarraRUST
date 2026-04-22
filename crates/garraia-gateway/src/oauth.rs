@@ -613,10 +613,19 @@ pub async fn oauth_callback(
         }
     };
 
-    // Issue JWT
-    let token = match issue_jwt_pub(&user_id, &email) {
+    // Issue JWT. Plan 0046 slice 3: pass `&AppState` so the handler
+    // reads the secret via `state.jwt_signing_secret()` rather than
+    // `std::env::var`. Fail-closed to 503 when unconfigured.
+    let token = match issue_jwt_pub(&state, &user_id, &email) {
         Ok(t) => t,
-        Err(e) => {
+        Err(crate::mobile_auth::JwtIssueError::AuthUnconfigured) => {
+            warn!("oauth: AuthConfig unavailable; returning 503");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "auth not configured"})),
+            );
+        }
+        Err(crate::mobile_auth::JwtIssueError::Jwt(e)) => {
             warn!("oauth: JWT issue failed: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
