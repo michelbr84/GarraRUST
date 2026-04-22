@@ -85,10 +85,13 @@ jobs:
         run: cargo install --locked --version '^0.21' cargo-audit
 
       - name: Prime crates.io index for workspace deps
-        # cargo-audit --no-fetch disables BOTH the advisory-db git fetch
-        # AND the crates.io index refresh used by the yanked-crate check.
-        # Pre-populate the local sparse index via `cargo fetch --locked`
-        # so `--deny yanked` has data to work with. Plan 0043 §5.5.
+        # cargo-audit --no-fetch disables the crates.io index refresh
+        # that cargo-audit uses for metadata lookups (yanked status
+        # and crate existence checks). Even without --deny yanked,
+        # yanked crates appear as yellow warnings which require the
+        # index. Pre-populate the local sparse index via
+        # `cargo fetch --locked` so the audit can resolve every dep
+        # in our lockfile without re-fetching. Plan 0043 §5.6.
         run: cargo fetch --locked
 
       - name: Fetch advisory database and strip CVSS v4 entries
@@ -108,18 +111,21 @@ jobs:
           git checkout --quiet FETCH_HEAD
           echo "Advisory DB HEAD: $(git rev-parse --short HEAD)"
           echo "Commit date: $(git log -1 --format=%cd --date=iso-strict)"
-          # Strip CVSS v4 advisories. Anchored to start of line + exact
-          # prefix `cvss = "CVSS:4.0/` keeps the match precise — body
-          # mentions of `CVSS:4.0` in prose won't trigger the strip.
-          mapfile -t stripped < <(grep -rlE '^cvss = "CVSS:4\.0/' crates/ || true)
+          # Strip CVSS v4 advisories. Anchored to start of line and
+          # tolerant of leading whitespace (`[[:space:]]*`) to cover
+          # TOML-legal indentation variants — rustsec advisory files
+          # today use no indent, but the schema allows leading spaces.
+          # Exact prefix `cvss = "CVSS:4.0/` keeps the match precise —
+          # body mentions of `CVSS:4.0` in prose won't trigger.
+          mapfile -t stripped < <(grep -rlE '^[[:space:]]*cvss = "CVSS:4\.0/' crates/ || true)
           echo "Stripping ${#stripped[@]} CVSS v4 advisories (threshold ${MAX_STRIPPED_CVSS_V4}):"
-          printf '  %s\n' "${stripped[@]}"
           if [ "${#stripped[@]}" -gt "${MAX_STRIPPED_CVSS_V4}" ]; then
             echo "::error::Stripped ${#stripped[@]} CVSS v4 advisories exceeds threshold ${MAX_STRIPPED_CVSS_V4}."
             echo "Re-triage required — rustsec likely needs CVSS v4 support."
             exit 1
           fi
           if [ "${#stripped[@]}" -gt 0 ]; then
+            printf '  %s\n' "${stripped[@]}"
             rm -- "${stripped[@]}"
           fi
 

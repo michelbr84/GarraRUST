@@ -88,7 +88,7 @@ O arquivo foi introduzido por commit `20b6160e8687` em 2026-03-24T08:21:09Z ("As
 
 Por design do `rustsec` crate, **uma entry individual falhando invalida a database inteira** — zero audit efetivo. Logo, o vermelho não é regressão nossa; é upstream schema gap.
 
-### 5.2 Por que pinar (Camada 2), não esperar (Camada 1)
+### 5.2 Por que agir agora, não esperar (Camada 1 rejeitada)
 
 O plano aprovado pela sessão (`plans/.../synchronous-baking-hippo.md` §3.3) define 4 camadas de tratamento: (1) esperar e verificar, (2) pinar DB a SHA estável, (3) downgradear cargo-audit, (4) fallback não-fatal.
 
@@ -122,7 +122,7 @@ Intersecção entre os 39 arquivos CVSS v4 stripados e nossa `Cargo.lock`:
 
 Follow-up: após o fix deste PR, Lote B-2 (RUSTSEC bumps) deve incluir revisão manual dos advisories CVSS v4 desses 6 crates para decidir bump ou ignore justificado. Registrado em `GAR-NEW-01` comment + no plano mestre da sessão.
 
-### 5.6 `.cargo/audit.toml` com 13 ignores justificados
+### 5.4 Fetch shallow + regex strip + `rm` seguro
 
 Run v3 (`24794271759`) tornou visível o volume real de advisories pendentes: **16 vulnerabilities + 6 denied warnings** em 13 advisory IDs únicos (muitas dups por crate ser usado em múltiplas versões da árvore de deps). Escopo bem maior que a TODO original do `ci.yml` (6 advisories listados).
 
@@ -145,7 +145,7 @@ Policy in-file documenta requisitos para adicionar novo ignore (referência de I
 
 Alternativa considerada (e rejeitada): usar `severity_threshold = "high"` para filtrar só os mais graves. Rejeitado porque (a) oculta o escopo real, (b) o campo `severity` é nullable em advisories CVSS v3 (muitos advisories nossos listam `Severity: -` porque não estão scored), (c) cria falsa impressão de "audit limpo" sem o trabalho de fix.
 
-### 5.5 `--no-fetch` + `cargo fetch --locked`
+### 5.5 `.cargo/audit.toml` com 13 ignores justificados
 
 `cargo audit --no-fetch` é crítico: sem ele, cargo-audit faz `git pull` no advisory-db automaticamente quando detecta um repo local, **sobrescrevendo nosso strip step**. Verificado empiricamente no código fonte (v0.21.2) do rustsec crate.
 
@@ -162,7 +162,7 @@ Ordem de steps é crítica:
 
 Se steps 2 e 3 forem invertidos, funciona igualmente, mas manter essa ordem espelha o fluxo mental "primeiro deps nossas, depois DB externa".
 
-### 5.4 Fetch shallow + regex strip + `rm` seguro
+### 5.6 `--no-fetch` + `cargo fetch --locked`
 
 Desde a pivotagem v2, não usamos mais pin por SHA — apenas fetch de HEAD (`git fetch --depth=1 origin main`). A manipulação subsequente:
 
@@ -180,13 +180,9 @@ Decisões:
 - **`rm --`** força que nenhum filename começando com `-` seja interpretado como flag.
 - **`|| true`** na composição com grep evita bash set -euo abortar quando o grep retorna zero matches (ideal quando rustsec eventualmente corrigir).
 
-### 5.5 Flag `--no-fetch` para `cargo audit`
+### 5.7 Expiration date (`2026-05-20`)
 
-`cargo audit 0.21.2` expõe `-n / --no-fetch` ("do not perform a git fetch on the advisory DB") — verificado no source em `rustsec/rustsec:cargo-audit/v0.21.2/cargo-audit/src/commands/audit.rs`. Sem isso, `cargo audit` detecta o diretório já presente mas **tenta fazer pull** na base clonada, o que sobrescreveria o pin com o HEAD atual quebrado. A flag é o enforcement do pin.
-
-### 5.6 Expiration date (`2026-05-20`)
-
-Pin deve ser temporário, nunca permanente — senão o audit vira teatro ao longo do tempo. Escolhi **4 semanas** (prazo suficiente para rustsec ter tempo de shippar support a CVSS v4 ou para o advisory-db ter downgrade para v3 nos libcrux entries), documentado inline no comentário do workflow e no Linear `GAR-NEW-01`. Revisão obrigatória em 2026-05-20: ou bump do pin para SHA recente se ainda broken, ou remoção do pin se resolvido.
+Pin deve ser temporário, nunca permanente — senão o audit vira teatro ao longo do tempo. Escolhi **4 semanas** (prazo suficiente para rustsec ter tempo de shippar support a CVSS v4 ou para o advisory-db ter downgrade para v3 nos libcrux entries), documentado inline no comentário do workflow e no Linear GAR-428. Revisão obrigatória em 2026-05-20: ou remoção do strip se resolvido, ou re-triage explícita.
 
 ## 6. Testing strategy
 
@@ -252,15 +248,20 @@ Após merge, **fechar** a issue como Done (slice é one-shot, não multi-slice).
 
 - [x] Triagem: ler o log da run vermelha, identificar line 5 column 8.
 - [x] Root cause: WebFetch do file `RUSTSEC-2026-0073.md` e identificação do `CVSS:4.0/`.
-- [x] Encontrar commit safe: `1dc467507294adffdc8e0a5548d97a58f77d111f`.
+- [x] v1: pin SHA `1dc467507294...` (insuficiente — CVSS v4 já existia desde 2025-12).
+- [x] v2: pivot para strip regex + fetch HEAD.
+- [x] v3: `cargo fetch --locked` para pre-popular sparse index (fix yanked-check).
+- [x] v4: `.cargo/audit.toml` com 13 ignores deferidos para Lote B-2.
+- [x] v5: drop `--deny yanked` (core2 unfixable hoje).
 - [x] Validar que `--no-fetch` existe em `cargo-audit 0.21.2`.
-- [x] Edit `.github/workflows/cargo-audit.yml`.
-- [x] Criar plan file (este arquivo).
-- [x] Atualizar `plans/README.md`.
-- [ ] Commit + push da branch.
-- [ ] Criar `GAR-NEW-01` no Linear.
-- [ ] `gh workflow run cargo-audit.yml --ref feat/0043-cargo-audit-db-pin`.
-- [ ] Se verde: abrir PR com `gh pr create`.
-- [ ] Review: dispatch `@security-auditor` + `@code-reviewer`.
-- [ ] Merge após approvals + CI verde.
-- [ ] Comentar `GAR-NEW-01` com link do PR + fechar.
+- [x] Commit + push da branch (`feat/0043-cargo-audit-db-pin`, commits 2c6c7ce..86fceb1).
+- [x] `gh workflow run cargo-audit.yml --ref feat/0043-cargo-audit-db-pin` — 5 runs (v1..v5), última verde (`24794886224`, 2m41s).
+- [x] Criar `GAR-428` no Linear (priority Urgent, label `security`, Fase 5).
+- [x] Abrir PR com `gh pr create` → [PR #57](https://github.com/michelbr84/GarraRUST/pull/57).
+- [x] Review: dispatch `@security-auditor` (7.5/10 APPROVE WITH NITS, 9 findings F-1..F-9) + `@code-reviewer` (APPROVE WITH NITS, 3 MEDIUMs + 5 NITs).
+- [x] Endereçar blocking findings pré-merge: F-1 (regex hardening), F-2 (rsa rationale), F-5 (cross-ref audit.toml/deny.toml), MEDIUM-1 (stale comment), MEDIUM-2 (plan §5 renumber), MEDIUM-3 (checklist), NIT-1 (printf empty).
+- [ ] Aguardar CI verde na branch após push de review fixes.
+- [ ] Merge.
+- [ ] Comentar `GAR-428` com link do PR + fechar (status → Done).
+- [ ] Atualizar `plans/README.md` status 0043 de "Em execução" para "Merged <data> (<sha>, PR #57)".
+- [ ] Observar primeiro scheduled run pós-merge (2026-04-23 07:00 UTC) confirmar verde natural.

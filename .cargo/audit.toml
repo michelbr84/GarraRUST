@@ -7,6 +7,13 @@
 # the touched crypto/parsing surface, then remove the entry from this
 # file.
 #
+# SYNC NOTE: this file and `/deny.toml` are parallel universes.
+# `cargo-audit` reads `.cargo/audit.toml`; `cargo-deny` reads
+# `deny.toml`. As of 2026-04-22 both files share the same 2 wasmtime
+# advisory IDs (RUSTSEC-2025-0046, RUSTSEC-2025-0118). When B-2 bumps
+# wasmtime, BOTH files must be updated. See F-5 in the plan 0043
+# security-auditor review (PR #57).
+#
 # ALL entries expire 2026-05-20 (4 weeks). At that point: either B-2
 # closed them, or they get re-triaged explicitly.
 #
@@ -18,9 +25,12 @@
 ignore = [
     # --- Vulnerabilities (deny-by-default) — 9 unique IDs ---
 
-    # rsa 0.9.10 — Marvin Attack (RCE-adjacent timing sidechannel on RSA
-    # key decryption). No fixed upstream release yet. We use `rsa` only
-    # transitively via JWT signing paths; exposure assessment in B-2.
+    # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
+    # GarraRUST JWT paths use HS256 via `ring` (HMAC-SHA256), NOT RSA
+    # decrypt — the Marvin attack code path is not reachable from our
+    # handlers. `rsa` is present transitively but exposure is zero for
+    # the paths we exercise. No upstream fix available. B-2 to confirm
+    # and remove. Security-auditor F-2 (PR #57 review) clarified this.
     "RUSTSEC-2023-0071",
 
     # idna 0.5.0 — Punycode labels without non-ASCII accepted. Bump to
