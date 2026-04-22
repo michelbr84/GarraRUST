@@ -72,6 +72,8 @@ impl Modify for SecurityAddon {
         super::invites::accept_invite,
         super::uploads::create_upload,
         super::uploads::head_upload,
+        super::uploads::patch_upload,
+        super::uploads::options_uploads,
     ),
     components(schemas(
         MeResponse,

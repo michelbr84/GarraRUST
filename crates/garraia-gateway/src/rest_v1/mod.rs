@@ -84,6 +84,25 @@ impl FromRef<RestV1AuthState> for Arc<LoginPool> {
     }
 }
 
+/// Storage wiring sub-state — object store backend + staging context.
+/// Plan 0044 (GAR-395 slice 2). Both fields are `Option` so the
+/// router can degrade uploads to 503 when the backend is not
+/// configured, without tearing down the rest of the `/v1` surface.
+#[derive(Clone, Default)]
+pub struct RestV1StorageState {
+    pub object_store: Option<Arc<dyn garraia_storage::ObjectStore>>,
+    pub upload_staging: Option<Arc<uploads::UploadStaging>>,
+}
+
+impl RestV1StorageState {
+    fn from_app_state(app: &AppState) -> Self {
+        Self {
+            object_store: app.object_store.clone(),
+            upload_staging: app.upload_staging.clone(),
+        }
+    }
+}
+
 /// Sub-state for `/v1` handlers that need both auth + the RLS
 /// `garraia_app` pool. Used by `/v1/groups/*`.
 ///
@@ -94,6 +113,9 @@ impl FromRef<RestV1AuthState> for Arc<LoginPool> {
 pub struct RestV1FullState {
     pub auth: RestV1AuthState,
     pub app_pool: Arc<AppPool>,
+    /// Plan 0044: storage wiring for tus upload commit. Always
+    /// present (carries `None` fields in fail-soft mode).
+    pub storage: RestV1StorageState,
 }
 
 impl RestV1FullState {
@@ -104,6 +126,7 @@ impl RestV1FullState {
         Some(Self {
             auth: RestV1AuthState::from_app_state(app)?,
             app_pool: app.app_pool.clone()?,
+            storage: RestV1StorageState::from_app_state(app),
         })
     }
 }
@@ -203,9 +226,26 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // is a cheap probe and inherits the same bucket to keep
             // the layer simple — the tighter `members_manage` preset
             // (20/min, burst 5) is acceptable for both ops in slice 1.
+            // `OPTIONS /v1/uploads` is intentionally UNAUTHENTICATED
+            // (tus §5.2) and NOT rate-limited via the per-user
+            // authenticated limiter. Co-locate it on the same route
+            // as POST using the method-routing chain so Axum's
+            // method dispatcher hands OPTIONS to the tus handler
+            // (instead of letting it fall through to tower-http or
+            // the router 405 branch). The authenticated rate-limit
+            // layer below still keys on `jwt-sub:{uuid}` and
+            // fails open (unauth path → IP bucket) for the OPTIONS
+            // request — acceptable because the handler returns fixed
+            // headers only.
             let tus_routes = Router::new()
-                .route("/v1/uploads", post(uploads::create_upload))
-                .route("/v1/uploads/{id}", head(uploads::head_upload))
+                .route(
+                    "/v1/uploads",
+                    post(uploads::create_upload).options(uploads::options_uploads),
+                )
+                .route(
+                    "/v1/uploads/{id}",
+                    head(uploads::head_upload).patch(uploads::patch_upload),
+                )
                 .layer(axum::middleware::from_fn_with_state(
                     rate_limit_state,
                     rate_limit_layer_authenticated,
@@ -248,13 +288,21 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
-                .route("/v1/uploads", post(unconfigured_handler))
-                .route("/v1/uploads/{id}", head(unconfigured_handler))
+                .route(
+                    "/v1/uploads",
+                    post(unconfigured_handler).options(uploads::options_uploads),
+                )
+                .route(
+                    "/v1/uploads/{id}",
+                    head(unconfigured_handler).patch(unconfigured_handler),
+                )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
         (_, None) => {
-            // Mode 3: no auth at all. Every route is a stub.
+            // Mode 3: no auth at all. Every route is a stub EXCEPT
+            // `OPTIONS /v1/uploads` which has no auth requirements
+            // by spec — always return the discovery headers.
             Router::new()
                 .route("/v1/me", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
@@ -272,8 +320,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
-                .route("/v1/uploads", post(unconfigured_handler))
-                .route("/v1/uploads/{id}", head(unconfigured_handler))
+                .route(
+                    "/v1/uploads",
+                    post(unconfigured_handler).options(uploads::options_uploads),
+                )
+                .route(
+                    "/v1/uploads/{id}",
+                    head(unconfigured_handler).patch(unconfigured_handler),
+                )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
                 .route("/docs/{*rest}", get(unconfigured_handler))

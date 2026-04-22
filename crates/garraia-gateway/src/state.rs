@@ -109,6 +109,17 @@ pub struct AppState {
     /// (loopback-only, no token, no allowlist) preserves dev ergonomics
     /// when `GARRAIA_METRICS_TOKEN` / `GARRAIA_METRICS_ALLOW` are unset.
     pub metrics_auth_cfg: crate::metrics_auth::MetricsAuthConfig,
+
+    // ── Plan 0044 (GAR-395 slice 2): ObjectStore + staging ─────────────────
+    /// Object storage backend used by `rest_v1::uploads` PATCH commit.
+    /// `None` means the backend is not wired (either config set to
+    /// `none` or construction failed at bootstrap) — the PATCH handler
+    /// answers 503 / 500 as documented. Never leaked by `Debug`.
+    pub(crate) object_store: Option<Arc<dyn garraia_storage::ObjectStore>>,
+    /// Upload staging context (directory + cap + HMAC secret). `None`
+    /// when either `object_store` is `None` or the staging directory
+    /// failed to canonicalize at bootstrap.
+    pub(crate) upload_staging: Option<Arc<crate::rest_v1::uploads::UploadStaging>>,
 }
 
 /// Per-connection session tracking.
@@ -204,7 +215,25 @@ impl AppState {
             // ⇒ 200 OK). Overwritten by `set_metrics_auth_cfg` at
             // bootstrap when env vars are set.
             metrics_auth_cfg: crate::metrics_auth::MetricsAuthConfig::default(),
+            // Plan 0044 (GAR-395 slice 2) — None until bootstrap wires
+            // an ObjectStore + staging dir (fail-soft: handlers then
+            // answer 503 via RestError::AuthUnconfigured).
+            object_store: None,
+            upload_staging: None,
         }
+    }
+
+    /// Plan 0044 (GAR-395 slice 2): attach the object-store backend
+    /// and the upload staging context. Bootstrap calls this exactly
+    /// once after both pieces are constructed. Passing `None` for
+    /// either leaves the tus PATCH handler in 503 mode.
+    pub fn set_storage_components(
+        &mut self,
+        object_store: Option<Arc<dyn garraia_storage::ObjectStore>>,
+        upload_staging: Option<Arc<crate::rest_v1::uploads::UploadStaging>>,
+    ) {
+        self.object_store = object_store;
+        self.upload_staging = upload_staging;
     }
 
     /// Plan 0024 (GAR-412): attach the metrics-auth configuration

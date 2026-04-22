@@ -62,6 +62,18 @@ pub enum RestError {
     /// range. The `{0}` detail is emitted — MUST NOT embed PII.
     #[error("{0}")]
     PayloadTooLarge(String),
+    /// Plan 0044 (GAR-395 slice 2): request `Content-Type` is not
+    /// acceptable for the endpoint (e.g. tus PATCH without
+    /// `application/offset+octet-stream`; commit-time MIME outside the
+    /// allow-list). The `{0}` detail is emitted — MUST NOT embed PII.
+    #[error("{0}")]
+    UnsupportedMediaType(String),
+    /// Plan 0044 (GAR-395 slice 2): upstream ObjectStore put failed.
+    /// Returned as 502 so the tus client knows the gateway itself was
+    /// reachable but the backend below was not — retry is safe because
+    /// `tus_uploads.status` stays `in_progress` on `put` failure.
+    #[error("{0}")]
+    BadGateway(String),
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
@@ -84,6 +96,8 @@ impl RestError {
             RestError::Gone(_) => StatusCode::GONE,
             RestError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             RestError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            RestError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            RestError::BadGateway(_) => StatusCode::BAD_GATEWAY,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -99,6 +113,8 @@ impl RestError {
             RestError::Gone(_) => "Gone",
             RestError::PreconditionFailed(_) => "Precondition Failed",
             RestError::PayloadTooLarge(_) => "Payload Too Large",
+            RestError::UnsupportedMediaType(_) => "Unsupported Media Type",
+            RestError::BadGateway(_) => "Bad Gateway",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::Internal(_) => "Internal Server Error",
         }

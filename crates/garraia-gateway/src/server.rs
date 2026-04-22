@@ -325,6 +325,15 @@ impl GatewayServer {
             }
         }
 
+        // Plan 0044 (GAR-395 slice 2): wire the object-store backend +
+        // upload staging context. Fail-soft: any failure (invalid path,
+        // missing HMAC secret, unsupported backend without feature) logs
+        // at WARN and leaves `state.object_store` = None so tus PATCH
+        // answers 503. Runs AFTER auth wiring so we already know whether
+        // the gateway can even serve `/v1/*` at all.
+        let (object_store_opt, upload_staging_opt) = build_storage_wiring(&state.config).await;
+        state.set_storage_components(object_store_opt, upload_staging_opt);
+
         // Start config hot-reload watcher
         let config_path = garraia_config::ConfigLoader::default_config_dir().join("config.yml");
 
@@ -698,6 +707,32 @@ pub async fn build_router_for_test(
     jwt_issuer: Arc<garraia_auth::JwtIssuer>,
     app_pool: Option<Arc<garraia_auth::AppPool>>,
 ) -> axum::Router {
+    build_router_for_test_with_storage(
+        config,
+        login_pool,
+        signup_pool,
+        jwt_issuer,
+        app_pool,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Plan 0044 (GAR-395 slice 2) variant: lets the tus-upload test
+/// harness inject a pre-built ObjectStore + UploadStaging alongside
+/// the auth wiring, so the PATCH handler has something to commit to
+/// without relying on `build_storage_wiring`'s env-var path.
+#[cfg(feature = "test-helpers")]
+pub async fn build_router_for_test_with_storage(
+    config: AppConfig,
+    login_pool: Arc<garraia_auth::LoginPool>,
+    signup_pool: Arc<garraia_auth::SignupPool>,
+    jwt_issuer: Arc<garraia_auth::JwtIssuer>,
+    app_pool: Option<Arc<garraia_auth::AppPool>>,
+    object_store: Option<Arc<dyn garraia_storage::ObjectStore>>,
+    upload_staging: Option<Arc<crate::rest_v1::uploads::UploadStaging>>,
+) -> axum::Router {
     use crate::admin;
     use garraia_agents::AgentRuntime;
     use garraia_channels::ChannelRegistry;
@@ -709,6 +744,7 @@ pub async fn build_router_for_test(
 
     // Inject the auth pieces the harness built against testcontainer.
     state.set_auth_components(login_pool, signup_pool, jwt_issuer, app_pool);
+    state.set_storage_components(object_store, upload_staging);
     let state: crate::state::SharedState = Arc::new(state);
 
     // Minimal collaborators expected by the production router.
@@ -869,4 +905,203 @@ async fn execute_scheduled_task(
     }
 
     Ok(())
+}
+
+/// Plan 0044 (GAR-395 slice 2): construct the ObjectStore backend +
+/// UploadStaging from the live config. Fail-soft: any misconfiguration
+/// yields `(None, None)` plus a WARN log — the tus PATCH path then
+/// answers 503.
+///
+/// This is intentionally in `server.rs` (not `bootstrap.rs`) because
+/// it depends on `AppState` layering and carries feature-gated
+/// branches. Moving it later is trivial.
+async fn build_storage_wiring(
+    config: &AppConfig,
+) -> (
+    Option<Arc<dyn garraia_storage::ObjectStore>>,
+    Option<Arc<crate::rest_v1::uploads::UploadStaging>>,
+) {
+    use garraia_config::StorageBackend;
+
+    // Resolve the default data_dir once so both LocalFs root and
+    // staging_dir share the same prefix when operator leaves them
+    // unset.
+    let data_dir_fallback = config
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("./data"));
+
+    let staging_dir = config
+        .storage
+        .staging_dir
+        .clone()
+        .unwrap_or_else(|| data_dir_fallback.join("uploads-staging"));
+
+    if let Err(e) = tokio::fs::create_dir_all(&staging_dir).await {
+        warn!(
+            error = %e,
+            staging_dir = %staging_dir.display(),
+            "failed to create tus staging directory; PATCH will answer 503"
+        );
+        return (None, None);
+    }
+
+    // Canonicalize so the traversal-safety argument in
+    // `uploads::UploadStaging::staging_path` holds end-to-end.
+    // std::fs::canonicalize is sync; wrap in spawn_blocking to avoid
+    // blocking the runtime.
+    let staging_dir_owned = staging_dir.clone();
+    let staging_dir_canonical = match tokio::task::spawn_blocking(move || {
+        std::fs::canonicalize(&staging_dir_owned)
+    })
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            warn!(
+                error = %e,
+                staging_dir = %staging_dir.display(),
+                "failed to canonicalize tus staging directory; PATCH will answer 503"
+            );
+            return (None, None);
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "spawn_blocking failed during staging dir canonicalization"
+            );
+            return (None, None);
+        }
+    };
+
+    // Plan 0044 §5.6: fail-closed HMAC secret. `GARRAIA_UPLOAD_HMAC_SECRET`
+    // must be set (≥32 bytes decoded). Without it, commit aborts
+    // because `file_versions.integrity_hmac` is NOT NULL.
+    let hmac_secret = match std::env::var("GARRAIA_UPLOAD_HMAC_SECRET") {
+        Ok(s) if s.as_bytes().len() >= 32 => s.as_bytes().to_vec(),
+        Ok(_) => {
+            warn!(
+                "GARRAIA_UPLOAD_HMAC_SECRET must be at least 32 bytes; tus PATCH commit will answer 503"
+            );
+            return (None, None);
+        }
+        Err(_) => {
+            info!(
+                "GARRAIA_UPLOAD_HMAC_SECRET not set; tus PATCH commit will answer 503 (expected in dev)"
+            );
+            return (None, None);
+        }
+    };
+
+    // Sanity: cap is operator-provided — clamp via the config check
+    // range defensively (bootstrap path trusts config but belt +
+    // suspenders).
+    let max_patch_bytes = config.storage.max_patch_bytes.clamp(
+        garraia_config::MAX_PATCH_BYTES_MIN,
+        garraia_config::MAX_PATCH_BYTES_MAX,
+    );
+
+    let staging = Arc::new(crate::rest_v1::uploads::UploadStaging {
+        staging_dir: staging_dir_canonical,
+        max_patch_bytes,
+        hmac_secret,
+    });
+
+    let object_store: Option<Arc<dyn garraia_storage::ObjectStore>> = match config.storage.backend {
+        StorageBackend::Local => {
+            let root = config
+                .storage
+                .local_fs_root
+                .clone()
+                .unwrap_or_else(|| data_dir_fallback.join("storage"));
+            if let Err(e) = tokio::fs::create_dir_all(&root).await {
+                warn!(
+                    error = %e,
+                    root = %root.display(),
+                    "failed to create LocalFs root; tus PATCH will answer 503"
+                );
+                return (None, None);
+            }
+            match garraia_storage::LocalFs::new(&root) {
+                Ok(fs) => {
+                    info!(
+                        root = %root.display(),
+                        "ObjectStore wired (LocalFs)"
+                    );
+                    Some(Arc::new(fs))
+                }
+                Err(e) => {
+                    warn!(error = %e, "LocalFs construction failed; tus PATCH will answer 503");
+                    return (None, None);
+                }
+            }
+        }
+        StorageBackend::S3 => {
+            // Gated behind the `storage-s3` feature. Without it, we
+            // cannot construct `S3Compatible` — return None with a
+            // clear log so the operator knows why.
+            #[cfg(feature = "storage-s3")]
+            {
+                let s3 = match config.storage.s3.as_ref() {
+                    Some(s) => s,
+                    None => {
+                        warn!(
+                            "storage.backend = s3 but [storage.s3] block missing; PATCH will answer 503"
+                        );
+                        return (None, None);
+                    }
+                };
+                let bucket = s3.bucket.clone().unwrap_or_default();
+                let region = s3.region.clone().unwrap_or_default();
+                if bucket.trim().is_empty() || region.trim().is_empty() {
+                    warn!("storage.s3.bucket or region missing; PATCH will answer 503");
+                    return (None, None);
+                }
+                // Build credentials from explicit access/secret if
+                // both set; otherwise let `aws-config` use the
+                // env/IAM-role default provider chain.
+                let credentials = match (&s3.access_key, &s3.secret_key) {
+                    (Some(ak), Some(sk)) => Some(aws_credential_types::Credentials::new(
+                        ak.clone(),
+                        sk.clone(),
+                        None,
+                        None,
+                        "garraia-gateway",
+                    )),
+                    _ => None,
+                };
+                let s3_cfg = garraia_storage::S3Config {
+                    bucket,
+                    region,
+                    endpoint_url: s3.endpoint.clone(),
+                    force_path_style: s3.endpoint.is_some(),
+                    credentials,
+                };
+                match garraia_storage::S3Compatible::new(s3_cfg).await {
+                    Ok(s3c) => {
+                        info!("ObjectStore wired (S3Compatible)");
+                        Some(Arc::new(s3c))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "S3Compatible construction failed; PATCH will answer 503");
+                        return (None, None);
+                    }
+                }
+            }
+            #[cfg(not(feature = "storage-s3"))]
+            {
+                warn!(
+                    "storage.backend = s3 but garraia-gateway was built without `storage-s3` feature; \
+                     tus PATCH will answer 503"
+                );
+                return (None, None);
+            }
+        }
+        StorageBackend::None => {
+            info!("storage.backend = none; tus PATCH will answer 503");
+            return (None, None);
+        }
+    };
+
+    (object_store, Some(staging))
 }
