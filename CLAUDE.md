@@ -92,9 +92,18 @@ crates/
                         `S3Config` com validações (staging_dir writable,
                         `max_patch_bytes` na faixa, S3 endpoint bem-formado, MIME
                         allow-list override via `allow_unsafe_mime_in_local_fs`),
-                        4 unit tests na matriz em `check.rs`. Redaction invariant:
-                        output (humano + JSON) só reporta presença de secrets
-                        (`api_key_set: true`), nunca valores.
+                        4 unit tests na matriz em `check.rs`. Plan 0046 (GAR-379
+                        slice 3, sessão autônoma Lote A-3 2026-04-22) adiciona
+                        `AuthSection { jwt_algorithm, access_token_ttl_secs,
+                        refresh_token_ttl_secs, metrics_token_ttl_hint_secs }` em
+                        `AppConfig` — APENAS knobs não-secret (secrets seguem
+                        env-only via `AuthConfig::from_env`, §5.1). `AuthConfig`
+                        ganha fallback `GarraIA_VAULT_PASSPHRASE` (zero breaking
+                        para deploys legacy). `config check` ganha 4 validações
+                        (algoritmo aceito, TTL ranges, access ≤ refresh,
+                        env-override Info). Redaction invariant: output (humano
+                        + JSON) só reporta presença de secrets (`api_key_set:
+                        true`), nunca valores.
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
                         (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
@@ -128,7 +137,19 @@ crates/
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
-  garraia-gateway/    — Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044)
+  garraia-gateway/    — Plan 0046 (GAR-379 slice 3, 2026-04-22) remove hardcoded
+                        fallback inseguro `garraia-insecure-default-jwt-secret-change-me`
+                        de `mobile_auth.rs` e introduz sentinel `AuthConfigMissing`
+                        + getter `AppState::jwt_signing_secret() -> Result<SecretString,
+                        AuthConfigMissing>`. `issue_jwt` / `issue_jwt_pub` propagam
+                        `?` até handler, que converte em **503 fail-closed** (alinha
+                        `/auth/*` com `/v1/auth/*` quando nenhum secret configurado).
+                        Grep invariant: `std::env::var("GARRAIA_JWT_SECRET")` e
+                        `std::env::var("GarraIA_VAULT_PASSPHRASE")` agora aparecem
+                        SÓ em `crates/garraia-config/src/auth.rs` (oauth.rs e totp.rs
+                        refactorados). `metrics_token` lido via `garraia-telemetry::config`
+                        dedicado. Ver `docs/auth-config.md` para matriz de precedência.
+                        Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044)
                         adiciona `rest_v1::uploads` com `POST /v1/uploads` (tus 1.0
                         Creation) + `HEAD /v1/uploads/{id}` (Resume probe) + `PATCH
                         /v1/uploads/{id}` (Core byte append) + `OPTIONS /v1/uploads`
