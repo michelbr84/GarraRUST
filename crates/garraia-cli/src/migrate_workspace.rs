@@ -195,6 +195,18 @@ impl Default for RunOptions {
 /// * `postgres_url` — target Postgres DSN (user must have BYPASSRLS or
 ///   superuser).
 /// * `opts` — CLI flags (dry-run, confirmation, group target).
+///
+/// # Tracing
+///
+/// The `#[instrument]` `skip(...)` list drops `opts` and the two path
+/// args from the span payload by default; the `fields(...)` clause
+/// then re-emits only deterministic, non-PII values — `dry_run`,
+/// `confirm_backup`, and `target_group_type` (validated by a CHECK
+/// constraint, always one of `family`/`team`/`personal`).
+/// `target_group_name` is **deliberately omitted** from `fields(...)`
+/// because it is operator-supplied free text that could reach OTLP
+/// exporters; security audit SEC-M-01 (plan 0040). Do not add it to
+/// `fields()` in a refactor without re-evaluating the exporter surface.
 #[instrument(
     name = "migrate_workspace.run",
     skip(postgres_url, sqlite_path, opts),
@@ -294,6 +306,14 @@ pub async fn run(
     }
 
     Ok((report, exit_codes::OK))
+}
+
+/// Narrow projection of `users` used by the Stage 3 membership loop.
+/// Kept at module scope (not inside the async fn) so sqlx's derive
+/// macros resolve cleanly and future refactors stay readable.
+#[derive(sqlx::FromRow)]
+struct MigratedUser {
+    id: uuid::Uuid,
 }
 
 #[derive(Debug, Clone)]
@@ -694,6 +714,27 @@ async fn run_stage3_groups(
         (new_group_id, true)
     };
 
+    // Code review MEDIUM fix — owner selection survives a partial rerun
+    // where the group row exists but `group_members` is empty (e.g. an
+    // operator who DELETEd memberships, or a prior run that committed
+    // the group but its membership inserts were reverted by a crash
+    // between separate runs). Rather than tying the owner promotion to
+    // `group_created_now`, check whether the group already has any
+    // active owner; if none, the first migrated user takes the slot.
+    // This preserves the reuse-a-pre-existing-group semantic (caller
+    // provided a group that already has its own owner) without
+    // collapsing the "group created earlier, members lost" case.
+    let group_has_active_owner: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+             SELECT 1 FROM group_members
+             WHERE group_id = $1 AND role = 'owner' AND status = 'active'
+         )",
+    )
+    .bind(group_id)
+    .fetch_one(&mut *tx)
+    .await
+    .context("probe existing owner")?;
+
     if group_created_now {
         // Audit row for the group itself. `WHERE NOT EXISTS` idempotency
         // mirrors the stage 2 pattern.
@@ -733,15 +774,19 @@ async fn run_stage3_groups(
     }
 
     // Memberships — iterate over every migrated user in deterministic
-    // order. First-seen becomes owner; rest become member.
+    // order. The first user takes `owner` iff no active owner exists on
+    // the group yet; otherwise everyone is `member`. This covers three
+    // realistic scenarios at once:
+    //   (a) freshly created group   → first legacy user is owner;
+    //   (b) pre-existing group from an operator seed with its own owner
+    //       → legacy users join as `member` (owner preservation);
+    //   (c) partial-rerun / orphaned group where memberships were
+    //       purged externally → first legacy user takes the empty
+    //       owner slot (code review MEDIUM fix).
     //
     // Query deliberately scopes to `legacy_sqlite_id IS NOT NULL` so a
     // hypothetical signup user sharing the same email (via the stage 1
     // UPSERT) doesn't accidentally receive Stage 3 membership.
-    #[derive(sqlx::FromRow)]
-    struct MigratedUser {
-        id: uuid::Uuid,
-    }
     let migrated: Vec<MigratedUser> = sqlx::query_as(
         "SELECT id FROM users
          WHERE legacy_sqlite_id IS NOT NULL
@@ -752,10 +797,7 @@ async fn run_stage3_groups(
     .context("list migrated users for membership insert")?;
 
     for (idx, user) in migrated.iter().enumerate() {
-        let role = if idx == 0 && group_created_now {
-            // Only the freshly-created group gets the migration's owner;
-            // a reused group keeps its own owner to avoid stomping on
-            // an operator-crafted bucket.
+        let role = if idx == 0 && !group_has_active_owner {
             "owner"
         } else {
             "member"
@@ -828,20 +870,21 @@ async fn run_stage3_groups(
     Ok(())
 }
 
-/// Map common Postgres SQLSTATE codes to actionable CLI exit paths.
-/// Currently narrow: only 23514 (CHECK violation) is surfaced because
-/// the caller is most likely to mis-type `--target-group-type`.
-/// `anyhow::Error` preserves the original context for the user.
+/// Map common Postgres SQLSTATE codes to actionable CLI hints via
+/// structured tracing. Currently narrow: only 23514 (CHECK violation)
+/// is surfaced because the caller is most likely to mis-type
+/// `--target-group-type`. The error is returned unchanged so the outer
+/// `anyhow` chain still carries the original context plus Postgres
+/// diagnostics for the CLI wrapper in `main.rs`.
 fn map_sqlstate_error(err: sqlx::Error) -> sqlx::Error {
-    if let sqlx::Error::Database(ref db_err) = err {
-        if db_err.code().as_deref() == Some("23514") {
-            eprintln!(
-                "error: Postgres CHECK constraint violated — \
-                 verify --target-group-type is one of 'family', \
-                 'team', 'personal' ({})",
-                db_err.message()
-            );
-        }
+    if let sqlx::Error::Database(ref db_err) = err
+        && db_err.code().as_deref() == Some("23514")
+    {
+        tracing::error!(
+            target: "garraia_cli::migrate_workspace",
+            pg_message = %db_err.message(),
+            "CHECK constraint violated — verify --target-group-type is one of 'family', 'team', 'personal'"
+        );
     }
     err
 }

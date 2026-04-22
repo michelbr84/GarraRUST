@@ -137,7 +137,11 @@ fn seed_sqlite(path: &std::path::Path, users: &[(&str, &str, &str)]) {
         );",
     )
     .expect("create table");
-    for (id, email, password) in users {
+    // Give each seeded user a distinct `created_at` so the Stage 3
+    // owner-selection query (`ORDER BY created_at ASC, id ASC`) has a
+    // deterministic primary key, independent of how Postgres orders
+    // the inserts internally. Code review NIT (plan 0040).
+    for (idx, (id, email, password)) in users.iter().enumerate() {
         let mut salt_raw = vec![0u8; 32];
         ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt_raw)
             .expect("rand fill");
@@ -151,9 +155,11 @@ fn seed_sqlite(path: &std::path::Path, users: &[(&str, &str, &str)]) {
         );
         let hash_b64 = BASE64.encode(&hash_raw);
         let salt_b64 = BASE64.encode(&salt_raw);
+        // Increment seconds so `ORDER BY created_at ASC` is strict.
+        let ts = format!("2026-04-15T00:00:{:02}Z", idx);
         conn.execute(
-            "INSERT INTO mobile_users (id, email, password_hash, salt, created_at) VALUES (?1, ?2, ?3, ?4, '2026-04-15T00:00:00Z')",
-            rusqlite::params![id, email, hash_b64, salt_b64],
+            "INSERT INTO mobile_users (id, email, password_hash, salt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, email, hash_b64, salt_b64, ts],
         )
         .expect("insert mobile_users");
     }
@@ -607,6 +613,98 @@ async fn stage3_resolves_preexisting_group_by_name() {
     .await
     .unwrap();
     assert_eq!(group_audit, 0, "reuse path emits no group audit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage3_promotes_first_legacy_user_when_group_has_no_owner() {
+    // Regression guard for code-review MEDIUM (plan 0040) — a group
+    // that exists but has no active owner must receive a legacy
+    // user as owner on the next run. Scenario constructed by pre-
+    // creating a group row with NO membership + then running the
+    // migration.
+    let Some(pg) = start_pg().await else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&pg.url)
+        .await
+        .expect("connect");
+    apply_migrations(&pool).await;
+
+    // Seed a group with no owner. `created_by` still has to be a
+    // valid user due to FK; so create a placeholder user who is NOT a
+    // legacy migrant — they only exist to satisfy the FK and deliberately
+    // never become a member.
+    let placeholder = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, status)
+         VALUES ($1, 'placeholder@example.com', 'placeholder', 'active')",
+    )
+    .bind(placeholder)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let pre_group = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO groups (id, name, type, created_by, settings)
+         VALUES ($1, 'Orphaned Bucket', 'personal', $2, '{}'::jsonb)",
+    )
+    .bind(pre_group)
+    .bind(placeholder)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // NO group_members inserted.
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sqlite_path = tmp.path().to_path_buf();
+    drop(tmp);
+    seed_sqlite(
+        &sqlite_path,
+        &[
+            ("u1", "alice@example.com", "pw-alice"),
+            ("u2", "bob@example.com", "pw-bob"),
+        ],
+    );
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        .args([
+            "migrate",
+            "workspace",
+            "--from-sqlite",
+            sqlite_path.to_str().unwrap(),
+            "--to-postgres",
+            &pg.url,
+            "--target-group-name",
+            "Orphaned Bucket",
+            "--confirm-backup",
+        ])
+        .output()
+        .expect("exec");
+    assert!(output.status.success());
+
+    // First legacy user (smallest created_at) is owner.
+    let owner_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+         WHERE gm.group_id = $1
+           AND u.legacy_sqlite_id IS NOT NULL
+           AND gm.role = 'owner' AND gm.status = 'active'",
+    )
+    .bind(pre_group)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(owner_count, 1, "orphan group gets owner promotion");
+
+    // Two memberships total: one owner + one member.
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
+        .bind(pre_group)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

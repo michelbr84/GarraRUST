@@ -331,8 +331,13 @@ enum MigrateCommands {
 
         /// Plan 0040 §5 — name of the bucket group created (or reused)
         /// for the migrated users. Defaults to the legacy personal
-        /// workspace label.
-        #[arg(long, default_value = "Legacy Personal Workspace")]
+        /// workspace label. Empty strings are rejected (security audit
+        /// SEC-L).
+        #[arg(
+            long,
+            default_value = "Legacy Personal Workspace",
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
         target_group_name: String,
 
         /// Plan 0040 §5 — `groups.type` for the bucket. Must be one of
