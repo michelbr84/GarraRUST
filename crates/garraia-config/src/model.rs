@@ -59,6 +59,12 @@ pub struct AppConfig {
     /// `ObjectStore` trait object that the tus PATCH commit flow uses.
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// Plan 0046 (GAR-379 slice 3) — non-secret auth knobs (JWT algorithm,
+    /// access/refresh TTLs, metrics-token hint). Secrets stay env-only
+    /// (plan 0046 §5.1) — see [`crate::AuthConfig`] for the env contract.
+    #[serde(default)]
+    pub auth: AuthSection,
 }
 
 impl Default for AppConfig {
@@ -79,9 +85,85 @@ impl Default for AppConfig {
             fs: FsConfig::default(),
             mobile: MobileConfig::default(),
             storage: StorageConfig::default(),
+            auth: AuthSection::default(),
         }
     }
 }
+
+/// Non-secret auth knobs (plan 0046 / GAR-379 slice 3).
+///
+/// Secrets (`jwt_secret`, `refresh_hmac_secret`, metrics token) are
+/// **never** stored in the config file — they are loaded exclusively
+/// from environment variables via [`crate::AuthConfig`]. See
+/// `docs/auth-config.md` for the full precedence matrix.
+///
+/// Fields here drive operational behavior that is safe to commit to
+/// source control: which JWT algorithm to accept, how long access and
+/// refresh tokens live, and a documentation-only hint about the
+/// metrics-token rotation cadence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthSection {
+    /// JWT signing algorithm. Only `"HS256"` is accepted today; any
+    /// other value is flagged as a validation error by `config check`.
+    /// Plan 0046 §5.5.
+    #[serde(default = "default_jwt_algorithm")]
+    pub jwt_algorithm: String,
+
+    /// Lifetime of an issued access JWT in seconds. Must be in the
+    /// inclusive range `[60, 86_400]` (1 min .. 24 h). Default: `900`
+    /// (15 min) matches the `garraia-auth` HS256 issuer.
+    #[serde(default = "default_access_token_ttl_secs")]
+    pub access_token_ttl_secs: u32,
+
+    /// Lifetime of a refresh token (opaque, HMAC-signed) in seconds.
+    /// Must be in the inclusive range `[60, 2_592_000]` (1 min .. 30
+    /// days) **and** `>= access_token_ttl_secs`. Default: `604_800`
+    /// (7 days).
+    #[serde(default = "default_refresh_token_ttl_secs")]
+    pub refresh_token_ttl_secs: u32,
+
+    /// Documentation-only hint in seconds for how frequently operators
+    /// are expected to rotate `GARRAIA_METRICS_TOKEN`. `0` (default)
+    /// means "indefinite". Not consumed by runtime code; surfaced by
+    /// `config check` as a soft signal.
+    #[serde(default)]
+    pub metrics_token_ttl_hint_secs: u32,
+}
+
+fn default_jwt_algorithm() -> String {
+    "HS256".to_string()
+}
+
+fn default_access_token_ttl_secs() -> u32 {
+    900
+}
+
+fn default_refresh_token_ttl_secs() -> u32 {
+    604_800
+}
+
+impl Default for AuthSection {
+    fn default() -> Self {
+        Self {
+            jwt_algorithm: default_jwt_algorithm(),
+            access_token_ttl_secs: default_access_token_ttl_secs(),
+            refresh_token_ttl_secs: default_refresh_token_ttl_secs(),
+            metrics_token_ttl_hint_secs: 0,
+        }
+    }
+}
+
+/// Minimum / maximum for `AuthSection::access_token_ttl_secs`.
+pub const AUTH_ACCESS_TTL_MIN_SECS: u32 = 60;
+pub const AUTH_ACCESS_TTL_MAX_SECS: u32 = 86_400;
+
+/// Minimum / maximum for `AuthSection::refresh_token_ttl_secs`.
+pub const AUTH_REFRESH_TTL_MIN_SECS: u32 = 60;
+pub const AUTH_REFRESH_TTL_MAX_SECS: u32 = 2_592_000;
+
+/// Algorithms that `AuthSection::jwt_algorithm` may take. Kept as a
+/// static list so `check.rs` + docs stay in sync.
+pub const AUTH_SUPPORTED_JWT_ALGORITHMS: &[&str] = &["HS256"];
 
 /// Mobile-chat runtime overrides (plan 0042).
 ///
