@@ -20,6 +20,7 @@ members = [
     "crates/garraia-voice",
     "crates/garraia-workspace",
     "crates/garraia-glob",
+    "crates/garraia-storage",
 ]
 
 [workspace.package]
