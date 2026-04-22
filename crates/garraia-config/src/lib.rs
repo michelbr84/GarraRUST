@@ -9,7 +9,8 @@ pub use check::{ConfigCheck, ConfigSummary, Finding, Severity, SourceReport, run
 pub use loader::ConfigLoader;
 pub use model::{
     AgentConfig, AppConfig, ChannelConfig, EmbeddingProviderConfig, GatewayConfig,
-    LlmProviderConfig, McpServerConfig, MemoryConfig, NamedAgentConfig, TimeoutConfig, TypeTimeout,
+    LlmProviderConfig, MAX_PATCH_BYTES_MAX, MAX_PATCH_BYTES_MIN, McpServerConfig, MemoryConfig,
+    NamedAgentConfig, S3StorageConfig, StorageBackend, StorageConfig, TimeoutConfig, TypeTimeout,
     VoiceConfig,
 };
 pub use watcher::ConfigWatcher;

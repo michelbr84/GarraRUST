@@ -22,6 +22,11 @@ garraia-telemetry = { path = "../garraia-telemetry", optional = true }
 # AppState carries Option<Arc<...>> fields that are None when AuthConfig
 # env vars are missing (fail-soft mode).
 garraia-auth = { workspace = true }
+# Plan 0044 (GAR-395 slice 2): ObjectStore trait + LocalFs + S3 backends.
+# Default features only — the tus PATCH commit path consumes the trait
+# surface from `garraia-storage`. S3 backend is opt-in via the
+# `storage-s3` feature on this crate (no-op transitive when absent).
+garraia-storage = { path = "../garraia-storage" }
 secrecy = "0.10"
 # Auth metrics — same version pin as garraia-telemetry to share the global
 # Prometheus exporter recorder. Behind cfg(feature = "telemetry") at the
@@ -75,6 +80,16 @@ ipnet = "2"
 subtle = "2.6"
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+# Plan 0044: SHA-256 for audit `object_key_hash` (not for storage — the
+# `garraia-storage` crate computes object checksums internally).
+sha2 = "0.10"
+hex = "0.4"
+bytes = { workspace = true }
+# Plan 0044: required only when compiling with the `storage-s3`
+# feature so the bootstrap can build `aws_credential_types::Credentials`
+# from static access/secret keys. Feature-gated to keep the baseline
+# build lightweight.
+aws-credential-types = { version = "1", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
 filetime = "0.2"
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
@@ -84,6 +99,10 @@ default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
 telemetry = ["dep:garraia-telemetry"]
+# Plan 0044 (GAR-395 slice 2): enables the S3Compatible ObjectStore
+# backend in bootstrap. Off by default — `LocalFs` is the only backend
+# wired in baseline builds to keep the aws-sdk dependency cost optional.
+storage-s3 = ["garraia-storage/storage-s3", "dep:aws-credential-types"]
 # Plan 0016 M2 — exposes test-only helpers on `GatewayServer` so the
 # integration test harness (`tests/common/mod.rs`) can build a Router
 # without running the full bootstrap pipeline. WARNING: MUST NOT be
@@ -156,6 +175,15 @@ required-features = ["test-helpers"]
 [[test]]
 name = "metrics_auth_integration"
 path = "tests/metrics_auth_integration.rs"
+required-features = ["test-helpers"]
+
+# Plan 0044 — GAR-395 slice 2: tus PATCH + OPTIONS integration.
+# Bundled scenarios. Feature-gated like the other integration tests
+# and guards Docker availability at runtime so CI without Docker
+# skips gracefully.
+[[test]]
+name = "rest_v1_uploads_patch"
+path = "tests/rest_v1_uploads_patch.rs"
 required-features = ["test-helpers"]
 
 [dev-dependencies]

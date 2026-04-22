@@ -53,6 +53,12 @@ pub struct AppConfig {
     /// slices will fold in more mobile-specific runtime knobs.
     #[serde(default)]
     pub mobile: MobileConfig,
+
+    /// Plan 0044 (GAR-395 slice 2) — object storage backend selection.
+    /// Consumed by `garraia-gateway` bootstrap to construct the
+    /// `ObjectStore` trait object that the tus PATCH commit flow uses.
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 impl Default for AppConfig {
@@ -72,6 +78,7 @@ impl Default for AppConfig {
             timeouts: TimeoutConfig::default(),
             fs: FsConfig::default(),
             mobile: MobileConfig::default(),
+            storage: StorageConfig::default(),
         }
     }
 }
@@ -90,6 +97,111 @@ pub struct MobileConfig {
     #[serde(default)]
     pub persona: Option<String>,
 }
+
+/// Object storage backend configuration (plan 0044 / GAR-395 slice 2).
+///
+/// Three backends supported — same set documented in ADR 0004:
+///
+/// - `local`: filesystem-backed `LocalFs`. Default. Uses
+///   [`StorageConfig::local_fs_root`] as the base directory.
+/// - `s3`: AWS S3 or S3-compatible (MinIO). Requires
+///   [`StorageConfig::s3`] to be populated and the gateway to be built
+///   with `garraia-storage/storage-s3`. Without the feature, validation
+///   warns the operator.
+/// - `none`: no backend wired; tus PATCH commit answers 503.
+///
+/// `staging_dir` is the filesystem path where partial tus uploads are
+/// appended. Required for any backend (the tus PATCH commit path is
+/// staging-FS-first regardless of final backend — plan 0044 §5.2).
+///
+/// `max_patch_bytes` is a soft operational cap on the size of a single
+/// PATCH body (bytes accepted into memory at commit time). Plan 0044
+/// §5.1 tradeoff — slice 3 lifts this by adding streaming `put_stream`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub backend: StorageBackend,
+    /// Filesystem path for the `LocalFs` backend root. Only consulted
+    /// when `backend = local`. Default: `<data_dir>/storage` or
+    /// `./data/storage` when `data_dir` is unset.
+    #[serde(default)]
+    pub local_fs_root: Option<PathBuf>,
+    /// S3 / MinIO configuration. Only consulted when `backend = s3`.
+    #[serde(default)]
+    pub s3: Option<S3StorageConfig>,
+    /// Staging directory for tus partial uploads. Required for PATCH
+    /// path regardless of backend. Default: `<data_dir>/uploads-staging`
+    /// or `./data/uploads-staging` when `data_dir` is unset.
+    #[serde(default)]
+    pub staging_dir: Option<PathBuf>,
+    /// Per-upload cap on total bytes accepted across PATCH requests
+    /// (streaming is slice 3). Default: 100 MiB. Must be in the range
+    /// `[1 MiB, 5 GiB]`.
+    #[serde(default = "default_max_patch_bytes")]
+    pub max_patch_bytes: u64,
+}
+
+/// Supported object storage backends. Lowercase wire form matches the
+/// `.env.example` documentation (`local`, `s3`, `none`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    /// Filesystem-backed `LocalFs`. Safe default for dev + tests.
+    #[default]
+    Local,
+    /// AWS S3 or S3-compatible (MinIO). Requires `storage-s3` feature.
+    S3,
+    /// No backend wired; tus PATCH commit answers 503.
+    None,
+}
+
+/// S3 / MinIO specific fields. Populated only when
+/// `StorageConfig::backend = s3`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct S3StorageConfig {
+    /// Bucket name. Required.
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// Region (e.g., `us-east-1`). Required.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Optional endpoint override (for MinIO or other S3-compatible
+    /// gateways). Must begin with `http://` or `https://`.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Access key id. Read from env when absent
+    /// (`GARRAIA_STORAGE_S3_ACCESS_KEY`).
+    #[serde(default)]
+    pub access_key: Option<String>,
+    /// Secret access key. Read from env when absent
+    /// (`GARRAIA_STORAGE_S3_SECRET_KEY`). PII-safe — never logged.
+    #[serde(default)]
+    pub secret_key: Option<String>,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: StorageBackend::default(),
+            local_fs_root: None,
+            s3: None,
+            staging_dir: None,
+            max_patch_bytes: default_max_patch_bytes(),
+        }
+    }
+}
+
+fn default_max_patch_bytes() -> u64 {
+    100 * 1024 * 1024
+}
+
+/// Minimum cap on `max_patch_bytes`. Anything smaller breaks common
+/// tus clients.
+pub const MAX_PATCH_BYTES_MIN: u64 = 1024 * 1024;
+
+/// Maximum cap on `max_patch_bytes`. Aligns with `files.size_bytes`
+/// CHECK from migration 003 (5 GiB).
+pub const MAX_PATCH_BYTES_MAX: u64 = 5 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
