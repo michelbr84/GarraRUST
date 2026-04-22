@@ -1,5 +1,6 @@
 mod banner;
 mod chat;
+mod config_cmd;
 mod glob_cmd;
 mod migrate;
 mod update;
@@ -162,6 +163,31 @@ enum Commands {
         /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
         #[arg(long, short = 'u')]
         url: Option<String>,
+    },
+
+    /// Inspect, validate, and diagnose the effective configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Load the effective configuration and report precedence + validation findings.
+    ///
+    /// Exit codes (sysexits):
+    ///   0  — ok (no errors; warnings allowed unless --strict)
+    ///   2  — validation errors found (or warnings under --strict)
+    ///   65 — EX_DATAERR, config file exists but does not parse
+    Check {
+        /// Emit machine-readable JSON instead of the human-friendly report.
+        #[arg(long)]
+        json: bool,
+
+        /// Treat warnings as errors (useful for CI).
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -493,6 +519,20 @@ fn main() -> Result<()> {
                 .init();
         }
     };
+
+    // GAR-379 / plan 0035 — `config check` must survive an unparseable config
+    // file and report EX_DATAERR (65) instead of bubbling up. Intercept the
+    // subcommand before we attempt the global `load()`.
+    if let Commands::Config {
+        action: ConfigCommands::Check { json, strict },
+    } = cli.command
+    {
+        let code = config_cmd::run_config_check(json, strict)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
 
     let config_loader = garraia_config::ConfigLoader::new()?;
     config_loader.ensure_dirs()?;
@@ -1081,6 +1121,12 @@ async fn async_main(
             url,
         } => {
             chat::run_chat(config, provider, model, url).await?;
+        }
+        Commands::Config { .. } => {
+            // Handled earlier in `main()` — the `config check` path must run
+            // before the global config is loaded so that EX_DATAERR (65) is
+            // reported correctly when the file is present but unparseable.
+            unreachable!("Commands::Config is intercepted in main() before async_main");
         }
     }
 
