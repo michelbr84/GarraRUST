@@ -1,6 +1,7 @@
 # GarraIA — Gateway de IA Multi-Canal
 
 > Rust-based AI gateway: multi-channel, multi-provider LLM orchestration with mobile client.
+> **Harness:** ClaudeMaxPower (branded localmente como "GarraIA SuperPowers") + official Superpowers plugin — hooks, agent teams, quality gates e subagents são parte do workflow obrigatório (ver `skills/`, `.claude/agents/`, `.claude/hooks/`).
 
 ## Identidade do Projeto
 

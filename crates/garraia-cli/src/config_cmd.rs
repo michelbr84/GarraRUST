@@ -75,15 +75,18 @@ pub fn run_config_check(json: bool, strict: bool) -> Result<i32> {
 }
 
 fn compute_exit_code(check: &ConfigCheck, strict: bool) -> i32 {
-    if check.has_errors() {
-        2
-    } else if strict && check.has_warnings() {
+    if check.has_errors() || (strict && check.has_warnings()) {
         2
     } else {
         0
     }
 }
 
+// `mod tests` lives mid-file here because the public entry (`run_config_check`)
+// and its `compute_exit_code` helper precede it, while the large `print_*`
+// helpers come after. Split 8+ large fn moves would bloat this PR — allow
+// locally.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,8 +32,7 @@ async fn router_build_does_not_panic() {
     // Wait a bit for potential panic (routes are validated at build time)
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // If we reach here, the router built successfully without panic
-    assert!(true, "Router built without panic");
+    // Sentinel: reaching this point means the router built without panic.
 }
 
 /// Test with voice enabled configuration
@@ -53,7 +52,7 @@ async fn router_build_with_voice_does_not_panic() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    assert!(true, "Router with voice enabled built without panic");
+    // Sentinel: reaching this point means the voice-enabled router built without panic.
 }
 
 /// Test that all routes use proper axum 0.7+ syntax (no legacy /: or /*)
@@ -70,6 +69,5 @@ fn no_legacy_route_syntax_in_router() {
     // The actual validation happens at runtime when build_router() is called.
     // If legacy syntax is used, axum 0.7+ will panic with:
     // "Path segments must not start with ':'"
-
-    assert!(true, "Router uses proper axum 0.7+ syntax");
+    // Sentinel: no assertion — test body documents the compile-time invariant.
 }

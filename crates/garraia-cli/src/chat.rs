@@ -176,61 +176,61 @@ pub async fn detect_provider(
     }
 
     // 2. Try Anthropic (cloud)
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        if !key.is_empty() {
-            let model = config
-                .llm
-                .get("anthropic")
-                .and_then(|c| c.model.as_deref())
-                .unwrap_or("claude-sonnet-4-5-20250929")
-                .to_string();
-            let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
-            return (
-                "anthropic".to_string(),
-                model,
-                Arc::new(provider) as Arc<dyn LlmProvider>,
-            );
-        }
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
+        && !key.is_empty()
+    {
+        let model = config
+            .llm
+            .get("anthropic")
+            .and_then(|c| c.model.as_deref())
+            .unwrap_or("claude-sonnet-4-5-20250929")
+            .to_string();
+        let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
+        return (
+            "anthropic".to_string(),
+            model,
+            Arc::new(provider) as Arc<dyn LlmProvider>,
+        );
     }
 
     // 3. Try OpenAI (cloud)
-    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-        if !key.is_empty() {
-            let model = config
-                .llm
-                .get("openai")
-                .and_then(|c| c.model.as_deref())
-                .unwrap_or("gpt-4o")
-                .to_string();
-            let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
-            return (
-                "openai".to_string(),
-                model,
-                Arc::new(provider) as Arc<dyn LlmProvider>,
-            );
-        }
+    if let Ok(key) = std::env::var("OPENAI_API_KEY")
+        && !key.is_empty()
+    {
+        let model = config
+            .llm
+            .get("openai")
+            .and_then(|c| c.model.as_deref())
+            .unwrap_or("gpt-4o")
+            .to_string();
+        let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
+        return (
+            "openai".to_string(),
+            model,
+            Arc::new(provider) as Arc<dyn LlmProvider>,
+        );
     }
 
     // 4. Try OpenRouter (cloud fallback)
-    if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
-        if !key.is_empty() {
-            let model = config
-                .llm
-                .get("openrouter")
-                .and_then(|c| c.model.as_deref())
-                .unwrap_or("anthropic/claude-sonnet-4-5")
-                .to_string();
-            let provider = OpenAiProvider::new(
-                &key,
-                Some(model.clone()),
-                Some("https://openrouter.ai/api/v1".to_string()),
-            );
-            return (
-                "openrouter".to_string(),
-                model,
-                Arc::new(provider) as Arc<dyn LlmProvider>,
-            );
-        }
+    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+        && !key.is_empty()
+    {
+        let model = config
+            .llm
+            .get("openrouter")
+            .and_then(|c| c.model.as_deref())
+            .unwrap_or("anthropic/claude-sonnet-4-5")
+            .to_string();
+        let provider = OpenAiProvider::new(
+            &key,
+            Some(model.clone()),
+            Some("https://openrouter.ai/api/v1".to_string()),
+        );
+        return (
+            "openrouter".to_string(),
+            model,
+            Arc::new(provider) as Arc<dyn LlmProvider>,
+        );
     }
 
     // 5. Fallback: Ollama with no health check (user will see error on first message)
