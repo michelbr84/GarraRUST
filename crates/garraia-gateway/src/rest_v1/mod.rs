@@ -34,12 +34,13 @@ pub mod invites;
 pub mod me;
 pub mod openapi;
 pub mod problem;
+pub mod uploads;
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, head, post};
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -192,6 +193,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     rate_limit_layer_authenticated,
                 ));
 
+            // Plan 0041 (GAR-395 slice 1): tus 1.0 Creation + HEAD.
+            // Wrapped in a 412 → Tus-Version header layer so precondition
+            // failures advertise the supported version without each
+            // handler having to remember the tus spec.
+            let tus_routes = Router::new()
+                .route("/v1/uploads", post(uploads::create_upload))
+                .route("/v1/uploads/{id}", head(uploads::head_upload))
+                .layer(axum::middleware::from_fn(uploads::tus_version_header_layer));
+
             Router::new()
                 .route("/v1/me", get(me::get_me))
                 .route("/v1/groups", post(groups::create_group))
@@ -201,6 +211,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/groups/{id}/invites", post(groups::create_invite))
                 .merge(rate_limited_routes)
+                .merge(tus_routes)
                 .with_state(full)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -227,6 +238,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
+                .route("/v1/uploads", post(unconfigured_handler))
+                .route("/v1/uploads/{id}", head(unconfigured_handler))
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -249,6 +262,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
+                .route("/v1/uploads", post(unconfigured_handler))
+                .route("/v1/uploads/{id}", head(unconfigured_handler))
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
                 .route("/docs/{*rest}", get(unconfigured_handler))
