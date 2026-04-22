@@ -15,8 +15,10 @@ use crate::mobile_auth::MobileAuth;
 use crate::state::AppState;
 use garraia_db::SessionStore;
 
-/// Personalidade padrão do Garra para o app mobile.
-/// Pode ser sobrescrita pela variável de ambiente `GARRA_MOBILE_PERSONA`.
+/// Personalidade padrão do Garra para o app mobile. Plan 0042 (GAR-379
+/// slice 2) moved the persona source-of-truth to `config.mobile.persona`
+/// with env + default as fallbacks; this constant is the last-resort
+/// default shipped with the binary.
 const DEFAULT_PERSONA: &str = r#"Você é o Garra, um assistente pessoal de IA com personalidade marcante.
 
 Seu estilo:
@@ -30,14 +32,49 @@ Seu estilo:
 
 Sua missão: tornar cada interação útil E divertida. O usuário deve sair da conversa tendo aprendido algo ou resolvido algo — e com vontade de voltar."#;
 
-fn garra_persona() -> &'static str {
-    // Leak once — safe for a long-running server process.
-    // If the env var is set, it overrides the default persona.
-    use std::sync::OnceLock;
-    static PERSONA: OnceLock<String> = OnceLock::new();
-    PERSONA.get_or_init(|| {
-        std::env::var("GARRA_MOBILE_PERSONA").unwrap_or_else(|_| DEFAULT_PERSONA.to_string())
-    })
+/// Resolve the persona string with precedence **config > env > default**
+/// (plan 0042 §5.1).
+///
+/// The old `OnceLock` cache is gone. `AppState` itself is handed to
+/// handlers as `Arc<AppState>`, so the call site already pays exactly
+/// one Arc-deref to reach `state.config`; the `.mobile.persona`
+/// lookup is a plain field access + `Option::as_deref` — cheap
+/// enough (< 100 ns) that we do not need a OnceLock to amortise it.
+/// Dropping the cache is what lets future config hot-reload be seen
+/// immediately (code review MEDIUM clarification: the `Arc` is on
+/// `AppState`, not on `config` itself).
+///
+/// `std::env::var` is queried per call. That is intentional: the env
+/// fallback is only exercised when `config.mobile.persona` is unset,
+/// which is the dev/legacy path. Caching via `OnceLock` here would
+/// cement whatever value the env had at first read and defeat
+/// per-test overrides.
+fn garra_persona(state: &AppState) -> String {
+    pick_persona(
+        normalise_persona_source(state.config.mobile.persona.as_deref()),
+        normalise_persona_source(std::env::var("GARRA_MOBILE_PERSONA").ok().as_deref()),
+    )
+}
+
+/// Pure precedence helper — kept separate from the env/state reads so
+/// the 3-tier fallback can be unit-tested without spinning up an
+/// `AppState` or touching process env.
+fn pick_persona(from_config: Option<&str>, from_env: Option<&str>) -> String {
+    if let Some(p) = from_config {
+        return p.to_string();
+    }
+    if let Some(p) = from_env {
+        return p.to_string();
+    }
+    DEFAULT_PERSONA.to_string()
+}
+
+/// Security audit SEC-L normalisation: treat an empty or
+/// whitespace-only value as *absent* so we do not send a blank
+/// system prompt to the LLM. Applied to both config and env sources
+/// before they reach [`pick_persona`].
+fn normalise_persona_source(raw: Option<&str>) -> Option<&str> {
+    raw.filter(|s| !s.trim().is_empty())
 }
 
 /// Session key prefix for mobile users.
@@ -96,7 +133,7 @@ pub async fn chat(
         .await;
 
     // Process the message through the agent runtime.
-    let persona = garra_persona();
+    let persona = garra_persona(&state);
     let result: Result<String, _> = state
         .agents
         .process_message_with_agent_config(
@@ -105,10 +142,10 @@ pub async fn chat(
             &[], // history already hydrated into runtime session
             Some(&session_id),
             Some(&user_id),
-            None,          // provider: use default
-            None,          // model: use default
-            Some(persona), // Garra personality system prompt
-            None,          // max_tokens: use default
+            None,           // provider: use default
+            None,           // model: use default
+            Some(&persona), // Garra personality system prompt
+            None,           // max_tokens: use default
         )
         .await;
 
@@ -200,4 +237,64 @@ pub async fn history(
             session_id,
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persona_prefers_config_over_env_and_default() {
+        let resolved = pick_persona(Some("config-persona"), Some("env-persona"));
+        assert_eq!(resolved, "config-persona");
+    }
+
+    #[test]
+    fn persona_falls_back_to_env_when_config_absent() {
+        let resolved = pick_persona(None, Some("env-persona"));
+        assert_eq!(resolved, "env-persona");
+    }
+
+    #[test]
+    fn persona_falls_back_to_default_when_neither_set() {
+        let resolved = pick_persona(None, None);
+        assert_eq!(resolved, DEFAULT_PERSONA);
+    }
+
+    #[test]
+    fn normalise_treats_empty_and_whitespace_as_absent() {
+        // Security audit SEC-L: an operator that sets
+        // `GARRA_MOBILE_PERSONA=""` or a whitespace-only value should
+        // not silently ship a blank system prompt to the LLM. The
+        // normaliser upgrades both to `None`, so the fallback chain
+        // walks to the next source.
+        assert_eq!(normalise_persona_source(Some("")), None);
+        assert_eq!(normalise_persona_source(Some("   ")), None);
+        assert_eq!(normalise_persona_source(Some("\t\n")), None);
+        assert_eq!(
+            normalise_persona_source(Some("real persona")),
+            Some("real persona"),
+        );
+        assert_eq!(normalise_persona_source(None), None);
+    }
+
+    #[test]
+    fn persona_empty_config_falls_through_to_env() {
+        // Regression guard — empty/whitespace config source must be
+        // upgraded to `None` by the caller so env (or default) wins.
+        let resolved = pick_persona(
+            normalise_persona_source(Some("   ")),
+            normalise_persona_source(Some("env-persona")),
+        );
+        assert_eq!(resolved, "env-persona");
+    }
+
+    #[test]
+    fn persona_empty_env_falls_through_to_default() {
+        let resolved = pick_persona(
+            normalise_persona_source(None),
+            normalise_persona_source(Some("")),
+        );
+        assert_eq!(resolved, DEFAULT_PERSONA);
+    }
 }
