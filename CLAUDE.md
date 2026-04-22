@@ -35,8 +35,18 @@ crates/
                         migrado (`created_at ASC`) vira `owner`, demais `member`,
                         audit `groups.imported_from_sqlite` + N×
                         `group_members.imported_from_sqlite` atômico no mesmo tx
-                        dos stages 1+2. Stages 5+ (chats, messages, memory,
-                        sessions, api_keys) em slices futuros.
+                        dos stages 1+2. Plan 0045 (GAR-413 Stage 5, sessão autônoma
+                        Lote A-2 2026-04-22) adiciona chats + chat_members: amendment
+                        normativo ao plan 0034 §7.5 (tabela legacy real é `sessions`,
+                        não `conversations` — evidência em
+                        `garraia-db/src/session_store.rs:105`), mapping
+                        `sessions → chats` (type `'channel'`) + `chat_members`
+                        (role `'owner'` para o `sessions.user_id` migrado), audit
+                        `chats.imported_from_sqlite` + `chat_members.imported_from_sqlite`
+                        atômico na mesma tx dos stages 1+2+3, `ChatMapping
+                        { legacy_session_id → new_chat_id }` exposto em memória para
+                        o stage 6 (messages) consumir em slice futuro. Stages 6+
+                        (messages, memory, sessions, api_keys) em slices futuros.
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
@@ -77,12 +87,18 @@ crates/
                         Plan 0035 (GAR-379 slice 1): novo módulo `check` com `run_check`
                         + `ConfigCheck`/`Finding`/`Severity`/`SourceReport` alimentando o
                         subcomando CLI `garraia config check [--json] [--strict]`.
-                        Redaction invariant: output (humano + JSON) só reporta presença
-                        de secrets (`api_key_set: true`), nunca valores.
+                        Plan 0044 (GAR-395 slice 2) adiciona `StorageConfig` +
+                        `StorageBackend` enum (`local` | `s3`) + `LocalFsConfig` +
+                        `S3Config` com validações (staging_dir writable,
+                        `max_patch_bytes` na faixa, S3 endpoint bem-formado, MIME
+                        allow-list override via `allow_unsafe_mime_in_local_fs`),
+                        4 unit tests na matriz em `check.rs`. Redaction invariant:
+                        output (humano + JSON) só reporta presença de secrets
+                        (`api_key_set: true`), nunca valores.
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
                         (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
-                        + GAR-387). 28 tabelas em 13 migrations, 21 sob FORCE RLS, 7 tenant-root
+                        + GAR-387 + GAR-395). 29 tabelas em 14 migrations, 22 sob FORCE RLS, 7 tenant-root
                         sob app-layer:
                         • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
                         • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
@@ -98,6 +114,9 @@ crates/
                               TO garraia_login (GAR-391c, Gaps A+B+C closed)
                         • 011 group_invites pending UNIQUE, 012 single-owner idx active-only,
                           013 audit_events WITH CHECK explícito (padrão seguido por 003).
+                        • 014 tus_uploads (GAR-395 plan 0041) — ledger de upload tus 1.0 com
+                              FORCE RLS + `tus_uploads_group_isolation` + CHECK `upload_length ≤ 5 GiB`
+                              + `object_key` UNIQUE + índice parcial `expires_in_progress_idx`.
                         Handle PII-safe via skip(config) + custom Debug redaction.
                         Decisão: docs/adr/0003-database-for-workspace.md + 0004-object-storage.md.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
@@ -109,13 +128,22 @@ crates/
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
-  garraia-gateway/    — Fase 3.5 (GAR-395 slice 1 plan 0041) adiciona
-                        `rest_v1::uploads` com `POST /v1/uploads` (tus 1.0
-                        Creation) + `HEAD /v1/uploads/{id}` (Resume probe)
-                        atrás de `Tus-Resumable: 1.0.0` precondition. Stored
-                        em `tus_uploads` (migration 014, FORCE RLS).
-                        PATCH + ObjectStore commit ficam para slice 2;
-                        termination + expiration worker para slice 3.
+  garraia-gateway/    — Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044)
+                        adiciona `rest_v1::uploads` com `POST /v1/uploads` (tus 1.0
+                        Creation) + `HEAD /v1/uploads/{id}` (Resume probe) + `PATCH
+                        /v1/uploads/{id}` (Core byte append) + `OPTIONS /v1/uploads`
+                        (tus discovery) atrás de `Tus-Resumable: 1.0.0` precondition.
+                        Stored em `tus_uploads` (migration 014, FORCE RLS). Slice 2
+                        wire `ObjectStore` em `AppState` via novo `StorageConfig`
+                        (`garraia-config::model::StorageConfig`, backend `local` ou
+                        `s3` feature-gated), staging FS local append-only,
+                        commit two-phase ordering (blob-first via `ObjectStore::put`
+                        + `files`/`file_versions` atomic + audit `upload.completed`
+                        + `tus_uploads.status='completed'` → `COMMIT` Postgres em
+                        seguida — plan 0044 §5.3.1). Cap operacional
+                        `storage.max_patch_bytes` default 100 MiB (streaming `put`
+                        fica para slice 3). Termination + expiration worker para
+                        slice 3.
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
