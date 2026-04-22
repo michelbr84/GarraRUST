@@ -1,14 +1,20 @@
-//! `garraia migrate workspace` — SQLite → Postgres migration (Stages 1–3).
+//! `garraia migrate workspace` — SQLite → Postgres migration (Stages 1–3 + 5).
 //!
 //! - Plan 0039 implemented §7.1 (users) + §7.2 (user_identities + atomic
 //!   audit) of [plan 0034](../../plans/0034-gar-413-migrate-workspace-spec.md).
-//! - Plan 0040 (this slice) adds §7.4 (groups + group_members): the
-//!   legacy bucket is auto-created under `--target-group-name` /
-//!   `--target-group-type`, the oldest migrated user becomes owner, the
-//!   rest become members, and each write emits an atomic audit row in
-//!   the same transaction.
-//! - Subsequent stages (chats, messages, memory, sessions, api_keys,
-//!   audit retrofit) land in follow-up slices.
+//! - Plan 0040 adds §7.4 (groups + group_members): the legacy bucket is
+//!   auto-created under `--target-group-name` / `--target-group-type`, the
+//!   oldest migrated user becomes owner, the rest become members, and
+//!   each write emits an atomic audit row in the same transaction.
+//! - Plan 0045 (this slice) adds Stage 5 — `chats` + `chat_members` from
+//!   SQLite `sessions`. Amends plan 0034 §7.5 (which referenced
+//!   `conversations`): the legacy table is `sessions`. One `chats` row
+//!   per session, one `chat_members` row per (session, migrated_user),
+//!   atomic audit both for chats and members, mapping
+//!   `legacy_session_id → new_chat_id` built in-memory for future Stage
+//!   6 (messages) to consume.
+//! - Subsequent stages (messages, memory, api_keys, audit retrofit) land
+//!   in follow-up slices.
 //!
 //! # Security invariants
 //!
@@ -48,7 +54,20 @@
 //! Operator-side rollback of migrated data:
 //!
 //! ```sql
-//! -- Stage 3 artefacts first (must precede user deletion because of FK).
+//! -- Stage 5 artefacts first — chat_members is not auto-cascaded by
+//! -- user deletion in a way that removes the chat rows.
+//! DELETE FROM chat_members
+//! WHERE chat_id IN (
+//!     SELECT resource_id::uuid FROM audit_events
+//!     WHERE action = 'chats.imported_from_sqlite'
+//! );
+//! DELETE FROM chats
+//! WHERE id IN (
+//!     SELECT resource_id::uuid FROM audit_events
+//!     WHERE action = 'chats.imported_from_sqlite'
+//! );
+//!
+//! -- Stage 3 artefacts (must precede user deletion because of FK).
 //! DELETE FROM group_members
 //! WHERE user_id IN (SELECT id FROM users WHERE legacy_sqlite_id IS NOT NULL)
 //!   AND group_id IN (
@@ -64,6 +83,7 @@
 //! -- audit_events rows persist by design (plan 0034 §8, LGPD art. 37).
 //! ```
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
@@ -112,9 +132,10 @@ const PBKDF2_OUTPUT_LEN: u32 = 32;
 /// Report produced by a successful `run` (or a failed one — fields
 /// populated up to the point of failure).
 ///
-/// Covers stages 1 (users), 2 (identities + audit) and 3 (groups +
-/// group_members). Stage-specific callers are responsible for bumping
-/// only their own fields; the outer `run` aggregates.
+/// Covers stages 1 (users), 2 (identities + audit), 3 (groups +
+/// group_members) and 5 (chats + chat_members). Stage-specific callers
+/// are responsible for bumping only their own fields; the outer `run`
+/// aggregates.
 #[derive(Debug, Default)]
 pub struct StageReport {
     // Stage 1.
@@ -130,13 +151,20 @@ pub struct StageReport {
     pub group_members_inserted: u64,
     pub group_members_skipped_conflict: u64,
     pub group_audit_events_inserted: u64,
+    // Stage 5 (plan 0045).
+    pub chats_inserted: u64,
+    pub chats_skipped_conflict: u64,
+    pub chat_members_inserted: u64,
+    pub chat_members_skipped_conflict: u64,
+    pub chat_audit_events_inserted: u64,
+    pub sessions_skipped_no_user: u64,
     pub dry_run: bool,
 }
 
 impl StageReport {
     pub fn print_summary(&self) {
         let mode = if self.dry_run { " (dry run)" } else { "" };
-        println!("Workspace Migration Report — Stages 1–3{mode}");
+        println!("Workspace Migration Report — Stages 1–3 + 5{mode}");
         println!("──────────────────────────────────────");
         println!(
             "  users:            {} inserted, {} upserted-on-existing",
@@ -155,10 +183,35 @@ impl StageReport {
             self.group_members_inserted, self.group_members_skipped_conflict
         );
         println!(
-            "  audit rows:       {} (users) + {} (groups/members)",
-            self.audit_events_inserted, self.group_audit_events_inserted
+            "  chats:            {} inserted, {} skipped (conflict), {} sessions skipped (no user)",
+            self.chats_inserted, self.chats_skipped_conflict, self.sessions_skipped_no_user
+        );
+        println!(
+            "  chat_members:     {} inserted, {} skipped (conflict)",
+            self.chat_members_inserted, self.chat_members_skipped_conflict
+        );
+        println!(
+            "  audit rows:       {} (users) + {} (groups/members) + {} (chats/members)",
+            self.audit_events_inserted,
+            self.group_audit_events_inserted,
+            self.chat_audit_events_inserted
         );
     }
+}
+
+/// In-memory map from legacy SQLite `sessions.id` to newly minted
+/// Postgres `chats.id`. Built by [`run_stage5_chats`]; a future slice
+/// for Stage 6 (messages) will consume this to rewrite
+/// `messages.session_id` references. Not persisted in any DB table —
+/// the relationship is rebuilt on every migration run.
+///
+/// Invariant maintained by Stage 5: `session_to_chat.len()` equals
+/// `StageReport.chats_inserted` after a successful run (guarded by an
+/// integration-test assertion and a debug_assert inside the stage
+/// function).
+#[derive(Debug, Default)]
+pub struct ChatMapping {
+    pub session_to_chat: HashMap<String, Uuid>,
 }
 
 /// CLI options accepted by [`run`]. Grouping them in a struct keeps the
@@ -298,11 +351,25 @@ pub async fn run(
     )
     .await?;
 
+    // Stage 7.5 (plan 0045) — chats + chat_members from SQLite
+    // `sessions`. Runs inside the same tx so any failure rolls back
+    // stages 1–3 too. The returned ChatMapping is consumed only by a
+    // future Stage 6 slice; ignored here after the smoke-check below.
+    let chat_mapping = run_stage5_chats(sqlite_path, &mut *tx, &mut report).await?;
+    // Smoke invariant (plan 0045 acceptance criterion 16): the mapping
+    // must have one entry per inserted chat. A divergence here signals
+    // a bug in the INSERT/idempotency logic, not a data issue.
+    debug_assert_eq!(
+        chat_mapping.session_to_chat.len() as u64,
+        report.chats_inserted,
+        "ChatMapping length must equal chats_inserted"
+    );
+
     if opts.dry_run {
         tx.rollback().await.context("rollback dry-run tx")?;
         info!("dry run: rolled back; no rows persisted");
     } else {
-        tx.commit().await.context("commit stages 1..3 tx")?;
+        tx.commit().await.context("commit stages 1..3 + 5 tx")?;
     }
 
     Ok((report, exit_codes::OK))
@@ -870,6 +937,385 @@ async fn run_stage3_groups(
     Ok(())
 }
 
+/// Narrow projection of SQLite `sessions` loaded for Stage 5. Only the
+/// fields we need — metadata is kept as raw TEXT so
+/// [`session_name_from_metadata`] can decide the name derivation path.
+#[derive(Debug, Clone)]
+struct SessionRow {
+    id: String,
+    channel_id: String,
+    user_id: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    metadata_raw: String,
+}
+
+/// Derive the `chats.name` value from SQLite `sessions.metadata` +
+/// `sessions.channel_id`, with the fallback chain described in plan
+/// 0045 §5.3.
+///
+/// 1. `metadata.title` when present, non-empty, and the metadata parses
+///    as JSON.
+/// 2. `"Chat {channel_id}"` when `channel_id` is non-empty.
+/// 3. `"Legacy chat"` otherwise.
+///
+/// The function is **fail-closed** w.r.t. SQLite integrity: malformed
+/// JSON, missing keys, wrong value types, or a whitespace-only `title`
+/// all fall through without returning an error. Stage 5 callers must
+/// never propagate a parse error — they'd abort a migration over a
+/// purely cosmetic field.
+///
+/// # Security
+///
+/// Plan 0045 §5.1 / §7: `sessions.metadata` may legitimately contain
+/// channel-specific tokens (Telegram chat metadata, device IDs). The
+/// caller MUST NOT log `metadata_raw`; only the extracted `title` is
+/// safe-to-display because the operator writes it themselves via the
+/// mobile client.
+fn session_name_from_metadata(metadata_raw: &str, channel_id: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata_raw) {
+        if let Some(title) = value.get("title").and_then(|v| v.as_str()) {
+            let trimmed = title.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    let trimmed_channel = channel_id.trim();
+    if !trimmed_channel.is_empty() {
+        return format!("Chat {trimmed_channel}");
+    }
+    "Legacy chat".to_string()
+}
+
+/// Load `sessions` rows from the SQLite legacy DB, ordered
+/// deterministically (`created_at ASC, id ASC`). Returns `Ok(None)`
+/// when the `sessions` table does not exist (old SQLite installs that
+/// never ran `SessionStore::ensure_schema`). A missing table is NOT an
+/// error — Stage 5 should skip gracefully with a WARN (plan 0045 §1.7).
+fn load_sessions(path: &Path) -> Result<Option<Vec<SessionRow>>> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("reopen sqlite for stage 5")?;
+    let table_exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .context("check sqlite_master for sessions")?;
+    if table_exists.is_none() {
+        return Ok(None);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, channel_id, user_id, created_at, updated_at,
+                    COALESCE(metadata, '{}') AS metadata
+             FROM sessions
+             ORDER BY created_at ASC, id ASC",
+        )
+        .context("prepare sessions SELECT")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?, // id
+                r.get::<_, String>(1)?, // channel_id
+                r.get::<_, String>(2)?, // user_id
+                r.get::<_, String>(3)?, // created_at
+                r.get::<_, String>(4)?, // updated_at
+                r.get::<_, String>(5)?, // metadata
+            ))
+        })
+        .context("query sessions")?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, channel_id, user_id, created_raw, updated_raw, metadata_raw) =
+            row.context("fetch sessions row")?;
+        let created_at = parse_sqlite_timestamp(&created_raw)
+            .with_context(|| format!("parse sessions.created_at for id={id}: `{created_raw}`"))?;
+        let updated_at = parse_sqlite_timestamp(&updated_raw)
+            .with_context(|| format!("parse sessions.updated_at for id={id}: `{updated_raw}`"))?;
+        out.push(SessionRow {
+            id,
+            channel_id,
+            user_id,
+            created_at,
+            updated_at,
+            metadata_raw,
+        });
+    }
+    Ok(Some(out))
+}
+
+/// Stage 5 — populate `chats` + `chat_members` from SQLite `sessions`
+/// per plan 0045. Runs inside the caller's transaction so any failure
+/// rolls back the entire migration (stages 1–3 included). Emits audit
+/// rows (`chats.imported_from_sqlite` once per created chat +
+/// `chat_members.imported_from_sqlite` once per membership) in the
+/// same transaction.
+///
+/// Skip conditions (plan 0045 §1.7):
+///
+/// - SQLite has no `sessions` table → WARN + early return, no DB
+///   touch.
+/// - SQLite has zero rows in `sessions` → silent early return.
+/// - Postgres has no migrated users (stage 3 skipped with WARN too) →
+///   early return because `chats.created_by` would have no owner.
+/// - A specific session's `user_id` does not resolve to
+///   `users.legacy_sqlite_id` → skip that session, bump
+///   `sessions_skipped_no_user`, log WARN with
+///   legacy_session_id + legacy_user_id only (both are internal
+///   identifiers, not PII).
+///
+/// # Side effects
+///
+/// - Emits at most one `chats` row per session.
+/// - Emits at most one `chat_members` row per session (role=`owner`).
+/// - Emits at most one `chats.imported_from_sqlite` audit row per
+///   new chat.
+/// - Emits at most one `chat_members.imported_from_sqlite` audit row
+///   per new membership.
+///
+/// # Returns
+///
+/// A [`ChatMapping`] from legacy `sessions.id` → new `chats.id`. The
+/// mapping tracks **only chats that were newly inserted in this run**;
+/// idempotent re-runs that detect an existing audit row do NOT populate
+/// the mapping. Plan 0045 §4 criterion 16 asserts the invariant
+/// `ChatMapping.len() == report.chats_inserted` (debug_assert in the
+/// caller). A future Stage 6 (messages) slice running in the same tx
+/// will therefore see exactly the chats just created — consistent with
+/// its own audit-row idempotency skipping messages already imported.
+#[instrument(name = "migrate_workspace.stage5_chats", skip(sqlite_path, tx, report))]
+async fn run_stage5_chats(
+    sqlite_path: &Path,
+    tx: &mut sqlx::PgConnection,
+    report: &mut StageReport,
+) -> Result<ChatMapping> {
+    let mut mapping = ChatMapping::default();
+
+    let sessions = match load_sessions(sqlite_path)? {
+        Some(s) => s,
+        None => {
+            tracing::warn!(
+                target: "garraia_cli::migrate_workspace",
+                "SQLite `sessions` table absent; skipping stage 5"
+            );
+            return Ok(mapping);
+        }
+    };
+
+    if sessions.is_empty() {
+        info!("no sessions in SQLite; skipping stage 5");
+        return Ok(mapping);
+    }
+
+    // Owner attribution for `chats.created_by` — the group owner
+    // (stage 3). If stage 3 found no migrated users, stage 5 can't
+    // write either because `created_by` is NOT NULL.
+    let owner_row: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT u.id, gm.group_id FROM users u
+         JOIN group_members gm ON gm.user_id = u.id
+         WHERE u.legacy_sqlite_id IS NOT NULL
+           AND gm.role = 'owner' AND gm.status = 'active'
+         ORDER BY u.created_at ASC, u.id ASC
+         LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .context("select owner user + group for stage 5")?;
+    let Some((owner_user_id, legacy_group_id)) = owner_row else {
+        tracing::warn!(
+            target: "garraia_cli::migrate_workspace",
+            "no migrated owner found; skipping stage 5"
+        );
+        return Ok(mapping);
+    };
+
+    for session in &sessions {
+        // Resolve `sessions.user_id` → pg user.id via legacy_sqlite_id.
+        let pg_user_row: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM users WHERE legacy_sqlite_id = $1")
+                .bind(&session.user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("lookup user by legacy_sqlite_id for stage 5")?;
+        let Some(pg_user_id) = pg_user_row else {
+            report.sessions_skipped_no_user += 1;
+            tracing::warn!(
+                target: "garraia_cli::migrate_workspace",
+                legacy_session_id = %session.id,
+                legacy_user_id = %session.user_id,
+                "session user not migrated; skipping session"
+            );
+            continue;
+        };
+
+        let chat_name = session_name_from_metadata(&session.metadata_raw, &session.channel_id);
+
+        // Look for an existing chat already imported from this legacy
+        // session (idempotency). The ground truth is the audit row,
+        // because there is no UNIQUE constraint on `chats` we can
+        // ON CONFLICT against.
+        let existing_chat_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT resource_id::uuid FROM audit_events
+             WHERE action = 'chats.imported_from_sqlite'
+               AND metadata->>'legacy_session_id' = $1
+             LIMIT 1",
+        )
+        .bind(&session.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("lookup existing stage 5 chat via audit")?;
+
+        let (chat_id, chat_created_now) = if let Some(existing) = existing_chat_id {
+            report.chats_skipped_conflict += 1;
+            (existing, false)
+        } else {
+            let new_chat_id = Uuid::now_v7();
+            sqlx::query(
+                r#"
+                INSERT INTO chats (id, group_id, type, name, created_by, settings, created_at, updated_at)
+                VALUES ($1, $2, 'channel', $3, $4, '{}'::jsonb, $5, $6)
+                "#,
+            )
+            .bind(new_chat_id)
+            .bind(legacy_group_id)
+            .bind(&chat_name)
+            .bind(owner_user_id)
+            .bind(session.created_at)
+            .bind(session.updated_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlstate_error)
+            .context("insert chats")?;
+            report.chats_inserted += 1;
+            // Only record newly inserted chats in the mapping — plan
+            // 0045 §4 criterion 16 invariant `mapping.len() ==
+            // chats_inserted`. Idempotent reruns that find an existing
+            // audit row do NOT populate the mapping; a future Stage 6
+            // slice will skip messages already imported via its own
+            // audit-row idempotency check.
+            mapping
+                .session_to_chat
+                .insert(session.id.clone(), new_chat_id);
+            (new_chat_id, true)
+        };
+
+        if chat_created_now {
+            // Audit row: chats.imported_from_sqlite. Zero PII in
+            // metadata — `legacy_session_id` + `channel_id` are
+            // internal categorical tokens.
+            let audit_id = Uuid::now_v7();
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO audit_events
+                    (id, group_id, actor_user_id, actor_label, action,
+                     resource_type, resource_id, metadata, created_at)
+                SELECT $1, $2, NULL, 'system.migrate_workspace',
+                       'chats.imported_from_sqlite', 'chat', $3::text,
+                       jsonb_build_object(
+                           'source', 'sessions',
+                           'legacy_session_id', $4::text,
+                           'chat_type', 'channel',
+                           'channel_id', $5::text),
+                       NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM audit_events
+                    WHERE action = 'chats.imported_from_sqlite'
+                      AND resource_id = $3::text
+                )
+                "#,
+            )
+            .bind(audit_id)
+            .bind(legacy_group_id)
+            .bind(chat_id.to_string())
+            .bind(&session.id)
+            .bind(&session.channel_id)
+            .execute(&mut *tx)
+            .await
+            .context("insert chats.imported_from_sqlite audit row")?
+            .rows_affected();
+            if inserted > 0 {
+                report.chat_audit_events_inserted += 1;
+            }
+        }
+
+        // chat_members — one row for the session's user, role='owner'.
+        let member_res = sqlx::query(
+            "INSERT INTO chat_members (chat_id, user_id, role, joined_at)
+             VALUES ($1, $2, 'owner', $3)
+             ON CONFLICT (chat_id, user_id) DO NOTHING",
+        )
+        .bind(chat_id)
+        .bind(pg_user_id)
+        .bind(session.created_at)
+        .execute(&mut *tx)
+        .await
+        .context("insert chat_members row")?;
+
+        if member_res.rows_affected() > 0 {
+            report.chat_members_inserted += 1;
+
+            // Audit: chat_members.imported_from_sqlite, resource_id
+            // = `{chat_id}:{user_id}` (mirrors stage 3).
+            let audit_id = Uuid::now_v7();
+            let resource_id = format!("{chat_id}:{pg_user_id}");
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO audit_events
+                    (id, group_id, actor_user_id, actor_label, action,
+                     resource_type, resource_id, metadata, created_at)
+                SELECT $1, $2, NULL, 'system.migrate_workspace',
+                       'chat_members.imported_from_sqlite',
+                       'chat_member', $3::text,
+                       jsonb_build_object(
+                           'source', 'sessions',
+                           'legacy_session_id', $4::text,
+                           'role', 'owner',
+                           'user_id', $5::text,
+                           'chat_id', $6::text),
+                       NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM audit_events
+                    WHERE action = 'chat_members.imported_from_sqlite'
+                      AND resource_id = $3::text
+                )
+                "#,
+            )
+            .bind(audit_id)
+            .bind(legacy_group_id)
+            .bind(&resource_id)
+            .bind(&session.id)
+            .bind(pg_user_id.to_string())
+            .bind(chat_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .context("insert chat_members.imported_from_sqlite audit row")?
+            .rows_affected();
+            if inserted > 0 {
+                report.chat_audit_events_inserted += 1;
+            }
+        } else {
+            report.chat_members_skipped_conflict += 1;
+        }
+    }
+
+    info!(
+        chats_new = report.chats_inserted,
+        chats_existing = report.chats_skipped_conflict,
+        members_new = report.chat_members_inserted,
+        members_existing = report.chat_members_skipped_conflict,
+        skipped_no_user = report.sessions_skipped_no_user,
+        mapping_size = mapping.session_to_chat.len(),
+        "stage 5 complete"
+    );
+
+    Ok(mapping)
+}
+
 /// Map common Postgres SQLSTATE codes to actionable CLI hints via
 /// structured tracing. Currently narrow: only 23514 (CHECK violation)
 /// is surfaced because the caller is most likely to mis-type
@@ -1034,6 +1480,13 @@ mod tests {
         assert_eq!(r.group_members_inserted, 0);
         assert_eq!(r.group_members_skipped_conflict, 0);
         assert_eq!(r.group_audit_events_inserted, 0);
+        // Stage 5 (plan 0045) counters.
+        assert_eq!(r.chats_inserted, 0);
+        assert_eq!(r.chats_skipped_conflict, 0);
+        assert_eq!(r.chat_members_inserted, 0);
+        assert_eq!(r.chat_members_skipped_conflict, 0);
+        assert_eq!(r.chat_audit_events_inserted, 0);
+        assert_eq!(r.sessions_skipped_no_user, 0);
         assert!(!r.dry_run);
     }
 
@@ -1044,5 +1497,94 @@ mod tests {
         assert_eq!(o.target_group_type, "personal");
         assert!(!o.dry_run);
         assert!(!o.confirm_backup);
+    }
+
+    // ─── Plan 0045 — Stage 5 pure helpers ────────────────────────────
+
+    #[test]
+    fn chat_mapping_default_is_empty() {
+        let m = ChatMapping::default();
+        assert!(m.session_to_chat.is_empty());
+        assert_eq!(m.session_to_chat.len(), 0);
+    }
+
+    #[test]
+    fn session_name_uses_metadata_title_when_present() {
+        let name = session_name_from_metadata(r#"{"title":"Hello"}"#, "mobile");
+        assert_eq!(name, "Hello");
+    }
+
+    #[test]
+    fn session_name_trims_whitespace_around_title() {
+        let name = session_name_from_metadata(r#"{"title":"  Hello  "}"#, "mobile");
+        assert_eq!(name, "Hello");
+    }
+
+    #[test]
+    fn session_name_falls_back_to_channel_when_title_empty_string() {
+        let name = session_name_from_metadata(r#"{"title":""}"#, "telegram");
+        assert_eq!(name, "Chat telegram");
+    }
+
+    #[test]
+    fn session_name_falls_back_to_channel_when_title_whitespace_only() {
+        let name = session_name_from_metadata(r#"{"title":"   "}"#, "discord");
+        assert_eq!(name, "Chat discord");
+    }
+
+    #[test]
+    fn session_name_falls_back_to_channel_on_missing_title_key() {
+        let name = session_name_from_metadata(r#"{"other":"x"}"#, "mobile");
+        assert_eq!(name, "Chat mobile");
+    }
+
+    #[test]
+    fn session_name_falls_back_to_channel_on_non_string_title() {
+        let name = session_name_from_metadata(r#"{"title":42}"#, "mobile");
+        assert_eq!(name, "Chat mobile");
+    }
+
+    #[test]
+    fn session_name_falls_back_to_channel_on_empty_metadata_object() {
+        let name = session_name_from_metadata("{}", "mobile");
+        assert_eq!(name, "Chat mobile");
+    }
+
+    #[test]
+    fn session_name_fails_closed_on_malformed_json() {
+        // Not JSON at all → fallback chain.
+        let name = session_name_from_metadata("not even json {[", "mobile");
+        assert_eq!(name, "Chat mobile");
+    }
+
+    #[test]
+    fn session_name_absolute_fallback_when_channel_empty() {
+        let name = session_name_from_metadata("", "");
+        assert_eq!(name, "Legacy chat");
+    }
+
+    #[test]
+    fn session_name_absolute_fallback_when_channel_whitespace_only() {
+        let name = session_name_from_metadata("not-json", "   ");
+        assert_eq!(name, "Legacy chat");
+    }
+
+    #[test]
+    fn session_name_title_wins_over_channel_even_when_both_present() {
+        let name = session_name_from_metadata(r#"{"title":"Project Apollo"}"#, "mobile");
+        assert_eq!(name, "Project Apollo");
+    }
+
+    #[test]
+    fn session_name_fail_closed_never_panics_on_pathological_inputs() {
+        // Ensure zero panics on weird inputs that a legacy SQLite
+        // might contain (empty strings, unicode, deeply nested JSON).
+        let _ = session_name_from_metadata("", "mobile");
+        let _ = session_name_from_metadata(r#"{"title":"🎉 αβγ"}"#, "mobile");
+        let _ = session_name_from_metadata(
+            r#"{"title": null, "other": {"nested": [1, 2, 3]}}"#,
+            "mobile",
+        );
+        let _ = session_name_from_metadata("\0\u{FFFE}", "mobile");
     }
 }
