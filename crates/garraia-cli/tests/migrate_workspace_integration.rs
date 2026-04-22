@@ -1,10 +1,12 @@
-//! End-to-end test for `migrate_workspace` Stages 1–3 against a real
-//! Postgres + real SQLite fixture. Gated by Docker availability.
+//! End-to-end test for `migrate_workspace` Stages 1–3 + 5 against a
+//! real Postgres + real SQLite fixture. Gated by Docker availability.
 //!
 //! Stage 1 coverage (plan 0039): users + identities UPSERT, atomic audit,
 //! idempotency, dry-run.
 //! Stage 3 coverage (plan 0040): group bucket create/reuse, owner
 //! selection, per-membership audit, idempotency, empty-SQLite skip.
+//! Stage 5 coverage (plan 0045): chats + chat_members from SQLite
+//! `sessions`, idempotency, missing-table skip, orphan user skip.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -749,6 +751,435 @@ async fn stage3_skips_when_no_legacy_users() {
         .await
         .unwrap();
     assert_eq!(member_count, 0);
+}
+
+// ─── Stage 5 helpers ───────────────────────────────────────────────
+
+/// Create the SQLite `sessions` table (matches the schema from
+/// `garraia-db::session_store::ensure_schema`). Used by Stage 5 tests
+/// to prepare a source that has sessions rows.
+fn seed_sessions_table(path: &std::path::Path) {
+    let conn = rusqlite::Connection::open(path).expect("open sqlite");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            channel_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            metadata TEXT DEFAULT '{}'
+        );",
+    )
+    .expect("create sessions");
+}
+
+/// Insert a session row. `idx` drives the deterministic timestamp so
+/// `ORDER BY created_at` is stable across runs.
+fn insert_session(
+    path: &std::path::Path,
+    idx: usize,
+    session_id: &str,
+    user_id: &str,
+    channel_id: &str,
+    metadata_json: &str,
+) {
+    let conn = rusqlite::Connection::open(path).expect("open sqlite");
+    let ts = format!("2026-04-15T01:00:{:02}Z", idx);
+    conn.execute(
+        "INSERT INTO sessions (id, tenant_id, channel_id, user_id, created_at, updated_at, metadata)
+         VALUES (?1, 'default', ?2, ?3, ?4, ?4, ?5)",
+        rusqlite::params![session_id, channel_id, user_id, ts, metadata_json],
+    )
+    .expect("insert session");
+}
+
+// ─── Stage 5 tests (plan 0045) ─────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage5_happy_path_creates_chats_and_members() {
+    let Some(pg) = start_pg().await else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&pg.url)
+        .await
+        .expect("connect");
+    apply_migrations(&pool).await;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sqlite_path = tmp.path().to_path_buf();
+    drop(tmp);
+    // Two legacy users; three sessions (2 for user A, 1 for user B).
+    seed_sqlite(
+        &sqlite_path,
+        &[
+            ("u1", "alice@example.com", "pw-alice-9999"),
+            ("u2", "bob@example.com", "pw-bob-7777"),
+        ],
+    );
+    seed_sessions_table(&sqlite_path);
+    insert_session(
+        &sqlite_path,
+        0,
+        "sess-a1",
+        "u1",
+        "mobile",
+        r#"{"title":"Project Apollo"}"#,
+    );
+    insert_session(&sqlite_path, 1, "sess-a2", "u1", "mobile", r#"{}"#);
+    insert_session(
+        &sqlite_path,
+        2,
+        "sess-b1",
+        "u2",
+        "telegram",
+        r#"{"title":"DMs"}"#,
+    );
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        .args([
+            "migrate",
+            "workspace",
+            "--from-sqlite",
+            sqlite_path.to_str().unwrap(),
+            "--to-postgres",
+            &pg.url,
+        ])
+        .env("RUST_LOG", "garraia=info")
+        .output()
+        .expect("exec garraia");
+    assert!(
+        output.status.success(),
+        "migrate exit={}:\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // 3 chats (one per session).
+    let chat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(chat_count, 3, "one chat per session");
+
+    // All chats type='channel' + scoped to the stage-3 group.
+    let group_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM groups WHERE name = 'Legacy Personal Workspace' AND type = 'personal'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("group row");
+    let chats_in_group: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE group_id = $1 AND type = 'channel'")
+            .bind(group_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(chats_in_group, 3, "all chats scoped to legacy group");
+
+    // Chat name precedence:
+    //   sess-a1 → "Project Apollo" (metadata.title wins)
+    //   sess-a2 → "Chat mobile"    (empty metadata → channel fallback)
+    //   sess-b1 → "DMs"            (metadata.title wins)
+    let name_a1: String = sqlx::query_scalar(
+        "SELECT name FROM chats WHERE id = (
+             SELECT resource_id::uuid FROM audit_events
+             WHERE action = 'chats.imported_from_sqlite'
+               AND metadata->>'legacy_session_id' = 'sess-a1'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(name_a1, "Project Apollo");
+
+    let name_a2: String = sqlx::query_scalar(
+        "SELECT name FROM chats WHERE id = (
+             SELECT resource_id::uuid FROM audit_events
+             WHERE action = 'chats.imported_from_sqlite'
+               AND metadata->>'legacy_session_id' = 'sess-a2'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(name_a2, "Chat mobile");
+
+    // 3 chat_members, all role='owner'.
+    let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_members")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(member_count, 3);
+
+    let owner_member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_members WHERE role = 'owner'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owner_member_count, 3);
+
+    // Audit: exactly 3 chats + 3 members audit rows.
+    let chat_audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'chats.imported_from_sqlite'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(chat_audit, 3);
+
+    let member_audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'chat_members.imported_from_sqlite'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(member_audit, 3);
+
+    // chat_members.user_id must match the legacy session's user via
+    // legacy_sqlite_id. sess-a1 + sess-a2 → user with legacy u1;
+    // sess-b1 → user with legacy u2.
+    let u1_pg: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE legacy_sqlite_id = 'u1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let u1_membership_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_members WHERE user_id = $1")
+            .bind(u1_pg)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(u1_membership_count, 2, "alice is member of her 2 chats");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage5_idempotent_rerun() {
+    let Some(pg) = start_pg().await else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&pg.url)
+        .await
+        .expect("connect");
+    apply_migrations(&pool).await;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sqlite_path = tmp.path().to_path_buf();
+    drop(tmp);
+    seed_sqlite(&sqlite_path, &[("u1", "alice@example.com", "pw-a")]);
+    seed_sessions_table(&sqlite_path);
+    insert_session(&sqlite_path, 0, "s1", "u1", "mobile", r#"{"title":"One"}"#);
+    insert_session(&sqlite_path, 1, "s2", "u1", "mobile", r#"{"title":"Two"}"#);
+
+    // First run.
+    assert!(
+        std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+            .args([
+                "migrate",
+                "workspace",
+                "--from-sqlite",
+                sqlite_path.to_str().unwrap(),
+                "--to-postgres",
+                &pg.url,
+            ])
+            .output()
+            .expect("exec")
+            .status
+            .success(),
+    );
+
+    let after_first_chats: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after_first_chats, 2);
+
+    // Second run — Postgres has rows already, need --confirm-backup.
+    let rerun = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        .args([
+            "migrate",
+            "workspace",
+            "--from-sqlite",
+            sqlite_path.to_str().unwrap(),
+            "--to-postgres",
+            &pg.url,
+            "--confirm-backup",
+        ])
+        .env("RUST_LOG", "garraia=debug")
+        .output()
+        .expect("rerun");
+    assert!(
+        rerun.status.success(),
+        "rerun failed (exit={}):\nstdout:\n{}\nstderr:\n{}",
+        rerun.status,
+        String::from_utf8_lossy(&rerun.stdout),
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+
+    let after_second_chats: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after_second_chats, 2, "chats count unchanged on rerun");
+
+    let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_members")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(member_count, 2, "chat_members count unchanged on rerun");
+
+    let chat_audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'chats.imported_from_sqlite'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(chat_audit, 2, "audit not duplicated");
+
+    let member_audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'chat_members.imported_from_sqlite'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(member_audit, 2, "member audit not duplicated");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage5_skips_when_no_sessions_table() {
+    let Some(pg) = start_pg().await else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&pg.url)
+        .await
+        .expect("connect");
+    apply_migrations(&pool).await;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sqlite_path = tmp.path().to_path_buf();
+    drop(tmp);
+    // Only mobile_users — NO sessions table on purpose.
+    seed_sqlite(&sqlite_path, &[("u1", "alice@example.com", "pw-a")]);
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        .args([
+            "migrate",
+            "workspace",
+            "--from-sqlite",
+            sqlite_path.to_str().unwrap(),
+            "--to-postgres",
+            &pg.url,
+        ])
+        .output()
+        .expect("exec");
+    assert!(
+        output.status.success(),
+        "missing sessions table must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Stages 1–3 still ran (so users/groups/group_members populated).
+    let user_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE legacy_sqlite_id IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(user_count, 1, "stage 1 still ran");
+
+    // Stage 5 did nothing.
+    let chat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(chat_count, 0, "no chats when sessions table absent");
+
+    let chat_audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'chats.imported_from_sqlite'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(chat_audit, 0, "no stage-5 audit when skipped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage5_skips_sessions_without_migrated_user() {
+    let Some(pg) = start_pg().await else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&pg.url)
+        .await
+        .expect("connect");
+    apply_migrations(&pool).await;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let sqlite_path = tmp.path().to_path_buf();
+    drop(tmp);
+    // Only u1 is migrated; u_orphan never exists in mobile_users.
+    seed_sqlite(&sqlite_path, &[("u1", "alice@example.com", "pw-a")]);
+    seed_sessions_table(&sqlite_path);
+    insert_session(
+        &sqlite_path,
+        0,
+        "s1",
+        "u1",
+        "mobile",
+        r#"{"title":"Legit"}"#,
+    );
+    insert_session(
+        &sqlite_path,
+        1,
+        "s_orphan",
+        "deleted-legacy-user",
+        "mobile",
+        r#"{"title":"Ghost"}"#,
+    );
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        .args([
+            "migrate",
+            "workspace",
+            "--from-sqlite",
+            sqlite_path.to_str().unwrap(),
+            "--to-postgres",
+            &pg.url,
+        ])
+        .output()
+        .expect("exec");
+    assert!(
+        output.status.success(),
+        "orphan session must not abort migration: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Exactly one chat (the orphan was skipped).
+    let chat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(chat_count, 1, "orphan session skipped");
+
+    let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_members")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(member_count, 1);
+
+    // The surviving chat is the non-orphan one (title 'Legit').
+    let surviving_name: String = sqlx::query_scalar("SELECT name FROM chats LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(surviving_name, "Legit");
 }
 
 #[tokio::test(flavor = "multi_thread")]
