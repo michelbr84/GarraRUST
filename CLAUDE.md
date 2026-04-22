@@ -56,7 +56,9 @@ crates/
                         empiricamente 2026-04-14). Epic GAR-391 continua aberto.
                         Decisão: docs/adr/0005-identity-provider.md (com Amendment 2026-04-13).
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
-  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user)
+  garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user).
+                        Plan 0036 (GAR-382): `update_mobile_user_hash` para lazy upgrade
+                        de PBKDF2 → Argon2id sem mexer no schema.
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
   garraia-config/     — schema unificado de config (serde + validator + notify).
                         Plan 0035 (GAR-379 slice 1): novo módulo `check` com `run_check`
