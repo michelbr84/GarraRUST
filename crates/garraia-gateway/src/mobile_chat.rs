@@ -35,14 +35,24 @@ Sua missão: tornar cada interação útil E divertida. O usuário deve sair da 
 /// Resolve the persona string with precedence **config > env > default**
 /// (plan 0042 §5.1).
 ///
-/// The old `OnceLock` cache is gone — `AppState::config` already lives
-/// behind an `Arc`, so a per-call pointer chase + `Option::as_deref` is
-/// cheap (< 100 ns) and lets future config hot-reload take effect
-/// immediately.
+/// The old `OnceLock` cache is gone. `AppState` itself is handed to
+/// handlers as `Arc<AppState>`, so the call site already pays exactly
+/// one Arc-deref to reach `state.config`; the `.mobile.persona`
+/// lookup is a plain field access + `Option::as_deref` — cheap
+/// enough (< 100 ns) that we do not need a OnceLock to amortise it.
+/// Dropping the cache is what lets future config hot-reload be seen
+/// immediately (code review MEDIUM clarification: the `Arc` is on
+/// `AppState`, not on `config` itself).
+///
+/// `std::env::var` is queried per call. That is intentional: the env
+/// fallback is only exercised when `config.mobile.persona` is unset,
+/// which is the dev/legacy path. Caching via `OnceLock` here would
+/// cement whatever value the env had at first read and defeat
+/// per-test overrides.
 fn garra_persona(state: &AppState) -> String {
     pick_persona(
-        state.config.mobile.persona.as_deref(),
-        std::env::var("GARRA_MOBILE_PERSONA").ok().as_deref(),
+        normalise_persona_source(state.config.mobile.persona.as_deref()),
+        normalise_persona_source(std::env::var("GARRA_MOBILE_PERSONA").ok().as_deref()),
     )
 }
 
@@ -57,6 +67,14 @@ fn pick_persona(from_config: Option<&str>, from_env: Option<&str>) -> String {
         return p.to_string();
     }
     DEFAULT_PERSONA.to_string()
+}
+
+/// Security audit SEC-L normalisation: treat an empty or
+/// whitespace-only value as *absent* so we do not send a blank
+/// system prompt to the LLM. Applied to both config and env sources
+/// before they reach [`pick_persona`].
+fn normalise_persona_source(raw: Option<&str>) -> Option<&str> {
+    raw.filter(|s| !s.trim().is_empty())
 }
 
 /// Session key prefix for mobile users.
@@ -244,11 +262,39 @@ mod tests {
     }
 
     #[test]
-    fn persona_empty_string_from_env_is_still_applied_not_default() {
-        // Intentional: if the operator explicitly sets an empty env
-        // value, we respect it rather than silently falling back —
-        // matches the old `unwrap_or_else` semantics.
-        let resolved = pick_persona(None, Some(""));
-        assert_eq!(resolved, "");
+    fn normalise_treats_empty_and_whitespace_as_absent() {
+        // Security audit SEC-L: an operator that sets
+        // `GARRA_MOBILE_PERSONA=""` or a whitespace-only value should
+        // not silently ship a blank system prompt to the LLM. The
+        // normaliser upgrades both to `None`, so the fallback chain
+        // walks to the next source.
+        assert_eq!(normalise_persona_source(Some("")), None);
+        assert_eq!(normalise_persona_source(Some("   ")), None);
+        assert_eq!(normalise_persona_source(Some("\t\n")), None);
+        assert_eq!(
+            normalise_persona_source(Some("real persona")),
+            Some("real persona"),
+        );
+        assert_eq!(normalise_persona_source(None), None);
+    }
+
+    #[test]
+    fn persona_empty_config_falls_through_to_env() {
+        // Regression guard — empty/whitespace config source must be
+        // upgraded to `None` by the caller so env (or default) wins.
+        let resolved = pick_persona(
+            normalise_persona_source(Some("   ")),
+            normalise_persona_source(Some("env-persona")),
+        );
+        assert_eq!(resolved, "env-persona");
+    }
+
+    #[test]
+    fn persona_empty_env_falls_through_to_default() {
+        let resolved = pick_persona(
+            normalise_persona_source(None),
+            normalise_persona_source(Some("")),
+        );
+        assert_eq!(resolved, DEFAULT_PERSONA);
     }
 }
