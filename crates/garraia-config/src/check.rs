@@ -434,6 +434,23 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // mobile.persona: plan 0042 §5.3 — suspiciously short strings are
+    // flagged as Warning (valid shape, unusual content). Threshold of
+    // 10 chars picks up accidental "hi" / "test" without slapping
+    // every lean prompt.
+    if let Some(p) = &config.mobile.persona
+        && p.len() < 10
+    {
+        push_warn(
+            &mut findings,
+            "mobile.persona",
+            format!(
+                "mobile.persona is only {} chars; typical personas are multi-sentence — likely a stub or typo",
+                p.len()
+            ),
+        );
+    }
+
     findings
 }
 
@@ -825,5 +842,41 @@ mod tests {
         assert_eq!(check.max_severity(), Some(Severity::Error));
         assert_eq!(check.summary.gateway_port, 3888);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Plan 0042 §6.1 — mobile.persona validation tests.
+
+    #[test]
+    fn mobile_persona_none_produces_no_finding() {
+        let cfg = AppConfig::default();
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| f.field != "mobile.persona"),
+            "persona absent must not flag: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn mobile_persona_short_string_emits_warn() {
+        let mut cfg = AppConfig::default();
+        cfg.mobile.persona = Some("hi".into());
+        let findings = validate(&cfg);
+        let f = findings
+            .iter()
+            .find(|f| f.field == "mobile.persona")
+            .expect("persona finding");
+        assert_eq!(f.severity, Severity::Warning);
+        assert!(f.message.contains("2 chars"));
+    }
+
+    #[test]
+    fn mobile_persona_long_enough_is_clean() {
+        let mut cfg = AppConfig::default();
+        cfg.mobile.persona = Some("Você é um assistente útil e direto.".into());
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| f.field != "mobile.persona"),
+            "long persona must not flag: {findings:?}"
+        );
     }
 }
