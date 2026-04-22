@@ -175,20 +175,7 @@ pub async fn create_upload(
         .await
         .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("begin create_upload tx")))?;
 
-    // SET LOCAL pair — group isolation + user attribution. Interpolated
-    // via `format!` because SET LOCAL does not accept bind parameters.
-    // Uuid::Display is always 36 hex-with-dash chars; injection-safe.
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_user_id")))?;
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{}'", group_id))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_group_id")))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
     sqlx::query(
         r#"
@@ -219,10 +206,18 @@ pub async fn create_upload(
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         LOCATION,
-        HeaderValue::from_str(&format!("/v1/uploads/{upload_id}")).expect("uuid is ascii"),
+        header_value_from_ascii(&format!("/v1/uploads/{upload_id}"))?,
     );
     response_headers.insert(
         H_TUS_RESUMABLE.clone(),
+        HeaderValue::from_static(TUS_RESUMABLE_VERSION),
+    );
+    // Code review HIGH-1 — plan 0041 §1 lists `Tus-Version` on the
+    // 201 response. The 412 middleware covers the precondition path
+    // only; 201 must carry it explicitly so the client sees the
+    // supported set on *every* successful creation.
+    response_headers.insert(
+        H_TUS_VERSION.clone(),
         HeaderValue::from_static(TUS_RESUMABLE_VERSION),
     );
 
@@ -282,18 +277,13 @@ pub async fn head_upload(
         .await
         .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("begin head_upload tx")))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_user_id")))?;
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{}'", group_id))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_group_id")))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
+    // NB (code review MEDIUM): `pool.begin()` + `SET LOCAL` + `SELECT`
+    // + `tx.commit()` is heavier than a bare `pool.acquire()` for a
+    // read-only HEAD. We keep the transactional shape here for parity
+    // with `groups.rs` and future slices that will add writes in the
+    // same handler (PATCH). Optimisation is deliberately deferred.
     let row: Option<(i64, i64, Option<String>)> = sqlx::query_as(
         "SELECT upload_length, upload_offset, upload_metadata
          FROM tus_uploads
@@ -313,11 +303,11 @@ pub async fn head_upload(
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         H_UPLOAD_OFFSET.clone(),
-        HeaderValue::from_str(&upload_offset.to_string()).expect("i64 is ascii"),
+        header_value_from_ascii(&upload_offset.to_string())?,
     );
     response_headers.insert(
         H_UPLOAD_LENGTH.clone(),
-        HeaderValue::from_str(&upload_length.to_string()).expect("i64 is ascii"),
+        header_value_from_ascii(&upload_length.to_string())?,
     );
     if let Some(raw) = metadata_raw {
         if let Ok(v) = HeaderValue::from_str(&raw) {
@@ -352,6 +342,38 @@ pub async fn tus_version_header_layer(req: Request<axum::body::Body>, next: Next
         );
     }
     resp
+}
+
+// ─── Tenant-context helper (SET LOCAL pair) ─────────────────────────────
+//
+// Extracted (code review MEDIUM) so `create_upload` + `head_upload` +
+// any future handler in this module can share the exact pattern. `SET
+// LOCAL` does not accept bind parameters; `Uuid::Display` is fixed at
+// 36 chars of `[0-9a-f-]` by RFC 4122, so the `format!` interpolation
+// is injection-safe by construction.
+async fn set_rls_context(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    group_id: Uuid,
+) -> Result<(), RestError> {
+    sqlx::query(&format!("SET LOCAL app.current_user_id = '{user_id}'"))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_user_id")))?;
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_group_id")))?;
+    Ok(())
+}
+
+/// Build a `HeaderValue` from a string the caller knows is ASCII (UUID,
+/// i64). Falls back to a 500 response if the invariant is ever
+/// violated — keeps CLAUDE.md rule #4 (no `expect()` in production)
+/// intact without pushing the check to a panic.
+fn header_value_from_ascii(s: &str) -> Result<HeaderValue, RestError> {
+    HeaderValue::from_str(s)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("header value is not ascii")))
 }
 
 // ─── Header parsing helpers (unit-tested) ───────────────────────────────
@@ -420,14 +442,24 @@ fn parse_upload_metadata_header(
     // defense is *intentional* here: the caller must never be able
     // to seed a `tus_uploads.upload_metadata` row with bytes that
     // could later pollute an HTTP response header on replay.
-    if raw.contains('\r') || raw.contains('\n') {
-        return Err(UploadRejection::InvalidUploadMetadata);
-    }
+    reject_crlf(raw)?;
     let parsed = parse_upload_metadata(raw)?;
     Ok(Some(UploadMetadata {
         raw: raw.to_string(),
         parsed,
     }))
+}
+
+/// Reject CR/LF in a raw metadata string. Extracted from
+/// `parse_upload_metadata_header` (security audit SEC-M2) so unit
+/// tests can exercise it directly — `http::HeaderValue::from_str`
+/// refuses raw CR/LF by construction, so feeding a poisoned value via
+/// a real `HeaderMap` isn't possible in-process.
+fn reject_crlf(raw: &str) -> Result<(), UploadRejection> {
+    if raw.contains('\r') || raw.contains('\n') {
+        return Err(UploadRejection::InvalidUploadMetadata);
+    }
+    Ok(())
 }
 
 /// Parse the tus 1.0 `Upload-Metadata` header: comma-separated list of
@@ -585,49 +617,27 @@ mod tests {
     }
 
     #[test]
-    fn metadata_header_rejects_crlf_in_raw_value() {
-        // Security audit SEC-M2 — CRLF must be rejected *at parse time*
-        // so a malicious client can never persist a value that would
-        // later trip response header injection on HEAD replay.
-        // `HeaderValue::from_str` refuses to build CR/LF into headers,
-        // so we can only exercise the validation by constructing the
-        // header bytes directly and checking the parser.
-        let map = {
-            let mut h = HeaderMap::new();
-            h.insert(
-                H_UPLOAD_METADATA.clone(),
-                HeaderValue::from_bytes(b"filename dmFsdWU%0D%0Ax-evil: 1").unwrap(),
-            );
-            h
-        };
-        // `HeaderValue::from_bytes` only rejects raw CR/LF bytes, but
-        // a percent-encoded payload still smuggles the marker into the
-        // parsed string. Verify our validator catches an explicit CRLF.
-        let direct = "filename dmFsdWU\r\nx-evil: 1".to_string();
-        match HeaderValue::from_str(&direct) {
-            Ok(_) => {
-                panic!("HeaderValue should reject raw CR/LF — if this fires, axum upgraded");
-            }
-            Err(_) => {
-                // Good — hyper/axum reject raw CR/LF at construct time.
-                // The defense lives at our parser for any path that
-                // obtains the raw string via other means (e.g. DB
-                // replay, per SEC-M2 rationale).
-                let _ = map; // silence unused
-            }
-        }
-
-        // Direct parser call with synthetic CRLF input — this is the
-        // path exercised when metadata is re-read from `tus_uploads`
-        // and re-emitted via `head_upload`.
-        use super::parse_upload_metadata_header as _f;
-        // We can't easily feed CRLF through HeaderMap (hyper refuses),
-        // so sanity-check the string-level guard directly.
-        let has_crlf = |s: &str| s.contains('\r') || s.contains('\n');
-        assert!(has_crlf("a\r\nb"));
-        assert!(has_crlf("foo\nbar"));
-        assert!(!has_crlf("no-crlf-here"));
-        let _ = _f; // keep the path in scope for future harder tests
+    fn reject_crlf_catches_all_line_separator_forms() {
+        // Security audit SEC-M2 regression guard — exercises the CRLF
+        // predicate directly so the guarantee is independent of hyper's
+        // `HeaderValue` constructors (which *also* reject CR/LF, making
+        // it impossible to feed a poisoned HeaderMap through the
+        // full `parse_upload_metadata_header` path at test time).
+        assert!(matches!(
+            reject_crlf("filename dmFsdWU\r\nX-Evil: 1").unwrap_err(),
+            UploadRejection::InvalidUploadMetadata
+        ));
+        assert!(matches!(
+            reject_crlf("only-lf\nplain").unwrap_err(),
+            UploadRejection::InvalidUploadMetadata
+        ));
+        assert!(matches!(
+            reject_crlf("only-cr\rmarker").unwrap_err(),
+            UploadRejection::InvalidUploadMetadata
+        ));
+        // Well-formed input passes.
+        reject_crlf("filename dmFsdWU,filetype dGV4dA").unwrap();
+        reject_crlf("marker").unwrap();
     }
 
     #[test]
