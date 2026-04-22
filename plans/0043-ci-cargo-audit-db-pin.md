@@ -14,6 +14,7 @@
 - **v2 (2026-04-22 13:55 ET) — workflow_dispatch FAILED:** run `24793600828` mostrou que o pin não foi suficiente. Falha secundária: `crates/deno/RUSTSEC-2025-0138.md` (adicionado 2025-12-29) também usa `cvss = "CVSS:4.0/..."`. O erro exato foi `unsupported CVSS version: 4.0`. Grep global no SHA pinado encontrou **26 entries CVSS v4 pré-existentes**. Pin por SHA teria que ir antes de 2025-12-29 — 4+ meses atrás — perdendo quase um semestre de advisories legítimos.
 - **v2 (2026-04-22 14:00 ET) — pivot para strip approach:** fetch HEAD da `advisory-db` + remoção cirúrgica de todos os arquivos com `^cvss = "CVSS:4.0/`. Safety net: aborta se remoção > 50 arquivos. Reteve este mesmo plan file para não inflacionar o numbering — §5.3 abaixo reescrito; v1 preservado em `§Revision log`.
 - **v3 (2026-04-22 14:05 ET) — `--no-fetch` bloqueia yanked check:** segunda run `24794024068` falhou com cascata de `couldn't check if the package is yanked: not found: No such crate in crates.io index` para cada crate da workspace. Investigação: `cargo audit --no-fetch` suprime tanto o pull do advisory-db quanto o refresh do índice crates.io usado pelo yanked-check (single flag, dupla ação). Fix aditivo: novo step `Prime crates.io index for workspace deps` executando `cargo fetch --locked` antes do audit, populando o sparse index cache localmente. `--no-fetch` preservado (necessário para proteger o strip). Commit separado.
+- **v4 (2026-04-22 14:10 ET) — advisories reais preexistentes:** terceira run `24794271759` revelou 16 vulnerabilidades + 6 denied warnings em deps legítimas (idna, rsa, rustls-webpki ×4, tokio-tar, wasmtime ×2, glib, lru, rand, core2 yanked). Escopo bem maior que os 6 advisories listados na TODO do `ci.yml`. Estratégia: `.cargo/audit.toml` com 13 ignores únicos, cada um com crate+justificativa+ponteiro para Lote B-2. Expiration date 2026-05-20 coletiva. Policy documentada in-file. **Não é silenciamento — é deferimento rastreável.**
 
 ---
 
@@ -32,7 +33,8 @@ Restaurar o workflow scheduled `Security — cargo audit` ao verde sem esperar 2
 
 **Arquivos modificados:**
 
-- `.github/workflows/cargo-audit.yml` — novo env `MAX_STRIPPED_CVSS_V4`, novo step "Fetch advisory database and strip CVSS v4 entries", step "Run cargo audit" adiciona `--no-fetch`.
+- `.github/workflows/cargo-audit.yml` — novo env `MAX_STRIPPED_CVSS_V4`, novo step "Prime crates.io index for workspace deps", novo step "Fetch advisory database and strip CVSS v4 entries", step "Run cargo audit" adiciona `--no-fetch`.
+- `.cargo/audit.toml` — novo arquivo com 13 ignores de advisories reais preexistentes, cada um comentado com crate + rationale + ponteiro para Lote B-2.
 - `plans/0043-ci-cargo-audit-db-pin.md` (este).
 - `plans/README.md` — entrada 0043 (inserida antes de 0042 mantendo ordem narrativa cronológica da sessão).
 
@@ -45,11 +47,13 @@ Zero alteração em `Cargo.toml`, `Cargo.lock`, crates de runtime, testes ou doc
 3. Log do job exibe linha `Advisory DB HEAD: <short-sha>` + `Stripping N CVSS v4 advisories` + lista completa dos arquivos removidos.
 4. `N` na stripping log está abaixo de `MAX_STRIPPED_CVSS_V4` (50 como configurado).
 5. `cargo audit` não faz fetch adicional (verificável pela ausência da mensagem `Fetching advisory database from https://github.com/RustSec/advisory-db.git`).
-6. Zero novo `continue-on-error: true` introduzido.
-7. `@security-auditor` APPROVE (cerimônia obrigatória CLAUDE.md regra 10 — workflow + security surface).
-8. `@code-reviewer` APPROVE.
-9. Comentário em `GAR-NEW-01` do Linear com link para o PR + lista explícita dos 6 deps nossos que perdem audit coverage (follow-up para B-2+).
-10. Plan file existe e está linkado no `plans/README.md`.
+6. Output do `cargo audit` registra "0 vulnerabilities found (after ignoring 13 deferred advisories)" ou equivalente.
+7. Zero novo `continue-on-error: true` introduzido.
+8. `.cargo/audit.toml` contém exatamente 13 entries no ignore list, cada uma com comment block (crate + rationale + B-2 pointer).
+9. `@security-auditor` APPROVE (cerimônia obrigatória CLAUDE.md regra 10 — workflow + security surface + config de audit).
+10. `@code-reviewer` APPROVE.
+11. Comentário em `GAR-NEW-01` do Linear com link para o PR + lista completa dos 13 advisories deferidos + lista dos 6 deps nossos que perdem audit coverage pelo strip (follow-up para B-2+).
+12. Plan file existe e está linkado no `plans/README.md`.
 
 ## 5. Design rationale
 
@@ -113,9 +117,32 @@ Intersecção entre os 39 arquivos CVSS v4 stripados e nossa `Cargo.lock`:
 | quinn-proto | 0.11.13 | **já listado no ci.yml TODO para bump** (B-2) — dupla-visibilidade |
 | tar | 0.4.45 | manual |
 | time | 0.3.47 | manual |
-| wasmtime | 28.0.1 | manual (crate grande, WASM sandbox) |
+| wasmtime | 28.0.1 | **também listado em `.cargo/audit.toml` ignore list** (§5.6 abaixo) com advisories CVSS v3 reais; dupla visibilidade |
 
 Follow-up: após o fix deste PR, Lote B-2 (RUSTSEC bumps) deve incluir revisão manual dos advisories CVSS v4 desses 6 crates para decidir bump ou ignore justificado. Registrado em `GAR-NEW-01` comment + no plano mestre da sessão.
+
+### 5.6 `.cargo/audit.toml` com 13 ignores justificados
+
+Run v3 (`24794271759`) tornou visível o volume real de advisories pendentes: **16 vulnerabilities + 6 denied warnings** em 13 advisory IDs únicos (muitas dups por crate ser usado em múltiplas versões da árvore de deps). Escopo bem maior que a TODO original do `ci.yml` (6 advisories listados).
+
+Estratégia: criar `.cargo/audit.toml` com `[advisories].ignore = [...]` listando todos os 13 IDs, cada um precedido de:
+
+- Nome do crate + versão afetada
+- Descrição curta do advisory
+- **Rationale de deferimento**: por que não corrigir AGORA (no A-0) e o que B-2 deve fazer
+- Expiration coletiva 2026-05-20
+
+Categorias:
+
+1. **Vulnerabilities reais** (9 IDs): idna, rsa, wasmtime, tokio-tar, rustls-webpki ×4.
+2. **Unsound** (3 IDs): glib, lru, rand.
+3. **Yanked** (1 ID): core2.
+
+**Não é silenciamento — é deferimento rastreável.** O PR que fecha cada advisory em B-2 remove a linha correspondente do arquivo (e o comentário serve como checklist natural). Reviewer entra no arquivo e sabe exatamente o que falta.
+
+Policy in-file documenta requisitos para adicionar novo ignore (referência de ID + rationale + owner). `.cargo/audit.toml` in VCS — não é `.gitignore`d — para garantir reprodutibilidade exata entre dev local e CI.
+
+Alternativa considerada (e rejeitada): usar `severity_threshold = "high"` para filtrar só os mais graves. Rejeitado porque (a) oculta o escopo real, (b) o campo `severity` é nullable em advisories CVSS v3 (muitos advisories nossos listam `Severity: -` porque não estão scored), (c) cria falsa impressão de "audit limpo" sem o trabalho de fix.
 
 ### 5.5 `--no-fetch` + `cargo fetch --locked`
 
