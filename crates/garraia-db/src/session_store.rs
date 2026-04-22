@@ -1168,6 +1168,26 @@ impl SessionStore {
             .map_err(|e| Error::Database(format!("find_mobile_user_by_email: {e}")))
     }
 
+    /// Lazy-upgrade the password hash of a mobile user (GAR-382).
+    ///
+    /// Used by the login handler right after a successful PBKDF2 verify to
+    /// replace the legacy hash with an Argon2id PHC string. Best-effort: the
+    /// caller logs a warning and proceeds if this returns `Ok(0)` (meaning
+    /// zero rows touched — e.g. another concurrent upgrade happened first).
+    ///
+    /// The `salt` column is explicitly zeroed to `""` because Argon2id PHC
+    /// strings embed their own salt. See plan 0036 §5.1 for the rationale
+    /// of keeping the column NOT NULL (SQLite ALTER TABLE DROP COLUMN is
+    /// post-3.35).
+    pub fn update_mobile_user_hash(&self, id: &str, new_phc: &str) -> Result<usize> {
+        self.conn
+            .execute(
+                "UPDATE mobile_users SET password_hash = ?1, salt = '' WHERE id = ?2",
+                params![new_phc, id],
+            )
+            .map_err(|e| Error::Database(format!("update_mobile_user_hash: {e}")))
+    }
+
     /// Find a mobile user by their UUID. Returns `None` if not found.
     pub fn find_mobile_user_by_id(&self, id: &str) -> Result<Option<MobileUser>> {
         self.conn
