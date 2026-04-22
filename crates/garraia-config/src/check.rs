@@ -453,7 +453,98 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // storage (plan 0044): validate the object storage backend config.
+    validate_storage(&config.storage, &mut findings, push_err, push_warn);
+
     findings
+}
+
+fn validate_storage(
+    storage: &crate::model::StorageConfig,
+    findings: &mut Vec<Finding>,
+    push_err: impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::{MAX_PATCH_BYTES_MAX, MAX_PATCH_BYTES_MIN, StorageBackend};
+
+    // max_patch_bytes must be in [1 MiB, 5 GiB] — covers reasonable
+    // operator overrides and prevents pathological values that would
+    // accept a body the gateway could not commit (files.size_bytes
+    // CHECK caps at 5 GiB in migration 003).
+    if storage.max_patch_bytes < MAX_PATCH_BYTES_MIN {
+        push_err(
+            findings,
+            "storage.max_patch_bytes",
+            format!(
+                "storage.max_patch_bytes ({}) must be >= {MAX_PATCH_BYTES_MIN} bytes (1 MiB)",
+                storage.max_patch_bytes
+            ),
+        );
+    } else if storage.max_patch_bytes > MAX_PATCH_BYTES_MAX {
+        push_err(
+            findings,
+            "storage.max_patch_bytes",
+            format!(
+                "storage.max_patch_bytes ({}) must be <= {MAX_PATCH_BYTES_MAX} bytes (5 GiB, aligns with files.size_bytes CHECK)",
+                storage.max_patch_bytes
+            ),
+        );
+    }
+
+    match storage.backend {
+        StorageBackend::Local => {
+            // staging_dir + local_fs_root are resolved at bootstrap
+            // with a default — no hard requirement at config-check
+            // time beyond "both are paths we can write to". Skip
+            // filesystem probing to keep `config check` side-effect
+            // free (operator runs this in CI where the target dirs
+            // may not exist yet).
+        }
+        StorageBackend::S3 => {
+            let Some(s3) = storage.s3.as_ref() else {
+                push_err(
+                    findings,
+                    "storage.s3",
+                    "storage.backend = \"s3\" but the [storage.s3] block is missing".into(),
+                );
+                return;
+            };
+            if s3.bucket.as_deref().unwrap_or("").trim().is_empty() {
+                push_err(
+                    findings,
+                    "storage.s3.bucket",
+                    "storage.s3.bucket is required when backend = \"s3\"".into(),
+                );
+            }
+            if s3.region.as_deref().unwrap_or("").trim().is_empty() {
+                push_err(
+                    findings,
+                    "storage.s3.region",
+                    "storage.s3.region is required when backend = \"s3\"".into(),
+                );
+            }
+            if let Some(ep) = s3.endpoint.as_deref()
+                && !ep.starts_with("http://")
+                && !ep.starts_with("https://")
+            {
+                push_warn(
+                    findings,
+                    "storage.s3.endpoint",
+                    format!(
+                        "storage.s3.endpoint should be http:// or https:// (got `{}`)",
+                        sanitise_for_display(ep)
+                    ),
+                );
+            }
+        }
+        StorageBackend::None => {
+            push_warn(
+                findings,
+                "storage.backend",
+                "storage.backend = \"none\" disables tus upload commit; POST /v1/uploads PATCH will answer 503".into(),
+            );
+        }
+    }
 }
 
 /// Run the full validation + reporting pipeline.
@@ -879,6 +970,70 @@ mod tests {
         assert!(
             findings.iter().all(|f| f.field != "mobile.persona"),
             "long persona must not flag: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn storage_default_is_clean() {
+        // Plan 0044 §3: default AppConfig must not introduce new
+        // validation errors for storage.
+        let cfg = AppConfig::default();
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("storage")),
+            "default storage config produced findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn storage_max_patch_bytes_below_min_is_error() {
+        use crate::model::StorageConfig;
+        let mut cfg = AppConfig::default();
+        cfg.storage = StorageConfig {
+            max_patch_bytes: 1024, // < 1 MiB
+            ..StorageConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "storage.max_patch_bytes"),
+            "expected error on tiny max_patch_bytes: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn storage_s3_missing_block_is_error() {
+        use crate::model::{StorageBackend, StorageConfig};
+        let mut cfg = AppConfig::default();
+        cfg.storage = StorageConfig {
+            backend: StorageBackend::S3,
+            s3: None,
+            ..StorageConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "storage.s3"),
+            "expected error on missing s3 block: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn storage_none_backend_is_warning() {
+        use crate::model::{StorageBackend, StorageConfig};
+        let mut cfg = AppConfig::default();
+        cfg.storage = StorageConfig {
+            backend: StorageBackend::None,
+            ..StorageConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.field == "storage.backend"),
+            "expected warning on backend=none: {findings:?}"
         );
     }
 }

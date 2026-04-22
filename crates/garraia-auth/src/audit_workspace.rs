@@ -72,6 +72,17 @@ pub enum WorkspaceAuditAction {
     /// `resource_id = "{group_id}:{user_id}"`.
     /// Metadata: `{ target_user_id, old_role }`.
     MemberRemoved,
+
+    /// A tus 1.0 upload completed end-to-end via
+    /// `PATCH /v1/uploads/{id}` when the final chunk arrived
+    /// (plan 0044 / GAR-395 slice 2).
+    ///
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ upload_id, size_bytes, object_key_hash }` where
+    /// `object_key_hash` is the SHA-256 hex of the object_key — used
+    /// for offline reconciliation without leaking the raw key (plan
+    /// 0044 §6 SEC-L audit event PII).
+    UploadCompleted,
 }
 
 impl WorkspaceAuditAction {
@@ -81,6 +92,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::InviteAccepted => "invite.accepted",
             WorkspaceAuditAction::MemberRoleChanged => "member.role_changed",
             WorkspaceAuditAction::MemberRemoved => "member.removed",
+            WorkspaceAuditAction::UploadCompleted => "upload.completed",
         }
     }
 }
@@ -159,6 +171,10 @@ mod tests {
             WorkspaceAuditAction::MemberRemoved.as_str(),
             "member.removed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::UploadCompleted.as_str(),
+            "upload.completed"
+        );
     }
 
     #[test]
@@ -168,6 +184,7 @@ mod tests {
             WorkspaceAuditAction::InviteAccepted.as_str(),
             WorkspaceAuditAction::MemberRoleChanged.as_str(),
             WorkspaceAuditAction::MemberRemoved.as_str(),
+            WorkspaceAuditAction::UploadCompleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
