@@ -72,10 +72,12 @@ Contrato de migração:
     "user not found" para neutralizar enumeration — usando
     `garraia_auth::hashing::consume_dummy_hash`.
 - `crates/garraia-db/src/session_store.rs`:
-  - Nova função `update_mobile_user_hash(&self, id: &str, new_hash: &str)
-    -> Result<()>` que faz `UPDATE mobile_users SET password_hash=?1,
-    salt='' WHERE id=?2`. Retorna OK silenciosamente se 0 linhas
-    atualizadas (o caller loga warning).
+  - Nova função `update_mobile_user_hash(&self, id: &str, new_phc: &str)
+    -> Result<usize>` que faz `UPDATE mobile_users SET password_hash=?1,
+    salt='' WHERE id=?2`. Retorna `Ok(0)` silenciosamente quando 0 linhas
+    foram atualizadas (o caller loga warning com `user_id`); retorno
+    `usize` em vez de `()` permite distinguir "zero rows" de "erro" e
+    preserva a semântica best-effort do lazy upgrade.
 - `crates/garraia-gateway/Cargo.toml`: já tem `garraia-auth = { workspace = true }`
   como dep; precisa adicionar `secrecy = { workspace = true }` (para
   `SecretString` passado para `hash_argon2id`). Verificar se já está.

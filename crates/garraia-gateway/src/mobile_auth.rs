@@ -354,7 +354,16 @@ async fn verify_password_and_maybe_upgrade(
 ) -> bool {
     if stored_hash.starts_with("$argon2id$") {
         let secret = SecretString::from(password.to_owned());
-        return verify_argon2id(stored_hash, &secret).unwrap_or(false);
+        // Code review LOW-1 (plan 0036): surface malformed-PHC errors in
+        // logs instead of silently folding them into a 401 — aids diagnosing
+        // DB-side hash corruption.
+        return match verify_argon2id(stored_hash, &secret) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("verify_argon2id error (uid={user_id}): {e}");
+                false
+            }
+        };
     }
 
     // Legacy PBKDF2 path: dual-verify with ring, then lazy upgrade.
