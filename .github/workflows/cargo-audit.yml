@@ -11,6 +11,17 @@ name: Security — cargo audit
 # audit` to zero external-action supply-chain surface. Trade-off:
 # no SARIF upload to the GitHub Security tab; failure visibility is
 # limited to the Actions tab + default notification channel.
+#
+# Plan 0043 (2026-04-22): pinned the advisory database to a fixed commit
+# after the scheduled run started failing with
+#   `error loading advisory database: TOML parse error at line 5, column 8`
+# caused by libcrux-* advisories using CVSS v4 notation (CVSS:4.0/...)
+# that the `cvss` crate dependency pulled transitively by `rustsec` 0.30.x
+# cannot deserialize. Pinning isolates us from the upstream schema gap.
+# EXPIRES 2026-05-20 (4 weeks). At that point either rustsec has shipped
+# CVSS v4 support and we can unpin, or we re-evaluate whether to bump the
+# pin forward. The fixed SHA is the last commit before the libcrux CVSS v4
+# advisories were added on 2026-03-24T08:19Z (see plan 0043 §3.2).
 
 on:
   schedule:
@@ -36,6 +47,13 @@ concurrency:
   # who may simply be testing the workflow).
   cancel-in-progress: false
 
+env:
+  # Plan 0043: pinned advisory-db SHA. Last commit before the libcrux
+  # CVSS v4 advisories were added (2026-03-24T08:16:07Z, just before the
+  # 08:19Z batch that introduced `cvss = "CVSS:4.0/..."`). EXPIRES
+  # 2026-05-20 — re-check whether rustsec 0.31+ supports CVSS v4 then.
+  ADVISORY_DB_SHA: 1dc467507294adffdc8e0a5548d97a58f77d111f
+
 jobs:
   audit:
     name: cargo audit
@@ -56,6 +74,23 @@ jobs:
         # exit codes, report format).
         run: cargo install --locked --version '^0.21' cargo-audit
 
+      - name: Fetch pinned advisory database
+        # Clone the RustSec advisory database at a fixed SHA instead of
+        # letting `cargo audit` pull HEAD. This isolates CI from upstream
+        # schema gaps (plan 0043). Shallow clone keeps the fetch small;
+        # `git fetch --depth=1 <sha>` requires the server to allow
+        # "uploadpack.allowReachableSHA1InWant", which GitHub does.
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cargo/advisory-db
+          cd ~/.cargo/advisory-db
+          git init --quiet
+          git remote add origin https://github.com/rustsec/advisory-db.git
+          git fetch --depth=1 --quiet origin "${ADVISORY_DB_SHA}"
+          git checkout --quiet FETCH_HEAD
+          echo "Advisory DB pinned to: $(git rev-parse --short HEAD)"
+          echo "Commit date: $(git log -1 --format=%cd --date=iso-strict)"
+
       - name: Run cargo audit
         # `cargo audit` already fails on any advisory (Informational,
         # Low, Medium, High, Critical) by default. The `--deny` flags
@@ -64,4 +99,6 @@ jobs:
         #                   advisories even if not yet a vuln.
         #   --deny yanked:  fail if any crate in Cargo.lock is yanked
         #                   from crates.io (strong supply-chain signal).
-        run: cargo audit --deny unsound --deny yanked
+        # `-n / --no-fetch` prevents cargo-audit from trying to refresh
+        # the DB and overriding our pinned SHA.
+        run: cargo audit --no-fetch --deny unsound --deny yanked
