@@ -8,10 +8,11 @@ use garraia_auth::{
     AppPool, InternalProvider, JwtIssuer, LoginPool, SessionStore as AuthSessionStore, SignupPool,
 };
 use garraia_channels::{ChannelRegistry, CommandRegistry};
-use garraia_config::AppConfig;
+use garraia_config::{AppConfig, AuthConfig};
 use garraia_db::{ChatSessionManager, SessionStore};
 use garraia_runtime::RuntimeSettings;
 use garraia_security::{Allowlist, PairingManager};
+use secrecy::SecretString;
 use std::sync::RwLock;
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
@@ -110,6 +111,17 @@ pub struct AppState {
     /// when `GARRAIA_METRICS_TOKEN` / `GARRAIA_METRICS_ALLOW` are unset.
     pub metrics_auth_cfg: crate::metrics_auth::MetricsAuthConfig,
 
+    // ── Plan 0046 (GAR-379 slice 3): canonical source of JWT secret ───────
+    /// Authoritative reference to the `AuthConfig` loaded at bootstrap —
+    /// the one source of truth for `jwt_secret`, `refresh_hmac_secret`,
+    /// and the login/signup/app DB pools. Handlers reach the JWT secret
+    /// exclusively via [`AppState::jwt_signing_secret`], never via
+    /// `std::env::var`. `None` in fail-soft mode (dev without env vars
+    /// set); the mobile/v1 auth handlers then map to `503` via
+    /// [`AuthConfigMissing`]. PII-safe — the inner `AuthConfig` prints
+    /// `[REDACTED]` placeholders when formatted.
+    pub(crate) auth_config: Option<Arc<AuthConfig>>,
+
     // ── Plan 0044 (GAR-395 slice 2): ObjectStore + staging ─────────────────
     /// Object storage backend used by `rest_v1::uploads` PATCH commit.
     /// `None` means the backend is not wired (either config set to
@@ -121,6 +133,25 @@ pub struct AppState {
     /// failed to canonicalize at bootstrap.
     pub(crate) upload_staging: Option<Arc<crate::rest_v1::uploads::UploadStaging>>,
 }
+
+/// Plan 0046 (GAR-379 slice 3): sentinel returned by
+/// [`AppState::jwt_signing_secret`] when the gateway is running in
+/// fail-soft mode (dev without `GARRAIA_JWT_SECRET` /
+/// `GarraIA_VAULT_PASSPHRASE`). Handlers convert this to
+/// `RestError::AuthUnconfigured` (`503 Service Unavailable`) — **never**
+/// to a hardcoded fallback secret (plan 0046 §5.2 closes SEC-H-2).
+#[derive(Debug, Clone, Copy)]
+pub struct AuthConfigMissing;
+
+impl std::fmt::Display for AuthConfigMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "auth not configured: GARRAIA_JWT_SECRET / GarraIA_VAULT_PASSPHRASE absent at bootstrap",
+        )
+    }
+}
+
+impl std::error::Error for AuthConfigMissing {}
 
 /// Per-connection session tracking.
 pub struct SessionState {
@@ -220,6 +251,12 @@ impl AppState {
             // answer 503 via RestError::AuthUnconfigured).
             object_store: None,
             upload_staging: None,
+            // Plan 0046 (GAR-379 slice 3) — None when AuthConfig::from_env
+            // returned None (dev mode without env vars). Populated by
+            // `set_auth_config` at bootstrap. Never read via
+            // `std::env::var` in handlers — always via
+            // `AppState::jwt_signing_secret`.
+            auth_config: None,
         }
     }
 
@@ -266,6 +303,37 @@ impl AppState {
         self.signup_pool = Some(signup_pool);
         self.login_pool = Some(login_pool);
         self.app_pool = app_pool;
+    }
+
+    /// Plan 0046 (GAR-379 slice 3): stash the `AuthConfig` loaded from
+    /// env at bootstrap so handlers can retrieve the JWT secret via
+    /// [`AppState::jwt_signing_secret`] without touching `std::env::var`.
+    pub fn set_auth_config(&mut self, config: Arc<AuthConfig>) {
+        self.auth_config = Some(config);
+    }
+
+    /// Plan 0046 (GAR-379 slice 3): return the JWT signing secret held
+    /// by the bootstrap-loaded [`AuthConfig`]. Returns
+    /// `Err(AuthConfigMissing)` when no `AuthConfig` was wired (dev mode
+    /// without `GARRAIA_JWT_SECRET` / `GarraIA_VAULT_PASSPHRASE`). Callers
+    /// map the error to `RestError::AuthUnconfigured` (`503 Service
+    /// Unavailable`) — the gateway NEVER falls back to a hardcoded
+    /// default (plan 0046 §5.2 closes SEC-H-2).
+    pub fn jwt_signing_secret(&self) -> Result<SecretString, AuthConfigMissing> {
+        match self.auth_config.as_ref() {
+            Some(cfg) => Ok(cfg.jwt_secret.clone()),
+            None => Err(AuthConfigMissing),
+        }
+    }
+
+    /// Plan 0046 (GAR-379 slice 3): return the `MetricsAuthConfig` held
+    /// by the gateway. Unlike [`AppState::jwt_signing_secret`] this does
+    /// not fail — the default config is loopback-only which preserves
+    /// dev ergonomics. The `Result` wrapping keeps the signature uniform
+    /// with future plan extensions that may require a fail-closed
+    /// metrics path.
+    pub fn metrics_auth_config(&self) -> &crate::metrics_auth::MetricsAuthConfig {
+        &self.metrics_auth_cfg
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.
@@ -812,5 +880,45 @@ mod tests {
         let state = AppState::new(config, AgentRuntime::new(), ChannelRegistry::new());
         let key = state.continuity_key(Some("user1"));
         assert_eq!(key, None);
+    }
+
+    // ── Plan 0046 slice 3: JWT secret getter behaviour ────────────────────
+
+    #[test]
+    fn jwt_signing_secret_fails_when_auth_config_absent() {
+        // Fresh AppState without `set_auth_config` → fail-closed sentinel.
+        let state = test_state();
+        let err = state
+            .jwt_signing_secret()
+            .expect_err("expected AuthConfigMissing");
+        // Sentinel is zero-sized; asserting the Debug output is stable.
+        assert_eq!(
+            format!("{err:?}"),
+            "AuthConfigMissing",
+            "sentinel must be the bare type marker"
+        );
+    }
+
+    #[test]
+    fn jwt_signing_secret_returns_configured_secret() {
+        use garraia_config::AuthConfig;
+        use secrecy::{ExposeSecret, SecretString};
+
+        let mut state = test_state();
+        let cfg = AuthConfig {
+            jwt_secret: SecretString::from("J".repeat(32)),
+            refresh_hmac_secret: SecretString::from("r".repeat(32)),
+            login_database_url: SecretString::from(
+                "postgres://garraia_login:pw@localhost/garraia".to_string(),
+            ),
+            signup_database_url: SecretString::from(
+                "postgres://garraia_signup:pw@localhost/garraia".to_string(),
+            ),
+            app_database_url: None,
+        };
+        state.set_auth_config(Arc::new(cfg));
+
+        let got = state.jwt_signing_secret().expect("should be Some");
+        assert_eq!(got.expose_secret(), "J".repeat(32));
     }
 }

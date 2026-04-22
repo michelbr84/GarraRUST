@@ -26,14 +26,14 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use garraia_auth::hashing::{consume_dummy_hash, hash_argon2id, verify_argon2id};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ring::pbkdf2;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::{AppState, AuthConfigMissing};
 
 const PBKDF2_ITERATIONS: u32 = 600_000;
 /// JWT expiry: 30 days in seconds.
@@ -87,7 +87,7 @@ impl FromRequestParts<Arc<AppState>> for MobileAuth {
 
     async fn from_request_parts(
         parts: &mut Parts,
-        _state: &Arc<AppState>,
+        state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
@@ -100,8 +100,18 @@ impl FromRequestParts<Arc<AppState>> for MobileAuth {
         }
 
         let token = &auth_header["Bearer ".len()..];
-        let secret = jwt_secret();
-        let key = DecodingKey::from_secret(secret.as_bytes());
+        // Plan 0046 slice 3: fail-closed. No hardcoded fallback — if
+        // `AuthConfig` is not wired (fail-soft dev mode), the extractor
+        // returns 503 rather than accepting tokens signed with an
+        // insecure default.
+        let secret = match state.jwt_signing_secret() {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("mobile_auth extractor: AuthConfig unavailable; returning 503");
+                return Err(auth_unconfigured());
+            }
+        };
+        let key = DecodingKey::from_secret(secret.expose_secret().as_bytes());
         // SEC-H-1 (plan 0036 audit): pin the algorithm list explicitly so the
         // guard against algorithm-confusion (e.g. `alg: none`) is closed
         // regardless of future jsonwebtoken defaults. The fluxo Postgres em
@@ -123,6 +133,17 @@ fn unauthorized(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({"error": msg})),
+    )
+}
+
+/// Plan 0046 slice 3: `503 Service Unavailable` used when the gateway
+/// is running in fail-soft mode (no `GARRAIA_JWT_SECRET` /
+/// `GarraIA_VAULT_PASSPHRASE` set). The response body stays JSON for
+/// consistency with the other mobile-auth errors.
+fn auth_unconfigured() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": "auth not configured"})),
     )
 }
 
@@ -187,9 +208,16 @@ pub async fn register(
         );
     }
 
-    let token = match issue_jwt(&user_id, &email) {
+    let token = match issue_jwt(&state, &user_id, &email) {
         Ok(t) => t,
-        Err(e) => {
+        Err(JwtIssueError::AuthUnconfigured) => {
+            warn!("register: AuthConfig unavailable; returning 503");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "auth not configured"})),
+            );
+        }
+        Err(JwtIssueError::Jwt(e)) => {
             warn!("register: JWT issue failed: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -269,9 +297,16 @@ pub async fn login(
         );
     }
 
-    let token = match issue_jwt(&user.id, &user.email) {
+    let token = match issue_jwt(&state, &user.id, &user.email) {
         Ok(t) => t,
-        Err(e) => {
+        Err(JwtIssueError::AuthUnconfigured) => {
+            warn!("login: AuthConfig unavailable; returning 503");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "auth not configured"})),
+            );
+        }
+        Err(JwtIssueError::Jwt(e)) => {
             warn!("login: JWT issue failed: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -438,29 +473,56 @@ pub fn legacy_hash_password_for_tests(password: &str) -> (String, String) {
     (BASE64.encode(&hash), BASE64.encode(&salt))
 }
 
-fn jwt_secret() -> String {
-    if let Ok(v) = std::env::var("GARRAIA_JWT_SECRET") {
-        return v;
-    }
-    if let Ok(v) = std::env::var("GarraIA_VAULT_PASSPHRASE") {
-        return v;
-    }
-    // SEC-H-2 (plan 0036 audit): both env vars are unset. Loudly emit a
-    // `warn!` so operators see the misconfiguration in logs — the hardcoded
-    // fallback is insecure and exists only so dev workflows keep working.
-    // Production deployments MUST set `GARRAIA_JWT_SECRET`.
-    warn!(
-        "mobile_auth::jwt_secret: neither GARRAIA_JWT_SECRET nor GarraIA_VAULT_PASSPHRASE is set; using insecure fallback — NOT SAFE FOR PRODUCTION"
-    );
-    "garraia-insecure-default-jwt-secret-change-me".to_string()
+/// Plan 0046 slice 3: unified error surface for `issue_jwt` callers.
+///
+/// `AuthUnconfigured` is a fail-closed signal — the gateway is running
+/// in dev mode without `GARRAIA_JWT_SECRET` / `GarraIA_VAULT_PASSPHRASE`.
+/// Handlers map this to `503 Service Unavailable`. `Jwt` wraps the
+/// upstream `jsonwebtoken` error; handlers map this to 500.
+#[derive(Debug)]
+pub enum JwtIssueError {
+    AuthUnconfigured,
+    Jwt(jsonwebtoken::errors::Error),
 }
 
-/// Public re-export so that oauth.rs and totp.rs can issue tokens without duplicating logic.
-pub fn issue_jwt_pub(user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
-    issue_jwt(user_id, email)
+impl std::fmt::Display for JwtIssueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JwtIssueError::AuthUnconfigured => {
+                f.write_str("auth not configured: GARRAIA_JWT_SECRET is absent")
+            }
+            JwtIssueError::Jwt(e) => write!(f, "jwt encode error: {e}"),
+        }
+    }
 }
 
-fn issue_jwt(user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
+impl std::error::Error for JwtIssueError {}
+
+impl From<AuthConfigMissing> for JwtIssueError {
+    fn from(_: AuthConfigMissing) -> Self {
+        JwtIssueError::AuthUnconfigured
+    }
+}
+
+impl From<jsonwebtoken::errors::Error> for JwtIssueError {
+    fn from(e: jsonwebtoken::errors::Error) -> Self {
+        JwtIssueError::Jwt(e)
+    }
+}
+
+/// Public re-export so that oauth.rs and totp.rs can issue tokens
+/// without duplicating logic. Plan 0046 slice 3: signature updated to
+/// take `&AppState` — the JWT secret is no longer read from env inside
+/// this module. Handlers MUST pass the shared state.
+pub fn issue_jwt_pub(
+    state: &AppState,
+    user_id: &str,
+    email: &str,
+) -> Result<String, JwtIssueError> {
+    issue_jwt(state, user_id, email)
+}
+
+fn issue_jwt(state: &AppState, user_id: &str, email: &str) -> Result<String, JwtIssueError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -473,18 +535,83 @@ fn issue_jwt(user_id: &str, email: &str) -> Result<String, jsonwebtoken::errors:
         exp: now + JWT_EXPIRY_SECS,
     };
 
-    let secret = jwt_secret();
-    encode(
+    // Plan 0046 slice 3: fail-closed — `AuthConfigMissing` converts to
+    // `JwtIssueError::AuthUnconfigured` which the handler maps to 503.
+    let secret = state.jwt_signing_secret()?;
+    let encoded = encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
+        &EncodingKey::from_secret(secret.expose_secret().as_bytes()),
+    )?;
+    Ok(encoded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::{AppConfig, AuthConfig};
     use garraia_db::SessionStore;
+
+    fn test_state_without_auth() -> AppState {
+        AppState::new(
+            AppConfig::default(),
+            AgentRuntime::new(),
+            ChannelRegistry::new(),
+        )
+    }
+
+    fn test_state_with_auth_secret(secret: &str) -> AppState {
+        let mut state = AppState::new(
+            AppConfig::default(),
+            AgentRuntime::new(),
+            ChannelRegistry::new(),
+        );
+        let cfg = AuthConfig {
+            jwt_secret: SecretString::from(secret.to_string()),
+            refresh_hmac_secret: SecretString::from("r".repeat(32)),
+            login_database_url: SecretString::from(
+                "postgres://garraia_login:pw@localhost/garraia".to_string(),
+            ),
+            signup_database_url: SecretString::from(
+                "postgres://garraia_signup:pw@localhost/garraia".to_string(),
+            ),
+            app_database_url: None,
+        };
+        state.set_auth_config(Arc::new(cfg));
+        state
+    }
+
+    #[test]
+    fn issue_jwt_without_auth_config_returns_auth_unconfigured() {
+        // Plan 0046 slice 3: fail-closed. Zero hardcoded fallback —
+        // when AppState has no AuthConfig, issue_jwt surfaces the
+        // `AuthConfigMissing` sentinel as `JwtIssueError::AuthUnconfigured`.
+        let state = test_state_without_auth();
+        let err = issue_jwt(&state, "u-1", "alice@example.test")
+            .expect_err("expected AuthUnconfigured, got Ok");
+        assert!(
+            matches!(err, JwtIssueError::AuthUnconfigured),
+            "expected JwtIssueError::AuthUnconfigured, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn issue_jwt_with_auth_config_returns_valid_hs256_token() {
+        let state = test_state_with_auth_secret(&"S".repeat(32));
+        let token = issue_jwt(&state, "u-2", "bob@example.test").expect("issue");
+        // HS256 JWTs have exactly 2 dots.
+        assert_eq!(token.matches('.').count(), 2, "token = {token}");
+
+        // Round-trip: decode with the same secret.
+        let key = DecodingKey::from_secret(&b"S".repeat(32));
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.validate_exp = true;
+        let data = decode::<MobileClaims>(&token, &key, &validation).expect("decode");
+        assert_eq!(data.claims.sub, "u-2");
+        assert_eq!(data.claims.email, "bob@example.test");
+    }
 
     #[test]
     fn hash_password_produces_argon2id_phc() {
@@ -621,6 +748,119 @@ mod tests {
         // Wrong password → false.
         let bad = verify_password_and_maybe_upgrade(&store, user_id, &phc, "", "nope").await;
         assert!(!bad);
+    }
+
+    // ── Plan 0046 slice 3: handler-level integration tests ────────────────
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn router_with_state(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/auth/register", post(register))
+            .route("/auth/login", post(login))
+            .with_state(state)
+    }
+
+    fn seed_state_with_store(state: &mut AppState) -> Arc<tokio::sync::Mutex<SessionStore>> {
+        let store = Arc::new(tokio::sync::Mutex::new(
+            SessionStore::in_memory().expect("in-memory store"),
+        ));
+        state.set_session_store(store.clone());
+        store
+    }
+
+    async fn post_json(
+        router: &Router,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .uri(path)
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.expect("oneshot");
+        let status = resp.status();
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn login_without_jwt_secret_returns_503() {
+        // Plan 0046 §7.2: the gateway refuses to sign tokens with a hardcoded
+        // fallback. When AppState has no AuthConfig, /auth/register (which
+        // reaches issue_jwt) fails closed with 503 — never 200 with an insecure JWT.
+        let mut state = test_state_without_auth();
+        seed_state_with_store(&mut state);
+        let state = Arc::new(state);
+        let router = router_with_state(state).await;
+
+        let (status, body) = post_json(
+            &router,
+            "/auth/register",
+            serde_json::json!({"email": "a@b.test", "password": "password-1234"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body = {body}");
+        assert_eq!(body["error"], "auth not configured");
+    }
+
+    #[tokio::test]
+    async fn login_with_standard_env_works() {
+        // Plan 0046 §7.2: baseline — when AuthConfig carries a valid
+        // jwt_secret, /auth/register succeeds and issues a real HS256 JWT.
+        let mut state = test_state_with_auth_secret(&"S".repeat(32));
+        seed_state_with_store(&mut state);
+        let state = Arc::new(state);
+        let router = router_with_state(state).await;
+
+        let (status, body) = post_json(
+            &router,
+            "/auth/register",
+            serde_json::json!({"email": "alice@b.test", "password": "password-1234"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body = {body}");
+        let token = body["token"].as_str().expect("token string");
+        assert_eq!(
+            token.matches('.').count(),
+            2,
+            "HS256 JWT must have exactly 2 dots"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_with_legacy_passphrase_works() {
+        // Plan 0046 §7.2: GarraIA_VAULT_PASSPHRASE fallback must still
+        // issue valid tokens when wired into AuthConfig. The env-var
+        // fallback is covered in garraia-config::auth::tests; here we
+        // confirm the handler path accepts any AuthConfig regardless of
+        // which env var fed it.
+        let mut state = test_state_with_auth_secret(&"V".repeat(32));
+        seed_state_with_store(&mut state);
+        let state = Arc::new(state);
+        let router = router_with_state(state).await;
+
+        let (status, body) = post_json(
+            &router,
+            "/auth/register",
+            serde_json::json!({"email": "legacy@b.test", "password": "password-1234"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body = {body}");
+        let token = body["token"].as_str().expect("token string");
+        // Decode with the same secret to confirm signing key.
+        let key = DecodingKey::from_secret(&b"V".repeat(32));
+        let mut v = Validation::new(Algorithm::HS256);
+        v.validate_exp = true;
+        decode::<MobileClaims>(token, &key, &v).expect("must decode with legacy secret");
     }
 
     #[tokio::test]
