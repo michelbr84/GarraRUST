@@ -1,0 +1,94 @@
+# cargo-audit configuration (plan 0043, 2026-04-22).
+#
+# Every entry in `ignore` is a REAL advisory against a dep in our
+# Cargo.lock. These are deferred — not silenced — to Lote B-2 of the
+# autonomous session (see plans/synchronous-baking-hippo.md §5 Lote B).
+# B-2 will address each via version bump + security-auditor review of
+# the touched crypto/parsing surface, then remove the entry from this
+# file.
+#
+# SYNC NOTE: this file and `/deny.toml` are parallel universes.
+# `cargo-audit` reads `.cargo/audit.toml`; `cargo-deny` reads
+# `deny.toml`. As of 2026-04-22 both files share the same 2 wasmtime
+# advisory IDs (RUSTSEC-2025-0046, RUSTSEC-2025-0118). When B-2 bumps
+# wasmtime, BOTH files must be updated. See F-5 in the plan 0043
+# security-auditor review (PR #57).
+#
+# ALL entries expire 2026-05-20 (4 weeks). At that point: either B-2
+# closed them, or they get re-triaged explicitly.
+#
+# Policy for adding a new ignore: (1) must reference a specific
+# advisory ID, (2) must have a one-line crate + rationale comment,
+# (3) must have a downstream owner (Linear issue or Lote marker).
+
+[advisories]
+ignore = [
+    # --- Vulnerabilities (deny-by-default) — 9 unique IDs ---
+
+    # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
+    # GarraRUST JWT paths use HS256 via `ring` (HMAC-SHA256), NOT RSA
+    # decrypt — the Marvin attack code path is not reachable from our
+    # handlers. `rsa` is present transitively but exposure is zero for
+    # the paths we exercise. No upstream fix available. B-2 to confirm
+    # and remove. Security-auditor F-2 (PR #57 review) clarified this.
+    "RUSTSEC-2023-0071",
+
+    # idna 0.5.0 — Punycode labels without non-ASCII accepted. Bump to
+    # 1.x in B-2; check transitive callers (url crate chain).
+    "RUSTSEC-2024-0421",
+
+    # wasmtime 28 — `fd_renumber` WASIp1 host panic. We ship WASM
+    # sandbox in garraia-plugins; must bump to fixed version in B-2
+    # WITH security-auditor review of plugin isolation surface.
+    "RUSTSEC-2025-0046",
+
+    # tokio-tar — PAX extended header file smuggling. Pulled by wasmtime
+    # toolchain; bump in B-2.
+    "RUSTSEC-2025-0111",
+
+    # wasmtime 28 — unsound shared linear memory API. Same bump as
+    # RUSTSEC-2025-0046; same security review gate.
+    "RUSTSEC-2025-0118",
+
+    # rustls-webpki — CRL matching logic; bump to >=0.103.10 (or
+    # 0.104-alpha.x if on rustls 0.23 alpha chain) in B-2.
+    "RUSTSEC-2026-0049",
+
+    # rustls-webpki — URI name constraints; same bump family as above.
+    "RUSTSEC-2026-0098",
+
+    # rustls-webpki — wildcard in name-constrained certs; same bump.
+    "RUSTSEC-2026-0099",
+
+    # rustls-webpki — reachable panic in CRL parsing; same bump.
+    "RUSTSEC-2026-0104",
+
+    # --- Unsound warnings (deny due to --deny unsound) — 3 unique IDs ---
+
+    # glib — `VariantStrIter` unsound Iterator impls. Pulled by Tauri
+    # surface (garraia-desktop), which is excluded from CI builds. Low
+    # runtime risk in server deployments. B-2 decision: bump glib or
+    # gate behind `desktop` feature for cargo-audit.
+    "RUSTSEC-2024-0429",
+
+    # lru — `IterMut` stacked-borrows violation. Pulled transitively;
+    # bump to fixed version in B-2 and confirm no downstream breakage.
+    "RUSTSEC-2026-0002",
+
+    # rand — custom logger unsoundness in `rand::rng()`. We use rand
+    # broadly; B-2 must audit call sites before bump (patch versions
+    # between 0.8 and 0.9 family are semver-incompatible).
+    "RUSTSEC-2026-0097",
+
+    # --- Yanked/unmaintained advisory IDs — 1 unique ID ---
+
+    # core2 — unmaintained AND all versions yanked. Pulled through
+    # image → rav1e → bitstream-io → core2 (garraia-media). B-2 to
+    # swap bitstream-io for a live alternative OR feature-gate
+    # garraia-media image support. Note: the yanked-at-crates.io
+    # status is caught by `--deny yanked` (separate code path from
+    # ignore list). Since all versions are yanked with no fix,
+    # `--deny yanked` was dropped from the workflow until B-2; yanked
+    # crates still show as yellow warnings in the log.
+    "RUSTSEC-2026-0105",
+]

@@ -1,4 +1,10 @@
 [advisories]
+# SYNC NOTE: this section and `.cargo/audit.toml` are parallel ignore
+# lists for two separate tools — `cargo-deny` reads here,
+# `cargo-audit` reads `.cargo/audit.toml`. Overlap as of 2026-04-22:
+# RUSTSEC-2025-0046 and RUSTSEC-2025-0118 (wasmtime). When Lote B-2
+# bumps wasmtime, BOTH files must be updated to drop those IDs. See
+# plan 0043 F-5 (security-auditor review on PR #57).
 version = 2
 yanked = "warn"
 ignore = [
