@@ -40,10 +40,12 @@ tracing-appender = "0.2.4"
 dotenvy.workspace = true
 
 # Plan 0039 — `migrate workspace` deps.
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+# Use workspace-pinned versions where available to avoid drift.
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
+rusqlite = { workspace = true }
 base64 = "0.22"
 secrecy = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = ["telemetry"]
@@ -54,10 +56,8 @@ telemetry = ["garraia-gateway/telemetry"]
 tempfile = "3"
 testcontainers = "0.23"
 # Integration tests run as their own bin crates, so they need explicit
-# access to the workspace deps used from the test file.
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
-base64 = "0.22"
+# access to some deps from the test file. Reuse workspace pins.
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -28,6 +28,14 @@
 //! 5. **PII redaction.** `postgres_url` (may contain password) is never
 //!    logged in the clear; tracing spans use `skip(postgres_url, sqlite_path)`.
 //!    PHC strings and raw hash/salt bytes never enter `tracing` output.
+//! 6. **Concurrent runs not supported.** Plan 0039 audit F-02: if two
+//!    processes invoke this command against the same Postgres at the
+//!    same time, the `WHERE NOT EXISTS` idempotency guard in the audit
+//!    INSERT can race — both transactions pass the existence check
+//!    before either commits, yielding duplicate audit rows. Operators
+//!    MUST serialise invocations at the deploy layer (e.g. a single
+//!    Kubernetes Job / systemd-run). Future slice may add a
+//!    migration advisory lock via `pg_try_advisory_lock`.
 //!
 //! # Rollback
 //!
@@ -40,21 +48,24 @@
 //! -- audit_events rows persist by design (plan 0034 §8, LGPD art. 37).
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use tracing::{info, instrument};
+use uuid::Uuid;
 
 /// Subset of sysexits.h codes used by `migrate workspace`. Kept local to
 /// the module so the CLI entrypoint can `std::process::exit` without
-/// guessing magic numbers.
+/// guessing magic numbers. `IO_ERR` is the only code accessed from
+/// `main.rs`; the rest are internal to the stage machinery.
 #[allow(dead_code)] // DATA_ERR reserved for future use (stages 3+)
-pub mod exit_codes {
+pub(crate) mod exit_codes {
     pub const OK: i32 = 0;
     /// Pre-flight check failed (schema version / missing table / bad auth).
     pub const USAGE: i32 = 64;
@@ -213,11 +224,11 @@ struct MobileUserRow {
     email: String,
     password_hash_b64: String,
     salt_b64: String,
-    /// SQLite stores created_at as TEXT in ISO 8601. Passed to Postgres
-    /// as `$N::timestamptz`; if parsing fails Postgres raises and the
-    /// stage tx rolls back — the operator gets DATA_ERR.
-    #[allow(dead_code)] // read via bind in insert_user
-    created_at: String,
+    /// Parsed at load time from SQLite's ISO 8601 TEXT into
+    /// `DateTime<Utc>`. Failing to parse aborts the load with a precise
+    /// per-row error message instead of surfacing an opaque Postgres
+    /// error at INSERT time (code review MEDIUM).
+    created_at: DateTime<Utc>,
 }
 
 fn preflight_sqlite(path: &Path) -> Result<Option<i32>> {
@@ -277,8 +288,12 @@ where
     let Some(row) = row else {
         return Ok(false);
     };
-    let bypass: bool = row.try_get("rolbypassrls").unwrap_or(false);
-    let sup: bool = row.try_get("rolsuper").unwrap_or(false);
+    let bypass: bool = row
+        .try_get("rolbypassrls")
+        .context("read rolbypassrls from pg_roles")?;
+    let sup: bool = row
+        .try_get("rolsuper")
+        .context("read rolsuper from pg_roles")?;
     Ok(bypass || sup)
 }
 
@@ -294,13 +309,19 @@ async fn preflight_schema_version(pool: &PgPool) -> Result<Option<i32>> {
         )?;
     let applied: Vec<i64> = rows
         .iter()
-        .map(|r| r.try_get::<i64, _>("version").unwrap_or(0))
-        .collect();
+        .map(|r| r.try_get::<i64, _>("version"))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("read version column from _sqlx_migrations")?;
     let missing: Vec<&str> = REQUIRED_MIGRATIONS
         .iter()
         .copied()
         .filter(|m| {
-            let n: i64 = m.parse().unwrap_or(-1);
+            // `REQUIRED_MIGRATIONS` is a static list of numeric strings
+            // (`"001"` … `"013"`). Leading zeros are benign to
+            // `i64::parse`; a parse failure here is a programmer bug.
+            let n: i64 = m
+                .parse()
+                .unwrap_or_else(|_| panic!("REQUIRED_MIGRATIONS entry `{m}` is not numeric"));
             !applied.contains(&n)
         })
         .collect();
@@ -327,7 +348,7 @@ async fn preflight_confirmation_gate(
         .fetch_one(pool)
         .await
         .context("count users")?;
-    let n: i64 = row.try_get("n").unwrap_or(0);
+    let n: i64 = row.try_get("n").context("read users count")?;
     if n > 0 && !confirm_backup {
         eprintln!(
             "error: Postgres `users` table already has {n} rows. Pass \
@@ -348,20 +369,50 @@ fn load_mobile_users(path: &Path) -> Result<Vec<MobileUserRow>> {
         .context("prepare mobile_users SELECT")?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(MobileUserRow {
-                id: r.get(0)?,
-                email: r.get(1)?,
-                password_hash_b64: r.get(2)?,
-                salt_b64: r.get(3)?,
-                created_at: r.get(4)?,
-            })
+            Ok((
+                r.get::<_, String>(0)?, // id
+                r.get::<_, String>(1)?, // email
+                r.get::<_, String>(2)?, // password_hash
+                r.get::<_, String>(3)?, // salt
+                r.get::<_, String>(4)?, // created_at as ISO 8601 TEXT
+            ))
         })
         .context("query mobile_users")?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.context("fetch mobile_users row")?);
+        let (id, email, password_hash_b64, salt_b64, created_at_raw) =
+            row.context("fetch mobile_users row")?;
+        let created_at = parse_sqlite_timestamp(&created_at_raw).with_context(|| {
+            format!("parse created_at for mobile_users.id={id}: `{created_at_raw}`")
+        })?;
+        out.push(MobileUserRow {
+            id,
+            email,
+            password_hash_b64,
+            salt_b64,
+            created_at,
+        });
     }
     Ok(out)
+}
+
+/// Parse SQLite's two common timestamp TEXT formats:
+///   - ISO 8601 with `T` separator and `Z` suffix  (`2026-04-15T00:00:00Z`)
+///   - SQLite `CURRENT_TIMESTAMP` default           (`2026-04-15 00:00:00`)
+///
+/// The second form omits the timezone; we treat it as UTC (mobile_auth's
+/// SQLite schema uses `DEFAULT CURRENT_TIMESTAMP` which is UTC-ish per
+/// the SQLite date-and-time functions spec).
+fn parse_sqlite_timestamp(raw: &str) -> Result<DateTime<Utc>> {
+    // Try ISO 8601 first.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    // SQLite's CURRENT_TIMESTAMP lacks a TZ; interpret as UTC.
+    let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S"))
+        .map_err(|e| anyhow!("unrecognised timestamp format: {e}"))?;
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
 }
 
 /// Returns `true` if the row existed (UPSERT updated `legacy_sqlite_id`),
@@ -372,23 +423,30 @@ async fn insert_user(tx: &mut sqlx::PgConnection, row: &MobileUserRow) -> Result
         .split_once('@')
         .map(|(local, _)| local.to_string())
         .unwrap_or_else(|| row.email.clone());
+    // `uuid_generate_v7()` is not installed in Postgres (migration 001
+    // only installs `pgcrypto` for v4). Generate v7 in Rust and bind —
+    // code review HIGH-1.
+    let new_user_id = Uuid::now_v7();
     let result = sqlx::query(
         r#"
         INSERT INTO users (id, email, display_name, status, legacy_sqlite_id, created_at, updated_at)
-        VALUES (uuid_generate_v7(), LOWER($1), $2, 'active', $3, $4::timestamptz, $4::timestamptz)
+        VALUES ($1, LOWER($2), $3, 'active', $4, $5, $5)
         ON CONFLICT (email) DO UPDATE SET
             legacy_sqlite_id = COALESCE(users.legacy_sqlite_id, EXCLUDED.legacy_sqlite_id)
         RETURNING (xmax = 0) AS inserted
         "#,
     )
+    .bind(new_user_id)
     .bind(&row.email)
     .bind(&display)
     .bind(&row.id)
-    .bind(&row.created_at)
+    .bind(row.created_at)
     .fetch_one(&mut *tx)
     .await
     .context("insert_user")?;
-    let inserted: bool = result.try_get("inserted").unwrap_or(true);
+    let inserted: bool = result
+        .try_get("inserted")
+        .context("read `inserted` flag from RETURNING")?;
     Ok(!inserted)
 }
 
@@ -413,15 +471,17 @@ async fn insert_identity_with_audit(
     })?;
     let user_uuid: uuid::Uuid = user_id_row.try_get("id")?;
 
+    let new_identity_id = Uuid::now_v7();
     let id_inserted = sqlx::query(
         r#"
         INSERT INTO user_identities
             (id, user_id, provider, provider_sub, password_hash, created_at, hash_upgraded_at)
         VALUES
-            (uuid_generate_v7(), $1, 'internal', $2, $3, NOW(), NULL)
+            ($1, $2, 'internal', $3, $4, NOW(), NULL)
         ON CONFLICT (provider, provider_sub) DO NOTHING
         "#,
     )
+    .bind(new_identity_id)
     .bind(user_uuid)
     .bind(user_uuid.to_string())
     .bind(phc)
@@ -431,28 +491,31 @@ async fn insert_identity_with_audit(
     .rows_affected()
         > 0;
 
+    let new_audit_id = Uuid::now_v7();
     let audit_inserted = sqlx::query(
         r#"
         INSERT INTO audit_events
             (id, group_id, actor_user_id, actor_label, action, resource_type, resource_id, metadata, created_at)
-        SELECT uuid_generate_v7(), NULL, NULL, 'system.migrate_workspace',
-               'users.imported_from_sqlite', 'user', $1::text,
+        SELECT $1, NULL, NULL, 'system.migrate_workspace',
+               'users.imported_from_sqlite', 'user', $2::text,
                jsonb_build_object(
                    'source', 'mobile_users',
-                   'legacy_id', $2::text,
+                   'legacy_id', $3::text,
                    'hash_algorithm', 'pbkdf2-sha256',
-                   'iterations', 600000,
+                   'iterations', $4::bigint,
                    'lazy_upgrade_pending', true),
                NOW()
         WHERE NOT EXISTS (
             SELECT 1 FROM audit_events
             WHERE action = 'users.imported_from_sqlite'
-              AND resource_id = $1::text
+              AND resource_id = $2::text
         )
         "#,
     )
+    .bind(new_audit_id)
     .bind(user_uuid)
     .bind(&row.id)
+    .bind(PBKDF2_ITERATIONS as i64)
     .execute(&mut *tx)
     .await
     .context("insert audit_events")?
@@ -493,13 +556,6 @@ pub fn pbkdf2_legacy_to_phc(hash_b64_std: &str, salt_b64_std: &str) -> Result<St
     Ok(format!(
         "$pbkdf2-sha256$i={PBKDF2_ITERATIONS},l={PBKDF2_OUTPUT_LEN}${salt_nopad}${hash_nopad}"
     ))
-}
-
-/// Format the resolved SQLite path for error messages; keep separate to
-/// avoid accidental String allocations in hot paths.
-#[allow(dead_code)]
-pub(crate) fn sqlite_display(path: &Path) -> PathBuf {
-    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -575,6 +631,10 @@ mod tests {
         let phc = pbkdf2_legacy_to_phc(&hash_b64, &salt_b64).unwrap();
         let verified = verify_pbkdf2(&phc, &SecretString::new(password.into())).unwrap();
         assert!(verified);
+
+        // Paired rejection check (plan 0039 audit F-08).
+        let rejected = verify_pbkdf2(&phc, &SecretString::new("totally-different".into())).unwrap();
+        assert!(!rejected, "wrong password must not verify");
     }
 
     #[test]
