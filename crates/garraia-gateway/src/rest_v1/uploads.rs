@@ -1049,24 +1049,36 @@ async fn finalize_upload(
         )));
     }
 
-    // Load bytes back from staging. Plan 0044 §5.1 — slice 3 will
-    // stream via `ObjectStore::put_stream`. Today we read the whole
-    // file; `max_patch_bytes` cap keeps memory bounded.
+    // Plan 0047 (GAR-395 slice 3): commit via streaming `put_stream`
+    // instead of buffering the whole staging file into memory. The
+    // staging path is opened as `tokio::fs::File` and handed to the
+    // backend as an `AsyncByteReader`; LocalFs streams through a temp
+    // sibling + atomic rename (zero RAM spike even for 5 GiB uploads),
+    // S3-compatible backends can override with multipart upload in a
+    // follow-up slice. `max_patch_bytes` remains the per-PATCH cap and
+    // is unaffected — this eliminates the second spike at finalize.
     let staging_path = staging.staging_path(upload_id);
-    let staged_bytes = tokio::fs::read(&staging_path).await.map_err(|e| {
-        RestError::Internal(anyhow::anyhow!(e).context("read staging file during finalize_upload"))
-    })?;
 
-    if staged_bytes.len() as i64 != size_bytes {
-        // Defense-in-depth: the upload_offset ledger and the staging
-        // file size must match. Any divergence is a gateway bug.
+    // Defense-in-depth: the upload_offset ledger and the staging file
+    // size must match BEFORE we hand the reader to the backend. This
+    // catches any gateway bug that advanced `upload_offset` without
+    // flushing the matching bytes to disk.
+    let staged_len = tokio::fs::metadata(&staging_path)
+        .await
+        .map_err(|e| {
+            RestError::Internal(anyhow::anyhow!(e).context("stat staging file during finalize"))
+        })?
+        .len();
+    if staged_len as i64 != size_bytes {
         return Err(RestError::Internal(anyhow::anyhow!(
-            "staging file size {} does not match expected {size_bytes}",
-            staged_bytes.len()
+            "staging file size {staged_len} does not match expected {size_bytes}"
         )));
     }
 
-    let put_bytes = Bytes::from(staged_bytes);
+    let staging_file = tokio::fs::File::open(&staging_path).await.map_err(|e| {
+        RestError::Internal(anyhow::anyhow!(e).context("open staging file for put_stream"))
+    })?;
+    let reader: garraia_storage::AsyncByteReader = Box::pin(staging_file);
 
     // PutOptions — MIME declared, HMAC material populated from the
     // staging context so ObjectStore stores `integrity_hmac` we can
@@ -1079,12 +1091,12 @@ async fn finalize_upload(
         hmac_secret: Some(staging.hmac_secret.clone()),
     };
 
-    // Plan 0044 §5.3.1: put() executes BEFORE commit. A put() failure
+    // Plan 0044 §5.3.1: put_stream() executes BEFORE commit. A failure
     // rolls back the tx (dropped at fn exit without `commit()`), so
     // `tus_uploads.status` stays `in_progress` and no files / versions
     // / audit rows exist. Retry is safe from the client's side.
     let put_meta = object_store
-        .put(object_key, put_bytes, put_opts)
+        .put_stream(object_key, reader, staged_len, put_opts)
         .await
         .map_err(|e| {
             // PII-safe: `StorageError::Display` is bounded to
@@ -1092,10 +1104,20 @@ async fn finalize_upload(
             tracing::warn!(
                 upload_id = %upload_id,
                 error = %e,
-                "ObjectStore::put failed; upload stays in_progress"
+                "ObjectStore::put_stream failed; upload stays in_progress"
             );
             RestError::BadGateway("ObjectStore commit failed; please retry".into())
         })?;
+
+    // Defense-in-depth parity with the pre-stream path: the backend
+    // MUST have seen the same byte count we expect. Any mismatch is a
+    // bug in the backend implementation, not a client issue.
+    if put_meta.size_bytes as i64 != size_bytes {
+        return Err(RestError::Internal(anyhow::anyhow!(
+            "put_stream size_bytes {} != expected {size_bytes}",
+            put_meta.size_bytes
+        )));
+    }
 
     // HMAC is required by migration 003 — if missing, fail-closed.
     let integrity_hmac = put_meta.integrity_hmac.ok_or_else(|| {
