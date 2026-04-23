@@ -49,6 +49,11 @@ Thumbs.db
 batch-results.json
 parallel-review-*.md
 
+# awesome-claude-token-stack — local context store (per-project SQLite WAL).
+# Contains per-turn memory, tool-result archive, observability scores.
+# Never committed — it's operational state, not project artifact.
+.acts/
+
 # MCP server configs at repo root — may contain API tokens / bearer tokens.
 # Use mcp.json.example (committed, no secrets) as reference.
 mcp.json

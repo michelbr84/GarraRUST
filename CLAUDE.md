@@ -150,22 +150,31 @@ crates/
                         SÓ em `crates/garraia-config/src/auth.rs` (oauth.rs e totp.rs
                         refactorados). `metrics_token` lido via `garraia-telemetry::config`
                         dedicado. Ver `docs/auth-config.md` para matriz de precedência.
-                        Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044)
-                        adiciona `rest_v1::uploads` com `POST /v1/uploads` (tus 1.0
-                        Creation) + `HEAD /v1/uploads/{id}` (Resume probe) + `PATCH
-                        /v1/uploads/{id}` (Core byte append) + `OPTIONS /v1/uploads`
-                        (tus discovery) atrás de `Tus-Resumable: 1.0.0` precondition.
-                        Stored em `tus_uploads` (migration 014, FORCE RLS). Slice 2
-                        wire `ObjectStore` em `AppState` via novo `StorageConfig`
-                        (`garraia-config::model::StorageConfig`, backend `local` ou
-                        `s3` feature-gated), staging FS local append-only,
-                        commit two-phase ordering (blob-first via `ObjectStore::put`
-                        + `files`/`file_versions` atomic + audit `upload.completed`
-                        + `tus_uploads.status='completed'` → `COMMIT` Postgres em
-                        seguida — plan 0044 §5.3.1). Cap operacional
-                        `storage.max_patch_bytes` default 100 MiB (streaming `put`
-                        fica para slice 3). Termination + expiration worker para
-                        slice 3.
+                        Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044 +
+                        slice 3 plan 0047) adiciona `rest_v1::uploads` com `POST
+                        /v1/uploads` (tus 1.0 Creation) + `HEAD /v1/uploads/{id}`
+                        (Resume probe) + `PATCH /v1/uploads/{id}` (Core byte append)
+                        + `DELETE /v1/uploads/{id}` (Termination) + `OPTIONS
+                        /v1/uploads` (tus discovery) atrás de `Tus-Resumable:
+                        1.0.0` precondition. Stored em `tus_uploads` (migration
+                        014, FORCE RLS). Slice 2 wire `ObjectStore` em `AppState`
+                        via novo `StorageConfig` (`garraia-config::model::StorageConfig`,
+                        backend `local` ou `s3` feature-gated), staging FS local
+                        append-only, commit two-phase ordering (blob-first via
+                        `ObjectStore::put` + `files`/`file_versions` atomic + audit
+                        `upload.completed` + `tus_uploads.status='completed'` →
+                        `COMMIT` Postgres em seguida — plan 0044 §5.3.1). Cap
+                        operacional `storage.max_patch_bytes` default 100 MiB.
+                        Plan 0047 (GAR-395 slice 3, 2026-04-23 merged em `96f5c03`
+                        via PR #62) fecha o epic GAR-395 adicionando: `DELETE
+                        /v1/uploads/{id}` (Termination idempotente 204/404),
+                        expiration worker dedicado em `uploads_worker.rs` (332 LOC)
+                        + `uploads_worker_util.rs` purgando uploads `status='in_progress'`
+                        expirados via `expires_in_progress_idx` com budget + jitter
+                        configuráveis, e `ObjectStore::put_stream` em `LocalFs` para
+                        patches grandes sem buffer integral em RAM. 752 LOC de
+                        integration tests novos em `rest_v1_uploads_delete_worker.rs`.
+                        GAR-395 movido para Done em 2026-04-23 17:38Z.
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
