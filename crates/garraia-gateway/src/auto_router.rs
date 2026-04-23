@@ -68,7 +68,7 @@ fn classify_heuristic(text: &str) -> Option<AgentMode> {
         (AgentMode::Ask, score_ask(t)),
     ];
 
-    scores.sort_by(|a, b| b.1.cmp(&a.1));
+    scores.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
     let (winner_mode, winner_score) = scores[0];
     let runner_score = scores[1].1;
 

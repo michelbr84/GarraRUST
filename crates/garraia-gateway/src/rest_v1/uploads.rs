@@ -394,10 +394,10 @@ pub async fn head_upload(
         H_UPLOAD_LENGTH.clone(),
         header_value_from_ascii(&upload_length.to_string())?,
     );
-    if let Some(raw) = metadata_raw {
-        if let Ok(v) = HeaderValue::from_str(&raw) {
-            response_headers.insert(H_UPLOAD_METADATA.clone(), v);
-        }
+    if let Some(raw) = metadata_raw
+        && let Ok(v) = HeaderValue::from_str(&raw)
+    {
+        response_headers.insert(H_UPLOAD_METADATA.clone(), v);
     }
     response_headers.insert(
         axum::http::header::CACHE_CONTROL,

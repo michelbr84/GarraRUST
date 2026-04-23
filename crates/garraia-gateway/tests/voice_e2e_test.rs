@@ -91,8 +91,8 @@ pub struct MockVoicePipeline {
     pub last_metrics: Option<VoiceMetrics>,
 }
 
-impl MockVoicePipeline {
-    pub fn new() -> Self {
+impl Default for MockVoicePipeline {
+    fn default() -> Self {
         Self {
             stt_failure: false,
             llm_failure: false,
@@ -102,6 +102,12 @@ impl MockVoicePipeline {
             record_metrics: true,
             last_metrics: None,
         }
+    }
+}
+
+impl MockVoicePipeline {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create a pipeline that always fails at STT
@@ -409,8 +415,7 @@ async fn voice_pipeline_logs_structured_info() {
         )
         .await;
 
-    // If we got here without panicking, logging is working
-    assert!(true);
+    // Sentinel: reaching this point means logging didn't panic. No assertion needed.
 }
 
 // ============================================================================

@@ -1,0 +1,11 @@
+# GarraRUST rustfmt config (plan 0049 / GAR-429 Lote Q.1).
+# Explicit-default — formaliza a convenção que hoje roda implícita via
+# `.github/workflows/ci.yml` (step `cargo fmt --check --all`).
+#
+# `newline_style` é intencionalmente omitido (default "Auto" preserva o
+# estilo existente) — impor "Unix" aqui reescreveria arquivos CRLF em
+# checkouts Windows sem benefício para o CI Linux.
+
+edition = "2024"
+max_width = 100
+tab_spaces = 4

@@ -1,0 +1,18 @@
+# GarraRUST clippy overrides (plan 0049 / GAR-429 Lote Q.1).
+# Thresholds escolhidos com base em baseline empírico do workspace (2026-04-22).
+
+# too-many-arguments: default 7 → 10.
+# Audit helpers (log_action, append_audit, list_audit_log_filtered) têm 8-9
+# params por razão de compliance trail (user_id + username + action + resource
+# + outcome + timestamps + ...). Refactor para struct tipado é cosmético e
+# dispara o limite default em 5 sites legítimos. 10 bate com o PR real
+# sem `#[allow(clippy::too_many_arguments)]` inline.
+too-many-arguments-threshold = 10
+
+# cognitive-complexity: default 25 → 25 (explícito, aprovado pelo usuário).
+cognitive-complexity-threshold = 25
+
+# too-many-lines: default 100 → 150.
+# Funções de migration (run_stage*_* em migrate_workspace.rs) legitimamente
+# passam de 100 linhas pela natureza atomic-tx de cada stage.
+too-many-lines-threshold = 150

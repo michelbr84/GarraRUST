@@ -105,37 +105,37 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
                 if let Some(key) = api_key {
                     // Health check for local OpenAI-compatible providers (LM Studio, vLLM, etc.)
-                    if let Some(ref base_url) = llm_config.base_url {
-                        if base_url.contains("localhost") || base_url.contains("127.0.0.1") {
-                            let addr = base_url
-                                .trim_start_matches("http://")
-                                .trim_start_matches("https://")
-                                .split('/')
-                                .next()
-                                .unwrap_or("localhost:1234");
-                            let sock_addr = if addr.contains(':') {
-                                addr.to_string()
-                            } else {
-                                format!("{}:1234", addr)
-                            };
-                            match std::net::TcpStream::connect_timeout(
-                                &sock_addr.parse().unwrap_or_else(|_| {
-                                    std::net::SocketAddr::from(([127, 0, 0, 1], 1234))
-                                }),
-                                std::time::Duration::from_secs(2),
-                            ) {
-                                Ok(_) => {
-                                    info!("Local OpenAI provider '{name}' reachable at {base_url}");
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Local OpenAI provider '{name}' not reachable at {base_url} \
-                                         ({}). Provider registered but may fail. \
-                                         Start the local server or switch default_provider in config.",
-                                        e
-                                    );
-                                    unreachable_local_providers.push(name.clone());
-                                }
+                    if let Some(ref base_url) = llm_config.base_url
+                        && (base_url.contains("localhost") || base_url.contains("127.0.0.1"))
+                    {
+                        let addr = base_url
+                            .trim_start_matches("http://")
+                            .trim_start_matches("https://")
+                            .split('/')
+                            .next()
+                            .unwrap_or("localhost:1234");
+                        let sock_addr = if addr.contains(':') {
+                            addr.to_string()
+                        } else {
+                            format!("{}:1234", addr)
+                        };
+                        match std::net::TcpStream::connect_timeout(
+                            &sock_addr.parse().unwrap_or_else(|_| {
+                                std::net::SocketAddr::from(([127, 0, 0, 1], 1234))
+                            }),
+                            std::time::Duration::from_secs(2),
+                        ) {
+                            Ok(_) => {
+                                info!("Local OpenAI provider '{name}' reachable at {base_url}");
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Local OpenAI provider '{name}' not reachable at {base_url} \
+                                     ({}). Provider registered but may fail. \
+                                     Start the local server or switch default_provider in config.",
+                                    e
+                                );
+                                unreachable_local_providers.push(name.clone());
                             }
                         }
                     }
@@ -553,25 +553,25 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     }
 
     // --- Auto-fallback: if default_provider is unreachable, try another ---
-    if let Some(ref default_id) = config.agent.default_provider {
-        if unreachable_local_providers.iter().any(|p| p == default_id) {
-            let providers = runtime.provider_ids();
-            let fallback = providers
-                .iter()
-                .find(|p| !unreachable_local_providers.contains(p));
-            if let Some(fallback_id) = fallback {
-                warn!(
-                    "Default provider '{}' is unreachable — auto-switching to '{}'",
-                    default_id, fallback_id
-                );
-                runtime.set_default_provider_id(fallback_id);
-            } else {
-                warn!(
-                    "Default provider '{}' is unreachable and no fallback available. \
-                     Start the local server or add a cloud provider to config.",
-                    default_id
-                );
-            }
+    if let Some(ref default_id) = config.agent.default_provider
+        && unreachable_local_providers.iter().any(|p| p == default_id)
+    {
+        let providers = runtime.provider_ids();
+        let fallback = providers
+            .iter()
+            .find(|p| !unreachable_local_providers.contains(p));
+        if let Some(fallback_id) = fallback {
+            warn!(
+                "Default provider '{}' is unreachable — auto-switching to '{}'",
+                default_id, fallback_id
+            );
+            runtime.set_default_provider_id(fallback_id);
+        } else {
+            warn!(
+                "Default provider '{}' is unreachable and no fallback available. \
+                 Start the local server or add a cloud provider to config.",
+                default_id
+            );
         }
     }
 

@@ -1,3 +1,9 @@
+// Plan 0049: `mod tests` sits mid-file; trailing private helpers
+// (`estimate_tokens`, `trim_messages_to_budget`, `extract_text`) are used by
+// the runtime public API above. Moving them before the tests would disrupt
+// git blame on a 1.9kloc file — inner allow at module scope.
+#![allow(clippy::items_after_test_module)]
+
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 

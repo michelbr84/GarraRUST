@@ -986,7 +986,7 @@ async fn build_storage_wiring(
     // must be set (≥32 bytes decoded). Without it, commit aborts
     // because `file_versions.integrity_hmac` is NOT NULL.
     let hmac_secret = match std::env::var("GARRAIA_UPLOAD_HMAC_SECRET") {
-        Ok(s) if s.as_bytes().len() >= 32 => s.as_bytes().to_vec(),
+        Ok(s) if s.len() >= 32 => s.as_bytes().to_vec(),
         Ok(_) => {
             warn!(
                 "GARRAIA_UPLOAD_HMAC_SECRET must be at least 32 bytes; tus PATCH commit will answer 503"
