@@ -7,7 +7,7 @@ use garraia_config::{AppConfig, ConfigWatcher};
 use garraia_db::{ChatSessionManager, SessionStore};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::admin;
 #[cfg(target_os = "macos")]
@@ -340,7 +340,30 @@ impl GatewayServer {
         // answers 503. Runs AFTER auth wiring so we already know whether
         // the gateway can even serve `/v1/*` at all.
         let (object_store_opt, upload_staging_opt) = build_storage_wiring(&state.config).await;
-        state.set_storage_components(object_store_opt, upload_staging_opt);
+        state.set_storage_components(object_store_opt, upload_staging_opt.clone());
+
+        // Plan 0047 (GAR-395 slice 3): spawn the tus_uploads expiration
+        // worker when both the AppPool and the staging directory are
+        // wired. The worker runs until process exit (no shutdown channel
+        // in v1 — the slice acceptance criteria accept process lifetime
+        // granularity). Fail-soft: if either component is absent the
+        // worker is skipped silently — the next slice of GAR-429 will
+        // surface this via a readiness probe.
+        if let Some(app_pool) = state.app_pool.clone() {
+            let staging_dir = upload_staging_opt.as_ref().map(|s| s.staging_dir.clone());
+            let handle = crate::uploads_worker::spawn_uploads_expiration_worker(
+                app_pool,
+                staging_dir,
+                crate::uploads_worker::UploadsExpirationWorkerConfig::default(),
+            );
+            // Detach: keep the worker alive for the process lifetime.
+            // `Box::leak` is acceptable here because the handle outlives
+            // `server.run()`, which never returns under normal operation.
+            std::mem::forget(handle);
+            info!("uploads_expiration_worker spawned (plan 0047)");
+        } else {
+            debug!("uploads_expiration_worker skipped (no AppPool wired)");
+        }
 
         // Start config hot-reload watcher
         let config_path = garraia_config::ConfigLoader::default_config_dir().join("config.yml");

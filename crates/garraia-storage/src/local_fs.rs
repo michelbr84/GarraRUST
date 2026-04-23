@@ -16,7 +16,7 @@ use url::Url;
 use crate::error::{Result, StorageError};
 use crate::hash_util::sha256_hex;
 use crate::object_store::{
-    GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist,
+    AsyncByteReader, GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist,
     maybe_compute_integrity_hmac,
 };
 use crate::path_sanitize::sanitise_key;
@@ -99,6 +99,107 @@ impl ObjectStore for LocalFs {
         file.write_all(&bytes).await?;
         file.flush().await?;
         debug!(target: "garraia_storage::local_fs", "put key={key} size={size_bytes}");
+        Ok(ObjectMetadata {
+            key: key.to_owned(),
+            size_bytes,
+            etag_sha256: etag,
+            content_type: opts.content_type,
+            integrity_hmac,
+        })
+    }
+
+    /// Streaming upload override: writes `reader` to a temp sibling and
+    /// atomically renames into place on success. Plan 0047 (GAR-395 slice 3).
+    ///
+    /// - Temp path is `<target>.inflight-<pid>-<nanos>` inside the same
+    ///   parent directory so `rename` is atomic on POSIX and best-effort
+    ///   on Windows (NTFS rename-with-replace works when the target is
+    ///   free, falls back to copy+delete when it is held — both survive
+    ///   partial writes because the temp is removed on error).
+    /// - The SHA-256 etag + optional HMAC are computed as bytes flow
+    ///   through the pipe — no full-buffer spike.
+    /// - `content_length` is advisory and used only for diagnostic tracing.
+    async fn put_stream(
+        &self,
+        key: &str,
+        reader: AsyncByteReader,
+        content_length: u64,
+        opts: PutOptions,
+    ) -> Result<ObjectMetadata> {
+        check_mime_allowlist(&opts)?;
+        let final_path = self.resolve(key)?;
+        if let Some(parent) = final_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let tmp_name = format!(
+            "{}.inflight-{pid}-{nanos}",
+            final_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("blob")
+        );
+        let tmp_path = final_path.with_file_name(tmp_name);
+
+        // Stream bytes to temp file while hashing on the fly.
+        use sha2::{Digest, Sha256};
+        let put_result: Result<(u64, String)> = async {
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            let mut reader = reader;
+            let mut hasher = Sha256::new();
+            let mut written: u64 = 0;
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n]).await?;
+                written += n as u64;
+            }
+            file.flush().await?;
+            let digest = hasher.finalize();
+            let mut etag = String::with_capacity(64);
+            for b in digest.as_slice() {
+                use std::fmt::Write as _;
+                let _ = write!(etag, "{b:02x}");
+            }
+            Ok::<(u64, String), StorageError>((written, etag))
+        }
+        .await;
+
+        let (size_bytes, etag) = match put_result {
+            Ok(v) => v,
+            Err(e) => {
+                // Best-effort cleanup of the inflight file on any failure
+                // (IO, partial write). Ignore removal errors — the temp is
+                // discardable.
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(e);
+            }
+        };
+
+        // Atomic rename into place. On Windows, `rename` over an existing
+        // file may fail — remove first in that case to mirror POSIX.
+        #[cfg(windows)]
+        {
+            let _ = tokio::fs::remove_file(&final_path).await;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(StorageError::Io(e));
+        }
+
+        let integrity_hmac = maybe_compute_integrity_hmac(&opts, key, &etag);
+        debug!(
+            target: "garraia_storage::local_fs",
+            "put_stream key={key} size={size_bytes} expected={content_length}"
+        );
         Ok(ObjectMetadata {
             key: key.to_owned(),
             size_bytes,
@@ -294,6 +395,87 @@ mod tests {
         assert!(store.exists("k").await.unwrap());
         store.delete("k").await.unwrap();
         assert!(!store.exists("k").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn put_stream_roundtrip_matches_put() {
+        // Plan 0047 (GAR-395 slice 3): streaming path must produce
+        // identical bytes + etag to `put` for the same input, and the
+        // atomic-rename implementation must leave no `.inflight-*`
+        // temp file behind on success.
+        let (_dir, store) = fresh();
+        let payload = b"streaming-bytes-0123456789".to_vec();
+
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(payload.clone());
+        let reader: crate::AsyncByteReader = Box::pin(cursor);
+        let meta_stream = store
+            .put_stream("s/one", reader, payload.len() as u64, PutOptions::default())
+            .await
+            .unwrap();
+
+        let got = store.get("s/one").await.unwrap();
+        assert_eq!(got.bytes.as_ref(), payload.as_slice());
+        assert_eq!(meta_stream.size_bytes, payload.len() as u64);
+        assert_eq!(meta_stream.etag_sha256.len(), 64);
+        assert_eq!(got.metadata.etag_sha256, meta_stream.etag_sha256);
+
+        // Compare against the buffered `put` path for byte/etag parity.
+        let meta_buf = store
+            .put("s/two", Bytes::from(payload.clone()), PutOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(meta_stream.etag_sha256, meta_buf.etag_sha256);
+
+        // No `.inflight-*` files should remain in the base dir.
+        let mut entries = tokio::fs::read_dir(store.base_dir().join("s"))
+            .await
+            .unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(!name.contains(".inflight-"), "leftover temp file: {name}",);
+        }
+    }
+
+    #[tokio::test]
+    async fn put_stream_empty_body_yields_empty_sha() {
+        // Edge case: zero-byte stream. Must still produce the SHA-256
+        // of the empty input and create a real zero-byte file.
+        let (_dir, store) = fresh();
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+        let reader: crate::AsyncByteReader = Box::pin(cursor);
+        let meta = store
+            .put_stream("empty", reader, 0, PutOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(meta.size_bytes, 0);
+        assert_eq!(
+            meta.etag_sha256,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert!(store.exists("empty").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn put_stream_overwrites_existing_content_atomically() {
+        // Write v1, then stream v2 over the same key. The stream path
+        // uses a temp sibling + rename, so the target file must carry
+        // the full v2 content (not a truncated mid-write of v1).
+        let (_dir, store) = fresh();
+        store
+            .put("k", Bytes::from_static(b"v1"), PutOptions::default())
+            .await
+            .unwrap();
+
+        let v2 = b"v2-much-longer-payload".to_vec();
+        let reader: crate::AsyncByteReader = Box::pin(std::io::Cursor::new(v2.clone()));
+        store
+            .put_stream("k", reader, v2.len() as u64, PutOptions::default())
+            .await
+            .unwrap();
+
+        let got = store.get("k").await.unwrap();
+        assert_eq!(got.bytes.as_ref(), v2.as_slice());
     }
 
     #[tokio::test]

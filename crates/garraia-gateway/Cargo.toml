@@ -186,6 +186,16 @@ name = "rest_v1_uploads_patch"
 path = "tests/rest_v1_uploads_patch.rs"
 required-features = ["test-helpers"]
 
+# Plan 0047 — GAR-395 slice 3 commit 4: DELETE termination + expiration
+# worker tick + streaming `put_stream` via finalize integration tests.
+# Single bundled `#[tokio::test]` following the same feature gate as the
+# rest of the integration suite so plain `cargo test -p garraia-gateway`
+# (without --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_uploads_delete_worker"
+path = "tests/rest_v1_uploads_delete_worker.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

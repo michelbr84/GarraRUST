@@ -244,7 +244,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/uploads/{id}",
-                    head(uploads::head_upload).patch(uploads::patch_upload),
+                    head(uploads::head_upload)
+                        .patch(uploads::patch_upload)
+                        .delete(uploads::delete_upload),
                 )
                 .layer(axum::middleware::from_fn_with_state(
                     rate_limit_state,
@@ -294,7 +296,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/uploads/{id}",
-                    head(unconfigured_handler).patch(unconfigured_handler),
+                    head(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
@@ -326,7 +330,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/uploads/{id}",
-                    head(unconfigured_handler).patch(unconfigured_handler),
+                    head(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
