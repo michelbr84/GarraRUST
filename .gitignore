@@ -33,6 +33,9 @@ Thumbs.db
 .claude/audit.log
 .claude/team-output/
 .claude/worktrees/
+# Runtime artifacts from scheduled tasks / loops / cron (auto-regenerated)
+.claude/*.lock
+.claude/scheduled_tasks/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
 # Git worktrees — isolated workspaces used by parallel agent execution
