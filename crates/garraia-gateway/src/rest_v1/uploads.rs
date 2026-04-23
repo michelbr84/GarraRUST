@@ -58,12 +58,9 @@ const TUS_RESUMABLE_VERSION: &str = "1.0.0";
 /// tus 1.0 `Tus-Version` supported set, emitted on OPTIONS and 412.
 const TUS_VERSION_HEADER: &str = "1.0.0";
 
-/// tus 1.0 extensions implemented in slice 2. `creation-with-upload`
-/// is not actually implemented (Creation must be a distinct POST) but
-/// advertising it keeps the header future-proof — slice 3 may add it
-/// without another discovery change. Conservative alternative: drop it.
-/// We go conservative and advertise only what is truly shipped.
-const TUS_EXTENSION_HEADER: &str = "creation";
+/// tus 1.0 extensions implemented. Updated in plan 0047 (GAR-395 slice 3)
+/// to advertise `termination` now that `DELETE /v1/uploads/{id}` is live.
+const TUS_EXTENSION_HEADER: &str = "creation,termination";
 
 /// Canonical tus 1.0 max size, matches `MAX_UPLOAD_LENGTH` above as
 /// a string. Kept separate so `HeaderValue::from_static` can inline it.
@@ -822,6 +819,161 @@ pub async fn patch_upload(
         H_UPLOAD_OFFSET.clone(),
         header_value_from_ascii(&new_offset.to_string())?,
     );
+    response_headers.insert(
+        H_TUS_RESUMABLE.clone(),
+        HeaderValue::from_static(TUS_RESUMABLE_VERSION),
+    );
+    Ok((StatusCode::NO_CONTENT, response_headers).into_response())
+}
+
+/// `DELETE /v1/uploads/{id}` — tus 1.0 **Termination** extension (plan
+/// 0047 / GAR-395 slice 3).
+///
+/// Semantics (spec §Termination):
+/// - `204 No Content` when the upload was `in_progress` and is now
+///   `aborted`. Staging file is deleted best-effort.
+/// - `404 Not Found` when the upload does not exist OR belongs to a
+///   different group (anti-enumeration per ADR 0004 §7 — NEVER 403).
+/// - `410 Gone` when the upload is already `completed`, `aborted`, or
+///   `expired` — the resource can no longer be terminated (completed
+///   uploads flow through `/v1/files/*` deletion, slice 4+).
+///
+/// `ObjectStore` is **not** touched here — in slice 2's two-phase
+/// commit, the blob is only put under `object_key` after `status =
+/// 'completed'`. An `in_progress` row has nothing in the bucket to
+/// remove; the staging file IS removed.
+///
+/// Audit: one row with action `upload.terminated` on success.
+#[utoipa::path(
+    delete,
+    path = "/v1/uploads/{id}",
+    params(("id" = Uuid, Path, description = "upload id returned by POST /v1/uploads")),
+    responses(
+        (status = 204, description = "upload terminated"),
+        (status = 404, description = "upload not found or cross-group"),
+        (status = 410, description = "upload already completed/aborted/expired"),
+        (status = 412, description = "Tus-Resumable header missing or unsupported"),
+    ),
+)]
+pub async fn delete_upload(
+    State(state): State<RestV1FullState>,
+    Path(upload_id): Path<Uuid>,
+    headers: HeaderMap,
+    principal: Principal,
+) -> Result<Response, RestError> {
+    validate_tus_resumable(&headers).map_err(UploadRejection::into_rest_error)?;
+
+    let group_id = principal.group_id.ok_or(RestError::Forbidden)?;
+
+    // Staging cleanup is best-effort AFTER the row transitions to
+    // aborted — pull the staging handle now so we can remove the file
+    // post-commit. A missing staging context is not a hard failure
+    // (server may not have the tus wiring fully configured) — we just
+    // skip the file cleanup branch.
+    let staging = state.storage.upload_staging.clone();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("begin delete_upload tx")))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Lock the row so concurrent DELETE + PATCH serialise via the row
+    // lock. RLS already restricts to the caller's group — if the row
+    // exists in a different group, the SELECT returns 0 rows (404).
+    let row: Option<(String, i64, i64, String)> = sqlx::query_as(
+        "SELECT status, upload_offset, upload_length, object_key
+         FROM tus_uploads
+         WHERE id = $1
+         FOR UPDATE",
+    )
+    .bind(upload_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| {
+        RestError::Internal(anyhow::anyhow!(e).context("select tus_uploads for delete"))
+    })?;
+
+    let (status, upload_offset, upload_length, object_key) = row.ok_or(RestError::NotFound)?;
+
+    // Status state machine — only `in_progress` can be terminated.
+    match status.as_str() {
+        "in_progress" => {}
+        "completed" | "aborted" | "expired" => {
+            return Err(RestError::Gone(format!(
+                "upload is no longer available (status={status})"
+            )));
+        }
+        other => {
+            return Err(RestError::Internal(anyhow::anyhow!(
+                "unexpected tus_uploads.status `{other}`"
+            )));
+        }
+    }
+
+    // Transition in the same tx. The WHERE guard against the current
+    // status is defense-in-depth against a race with the expiration
+    // worker / a concurrent DELETE.
+    let updated = sqlx::query(
+        "UPDATE tus_uploads
+         SET status = 'aborted', updated_at = now()
+         WHERE id = $1 AND status = 'in_progress'",
+    )
+    .bind(upload_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        RestError::Internal(anyhow::anyhow!(e).context("update tus_uploads.status=aborted"))
+    })?;
+
+    if updated.rows_affected() == 0 {
+        // Another actor won the transition — treat as 410 to stay
+        // idempotent from the client's POV.
+        return Err(RestError::Gone(
+            "upload transitioned concurrently; terminated elsewhere".into(),
+        ));
+    }
+
+    // Audit atomically within the same tx.
+    let object_key_hash = sha256_hex_of(object_key.as_bytes());
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::UploadTerminated,
+        principal.user_id,
+        group_id,
+        "tus_uploads",
+        upload_id.to_string(),
+        json!({
+            "upload_offset": upload_offset,
+            "upload_length": upload_length,
+            "object_key_hash": object_key_hash,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("audit upload.terminated")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("commit delete_upload tx")))?;
+
+    // Post-commit: best-effort staging cleanup. A failure here is benign
+    // (the expiration worker will eventually sweep stale staging files).
+    if let Some(staging) = staging {
+        let staging_path = staging.staging_path(upload_id);
+        if let Err(e) = tokio::fs::remove_file(&staging_path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                upload_id = %upload_id,
+                error = %e,
+                "failed to remove staging file after termination"
+            );
+        }
+    }
+
+    let mut response_headers = HeaderMap::new();
     response_headers.insert(
         H_TUS_RESUMABLE.clone(),
         HeaderValue::from_static(TUS_RESUMABLE_VERSION),

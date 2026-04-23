@@ -42,8 +42,8 @@ pub mod s3_compat;
 pub use error::{Result, StorageError};
 pub use local_fs::LocalFs;
 pub use object_store::{
-    GetOptions, GetResult, ObjectMetadata, ObjectStore, PRESIGN_TTL_MAX, PRESIGN_TTL_MIN,
-    PutOptions,
+    AsyncByteReader, GetOptions, GetResult, ObjectMetadata, ObjectStore, PRESIGN_TTL_MAX,
+    PRESIGN_TTL_MIN, PutOptions,
 };
 pub use path_sanitize::{SanitizeError, sanitise_key};
 

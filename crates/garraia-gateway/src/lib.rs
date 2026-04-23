@@ -39,6 +39,8 @@ pub mod skins_handler;
 pub mod slash_commands;
 pub mod state;
 pub mod totp;
+pub mod uploads_worker;
+pub mod uploads_worker_util;
 pub mod voice_handler;
 pub mod ws;
 

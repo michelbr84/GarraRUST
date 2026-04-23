@@ -1,15 +1,24 @@
 //! `ObjectStore` trait + request/response types.
 
 use std::fmt;
+use std::pin::Pin;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncRead;
 use url::Url;
 
 use crate::error::{Result, StorageError};
 use crate::integrity;
+
+/// Boxed, pinned, `Send` async reader — the value type the streaming
+/// [`ObjectStore::put_stream`] accepts. Box + Pin + Send is the minimal
+/// set of bounds that lets the trait remain `dyn`-compatible under
+/// `async_trait` (plan 0047 §streaming). Callers construct with e.g.
+/// `Box::pin(tokio::fs::File::open(path).await?)`.
+pub type AsyncByteReader = Pin<Box<dyn AsyncRead + Send>>;
 
 /// Metadata returned by [`ObjectStore::put`] and [`ObjectStore::head`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,6 +137,45 @@ pub struct GetResult {
 pub trait ObjectStore: Send + Sync + 'static {
     /// Upload `bytes` under `key`, replacing any previous content.
     async fn put(&self, key: &str, bytes: Bytes, opts: PutOptions) -> Result<ObjectMetadata>;
+
+    /// Streaming upload under `key`, replacing any previous content.
+    ///
+    /// Plan 0047 (GAR-395 slice 3). Default implementation buffers the
+    /// full stream into memory and delegates to [`Self::put`] — this keeps
+    /// the contract backwards-compatible for existing callers and lets
+    /// backends opt into true streaming (LocalFs: `tokio::io::copy` into
+    /// an open `File`; S3: multipart upload) without breaking the world.
+    ///
+    /// `content_length` is the **expected** byte count — backends MAY use
+    /// it for pre-allocation (e.g. S3 multipart part sizing). A caller
+    /// that does not know the length up-front should buffer via `put`.
+    /// The actual bytes consumed from `reader` drive the final etag and
+    /// `ObjectMetadata::size_bytes`.
+    ///
+    /// **Semantics of failure mid-stream:** backends MUST leave the
+    /// target key in a consistent state — either the old content
+    /// (replace failed, nothing visible) or the new full content
+    /// (replace succeeded). A backend that cannot guarantee this (e.g.
+    /// a naive LocalFs write-in-place) MUST write to a temp path and
+    /// atomically rename on success, OR override this default with a
+    /// safer path.
+    async fn put_stream(
+        &self,
+        key: &str,
+        reader: AsyncByteReader,
+        content_length: u64,
+        opts: PutOptions,
+    ) -> Result<ObjectMetadata> {
+        // Default: buffer into memory up to `content_length` bytes and
+        // delegate. Overridable — see `LocalFs::put_stream`.
+        let _ = content_length; // advisory for default impl; backends override
+        let mut reader = reader;
+        let mut buf: Vec<u8> = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+            .await
+            .map_err(StorageError::Io)?;
+        self.put(key, Bytes::from(buf), opts).await
+    }
 
     /// Fetch the bytes + metadata for `key`.
     async fn get(&self, key: &str) -> Result<GetResult>;
