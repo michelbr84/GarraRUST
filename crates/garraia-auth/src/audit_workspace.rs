@@ -83,6 +83,23 @@ pub enum WorkspaceAuditAction {
     /// for offline reconciliation without leaking the raw key (plan
     /// 0044 §6 SEC-L audit event PII).
     UploadCompleted,
+
+    /// A tus 1.0 upload was explicitly terminated by the client via
+    /// `DELETE /v1/uploads/{id}` before completion (plan 0047 /
+    /// GAR-395 slice 3 — tus Termination extension).
+    ///
+    /// `resource_type = "tus_uploads"`, `resource_id = "{upload_id}"`.
+    /// Metadata: `{ upload_offset, upload_length, object_key_hash }`.
+    UploadTerminated,
+
+    /// A tus 1.0 upload exceeded its `expires_at` deadline while still
+    /// `in_progress` and was transitioned to `status='expired'` by the
+    /// periodic expiration worker (plan 0047 / GAR-395 slice 3).
+    ///
+    /// `resource_type = "tus_uploads"`, `resource_id = "{upload_id}"`.
+    /// Metadata: `{ upload_offset, upload_length, age_secs,
+    /// object_key_hash }`.
+    UploadExpired,
 }
 
 impl WorkspaceAuditAction {
@@ -93,6 +110,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MemberRoleChanged => "member.role_changed",
             WorkspaceAuditAction::MemberRemoved => "member.removed",
             WorkspaceAuditAction::UploadCompleted => "upload.completed",
+            WorkspaceAuditAction::UploadTerminated => "upload.terminated",
+            WorkspaceAuditAction::UploadExpired => "upload.expired",
         }
     }
 }
