@@ -850,10 +850,22 @@ pub async fn patch_upload(
     params(("id" = Uuid, Path, description = "upload id returned by POST /v1/uploads")),
     responses(
         (status = 204, description = "upload terminated"),
+        (status = 401, description = "missing or invalid bearer token"),
+        (status = 403, description = "authenticated but no group membership"),
         (status = 404, description = "upload not found or cross-group"),
         (status = 410, description = "upload already completed/aborted/expired"),
         (status = 412, description = "Tus-Resumable header missing or unsupported"),
     ),
+    security(("bearer" = [])),
+)]
+#[tracing::instrument(
+    name = "rest_v1.delete_uploads",
+    skip(state, headers, principal),
+    fields(
+        user_id = %principal.user_id,
+        group_id = ?principal.group_id,
+        upload_id = %upload_id
+    )
 )]
 pub async fn delete_upload(
     State(state): State<RestV1FullState>,
