@@ -318,7 +318,7 @@ pub async fn run(
 
     for row in &legacy_rows {
         // Stage 7.1 — users UPSERT.
-        let upserted = insert_user(&mut *tx, row).await?;
+        let upserted = insert_user(&mut tx, row).await?;
         if upserted {
             report.users_upserted += 1;
         } else {
@@ -329,7 +329,7 @@ pub async fn run(
         let phc = pbkdf2_legacy_to_phc(&row.password_hash_b64, &row.salt_b64)
             .with_context(|| format!("reassemble PHC for legacy user {}", row.id))?;
 
-        let (id_ins, audit_ins) = insert_identity_with_audit(&mut *tx, row, &phc).await?;
+        let (id_ins, audit_ins) = insert_identity_with_audit(&mut tx, row, &phc).await?;
         if id_ins {
             report.identities_inserted += 1;
         } else {
@@ -344,7 +344,7 @@ pub async fn run(
     // failure here rolls back the users/identities too. No-op when the
     // SQLite was empty.
     run_stage3_groups(
-        &mut *tx,
+        &mut tx,
         &opts.target_group_name,
         &opts.target_group_type,
         &mut report,
@@ -355,7 +355,7 @@ pub async fn run(
     // `sessions`. Runs inside the same tx so any failure rolls back
     // stages 1–3 too. The returned ChatMapping is consumed only by a
     // future Stage 6 slice; ignored here after the smoke-check below.
-    let chat_mapping = run_stage5_chats(sqlite_path, &mut *tx, &mut report).await?;
+    let chat_mapping = run_stage5_chats(sqlite_path, &mut tx, &mut report).await?;
     // Smoke invariant (plan 0045 acceptance criterion 16): the mapping
     // must have one entry per inserted chat. A divergence here signals
     // a bug in the INSERT/idempotency logic, not a data issue.
@@ -973,12 +973,12 @@ struct SessionRow {
 /// safe-to-display because the operator writes it themselves via the
 /// mobile client.
 fn session_name_from_metadata(metadata_raw: &str, channel_id: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata_raw) {
-        if let Some(title) = value.get("title").and_then(|v| v.as_str()) {
-            let trimmed = title.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata_raw)
+        && let Some(title) = value.get("title").and_then(|v| v.as_str())
+    {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
     let trimmed_channel = channel_id.trim();

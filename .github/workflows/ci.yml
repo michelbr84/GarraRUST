@@ -27,19 +27,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check --all
 
-  # Lint with clippy
+  # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting
     runs-on: ubuntu-latest
-    # TODO(fix/ci-triage-2026-04-15): 8+ pre-existing clippy errors are
-    # currently present on main (too_many_arguments x3, items_after_test_module,
-    # collapsible_if x2, plus unknowns behind the first-error wall). These
-    # accumulated while CI was red. Fixing them requires judgment calls
-    # (refactor vs #[allow]) and touches production code across multiple
-    # crates — out of scope for this CI-only unblock PR. Deferred to a
-    # dedicated `chore: clippy cleanup` PR. Step-level continue-on-error on
-    # the clippy command below keeps the log visible while reporting the
-    # job as successful so merges are not blocked.
+    # Plan 0049 (GAR-429 Lote Q.1, 2026-04-22) limpou os 26 warnings
+    # pré-existentes (too_many_arguments, collapsible_if, explicit_auto_deref,
+    # assertions_on_constants, new_without_default, items_after_test_module,
+    # needless_as_bytes, useless_conversion, if_same_then_else) e introduziu
+    # `clippy.toml` + `rustfmt.toml`. O step é bloqueante a partir deste PR —
+    # qualquer warning novo em crates ativos falha CI.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -54,7 +51,6 @@ jobs:
         # the GTK/glib system libraries and a Windows sidecar binary that are
         # not available on GitHub-hosted runners. Desktop is built locally via
         # scripts/build-installer.ps1.
-        continue-on-error: true
         run: cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
 
   # Build and test on multiple platforms

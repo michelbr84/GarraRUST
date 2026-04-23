@@ -260,7 +260,7 @@ impl RateLimiter {
         let remaining = self
             .config
             .requests_per_minute
-            .saturating_sub(u32::try_from(per_minute.saturating_add(1)).unwrap_or(u32::MAX));
+            .saturating_sub(per_minute.saturating_add(1));
         let reset_at = now + 60 - (now % 60);
 
         RateLimitDecision {
