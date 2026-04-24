@@ -5,6 +5,8 @@ pub mod a2a;
 pub mod agent_mode;
 pub mod anthropic;
 pub mod context_policy;
+#[cfg(feature = "dev-echo-provider")]
+pub mod echo;
 pub mod embeddings;
 pub mod execution_budget;
 pub mod llama_cpp;
@@ -24,6 +26,8 @@ pub use agent_mode::{
     ToolPolicyEngine,
 };
 pub use anthropic::AnthropicProvider;
+#[cfg(feature = "dev-echo-provider")]
+pub use echo::EchoProvider;
 pub use embeddings::{
     CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider,
 };

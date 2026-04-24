@@ -29,6 +29,10 @@ libc = { workspace = true }
 default = []
 mcp = ["dep:rmcp"]
 mcp-http = ["mcp", "rmcp?/transport-streamable-http-client-reqwest"]
+# Plan 0051 (GAR-444): deterministic echo LLM provider for dev + CI smoke
+# tests. OFF by default — a release build without this feature never links
+# `EchoProvider` and `crate::echo` is absent from the compiled artifact.
+dev-echo-provider = []
 
 [dev-dependencies]
 tempfile = "3"
