@@ -2,6 +2,9 @@
 # GarraIA SuperPowers — pre-tool-use hook
 # Bloqueia comandos perigosos, detecta segredos e registra audit log
 
+# Resolve project root so AUDIT_LOG resolves regardless of CWD (GAR-445).
+cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
 CMD="${CLAUDE_TOOL_INPUT_COMMAND:-}"
 AUDIT_LOG=".claude/audit.log"
 

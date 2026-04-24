@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Resolve project root so all relative paths below work regardless of the CWD
+# Claude Code used to invoke this hook (sessions started from a worktree or
+# subdir used to fail with "No such file or directory" — see GAR-445).
+cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
 ESTADO_FILE=".garra-estado.md"
 SESSIONS_DIR=".claude/sessions"
 MAX_SESSIONS=10
@@ -30,7 +35,12 @@ $LOG
 "
 
 if [ -f "$ESTADO_FILE" ]; then
-  EXISTING=$(cat "$ESTADO_FILE")
+  # Strip any accumulated "# Estado GarraIA" header(s) from $EXISTING — keep
+  # only the content starting at the first "## <timestamp>" entry, and drop
+  # header lines that may have accumulated between entries. Old hook versions
+  # prepended a fresh header every session; this idempotent awk keeps exactly
+  # one header at the top of the file forever.
+  EXISTING=$(awk '/^## / { capture = 1 } capture && !/^# Estado GarraIA$/' "$ESTADO_FILE")
   echo -e "# Estado GarraIA\n\n$ESTADO_ENTRY\n$EXISTING" > "$ESTADO_FILE"
 else
   echo -e "# Estado GarraIA\n\n$ESTADO_ENTRY" > "$ESTADO_FILE"

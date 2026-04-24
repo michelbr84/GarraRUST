@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Resolve project root so all relative paths below work regardless of CWD
+# (GAR-445).
+cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
