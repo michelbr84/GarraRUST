@@ -74,27 +74,28 @@ jobs:
         with:
           command: check bans licenses sources
 
-  # Dependency review — catches new vulnerable/deprecated transitive deps
-  # before they land on main. Runs only on pull_request (the action requires
-  # a base SHA for the diff and has no useful meaning on push).
-  # Plan 0050 Lote 1 / GAR-432.
-  dependency-review:
-    name: Dependency Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          # Block PR when any new dependency (direct or transitive) carries
-          # a High/Critical advisory. Existing advisories already tracked in
-          # .cargo/audit.toml are NOT double-flagged — this action only looks
-          # at the diff.
-          fail-on-severity: high
-          comment-summary-in-pr: on-failure
+  # NOTE: `dependency-review-action` was originally planned as part of this
+  # Lote 1 but blocked by a GitHub settings prerequisite. The action errors
+  # with "Dependency review is not supported on this repository. Please
+  # ensure that Dependency graph is enabled". Enabling Dependency Graph
+  # requires a repo owner action at
+  # https://github.com/michelbr84/GarraRUST/settings/security_analysis
+  # (one click in the UI — we do not enable it programmatically to avoid
+  # touching security settings without explicit authorization).
+  #
+  # Tracked as Q12 / GAR-442. When Dependency Graph is enabled, the job
+  # below can be restored in a follow-up PR.
+  #
+  #   dependency-review:
+  #     name: Dependency Review
+  #     runs-on: ubuntu-latest
+  #     if: github.event_name == 'pull_request'
+  #     steps:
+  #       - uses: actions/checkout@v4
+  #       - uses: actions/dependency-review-action@v4
+  #         with:
+  #           fail-on-severity: high
+  #           comment-summary-in-pr: on-failure
 
   # Secret scanning — catches accidental commit of JWT signing secrets,
   # API keys, refresh-HMAC secrets, metrics bearer tokens. Project handles
