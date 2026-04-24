@@ -71,8 +71,12 @@ test.describe('MCP Manager Web UI (GAR-300)', () => {
   // ── 1. Page loads ──────────────────────────────────────────────────────────
   test('1. MCP page loads with Add button and template gallery', async ({ page }) => {
     await expect(page.getByRole('button', { name: '+ Add MCP' })).toBeVisible();
-    // Page title
-    await expect(page.locator('#topbar-title, #page-title, h2, h1').first()).toContainText(/MCP/i);
+    // Page title — #page-title is the dynamic span updated by the admin JS
+    // (admin.html:545 + 708). The previous combined selector with `.first()`
+    // picked `<h1>🦜 GarraIA</h1>` from the banner because `.first()` takes
+    // the first DOM-order match of any of the comma-separated selectors, not
+    // the first in the selector list. Fixed in plan 0050 Lote 2 (GAR-438).
+    await expect(page.locator('#page-title')).toContainText(/MCP/i);
     // Template gallery section
     await expect(page.locator('#content-area')).toContainText(/template/i);
   });

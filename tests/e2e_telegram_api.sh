@@ -89,10 +89,14 @@ run_test() {
     info "Running: $name"
     if $fn; then
         pass "$name"
-        ((PASS++))
+        # Use assignment form instead of `((PASS++))`: bash post-increment
+        # returns the value BEFORE the increment (0 on first call), which
+        # has exit status 1 and aborts the script under `set -e` (line 22).
+        # Discovered in plan 0050 Lote 2 (GAR-438), 2026-04-24.
+        PASS=$((PASS + 1))
     else
         fail "$name"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     fi
 }
 
