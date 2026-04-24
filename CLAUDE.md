@@ -175,6 +175,20 @@ crates/
                         patches grandes sem buffer integral em RAM. 752 LOC de
                         integration tests novos em `rest_v1_uploads_delete_worker.rs`.
                         GAR-395 movido para Done em 2026-04-23 17:38Z.
+                        Plan 0050 Lote 2 (GAR-438, 2026-04-24 merged em `1828625`
+                        via PR #64) corrige o pipeline CI `.github/workflows/ci.yml`:
+                        `e2e` + `playwright` antes chamavam `./target/release/garraia-gateway`
+                        (binário inexistente — `garraia-gateway` é biblioteca) e o
+                        mascaramento via `continue-on-error: true` escondia o
+                        `No such file or directory`. Fix cirúrgico: `cargo build
+                        --bin garraia --release` + `./target/release/garraia start
+                        --host 0.0.0.0 --port 3888` + `services: postgres:16.8-alpine`
+                        + envs mínimas (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`,
+                        `GARRAIA_LOGIN_DATABASE_URL`, `GARRAIA_SIGNUP_DATABASE_URL`
+                        com `::add-mask::`). 4 de 7 `continue-on-error` removidos
+                        permanentemente; 3 remanescentes rastreáveis por issue
+                        (L286→GAR-444 mock LLM, L402→GAR-443 UI drift, L443→Lote 4
+                        RUSTSEC).
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
