@@ -185,23 +185,43 @@ jobs:
         # See clippy job comment: garraia-desktop excluded on CI.
         run: cargo build --workspace --exclude garraia-desktop --release
 
-  # E2E integration test (GAR-216)
+  # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    # TODO(fix/ci-triage-2026-04-15): the gateway release binary compiles
-    # successfully but exits immediately on startup in CI (likely missing
-    # Postgres service / env config since plan 0016 M4 introduced
-    # /v1/groups handlers that require garraia-workspace). This is a
-    # pre-existing failure on main, unrelated to glib/rustfmt. Deferred
-    # to a follow-up PR that will either add a Postgres service container
-    # to this job or gate the gateway startup on a minimal config profile.
-    # Step-level continue-on-error on Build/Start/Run below keeps the log
-    # visible while reporting the job as successful.
+    # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24):
+    # The previous "gateway exits immediately" hypothesis was wrong. Root cause
+    # was that `garraia-gateway` is a library crate (no production [[bin]]);
+    # the real binary is `garraia` from `garraia-cli`. The job used to
+    # `cargo build -p garraia-gateway --release` + `./target/release/garraia-gateway`
+    # — that binary never existed, the `&` backgrounded a non-existent
+    # process with exit 0, and `continue-on-error: true` masked the failure.
+    # Fix: build `--bin garraia`, start via `garraia start`, add Postgres
+    # service + minimal auth envs so `AuthConfig::from_env` does not bail.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: garraia_workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       # Use a mock/echo LLM — no real API key required for E2E structure tests
       ANTHROPIC_API_KEY: "sk-ant-test-key-for-ci"
       GARRAIA_API_KEY: "ci-test-bearer-token"
+      # Plan 0050 Lote 2: minimal auth envs for `AuthConfig::from_env` (fail-soft
+      # to 503 on /v1/auth/* if any pool role is missing, but `/health` stays
+      # green and the E2E script only hits /health + /api/sessions + /v1/chat).
+      GARRAIA_JWT_SECRET: "ci-e2e-jwt-secret-minimum-32-bytes-XXXXXXXX"
+      GARRAIA_REFRESH_HMAC_SECRET: "ci-e2e-refresh-hmac-secret-min-32-bytes-XXXXXXXX"
+      GARRAIA_LOGIN_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+      GARRAIA_SIGNUP_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -221,22 +241,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-e2e-
 
-      - name: Build gateway (release)
-        continue-on-error: true
-        run: cargo build -p garraia-gateway --release
+      - name: Build garraia binary (release)
+        run: cargo build --bin garraia --release
 
       - name: Start gateway in background
-        continue-on-error: true
         run: |
-          ./target/release/garraia-gateway &
+          ./target/release/garraia start --host 0.0.0.0 --port 3888 &
           echo $! > /tmp/garraia.pid
-          # Wait up to 15s for health endpoint to respond
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3888/health && break || sleep 1
+          # Wait up to 30s for health endpoint to respond
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3888/health; then
+              echo ""
+              echo "gateway responded to /health after ${i}s"
+              exit 0
+            fi
+            sleep 1
           done
+          echo "gateway failed to respond to /health within 30s" >&2
+          exit 1
 
       - name: Run E2E tests
-        continue-on-error: true
         run: |
           chmod +x tests/e2e_telegram_api.sh
           GARRAIA_BASE_URL=http://localhost:3888 \
@@ -250,20 +274,36 @@ jobs:
             kill $(cat /tmp/garraia.pid) 2>/dev/null || true
           fi
 
-  # Playwright E2E Web UI tests (GAR-300)
+  # Playwright E2E Web UI tests (GAR-300, GAR-438 / plan 0050 Lote 2)
   playwright:
     name: Playwright E2E (MCP UI)
     runs-on: ubuntu-latest
-    # TODO(fix/ci-triage-2026-04-15): same root cause as the `e2e` job —
-    # gateway release binary starts but exits immediately on CI. Install
-    # Playwright step is unblocked by the committed package-lock.json, but
-    # the gateway startup cascade still fails. Deferred to the same
-    # follow-up PR as `e2e`. Step-level continue-on-error on Build/Start/Run
-    # below keeps the log visible while reporting the job as successful.
+    # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24): same root cause
+    # as the `e2e` job — the previous workflow ran a binary that never existed
+    # (`./target/release/garraia-gateway`, but the real binary is `garraia`
+    # from `garraia-cli`). See the `e2e` job comment for the full causal
+    # chain.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: garraia_workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       ANTHROPIC_API_KEY: "sk-ant-test-key-for-ci"
       GARRAIA_ADMIN_USER: "admin"
       GARRAIA_ADMIN_PASS: "admin123ci"
+      GARRAIA_JWT_SECRET: "ci-playwright-jwt-secret-minimum-32-bytes-XXXXXXXX"
+      GARRAIA_REFRESH_HMAC_SECRET: "ci-playwright-refresh-hmac-min-32-bytes-XXXXXXXX"
+      GARRAIA_LOGIN_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+      GARRAIA_SIGNUP_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
     defaults:
       run:
         working-directory: tests
@@ -284,10 +324,9 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-playwright-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build gateway
+      - name: Build garraia binary (release)
         working-directory: .
-        continue-on-error: true
-        run: cargo build -p garraia-gateway --release
+        run: cargo build --bin garraia --release
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -297,22 +336,37 @@ jobs:
           cache-dependency-path: tests/package-lock.json
 
       - name: Install Playwright
-        continue-on-error: true
         run: npm ci && npx playwright install chromium --with-deps
 
       - name: Start gateway
         working-directory: .
-        continue-on-error: true
         run: |
-          ./target/release/garraia-gateway &
-          for i in $(seq 1 20); do curl -sf http://localhost:3888/health && break || sleep 1; done
+          ./target/release/garraia start --host 0.0.0.0 --port 3888 &
+          echo $! > /tmp/garraia.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3888/health; then
+              echo ""
+              echo "gateway responded to /health after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway failed to respond to /health within 30s" >&2
+          exit 1
 
       - name: Run Playwright tests
-        continue-on-error: true
         run: |
           GARRAIA_BASE_URL=http://localhost:3888 \
           GARRAIA_SKIP_SERVER=1 \
           npx playwright test
+
+      - name: Stop gateway
+        if: always()
+        working-directory: .
+        run: |
+          if [ -f /tmp/garraia.pid ]; then
+            kill $(cat /tmp/garraia.pid) 2>/dev/null || true
+          fi
 
       - name: Upload test report
         if: always()
