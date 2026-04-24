@@ -2,6 +2,10 @@
 # GarraRUST — post-tool-use hook
 # Roda cargo test ou flutter test após edições
 
+# Resolve project root so Cargo / flutter lookups work regardless of CWD
+# (GAR-445).
+cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
 FILE="${CLAUDE_TOOL_INPUT_FILE_PATH:-}"
 [ -z "$FILE" ] && exit 0
 
