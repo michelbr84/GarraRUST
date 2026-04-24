@@ -199,9 +199,14 @@ jobs:
     # Fix: build `--bin garraia`, start via `garraia start`, add Postgres
     # service + minimal auth envs so `AuthConfig::from_env` does not bail.
     services:
+      # Pin to 16.8-alpine (minor+patch) for deterministic CI runs —
+      # full SHA pin would be overkill for an ephemeral test service.
+      # `POSTGRES_USER: postgres` declared explicitly so the connection
+      # strings below remain auditable even if the image default changes.
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.8-alpine
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: garraia_workspace_test
         ports:
@@ -225,6 +230,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Fake CI-only secrets are still printed in logs by default. Mask them
+      # so the pattern doesn't become a precedent for real secrets later.
+      - name: Mask CI-only fake secrets
+        run: |
+          echo "::add-mask::ci-e2e-jwt-secret-minimum-32-bytes-XXXXXXXX"
+          echo "::add-mask::ci-e2e-refresh-hmac-secret-min-32-bytes-XXXXXXXX"
+          echo "::add-mask::postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -284,9 +297,14 @@ jobs:
     # from `garraia-cli`). See the `e2e` job comment for the full causal
     # chain.
     services:
+      # Pin to 16.8-alpine (minor+patch) for deterministic CI runs —
+      # full SHA pin would be overkill for an ephemeral test service.
+      # `POSTGRES_USER: postgres` declared explicitly so the connection
+      # strings below remain auditable even if the image default changes.
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.8-alpine
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: garraia_workspace_test
         ports:
@@ -310,6 +328,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # See `e2e` job for rationale — mask CI-only fake secrets.
+      - name: Mask CI-only fake secrets
+        working-directory: .
+        run: |
+          echo "::add-mask::ci-playwright-jwt-secret-minimum-32-bytes-XXXXXXXX"
+          echo "::add-mask::ci-playwright-refresh-hmac-min-32-bytes-XXXXXXXX"
+          echo "::add-mask::postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
