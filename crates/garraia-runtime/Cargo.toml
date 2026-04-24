@@ -2,6 +2,7 @@
 name = "garraia-runtime"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 description = "Runtime principal do GarraIA — state machine, meta-controller e executor"
 
 [dependencies]
