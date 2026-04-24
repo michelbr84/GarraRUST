@@ -238,6 +238,11 @@ jobs:
           echo "::add-mask::ci-e2e-jwt-secret-minimum-32-bytes-XXXXXXXX"
           echo "::add-mask::ci-e2e-refresh-hmac-secret-min-32-bytes-XXXXXXXX"
           echo "::add-mask::postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+          # Plan 0051 (GAR-444): the `sk-ant-*` prefix above follows the real
+          # Anthropic secret format even though the suffix is fictional.
+          # Mask it so gitleaks-style scanners never treat this CI workflow
+          # as a "leaked key" reference point.
+          echo "::add-mask::sk-ant-test-key-for-ci"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -254,10 +259,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-e2e-
 
-      - name: Build garraia binary (release)
-        run: cargo build --bin garraia --release
+      # Plan 0051 (GAR-444): build with `dev-echo-provider` feature so
+      # `AgentRuntime::build_agent_runtime` wires the deterministic echo
+      # LLM provider when the e2e config declares `[llm.echo] provider = "echo"`.
+      # Default OFF in the workspace — never enabled by a release binary.
+      - name: Build garraia binary (release, dev-echo-provider)
+        run: cargo build --bin garraia --release --features dev-echo-provider
+
+      # Plan 0051 (GAR-444): seed a minimal config with one echo provider so
+      # the AgentRuntime has a registered LlmProvider when the gateway boots.
+      # `GARRAIA_CONFIG_DIR` (read by `ConfigLoader::default_config_dir`) makes
+      # the gateway pick this file over the user-home default. No secrets, no
+      # network, no external service.
+      - name: Seed echo LLM config for e2e
+        run: |
+          mkdir -p /tmp/garraia-e2e
+          cat > /tmp/garraia-e2e/config.toml <<'TOML'
+          [llm.echo]
+          provider = "echo"
+          model = "echo-stub"
+
+          [agent]
+          default_provider = "echo"
+          TOML
 
       - name: Start gateway in background
+        env:
+          GARRAIA_CONFIG_DIR: /tmp/garraia-e2e
         run: |
           ./target/release/garraia start --host 0.0.0.0 --port 3888 &
           echo $! > /tmp/garraia.pid
@@ -273,17 +301,12 @@ jobs:
           echo "gateway failed to respond to /health within 30s" >&2
           exit 1
 
-      # TEMPORARY (plan 0050 Lote 2 P2.5, 2026-04-24): tests 3-6 of
-      # tests/e2e_telegram_api.sh exercise POST /v1/chat/completions which
-      # requires a real `LlmProvider` wired into the `AgentRuntime`. CI has
-      # only a fake `ANTHROPIC_API_KEY: sk-ant-test-key-for-ci`, so the
-      # gateway answers "Agent error: no LLM provider configured" and the
-      # script exits 1 on test 3. This is a pre-existing config gap, not a
-      # regression from this Lote. Tracked by GAR-NEW-Q18 (mock/echo LLM
-      # provider for CI); removing this CoE is part of that issue's DoD.
-      # Build / Start gateway / Health probe above stay genuinely blocking.
+      # Plan 0051 (GAR-444): the `continue-on-error: true` that previously
+      # masked this step is gone — the echo provider wired above makes the
+      # 6/6 [PASS] contract of `tests/e2e_telegram_api.sh` a real blocking
+      # gate. `Build / Seed / Start / Health probe` above remain genuinely
+      # blocking too.
       - name: Run E2E tests
-        continue-on-error: true
         run: |
           chmod +x tests/e2e_telegram_api.sh
           GARRAIA_BASE_URL=http://localhost:3888 \
