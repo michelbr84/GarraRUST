@@ -99,6 +99,11 @@ default = ["telemetry"]
 mcp-http = ["garraia-agents/mcp-http"]
 tls = ["dep:axum-server"]
 telemetry = ["dep:garraia-telemetry"]
+# Plan 0051 (GAR-444): forwards the echo LLM provider feature down to
+# `garraia-agents`. Enables the `"echo"` match arm in
+# `bootstrap::build_agent_runtime`. Default OFF — never enabled by a
+# production release binary.
+dev-echo-provider = ["garraia-agents/dev-echo-provider"]
 # Plan 0044 (GAR-395 slice 2): enables the S3Compatible ObjectStore
 # backend in bootstrap. Off by default — `LocalFs` is the only backend
 # wired in baseline builds to keep the aws-sdk dependency cost optional.

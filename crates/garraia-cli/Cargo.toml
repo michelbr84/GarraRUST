@@ -51,6 +51,11 @@ chrono = { version = "0.4", features = ["serde"] }
 default = ["telemetry"]
 plugins = ["dep:garraia-plugins"]
 telemetry = ["garraia-gateway/telemetry"]
+# Plan 0051 (GAR-444): forwards the echo LLM provider feature down the
+# dependency chain (garraia-cli → garraia-gateway → garraia-agents).
+# Enables `cargo build --bin garraia --features dev-echo-provider` in CI
+# (see .github/workflows/ci.yml e2e job). Default OFF.
+dev-echo-provider = ["garraia-gateway/dev-echo-provider"]
 
 [dev-dependencies]
 tempfile = "3"
