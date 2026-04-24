@@ -36,6 +36,10 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    # NCSA — University of Illinois/NCSA Open Source License. OSI-approved,
+    # FSF Free/Libre. Transitive via libfuzzer-sys → rav1e → ravif → image
+    # (garraia-media image pipeline). Plan 0050 Lote 1 / GAR-431.
+    "NCSA",
 ]
 
 [[licenses.clarify]]
