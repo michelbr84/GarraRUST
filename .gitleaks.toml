@@ -1,0 +1,41 @@
+# Gitleaks configuration for GarraRUST.
+# Plan 0050 Lote 1 / GAR-433. Extends the default gitleaks ruleset with an
+# allow-list for legitimate test fixtures, docs, and placeholder values that
+# live in the repository by design.
+#
+# Reference: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths and regexes that are expected to contain secret-shaped strings but are not real secrets"
+
+# Files that are explicitly public documentation / examples.
+paths = [
+    '''^\.env\.example$''',
+    '''^\.gitleaks\.toml$''',
+    '''^docs/.*\.md$''',
+    '''^plans/.*\.md$''',
+    '''^CLAUDE\.md$''',
+    '''^ROADMAP\.md$''',
+    '''^README\.md$''',
+    '''^crates/.*/tests/.*\.rs$''',
+    '''^tests/.*\.(rs|sh|md|ts|js)$''',
+    '''^\.github/ISSUE_TEMPLATE/.*''',
+    '''^\.github/PULL_REQUEST_TEMPLATE\.md$''',
+]
+
+# Placeholder / fixture strings that legitimately appear in the codebase.
+regexes = [
+    # JWT test vectors and dummy bearer tokens used in integration tests
+    '''sk-ant-test-key-for-ci''',
+    '''ci-test-bearer-token''',
+    '''garraia-insecure-default-jwt-secret-change-me''',
+    # Documentation placeholders
+    '''your[-_][A-Za-z0-9_-]+[-_](key|token|secret)''',
+    '''<your[-_].*?>''',
+    '''CHANGE_ME''',
+    '''PLACEHOLDER''',
+    '''XXXXX+''',
+]

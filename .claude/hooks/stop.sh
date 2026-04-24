@@ -63,4 +63,12 @@ if [ "$SESSION_COUNT" -gt "$MAX_SESSIONS" ]; then
 fi
 
 echo "Sessao salva em $SESSION_FILE"
+
+# ── 4. Token-stack observability (plan foamy-origami Lote 0.2) ───────────
+# Grava observação no .acts/store.db via MCP server local (fail-soft — se
+# Node/acts não estiver disponível, silenciosamente ignora).
+if command -v node &>/dev/null; then
+  node ".claude/hooks/acts-log.js" "$BRANCH" "$TIMESTAMP" "$SUMMARY" 2>/dev/null || true
+fi
+
 exit 0
