@@ -516,6 +516,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     );
                 }
             }
+            // Plan 0051 (GAR-444): deterministic echo provider for dev + CI
+            // smoke tests. Gated by `dev-echo-provider` feature on
+            // `garraia-gateway` (forwarded to `garraia-agents`). Default OFF —
+            // the arm is not compiled in production release builds.
+            #[cfg(feature = "dev-echo-provider")]
+            "echo" => {
+                let provider = garraia_agents::EchoProvider::new(llm_config.model.clone());
+                runtime.register_provider(Arc::new(provider));
+                info!("configured echo provider: {name} (dev-echo-provider feature)");
+            }
             other => {
                 warn!("unknown LLM provider type: {other}, skipping {name}");
             }
