@@ -39,7 +39,7 @@ tracing = { workspace = true }
 # `impl Trait` lands stable for dyn-compatible traits.
 async-trait = { workspace = true }
 # Config validation — same crate version as garraia-workspace.
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 # Password hashing — Argon2id (RFC 9106 first recommendation: m=64MiB, t=3, p=4)
 # via RustCrypto. Isolated from garraia-security (which uses ring/PBKDF2) per
 # plan 0011 §13 Q5 default.
