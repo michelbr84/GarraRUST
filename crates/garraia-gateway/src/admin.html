@@ -1077,11 +1077,11 @@ async function pageTools() {
 
 // ─── MCP ─────────────────────────────────────────────────────────────
 function mcpStatusBadge(status) {
-  if (!status) return el('span', { className: 'badge badge-neutral', textContent: 'Unknown' });
+  if (!status) return el('span', { 'data-testid': 'mcp-status-badge', className: 'badge badge-neutral', textContent: 'Unknown' });
   var state = (typeof status === 'object') ? status.state : status;
   var map = { running: ['badge-success', 'Running'], stopped: ['badge-neutral', 'Stopped'], error: ['badge-error', 'Error'], starting: ['badge-warning', 'Starting'] };
   var info = map[state] || ['badge-neutral', state || 'Unknown'];
-  return el('span', { className: 'badge ' + info[0], textContent: info[1] });
+  return el('span', { 'data-testid': 'mcp-status-badge', className: 'badge ' + info[0], textContent: info[1] });
 }
 async function pageMcp() { await renderMcpPage(); if (mcpRefreshTimer !== null) { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; } mcpRefreshTimer = setInterval(() => { if (currentPage !== 'mcp') { clearInterval(mcpRefreshTimer); mcpRefreshTimer = null; return; } renderMcpPage(); }, 10000); }
 async function renderMcpPage() {
@@ -1102,9 +1102,9 @@ async function renderMcpPage() {
       var tbody = el('tbody');
       servers.forEach(s => {
         var actions = el('td', { style: 'white-space:nowrap' });
-        if (can('mcp_servers', 'update')) { actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Edit', onClick: () => showMcpForm(s) })); actions.appendChild(document.createTextNode(' ')); actions.appendChild(el('button', { className: 'btn-secondary btn-sm', textContent: 'Restart', onClick: () => mcpRestart(s.name) })); actions.appendChild(document.createTextNode(' ')); }
-        if (can('mcp_servers', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => mcpDelete(s.name) }));
-        tbody.appendChild(el('tr', null, [el('td', null, [el('strong', { textContent: s.name })]), el('td', null, [el('span', { className: 'badge badge-info', textContent: s.transport || '-' })]), el('td', null, [mcpStatusBadge(s.status)]), el('td', { textContent: s.tool_count != null ? String(s.tool_count) : '-' }), actions]));
+        if (can('mcp_servers', 'update')) { actions.appendChild(el('button', { 'data-testid': 'mcp-row-edit', className: 'btn-secondary btn-sm', textContent: 'Edit', onClick: () => showMcpForm(s) })); actions.appendChild(document.createTextNode(' ')); actions.appendChild(el('button', { 'data-testid': 'mcp-row-restart', className: 'btn-secondary btn-sm', textContent: 'Restart', onClick: () => mcpRestart(s.name) })); actions.appendChild(document.createTextNode(' ')); }
+        if (can('mcp_servers', 'delete')) actions.appendChild(el('button', { 'data-testid': 'mcp-row-delete', className: 'btn-danger btn-sm', textContent: 'Delete', onClick: () => mcpDelete(s.name) }));
+        tbody.appendChild(el('tr', { 'data-testid': 'mcp-row-' + s.name }, [el('td', null, [el('strong', { textContent: s.name })]), el('td', null, [el('span', { className: 'badge badge-info', textContent: s.transport || '-' })]), el('td', null, [mcpStatusBadge(s.status)]), el('td', { textContent: s.tool_count != null ? String(s.tool_count) : '-' }), actions]));
       });
       tbl.appendChild(tbody); card.appendChild(tbl);
     }
@@ -1126,16 +1126,18 @@ async function renderMcpPage() {
 }
 function showMcpForm(server, tpl) {
   var isEdit = !!server; var src = server || tpl || {};
-  var overlay = el('div', { className: 'card', style: 'margin-bottom:16px' });
-  overlay.appendChild(el('h3', { textContent: isEdit ? 'Edit: ' + server.name : 'Add MCP Server', style: 'margin-bottom:16px' }));
-  var nameInput = el('input', { type: 'text', placeholder: 'e.g. my-tool', value: isEdit ? server.name : (tpl ? tpl.id : '') }); if (isEdit) nameInput.disabled = true;
-  var transportSel = el('select');
+  var overlay = el('div', { 'data-testid': 'mcp-form', className: 'card', style: 'margin-bottom:16px' });
+  overlay.appendChild(el('h3', { 'data-testid': 'mcp-form-title', textContent: isEdit ? 'Edit MCP Server: ' + server.name : 'Add MCP Server', style: 'margin-bottom:16px' }));
+  var errorEl = el('div', { 'data-testid': 'mcp-form-error', style: 'color:var(--text-error,#c33);margin-bottom:8px;display:none' });
+  overlay.appendChild(errorEl);
+  var nameInput = el('input', { 'data-testid': 'mcp-form-name', type: 'text', placeholder: 'e.g. my-tool', value: isEdit ? server.name : (tpl ? tpl.id : '') }); if (isEdit) nameInput.disabled = true;
+  var transportSel = el('select', { 'data-testid': 'mcp-form-transport' });
   ['stdio','http','sse','streamableHttp'].forEach(t => { var opt = el('option', { value: t, textContent: t }); if ((src.transport || '') === t) opt.selected = true; transportSel.appendChild(opt); });
-  var cmdInput = el('input', { type: 'text', placeholder: 'e.g. npx -y my-mcp-server', value: src.command || '' });
-  var argsInput = el('textarea', { rows: '2', placeholder: 'One arg per line', style: 'width:100%' }); if (src.args && src.args.length) argsInput.value = src.args.join('\n');
-  var urlInput = el('input', { type: 'text', placeholder: 'https://...', value: src.url || '' });
-  var tokenInput = el('input', { type: 'password', placeholder: 'API token (optional)' });
-  var timeoutInput = el('input', { type: 'number', min: '5', max: '300', placeholder: '30', value: String(src.timeout_secs || 30) });
+  var cmdInput = el('input', { 'data-testid': 'mcp-form-command', type: 'text', placeholder: 'e.g. npx -y my-mcp-server', value: src.command || '' });
+  var argsInput = el('textarea', { 'data-testid': 'mcp-form-args', rows: '2', placeholder: 'One arg per line', style: 'width:100%' }); if (src.args && src.args.length) argsInput.value = src.args.join('\n');
+  var urlInput = el('input', { 'data-testid': 'mcp-form-url', type: 'text', placeholder: 'https://...', value: src.url || '' });
+  var tokenInput = el('input', { 'data-testid': 'mcp-form-token', type: 'password', placeholder: 'API token (optional)' });
+  var timeoutInput = el('input', { 'data-testid': 'mcp-form-timeout', type: 'number', min: '5', max: '300', placeholder: '30', value: String(src.timeout_secs || 30) });
 
   overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Name *' }), nameInput]), el('div', { className: 'form-group' }, [el('label', { textContent: 'Transport *' }), transportSel])]));
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Command (stdio)' }), cmdInput]));
@@ -1143,15 +1145,19 @@ function showMcpForm(server, tpl) {
   overlay.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'URL (http/sse)' }), urlInput]));
   overlay.appendChild(el('div', { className: 'form-row' }, [el('div', { className: 'form-group' }, [el('label', { textContent: 'Token' }), tokenInput]), el('div', { className: 'form-group', style: 'max-width:120px' }, [el('label', { textContent: 'Timeout (s)' }), timeoutInput])]));
 
+  function showError(msg) { errorEl.textContent = msg; errorEl.style.display = 'block'; }
   function buildBody() {
     var argsVal = argsInput.value.split('\n').map(a => a.trim()).filter(Boolean);
     var env = {}; if (tokenInput.value) env['API_KEY'] = tokenInput.value;
     return { name: nameInput.value.trim(), transport: transportSel.value, command: cmdInput.value.trim() || undefined, args: argsVal, url: urlInput.value.trim() || undefined, env: env, timeout_secs: parseInt(timeoutInput.value) || 30 };
   }
-  overlay.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
-    el('button', { className: 'btn-primary btn-sm', textContent: isEdit ? 'Save' : 'Add', onClick: async () => { var body = buildBody(); if (!body.name) return; try { if (isEdit) { await apiDelete('/mcp/' + encodeURIComponent(server.name)); } await apiPost('/mcp', body); toast('Saved', 'success'); pageMcp(); } catch(e) { toast(e.message, 'error'); } } }),
-    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => pageMcp() })
-  ]));
+  var actions = el('div', { style: 'display:flex;gap:8px' });
+  actions.appendChild(el('button', { 'data-testid': 'mcp-form-submit', className: 'btn-primary btn-sm', textContent: isEdit ? 'Save Changes' : 'Add', onClick: async () => { var body = buildBody(); if (!body.name) { showError('Name is required.'); return; } try { if (isEdit) { await apiDelete('/mcp/' + encodeURIComponent(server.name)); } await apiPost('/mcp', body); toast(isEdit ? 'Updated' : 'Added', 'success'); pageMcp(); } catch(e) { toast(e.message, 'error'); } } }));
+  if (!isEdit) {
+    actions.appendChild(el('button', { 'data-testid': 'mcp-form-save-template', className: 'btn-secondary btn-sm', textContent: 'Save as Template', onClick: async () => { var body = buildBody(); if (!body.name) { showError('Name is required.'); return; } try { await apiPost('/mcp/templates', { id: body.name, name: body.name, description: '', transport: body.transport, command: body.command || null, args: body.args, url: body.url || null, env: {}, timeout_secs: body.timeout_secs, builtin: false }); toast('Template saved', 'success'); } catch(e) { toast(e.message, 'error'); } } }));
+  }
+  actions.appendChild(el('button', { 'data-testid': 'mcp-form-cancel', className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => pageMcp() }));
+  overlay.appendChild(actions);
   document.getElementById('content-area').insertBefore(overlay, document.getElementById('content-area').firstChild);
 }
 async function mcpRestart(name) { try { await apiPost('/mcp/' + encodeURIComponent(name) + '/restart', {}); toast('Restarting...', 'info'); } catch(e) { toast(e.message, 'error'); } }
