@@ -33,7 +33,7 @@ tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
 axum = { version = "0.8" }
 
 # Validation + ids
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
