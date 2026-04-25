@@ -18,4 +18,4 @@ tokio = { workspace = true }
 dirs = "6"
 # GAR-391c — AuthConfig::from_env validation + redacted secret wrapping.
 secrecy = { version = "0.10", features = ["serde"] }
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }

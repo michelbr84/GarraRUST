@@ -29,7 +29,7 @@ tokio = { workspace = true }
 # Tracing (PII-safe spans via skip)
 tracing = { workspace = true }
 # Config validation
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 # pgvector bindings for sqlx — enables binding Vec<f32> → vector(768) in
 # migration 005 (memory_embeddings). Runtime-only, no macros.
 pgvector = { version = "0.4", features = ["sqlx"] }

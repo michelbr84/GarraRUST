@@ -33,10 +33,6 @@ ignore = [
     # and remove. Security-auditor F-2 (PR #57 review) clarified this.
     "RUSTSEC-2023-0071",
 
-    # idna 0.5.0 — Punycode labels without non-ASCII accepted. Bump to
-    # 1.x in B-2; check transitive callers (url crate chain).
-    "RUSTSEC-2024-0421",
-
     # wasmtime 28 — `fd_renumber` WASIp1 host panic. We ship WASM
     # sandbox in garraia-plugins; must bump to fixed version in B-2
     # WITH security-auditor review of plugin isolation surface.
