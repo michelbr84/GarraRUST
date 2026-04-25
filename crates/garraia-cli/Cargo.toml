@@ -59,7 +59,7 @@ dev-echo-provider = ["garraia-gateway/dev-echo-provider"]
 
 [dev-dependencies]
 tempfile = "3"
-testcontainers = "0.23"
+testcontainers = "0.27"
 # Integration tests run as their own bin crates, so they need explicit
 # access to some deps from the test file. Reuse workspace pins.
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }

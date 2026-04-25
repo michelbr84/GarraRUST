@@ -35,8 +35,8 @@ validator = { version = "0.20", features = ["derive"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 
 [dev-dependencies]
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 anyhow = "1"
 rand = "0.8"
