@@ -397,8 +397,26 @@ jobs:
       - name: Install Playwright
         run: npm ci && npx playwright install chromium --with-deps
 
+      - name: Write Playwright gateway config
+        run: |
+          # The default per-IP rate limit (1 req/s, burst 60) is exceeded by
+          # 9 sequential Playwright tests + the admin UI's 10s auto-refresh
+          # poll. Bump it for the test gateway only — production defaults
+          # in `garraia-config` remain untouched.
+          mkdir -p /tmp/garraia-test-config
+          cat > /tmp/garraia-test-config/config.yml <<'EOF'
+          gateway:
+            host: "127.0.0.1"
+            port: 3888
+            rate_limit:
+              per_second: 1000
+              burst_size: 5000
+          EOF
+
       - name: Start gateway
         working-directory: .
+        env:
+          GARRAIA_CONFIG_DIR: /tmp/garraia-test-config
         run: |
           ./target/release/garraia start --host 0.0.0.0 --port 3888 &
           echo $! > /tmp/garraia.pid
@@ -413,16 +431,7 @@ jobs:
           echo "gateway failed to respond to /health within 30s" >&2
           exit 1
 
-      # TEMPORARY (plan 0050 Lote 2, 2026-04-24): 6 of 9 tests in
-      # mcp-manager.spec.ts time out waiting for
-      # `input[placeholder*="Command"]` inside the Add MCP modal. The form
-      # HTML has drifted since the spec was written — this is a pre-existing
-      # UI/test issue, not a regression from this Lote. Tracked by
-      # GAR-NEW-Q17; this `continue-on-error: true` MUST be removed when
-      # that issue lands. The build/start/install/health-probe steps above
-      # stay genuinely blocking — only this one step is temporarily masked.
       - name: Run Playwright tests
-        continue-on-error: true
         run: |
           GARRAIA_BASE_URL=http://localhost:3888 \
           GARRAIA_SKIP_SERVER=1 \
