@@ -50,17 +50,55 @@ ignore = [
     # RUSTSEC-2025-0046; same security review gate.
     "RUSTSEC-2025-0118",
 
-    # rustls-webpki — CRL matching logic; bump to >=0.103.10 (or
-    # 0.104-alpha.x if on rustls 0.23 alpha chain) in B-2.
+    # --- rustls-webpki residuals (GAR-447 PR-1, plan 0053) ---
+    #
+    # PR-1 (commit landing this comment block) applied the lockfile-only
+    # patch `cargo update -p rustls-webpki@0.103.9 --precise 0.103.13`,
+    # closing the 4 advisories below on the **production hot path**
+    # (rustls 0.23 chain: reqwest, hyper-rustls, tokio-rustls 0.26).
+    #
+    # The 4 IDs REMAIN ignored here because two legacy chains in
+    # Cargo.lock still trigger them and have no upstream fix:
+    #
+    #   A) rustls-webpki 0.102.8 (all 4 IDs)
+    #      via: serenity 0.12.5 → tokio-tungstenite 0.21
+    #           → rustls 0.22 → rustls-webpki 0.102.8
+    #      blocker: serenity 0.12.5 is the latest stable on crates.io;
+    #               line rustls-webpki 0.102.x is EOL (no 0.102.10+).
+    #
+    #   B) rustls-webpki 0.101.7 (3 of 4 IDs: 0098, 0099, 0104)
+    #      via: aws-smithy-http-client 1.1.12 → rustls 0.21
+    #           → rustls-webpki 0.101.7
+    #      blocker: aws-smithy-http-client 1.1.12 is the latest stable
+    #               on crates.io; feature-gated behind `storage-s3`.
+    #
+    # `cargo-audit` 0.22.x does NOT support per-(advisory, version)
+    # ignore — only per advisory ID. Aggressive `[patch.crates-io]`
+    # overrides for tokio-tungstenite/serenity/aws-smithy were
+    # rejected as too risky for a security PR (would force semver-
+    # incompatible bumps that could break Discord and S3 paths).
+    #
+    # Residual tracking: GAR-455 (Q7c) under GAR-430.
+    # Expiration target for these 4 IDs: 2026-07-31 (will be refreshed
+    # in PR-6 / GAR-452 once the lote-wide audit.toml cleanup lands).
+    #
+    # If a future advisory affects ONLY the 0.103.x line, this block
+    # MUST be revisited: the ignore would silence a real prod regression.
+
+    # rustls-webpki — CRL matching logic. Patched in 0.103.10. Hot path
+    # 0.103.13 is fixed. Residual: 0.102.8 only (serenity chain).
     "RUSTSEC-2026-0049",
 
-    # rustls-webpki — URI name constraints; same bump family as above.
+    # rustls-webpki — URI name constraints. Patched in 0.103.12. Hot
+    # path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7 chains.
     "RUSTSEC-2026-0098",
 
-    # rustls-webpki — wildcard in name-constrained certs; same bump.
+    # rustls-webpki — wildcard in name-constrained certs. Patched in
+    # 0.103.12. Hot path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7.
     "RUSTSEC-2026-0099",
 
-    # rustls-webpki — reachable panic in CRL parsing; same bump.
+    # rustls-webpki — reachable panic in CRL parsing. Patched in
+    # 0.103.13. Hot path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7.
     "RUSTSEC-2026-0104",
 
     # --- Unsound warnings (deny due to --deny unsound) — 3 unique IDs ---
