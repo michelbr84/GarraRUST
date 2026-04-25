@@ -189,6 +189,16 @@ crates/
                         permanentemente; 3 remanescentes rastreáveis por issue
                         (L286→GAR-444 mock LLM, L402→GAR-443 UI drift, L443→Lote 4
                         RUSTSEC).
+                        Plan 0052 (GAR-443 Lote 4, 2026-04-24) migra
+                        `tests/playwright/mcp-manager.spec.ts` para `getByTestId(...)`
+                        ancorados em `data-testid` adicionados a `admin.html`
+                        (`showMcpForm` + `renderMcpPage`). **Convenção**: specs
+                        Playwright do admin DEVEM preferir `data-testid` estáveis
+                        em vez de `placeholder*=` ou `getByRole(button,{name})` —
+                        copy/placeholder são propriedade da UX e podem mudar; os
+                        testids são contrato de teste. Remove `continue-on-error: true`
+                        do step `Run Playwright tests` (`ci.yml:425`); CoE count
+                        cai 2→1 (só RUSTSEC remanescente).
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
