@@ -21,7 +21,7 @@ test-support = []
 # SQL driver — runtime-only, matches garraia-workspace's feature set so the
 # LoginPool can be built from the same Postgres instance without forcing TLS.
 # `ipnetwork` feature is needed for binding `IpAddr` -> Postgres `inet`.
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "ipnetwork"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "ipnetwork"] }
 # Identifiers
 uuid = { version = "1", features = ["v7", "serde"] }
 # Timestamps
