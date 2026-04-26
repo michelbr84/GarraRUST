@@ -136,15 +136,13 @@ ignore = [
     # between 0.8 and 0.9 family are semver-incompatible).
     "RUSTSEC-2026-0097",
 
-    # --- Yanked/unmaintained advisory IDs — 1 unique ID ---
-
-    # core2 — unmaintained AND all versions yanked. Pulled through
-    # image → rav1e → bitstream-io → core2 (garraia-media). B-2 to
-    # swap bitstream-io for a live alternative OR feature-gate
-    # garraia-media image support. Note: the yanked-at-crates.io
-    # status is caught by `--deny yanked` (separate code path from
-    # ignore list). Since all versions are yanked with no fix,
-    # `--deny yanked` was dropped from the workflow until B-2; yanked
-    # crates still show as yellow warnings in the log.
-    "RUSTSEC-2026-0105",
+    # NOTE: RUSTSEC-2026-0105 (core2 0.4.0 unmaintained + yanked) was
+    # closed by plan 0053 PR-5 (GAR-451). Resolution path: feature-gated
+    # AVIF off in `crates/garraia-media/Cargo.toml` (`image = { version
+    # = "0.25", default-features = false, features = ["png", "jpeg",
+    # "webp", "gif"] }`) AND removed dead-dep `imageproc 0.25` (zero
+    # `imageproc::` references anywhere in the workspace; was reactivating
+    # AVIF via cargo feature unification because it pulled `image` with
+    # defaults enabled). Result: core2, bitstream-io, rav1e, ravif all
+    # absent from `Cargo.lock`. Ignore removed.
 ]

@@ -17,9 +17,19 @@ reqwest = { workspace = true }
 # PDF processing
 lopdf = "0.34"
 
-# Image processing
-image = "0.25"
-imageproc = "0.25"
+# Image processing — AVIF feature-gated OFF intentionally (plan 0053 PR-5,
+# GAR-451) to drop the rav1e → ravif → bitstream-io → core2 (yanked)
+# transitive chain that triggered RUSTSEC-2026-0105. AVIF is not used at
+# runtime (zero `Avif`/`ravif`/`image::codecs::avif` references in
+# garraia-media/src/). Re-enable only via explicit `avif` feature opt-in
+# if/when AVIF support is actually needed.
+#
+# NOTE: `imageproc 0.25` was removed in this PR — it was a dead dep (zero
+# `imageproc::` references anywhere in the workspace) AND it was forcing
+# `image` defaults to be enabled via cargo feature unification, defeating
+# the AVIF gate above. If imageproc is ever needed, declare it with
+# `default-features = false` so it doesn't reactivate AVIF.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 # Base64 encoding for image data
 base64 = "0.22"
