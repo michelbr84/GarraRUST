@@ -85,8 +85,8 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 static_assertions = "1"
 # Integration tests spin their own pgvector container so garraia-auth stays
 # independently testable. Shared fixture optimization deferred to GAR-391c.
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 anyhow = "1"
 # Used by the smoke test to apply migrations 001..008 before exercising the

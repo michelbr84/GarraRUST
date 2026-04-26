@@ -43,6 +43,6 @@ base64 = { version = "0.22", optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["minio"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["minio"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
