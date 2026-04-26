@@ -38,9 +38,13 @@ ignore = [
     # WITH security-auditor review of plugin isolation surface.
     "RUSTSEC-2025-0046",
 
-    # tokio-tar — PAX extended header file smuggling. Pulled by wasmtime
-    # toolchain; bump in B-2.
-    "RUSTSEC-2025-0111",
+    # NOTE: RUSTSEC-2025-0111 (tokio-tar PAX file smuggling) was closed by
+    # plan 0053 PR-3 (GAR-449). Resolution path: testcontainers 0.23 → 0.27.3
+    # + testcontainers-modules 0.11 → 0.15.0, which replaces tokio-tar 0.3.1
+    # with astral-tokio-tar 0.6.0 (the *fixed* version of the replacement —
+    # plan-pivot doc'd in plans/0053 §Amendment 2026-04-25 because the
+    # intermediate path 0.25/0.13 pulled astral-tokio-tar 0.5.6 which had its
+    # own RUSTSEC-2026-0066). tokio-tar absent from Cargo.lock; ignore removed.
 
     # wasmtime 28 — unsound shared linear memory API. Same bump as
     # RUSTSEC-2025-0046; same security review gate.
