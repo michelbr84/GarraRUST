@@ -1,17 +1,50 @@
 [advisories]
-# SYNC NOTE: this section and `.cargo/audit.toml` are parallel ignore
-# lists for two separate tools — `cargo-deny` reads here,
-# `cargo-audit` reads `.cargo/audit.toml`. Overlap as of 2026-04-22:
-# RUSTSEC-2025-0046 and RUSTSEC-2025-0118 (wasmtime). When Lote B-2
-# bumps wasmtime, BOTH files must be updated to drop those IDs. See
-# plan 0043 F-5 (security-auditor review on PR #57).
+# SYNC NOTE — `deny.toml` vs `.cargo/audit.toml` (HONEST asymmetry,
+# refreshed 2026-04-26 by plan 0053 PR-6 / GAR-452):
+#
+#   * `audit.toml` controls vulnerabilities flagged by `cargo audit`
+#     (the nightly Security workflow uses `--deny unsound`).
+#   * `deny.toml` controls advisories flagged by `cargo deny`.
+#   * Mandatory sync between the two files: **only the RUSTSEC wasmtime
+#     IDs.** When GAR-454 (Q7b) bumps wasmtime to >= 40.0.4 / >= 41.0.4,
+#     ALL 15 wasmtime IDs below MUST be dropped from BOTH files
+#     atomically.
+#   * The 5 unmaintained-only IDs at the bottom of this list (daemonize,
+#     derivative, fxhash, instant, paste) are intentionally NOT mirrored
+#     in `audit.toml`. `cargo audit` auto-classifies them as "allowed
+#     warnings" and does NOT require explicit ignore. Mirroring them
+#     here in `deny.toml` is required because `cargo deny` treats them
+#     as deny-by-default. Do not "fix" the asymmetry by mass-mirroring
+#     to `audit.toml`; that would change runtime behavior.
 version = 2
 yanked = "warn"
 ignore = [
-    # wasmtime 28.0.1 low-severity issues — transitive deps from garraia-plugins
-    "RUSTSEC-2025-0118", # Unsound API access to WebAssembly shared linear memory
+    # --- wasmtime 28 — 15 IDs (GAR-454, expires 2026-08-31) ---
+    # Pre-existing pair (plan 0043 baseline):
     "RUSTSEC-2025-0046", # Host panic with fd_renumber WASIp1 function
-    # Unmaintained transitive deps — no direct replacements available
+    "RUSTSEC-2025-0118", # Unsound API access to WebAssembly shared linear memory
+    # Added 2026-04-26 (plan 0053 PR-6 — empirical inventory revealed 13
+    # additional wasmtime advisories not previously tracked here):
+    "RUSTSEC-2026-0020", # Guest-controlled resource exhaustion in WASI
+    "RUSTSEC-2026-0021", # Guest-controlled resource exhaustion in WASI #2
+    "RUSTSEC-2026-0085",
+    "RUSTSEC-2026-0086",
+    "RUSTSEC-2026-0087",
+    "RUSTSEC-2026-0088",
+    "RUSTSEC-2026-0089",
+    "RUSTSEC-2026-0091",
+    "RUSTSEC-2026-0092",
+    "RUSTSEC-2026-0093",
+    "RUSTSEC-2026-0094",
+    "RUSTSEC-2026-0095", # CRITICAL (CVSS 9.0)
+    "RUSTSEC-2026-0096", # CRITICAL (CVSS 9.0)
+
+    # --- Unmaintained-only — deny.toml-exclusive (no audit.toml mirror) ---
+    # These crates have RUSTSEC `unmaintained` advisories but no fixed
+    # version. `cargo audit` auto-allows them as warnings; `cargo deny`
+    # would otherwise deny. Listed here so `cargo deny check advisories`
+    # passes. Owners deferred — these will be addressed when their
+    # downstream consumers are upgraded.
     "RUSTSEC-2025-0069", # daemonize (direct dep, no maintained alternative)
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)

@@ -1,148 +1,179 @@
-# cargo-audit configuration (plan 0043, 2026-04-22).
+# cargo-audit configuration.
+#
+# Last cleanup: 2026-04-26 (plan 0053 PR-6 / GAR-452).
+# Originally drafted: 2026-04-22 (plan 0043).
 #
 # Every entry in `ignore` is a REAL advisory against a dep in our
-# Cargo.lock. These are deferred — not silenced — to Lote B-2 of the
-# autonomous session (see plans/synchronous-baking-hippo.md §5 Lote B).
-# B-2 will address each via version bump + security-auditor review of
-# the touched crypto/parsing surface, then remove the entry from this
-# file.
+# Cargo.lock. These are deferred — not silenced — to a downstream
+# Linear issue that owns the structural fix. Each block declares the
+# advisory ID, the affected crate + version, runtime impact, the
+# Linear issue that owns it, the available fix path (when known), and
+# the expiration date that forces re-triage.
 #
-# SYNC NOTE: this file and `/deny.toml` are parallel universes.
-# `cargo-audit` reads `.cargo/audit.toml`; `cargo-deny` reads
-# `deny.toml`. As of 2026-04-22 both files share the same 2 wasmtime
-# advisory IDs (RUSTSEC-2025-0046, RUSTSEC-2025-0118). When B-2 bumps
-# wasmtime, BOTH files must be updated. See F-5 in the plan 0043
-# security-auditor review (PR #57).
+# Policy for adding a new ignore: (1) must reference a specific advisory
+# ID, (2) must have a crate + rationale comment, (3) must have a
+# concrete Linear issue as owner (not a "Lote" marker), (4) must declare
+# fix availability honestly, (5) must have an expiration date.
 #
-# ALL entries expire 2026-05-20 (4 weeks). At that point: either B-2
-# closed them, or they get re-triaged explicitly.
+# SYNC NOTE — `audit.toml` vs `deny.toml` (HONEST asymmetry):
 #
-# Policy for adding a new ignore: (1) must reference a specific
-# advisory ID, (2) must have a one-line crate + rationale comment,
-# (3) must have a downstream owner (Linear issue or Lote marker).
+#   * `audit.toml` controls vulnerabilities flagged by `cargo audit`.
+#     It carries every RUSTSEC ID that would otherwise make `cargo audit`
+#     exit non-zero on `Cargo.lock`.
+#   * `deny.toml` controls advisories flagged by `cargo deny`. It carries
+#     the same RUSTSEC wasmtime IDs (mandatory sync) PLUS 5 additional
+#     `unmaintained-only` advisories (daemonize, derivative, fxhash,
+#     instant, paste) that `cargo audit` auto-classifies as "allowed
+#     warnings" and does NOT require explicit ignore.
+#   * **Mandatory sync on wasmtime IDs only.** When GAR-454 (Q7b) bumps
+#     wasmtime to ≥ 40.0.4 / ≥ 41.0.4, ALL 15 wasmtime IDs below MUST be
+#     dropped from BOTH files atomically.
+#   * The 5 unmaintained-only IDs in `deny.toml` are intentionally NOT
+#     mirrored here. Do not "fix" the asymmetry by mass-mirroring; that
+#     would change runtime behavior of `cargo audit`.
 
 [advisories]
 ignore = [
-    # --- Vulnerabilities (deny-by-default) — 9 unique IDs ---
-
+    # =========================================================================
+    # GAR-456 — sqlx-mysql lockfile leak (rsa Marvin Attack timing sidechannel)
+    # =========================================================================
     # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
-    #
-    # **Status (plan 0053 PR-4, GAR-450, 2026-04-25):** ignore RETIDO honestamente.
-    # PR-4 aplicou `default-features = false` em todas as 5 declarações de sqlx
-    # (workspace + 4 crates), removendo o `mysql` feature do active dep tree —
-    # `cargo tree -i sqlx-mysql --target all` retorna "nothing to print" e
-    # `cargo tree -e features -p sqlx | grep mysql` é vazio. Defesa em profundidade:
-    # qualquer `use sqlx::mysql::*` futuro agora exige opt-in explícito de feature.
-    #
-    # **Por que o ignore CONTINUA:** o meta-crate upstream `sqlx 0.8.6` declara
-    # `sqlx-mysql` (e `sqlx-sqlite`) na sua dep section como `optional = true`.
-    # Cargo lockfile inclui TODAS as deps declaradas (mesmo optional não-ativas)
-    # para reprodutibilidade. `cargo audit` walks `Cargo.lock`, não o active
-    # feature tree, então continua vendo `rsa 0.9.10` (transitivo via
-    # `sqlx → sqlx-mysql`) e dispara RUSTSEC-2023-0071. O fix arquitetural
-    # estrutural seria refactor para usar `sqlx-postgres` direto (sem o
-    # meta-crate) ou esperar sqlx 0.9 (que pode mudar essa estrutura). Tracked
-    # em **GAR-450-followup** (a criar quando este PR abrir). Expiration
-    # refrescada para 2026-07-31.
-    #
-    # GarraRUST JWT paths usam HS256 via `ring` (HMAC-SHA256), NÃO RSA decrypt
-    # — a Marvin attack code path não é reachable nos handlers atuais. Risk
-    # operacional zero; este ignore é puramente um workaround para a
-    # discrepância entre lockfile e active tree.
+    # Status: ignore RETIDO honestamente. Defense-in-depth aplicado em
+    # plan 0053 PR-4 (GAR-450, 2026-04-25): `default-features = false` em
+    # todas as 5 declarações de sqlx, removendo `mysql` feature do active
+    # tree. Mas o meta-crate upstream `sqlx 0.8.6` declara `sqlx-mysql`
+    # como `optional = true` na sua dep section, então `cargo audit` walks
+    # `Cargo.lock` e continua vendo `rsa 0.9.10` (transitivo). JWT paths
+    # do GarraRUST usam HS256 via `ring` — Marvin code path NÃO reachable.
+    # Fix estrutural: refactor para `sqlx-postgres` direto OU sqlx 0.9.
+    # Tracked by: GAR-456. Expires: 2026-07-31.
     "RUSTSEC-2023-0071",
 
-    # wasmtime 28 — `fd_renumber` WASIp1 host panic. We ship WASM
-    # sandbox in garraia-plugins; must bump to fixed version in B-2
-    # WITH security-auditor review of plugin isolation surface.
-    "RUSTSEC-2025-0046",
-
-    # NOTE: RUSTSEC-2025-0111 (tokio-tar PAX file smuggling) was closed by
-    # plan 0053 PR-3 (GAR-449). Resolution path: testcontainers 0.23 → 0.27.3
-    # + testcontainers-modules 0.11 → 0.15.0, which replaces tokio-tar 0.3.1
-    # with astral-tokio-tar 0.6.0 (the *fixed* version of the replacement —
-    # plan-pivot doc'd in plans/0053 §Amendment 2026-04-25 because the
-    # intermediate path 0.25/0.13 pulled astral-tokio-tar 0.5.6 which had its
-    # own RUSTSEC-2026-0066). tokio-tar absent from Cargo.lock; ignore removed.
-
-    # wasmtime 28 — unsound shared linear memory API. Same bump as
-    # RUSTSEC-2025-0046; same security review gate.
-    "RUSTSEC-2025-0118",
-
-    # --- rustls-webpki residuals (GAR-447 PR-1, plan 0053) ---
+    # =========================================================================
+    # GAR-454 — wasmtime 28 (15 advisories, includes 2 CRITICAL severity 9.0)
+    # =========================================================================
+    # Temporary ignores — NOT fixed structurally. Tracked by GAR-454.
+    # wasmtime 28.0.1 still present in Cargo.lock (verified empirically
+    # on 2026-04-26 via `cargo metadata --locked`). Pulled transitively
+    # via `garraia-plugins → wasmtime/wasmtime-wasi/wiggle 28.0.1`.
     #
-    # PR-1 (commit landing this comment block) applied the lockfile-only
-    # patch `cargo update -p rustls-webpki@0.103.9 --precise 0.103.13`,
-    # closing the 4 advisories below on the **production hot path**
-    # (rustls 0.23 chain: reqwest, hyper-rustls, tokio-rustls 0.26).
+    # Fix available via `wasmtime >= 40.0.4` or `>= 41.0.4`, but the bump
+    # touches `garraia-plugins` runtime/plugin isolation surface and
+    # crosses several major versions (28 → 40+). Requires
+    # @security-auditor review of plugin isolation BEFORE structural fix;
+    # therefore deferred to GAR-454 with dedicated plan
+    # (`plans/0050.4-wasmtime-upgrade.md`, to be authored).
+    #
+    # Severity breakdown:
+    #   * RUSTSEC-2026-0095 / 0096 — CRITICAL (CVSS 9.0)
+    #   * RUSTSEC-2026-0020 / 0021 / 0093 — Medium (6.9)
+    #   * RUSTSEC-2026-0091 / 0094 — Medium (6.1)
+    #   * RUSTSEC-2026-0089 / 0092 — Medium (5.9)
+    #   * RUSTSEC-2026-0085 — Medium (5.6)
+    #   * RUSTSEC-2026-0087 — Medium (4.1)
+    #   * RUSTSEC-2026-0086 / 0088 — Low (2.3)
+    #   * RUSTSEC-2025-0046 / 0118 — pre-existing (originally documented
+    #     in plan 0043; carried forward)
+    #
+    # Expires: 2026-08-31 (15 IDs together — atomic re-triage gate).
+    "RUSTSEC-2025-0046",  # fd_renumber WASIp1 host panic
+    "RUSTSEC-2025-0118",  # unsound shared linear memory API
+    "RUSTSEC-2026-0020",  # guest-controlled resource exhaustion (WASI)
+    "RUSTSEC-2026-0021",  # guest-controlled resource exhaustion (WASI #2)
+    "RUSTSEC-2026-0085",
+    "RUSTSEC-2026-0086",
+    "RUSTSEC-2026-0087",
+    "RUSTSEC-2026-0088",
+    "RUSTSEC-2026-0089",
+    "RUSTSEC-2026-0091",
+    "RUSTSEC-2026-0092",
+    "RUSTSEC-2026-0093",
+    "RUSTSEC-2026-0094",
+    "RUSTSEC-2026-0095",  # CRITICAL (9.0)
+    "RUSTSEC-2026-0096",  # CRITICAL (9.0)
+
+    # =========================================================================
+    # GAR-455 — rustls-webpki residuals (serenity 0.12.5 + aws-smithy 1.1.12)
+    # =========================================================================
+    # Plan 0053 PR-1 (GAR-447, 2026-04-25) applied the lockfile-only patch
+    # `cargo update -p rustls-webpki@0.103.9 --precise 0.103.13`, closing
+    # the 4 IDs below on the **production hot path** (rustls 0.23 chain:
+    # reqwest, hyper-rustls, tokio-rustls 0.26).
     #
     # The 4 IDs REMAIN ignored here because two legacy chains in
-    # Cargo.lock still trigger them and have no upstream fix:
+    # `Cargo.lock` still trigger them with no upstream fix:
     #
-    #   A) rustls-webpki 0.102.8 (all 4 IDs)
-    #      via: serenity 0.12.5 → tokio-tungstenite 0.21
-    #           → rustls 0.22 → rustls-webpki 0.102.8
-    #      blocker: serenity 0.12.5 is the latest stable on crates.io;
-    #               line rustls-webpki 0.102.x is EOL (no 0.102.10+).
-    #
-    #   B) rustls-webpki 0.101.7 (3 of 4 IDs: 0098, 0099, 0104)
-    #      via: aws-smithy-http-client 1.1.12 → rustls 0.21
-    #           → rustls-webpki 0.101.7
-    #      blocker: aws-smithy-http-client 1.1.12 is the latest stable
-    #               on crates.io; feature-gated behind `storage-s3`.
+    #   * `rustls-webpki 0.102.8` (all 4 IDs) — via serenity 0.12.5 →
+    #     tokio-tungstenite 0.21 → rustls 0.22. serenity 0.12.5 is the
+    #     latest stable; line 0.102.x is EOL (no 0.102.10+).
+    #   * `rustls-webpki 0.101.7` (3 of 4 IDs: 0098, 0099, 0104) — via
+    #     aws-smithy-http-client 1.1.12 → rustls 0.21. Latest stable;
+    #     feature-gated behind `storage-s3`.
     #
     # `cargo-audit` 0.22.x does NOT support per-(advisory, version)
-    # ignore — only per advisory ID. Aggressive `[patch.crates-io]`
-    # overrides for tokio-tungstenite/serenity/aws-smithy were
-    # rejected as too risky for a security PR (would force semver-
-    # incompatible bumps that could break Discord and S3 paths).
+    # ignore. If a future advisory affects ONLY the 0.103.x line, this
+    # block MUST be revisited — the ignore would silence a real prod
+    # regression.
     #
-    # Residual tracking: GAR-455 (Q7c) under GAR-430.
-    # Expiration target for these 4 IDs: 2026-07-31 (will be refreshed
-    # in PR-6 / GAR-452 once the lote-wide audit.toml cleanup lands).
+    # Tracked by: GAR-455. Expires: 2026-07-31.
+    "RUSTSEC-2026-0049",  # CRL matching — patched in 0.103.10
+    "RUSTSEC-2026-0098",  # URI name constraints — patched in 0.103.12
+    "RUSTSEC-2026-0099",  # wildcard in name-constrained — patched in 0.103.12
+    "RUSTSEC-2026-0104",  # reachable panic in CRL parsing — patched in 0.103.13
+
+    # =========================================================================
+    # GAR-437 carve-out — unsound warnings (glib + lru + rand)
+    # =========================================================================
+    # No individual sub-issue carved out yet — tracked under epic GAR-437
+    # ("Q7 RUSTSEC triage"). All 3 crates remain in `Cargo.lock` (verified
+    # empirically 2026-04-26). Without these ignores, the nightly
+    # `cargo audit --no-fetch --deny unsound` workflow (cargo-audit.yml)
+    # fails because cargo-audit treats `unsound` as denied. Expirations
+    # force re-triage 2026-07-31; if not addressed by then, dedicated
+    # sub-issue (analogous to GAR-454/455) must be opened.
     #
-    # If a future advisory affects ONLY the 0.103.x line, this block
-    # MUST be revisited: the ignore would silence a real prod regression.
-
-    # rustls-webpki — CRL matching logic. Patched in 0.103.10. Hot path
-    # 0.103.13 is fixed. Residual: 0.102.8 only (serenity chain).
-    "RUSTSEC-2026-0049",
-
-    # rustls-webpki — URI name constraints. Patched in 0.103.12. Hot
-    # path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7 chains.
-    "RUSTSEC-2026-0098",
-
-    # rustls-webpki — wildcard in name-constrained certs. Patched in
-    # 0.103.12. Hot path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7.
-    "RUSTSEC-2026-0099",
-
-    # rustls-webpki — reachable panic in CRL parsing. Patched in
-    # 0.103.13. Hot path 0.103.13 is fixed. Residual: 0.102.8 + 0.101.7.
-    "RUSTSEC-2026-0104",
-
-    # --- Unsound warnings (deny due to --deny unsound) — 3 unique IDs ---
-
-    # glib — `VariantStrIter` unsound Iterator impls. Pulled by Tauri
-    # surface (garraia-desktop), which is excluded from CI builds. Low
-    # runtime risk in server deployments. B-2 decision: bump glib or
-    # gate behind `desktop` feature for cargo-audit.
+    # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
+    # Tauri surface (garraia-desktop), excluded from CI builds. Low
+    # runtime risk in server deployments. Fix path: bump glib OR gate
+    # ignore behind `desktop` feature.
     "RUSTSEC-2024-0429",
 
-    # lru — `IterMut` stacked-borrows violation. Pulled transitively;
-    # bump to fixed version in B-2 and confirm no downstream breakage.
+    # lru 0.12.5 — `IterMut` stacked-borrows violation. Pulled
+    # transitively via `aws-sdk-s3 1.119.0 → garraia-storage` (feature
+    # `storage-s3`). Verified 2026-04-26: `cargo audit` reports lru
+    # in the lockfile dependency tree even when feature-gated, because
+    # lockfile resolution is feature-agnostic. Fix path: wait for
+    # aws-sdk-s3 to bump lru OR exclude `storage-s3` from cargo audit
+    # surface (changes runtime contract; not in this PR's scope).
     "RUSTSEC-2026-0002",
 
-    # rand — custom logger unsoundness in `rand::rng()`. We use rand
-    # broadly; B-2 must audit call sites before bump (patch versions
-    # between 0.8 and 0.9 family are semver-incompatible).
+    # rand 0.10.1 — custom logger unsoundness in `rand::rng()`. Used
+    # broadly across the workspace; pre-bump audit of call sites required
+    # because patch versions between 0.8 and 0.9 family are
+    # semver-incompatible.
     "RUSTSEC-2026-0097",
 
+    # =========================================================================
+    # GAR-457 — quinn-proto Denial of Service in Quinn endpoints
+    # =========================================================================
+    # Temporary ignore — NOT fixed. Tracked by GAR-457. quinn-proto 0.11.13
+    # present in Cargo.lock via quinn 0.11.9 → reqwest 0.12.28, transitively
+    # used by garraia-gateway, garraia-channels (teloxide, serenity), and
+    # several other crates. Fix available: upgrade to >= 0.11.14. Diagnosis
+    # of the simplest cargo update path TBD (may bump via reqwest or via
+    # `cargo update -p quinn-proto --precise 0.11.14`).
+    #
+    # Short expiration deliberately forces re-triage well before the
+    # wasmtime/rustls cohort. Expires: 2026-06-15 (~7 weeks).
+    "RUSTSEC-2026-0037",
+
+    # NOTE: RUSTSEC-2025-0111 (tokio-tar PAX file smuggling) was closed
+    # by plan 0053 PR-3 (GAR-449). Resolution: testcontainers 0.23 →
+    # 0.27.3 + testcontainers-modules 0.11 → 0.15.0 replaces tokio-tar
+    # with astral-tokio-tar 0.6.0. Ignore removed.
+    #
     # NOTE: RUSTSEC-2026-0105 (core2 0.4.0 unmaintained + yanked) was
-    # closed by plan 0053 PR-5 (GAR-451). Resolution path: feature-gated
-    # AVIF off in `crates/garraia-media/Cargo.toml` (`image = { version
-    # = "0.25", default-features = false, features = ["png", "jpeg",
-    # "webp", "gif"] }`) AND removed dead-dep `imageproc 0.25` (zero
-    # `imageproc::` references anywhere in the workspace; was reactivating
-    # AVIF via cargo feature unification because it pulled `image` with
-    # defaults enabled). Result: core2, bitstream-io, rav1e, ravif all
-    # absent from `Cargo.lock`. Ignore removed.
+    # closed by plan 0053 PR-5 (GAR-451). Resolution: AVIF feature-gated
+    # OFF in `crates/garraia-media/Cargo.toml`. Ignore removed.
+    #
 ]

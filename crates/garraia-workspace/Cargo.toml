@@ -8,7 +8,13 @@ repository.workspace = true
 description = "Multi-tenant Postgres workspace (groups, members, auth, RBAC, audit) — Fase 3"
 
 [dependencies]
-# SQL driver (runtime-only, no query! macros yet — see plan 0003 §12 Q1)
+# SQL driver. The "macros" feature is required ONLY by the migrate!() macro
+# at crates/garraia-workspace/src/store.rs:11 — there are no query!() or
+# query_as!() call sites anywhere in the workspace (verify with:
+# `rg 'sqlx::query!|sqlx::query_as!|\bquery!\(|\bquery_as!\('`). If you
+# add the first compile-time-checked query!() macro, drop this comment.
+# See plan 0003 §12 Q1 for the original rationale.
+#
 # TLS feature is intentionally absent: Postgres connection runs on a private
 # network (self-host or managed instance behind the gateway). If the workspace
 # is ever deployed across a public network, enable `tls-rustls` here and
