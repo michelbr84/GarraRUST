@@ -26,11 +26,29 @@ ignore = [
     # --- Vulnerabilities (deny-by-default) — 9 unique IDs ---
 
     # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
-    # GarraRUST JWT paths use HS256 via `ring` (HMAC-SHA256), NOT RSA
-    # decrypt — the Marvin attack code path is not reachable from our
-    # handlers. `rsa` is present transitively but exposure is zero for
-    # the paths we exercise. No upstream fix available. B-2 to confirm
-    # and remove. Security-auditor F-2 (PR #57 review) clarified this.
+    #
+    # **Status (plan 0053 PR-4, GAR-450, 2026-04-25):** ignore RETIDO honestamente.
+    # PR-4 aplicou `default-features = false` em todas as 5 declarações de sqlx
+    # (workspace + 4 crates), removendo o `mysql` feature do active dep tree —
+    # `cargo tree -i sqlx-mysql --target all` retorna "nothing to print" e
+    # `cargo tree -e features -p sqlx | grep mysql` é vazio. Defesa em profundidade:
+    # qualquer `use sqlx::mysql::*` futuro agora exige opt-in explícito de feature.
+    #
+    # **Por que o ignore CONTINUA:** o meta-crate upstream `sqlx 0.8.6` declara
+    # `sqlx-mysql` (e `sqlx-sqlite`) na sua dep section como `optional = true`.
+    # Cargo lockfile inclui TODAS as deps declaradas (mesmo optional não-ativas)
+    # para reprodutibilidade. `cargo audit` walks `Cargo.lock`, não o active
+    # feature tree, então continua vendo `rsa 0.9.10` (transitivo via
+    # `sqlx → sqlx-mysql`) e dispara RUSTSEC-2023-0071. O fix arquitetural
+    # estrutural seria refactor para usar `sqlx-postgres` direto (sem o
+    # meta-crate) ou esperar sqlx 0.9 (que pode mudar essa estrutura). Tracked
+    # em **GAR-450-followup** (a criar quando este PR abrir). Expiration
+    # refrescada para 2026-07-31.
+    #
+    # GarraRUST JWT paths usam HS256 via `ring` (HMAC-SHA256), NÃO RSA decrypt
+    # — a Marvin attack code path não é reachable nos handlers atuais. Risk
+    # operacional zero; este ignore é puramente um workaround para a
+    # discrepância entre lockfile e active tree.
     "RUSTSEC-2023-0071",
 
     # wasmtime 28 — `fd_renumber` WASIp1 host panic. We ship WASM

@@ -14,7 +14,7 @@ description = "Multi-tenant Postgres workspace (groups, members, auth, RBAC, aud
 # is ever deployed across a public network, enable `tls-rustls` here and
 # document the change; do NOT silently promote to the workspace root sqlx dep
 # without verifying the TLS feature survives the promotion.
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
 # Identifiers
 uuid = { version = "1", features = ["v7", "serde"] }
 # Timestamps
