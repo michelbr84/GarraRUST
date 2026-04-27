@@ -7,8 +7,20 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::preview1::{self, WasiP1Ctx};
-use wasmtime_wasi::{DirPerms, FilePerms, SocketAddrUse, WasiCtxBuilder};
+// GAR-454 (sessão `purrfect-lantern`, 2026-04-27): wasmtime 28 → 44 bump.
+// The `preview1` module was renamed to `p1` in wasmtime-wasi 30+ (Preview 1
+// is now referenced by its protocol version short name `p1`). The functional
+// surface — `add_to_linker_async`, `WasiP1Ctx`, `build_p1()` — is identical;
+// only the path changed. `build_p1()` is feature-gated under `features = ["p1"]`
+// declared in the workspace Cargo.toml since wasmtime-wasi 44.
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
+// `DirPerms` / `FilePerms` / `WasiCtxBuilder` remain at the top of the crate
+// (they are shared by both p1 and p2 contexts). `SocketAddrUse` and the
+// `pipe::*` types moved into `wasmtime_wasi::p2::*` in v30+ when WASIp2
+// became the canonical namespace; the names and contracts are unchanged.
+use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime_wasi::sockets::SocketAddrUse;
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 pub struct WasmRuntime {
     manifest: PluginManifest,
@@ -32,7 +44,10 @@ impl Drop for WasmRuntime {
 impl WasmRuntime {
     pub fn new(manifest: PluginManifest, wasm_path: PathBuf) -> Result<Self> {
         let mut config = Config::new();
-        config.async_support(true);
+        // GAR-454: `Config::async_support(true)` is deprecated in wasmtime 44+
+        // ("no longer has any effect" — async support is enabled implicitly
+        // by the async APIs we use such as `Linker::instantiate_async` and
+        // `Func::call_async`). Removed to avoid the deprecation warning.
         config.epoch_interruption(true);
 
         let engine =
@@ -182,7 +197,7 @@ impl Plugin for WasmRuntime {
 
     async fn execute(&self, input: PluginInput) -> Result<PluginOutput> {
         let mut linker = Linker::new(&self.engine);
-        preview1::add_to_linker_async(&mut linker, |s: &mut WasmState| &mut s.ctx)
+        p1::add_to_linker_async(&mut linker, |s: &mut WasmState| &mut s.ctx)
             .map_err(|e| Error::Plugin(format!("linker error: {e}")))?;
 
         let mut builder = WasiCtxBuilder::new();
@@ -198,14 +213,14 @@ impl Plugin for WasmRuntime {
 
         // Output capture via bounded pipes.
         let max_output_bytes = self.manifest.limits.max_output_bytes.max(1);
-        let stdout = wasmtime_wasi::pipe::MemoryOutputPipe::new(max_output_bytes);
-        let stderr = wasmtime_wasi::pipe::MemoryOutputPipe::new(max_output_bytes);
+        let stdout = MemoryOutputPipe::new(max_output_bytes);
+        let stderr = MemoryOutputPipe::new(max_output_bytes);
         builder.stdout(stdout.clone());
         builder.stderr(stderr.clone());
 
         // Input
         if !input.stdin.is_empty() {
-            let stdin = wasmtime_wasi::pipe::MemoryInputPipe::new(input.stdin.clone());
+            let stdin = MemoryInputPipe::new(input.stdin.clone());
             builder.stdin(stdin);
         }
 

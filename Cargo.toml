@@ -75,8 +75,13 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
 jsonwebtoken = "9"
 
-# Plugin system
-wasmtime = "28"
+# Plugin system — bumped from 28 → 44 in GAR-454 (sessão `purrfect-lantern`),
+# closing 15 RUSTSEC IDs incluindo 2 CRITICAL (RUSTSEC-2026-0095 / 0096).
+# `wasmtime-wasi` requires `features = ["p1"]` because `WasiCtxBuilder::build_p1`
+# (used by `garraia-plugins/src/runtime.rs`) became feature-gated in v44.
+# `preview1` module was renamed to `p1` in the upstream — handled in runtime.rs.
+wasmtime = "44"
+wasmtime-wasi = { version = "44", features = ["p1"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "rustls_backend"] }
