@@ -9,11 +9,12 @@
 #     advisories`. Now invoked in CI via `cargo-deny-action` default
 #     `command: check` (since GAR-458 enabled the advisories category).
 #   * **Mandatory sync between the two files: wasmtime IDs (15),
-#     rustls-webpki residuals (4), AND 5 audit.toml mirrors that
-#     cargo-deny ALSO requires (rsa, glib, lru, quinn-proto, rand —
-#     differing severity classification between cargo-deny and
-#     cargo-audit).** When the upstream blockers close, the IDs MUST
-#     be dropped from BOTH files atomically.
+#     rustls-webpki residuals (4), AND 4 audit.toml mirrors that
+#     cargo-deny ALSO requires (rsa, glib, lru, rand — differing
+#     severity classification between cargo-deny and cargo-audit).**
+#     When the upstream blockers close, the IDs MUST be dropped from
+#     BOTH files atomically. (quinn-proto previously here was closed
+#     by GAR-457 on 2026-04-27.)
 #   * The 23 unmaintained-only IDs (8 directly named: daemonize,
 #     derivative, fxhash, instant, paste, proc-macro-error, async-std,
 #     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
@@ -109,10 +110,9 @@ ignore = [
     # under GAR-437 carve-out. Pulled via aws-sdk-s3 → garraia-storage
     # (feature `storage-s3`). Expires 2026-07-31.
     "RUSTSEC-2026-0002",
-    # quinn-proto 0.11.13 — DoS in Quinn endpoints. Mirror of audit.toml
-    # under GAR-457; will be closed by Phase 3 of this session
-    # (cargo update -p quinn-proto --precise 0.11.14). Expires 2026-06-15.
-    "RUSTSEC-2026-0037",
+    # NOTE: RUSTSEC-2026-0037 (quinn-proto) closed by GAR-457 (2026-04-27)
+    # via lockfile-only `cargo update -p quinn-proto --precise 0.11.14`.
+    # Removed from BOTH audit.toml and deny.toml.
     # rand 0.10.1 — custom logger unsound in rand::rng(). Mirror of
     # audit.toml under GAR-437 carve-out. Used broadly; semver-incompatible
     # bump path under audit. Expires 2026-07-31.
