@@ -35,7 +35,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::admin::middleware::{AuthenticatedAdmin, require_admin_auth, require_csrf};
+use crate::admin::middleware::{
+    AuthenticatedAdmin, require_admin_auth, require_csrf, security_headers,
+};
 use crate::admin::rbac::{Permission, has_permission};
 use crate::admin::store::AdminStore;
 use crate::state::SharedState;
@@ -147,6 +149,11 @@ pub fn build_plugin_routes(state: SharedState, admin_store: Arc<Mutex<AdminStore
         .layer(axum::middleware::from_fn(require_csrf))
         .layer(axum::middleware::from_fn(require_admin_auth))
         .layer(Extension(admin_store))
+        // Security-auditor LOW finding (GAR-459): mirror the `security_headers`
+        // middleware applied to the /admin nested router so /api/plugins/*
+        // responses also carry CSP, X-Content-Type-Options, X-Frame-Options,
+        // referrer-policy, permissions-policy, cache-control: no-store.
+        .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)
 }
 
