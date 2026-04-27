@@ -57,47 +57,20 @@ ignore = [
     "RUSTSEC-2023-0071",
 
     # =========================================================================
-    # GAR-454 — wasmtime 28 (15 advisories, includes 2 CRITICAL severity 9.0)
+    # GAR-454 (CLOSED 2026-04-27) — wasmtime 28 → 44 bump fechou os 15 IDs
     # =========================================================================
-    # Temporary ignores — NOT fixed structurally. Tracked by GAR-454.
-    # wasmtime 28.0.1 still present in Cargo.lock (verified empirically
-    # on 2026-04-26 via `cargo metadata --locked`). Pulled transitively
-    # via `garraia-plugins → wasmtime/wasmtime-wasi/wiggle 28.0.1`.
-    #
-    # Fix available via `wasmtime >= 40.0.4` or `>= 41.0.4`, but the bump
-    # touches `garraia-plugins` runtime/plugin isolation surface and
-    # crosses several major versions (28 → 40+). Requires
-    # @security-auditor review of plugin isolation BEFORE structural fix;
-    # therefore deferred to GAR-454 with dedicated plan
-    # (`plans/0050.4-wasmtime-upgrade.md`, to be authored).
-    #
-    # Severity breakdown:
-    #   * RUSTSEC-2026-0095 / 0096 — CRITICAL (CVSS 9.0)
-    #   * RUSTSEC-2026-0020 / 0021 / 0093 — Medium (6.9)
-    #   * RUSTSEC-2026-0091 / 0094 — Medium (6.1)
-    #   * RUSTSEC-2026-0089 / 0092 — Medium (5.9)
-    #   * RUSTSEC-2026-0085 — Medium (5.6)
-    #   * RUSTSEC-2026-0087 — Medium (4.1)
-    #   * RUSTSEC-2026-0086 / 0088 — Low (2.3)
-    #   * RUSTSEC-2025-0046 / 0118 — pre-existing (originally documented
-    #     in plan 0043; carried forward)
-    #
-    # Expires: 2026-08-31 (15 IDs together — atomic re-triage gate).
-    "RUSTSEC-2025-0046",  # fd_renumber WASIp1 host panic
-    "RUSTSEC-2025-0118",  # unsound shared linear memory API
-    "RUSTSEC-2026-0020",  # guest-controlled resource exhaustion (WASI)
-    "RUSTSEC-2026-0021",  # guest-controlled resource exhaustion (WASI #2)
-    "RUSTSEC-2026-0085",
-    "RUSTSEC-2026-0086",
-    "RUSTSEC-2026-0087",
-    "RUSTSEC-2026-0088",
-    "RUSTSEC-2026-0089",
-    "RUSTSEC-2026-0091",
-    "RUSTSEC-2026-0092",
-    "RUSTSEC-2026-0093",
-    "RUSTSEC-2026-0094",
-    "RUSTSEC-2026-0095",  # CRITICAL (9.0)
-    "RUSTSEC-2026-0096",  # CRITICAL (9.0)
+    # Resolution: sessão `purrfect-lantern` bumped wasmtime 28.0.1 → 44.0.0
+    # + wasmtime-wasi 28 → 44 + wiggle 28 → 44 (transitive). Empirical
+    # verification:
+    #   * `cargo audit --no-fetch --deny unsound` exit 0 — none of the 15
+    #     IDs trigger any longer.
+    #   * `cargo deny check advisories` flags every dropped ID as
+    #     `advisory-not-detected: no crate matched advisory criteria`,
+    #     confirming the wasmtime 28 chain is gone from `Cargo.lock`.
+    # Removed atomically from this file AND `deny.toml` per the SYNC NOTE
+    # invariant: RUSTSEC-2025-0046, -0118, RUSTSEC-2026-0020, -0021, -0085,
+    # -0086, -0087, -0088, -0089, -0091, -0092, -0093, -0094, -0095
+    # (CRITICAL CVSS 9.0), -0096 (CRITICAL CVSS 9.0).
 
     # =========================================================================
     # GAR-455 — rustls-webpki residuals (serenity 0.12.5 + aws-smithy 1.1.12)
