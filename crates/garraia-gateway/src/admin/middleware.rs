@@ -87,7 +87,19 @@ pub async fn require_csrf(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if csrf_from_header.is_empty() || csrf_from_header != admin.csrf_token {
+    // GAR-459 (PR-A of GAR-454, security-auditor finding MEDIUM): use a
+    // constant-time comparison so the CSRF check cannot leak the prefix
+    // length of `admin.csrf_token` via a byte-by-byte short-circuit timing
+    // oracle. Even though the CSRF token is a 32-byte secret never echoed
+    // in responses, the project convention (see `garraia-auth` hashing
+    // module) is to compare any secret-comparison via `subtle`.
+    use subtle::ConstantTimeEq;
+    let header_bytes = csrf_from_header.as_bytes();
+    let stored_bytes = admin.csrf_token.as_bytes();
+    if csrf_from_header.is_empty()
+        || header_bytes.len() != stored_bytes.len()
+        || header_bytes.ct_eq(stored_bytes).unwrap_u8() == 0
+    {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -145,17 +157,25 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Build a Set-Cookie header for admin session.
+///
+/// **`Path=/`** (GAR-459 PR-A of GAR-454, security-auditor finding MEDIUM):
+/// the cookie used to carry `Path=/admin` which prevented browsers from
+/// sending it on requests to `/api/plugins/*` under SameSite=Strict path
+/// scoping. After this PR the admin session cookie also gates the
+/// `/api/plugins/*` sub-router (GAR-459), so the path scope must cover both.
+/// HttpOnly + Secure + SameSite=Strict remain in place.
 pub fn build_session_cookie(token: &str, max_age_secs: i64) -> String {
     format!(
-        "{}={}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age={}",
+        "{}={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
         SESSION_COOKIE_NAME, token, max_age_secs
     )
 }
 
-/// Build a Set-Cookie header that clears the session.
+/// Build a Set-Cookie header that clears the session. Path matches
+/// `build_session_cookie` so the browser actually clears the right cookie.
 pub fn build_clear_cookie() -> String {
     format!(
-        "{}=; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=0",
+        "{}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
         SESSION_COOKIE_NAME
     )
 }
@@ -210,6 +230,22 @@ mod tests {
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("Secure"));
         assert!(cookie.contains("SameSite=Strict"));
-        assert!(cookie.contains("Path=/admin"));
+        // GAR-459 (PR-A of GAR-454): cookie path widened from `/admin` to
+        // `/` so the same admin session also gates `/api/plugins/*`. The
+        // previous assertion `Path=/admin` would prevent the cookie from
+        // being sent to plugin routes under SameSite=Strict path scoping.
+        assert!(cookie.contains("Path=/"));
+        assert!(!cookie.contains("Path=/admin"));
+    }
+
+    #[test]
+    fn build_clear_cookie_path_matches_session_cookie() {
+        // Path on the clear-cookie MUST match the session cookie path,
+        // otherwise the browser keeps the original cookie around.
+        let clear = build_clear_cookie();
+        assert!(clear.contains("garraia_admin_session="));
+        assert!(clear.contains("Path=/"));
+        assert!(clear.contains("Max-Age=0"));
+        assert!(!clear.contains("Path=/admin"));
     }
 }

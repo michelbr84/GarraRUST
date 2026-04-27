@@ -210,21 +210,12 @@ pub fn build_router(
             "/api/openclaw/channels",
             get(crate::openclaw_handler::openclaw_channels),
         )
-        // Phase 3.1: Plugin Registry
-        .route(
-            "/api/plugins/install",
-            post(crate::plugins_handler::install_plugin),
-        )
-        .route("/api/plugins", get(crate::plugins_handler::list_plugins))
-        .route(
-            "/api/plugins/{id}",
-            get(crate::plugins_handler::get_plugin)
-                .delete(crate::plugins_handler::uninstall_plugin),
-        )
-        .route(
-            "/api/plugins/{id}/toggle",
-            post(crate::plugins_handler::toggle_plugin),
-        )
+        // Phase 3.1: Plugin Registry — GAR-459 (PR-A of GAR-454):
+        // mounted as a sub-router with `require_admin_auth` + `require_csrf`
+        // + admin-store extension applied to the 5 routes (mirrors the
+        // /admin nested router's wiring). Handlers also enforce
+        // `Permission::ManagePlugins`. See plugins_handler::build_plugin_routes
+        // for layer ordering rationale.
         // Phase 3.2: MCP Marketplace
         .route(
             "/api/mcp/marketplace",
@@ -323,6 +314,14 @@ pub fn build_router(
         // /v1/openapi.json and /docs. Fail-soft: when AuthConfig env
         // vars are missing, every /v1 route answers 503 Problem Details.
         .merge(crate::rest_v1::router(state.clone()))
+        // GAR-459 (PR-A of GAR-454): /api/plugins/* protected sub-router.
+        // Must merge BEFORE the /admin nest because the nest call moves
+        // `admin_store`. The clone keeps the Arc<Mutex<AdminStore>> live
+        // for both consumers — same admin store, two mounting points.
+        .merge(crate::plugins_handler::build_plugin_routes(
+            state.clone(),
+            admin_store.clone(),
+        ))
         .nest(
             "/admin",
             admin::routes::build_admin_router(state, admin_store),
