@@ -160,20 +160,11 @@ ignore = [
     # semver-incompatible.
     "RUSTSEC-2026-0097",
 
-    # =========================================================================
-    # GAR-457 — quinn-proto Denial of Service in Quinn endpoints
-    # =========================================================================
-    # Temporary ignore — NOT fixed. Tracked by GAR-457. quinn-proto 0.11.13
-    # present in Cargo.lock via quinn 0.11.9 → reqwest 0.12.28, transitively
-    # used by garraia-gateway, garraia-channels (teloxide, serenity), and
-    # several other crates. Fix available: upgrade to >= 0.11.14. Diagnosis
-    # of the simplest cargo update path TBD (may bump via reqwest or via
-    # `cargo update -p quinn-proto --precise 0.11.14`).
+    # NOTE: RUSTSEC-2026-0037 (quinn-proto DoS in Quinn endpoints) was
+    # closed by GAR-457 (2026-04-27, PR-following-#75). Resolution:
+    # `cargo update -p quinn-proto --precise 0.11.14` lockfile-only patch.
+    # Ignore removed.
     #
-    # Short expiration deliberately forces re-triage well before the
-    # wasmtime/rustls cohort. Expires: 2026-06-15 (~7 weeks).
-    "RUSTSEC-2026-0037",
-
     # NOTE: RUSTSEC-2025-0111 (tokio-tar PAX file smuggling) was closed
     # by plan 0053 PR-3 (GAR-449). Resolution: testcontainers 0.23 →
     # 0.27.3 + testcontainers-modules 0.11 → 0.15.0 replaces tokio-tar
