@@ -491,22 +491,24 @@ Sequencialmente, um PR por cluster:
 
 **Lote 4b — wasmtime upgrade (subplano próprio, ref. `plans/0050.4-wasmtime-upgrade.md`):**
 
-Será escrito como sub-plan apartado, contendo:
-* inventário dos pontos de `garraia-plugins` que tocam wasmtime 28 API;
-* matriz de breaking changes 28→29;
-* estratégia de upgrade (one-shot vs. duas etapas 28 → 28.X → 29);
-* plano de teste (testes existentes + novos) — o risco de
-  `RUSTSEC-2025-0118` (unsound shared linear memory) exige cobertura
-  adversarial mínima;
-* rollback plan;
-* aprovação explícita por `@security-auditor`.
+✅ **DONE 2026-04-27** — sessão `purrfect-lantern` (plan
+`C:/Users/miche/.claude/plans/conferi-o-gar-454-no-purrfect-lantern.md`)
+fechou GAR-454 em 2 PRs sequenciais:
+
+* **PR #77** (GAR-459 pré-req de segurança): admin auth + SSRF defense em `/api/plugins/*`. Mergeado em `0ee9595c`.
+* **PR #78** (GAR-454 main): wasmtime 28.0.1 → 44.0.0 + drop atômico de 15 RUSTSEC IDs (incluindo 2 CRITICAL CVSS 9.0). Mergeado em `cb873d59`.
+
+Re-scope vs. plan original: o ticket evoluiu de "bump 28→29 fechando 2 IDs" para "bump 28→44 fechando 15 IDs" após o inventário empírico de GAR-452/PR-6 (2026-04-26). A execução final saltou diretamente para a versão estável mais recente (44.0.0, publicada 2026-04-20) por economia de roundtrips e porque os 15 IDs incluíam CVEs 2026-Q1/Q2 que só fixam em wasmtime 40+.
+
+Retrospectivo + breaking-change matrix em `plans/0050.4-wasmtime-upgrade.md`.
 
 **Saída do Lote 4a:** `cargo audit` verde exceto para o ignore
 explícito de wasmtime com link ao sub-plan 0050.4. Entradas expiradas
 limpas. Jobo `security` passa a falhar em qualquer NOVA advisory.
 
-**Saída do Lote 4b:** wasmtime em 29+, `.cargo/audit.toml` com ≤ 2
-ignores (ou zero), `security` 100% bloqueante.
+**Saída do Lote 4b (atingida):** wasmtime em 44.0.0, `.cargo/audit.toml`
+sem nenhum ignore wasmtime (todos os 15 dropped atomicamente), `security`
+100% bloqueante.
 
 ### Lote 5 — Mutation testing piloto (4h)
 *Depende: Lote 3 (cobertura visível).*
