@@ -53,15 +53,15 @@ jobs:
         # scripts/build-installer.ps1.
         run: cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
 
-  # Supply-chain gate: license allow-list + crate bans + registry source bans.
-  # Uses deny.toml at the repo root (exists since 2026-03, never invoked in CI
-  # until plan 0050 Lote 1 / GAR-431). Runs in parallel with clippy.
-  #
-  # NOTE: `advisories` check is intentionally NOT run here — it is scoped to
-  # Q7 (RUSTSEC triage, GAR-437 / plan 0050 Lote 4a) and already covered by
-  # the nightly `cargo audit` workflow with deferred ignores through
-  # 2026-05-20. Once Q7 closes, flip the `command` below to `check` (default)
-  # and drop this note.
+  # Supply-chain gate: license allow-list + crate bans + registry source bans
+  # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
+  # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
+  # which runs all four categories — `advisories` was added in plan 0053
+  # PR-7 followup / GAR-458 after the `audit.toml` train (PR-1..PR-7) closed
+  # the Q7 RUSTSEC triage and `deny.toml` was synced with 21 ignored IDs
+  # (4 rustls-webpki residuals, 12 unmaintained-only crates, 15 wasmtime).
+  # Second-layer gate paired with the now-blocking PR-time `Security Audit`
+  # job (`cargo audit --no-fetch --deny unsound`).
   cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -69,10 +69,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run cargo-deny (bans + licenses + sources)
+      - name: Run cargo-deny (advisories + bans + licenses + sources)
         uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check bans licenses sources
 
   # Dependency review — catches new vulnerable/deprecated transitive deps
   # before they land on main. Runs only on pull_request (the action requires
