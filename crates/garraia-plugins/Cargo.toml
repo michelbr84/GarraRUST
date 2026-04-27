@@ -15,7 +15,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 wasmtime = { workspace = true }
-wasmtime-wasi = "28"
+# GAR-454: consume the workspace pin (was hardcoded "28" pre-bump). The
+# workspace declaration enables `features = ["p1"]` so that
+# `WasiCtxBuilder::build_p1()` remains available in wasmtime 44+.
+wasmtime-wasi = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 notify = { workspace = true }

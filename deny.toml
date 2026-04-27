@@ -27,25 +27,13 @@
 version = 2
 yanked = "warn"
 ignore = [
-    # --- wasmtime 28 — 15 IDs (GAR-454, expires 2026-08-31) ---
-    # Pre-existing pair (plan 0043 baseline):
-    "RUSTSEC-2025-0046", # Host panic with fd_renumber WASIp1 function
-    "RUSTSEC-2025-0118", # Unsound API access to WebAssembly shared linear memory
-    # Added 2026-04-26 (plan 0053 PR-6 — empirical inventory revealed 13
-    # additional wasmtime advisories not previously tracked here):
-    "RUSTSEC-2026-0020", # Guest-controlled resource exhaustion in WASI
-    "RUSTSEC-2026-0021", # Guest-controlled resource exhaustion in WASI #2
-    "RUSTSEC-2026-0085",
-    "RUSTSEC-2026-0086",
-    "RUSTSEC-2026-0087",
-    "RUSTSEC-2026-0088",
-    "RUSTSEC-2026-0089",
-    "RUSTSEC-2026-0091",
-    "RUSTSEC-2026-0092",
-    "RUSTSEC-2026-0093",
-    "RUSTSEC-2026-0094",
-    "RUSTSEC-2026-0095", # CRITICAL (CVSS 9.0)
-    "RUSTSEC-2026-0096", # CRITICAL (CVSS 9.0)
+    # --- GAR-454 (CLOSED 2026-04-27) wasmtime 28 → 44 bump fechou os 15 IDs ---
+    # Sessão `purrfect-lantern` bumped wasmtime 28.0.1 → 44.0.0 + wasmtime-wasi
+    # 28 → 44 + wiggle 28 → 44 (transitive). `cargo deny check advisories` exit
+    # 0 sem nenhum dos 15 IDs em ignore. Removidos atomicamente daqui e de
+    # `.cargo/audit.toml` per o SYNC NOTE invariant: RUSTSEC-2025-0046, -0118,
+    # RUSTSEC-2026-0020, -0021, -0085, -0086, -0087, -0088, -0089, -0091,
+    # -0092, -0093, -0094, -0095 (CRITICAL CVSS 9.0), -0096 (CRITICAL CVSS 9.0).
 
     # --- rustls-webpki residual — 4 IDs (GAR-455, expires 2026-07-31) ---
     # MIRROR of the same 4 IDs in `.cargo/audit.toml`. Plan 0053 PR-1
