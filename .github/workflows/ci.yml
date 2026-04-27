@@ -58,11 +58,12 @@ jobs:
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
   # which runs all four categories — `advisories` was added in plan 0053
   # PR-7 followup / GAR-458 after the `audit.toml` train (PR-1..PR-7) closed
-  # the Q7 RUSTSEC triage. `deny.toml` ignore list = 42 RUSTSEC IDs total
+  # the Q7 RUSTSEC triage. `deny.toml` ignore list = 47 RUSTSEC IDs total
   # (15 wasmtime under GAR-454, 4 rustls-webpki residuals under GAR-455,
-  # 23 unmaintained-only spread across GAR-430 ownership). Second-layer
-  # gate paired with the now-blocking PR-time `Security Audit` job
-  # (`cargo audit --no-fetch --deny unsound`).
+  # 5 audit.toml mirrors with deny-stricter severity mapping under GAR-437/
+  # GAR-456/GAR-457, 23 unmaintained-only spread across GAR-430 ownership).
+  # Second-layer gate paired with the now-blocking PR-time `Security Audit`
+  # job (`cargo audit --no-fetch --deny unsound`).
   cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-latest

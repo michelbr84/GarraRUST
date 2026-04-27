@@ -8,10 +8,12 @@
 #   * `deny.toml` controls advisories flagged by `cargo deny check
 #     advisories`. Now invoked in CI via `cargo-deny-action` default
 #     `command: check` (since GAR-458 enabled the advisories category).
-#   * **Mandatory sync between the two files: wasmtime IDs (15) AND
-#     rustls-webpki residuals (4).** When the upstream blockers close
-#     (GAR-454 wasmtime; GAR-455 serenity/aws-smithy) the IDs MUST be
-#     dropped from BOTH files atomically.
+#   * **Mandatory sync between the two files: wasmtime IDs (15),
+#     rustls-webpki residuals (4), AND 5 audit.toml mirrors that
+#     cargo-deny ALSO requires (rsa, glib, lru, quinn-proto, rand —
+#     differing severity classification between cargo-deny and
+#     cargo-audit).** When the upstream blockers close, the IDs MUST
+#     be dropped from BOTH files atomically.
 #   * The 23 unmaintained-only IDs (8 directly named: daemonize,
 #     derivative, fxhash, instant, paste, proc-macro-error, async-std,
 #     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
@@ -84,6 +86,37 @@ ignore = [
     # to `rustls-pki-types::PemObject`. Pulled via axum-server 0.7.3 →
     # garraia-gateway. Owner: GAR-430 (Quality Gates 3.6).
     "RUSTSEC-2025-0134", # rustls-pemfile
+
+    # --- audit.toml mirrors that cargo-deny ALSO requires (vuln + unsound) ---
+    # These IDs are in `.cargo/audit.toml` but cargo-deny categorizes them
+    # differently than cargo-audit — `unsound` is deny-by-default in
+    # cargo-deny, so we must mirror them here even though `cargo audit
+    # --deny unsound` already covers them in the PR-time Security gate.
+    # Local `cargo deny --offline check` does NOT reproduce these failures
+    # because the local cargo-deny version's severity mapping differs from
+    # the cargo-deny-action@v2 used in CI; the IDs are added defensively
+    # to cover the empirical CI behavior.
+    #
+    # rsa 0.9.10 — Marvin Attack timing sidechannel. Mirror of audit.toml
+    # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
+    # in PR-4 prevented runtime use). Expires 2026-07-31.
+    "RUSTSEC-2023-0071",
+    # glib 0.18.5 — VariantStrIter unsound iterator impls. Mirror of
+    # audit.toml under GAR-437 carve-out. Desktop-only via Tauri surface.
+    # Expires 2026-07-31.
+    "RUSTSEC-2024-0429",
+    # lru 0.12.5 — IterMut stacked-borrows violation. Mirror of audit.toml
+    # under GAR-437 carve-out. Pulled via aws-sdk-s3 → garraia-storage
+    # (feature `storage-s3`). Expires 2026-07-31.
+    "RUSTSEC-2026-0002",
+    # quinn-proto 0.11.13 — DoS in Quinn endpoints. Mirror of audit.toml
+    # under GAR-457; will be closed by Phase 3 of this session
+    # (cargo update -p quinn-proto --precise 0.11.14). Expires 2026-06-15.
+    "RUSTSEC-2026-0037",
+    # rand 0.10.1 — custom logger unsound in rand::rng(). Mirror of
+    # audit.toml under GAR-437 carve-out. Used broadly; semver-incompatible
+    # bump path under audit. Expires 2026-07-31.
+    "RUSTSEC-2026-0097",
 
     # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-07-31) ---
     # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
