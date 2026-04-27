@@ -1,21 +1,28 @@
 [advisories]
 # SYNC NOTE — `deny.toml` vs `.cargo/audit.toml` (HONEST asymmetry,
-# refreshed 2026-04-26 by plan 0053 PR-6 / GAR-452):
+# refreshed 2026-04-27 by plan 0053 PR-7 followup / GAR-458):
 #
 #   * `audit.toml` controls vulnerabilities flagged by `cargo audit`
-#     (the nightly Security workflow uses `--deny unsound`).
-#   * `deny.toml` controls advisories flagged by `cargo deny`.
-#   * Mandatory sync between the two files: **only the RUSTSEC wasmtime
-#     IDs.** When GAR-454 (Q7b) bumps wasmtime to >= 40.0.4 / >= 41.0.4,
-#     ALL 15 wasmtime IDs below MUST be dropped from BOTH files
-#     atomically.
-#   * The 5 unmaintained-only IDs at the bottom of this list (daemonize,
-#     derivative, fxhash, instant, paste) are intentionally NOT mirrored
-#     in `audit.toml`. `cargo audit` auto-classifies them as "allowed
-#     warnings" and does NOT require explicit ignore. Mirroring them
-#     here in `deny.toml` is required because `cargo deny` treats them
-#     as deny-by-default. Do not "fix" the asymmetry by mass-mirroring
-#     to `audit.toml`; that would change runtime behavior.
+#     (the PR-time Security job uses `--deny unsound`, mirroring the
+#     nightly `cargo-audit.yml` setup since GAR-453 made it blocking).
+#   * `deny.toml` controls advisories flagged by `cargo deny check
+#     advisories`. Now invoked in CI via `cargo-deny-action` default
+#     `command: check` (since GAR-458 enabled the advisories category).
+#   * **Mandatory sync between the two files: wasmtime IDs (15),
+#     rustls-webpki residuals (4), AND 5 audit.toml mirrors that
+#     cargo-deny ALSO requires (rsa, glib, lru, quinn-proto, rand —
+#     differing severity classification between cargo-deny and
+#     cargo-audit).** When the upstream blockers close, the IDs MUST
+#     be dropped from BOTH files atomically.
+#   * The 23 unmaintained-only IDs (8 directly named: daemonize,
+#     derivative, fxhash, instant, paste, proc-macro-error, async-std,
+#     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
+#     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
+#     "allowed warnings" and does NOT require explicit ignore.
+#     Mirroring them here in `deny.toml` is required because `cargo
+#     deny` treats them as deny-by-default. Do not "fix" the asymmetry
+#     by mass-mirroring to `audit.toml`; that would change runtime
+#     behavior.
 version = 2
 yanked = "warn"
 ignore = [
@@ -39,6 +46,28 @@ ignore = [
     "RUSTSEC-2026-0095", # CRITICAL (CVSS 9.0)
     "RUSTSEC-2026-0096", # CRITICAL (CVSS 9.0)
 
+    # --- rustls-webpki residual — 4 IDs (GAR-455, expires 2026-07-31) ---
+    # MIRROR of the same 4 IDs in `.cargo/audit.toml`. Plan 0053 PR-1
+    # (GAR-447) closed the production hot path (rustls 0.23 chain) via
+    # lockfile-only `cargo update`, but `cargo deny` walks the full
+    # lockfile and still sees the legacy chains:
+    #   * `rustls-webpki 0.102.8` via serenity 0.12.5 → tokio-tungstenite
+    #     0.21 → rustls 0.22 (latest stable; 0.102.x line is EOL).
+    #   * `rustls-webpki 0.101.7` via aws-smithy-http-client 1.1.12 →
+    #     rustls 0.21 (feature `storage-s3`; latest stable).
+    # Neither has an upstream fix today. cargo-deny 0.16.x does not
+    # support per-(advisory, version) ignore.
+    #
+    # OPERATIONAL WARNING: enabling the `storage-s3` feature in production
+    # requires manual re-triage of GAR-455 BEFORE deploy. The expiration
+    # date below does not substitute that check — it only forces a
+    # scheduled re-audit. (Security review of PR #75 / GAR-458 flagged
+    # this LOW residual risk explicitly.)
+    "RUSTSEC-2026-0049", # CRL matching — patched in 0.103.10
+    "RUSTSEC-2026-0098", # URI name constraints — patched in 0.103.12
+    "RUSTSEC-2026-0099", # wildcard in name-constrained — patched in 0.103.12
+    "RUSTSEC-2026-0104", # reachable panic in CRL parsing — patched in 0.103.13
+
     # --- Unmaintained-only — deny.toml-exclusive (no audit.toml mirror) ---
     # These crates have RUSTSEC `unmaintained` advisories but no fixed
     # version. `cargo audit` auto-allows them as warnings; `cargo deny`
@@ -50,6 +79,72 @@ ignore = [
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
     "RUSTSEC-2024-0384", # instant (transitive via notify)
     "RUSTSEC-2024-0436", # paste (transitive via wasmtime)
+    "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
+    "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
+    # Added 2026-04-27 (PR #75 CI surfaced this — local cache was stale):
+    # rustls-pemfile 2.2.0 archived 2025-08; upstream recommends migrating
+    # to `rustls-pki-types::PemObject`. Pulled via axum-server 0.7.3 →
+    # garraia-gateway. Owner: GAR-430 (Quality Gates 3.6).
+    "RUSTSEC-2025-0134", # rustls-pemfile
+
+    # --- audit.toml mirrors that cargo-deny ALSO requires (vuln + unsound) ---
+    # These IDs are in `.cargo/audit.toml` but cargo-deny categorizes them
+    # differently than cargo-audit — `unsound` is deny-by-default in
+    # cargo-deny, so we must mirror them here even though `cargo audit
+    # --deny unsound` already covers them in the PR-time Security gate.
+    # Local `cargo deny --offline check` does NOT reproduce these failures
+    # because the local cargo-deny version's severity mapping differs from
+    # the cargo-deny-action@v2 used in CI; the IDs are added defensively
+    # to cover the empirical CI behavior.
+    #
+    # rsa 0.9.10 — Marvin Attack timing sidechannel. Mirror of audit.toml
+    # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
+    # in PR-4 prevented runtime use). Expires 2026-07-31.
+    "RUSTSEC-2023-0071",
+    # glib 0.18.5 — VariantStrIter unsound iterator impls. Mirror of
+    # audit.toml under GAR-437 carve-out. Desktop-only via Tauri surface.
+    # Expires 2026-07-31.
+    "RUSTSEC-2024-0429",
+    # lru 0.12.5 — IterMut stacked-borrows violation. Mirror of audit.toml
+    # under GAR-437 carve-out. Pulled via aws-sdk-s3 → garraia-storage
+    # (feature `storage-s3`). Expires 2026-07-31.
+    "RUSTSEC-2026-0002",
+    # quinn-proto 0.11.13 — DoS in Quinn endpoints. Mirror of audit.toml
+    # under GAR-457; will be closed by Phase 3 of this session
+    # (cargo update -p quinn-proto --precise 0.11.14). Expires 2026-06-15.
+    "RUSTSEC-2026-0037",
+    # rand 0.10.1 — custom logger unsound in rand::rng(). Mirror of
+    # audit.toml under GAR-437 carve-out. Used broadly; semver-incompatible
+    # bump path under audit. Expires 2026-07-31.
+    "RUSTSEC-2026-0097",
+
+    # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-07-31) ---
+    # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
+    # → garraia-desktop. CI excludes garraia-desktop (`--exclude garraia-desktop`)
+    # so runtime risk on Linux server deploys is zero, but `cargo deny` walks
+    # the full lockfile. Upstream gtk-rs GTK3 bindings discontinued; GTK4
+    # migration is a Tauri-side decision. Owner: epic GAR-430.
+    "RUSTSEC-2024-0411", # gdk
+    "RUSTSEC-2024-0412", # gdk-sys
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # atk-sys
+    "RUSTSEC-2024-0415", # gdkwayland-sys
+    "RUSTSEC-2024-0416", # gdkx11
+    "RUSTSEC-2024-0417", # gdkx11-sys
+    "RUSTSEC-2024-0418", # gtk
+    "RUSTSEC-2024-0419", # gtk-sys
+    "RUSTSEC-2024-0420", # gtk3-macros
+
+    # --- unic-* unmaintained — open-i18n/rust-unic discontinued (5 IDs) ---
+    # Pulled via tauri-utils 2.8 → urlpattern 0.3 → unic-ucd-ident → unic-*.
+    # Tauri 2.x uses urlpattern for permission scope matching; replacement
+    # depends on a Tauri or urlpattern crate update. Owner: GAR-430.
+    # Expires 2026-07-31.
+    "RUSTSEC-2025-0075", # unic-char-property
+    "RUSTSEC-2025-0080", # unic-char-range
+    "RUSTSEC-2025-0081", # unic-common
+    "RUSTSEC-2025-0098", # unic-ucd-ident
+    "RUSTSEC-2025-0100", # unic-ucd-version
 ]
 
 [licenses]

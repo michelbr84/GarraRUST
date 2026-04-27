@@ -15,22 +15,29 @@
 # concrete Linear issue as owner (not a "Lote" marker), (4) must declare
 # fix availability honestly, (5) must have an expiration date.
 #
-# SYNC NOTE — `audit.toml` vs `deny.toml` (HONEST asymmetry):
+# SYNC NOTE — `audit.toml` vs `deny.toml` (HONEST asymmetry,
+# refreshed 2026-04-27 by GAR-458 PR #75):
 #
 #   * `audit.toml` controls vulnerabilities flagged by `cargo audit`.
 #     It carries every RUSTSEC ID that would otherwise make `cargo audit`
 #     exit non-zero on `Cargo.lock`.
-#   * `deny.toml` controls advisories flagged by `cargo deny`. It carries
-#     the same RUSTSEC wasmtime IDs (mandatory sync) PLUS 5 additional
-#     `unmaintained-only` advisories (daemonize, derivative, fxhash,
-#     instant, paste) that `cargo audit` auto-classifies as "allowed
-#     warnings" and does NOT require explicit ignore.
-#   * **Mandatory sync on wasmtime IDs only.** When GAR-454 (Q7b) bumps
-#     wasmtime to ≥ 40.0.4 / ≥ 41.0.4, ALL 15 wasmtime IDs below MUST be
+#   * `deny.toml` controls advisories flagged by `cargo deny check
+#     advisories` (now invoked in CI via cargo-deny-action default
+#     `command: check`). It carries the same RUSTSEC wasmtime IDs AND
+#     the same 4 rustls-webpki residual IDs (mandatory sync, see below)
+#     PLUS 23 `unmaintained-only` advisories that `cargo audit`
+#     auto-classifies as "allowed warnings" and does NOT require
+#     explicit ignore here.
+#   * **Mandatory sync between the two files: wasmtime IDs (15) AND
+#     rustls-webpki residuals (4).** When GAR-454 (Q7b) bumps wasmtime
+#     to ≥ 40.0.4 / ≥ 41.0.4, ALL 15 wasmtime IDs below MUST be dropped
+#     from BOTH files atomically. When GAR-455 closes (serenity 0.13 +
+#     aws-smithy upgrade), ALL 4 rustls-webpki IDs below MUST be
 #     dropped from BOTH files atomically.
-#   * The 5 unmaintained-only IDs in `deny.toml` are intentionally NOT
-#     mirrored here. Do not "fix" the asymmetry by mass-mirroring; that
-#     would change runtime behavior of `cargo audit`.
+#   * The 23 unmaintained-only IDs in `deny.toml` (8 directly named +
+#     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
+#     "fix" the asymmetry by mass-mirroring; that would change runtime
+#     behavior of `cargo audit`.
 
 [advisories]
 ignore = [
