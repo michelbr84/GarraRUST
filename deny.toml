@@ -12,14 +12,15 @@
 #     rustls-webpki residuals (4).** When the upstream blockers close
 #     (GAR-454 wasmtime; GAR-455 serenity/aws-smithy) the IDs MUST be
 #     dropped from BOTH files atomically.
-#   * The 12 unmaintained-only IDs (daemonize, derivative, fxhash,
-#     instant, paste, proc-macro-error, async-std, 10× gtk-rs, 5×
-#     unic-*) are intentionally NOT mirrored in `audit.toml`. `cargo
-#     audit` auto-classifies them as "allowed warnings" and does NOT
-#     require explicit ignore. Mirroring them here in `deny.toml` is
-#     required because `cargo deny` treats them as deny-by-default.
-#     Do not "fix" the asymmetry by mass-mirroring to `audit.toml`;
-#     that would change runtime behavior.
+#   * The 23 unmaintained-only IDs (8 directly named: daemonize,
+#     derivative, fxhash, instant, paste, proc-macro-error, async-std,
+#     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
+#     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
+#     "allowed warnings" and does NOT require explicit ignore.
+#     Mirroring them here in `deny.toml` is required because `cargo
+#     deny` treats them as deny-by-default. Do not "fix" the asymmetry
+#     by mass-mirroring to `audit.toml`; that would change runtime
+#     behavior.
 version = 2
 yanked = "warn"
 ignore = [
@@ -54,6 +55,12 @@ ignore = [
     #     rustls 0.21 (feature `storage-s3`; latest stable).
     # Neither has an upstream fix today. cargo-deny 0.16.x does not
     # support per-(advisory, version) ignore.
+    #
+    # OPERATIONAL WARNING: enabling the `storage-s3` feature in production
+    # requires manual re-triage of GAR-455 BEFORE deploy. The expiration
+    # date below does not substitute that check — it only forces a
+    # scheduled re-audit. (Security review of PR #75 / GAR-458 flagged
+    # this LOW residual risk explicitly.)
     "RUSTSEC-2026-0049", # CRL matching — patched in 0.103.10
     "RUSTSEC-2026-0098", # URI name constraints — patched in 0.103.12
     "RUSTSEC-2026-0099", # wildcard in name-constrained — patched in 0.103.12
@@ -72,6 +79,11 @@ ignore = [
     "RUSTSEC-2024-0436", # paste (transitive via wasmtime)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
     "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
+    # Added 2026-04-27 (PR #75 CI surfaced this — local cache was stale):
+    # rustls-pemfile 2.2.0 archived 2025-08; upstream recommends migrating
+    # to `rustls-pki-types::PemObject`. Pulled via axum-server 0.7.3 →
+    # garraia-gateway. Owner: GAR-430 (Quality Gates 3.6).
+    "RUSTSEC-2025-0134", # rustls-pemfile
 
     # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-07-31) ---
     # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
