@@ -27,7 +27,7 @@ Plugins são binários WebAssembly que estendem o comportamento do agente adicio
 ## Pré-requisitos
 
 ```bash
-# Rust 1.88+
+# Rust 1.92+
 rustc --version
 
 # Adicionar o target WebAssembly

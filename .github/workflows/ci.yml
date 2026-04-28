@@ -187,25 +187,28 @@ jobs:
 
   # MSRV gate (GAR-441) — bloqueante. Drift descoberto em smoke test do
   # plan 0050 (`cargo +1.85 check` falhava porque darling 0.23, home 0.5.12,
-  # process-wrap 9, time 0.3.47 e time-macros 0.2.27 exigem ≥ 1.87/1.88).
-  # Este job protege a coerência entre `rust-version = "1.88"` declarado
-  # no workspace e o real piso transitivo do `Cargo.lock`. `--locked`
-  # garante que o lockfile não é regerado durante o check (qualquer drift
-  # falha o build).
-  # `garraia-desktop` excluído pelos mesmos motivos do clippy/build (GTK +
-  # sidecar Windows ausentes em runners GHA).
+  # process-wrap 9, time 0.3.47, time-macros 0.2.27 exigem ≥ 1.87/1.88) E
+  # depois confirmado pelo primeiro CI run desta PR: o bump `wasmtime 28
+  # → 44` (GAR-454, sessão `purrfect-lantern`) elevou o piso real para
+  # **1.92** porque ~30 sub-crates `wasmtime-*` declaram
+  # `rust-version = "1.92"` em seus manifests publicados. O piso real
+  # (1.92) é o gate, não o piso parcial (1.88) das deps não-wasmtime.
+  # `--locked` garante que o lockfile não é regerado durante o check
+  # (qualquer drift falha o build). `garraia-desktop` excluído pelos
+  # mesmos motivos do clippy/build (GTK + sidecar Windows ausentes em
+  # runners GHA).
   msrv:
-    name: MSRV check (1.88)
+    name: MSRV check (1.92)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@1.88
+      - name: Install Rust 1.92
+        uses: dtolnay/rust-toolchain@1.92
 
-      - name: cargo +1.88 check
-        run: cargo +1.88 check --workspace --exclude garraia-desktop --locked
+      - name: cargo +1.92 check
+        run: cargo +1.92 check --workspace --exclude garraia-desktop --locked
 
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:

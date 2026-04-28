@@ -8,7 +8,7 @@ Coloque o GarraIA funcionando em menos de 5 minutos.
 
 | Requisito | Versão mínima | Verificação |
 |-----------|---------------|-------------|
-| Rust | 1.88 | `rustc --version` |
+| Rust | 1.92 | `rustc --version` |
 | Git | qualquer | `git --version` |
 | Chave de API LLM | — | Anthropic, OpenAI ou Ollama local |
 

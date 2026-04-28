@@ -14,7 +14,7 @@ Ao participar deste projeto, você concorda em ser respeitoso, inclusivo e const
 
 | Ferramenta | Versão mínima | Instalação |
 |------------|---------------|------------|
-| Rust | 1.88 | `rustup update stable` |
+| Rust | 1.92 | `rustup update stable` |
 | Git | qualquer | [git-scm.com](https://git-scm.com) |
 | FFmpeg | 6.x | `apt install ffmpeg` / `brew install ffmpeg` |
 | Node.js (opcional) | 20+ | Para rodar servidores MCP de teste |

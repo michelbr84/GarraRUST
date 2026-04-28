@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.92%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/badge/crates-16-green" alt="Crates">
   <img src="https://img.shields.io/badge/channels-11-purple" alt="Channels">
@@ -66,7 +66,7 @@ garraia start
 <summary>Compilar a partir do código-fonte</summary>
 
 ```bash
-# Requer Rust 1.88+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
+# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
 cargo build --release
 ./target/release/garraia init
 ./target/release/garraia start

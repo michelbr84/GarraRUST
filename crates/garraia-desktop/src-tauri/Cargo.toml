@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "Garra Desktop — Clippy-style AI assistant overlay"
 license = "MIT"
-rust-version = "1.88"
+rust-version = "1.92"
 
 [lib]
 name = "garraia_desktop_lib"
