@@ -12,6 +12,12 @@ cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 ESTADO_FILE=".garra-estado.md"
 SESSIONS_DIR=".claude/sessions"
 MAX_SESSIONS=10
+# Cap how many "## <timestamp>" entries we retain in $ESTADO_FILE. The new
+# entry is always prepended; the awk filter below drops anything past the
+# Nth historical block. Without this cap the file grew unbounded
+# (~82k chars after several dozen sessions before the 2026-04-27 manual
+# truncation). 5 keeps the active context near ~5-10k chars indefinitely.
+MAX_ESTADO_ENTRIES=5
 
 mkdir -p "$SESSIONS_DIR"
 
@@ -40,14 +46,24 @@ if [ -f "$ESTADO_FILE" ]; then
   # header lines that may have accumulated between entries. Old hook versions
   # prepended a fresh header every session; this idempotent awk keeps exactly
   # one header at the top of the file forever.
-  EXISTING=$(awk '/^## / { capture = 1 } capture && !/^# Estado GarraIA$/' "$ESTADO_FILE")
+  #
+  # The new entry being prepended below counts as #1, so we retain at most
+  # (MAX_ESTADO_ENTRIES - 1) historical blocks here — and exit before any
+  # block past that boundary is printed. Every line of a retained block
+  # reaches the default print action via `capture && !/^# Estado GarraIA$/`.
+  EXISTING=$(awk -v keep="$((MAX_ESTADO_ENTRIES - 1))" '
+    /^## / { count++; if (count > keep) exit; capture = 1 }
+    capture && !/^# Estado GarraIA$/
+  ' "$ESTADO_FILE")
   echo -e "# Estado GarraIA\n\n$ESTADO_ENTRY\n$EXISTING" > "$ESTADO_FILE"
 else
   echo -e "# Estado GarraIA\n\n$ESTADO_ENTRY" > "$ESTADO_FILE"
 fi
 
-# Stage .garra-estado.md (não commita)
-git add "$ESTADO_FILE" 2>/dev/null || true
+# `.garra-estado.md` é local/operacional e está em .gitignore (linha 46) —
+# nunca deve ser stageado. O `git add` anterior falhava silenciosamente
+# por causa do gitignore mas ainda gerava ruído em hooks futuros e poluía
+# `git status -uall`. Removido.
 
 # ── 2. Salvar sessão ──────────────────────────────────────────────────────
 SESSION_FILE="$SESSIONS_DIR/session-$TIMESTAMP.md"
