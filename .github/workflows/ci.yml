@@ -217,6 +217,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Plan abundant-thimble (GAR-439 slice 9.a, 2026-04-28): the default
+      # GHA `ubuntu-latest` runner ships with ~14 GB free disk. The combo of
+      # (cache restore ~3.2 GB target + cargo install --force rebuild +
+      # `cargo llvm-cov` instrumented rebuild of target/) crosses 14 GB and
+      # the runner crashes with `No space left on device` mid-job (verified
+      # empirically on PR #90 retry — same failure twice). Pruning the
+      # default runner image saves ~12 GB before any rust step touches disk.
+      # Inline `rm -rf` instead of an external action to keep supply-chain
+      # surface zero (same posture as `cargo-deny`/`cargo-audit` jobs).
+      - name: Free up disk space (GHA runner default ~14 GB → ~26 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Install Rust + llvm-tools-preview
         uses: dtolnay/rust-toolchain@stable
         with:
