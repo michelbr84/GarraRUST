@@ -170,6 +170,131 @@ jobs:
           fi
         shell: bash
 
+  # Coverage instrumentation (GAR-435 / Q5 of EPIC GAR-430). Linux-only.
+  #
+  # Generates lcov.info via cargo-llvm-cov, uploads as artifact (14d retention),
+  # and posts a textual summary as PR comment via `gh pr comment` using the
+  # default GITHUB_TOKEN. NO external service (per Linear GAR-435 / plan
+  # foamy-origami ajuste #2 — sem Codecov/Coveralls).
+  #
+  # Soft-gate semantics (per plan sprightly-raven §11.3):
+  #   - NO threshold — coverage % does not block PRs.
+  #   - Job runs on every PR and emits artifact + comment.
+  #   - NO `continue-on-error: true` — if the job is broken, fix it; do not
+  #     accumulate silent failures (the repo just migrated all soft-gates to
+  #     blocking via GAR-453).
+  #
+  # Excludes (matching test/build/clippy/msrv):
+  #   - garraia-desktop  — Tauri sidecar + GTK absent on GHA runners.
+  #   - garraia-auth     — integration tests need testcontainers + secrets
+  #                        (this job intentionally has no GARRAIA_JWT_SECRET
+  #                        or DATABASE_URL provisioned). Coverage of this
+  #                        crate is a follow-up task once we wire the env
+  #                        and a dedicated Postgres service into this job.
+  #   - garraia-workspace — same reason as garraia-auth (testcontainers +
+  #                        Postgres + JWT).
+  #
+  # Security review (PR #87): pre-merge audit by security-auditor agent
+  # flagged 4 findings; all addressed below:
+  #   - HIGH:    `gh pr comment` step gated by
+  #              `github.event.pull_request.head.repo.full_name == github.repository`
+  #              (fork PRs receive read-only token by GitHub default; without
+  #              the gate, the step would 403 on every fork PR, regressing
+  #              the §11.3 contract).
+  #   - MEDIUM:  cache restore-keys isolated to `*-coverage-llvm-` prefix to
+  #              avoid restoring target/ from the `test` job (compiled
+  #              without `llvm-tools-preview` instrumentation).
+  #   - MEDIUM:  `garraia-auth` and `garraia-workspace` excluded (see above).
+  #   - LOW:     `timeout-minutes: 30` to bound runaway test hangs.
+  coverage:
+    name: Coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write   # required for gh pr comment
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust + llvm-tools-preview
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-coverage-llvm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-llvm-
+
+      - name: Install cargo-llvm-cov
+        # `--locked` matches the cargo-audit / cargo-deny installation pattern
+        # for supply-chain hygiene. `^0.6` allows minor bumps within the 0.6.x
+        # line (current 0.6.16 as of 2026-04-28); breaking-change bumps require
+        # a deliberate edit.
+        run: cargo install --locked --version '^0.6' cargo-llvm-cov
+
+      - name: Generate lcov coverage
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --exclude garraia-desktop \
+            --exclude garraia-auth \
+            --exclude garraia-workspace \
+            --lcov --output-path lcov.info
+
+      - name: Generate textual summary
+        run: cargo llvm-cov report --summary-only > coverage-summary.txt
+
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov-${{ github.run_id }}
+          path: lcov.info
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload textual summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary-${{ github.run_id }}
+          path: coverage-summary.txt
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Post coverage summary as PR comment
+        # Skip on push events AND on PRs from forks. GitHub's default policy
+        # gives fork PRs a read-only GITHUB_TOKEN regardless of the workflow's
+        # `permissions:` declaration; without this guard, the `gh pr comment`
+        # step would 403 on every fork PR, breaking the §11.3 contract that
+        # the job runs on every PR.
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          {
+            echo '<!-- coverage-comment -->'
+            echo '## Coverage Report (cargo-llvm-cov)'
+            echo
+            echo '_Generated by `coverage` job in this PR run. Soft-gate: no threshold; artifact + summary only._'
+            echo
+            echo 'Excluded crates: `garraia-desktop`, `garraia-auth`, `garraia-workspace` (see ci.yml comment).'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } > pr-comment.md
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file pr-comment.md
+
   # Build only (no test) for faster feedback on other platforms if needed
   build:
     name: Build Check

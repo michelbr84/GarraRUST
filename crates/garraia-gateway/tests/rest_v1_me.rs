@@ -58,17 +58,27 @@ async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() 
 
     // Wait for the listener to actually bind. Gateway bootstrap pulls
     // in channels, MCP registry and tools, so 500ms is not enough — poll
-    // the port with exponential backoff up to ~20s.
+    // the port with exponential backoff up to ~40s.
     //
-    // History: the budget was 40×250ms (~10s) until a ubuntu-latest runner
-    // flaked on commit fe087e4 (2026-04-21) where bootstrap took longer
-    // than 10s. The flake was caught only in scheduled CI on main (not in
-    // PR CI where the same commit passed first try), indicating a resource-
-    // sensitive timing issue, not a product regression. Bumped to 80×250ms
-    // (~20s) to eat the long tail of slow-runner cold-starts without
-    // materially changing test wall-clock on the happy path (the loop
-    // breaks on first successful send, so extra budget only kicks in on
-    // slow boots).
+    // History:
+    //   - Budget was 40×250ms (~10s) until a ubuntu-latest runner flaked on
+    //     commit fe087e4 (2026-04-21) where bootstrap took longer than 10s.
+    //   - Bumped to 80×250ms (~20s) on 2026-04-21 to absorb slow-runner
+    //     cold-starts on the plain `Test (ubuntu-latest)` job.
+    //   - Bumped to 160×250ms (~40s) on 2026-04-28 (PR #87 / GAR-435) when
+    //     the new `Coverage (cargo-llvm-cov)` job introduced LLVM
+    //     instrumentation overhead that pushed bootstrap past the 20s cap
+    //     on the same runner class. The instrumented `Coverage` run AND
+    //     the plain `Test (ubuntu-latest)` run BOTH flaked on PR-2's first
+    //     CI pass (jobs 73421460770 and 73421460830), confirming the
+    //     timing budget was already too tight. 40s is still well under the
+    //     reqwest::Client outer timeout (5s × 160 retries == hardcap
+    //     ceiling, not nominal). Happy-path runs break on the first
+    //     successful send, so this only affects slow-bootstrap tails.
+    //
+    // This bump is kept in the same PR that introduces the coverage job
+    // because the coverage instrumentation is what pushed the threshold
+    // over — the bump is part of making coverage merge cleanly.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -78,7 +88,7 @@ async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() 
     let resp = loop {
         match client.get(&url).send().await {
             Ok(resp) => break resp,
-            Err(err) if attempt < 80 => {
+            Err(err) if attempt < 160 => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let _ = err;
