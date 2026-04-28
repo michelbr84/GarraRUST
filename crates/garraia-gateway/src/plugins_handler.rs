@@ -23,7 +23,7 @@
 //!      IPs (loopback/private/link-local/multicast/unspecified) for
 //!      IPv4 + IPv6.
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -553,6 +553,7 @@ async fn read_capped(response: reqwest::Response, cap: usize) -> Result<Vec<u8>,
 ///   * fe80::/10         (link-local)
 ///   * ff00::/8          (multicast)
 ///   * ::ffff:0:0/96     (IPv4-mapped — inspect inner v4)
+///   * ::a.b.c.d         (IPv4-compatible legacy RFC 4291 §2.5.5.1 — inspect inner v4)
 fn is_blocked_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -580,6 +581,22 @@ fn is_blocked_ip(ip: &IpAddr) -> bool {
             }
             // IPv4-mapped IPv6 (::ffff:0:0/96): inspect the inner v4.
             if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(&IpAddr::V4(v4));
+            }
+            // IPv4-compatible IPv6 (RFC 4291 §2.5.5.1, deprecated):
+            // ::a.b.c.d where the high 96 bits are zero and the low 32
+            // bits encode an IPv4 address. Distinguished from v4-mapped
+            // (::ffff:a.b.c.d, handled above by to_ipv4_mapped) and from
+            // pure ::1/:: (caught by is_loopback/is_unspecified guards
+            // ABOVE this branch — those guards run first, so the cases
+            // segs[6] == 0 && segs[7] in (0, 1) never reach here). GAR-460.
+            if segs[0..6] == [0, 0, 0, 0, 0, 0] {
+                let v4 = Ipv4Addr::new(
+                    (segs[6] >> 8) as u8,
+                    (segs[6] & 0xff) as u8,
+                    (segs[7] >> 8) as u8,
+                    (segs[7] & 0xff) as u8,
+                );
                 return is_blocked_ip(&IpAddr::V4(v4));
             }
             false
@@ -718,6 +735,28 @@ mod tests {
         assert!(is_blocked_ip(&ip("::ffff:127.0.0.1")));
         // ::ffff:169.254.169.254 — IPv4-mapped IPv6 of IMDS.
         assert!(is_blocked_ip(&ip("::ffff:169.254.169.254")));
+    }
+
+    #[test]
+    fn is_blocked_ip_ipv6_v4_compatible_legacy() {
+        // GAR-460 — IPv4-compatible IPv6 (RFC 4291 §2.5.5.1, deprecated):
+        // ::a.b.c.d. NOT captured by Ipv6Addr::to_ipv4_mapped() (which
+        // only handles ::ffff:a.b.c.d). The new branch in is_blocked_ip
+        // walks segs[0..6] == [0;6] and decodes segs[6..8] as a v4 addr.
+        assert!(is_blocked_ip(&ip("::127.0.0.1"))); // loopback wrapped
+        assert!(is_blocked_ip(&ip("::169.254.169.254"))); // IMDS wrapped
+        assert!(is_blocked_ip(&ip("::10.0.0.1"))); // RFC1918 wrapped
+        assert!(is_blocked_ip(&ip("::192.168.1.1"))); // RFC1918 wrapped
+        // Public v4 wrapped in v4-compatible should NOT be blocked.
+        assert!(!is_blocked_ip(&ip("::8.8.8.8")));
+        assert!(!is_blocked_ip(&ip("::1.1.1.1")));
+        // Boundary: ::1 stays IPv6 loopback (caught by is_loopback BEFORE
+        // the v4-compat branch fires — guards run in declared order).
+        assert!(is_blocked_ip(&ip("::1")));
+        // Boundary: :: stays IPv6 unspecified (caught by is_unspecified
+        // BEFORE the v4-compat branch). Would also collapse to 0.0.0.0
+        // which is blocked, but for the right reason.
+        assert!(is_blocked_ip(&ip("::")));
     }
 
     #[test]
