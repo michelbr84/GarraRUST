@@ -113,19 +113,40 @@ test_health() {
 }
 
 test_create_session() {
-    # POST /api/sessions  — creates a session (same as Telegram channel init)
-    local resp
-    resp=$(garraia_curl POST "/api/sessions" -d "{\"session_id\":\"${SESSION_ID}\"}" 2>&1)
-    # Accept 200 or 201; session already exists is also OK (idempotent)
-    if echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('session_id') or d.get('id') or d.get('ok')" 2>/dev/null; then
-        return 0
+    # POST /api/sessions — creates a session (same as Telegram channel init).
+    #
+    # GAR-446 part 2: the previous version sent {"session_id":"${SESSION_ID}"}
+    # in the body and accepted any non-empty `session_id`/`id`/`ok` field as
+    # PASS. But the gateway IGNORES the body's session_id by design — see
+    # `crates/garraia-gateway/src/api.rs:62-122` and
+    # `crates/garraia-gateway/src/state.rs:406-410` (`state.create_session()`
+    # always generates a fresh UUID). The previous test was therefore a
+    # vacuous PASS: the script kept using the requested SESSION_ID locally
+    # while the gateway stored under its own UUID, so tests 4 and 6 — which
+    # hit `/api/sessions/{id}/...` — would 404 against state.sessions.
+    #
+    # Fix: capture the gateway-assigned session_id from the response and
+    # update the global SESSION_ID. Tests 3-6 then use the same ID the
+    # gateway actually persisted under.
+    local resp returned_id
+    resp=$(garraia_curl POST "/api/sessions" -d "{}" 2>&1)
+    returned_id=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sid = d.get('session_id') or d.get('id')
+assert sid, f'response missing session_id/id: {d}'
+print(sid)
+" 2>/dev/null) || returned_id=""
+
+    if [[ -z "$returned_id" ]]; then
+        echo "  Response: $resp" >&2
+        echo "  Could not extract gateway-assigned session_id from response." >&2
+        return 1
     fi
-    # Some implementations return just {}  or {"status":"ok"}
-    if [[ "$resp" == "{}" ]] || echo "$resp" | grep -qi '"ok"'; then
-        return 0
-    fi
-    echo "  Response: $resp" >&2
-    return 1
+
+    info "  Gateway-assigned session_id: $returned_id (script default was: $SESSION_ID)"
+    SESSION_ID="$returned_id"
+    return 0
 }
 
 test_chat_completions_first_turn() {
@@ -164,22 +185,78 @@ assert d['choices'][0]['message'].get('content'), 'empty content'
 }
 
 test_session_history_persisted() {
-    # Check that messages were persisted in the session
-    local resp
-    resp=$(garraia_curl GET "/api/sessions/${SESSION_ID}/messages?limit=10" 2>&1)
+    # GAR-446: end-to-end persistence test on the /api/sessions surface.
+    #
+    # The /v1/chat/completions surface is intentionally stateless from the
+    # gateway's perspective (consumer passes prior context as part of the
+    # request — see test 5). It does not necessarily share persistence with
+    # the /api/sessions/{id}/* surface, especially in the dev-echo-provider
+    # CI config. So driving persistence via test 3 (chat completions) and
+    # asserting it via /api/sessions/{id}/history is architecturally wrong.
+    #
+    # Right path: POST /api/sessions/{id}/messages goes through
+    # `api::send_message` (crates/garraia-gateway/src/api.rs:158-253) which
+    # does `state.persist_turn(...)` (line 227-235) — same store
+    # `api::session_history` reads via `state.hydrate_session_history` +
+    # `state.session_history` (api.rs:269-272). Symmetric round-trip.
+    #
+    # Steps:
+    #   1) POST /api/sessions/{id}/messages with a primer turn — drives
+    #      persistence on the same surface we're about to read.
+    #   2) GET /api/sessions/{id}/history — fail-fast on any non-200.
+    #   3) Strict shape: messages is a list, len >= 2 (user + assistant from
+    #      the primer turn), each item has role + content.
+    local primer_status primer_body history_status history_body body_file
+    body_file=$(mktemp)
 
-    if echo "$resp" | python3 -c "
+    # Step 1 — primer turn via /api/sessions/{id}/messages.
+    primer_status=$(curl -s -o "$body_file" -w "%{http_code}" \
+        -X POST "${BASE_URL}/api/sessions/${SESSION_ID}/messages" \
+        -H "Content-Type: application/json" \
+        "${auth_headers[@]}" \
+        -d '{"content":"persistence primer for GAR-446 test 4"}')
+    primer_body=$(cat "$body_file")
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "  ← primer status=$primer_status body=$primer_body" >&2
+    fi
+    if [[ "$primer_status" != "200" ]]; then
+        rm -f "$body_file"
+        echo "  HTTP $primer_status on POST /api/sessions/${SESSION_ID}/messages" >&2
+        echo "  Primer body: $primer_body" >&2
+        return 1
+    fi
+
+    # Step 2 — read history.
+    history_status=$(curl -s -o "$body_file" -w "%{http_code}" \
+        -X GET "${BASE_URL}/api/sessions/${SESSION_ID}/history" \
+        -H "Content-Type: application/json" \
+        "${auth_headers[@]}")
+    history_body=$(cat "$body_file")
+    rm -f "$body_file"
+
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "  ← history status=$history_status body=$history_body" >&2
+    fi
+    if [[ "$history_status" != "200" ]]; then
+        echo "  HTTP $history_status (expected 200) on GET /api/sessions/${SESSION_ID}/history" >&2
+        echo "  Body: $history_body" >&2
+        return 1
+    fi
+
+    # Step 3 — strict shape assertion.
+    if echo "$history_body" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-msgs = d if isinstance(d, list) else d.get('messages', [])
-assert len(msgs) >= 1, f'expected >=1 messages, got {len(msgs)}'
+msgs = d.get('messages', [])
+assert isinstance(msgs, list), f'expected messages to be a list, got {type(msgs).__name__}'
+assert len(msgs) >= 2, f'expected >=2 persisted messages (user+assistant from primer turn), got {len(msgs)}'
+for m in msgs:
+    assert 'role' in m and 'content' in m, f'malformed message: {m}'
 " 2>/dev/null; then
         return 0
     fi
-    echo "  Response: $resp" >&2
-    # Non-fatal: not all implementations expose this endpoint
-    info "  (session history endpoint not available — skipping persistence check)"
-    return 0
+    echo "  Body did not match expected shape (msgs:list len>=2 with primer turn, each role+content): $history_body" >&2
+    return 1
 }
 
 test_chat_completions_second_turn() {
