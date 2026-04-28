@@ -240,7 +240,18 @@ jobs:
         # for supply-chain hygiene. `^0.6` allows minor bumps within the 0.6.x
         # line (current 0.6.16 as of 2026-04-28); breaking-change bumps require
         # a deliberate edit.
-        run: cargo install --locked --version '^0.6' cargo-llvm-cov
+        #
+        # `--force` is required because the cache step above restores
+        # `~/.cargo/bin/` whenever the same Cargo.lock hash hits (which is
+        # always for refactor PRs that don't touch the lockfile). On a cache
+        # hit, the cargo-llvm-cov binary is already present and `cargo
+        # install` refuses to overwrite without `--force`. Discovered on
+        # PR-1 of plan abundant-thimble (GAR-440 slice 10.a, 2026-04-28):
+        # 1st CI run installed clean, 2nd run (after fmt fixup commit) hit
+        # cache and failed with `error: binary cargo-llvm-cov already
+        # exists in destination`. `--force` makes the step idempotent
+        # without sacrificing the supply-chain pin.
+        run: cargo install --locked --force --version '^0.6' cargo-llvm-cov
 
       - name: Generate lcov coverage
         run: |
