@@ -6,7 +6,7 @@ Thank you for your interest in contributing to GarraIA!
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.92+
 - Git
 - FFmpeg (for voice features)
 
