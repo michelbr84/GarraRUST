@@ -21,9 +21,16 @@
 //!      operator opts into specific domains via `INSTALL_URL_ALLOWLIST`.
 //!   4. HTTPS-only, redirect=none, 10s timeout, 64KiB body cap, blocked
 //!      IPs (loopback/private/link-local/multicast/unspecified) for
-//!      IPv4 + IPv6.
+//!      IPv4 + IPv6 (including v4-mapped and v4-compatible legacy via
+//!      GAR-460).
+//!   5. **DNS pinning (GAR-461):** the IPs vetted in step (3) are
+//!      handed to `reqwest::ClientBuilder::resolve_to_addrs(&host, …)`
+//!      so the connect-time DNS lookup is skipped entirely for `host`
+//!      and `.send()` connects to the IPs we already validated. This
+//!      eliminates the TOCTOU window an attacker controlling the
+//!      upstream resolver could otherwise exploit (DNS rebinding).
 
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -417,45 +424,19 @@ async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson,
         ));
     }
 
-    // 3) DNS resolve + IP block gate. Resolves once here to fail-fast on
-    //    private targets BEFORE the reqwest client opens the socket.
-    //    Note: this is not perfect mitigation against DNS rebinding (the
-    //    actual reqwest connect resolves again); the allowlist gate above
-    //    is the primary defense, and the IP block is defense-in-depth.
+    // 3) DNS resolve + IP block gate. Resolves ONCE here; the resolved
+    //    addrs are pinned into the reqwest client below via
+    //    `resolve_to_addrs` so the connect does NOT re-resolve `host`
+    //    (defense against DNS rebinding — GAR-461).
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let socket_str = format!("{host}:{port}");
-    let resolved = socket_str
-        .to_socket_addrs()
-        .map_err(|e| InstallError::bad_request(format!("DNS resolve failed: {e}")))?;
-    let mut any_resolved = false;
-    for addr in resolved {
-        any_resolved = true;
-        if is_blocked_ip(&addr.ip()) {
-            return Err(InstallError::forbidden(format!(
-                "host '{host}' resolves to blocked address {} \
-                 (loopback/private/link-local/multicast/unspecified)",
-                addr.ip()
-            )));
-        }
-    }
-    if !any_resolved {
-        return Err(InstallError::bad_request(format!(
-            "host '{host}' resolved to no addresses"
-        )));
-    }
+    let resolved = resolve_manifest_addrs(&host, port)?;
+    validate_manifest_addrs(&resolved, &host)?;
 
-    // 4) HTTP fetch with redirect=none + timeout + bounded body.
-    let client = reqwest::Client::builder()
-        .timeout(MANIFEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .https_only(true)
-        .user_agent(concat!(
-            "GarraIA/",
-            env!("CARGO_PKG_VERSION"),
-            " plugin-installer"
-        ))
-        .build()
-        .map_err(|e| InstallError::upstream(format!("client build failed: {e}")))?;
+    // 4) HTTP fetch with redirect=none + timeout + bounded body. Client
+    //    is built with `resolve_to_addrs(&host, &resolved)` so reqwest's
+    //    `.send()` skips DNS resolution entirely for `host` and connects
+    //    to the IPs we already validated in step (3).
+    let client = build_pinned_manifest_client(&host, &resolved)?;
 
     let response = client
         .get(parsed)
@@ -508,6 +489,66 @@ async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson,
     }
 
     Ok(manifest)
+}
+
+/// Resolve `host:port` to the full set of `SocketAddr`s via the system
+/// resolver. Returns an `InstallError::bad_request` if resolution fails
+/// or returns zero addresses. Pure helper — no IO besides DNS, easy to
+/// reason about and replace.
+fn resolve_manifest_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, InstallError> {
+    let socket_str = format!("{host}:{port}");
+    let resolved: Vec<SocketAddr> = socket_str
+        .to_socket_addrs()
+        .map_err(|e| InstallError::bad_request(format!("DNS resolve failed: {e}")))?
+        .collect();
+    if resolved.is_empty() {
+        return Err(InstallError::bad_request(format!(
+            "host '{host}' resolved to no addresses"
+        )));
+    }
+    Ok(resolved)
+}
+
+/// Reject the entire `addrs` list if ANY address falls in a blocked
+/// IP range (per [`is_blocked_ip`]). Returning `Ok(())` guarantees every
+/// entry is publicly routable. The `host` parameter only flavors the
+/// error message.
+fn validate_manifest_addrs(addrs: &[SocketAddr], host: &str) -> Result<(), InstallError> {
+    for addr in addrs {
+        if is_blocked_ip(&addr.ip()) {
+            return Err(InstallError::forbidden(format!(
+                "host '{host}' resolves to blocked address {} \
+                 (loopback/private/link-local/multicast/unspecified)",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Build a `reqwest::Client` that connects ONLY to the pre-validated
+/// `addrs` for `host`, bypassing reqwest's internal DNS resolver. This
+/// closes the TOCTOU window for DNS rebinding: without
+/// `resolve_to_addrs`, reqwest would resolve `host` again at `.send()`
+/// time, allowing an attacker controlling the upstream resolver to swap
+/// the IP between our IP-block gate and the actual connect. Cf.
+/// `reqwest::ClientBuilder::resolve_to_addrs` (GAR-461).
+fn build_pinned_manifest_client(
+    host: &str,
+    addrs: &[SocketAddr],
+) -> Result<reqwest::Client, InstallError> {
+    reqwest::Client::builder()
+        .resolve_to_addrs(host, addrs)
+        .timeout(MANIFEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
+        .user_agent(concat!(
+            "GarraIA/",
+            env!("CARGO_PKG_VERSION"),
+            " plugin-installer"
+        ))
+        .build()
+        .map_err(|e| InstallError::upstream(format!("client build failed: {e}")))
 }
 
 /// Read at most `cap` bytes from a response body, aborting with a 400 if
@@ -821,5 +862,75 @@ mod tests {
             .await
             .expect_err("invalid URL should be 400");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    // ── DNS-pinning helpers (GAR-461) ──────────────────────────────────────
+    //
+    // These exercise the pure helpers `validate_manifest_addrs` +
+    // `build_pinned_manifest_client` without touching the network. The
+    // structural guarantee that `.send()` skips the connect-time DNS
+    // lookup comes from `reqwest::ClientBuilder::resolve_to_addrs`,
+    // which we plug in `build_pinned_manifest_client`. We do not test
+    // `resolve_manifest_addrs` directly because it depends on the system
+    // resolver (covered indirectly by the existing e2e harness).
+
+    #[test]
+    fn validate_manifest_addrs_accepts_empty() {
+        // Trivially total. `resolve_manifest_addrs` would have returned
+        // an error before reaching this; we still want a no-panic on [].
+        assert!(validate_manifest_addrs(&[], "example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_manifest_addrs_rejects_loopback_v4() {
+        let addrs = vec![SocketAddr::from(([127, 0, 0, 1], 443))];
+        let err =
+            validate_manifest_addrs(&addrs, "evil.example").expect_err("loopback must be rejected");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(err.message.contains("blocked address"));
+    }
+
+    #[test]
+    fn validate_manifest_addrs_rejects_imds() {
+        let addrs = vec![SocketAddr::from(([169, 254, 169, 254], 443))];
+        assert!(validate_manifest_addrs(&addrs, "evil.example").is_err());
+    }
+
+    #[test]
+    fn validate_manifest_addrs_rejects_mixed_public_private() {
+        // Critical case: an attacker's resolver returns a public IP
+        // first (would pass alone) followed by RFC1918. The helper MUST
+        // walk the entire list and trip on ANY blocked entry.
+        let addrs = vec![
+            SocketAddr::from(([8, 8, 8, 8], 443)), // public, would pass alone
+            SocketAddr::from(([10, 0, 0, 1], 443)), // RFC1918 — must trip
+        ];
+        let err = validate_manifest_addrs(&addrs, "evil.example")
+            .expect_err("mixed public+private must be rejected");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn validate_manifest_addrs_accepts_all_public_v4_v6() {
+        let addrs = vec![
+            SocketAddr::from(([8, 8, 8, 8], 443)),
+            SocketAddr::from(([1, 1, 1, 1], 443)),
+            SocketAddr::from((
+                std::net::Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111),
+                443,
+            )),
+        ];
+        assert!(validate_manifest_addrs(&addrs, "ok.example").is_ok());
+    }
+
+    #[test]
+    fn build_pinned_manifest_client_smoke() {
+        // Smoke test: builder accepts a host + pinned addrs and returns
+        // a usable Client. The behavioral guarantee that `.send()` on
+        // this client skips DNS resolution comes from reqwest's docs;
+        // we verify the wiring compiles and constructs successfully.
+        let addrs = vec![SocketAddr::from(([8, 8, 8, 8], 443))];
+        let client = build_pinned_manifest_client("example.invalid", &addrs);
+        assert!(client.is_ok(), "expected pinned client to build cleanly");
     }
 }
