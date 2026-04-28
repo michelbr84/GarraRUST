@@ -63,7 +63,7 @@ jobs:
   # 5 audit.toml mirrors with deny-stricter severity mapping under GAR-437/
   # GAR-456/GAR-457, 23 unmaintained-only spread across GAR-430 ownership).
   # Second-layer gate paired with the now-blocking PR-time `Security Audit`
-  # job (`cargo audit --no-fetch --deny unsound`).
+  # job (`cargo audit --deny unsound`, GAR-462 dropped `--no-fetch`).
   cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -480,22 +480,22 @@ jobs:
 
   # Security audit — bloqueante desde plan 0053 PR-7 (GAR-453, fecha GAR-437).
   # Espelha o setup do nightly `.github/workflows/cargo-audit.yml` para evitar
-  # drift de decisão entre PR-time e schedule. Quando rustsec >= 0.31 com CVSS
-  # v4 nativo chegar, o strip step abaixo deve sair de AMBOS workflows
-  # atomicamente. Histórico: o `continue-on-error: true` que sobreviveu até
-  # plan 0053 PR-1..PR-6 cobria 6 advisories; PR-1..PR-6 fecharam ou
-  # documentaram cada uma em `.cargo/audit.toml` com Linear owner explícito,
-  # então o gate agora é blocking de fato.
+  # drift de decisão entre PR-time e schedule. Histórico: o `continue-on-error:
+  # true` que sobreviveu até plan 0053 PR-1..PR-6 cobria 6 advisories;
+  # PR-1..PR-6 fecharam ou documentaram cada uma em `.cargo/audit.toml` com
+  # Linear owner explícito, então o gate agora é blocking de fato.
+  #
+  # GAR-462 (2026-04-28): bump cargo-audit pin de `^0.21` para `^0.22` e
+  # remove o strip CVSS v4 do plan 0043. cargo-audit 0.22.1 ships rustsec
+  # >= 0.31 que (a) tolera CVSS v4 nativamente e (b) tolera filenames
+  # não-canônicos como `RUSTSEC-0000-0000.<N>.md` (placeholders pre-ID).
+  # Mudanças aqui devem replicar em cargo-audit.yml.
   security:
     name: Security Audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-    env:
-      # Plan 0043: hard ceiling para CVSS v4 advisories que podem ser
-      # strippadas. Alinhado com cargo-audit.yml. EXPIRES 2026-05-20.
-      MAX_STRIPPED_CVSS_V4: 50
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -504,47 +504,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        # `--locked` pina as transitive deps de cargo-audit; range `^0.21`
-        # tracks a linha 0.21.x igual ao nightly. Bump deliberado quando
+        # `--locked` pina as transitive deps de cargo-audit; range `^0.22`
+        # tracks a linha 0.22.x igual ao nightly. Bump deliberado quando
         # upstream quebrar contrato CLI.
-        run: cargo install --locked --version '^0.21' cargo-audit
+        run: cargo install --locked --version '^0.22' cargo-audit
 
       - name: Prime crates.io index for workspace deps
-        # cargo-audit --no-fetch desabilita o refresh do índice — pré-popular
-        # via `cargo fetch --locked` para que metadata lookups (yanked,
-        # existência) funcionem offline. Plan 0043 §5.6.
+        # Pre-popular o sparse index para que metadata lookups (yanked,
+        # existência) de cargo-audit funcionem rápido. Plan 0043 §5.6.
         run: cargo fetch --locked
-
-      - name: Fetch advisory database and strip CVSS v4 entries
-        # Fetch HEAD do RustSec advisory-db, depois strip de entradas com
-        # CVSS v4 (rustsec 0.30.x falha o load inteiro se uma única entrada
-        # for unparseable). Hard-stop em threshold quando upstream fizer bulk
-        # migration. EXPIRES 2026-05-20. Espelha cargo-audit.yml passo-a-passo.
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.cargo/advisory-db
-          cd ~/.cargo/advisory-db
-          git init --quiet
-          git remote add origin https://github.com/rustsec/advisory-db.git
-          git fetch --depth=1 --quiet origin main
-          git checkout --quiet FETCH_HEAD
-          echo "Advisory DB HEAD: $(git rev-parse --short HEAD)"
-          echo "Commit date: $(git log -1 --format=%cd --date=iso-strict)"
-          mapfile -t stripped < <(grep -rlE '^[[:space:]]*cvss = "CVSS:4\.0/' crates/ || true)
-          echo "Stripping ${#stripped[@]} CVSS v4 advisories (threshold ${MAX_STRIPPED_CVSS_V4}):"
-          if [ "${#stripped[@]}" -gt "${MAX_STRIPPED_CVSS_V4}" ]; then
-            echo "::error::Stripped ${#stripped[@]} CVSS v4 advisories exceeds threshold ${MAX_STRIPPED_CVSS_V4}."
-            echo "Re-triage required — rustsec likely needs CVSS v4 support."
-            exit 1
-          fi
-          if [ "${#stripped[@]}" -gt 0 ]; then
-            printf '  %s\n' "${stripped[@]}"
-            rm -- "${stripped[@]}"
-          fi
 
       - name: Run security audit
         # `--deny unsound` widens failure beyond the default vuln set.
-        # `--no-fetch` prevents cargo-audit from refreshing the DB and
-        # overriding the CVSS v4 strip above. Mesmo flag-for-flag que o
-        # nightly cargo-audit.yml — mudanças aqui devem replicar lá.
-        run: cargo audit --no-fetch --deny unsound
+        # GAR-462 dropped `--no-fetch`: cargo-audit 0.22 gerencia o
+        # advisory-db sozinho. Mesmo flag-for-flag que o nightly
+        # cargo-audit.yml.
+        run: cargo audit --deny unsound
