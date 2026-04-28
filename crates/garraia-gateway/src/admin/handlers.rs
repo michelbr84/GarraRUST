@@ -1,26 +1,18 @@
-use std::sync::Arc;
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
-use tokio::sync::Mutex;
 
 use super::middleware::{AuthenticatedAdmin, build_clear_cookie, build_session_cookie, extract_ip};
 use super::rbac::{Action, Resource, Role, check_permission};
-use super::store::AdminStore;
-use crate::state::SharedState;
 
-/// Shared state for admin API handlers.
-#[derive(Clone)]
-pub struct AdminState {
-    pub store: Arc<Mutex<AdminStore>>,
-    pub app_state: SharedState,
-    /// Master encryption key (derived or loaded at startup) for secrets encryption.
-    pub encryption_key: Arc<Vec<u8>>,
-}
+// Slice 9.a (GAR-439): `AdminState` and `derive_encryption_key` extracted to
+// `admin::shared`. Re-exported here so external paths
+// `super::handlers::AdminState` and `super::handlers::derive_encryption_key`
+// (consumed by `admin/routes.rs`) keep resolving without changes.
+pub use super::shared::{AdminState, derive_encryption_key};
 
 // ── Auth endpoints ──────────────────────────────────────────────────
 
@@ -1075,58 +1067,6 @@ fn redact_config_secrets(config: &mut garraia_config::AppConfig) {
             }
         }
     }
-}
-
-/// Derive or generate a master encryption key for the admin secrets store.
-pub fn derive_encryption_key() -> Vec<u8> {
-    if let Ok(passphrase) = std::env::var("GARRAIA_ADMIN_KEY") {
-        let salt = b"garraia-admin-secrets-v1";
-        let iterations = std::num::NonZeroU32::new(100_000).unwrap();
-        let mut key = vec![0u8; 32];
-        ring::pbkdf2::derive(
-            ring::pbkdf2::PBKDF2_HMAC_SHA256,
-            iterations,
-            salt,
-            passphrase.as_bytes(),
-            &mut key,
-        );
-        return key;
-    }
-
-    if let Ok(passphrase) = std::env::var("GARRAIA_VAULT_PASSPHRASE") {
-        let salt = b"garraia-admin-secrets-v1";
-        let iterations = std::num::NonZeroU32::new(100_000).unwrap();
-        let mut key = vec![0u8; 32];
-        ring::pbkdf2::derive(
-            ring::pbkdf2::PBKDF2_HMAC_SHA256,
-            iterations,
-            salt,
-            passphrase.as_bytes(),
-            &mut key,
-        );
-        return key;
-    }
-
-    let key_path = garraia_config::ConfigLoader::default_config_dir()
-        .join("admin")
-        .join("master.key");
-
-    if let Ok(data) = std::fs::read(&key_path)
-        && data.len() == 32
-    {
-        return data;
-    }
-
-    let rng = SystemRandom::new();
-    let mut key = vec![0u8; 32];
-    rng.fill(&mut key).expect("failed to generate master key");
-
-    if let Some(parent) = key_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&key_path, &key);
-
-    key
 }
 
 // ═══════════════════════════════════════════════════════════════════════
