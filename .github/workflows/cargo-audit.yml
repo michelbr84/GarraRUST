@@ -12,26 +12,28 @@ name: Security — cargo audit
 # no SARIF upload to the GitHub Security tab; failure visibility is
 # limited to the Actions tab + default notification channel.
 #
-# Plan 0043 (2026-04-22): the scheduled run went red with
-#   `error loading advisory database: TOML parse error at line N, column 8`
-# because `rustsec 0.30.x` cannot deserialize CVSS v4 advisories
-# (`cvss = "CVSS:4.0/..."`). Verification showed 39+ such entries in the
-# current HEAD of advisory-db (the earliest is deno/RUSTSEC-2025-0138
-# from 2025-12-29), so a SHA pin pre-dating v4 would require going back
-# 4+ months and losing all recent advisories. The adopted strategy is
-# instead to **strip** the CVSS v4 files after fetching HEAD. This keeps
-# full coverage of the CVSS v3 advisory corpus at the price of an
-# explicit, logged coverage gap on the v4-annotated crates.
+# Plan 0043 (2026-04-22) added a temporary CVSS v4 strip workaround to keep
+# `cargo audit` working against advisory-db HEAD when rustsec 0.30.x choked
+# on `cvss = "CVSS:4.0/..."` entries (see GAR-428).
 #
-# Crates in our Cargo.lock that intersect the stripped set as of the
-# pinning date: cap-primitives, cmov, quinn-proto, tar, time, wasmtime.
-# Manual review of these is tracked as follow-up to Lote B-2 (see plan
-# `synchronous-baking-hippo.md` §13).
+# GAR-462 (2026-04-28) supersedes that workaround. cargo-audit 0.22.1
+# (released 2026-02-04) ships rustsec >= 0.31 which (a) tolerates CVSS v4
+# entries natively and (b) tolerates non-canonical advisory filenames such
+# as `RUSTSEC-0000-0000.<N>.md` (the placeholder convention used by
+# advisory-db contributors for advisories awaiting permanent ID assignment).
+# Empirically verified locally against advisory-db HEAD `3562fa0`:
+# `cargo-audit 0.22.1 audit --deny unsound` loads the DB without error.
 #
-# EXPIRES 2026-05-20 (4 weeks). At expiration either rustsec has shipped
-# CVSS v4 support (remove the strip step) or we re-triage.
-# Safety net: the strip step aborts the job if the stripped count
-# exceeds 50 — forces triage when upstream does a bulk migration.
+# Consequence: this workflow no longer needs the manual fetch + strip step.
+# Pin bumped from `^0.21` to `^0.22` and the manual advisory-db management
+# is handed back to cargo-audit itself.
+#
+# Note on coverage: cargo-audit (any version) does NOT match advisories
+# filed under the placeholder ID `RUSTSEC-0000-0000`. The companion
+# `cargo-deny` job in `ci.yml` does match them — it caught the
+# `astral-tokio-tar 0.6.0` PAX header / chmod-via-symlink advisories in
+# GAR-462. Until upstream RustSec assigns permanent IDs, cargo-deny is
+# the authoritative gate for placeholder-ID advisories.
 
 on:
   schedule:
@@ -57,13 +59,6 @@ concurrency:
   # who may simply be testing the workflow).
   cancel-in-progress: false
 
-env:
-  # Plan 0043: hard ceiling on CVSS v4 advisories that may be stripped.
-  # If the real count at HEAD exceeds this, the job aborts so we can
-  # re-triage upstream schema state instead of silently losing coverage.
-  # Current count (2026-04-22): 39. EXPIRES 2026-05-20.
-  MAX_STRIPPED_CVSS_V4: 50
-
 jobs:
   audit:
     name: cargo audit
@@ -79,55 +74,20 @@ jobs:
       - name: Install cargo-audit
         # `--locked` pins the transitive deps of cargo-audit itself so
         # this job doesn't silently drift when a new cargo-audit release
-        # lands. Version range `^0.21` tracks the 0.21.x line; bump
-        # deliberately when upstream breaks the CLI contract (flags,
-        # exit codes, report format).
-        run: cargo install --locked --version '^0.21' cargo-audit
+        # lands. Version range `^0.22` tracks the 0.22.x line (bumped
+        # from `^0.21` in GAR-462). 0.22.1 ships rustsec >= 0.31 with
+        # native CVSS v4 support and tolerance for non-canonical
+        # advisory filenames — both fixes that previously required the
+        # manual strip workaround removed by GAR-462. Bump the range
+        # deliberately when upstream breaks the CLI contract.
+        run: cargo install --locked --version '^0.22' cargo-audit
 
       - name: Prime crates.io index for workspace deps
-        # cargo-audit --no-fetch disables the crates.io index refresh
-        # that cargo-audit uses for metadata lookups (yanked status
-        # and crate existence checks). Even without --deny yanked,
-        # yanked crates appear as yellow warnings which require the
-        # index. Pre-populate the local sparse index via
-        # `cargo fetch --locked` so the audit can resolve every dep
-        # in our lockfile without re-fetching. Plan 0043 §5.6.
+        # cargo-audit performs metadata lookups (yanked status, crate
+        # existence) against the crates.io index. Pre-populating via
+        # `cargo fetch --locked` keeps those lookups offline-stable
+        # and shortens the audit step. Plan 0043 §5.6.
         run: cargo fetch --locked
-
-      - name: Fetch advisory database and strip CVSS v4 entries
-        # Fetch HEAD of the RustSec advisory database, then remove entries
-        # that use CVSS v4 notation. rustsec 0.30.x fails to load the
-        # entire DB if a single entry is unparseable (by-design strictness
-        # of `rustsec::Database::open`). Stripping is the minimum-cost way
-        # to restore audit coverage without losing 4+ months of recent
-        # CVSS v3 advisories (plan 0043 §5.2). EXPIRES 2026-05-20.
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.cargo/advisory-db
-          cd ~/.cargo/advisory-db
-          git init --quiet
-          git remote add origin https://github.com/rustsec/advisory-db.git
-          git fetch --depth=1 --quiet origin main
-          git checkout --quiet FETCH_HEAD
-          echo "Advisory DB HEAD: $(git rev-parse --short HEAD)"
-          echo "Commit date: $(git log -1 --format=%cd --date=iso-strict)"
-          # Strip CVSS v4 advisories. Anchored to start of line and
-          # tolerant of leading whitespace (`[[:space:]]*`) to cover
-          # TOML-legal indentation variants — rustsec advisory files
-          # today use no indent, but the schema allows leading spaces.
-          # Exact prefix `cvss = "CVSS:4.0/` keeps the match precise —
-          # body mentions of `CVSS:4.0` in prose won't trigger.
-          mapfile -t stripped < <(grep -rlE '^[[:space:]]*cvss = "CVSS:4\.0/' crates/ || true)
-          echo "Stripping ${#stripped[@]} CVSS v4 advisories (threshold ${MAX_STRIPPED_CVSS_V4}):"
-          if [ "${#stripped[@]}" -gt "${MAX_STRIPPED_CVSS_V4}" ]; then
-            echo "::error::Stripped ${#stripped[@]} CVSS v4 advisories exceeds threshold ${MAX_STRIPPED_CVSS_V4}."
-            echo "Re-triage required — rustsec likely needs CVSS v4 support."
-            exit 1
-          fi
-          if [ "${#stripped[@]}" -gt 0 ]; then
-            printf '  %s\n' "${stripped[@]}"
-            rm -- "${stripped[@]}"
-          fi
 
       - name: Run cargo audit
         # `cargo audit` already fails on any advisory (Informational,
@@ -141,11 +101,11 @@ jobs:
         # has "all versions yanked, unmaintained" upstream — no bump
         # possible. Yanked still shows as yellow warning in the log;
         # B-2 will swap core2 out of the dep tree or feature-gate
-        # `garraia-media` for CI-free builds. Removing `--deny yanked`
-        # is scoped: it's the single axis blocking green here, and
-        # leaving it exposed-but-not-fatal matches the existing treatment
-        # of unmaintained warnings in `informational_warnings`.
+        # `garraia-media` for CI-free builds.
         #
-        # `-n / --no-fetch` prevents cargo-audit from trying to refresh
-        # the DB and overriding our CVSS v4 strip.
-        run: cargo audit --no-fetch --deny unsound
+        # GAR-462 dropped `--no-fetch`: the workaround that required
+        # pre-fetching + stripping the advisory-db is gone, so
+        # cargo-audit 0.22 fetches and manages the DB on its own. The
+        # DB SHA appears in the run log as part of cargo-audit's normal
+        # output for traceability.
+        run: cargo audit --deny unsound
