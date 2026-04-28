@@ -164,22 +164,50 @@ assert d['choices'][0]['message'].get('content'), 'empty content'
 }
 
 test_session_history_persisted() {
-    # Check that messages were persisted in the session
-    local resp
-    resp=$(garraia_curl GET "/api/sessions/${SESSION_ID}/messages?limit=10" 2>&1)
+    # GAR-446: assert real persistence — fail-fast on any non-200 status.
+    #
+    # Endpoint: GET /api/sessions/{id}/history
+    #   Route:  crates/garraia-gateway/src/router.rs:112
+    #   Handler:crates/garraia-gateway/src/api.rs:257-298 (api::session_history)
+    #   Shape:  200 + {"messages":[{"role":"...","content":"..."}]}
+    #   404:    {"error":"session not found"}
+    #
+    # Previous version targeted GET /api/sessions/{id}/messages?limit=10 (route
+    # does NOT exist — only POST exists at that path) and silently returned
+    # PASS via `info "endpoint not available — skipping"`. Test 4 effectively
+    # never exercised persistence. See Linear GAR-446 for the full diagnosis.
+    local body_file status body
+    body_file=$(mktemp)
+    status=$(curl -s -o "$body_file" -w "%{http_code}" \
+        -X GET "${BASE_URL}/api/sessions/${SESSION_ID}/history" \
+        -H "Content-Type: application/json" \
+        "${auth_headers[@]}")
+    body=$(cat "$body_file")
+    rm -f "$body_file"
 
-    if echo "$resp" | python3 -c "
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "  ← status=$status body=$body" >&2
+    fi
+
+    if [[ "$status" != "200" ]]; then
+        echo "  HTTP $status (expected 200) on GET /api/sessions/${SESSION_ID}/history" >&2
+        echo "  Body: $body" >&2
+        return 1
+    fi
+
+    if echo "$body" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-msgs = d if isinstance(d, list) else d.get('messages', [])
-assert len(msgs) >= 1, f'expected >=1 messages, got {len(msgs)}'
+msgs = d.get('messages', [])
+assert isinstance(msgs, list), f'expected messages to be a list, got {type(msgs).__name__}'
+assert len(msgs) >= 1, f'expected >=1 persisted messages, got {len(msgs)}'
+for m in msgs:
+    assert 'role' in m and 'content' in m, f'malformed message: {m}'
 " 2>/dev/null; then
         return 0
     fi
-    echo "  Response: $resp" >&2
-    # Non-fatal: not all implementations expose this endpoint
-    info "  (session history endpoint not available — skipping persistence check)"
-    return 0
+    echo "  Body did not match expected shape (msgs:list len>=1, role+content): $body" >&2
+    return 1
 }
 
 test_chat_completions_second_turn() {
