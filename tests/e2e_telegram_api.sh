@@ -185,49 +185,77 @@ assert d['choices'][0]['message'].get('content'), 'empty content'
 }
 
 test_session_history_persisted() {
-    # GAR-446: assert real persistence — fail-fast on any non-200 status.
+    # GAR-446: end-to-end persistence test on the /api/sessions surface.
     #
-    # Endpoint: GET /api/sessions/{id}/history
-    #   Route:  crates/garraia-gateway/src/router.rs:112
-    #   Handler:crates/garraia-gateway/src/api.rs:257-298 (api::session_history)
-    #   Shape:  200 + {"messages":[{"role":"...","content":"..."}]}
-    #   404:    {"error":"session not found"}
+    # The /v1/chat/completions surface is intentionally stateless from the
+    # gateway's perspective (consumer passes prior context as part of the
+    # request — see test 5). It does not necessarily share persistence with
+    # the /api/sessions/{id}/* surface, especially in the dev-echo-provider
+    # CI config. So driving persistence via test 3 (chat completions) and
+    # asserting it via /api/sessions/{id}/history is architecturally wrong.
     #
-    # Previous version targeted GET /api/sessions/{id}/messages?limit=10 (route
-    # does NOT exist — only POST exists at that path) and silently returned
-    # PASS via `info "endpoint not available — skipping"`. Test 4 effectively
-    # never exercised persistence. See Linear GAR-446 for the full diagnosis.
-    local body_file status body
+    # Right path: POST /api/sessions/{id}/messages goes through
+    # `api::send_message` (crates/garraia-gateway/src/api.rs:158-253) which
+    # does `state.persist_turn(...)` (line 227-235) — same store
+    # `api::session_history` reads via `state.hydrate_session_history` +
+    # `state.session_history` (api.rs:269-272). Symmetric round-trip.
+    #
+    # Steps:
+    #   1) POST /api/sessions/{id}/messages with a primer turn — drives
+    #      persistence on the same surface we're about to read.
+    #   2) GET /api/sessions/{id}/history — fail-fast on any non-200.
+    #   3) Strict shape: messages is a list, len >= 2 (user + assistant from
+    #      the primer turn), each item has role + content.
+    local primer_status primer_body history_status history_body body_file
     body_file=$(mktemp)
-    status=$(curl -s -o "$body_file" -w "%{http_code}" \
-        -X GET "${BASE_URL}/api/sessions/${SESSION_ID}/history" \
+
+    # Step 1 — primer turn via /api/sessions/{id}/messages.
+    primer_status=$(curl -s -o "$body_file" -w "%{http_code}" \
+        -X POST "${BASE_URL}/api/sessions/${SESSION_ID}/messages" \
         -H "Content-Type: application/json" \
-        "${auth_headers[@]}")
-    body=$(cat "$body_file")
-    rm -f "$body_file"
-
+        "${auth_headers[@]}" \
+        -d '{"content":"persistence primer for GAR-446 test 4"}')
+    primer_body=$(cat "$body_file")
     if [[ "$VERBOSE" == "1" ]]; then
-        echo "  ← status=$status body=$body" >&2
+        echo "  ← primer status=$primer_status body=$primer_body" >&2
     fi
-
-    if [[ "$status" != "200" ]]; then
-        echo "  HTTP $status (expected 200) on GET /api/sessions/${SESSION_ID}/history" >&2
-        echo "  Body: $body" >&2
+    if [[ "$primer_status" != "200" ]]; then
+        rm -f "$body_file"
+        echo "  HTTP $primer_status on POST /api/sessions/${SESSION_ID}/messages" >&2
+        echo "  Primer body: $primer_body" >&2
         return 1
     fi
 
-    if echo "$body" | python3 -c "
+    # Step 2 — read history.
+    history_status=$(curl -s -o "$body_file" -w "%{http_code}" \
+        -X GET "${BASE_URL}/api/sessions/${SESSION_ID}/history" \
+        -H "Content-Type: application/json" \
+        "${auth_headers[@]}")
+    history_body=$(cat "$body_file")
+    rm -f "$body_file"
+
+    if [[ "$VERBOSE" == "1" ]]; then
+        echo "  ← history status=$history_status body=$history_body" >&2
+    fi
+    if [[ "$history_status" != "200" ]]; then
+        echo "  HTTP $history_status (expected 200) on GET /api/sessions/${SESSION_ID}/history" >&2
+        echo "  Body: $history_body" >&2
+        return 1
+    fi
+
+    # Step 3 — strict shape assertion.
+    if echo "$history_body" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 msgs = d.get('messages', [])
 assert isinstance(msgs, list), f'expected messages to be a list, got {type(msgs).__name__}'
-assert len(msgs) >= 1, f'expected >=1 persisted messages, got {len(msgs)}'
+assert len(msgs) >= 2, f'expected >=2 persisted messages (user+assistant from primer turn), got {len(msgs)}'
 for m in msgs:
     assert 'role' in m and 'content' in m, f'malformed message: {m}'
 " 2>/dev/null; then
         return 0
     fi
-    echo "  Body did not match expected shape (msgs:list len>=1, role+content): $body" >&2
+    echo "  Body did not match expected shape (msgs:list len>=2 with primer turn, each role+content): $history_body" >&2
     return 1
 }
 
