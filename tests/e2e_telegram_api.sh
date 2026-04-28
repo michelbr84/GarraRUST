@@ -113,19 +113,40 @@ test_health() {
 }
 
 test_create_session() {
-    # POST /api/sessions  — creates a session (same as Telegram channel init)
-    local resp
-    resp=$(garraia_curl POST "/api/sessions" -d "{\"session_id\":\"${SESSION_ID}\"}" 2>&1)
-    # Accept 200 or 201; session already exists is also OK (idempotent)
-    if echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('session_id') or d.get('id') or d.get('ok')" 2>/dev/null; then
-        return 0
+    # POST /api/sessions — creates a session (same as Telegram channel init).
+    #
+    # GAR-446 part 2: the previous version sent {"session_id":"${SESSION_ID}"}
+    # in the body and accepted any non-empty `session_id`/`id`/`ok` field as
+    # PASS. But the gateway IGNORES the body's session_id by design — see
+    # `crates/garraia-gateway/src/api.rs:62-122` and
+    # `crates/garraia-gateway/src/state.rs:406-410` (`state.create_session()`
+    # always generates a fresh UUID). The previous test was therefore a
+    # vacuous PASS: the script kept using the requested SESSION_ID locally
+    # while the gateway stored under its own UUID, so tests 4 and 6 — which
+    # hit `/api/sessions/{id}/...` — would 404 against state.sessions.
+    #
+    # Fix: capture the gateway-assigned session_id from the response and
+    # update the global SESSION_ID. Tests 3-6 then use the same ID the
+    # gateway actually persisted under.
+    local resp returned_id
+    resp=$(garraia_curl POST "/api/sessions" -d "{}" 2>&1)
+    returned_id=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+sid = d.get('session_id') or d.get('id')
+assert sid, f'response missing session_id/id: {d}'
+print(sid)
+" 2>/dev/null) || returned_id=""
+
+    if [[ -z "$returned_id" ]]; then
+        echo "  Response: $resp" >&2
+        echo "  Could not extract gateway-assigned session_id from response." >&2
+        return 1
     fi
-    # Some implementations return just {}  or {"status":"ok"}
-    if [[ "$resp" == "{}" ]] || echo "$resp" | grep -qi '"ok"'; then
-        return 0
-    fi
-    echo "  Response: $resp" >&2
-    return 1
+
+    info "  Gateway-assigned session_id: $returned_id (script default was: $SESSION_ID)"
+    SESSION_ID="$returned_id"
+    return 0
 }
 
 test_chat_completions_first_turn() {
