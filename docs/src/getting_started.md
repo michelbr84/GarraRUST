@@ -19,7 +19,7 @@ garraia start
 
 ## Compilar a partir do código-fonte
 
-Você também pode compilar o GarraIA a partir do código-fonte, caso tenha o Rust instalado (versão 1.85 ou superior).
+Você também pode compilar o GarraIA a partir do código-fonte, caso tenha o Rust instalado (versão 1.88 ou superior).
 
 ```bash
 cargo build --release
