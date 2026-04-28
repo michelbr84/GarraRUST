@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use garraia_agents::tools::Tool;
@@ -28,8 +27,8 @@ mod config;
 // to `bootstrap::config`. Re-exported at this level so external paths
 // `crate::bootstrap::default_vault_path` and `crate::bootstrap::resolve_api_key`
 // stay valid (consumed by `admin::handlers`, `router`, `state`).
-pub(crate) use config::{default_vault_path, resolve_api_key};
 use config::default_allowlist_path;
+pub(crate) use config::{default_vault_path, resolve_api_key};
 
 /// Build a fully-configured `AgentRuntime` from the application config.
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
@@ -2356,5 +2355,4 @@ mod tests {
         // Should not panic — unknown providers are logged and skipped
         let _runtime = build_agent_runtime(&config);
     }
-
 }
