@@ -103,15 +103,15 @@ impl TelemetryConfig {
         if let Ok(v) = std::env::var("GARRAIA_OTEL_ENABLED") {
             cfg.enabled = parse_bool(&v);
         }
-        if let Ok(v) = std::env::var("GARRAIA_OTEL_EXPORTER_OTLP_ENDPOINT") {
-            if !v.is_empty() {
-                cfg.otlp_endpoint = Some(v);
-            }
+        if let Ok(v) = std::env::var("GARRAIA_OTEL_EXPORTER_OTLP_ENDPOINT")
+            && !v.is_empty()
+        {
+            cfg.otlp_endpoint = Some(v);
         }
-        if let Ok(v) = std::env::var("GARRAIA_OTEL_SERVICE_NAME") {
-            if !v.is_empty() {
-                cfg.service_name = v;
-            }
+        if let Ok(v) = std::env::var("GARRAIA_OTEL_SERVICE_NAME")
+            && !v.is_empty()
+        {
+            cfg.service_name = v;
         }
         if let Ok(v) = std::env::var("GARRAIA_OTEL_SAMPLE_RATIO") {
             cfg.sample_ratio = v
@@ -121,10 +121,10 @@ impl TelemetryConfig {
         if let Ok(v) = std::env::var("GARRAIA_METRICS_ENABLED") {
             cfg.metrics_enabled = parse_bool(&v);
         }
-        if let Ok(v) = std::env::var("GARRAIA_METRICS_BIND") {
-            if !v.is_empty() {
-                cfg.metrics_bind = v;
-            }
+        if let Ok(v) = std::env::var("GARRAIA_METRICS_BIND")
+            && !v.is_empty()
+        {
+            cfg.metrics_bind = v;
         }
         if let Ok(v) = std::env::var("GARRAIA_METRICS_TOKEN") {
             let trimmed = v.trim();

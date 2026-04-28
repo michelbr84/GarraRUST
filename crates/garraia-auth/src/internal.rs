@@ -423,10 +423,14 @@ pub async fn signup_user(
 /// (SQLSTATE `23505`). Used by [`signup_user`] to translate DB collisions
 /// into [`AuthError::DuplicateEmail`] without probing.
 fn is_unique_violation(err: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = err {
-        if let Some(code) = db_err.code() {
-            return code == "23505";
-        }
+    // Let-chains stabilized in Rust 1.65 syntactically but only became
+    // available under our MSRV after the bump to 1.88 (GAR-441). Clippy
+    // now suggests collapsing the previous nested `if let` blocks into
+    // a single chained one.
+    if let sqlx::Error::Database(db_err) = err
+        && let Some(code) = db_err.code()
+    {
+        return code == "23505";
     }
     false
 }
