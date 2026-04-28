@@ -1,0 +1,123 @@
+name: Mutation Testing — garraia-auth (pilot)
+
+# GAR-436 / Q6 of EPIC GAR-430 (Quality Gates Phase 3.6) — pilot of
+# `cargo-mutants` on the `garraia-auth` crate. Schedule-only (NOT on PR path)
+# + manual workflow_dispatch. Runs weekly, never blocks any merge.
+#
+# Why garraia-auth as pilot (per Linear GAR-436):
+#   - High test:src ratio (~3.5 KLOC src + ~3.1 KLOC integration tests, ~89%).
+#   - Crypto + RBAC critical path — mutation reveals whether tests exercise
+#     branches or only happy-path.
+#   - Already wired for testcontainers (the test suite spawns its own
+#     Postgres + pgvector via testcontainers-rs); no service container
+#     needed at the workflow level. Docker is preinstalled on GHA
+#     ubuntu-latest runners.
+#
+# Runtime expectation: initial baseline likely 30-90 min (compile-once +
+# N × test-runs, where N is the count of mutants generated). The first run
+# will publish a baseline — refine `--timeout-multiplier` and (later)
+# `--jobs` based on observed runtime. Job timeout set to 90 min as a hard
+# upper bound.
+#
+# Soft-gate (per plan sprightly-raven §11.3):
+#   - NO mutation-score threshold — does not block anything.
+#   - Off the PR path entirely (schedule + workflow_dispatch only).
+#   - NO `continue-on-error: true`. If cargo-mutants fails the run shows
+#     red in the Actions tab and triggers the default operator notification
+#     channel. Fix forward; do not silence.
+
+on:
+  schedule:
+    # 05:00 UTC every Monday (= 01:00 America/New_York). Off-hours, off the
+    # main CI lane, different slot from Security — cargo audit (07:00 UTC
+    # daily) to avoid GHA quota contention with other scheduled scans.
+    - cron: '0 5 * * 1'
+  workflow_dispatch: {}
+
+# Match cargo-audit.yml's concurrency posture. Without this block, a manual
+# workflow_dispatch issued while the Monday schedule is mid-run (or vice
+# versa) would spawn two parallel 90-minute jobs sharing the same cache
+# prefix `${{ runner.os }}-mutants-`. `cancel-in-progress: false` mirrors
+# the cargo-audit policy: a scheduled pilot run should not be silently
+# preempted by a manual dispatch.
+concurrency:
+  group: cargo-mutants-garraia-auth
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  mutants:
+    name: cargo-mutants (garraia-auth pilot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        # Isolated prefix to avoid collision with the main `ci.yml` job
+        # caches (which compile without mutation instrumentation).
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-mutants-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mutants-
+
+      - name: Install cargo-mutants
+        # `--locked` matches the supply-chain pattern of cargo-audit /
+        # cargo-deny / cargo-llvm-cov in this repo — never `cargo install`
+        # without `--locked`.
+        run: cargo install --locked --version '^25' cargo-mutants
+
+      - name: Run cargo-mutants on garraia-auth
+        # Strategy: --no-shuffle keeps mutant ordering stable across runs,
+        # making the report comparable week-over-week. --in-place writes
+        # mutants directly into the workspace (CI is ephemeral, no risk of
+        # cross-contamination). --timeout-multiplier 5 is conservative for
+        # tests with testcontainers warmup.
+        #
+        # Env: garraia-auth integration tests instantiate their own JWT/HMAC
+        # fixtures via testcontainers + per-test setup (see
+        # `crates/garraia-auth/tests/common/`). The workflow does NOT export
+        # GARRAIA_JWT_SECRET / GARRAIA_REFRESH_HMAC_SECRET — adding stub
+        # values here previously triggered gitleaks false-positives (the
+        # `*-secret-*-bytes-*` pattern resembles real secret structure).
+        # If the first scheduled run reveals tests that DO require these
+        # env vars, the workflow can be amended with values whose format
+        # does not match the gitleaks rules, OR with a `.gitleaks.toml`
+        # allow-list entry scoped to this workflow.
+        run: |
+          cargo mutants \
+            --package garraia-auth \
+            --no-shuffle \
+            --in-place \
+            --timeout-multiplier 5 \
+            --output mutants.out
+
+      - name: Upload mutants report
+        # Always upload — capture partial reports on failure for triage.
+        # `mutants.out/` contains `outcomes.json`, `mutants.json`, per-mutant
+        # logs, and the summary. 30d retention is enough to compare across
+        # ~4 weekly runs.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-${{ github.run_id }}
+          path: mutants.out/
+          retention-days: 30
+          if-no-files-found: error
