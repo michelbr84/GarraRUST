@@ -884,8 +884,8 @@ mod tests {
     #[test]
     fn validate_manifest_addrs_rejects_loopback_v4() {
         let addrs = vec![SocketAddr::from(([127, 0, 0, 1], 443))];
-        let err = validate_manifest_addrs(&addrs, "evil.example")
-            .expect_err("loopback must be rejected");
+        let err =
+            validate_manifest_addrs(&addrs, "evil.example").expect_err("loopback must be rejected");
         assert_eq!(err.status, StatusCode::FORBIDDEN);
         assert!(err.message.contains("blocked address"));
     }
