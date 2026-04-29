@@ -190,8 +190,7 @@ mod tests {
     ///     pbkdf2::Params { rounds: 600_000, output_length: 32 }, &salt,
     /// ).unwrap().to_string()
     /// ```
-    const PBKDF2_FIXTURE_PHC: &str =
-        "$pbkdf2-sha256$i=600000,l=32$Y3JhYi1zYWx0LWZpeGVk$fJC/CVFjhIg4Ba4mggBBBt9+u5ygVtyQEzEFm7qN+xE";
+    const PBKDF2_FIXTURE_PHC: &str = "$pbkdf2-sha256$i=600000,l=32$Y3JhYi1zYWx0LWZpeGVk$fJC/CVFjhIg4Ba4mggBBBt9+u5ygVtyQEzEFm7qN+xE";
 
     #[test]
     fn pbkdf2_accepts_correct_password() {

@@ -16,9 +16,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use garraia_auth::{
-    JwtConfig, JwtIssuer, LoginConfig, LoginPool, SessionId, SessionStore,
-};
+use garraia_auth::{JwtConfig, JwtIssuer, LoginConfig, LoginPool, SessionId, SessionStore};
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use secrecy::{ExposeSecret, SecretString};
 use testcontainers::ContainerAsync;
@@ -83,9 +81,7 @@ async fn boot() -> anyhow::Result<Fixture> {
     // free of Cargo.toml feature toggles.
     let issuer = JwtIssuer::new(JwtConfig {
         jwt_secret: SecretString::from("q6-1-test-jwt-secret-32-bytes!!!".to_owned()),
-        refresh_hmac_secret: SecretString::from(
-            "q6-1-test-refresh-hmac-32-bytes!".to_owned(),
-        ),
+        refresh_hmac_secret: SecretString::from("q6-1-test-refresh-hmac-32-bytes!".to_owned()),
     })?;
 
     Ok(Fixture {
@@ -123,10 +119,7 @@ async fn issue_session_for(
     user_id: Uuid,
 ) -> anyhow::Result<(String, SessionId, DateTime<Utc>)> {
     let pair = f.issuer.issue_refresh()?;
-    let (sid, expires_at) = f
-        .store
-        .issue(user_id, &pair.hmac_hash, None)
-        .await?;
+    let (sid, expires_at) = f.store.issue(user_id, &pair.hmac_hash, None).await?;
     Ok((pair.plaintext.expose_secret().to_string(), sid, expires_at))
 }
 
@@ -216,12 +209,11 @@ async fn revoke_is_idempotent_and_persists() -> anyhow::Result<()> {
     );
 
     // Direct DB observation: revoked_at is non-NULL.
-    let revoked_at: Option<DateTime<Utc>> = sqlx::query_scalar(
-        "SELECT revoked_at FROM sessions WHERE id = $1",
-    )
-    .bind(sid.0)
-    .fetch_one(&f.admin_pool)
-    .await?;
+    let revoked_at: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT revoked_at FROM sessions WHERE id = $1")
+            .bind(sid.0)
+            .fetch_one(&f.admin_pool)
+            .await?;
     assert!(
         revoked_at.is_some(),
         "revoked_at must be populated after revoke — mutant `Ok(())` (no-op) \
