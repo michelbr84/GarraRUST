@@ -98,8 +98,11 @@ async fn boot() -> anyhow::Result<Fixture> {
 /// Email uses the `.invalid` TLD (RFC 2606) plus a fresh UUID for safe
 /// parallel test execution.
 async fn seed_user(admin: &sqlx::PgPool) -> anyhow::Result<Uuid> {
+    // Single UUID drives BOTH the row PK and the email — guarantees the
+    // identifier surfaced in `display_name` matches the inserted PK and
+    // keeps debugging simple when a test fails (one id to grep).
     let user_id = Uuid::now_v7();
-    let email = format!("session-test-{}@example.invalid", Uuid::now_v7());
+    let email = format!("session-test-{user_id}@example.invalid");
     sqlx::query(
         "INSERT INTO users (id, email, display_name, status) \
          VALUES ($1, $2, $3, 'active')",
@@ -196,12 +199,14 @@ async fn revoke_is_idempotent_and_persists() -> anyhow::Result<()> {
 
     // Second revoke is a no-op (UPDATE ... AND revoked_at IS NULL matches 0
     // rows). Must still return Ok(()) — both the real impl AND the mutant
-    // pass this assertion, BUT...
+    // `Ok(())` pass this call. The discrimination between real and mutant
+    // comes from the `verify_refresh` and SELECT assertions below, NOT from
+    // this second `revoke` call.
     f.store.revoke(sid).await?;
 
-    // ...the verify_refresh below would return Some(...) under the mutant
-    // because revoked_at would still be NULL. The real impl revoked the row
-    // on the first call, so verify_refresh returns None.
+    // Under the mutant, `revoked_at` would still be NULL (first revoke was
+    // a no-op), so `verify_refresh` would return Some(...). The real impl
+    // revoked the row on the first call, so `verify_refresh` returns None.
     let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
     assert!(
         result.is_none(),

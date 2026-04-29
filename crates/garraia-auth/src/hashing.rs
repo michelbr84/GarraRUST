@@ -179,7 +179,7 @@ mod tests {
     // ───────────────────────────────────────────────────────────────────────
 
     /// Synthetic PBKDF2-SHA256 PHC fixture for the public test password
-    /// `"correct horse battery staple"` (xkcd 936) with FIXED 16-byte salt
+    /// `"correct horse battery staple"` (xkcd 936) with FIXED 15-byte salt
     /// `"crab-salt-fixed"` (base64 `Y3JhYi1zYWx0LWZpeGVk`) and i=600_000.
     ///
     /// Reproduce via `examples/gen_pbkdf2_fixture.rs` (deleted before commit):
@@ -231,9 +231,16 @@ mod tests {
     /// assert that real argon2id work runs.
     ///
     /// Argon2id with RFC 9106 params (m=64MiB, t=3, p=4) takes ≥ 30 ms on
-    /// commodity hardware. Slowest GHA shared runner observed ≥ 10 ms.
-    /// 5 ms threshold gives ~6× headroom over the mutated `Ok(())` path
-    /// (microseconds) and ≥ 3× under the real lower bound — flake-resistant.
+    /// commodity hardware (~80–250 ms on `windows-latest` GHA runners under
+    /// load per test-engineer review). 8 ms lower bound gives ~1000× over
+    /// the mutated `Ok(())` path (microseconds) while staying ≥ 4× under
+    /// the slowest observed real lower bound — robust against scheduler
+    /// jitter on shared CI without false-positive risk.
+    ///
+    /// The upper bound of 10 s is a sanity check: if the call genuinely
+    /// takes longer than that, the runner is hosed (memory-pressured /
+    /// CPU-starved) and the test result is meaningless — surface it as a
+    /// failure rather than a misleading pass.
     #[test]
     fn consume_dummy_hash_performs_real_argon2_work() {
         use std::time::{Duration, Instant};
@@ -247,9 +254,15 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed >= Duration::from_millis(5),
-            "consume_dummy_hash returned in {elapsed:?}; expected >= 5ms of \
+            elapsed >= Duration::from_millis(8),
+            "consume_dummy_hash returned in {elapsed:?}; expected >= 8ms of \
              real argon2id work — mutant `Ok(())` returns instantly"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "consume_dummy_hash took {elapsed:?}; runner is severely \
+             resource-starved — the timing assertion above cannot be \
+             trusted under such conditions"
         );
     }
 }
