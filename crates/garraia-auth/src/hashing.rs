@@ -165,4 +165,104 @@ mod tests {
         let pw = secret("any input");
         consume_dummy_hash(&pw).expect("dummy hash verify must succeed (boolean discarded)");
     }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // GAR-463 Q6.1 — kill 3 mutation bypasses in this module
+    //
+    // Coverage targets (file:line in src/hashing.rs at PR #91):
+    //   - line 81:  `verify_pbkdf2 → Ok(true)`        (any password verifies)
+    //   - line 107: `consume_dummy_hash → Ok(())`     (no real argon2 work)
+    //
+    // The deterministic PBKDF2 fixture below is generated with a FIXED salt
+    // so the PHC is fully reproducible without bringing OsRng into the test.
+    // No real secret — both salt and password are public test constants.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// Synthetic PBKDF2-SHA256 PHC fixture for the public test password
+    /// `"correct horse battery staple"` (xkcd 936) with FIXED 15-byte salt
+    /// `"crab-salt-fixed"` (base64 `Y3JhYi1zYWx0LWZpeGVk`) and i=600_000.
+    ///
+    /// Reproduce via `examples/gen_pbkdf2_fixture.rs` (deleted before commit):
+    /// ```ignore
+    /// let salt = SaltString::from_b64("Y3JhYi1zYWx0LWZpeGVk").unwrap();
+    /// Pbkdf2.hash_password_customized(
+    ///     b"correct horse battery staple", None, None,
+    ///     pbkdf2::Params { rounds: 600_000, output_length: 32 }, &salt,
+    /// ).unwrap().to_string()
+    /// ```
+    const PBKDF2_FIXTURE_PHC: &str = "$pbkdf2-sha256$i=600000,l=32$Y3JhYi1zYWx0LWZpeGVk$fJC/CVFjhIg4Ba4mggBBBt9+u5ygVtyQEzEFm7qN+xE";
+
+    #[test]
+    fn pbkdf2_accepts_correct_password() {
+        let pw = secret("correct horse battery staple");
+        assert!(
+            verify_pbkdf2(PBKDF2_FIXTURE_PHC, &pw).expect("verify"),
+            "fixture PHC must verify against the public xkcd-936 password"
+        );
+    }
+
+    #[test]
+    fn pbkdf2_rejects_wrong_password() {
+        // Mutant `verify_pbkdf2 → Ok(true)` makes this assertion FAIL.
+        let wrong = secret("definitely-not-the-password");
+        let result = verify_pbkdf2(PBKDF2_FIXTURE_PHC, &wrong).expect("verify");
+        assert!(
+            !result,
+            "verify_pbkdf2 must return Ok(false) for a wrong password \
+             — mutant `Ok(true)` triggers this assertion failure"
+        );
+    }
+
+    #[test]
+    fn pbkdf2_rejects_argon2id_phc() {
+        let pw = secret("anything");
+        let phc = hash_argon2id(&pw).expect("hash");
+        match verify_pbkdf2(&phc, &pw) {
+            Err(AuthError::Hashing(_)) => {}
+            other => panic!("expected Hashing error for argon2id PHC, got {other:?}"),
+        }
+    }
+
+    /// Kills mutant `consume_dummy_hash → Ok(())` (src/hashing.rs:107).
+    ///
+    /// `consume_dummy_hash` has no observable side-effects — its contract IS
+    /// its execution time (anti-enumeration timing match against a real
+    /// argon2id verify). The only way to detect the `Ok(())` mutant is to
+    /// assert that real argon2id work runs.
+    ///
+    /// Argon2id with RFC 9106 params (m=64MiB, t=3, p=4) takes ≥ 30 ms on
+    /// commodity hardware (~80–250 ms on `windows-latest` GHA runners under
+    /// load per test-engineer review). 8 ms lower bound gives ~1000× over
+    /// the mutated `Ok(())` path (microseconds) while staying ≥ 4× under
+    /// the slowest observed real lower bound — robust against scheduler
+    /// jitter on shared CI without false-positive risk.
+    ///
+    /// The upper bound of 10 s is a sanity check: if the call genuinely
+    /// takes longer than that, the runner is hosed (memory-pressured /
+    /// CPU-starved) and the test result is meaningless — surface it as a
+    /// failure rather than a misleading pass.
+    #[test]
+    fn consume_dummy_hash_performs_real_argon2_work() {
+        use std::time::{Duration, Instant};
+        let pw = secret("any input");
+
+        // Warmup: first call may pay page-fault cost on DUMMY_HASH bytes.
+        consume_dummy_hash(&pw).expect("warmup");
+
+        let start = Instant::now();
+        consume_dummy_hash(&pw).expect("real call");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(8),
+            "consume_dummy_hash returned in {elapsed:?}; expected >= 8ms of \
+             real argon2id work — mutant `Ok(())` returns instantly"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "consume_dummy_hash took {elapsed:?}; runner is severely \
+             resource-starved — the timing assertion above cannot be \
+             trusted under such conditions"
+        );
+    }
 }

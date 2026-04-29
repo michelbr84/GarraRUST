@@ -440,3 +440,50 @@ async fn create_identity_is_deferred_to_391c() -> anyhow::Result<()> {
         other => panic!("expected NotImplemented (deferred to 391c), got: {other:?}"),
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// GAR-463 Q6.1 — kill `verify_credential → Ok(None)` (internal.rs:286)
+//
+// All other tests in this file call `verify_credential_with_ctx` directly,
+// leaving the trait-level entry point (`IdentityProvider::verify_credential`)
+// unexercised. cargo-mutants reports the trait method's `Ok(None)` mutant as
+// missed because nothing observes its delegation. This test exercises the
+// trait method via a `&dyn IdentityProvider` and asserts the happy path.
+// ───────────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verify_credential_trait_method_happy_path() -> anyhow::Result<()> {
+    let f = boot().await?;
+    let pw = SecretString::from("correct horse battery staple".to_owned());
+    let phc = hash_argon2id(&pw)?;
+
+    // .invalid TLD per RFC 2606 + UUID for safe parallel test execution.
+    let email = format!("trait-method-{}@example.invalid", Uuid::now_v7());
+    let (user_id, _identity_id) = seed_user(&f.admin_pool, &email, Some(&phc), "active").await?;
+
+    // Call THROUGH the IdentityProvider trait, not `_with_ctx` directly.
+    // The trait method is a simple delegation
+    // (`verify_credential_with_ctx(cred, &RequestCtx::default())`); the
+    // mutant `Ok(None)` would skip that call entirely.
+    let provider: &dyn IdentityProvider = f.provider.as_ref();
+    let cred = Credential::Internal {
+        email: email.clone(),
+        password: pw,
+    };
+    let result = provider
+        .verify_credential(&cred)
+        .await
+        .expect("trait verify_credential must not error on a valid credential");
+
+    match result {
+        Some(uid) => assert_eq!(
+            uid, user_id,
+            "trait method must return the same user id as the seeded user"
+        ),
+        None => panic!(
+            "trait method returned Ok(None) for a valid credential — \
+             mutant `internal.rs:286 → Ok(None)` triggers this panic"
+        ),
+    }
+    Ok(())
+}
