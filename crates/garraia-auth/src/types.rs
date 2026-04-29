@@ -105,3 +105,41 @@ pub struct LoginOutcome {
     pub refresh_token: SecretString,
     pub expires_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GAR-468 Q6.6 — kills mutant `types.rs:47` (`Debug for Credential`
+    /// → `Ok(Default::default())`). Asserts the password is masked while
+    /// the email is preserved (emails are non-secret identifiers; passwords
+    /// are SecretString and must never reach `Debug` output).
+    #[test]
+    fn debug_for_credential_internal_redacts_password() {
+        let cred = Credential::Internal {
+            email: "alice@example.invalid".to_owned(),
+            password: SecretString::from("super-secret-password-XYZ".to_owned()),
+        };
+        let dbg = format!("{cred:?}");
+        assert!(
+            !dbg.contains("super-secret-password"),
+            "Debug must not leak password: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "redaction marker missing: {dbg}"
+        );
+        // Email is intentionally preserved — it is a non-secret identifier
+        // and is allowed to surface in structured logs.
+        assert!(
+            dbg.contains("alice@example.invalid"),
+            "email should be visible (it is not a secret): {dbg}"
+        );
+        // Variant tag should be present — confirms structured output (the
+        // mutant `Ok(Default::default())` produces an empty `()` instead).
+        assert!(
+            dbg.contains("Credential::Internal"),
+            "variant tag missing: {dbg}"
+        );
+    }
+}

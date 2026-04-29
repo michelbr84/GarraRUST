@@ -411,6 +411,59 @@ mod tests {
         assert_eq!(recomputed, pair.hmac_hash);
     }
 
+    /// GAR-468 Q6.6 — kills mutant `jwt.rs:63` (`Debug for JwtConfig`
+    /// → `Ok(Default::default())`). The `Debug` impl is hand-rolled to
+    /// redact both secrets; this test asserts the redaction is observable
+    /// (the mutant produces empty output that lacks `[REDACTED]` markers).
+    #[test]
+    fn debug_for_jwt_config_redacts_both_secrets() {
+        let cfg = JwtConfig {
+            jwt_secret: SecretString::from("jwt-super-secret-32-bytes-AAAA!!".to_owned()),
+            refresh_hmac_secret: SecretString::from("refresh-hmac-32-bytes-BBBBBBBBB!!".to_owned()),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("jwt-super-secret"),
+            "Debug must not leak jwt_secret: {dbg}"
+        );
+        assert!(
+            !dbg.contains("refresh-hmac"),
+            "Debug must not leak refresh_hmac_secret: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "redaction marker missing: {dbg}"
+        );
+    }
+
+    /// GAR-468 Q6.6 — kills mutant `jwt.rs:81` (`Debug for RefreshTokenPair`
+    /// → `Ok(Default::default())`). Asserts the plaintext is masked and
+    /// the hmac_hash is hex-redacted, regardless of input.
+    #[test]
+    fn debug_for_refresh_token_pair_redacts_plaintext_and_hash() {
+        let pair = RefreshTokenPair {
+            plaintext: SecretString::from("super-secret-token-plaintext-XYZ".to_owned()),
+            hmac_hash: "deadbeefcafebabe1234567890abcdef".to_owned(),
+        };
+        let dbg = format!("{pair:?}");
+        assert!(
+            !dbg.contains("super-secret-token"),
+            "Debug must not leak plaintext: {dbg}"
+        );
+        assert!(
+            !dbg.contains("deadbeefcafebabe"),
+            "Debug must not leak hmac_hash: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "plaintext marker missing: {dbg}"
+        );
+        assert!(
+            dbg.contains("[HEX_REDACTED]"),
+            "hmac_hash marker missing: {dbg}"
+        );
+    }
+
     #[test]
     fn new_for_test_and_issue_access_for_test_roundtrip() {
         // Short secret: padded to 32 bytes internally.
