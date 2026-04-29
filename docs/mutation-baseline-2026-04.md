@@ -1,5 +1,7 @@
 # Mutation Testing Baseline — `garraia-auth` (April 2026)
 
+> **Atualizado 2026-04-29** — pós-Q6.1 (PR #92) + Q6.7 (PR #93). Score subiu de **85.04% → 90.78%**. Ver §"Atualização — Run 25116031135" no fim deste documento.
+
 ## Visão geral
 
 Baseline empírico do **cargo-mutants pilot em `garraia-auth`** (GAR-436 / Q6 do EPIC GAR-430 — Quality Gates Phase 3.6), produzido pela **primeira execução real** do workflow `.github/workflows/mutants.yml`.
@@ -142,3 +144,133 @@ Recomendação: abrir 1 sub-issue por categoria (não 1 por mutant — overhead 
 - Plan: `C:/Users/miche/.claude/plans/voc-est-no-reposit-rio-abundant-thimble.md` (sessão `abundant-thimble`).
 - Run: https://github.com/michelbr84/GarraRUST/actions/runs/25072579785
 - Comparativo de coverage line vs mutation: `docs/coverage-baseline-2026-04.md`.
+
+---
+
+## Atualização — Run 25116031135 (2026-04-29)
+
+Primeira execução **completa** após PR #92 (Q6.1 — kill 5 critical bypasses) e PR #93 (Q6.7 — timeout 90→150 min). O run anterior (`25109221846`) cancelou em 90 min com 154 de 179 mutants processados; este completou em 2h12m49s, dentro do novo limite de 150 min.
+
+### Metadata
+
+| Campo | Valor |
+|---|---|
+| Run ID | `25116031135` |
+| Workflow | `Mutation Testing — garraia-auth (pilot)` (`mutants.yml`) |
+| Trigger | `workflow_dispatch` (post-merge de PR #93) |
+| Commit base | `de8bee5` (`main` após Q6.1+Q6.7) |
+| `cargo-mutants` versão | `25.x` |
+| Timeout do workflow | **150 min** (era 90; bump aplicado por PR #93) |
+| Duração efetiva | **2h12m49s** (133 min wall-clock — cabe em 150 com folga de ~12%) |
+| Conclusão | `failure` (exit 3) — **comportamento esperado** quando há `MISSED`/`TIMEOUT`. NÃO é `cancelled` por timeout do workflow. |
+| Artifact | `mutants-report-25116031135` (2.1 MB, completo) |
+
+### Score
+
+```
+total_mutants:    179
+caught:           125  (+19 vs baseline 25072579785 — Q6.1 + crescimento natural)
+missed:            13  (-6 vs baseline)
+timeout:            3  (+1 vs baseline)
+unviable:          38  (+5 vs baseline — proporcional ao crescimento de código)
+```
+
+**Cálculo (mantendo a convenção do baseline original):**
+
+- Mutantes viáveis: `179 - 38 (unviable) = 141`
+- Killed (caught + timeout): `125 + 3 = 128`
+- **Score: `128 / 141 = 90.78%`** (vs baseline **85.04%** → **+5.74 p.p.**)
+
+### Comparativo
+
+| Métrica | Run 25072579785 (baseline) | Run 25116031135 (atual) | Δ |
+|---|---|---|---|
+| Total mutants generated | 160 | 179 | +19 |
+| Caught | 106 | **125** | +19 |
+| Missed | 19 | **13** | **−6** |
+| Timeout | 2 | 3 | +1 |
+| Unviable | 33 | 38 | +5 |
+| Mutantes viáveis | 127 | 141 | +14 |
+| **Killed score** | **85.04%** | **90.78%** | **+5.74 p.p.** |
+| Workflow conclusion | `cancelled` (timeout) | `failure` (esperado: há MISSED) | conclusion-correta agora |
+| Duração wall-clock | 1h30m20s (cancelled) | 2h12m49s (completo) | +42m29s |
+
+### Q6.1 confirmação final (5/5 CAUGHT)
+
+Cross-check empírico via `caught.txt` do artifact:
+
+| Q6.1 target | Status | Variants extras |
+|---|---|---|
+| `hashing.rs:81 verify_pbkdf2 → Ok(true)` | ✅ CAUGHT | + `Ok(false)` também CAUGHT (bonus) |
+| `hashing.rs:107 consume_dummy_hash → Ok(())` | ✅ CAUGHT | timing assertion (≥ 8 ms) |
+| `internal.rs:286 verify_credential → Ok(None)` | ✅ CAUGHT | + `Ok(Some(Default))` CAUGHT |
+| `sessions.rs:115 verify_refresh → Ok(None)` | ✅ CAUGHT | `Ok(Some((Default,Default)))` é UNVIABLE (Uuid Default não compila) |
+| `sessions.rs:158 revoke → Ok(())` | ✅ CAUGHT | observação direta de `revoked_at` via admin pool |
+
+**Bônus**: 3 mutantes em `sessions.rs` (linhas 81, 136, 147 — TTL/time arithmetic) também CAUGHT pelos integration tests novos do `sessions_lifecycle.rs`. Esses pertenciam ao escopo de Q6.3 mas caíram com a infra de Q6.1.
+
+### Q6.7 confirmação final
+
+Workflow concluiu em **133 min** dentro do novo limite de **150 min**. Headroom efetivo: ~17 min (~13%). Decisão de 150 (em vez de 120 ou 180) validada empiricamente.
+
+### 13 mutantes restantes (`missed`) — mapeamento atualizado para sub-issues
+
+| # | Arquivo | Linha | Mutação | Sub-issue Q6.x |
+|---|---|---|---|---|
+| 1 | `audit_workspace.rs` | 156 | `audit_workspace_event` → `Ok(())` | GAR-467 (Q6.5 audit observability) |
+| 2 | `internal.rs` | 430 | `is_unique_violation` → `true` | GAR-466 (Q6.4 unique-violation) |
+| 3 | `jwt.rs` | 33 | `*` → `+` | GAR-465 (Q6.3 TTL arithmetic) |
+| 4 | `jwt.rs` | 33 | `*` → `/` | GAR-465 (Q6.3) |
+| 5 | `jwt.rs` | 63 | `Debug for JwtConfig` → `Ok(Default)` | GAR-468 (Q6.6 Debug skip) |
+| 6 | `jwt.rs` | 81 | `Debug for RefreshTokenPair` → `Ok(Default)` | GAR-468 (Q6.6) |
+| 7 | `jwt.rs` | 179 | `<` → `<=` em `JwtIssuer::new_for_test` | GAR-464 (Q6.2 boundary) |
+| 8 | `jwt.rs` | 248 | `<` → `<=` em `extract_bearer_token` | GAR-464 (Q6.2) |
+| 9 | `types.rs` | 47 | `Debug for Credential` → `Ok(Default)` | GAR-468 (Q6.6) |
+| 10 | `signup_pool.rs` | 153 | `Debug for SignupPool` → `Ok(Default)` | GAR-468 (Q6.6) |
+| 11 | `storage_redacted.rs` | 71 | `<` → `<=` em `redact_urls` | GAR-464 (Q6.2) |
+| 12 | **`app_pool.rs`** | **203** | `!=` → `==` em `AppPool::from_dedicated_config` | GAR-464 (Q6.2) — **NOVO** |
+| 13 | **`app_pool.rs`** | **218** | `Debug for AppPool` → `Ok(Default)` | GAR-468 (Q6.6) — **NOVO** |
+
+**Distribuição**: Q6.6 = 5 (era 4 + 1 novo), Q6.2 = 4 (era 3 + 1 novo + 1 herdado), Q6.3 = 2, Q6.4 = 1, Q6.5 = 1.
+
+> **Mudança vs baseline**: 8 mutantes do baseline original foram mortos (5 Q6.1 + 3 sessions bonus); 2 mutantes novos apareceram (`app_pool.rs:203,218` — código adicionado pós-baseline). Net: **−6 missed**.
+
+### 3 mutantes timeout (`timeout`)
+
+| # | Arquivo | Linha | Mutação |
+|---|---|---|---|
+| 1 | `storage_redacted.rs` | 91 | `+=` → `-=` em `redact_urls` |
+| 2 | `storage_redacted.rs` | 91 | `+=` → `*=` em `redact_urls` |
+| 3 | **`storage_redacted.rs`** | **104** | `+=` → `*=` em `redact_urls` (**novo no run completo**) |
+
+Tratados como **killed** no score (mutated code didn't terminate within timeout — implícito kill). Tendência: regex/string redaction em loops com aritmética mutada → loops infinitos. Investigação opcional em follow-up; não bloqueia.
+
+### Status das sub-issues Q6.x
+
+| Sub-issue | State | Confirmação |
+|---|---|---|
+| GAR-463 (Q6.1 security bypass) | **Done** | 5/5 CAUGHT confirmado neste run |
+| GAR-464 (Q6.2 boundary) | Backlog | 4 mutants no missed list |
+| GAR-465 (Q6.3 TTL arithmetic) | Backlog | 2 mutants (3 já mortos como bônus de Q6.1) |
+| GAR-466 (Q6.4 unique-violation) | Backlog | 1 mutant |
+| GAR-467 (Q6.5 audit observability) | Backlog | 1 mutant |
+| GAR-468 (Q6.6 Debug skip) | Backlog | **5 mutants** (mais provável "vitória rápida") |
+| GAR-469 (Q6.7 timeout 90→150) | **Done** | 150 min validado empiricamente |
+| GAR-481 (Q6.8 Node 24 migration) | Backlog | criada nesta sessão; deadline 2026-06-02 |
+
+### Próximo melhor passo
+
+Após este run, dois caminhos abertos com ROI distinto:
+
+1. **GAR-481 (Node 24)** — High priority, deadline externa firme (2026-06-02 = 34 dias). Não fecha mutants, mas evita CI quebrar.
+2. **GAR-468 (Q6.6 Debug skip)** — Low priority no Linear, mas é a vitória mais rápida em mutation score: 5 mutants podem virar killed com `// mutants: skip` annotations + rationale, ou via 1 unit test de redação cobrindo todos os 5 `impl Debug`. Score subiria a `133/141 = 94.33%`.
+
+Recomenda-se atacar GAR-481 primeiro (deadline) e GAR-468 logo em seguida.
+
+### Referências adicionais (este update)
+
+- PR #92 (Q6.1): https://github.com/michelbr84/GarraRUST/pull/92 → merged em `a13517c`
+- PR #93 (Q6.7): https://github.com/michelbr84/GarraRUST/pull/93 → merged em `de8bee5`
+- Run anterior (cancelled): https://github.com/michelbr84/GarraRUST/actions/runs/25109221846
+- Run atual (completo): https://github.com/michelbr84/GarraRUST/actions/runs/25116031135
+- Linear Q6.1..Q6.8: GAR-463, GAR-464, GAR-465, GAR-466, GAR-467, GAR-468, GAR-469, GAR-481
