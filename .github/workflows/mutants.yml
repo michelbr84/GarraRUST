@@ -55,7 +55,14 @@ jobs:
   mutants:
     name: cargo-mutants (garraia-auth pilot)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 150 min based on empirical evidence from run 25109221846 (GAR-469 Q6.7):
+    # 154 of 179 mutants processed in the 90-min window before cancellation
+    # (~35s per outcome with build overhead included). Completing all 179 needs
+    # ~105 min wall-clock; 150 leaves ~45 min (~43%) headroom for future test
+    # growth and slow shared-runner conditions. If the suite ever exceeds this
+    # again, the next step is shard/parallel (open a follow-up issue), not a
+    # blind bump to 180+.
+    timeout-minutes: 150
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
