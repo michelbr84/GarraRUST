@@ -25,19 +25,31 @@ dealbreakers for this repo:
    Playwright E2E fixtures is not configurable through the UI.
 
 Advanced setup — a checked-in `.github/workflows/codeql.yml` plus
-`.github/codeql-config.yml` — solves both: we run our own
-`cargo build --workspace --exclude garraia-desktop --locked` (the same
-build line `ci.yml` already uses), and we set explicit `paths-ignore`
-in the config file.
+`.github/codeql-config.yml` — solves both via two complementary
+mechanisms:
+
+1. **`build-mode: none` (buildless extraction).** CodeQL for Rust does
+   NOT support `build-mode: manual` (verified empirically against run
+   `25176031230` on the first attempt of this workflow: `"Rust does not
+   support the manual build mode. Please try using one of the following
+   build modes instead: none."`). Buildless Rust extraction means we do
+   NOT need to run `cargo build` — the analyzer reads source files
+   directly. This eliminates the autobuild surface that broke default
+   setup.
+2. **Explicit `paths-ignore` in the config file** so analysis still
+   excludes `crates/garraia-desktop`, `apps/garraia-mobile`, `benches`,
+   and `tests/playwright` — same exclusion list `ci.yml` /
+   `cargo-audit.yml` / `mutants.yml` already use.
 
 ## What this PR adds
 
 - **`.github/workflows/codeql.yml`** — advanced workflow. Two language
-  jobs (`rust` with `build-mode: manual`, `javascript-typescript` with
-  `build-mode: none`) on `ubuntu-latest`, triggered on push/PR to `main`
-  + weekly Monday 09:00 UTC schedule. Action versions match `ci.yml`:
-  `actions/checkout@v6`, `dtolnay/rust-toolchain@1.92`,
-  `github/codeql-action/init@v3` + `analyze@v3`.
+  jobs (`rust` and `javascript-typescript`, both with `build-mode: none`)
+  on `ubuntu-latest`, triggered on push/PR to `main` + weekly Monday
+  09:00 UTC schedule. Action versions match `ci.yml`:
+  `actions/checkout@v6`, `github/codeql-action/init@v3` +
+  `analyze@v3`. (No Rust toolchain install needed — buildless
+  extraction reads sources directly.)
 - **`.github/codeql-config.yml`** — `paths-ignore` for
   `crates/garraia-desktop/**`, `apps/garraia-mobile/**`, `benches/**`,
   `tests/playwright/**`. Mirrors the exclusion set used by `ci.yml`,

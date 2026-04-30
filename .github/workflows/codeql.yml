@@ -45,12 +45,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Manual mode: we run `cargo build --workspace --exclude
-          # garraia-desktop` ourselves so the autobuild step does not
-          # try (and fail) on the Tauri crate. Same exclusion pattern
-          # as ci.yml / cargo-audit.yml / mutants.yml.
+          # CodeQL for Rust uses BUILDLESS (standalone) extraction. Empirical
+          # evidence from run 25176031230 (the first attempt of this workflow):
+          # `build-mode: manual` is rejected with "Rust does not support the
+          # manual build mode. Please try using one of the following build
+          # modes instead: none." This is the same constraint that made the
+          # original GitHub-native default setup fail on Tauri — the autobuild
+          # phase that broke wasn't Rust's; it was the `actions` / `python` /
+          # `kotlin` autodetection adding garraia-desktop's directory to its
+          # build path. With buildless Rust extraction + paths-ignore, neither
+          # problem can recur.
           - language: rust
-            build-mode: manual
+            build-mode: none
           # JS/TS analysis covers the admin UI under crates/garraia-gateway/admin
           # and any project-internal scripts. No build needed.
           - language: javascript-typescript
@@ -60,28 +66,12 @@ jobs:
         # Match version pinned in ci.yml (verified 2026-04-30).
         uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        if: matrix.language == 'rust'
-        # Match the MSRV gate in ci.yml line 770 (`MSRV check (1.92)`).
-        # Using the exact toolchain version ensures CodeQL analyzes
-        # against the same source CFGs that production CI compiles.
-        uses: dtolnay/rust-toolchain@1.92
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql-config.yml
-
-      - name: Manual build (Rust)
-        if: matrix.language == 'rust'
-        # Reproduces `Build Check` in ci.yml. `--locked` is mandatory:
-        # CodeQL must analyze exactly what production builds.
-        run: |
-          cargo build --workspace \
-            --exclude garraia-desktop \
-            --locked
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
