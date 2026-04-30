@@ -1,0 +1,23 @@
+# Pre-commit hooks for GarraRUST.
+#
+# Plan: personal-api-key-revogada-vectorized-matsumoto §Step 1.
+# Linear: GAR-XXX (Green Security Baseline 2026-04-30, sub-issue 1).
+#
+# Local installation (one-time per developer):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Manual run (full repo):
+#   pre-commit run --all-files
+#
+# CI parity: .github/workflows/ci.yml has a `Secret Scan (gitleaks)` job
+# (gitleaks-action@v2) that runs on every push/PR — pre-commit is the
+# local mirror, not the source of truth.
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # gitleaks reads .gitleaks.toml + .gitleaksignore from repo root.
+        # Documented historical revoked findings live in .gitleaksignore.
