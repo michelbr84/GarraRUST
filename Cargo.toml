@@ -72,8 +72,8 @@ serial_test = "3"
 ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-rand = "0.9"
-jsonwebtoken = "9"
+rand = "0.10"
+jsonwebtoken = "10"
 
 # Plugin system — bumped from 28 → 44 in GAR-454 (sessão `purrfect-lantern`),
 # closing 15 RUSTSEC IDs incluindo 2 CRITICAL (RUSTSEC-2026-0095 / 0096).
