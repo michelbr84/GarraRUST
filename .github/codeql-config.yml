@@ -1,0 +1,23 @@
+name: GarraRUST CodeQL Config
+
+# Plan: personal-api-key-revogada-vectorized-matsumoto §Step 2 (PR C).
+# Linear: GAR-XXX (Green Security Baseline 2026-04-30, sub-issue 3).
+#
+# Mirrors the exclusion set used by ci.yml / cargo-audit.yml / mutants.yml
+# so CodeQL does not try to autobuild crates that require host-specific
+# toolchains absent from GitHub-hosted runners.
+
+paths-ignore:
+  # Tauri desktop crate — depends on WebView2 SDK / GTK / native sidecar
+  # that are not available on GitHub-hosted runners. Built locally via
+  # scripts/build-installer.ps1.
+  - 'crates/garraia-desktop/**'
+  # Flutter mobile client — JS/TS analysis would only see the build output
+  # of `flutter build`, which is not run in CI.
+  - 'apps/garraia-mobile/**'
+  # PoC bench harness — isolated cargo workspace, ephemeral per CLAUDE.md
+  # ("Deletar depois que garraia-workspace estiver estabilizado").
+  - 'benches/**'
+  # Playwright E2E tests are TypeScript test fixtures, scanned by their
+  # own Playwright runner. CodeQL JS/TS coverage focuses on the admin UI.
+  - 'tests/playwright/**'
