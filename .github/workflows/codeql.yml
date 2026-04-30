@@ -1,0 +1,93 @@
+name: CodeQL
+
+# Plan: personal-api-key-revogada-vectorized-matsumoto §Step 2 (PR C).
+# Replaces GitHub-native default setup that was failing autobuild on
+# crates/garraia-desktop (Tauri) — the source of the "Code scanning
+# configuration error" banner in the Security tab.
+#
+# IMPORTANT: GitHub default-setup must be DISABLED in repo Settings →
+# Code security → Code scanning before this workflow's results take
+# effect. Otherwise SARIF uploads collide with default-setup's uploads
+# under the same category. See docs/security/codeql-setup.md for the
+# step-by-step toggle procedure.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Monday 09:00 UTC — keeps the dependency-bump cycle aligned with
+    # cargo-audit.yml (also weekly) so RUSTSEC + CodeQL alerts come
+    # in the same review window.
+    - cron: '0 9 * * 1'
+
+# Cancel in-flight runs on the same ref to avoid wasting compute when
+# multiple commits land in quick succession (mirrors ci.yml convention).
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # SARIF upload — required for results to appear in the Security tab.
+      security-events: write
+      # Read workflow metadata for the action.
+      actions: read
+      # Read repo contents for analysis.
+      contents: read
+    strategy:
+      # Don't abort other languages if one fails — keeps partial coverage.
+      fail-fast: false
+      matrix:
+        include:
+          # Manual mode: we run `cargo build --workspace --exclude
+          # garraia-desktop` ourselves so the autobuild step does not
+          # try (and fail) on the Tauri crate. Same exclusion pattern
+          # as ci.yml / cargo-audit.yml / mutants.yml.
+          - language: rust
+            build-mode: manual
+          # JS/TS analysis covers the admin UI under crates/garraia-gateway/admin
+          # and any project-internal scripts. No build needed.
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        # Match version pinned in ci.yml (verified 2026-04-30).
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        if: matrix.language == 'rust'
+        # Match the MSRV gate in ci.yml line 770 (`MSRV check (1.92)`).
+        # Using the exact toolchain version ensures CodeQL analyzes
+        # against the same source CFGs that production CI compiles.
+        uses: dtolnay/rust-toolchain@1.92
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql-config.yml
+
+      - name: Manual build (Rust)
+        if: matrix.language == 'rust'
+        # Reproduces `Build Check` in ci.yml. `--locked` is mandatory:
+        # CodeQL must analyze exactly what production builds.
+        run: |
+          cargo build --workspace \
+            --exclude garraia-desktop \
+            --locked
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          # Category disambiguates this advanced setup's SARIF uploads
+          # from any residual default-setup uploads. After default setup
+          # is disabled, this category is the canonical source of
+          # /language:* results in the Security tab.
+          category: "/language:${{ matrix.language }}"
