@@ -45,7 +45,7 @@ testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 anyhow = "1"
-rand = "0.8"
+rand = "0.10"
 rand_chacha = "0.3"
 # scopeguard: panic-safe defer for the RLS Cenário 4 ownership transfer dance.
 # Without it, a panic/early-return between ALTER TABLE ... OWNER TO test_role

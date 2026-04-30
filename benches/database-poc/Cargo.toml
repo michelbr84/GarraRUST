@@ -31,7 +31,7 @@ rusqlite = { version = "0.32", features = ["bundled", "vtab", "functions", "blob
 tempfile = "3"
 # Data gen
 uuid = { version = "1", features = ["v4", "v7"] }
-rand = "0.8"
+rand = "0.10"
 rand_chacha = "0.3"
 fake = { version = "2.9", features = ["derive", "chrono"] }
 # Serialization for results
