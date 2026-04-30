@@ -1,0 +1,32 @@
+# gitleaks ignore file — historical findings already mitigated.
+#
+# Format: <commit_sha>:<file>:<rule_id>:<line>
+# Reference: https://github.com/gitleaks/gitleaks#gitleaksignore
+#
+# Policy: GarraRUST does not perform git-history rewrites for tokens that
+# have already been revoked upstream. We add the fingerprint here, document
+# the mitigation in docs/security/secret-scanning-runbook.md, and close the
+# corresponding GitHub secret-scanning alert as `resolved/revoked`.
+
+# -----------------------------------------------------------------------
+# Linear API Key — REVOKED 2026-04-30 (GitHub secret-scanning alert #1).
+# Token appeared in 4 internal Linear-automation .ps1 scripts in commit
+# da29936 (2026-02-27, "Atualizei dependências e integração do Whisper STT").
+# Files were removed from git tracking in commit b7d1e73 (2026-03-07) and
+# the .gitignore /*.ps1 rule (line 116) keeps any future variant out of
+# the repo. Token has zero live exposure since the Linear-side revocation.
+da29936565b324d73d6a87f32e77ef73021f6a6c:mark_done_more.ps1:linear-api-key:4
+da29936565b324d73d6a87f32e77ef73021f6a6c:mark_177_done.ps1:linear-api-key:4
+da29936565b324d73d6a87f32e77ef73021f6a6c:mark_179_done.ps1:linear-api-key:4
+da29936565b324d73d6a87f32e77ef73021f6a6c:mark_done_roadmap.ps1:linear-api-key:4
+
+# -----------------------------------------------------------------------
+# False positives — test fixtures inside crates/garraia-security/src/redaction.rs
+# (commit f8374996, 2026-02-22). Lines 71 and 77 are inside `#[cfg(test)]
+# mod tests` and use synthetic patterns (`key=sk-1234...`, `token=xoxb-...`)
+# as INPUT to verify the redact_secrets() function actually redacts them.
+# They are not real secrets. The .gitleaks.toml allowlist already covers
+# `crates/.*/tests/` paths but not `*/src/*.rs` test modules — these two
+# fingerprints close that gap explicitly without weakening the regex.
+f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.rs:generic-api-key:71
+f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.rs:generic-api-key:77
