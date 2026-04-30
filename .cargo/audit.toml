@@ -50,9 +50,24 @@ ignore = [
     # todas as 5 declarações de sqlx, removendo `mysql` feature do active
     # tree. Mas o meta-crate upstream `sqlx 0.8.6` declara `sqlx-mysql`
     # como `optional = true` na sua dep section, então `cargo audit` walks
-    # `Cargo.lock` e continua vendo `rsa 0.9.10` (transitivo). JWT paths
-    # do GarraRUST usam HS256 via `ring` — Marvin code path NÃO reachable.
-    # Fix estrutural: refactor para `sqlx-postgres` direto OU sqlx 0.9.
+    # `Cargo.lock` e continua vendo `rsa 0.9.10` (transitivo).
+    #
+    # AMENDMENT 2026-04-30 (plan personal-api-key-revogada-vectorized-
+    # matsumoto §Step 3): `jsonwebtoken 10 + rust_crypto` foi adotado para
+    # destravar Dependabot PR #103. O backend `rust_crypto` traz `rsa
+    # 0.9.10` para a árvore de produção do `garraia-auth` (segundo path de
+    # entrada além do sqlx). A invariante de segurança permanece: o
+    # GarraRUST emite e verifica APENAS HS256 (`Algorithm::HS256` em
+    # crates/garraia-auth/src/jwt.rs), que usa hmac+sha2 do RustCrypto e
+    # NÃO chama nenhum código RSA — o Marvin code path continua
+    # não-reachable. Antes era "HS256 via ring"; agora é "HS256 via
+    # hmac+sha2 RustCrypto". Mesma invariante, novo backend.
+    #
+    # Fix estrutural (em ordem de preferência):
+    #   1. `jsonwebtoken` upstream isolar `rsa` atrás de uma feature
+    #      "asymmetric" (não-default) — emitir issue lá quando relevante.
+    #   2. Refactor para `sqlx-postgres` direto OU sqlx 0.9 (fecha o path
+    #      sqlx-mysql).
     # Tracked by: GAR-456. Expires: 2026-07-31.
     "RUSTSEC-2023-0071",
 

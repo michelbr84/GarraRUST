@@ -19,8 +19,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use rand::TryRngCore;
-use rand::rngs::OsRng;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -201,12 +199,16 @@ impl JwtIssuer {
     }
 
     /// Generate a fresh opaque refresh token and its HMAC-SHA256 hash.
-    /// 32 random bytes from `OsRng`, URL-safe base64 (no padding).
+    /// 32 random bytes via `getrandom::fill` (direct OS RNG syscall),
+    /// URL-safe base64 (no padding). Plan
+    /// personal-api-key-revogada-vectorized-matsumoto §Decisões §3 moved
+    /// from `rand::rngs::OsRng + TryRngCore::try_fill_bytes` to
+    /// `getrandom::fill` to decouple this crate from the rand 0.9/0.10
+    /// transitive-resolution churn that broke Dependabot PR #103.
     pub fn issue_refresh(&self) -> Result<RefreshTokenPair, AuthError> {
         let mut bytes = [0u8; 32];
-        OsRng
-            .try_fill_bytes(&mut bytes)
-            .map_err(|e| AuthError::Config(format!("OsRng failure: {e}")))?;
+        getrandom::fill(&mut bytes)
+            .map_err(|e| AuthError::Config(format!("getrandom failure: {e}")))?;
         let plaintext = URL_SAFE_NO_PAD.encode(bytes);
         let hmac_hash = self.hmac_refresh(&plaintext)?;
         Ok(RefreshTokenPair {

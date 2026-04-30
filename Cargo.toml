@@ -73,7 +73,12 @@ ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
-jsonwebtoken = "9"
+# Plan personal-api-key-revogada-vectorized-matsumoto §Step 3 / Decisões §2:
+# `jsonwebtoken 10` requires explicit backend selection. We pick `rust_crypto`
+# because the workspace already depends on `password-hash`/`argon2`/`pbkdf2`/
+# `hmac`/`sha2` (RustCrypto stack); no FIPS requirement justifies the
+# operational cost of the alternative `aws_lc_rs` (cmake + C toolchain).
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 # Plugin system — bumped from 28 → 44 in GAR-454 (sessão `purrfect-lantern`),
 # closing 15 RUSTSEC IDs incluindo 2 CRITICAL (RUSTSEC-2026-0095 / 0096).
