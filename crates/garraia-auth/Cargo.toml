@@ -58,8 +58,11 @@ sha2 = "0.10"
 secrecy = { version = "0.10", features = ["serde"] }
 # JWT issuance + verification (HS256). Pinned via the workspace.
 jsonwebtoken = { workspace = true }
-# Cryptographic randomness for refresh tokens.
-rand = { workspace = true }
+# Cryptographic randomness for refresh tokens. We call `getrandom::fill`
+# directly to decouple this crate from the rand 0.9 -> 0.10 transitive
+# churn that broke Dependabot PR #103. See plan
+# personal-api-key-revogada-vectorized-matsumoto §Decisões §3.
+getrandom = "0.3"
 # Base64 URL-safe encoding for refresh tokens.
 base64 = { workspace = true }
 # Axum extractor support (GAR-391c).
