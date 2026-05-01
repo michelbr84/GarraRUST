@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json.schemastore.org/base.json",
+  "schema_version": "1.0.0",
+  "repo": "michelbr84/GarraRUST",
+  "last_updated": "2026-05-01",
+  "audit_expiration": "2026-08-01",
+  "policy": "no-bulk-suppression",
+  "linear_owner": "GAR-491",
+  "ledger_md": "docs/security/codeql-suppressions.md",
+  "entries": [
+    {
+      "alert_number": 40,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-gateway/src/mobile_auth.rs",
+      "line": 738,
+      "disposition": "dismissed-used-in-tests",
+      "dismissed_reason": "used_in_tests",
+      "justification": "Test fixture inside #[tokio::test] argon2id_register_and_login_roundtrip. The literal salt argument \"\" is a placeholder for the new-format Argon2id PHC string path which embeds its own salt; the legacy column is unused. No production code path reads or writes this value.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-40"
+    },
+    {
+      "alert_number": 41,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-gateway/src/mobile_auth.rs",
+      "line": 749,
+      "disposition": "dismissed-used-in-tests",
+      "dismissed_reason": "used_in_tests",
+      "justification": "Test fixture inside #[tokio::test] argon2id_register_and_login_roundtrip — negative branch verifying that wrong password \"nope\" returns false. Not a real credential; intentional invalid input for assertion coverage.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-41"
+    },
+    {
+      "alert_number": 42,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-gateway/src/mobile_auth.rs",
+      "line": 870,
+      "disposition": "dismissed-used-in-tests",
+      "dismissed_reason": "used_in_tests",
+      "justification": "Test fixture inside #[tokio::test] second_login_after_upgrade_still_works. Literal password \"seq-password-xyz\" exercises the PBKDF2 → Argon2id lazy-upgrade transactional path; never persisted, never reaches production.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-42"
+    },
+    {
+      "alert_number": 43,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-security/src/credentials.rs",
+      "line": 49,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "vec![0u8; SALT_LEN] is a buffer initializer immediately overwritten by ring::SystemRandom::fill on the next line (credentials.rs:50). The ring API requires a &mut [u8] backing slice; the zero literal never becomes a real salt. CodeQL flags the 0u8 literal pattern but the dataflow proves the bytes are replaced before any cryptographic use. Empirical-proof anchor for GAR-491 mechanism.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-43"
+    },
+    {
+      "alert_number": 44,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-security/src/validation.rs",
+      "line": 233,
+      "disposition": "dismissed-used-in-tests",
+      "dismissed_reason": "used_in_tests",
+      "justification": "Test fixture inside #[test] validate_password_length. Literal \"short\" is intentionally below the minimum length to assert that validate_password_length returns Err. Negative-path coverage; not a real credential.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-44"
+    },
+    {
+      "alert_number": 45,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-security/src/validation.rs",
+      "line": 234,
+      "disposition": "dismissed-used-in-tests",
+      "dismissed_reason": "used_in_tests",
+      "justification": "Test fixture inside #[test] validate_password_length. Literal \"validpass123\" is intentionally above the minimum length to assert that validate_password_length returns Ok. Positive-path coverage; not a real credential.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-45"
+    }
+  ]
+}
