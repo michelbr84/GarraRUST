@@ -100,7 +100,8 @@ no mesmo repositório; o `state=dismissed` não é resetado quando o workflow
 4. Aguardar CodeQL run completar (~16 min, baseline conhecido do PR #106).
 5. Re-query o alerta — `state` deve continuar `dismissed`.
 
-**Result** (preenchido durante a execução de GAR-491 PR; última atualização
+**Result** (preenchido após CodeQL re-run completar em
+`security/gar-491-codeql-suppressions-2026-05-01` — última atualização
 2026-05-01):
 
 | Step | Run ID | Timestamp (UTC) | Status |
@@ -108,14 +109,31 @@ no mesmo repositório; o `state=dismissed` não é resetado quando o workflow
 | Pre-dismissal CodeQL on main (baseline) | [`25202502297`](https://github.com/michelbr84/GarraRUST/actions/runs/25202502297) | 2026-05-01T04:39:43Z | success |
 | Initial dismissal of #43 (PATCH) | n/a | 2026-05-01T12:33:36Z | success — `state=dismissed`, `reason="false positive"`, by `michelbr84` |
 | Verify state immediate (gh api re-query) | n/a | 2026-05-01T12:33:38Z | success — confirmed dismissed |
-| Push commit, trigger CodeQL re-run on branch | _to be filled after push_ | TBD | TBD |
-| Re-query #43 post-rerun | n/a | TBD | TBD |
+| Push commit `34b155b`, trigger CodeQL re-run on branch | [`25214464719`](https://github.com/michelbr84/GarraRUST/actions/runs/25214464719) | 2026-05-01T12:35:44Z (start) | **success** |
+| Re-query #43 post-rerun | n/a | 2026-05-01T~12:43Z | **`state=dismissed` PERSISTED** — `dismissed_reason="false positive"`, `dismissed_at=2026-05-01T12:33:36Z` (unchanged) |
+| Apply remaining 5 dismissals via `--apply` | n/a | 2026-05-01T~12:44Z | success — 5 applied, 0 errors |
+| Final verification: all 6 dismissed | n/a | 2026-05-01T~12:45Z | success — all 6 `{state:"dismissed"}` |
 
-**Verdict (interim)**: dismissal API call accepted by GitHub. The decisive
-test is whether the next CodeQL run on this branch preserves
-`state=dismissed`. Ledger §5 will be re-committed with the post-rerun
-result. If passing → apply 5 remaining (§4 rows 40-42, 44-45). If
-failing → §6 abort procedure.
+**Verdict**: ✅ **Empirical proof PASSED.** The REST-dismissal mechanism
+preserves `state=dismissed` across CodeQL re-analysis of the same branch.
+Mechanism approved for the batch.
+
+Final state of all 6 alerts:
+
+```
+{"n":40,"reason":"used in tests","state":"dismissed"}
+{"n":41,"reason":"used in tests","state":"dismissed"}
+{"n":42,"reason":"used in tests","state":"dismissed"}
+{"n":43,"reason":"false positive","state":"dismissed"}
+{"n":44,"reason":"used in tests","state":"dismissed"}
+{"n":45,"reason":"used in tests","state":"dismissed"}
+```
+
+**Idempotency**: confirmed empirically — a second `--apply` run on the
+same ledger reports `6 skipped, 0 applied, 0 errors`. The script's
+fail-closed validation (rule_id + path + start_line) re-passes for each
+entry, and the API-form-aware skip check correctly identifies
+already-dismissed alerts.
 
 ## §6. Failure handling (no global filter fallback)
 

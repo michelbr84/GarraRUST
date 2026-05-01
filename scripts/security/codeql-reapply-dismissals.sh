@@ -191,30 +191,19 @@ while IFS= read -r entry; do
     exit 2
   fi
 
-  # Already-dismissed and matching reason: skip silently.
-  if [[ "$cur_state" == "dismissed" && "$cur_reason" == "$reason" ]]; then
-    echo "  skip: already dismissed (reason=$cur_reason)"
-    skipped=$((skipped + 1))
-    continue
-  fi
-
-  # Already-fixed: alert no longer applicable.
-  if [[ "$cur_state" == "fixed" ]]; then
-    echo "  → exit 3: alert state=fixed, ledger entry stale"
-    exit 3
-  fi
-
-  # State is open (or dismissed with WRONG reason — we'll re-PATCH to correct).
-  #
-  # GitHub API quirks (HTTP 422 surfaces):
-  #   - `dismissed_reason` values use SPACES not underscores:
-  #     {"false positive", "won't fix", "used in tests"}.
+  # GitHub API quirks observed empirically:
+  #   - HTTP 422 surfaces: `dismissed_reason` values use SPACES not
+  #     underscores: {"false positive", "won't fix", "used in tests"}.
+  #   - HTTP 400 "Alert is already dismissed." surfaces when PATCH retries
+  #     on an already-dismissed alert with the same reason. We must detect
+  #     the idempotent case BEFORE issuing PATCH, comparing against the
+  #     space-separated API form.
   #   - `dismissed_comment` max 280 characters total.
   #
   # We keep snake_case in the JSON ledger (it survives shell/jq cleanly)
-  # and translate here. We compose a short comment that always fits in the
-  # 280-char limit and points the auditor at the ledger anchor for the
-  # full justification.
+  # and translate to the API form here. We compose a short comment that
+  # always fits in the 280-char limit and points the auditor at the
+  # ledger anchor for the full justification.
   case "$reason" in
     false_positive) api_reason="false positive" ;;
     used_in_tests)  api_reason="used in tests" ;;
@@ -225,6 +214,21 @@ while IFS= read -r entry; do
       exit 5
       ;;
   esac
+
+  # Already-dismissed with the SAME reason: skip. Idempotent reapply.
+  # Compare against api_reason (with spaces) since that's what the API
+  # returns in cur_reason — NOT the snake_case ledger value.
+  if [[ "$cur_state" == "dismissed" && "$cur_reason" == "$api_reason" ]]; then
+    echo "  skip: already dismissed (reason='$cur_reason')"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  # Already-fixed: alert no longer applicable.
+  if [[ "$cur_state" == "fixed" ]]; then
+    echo "  → exit 3: alert state=fixed, ledger entry stale"
+    exit 3
+  fi
 
   # 280-char comment budget. Shape: "GAR-491 #N: <first ~180 of just>... See <ledger>#<anchor>."
   ledger_ref=" See $LEDGER_MD#$anchor."
