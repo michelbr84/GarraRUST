@@ -312,6 +312,32 @@ async fn export_skill_rejects_dot_in_name() {
 
 #[tokio::test]
 #[serial]
+async fn import_skill_with_malicious_frontmatter_name_returns_400() {
+    // Defense-in-depth coverage flagged by the security audit:
+    // `import_skill` parses the YAML frontmatter and was using
+    // `skill.frontmatter.name` directly in `format!("{}.md", ...)` —
+    // CodeQL did not flag this because the value transits through
+    // `parse_skill`, but the path-injection vector was real.
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let base =
+        start_test_gateway_with_config_dir(tmp.path().to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    // Frontmatter `name` violates the helper (path traversal segment)
+    // even though the YAML itself parses cleanly.
+    let malicious_content = "---\nname: ../evil\ndescription: looks ok\n---\n\nbody.\n";
+
+    let resp = client
+        .post(format!("{base}/api/skills/import"))
+        .json(&json!({ "content": malicious_content }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+#[serial]
 async fn set_skill_triggers_rejects_dot_in_name() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let base =

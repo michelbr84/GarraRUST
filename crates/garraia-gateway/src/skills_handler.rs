@@ -445,6 +445,17 @@ pub async fn import_skill(
                         );
                     }
 
+                    // Defense-in-depth: the skill *body* parser
+                    // (`garraia_skills::validate_skill`) enforces the project's
+                    // name convention but the `frontmatter.name` is also used
+                    // directly to compose a filesystem path on the next line.
+                    // CodeQL's dataflow loses the source through `parse_skill`,
+                    // so the alert is silent — but the vector is real.
+                    // Re-check with the gateway's stricter ASCII helper.
+                    if let Err(e) = validate_skill_name(&skill.frontmatter.name) {
+                        return bad_skill_name(&skill.frontmatter.name, e);
+                    }
+
                     let dir = skills_dir();
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         return (
