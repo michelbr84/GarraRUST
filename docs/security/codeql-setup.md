@@ -101,16 +101,25 @@ re-enabled the same way.
 ## What we did NOT change
 
 - The 90 existing CodeQL alerts are NOT triaged in this PR. Triage waves
-  are tracked separately as Linear sub-issues `GAR-XXX.4` (production
-  paths: ~24 path-injection in `skills_handler.rs`/`skins_handler.rs`,
-  ~8 sql-injection in `groups.rs`/`invites.rs`) and `GAR-XXX.5` (test
+  are tracked separately as Linear sub-issues `GAR-490` (Wave 1, production
+  paths: ~16 path-injection in `skills_handler.rs`/`skins_handler.rs`,
+  8 sql-injection in `groups.rs`/`invites.rs`) and `GAR-491` (Wave 2, test
   fixtures + suppression convention).
-- Suppression syntax for Rust CodeQL alerts is **not yet decided**.
-  Unlike Java/JS/Python, CodeQL for Rust does not currently support
-  inline `// codeql[...]` comments. Wave 2 (`GAR-XXX.5`) will validate
-  the supported mechanism (path-based ignore vs custom query suite vs
-  manual UI dismissal with justification) before any suppression is
-  applied.
+- **AMENDMENT 2026-05-01 (GAR-491):** suppression mechanism for Rust CodeQL
+  alerts has now been decided. Rust CodeQL still does NOT support inline
+  `// codeql[...]` comments (PR github/codeql#21638 is open without merge).
+  The chosen mechanism is **REST API dismissal + a versioned ledger** —
+  see [`docs/security/codeql-suppressions.md`](codeql-suppressions.md) for
+  the human-readable ledger and
+  [`docs/security/codeql-suppressions.json`](codeql-suppressions.json) for
+  the machine-readable source consumed by
+  [`scripts/security/codeql-reapply-dismissals.sh`](../../scripts/security/codeql-reapply-dismissals.sh).
+  Wave 2 (`GAR-491`) entrega a convenção + script + 6 dismissals
+  individualmente justificados; a empirical proof (persistência do
+  dismissal de `credentials.rs:49` entre re-análises CodeQL) é o gate
+  obrigatório antes do batch dos 5 restantes. **Sem fallback global**:
+  se a prova falhar, abort + nova decisão (sem `query-filters: exclude`
+  por rule-id).
 - The `query_suite` defaults to `default` (was the same in default
   setup). Switching to `extended` or `security-extended` is a separate
   decision that surfaces more alerts; not appropriate while we still
