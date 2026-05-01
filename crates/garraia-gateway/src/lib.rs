@@ -26,6 +26,7 @@ pub mod observability;
 pub mod openai_api;
 pub mod openclaw_handler;
 pub mod parrot_ws;
+pub mod path_validation;
 pub mod plugins_handler;
 pub mod projects_handler;
 pub mod rate_limiter;
