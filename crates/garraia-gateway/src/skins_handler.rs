@@ -10,6 +10,22 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::warn;
 
+use crate::path_validation::{NameError, validate_skill_name};
+
+/// Build a 400 response for a rejected skin basename.
+///
+/// `validate_skill_name` is shared with `skills_handler` — see
+/// `path_validation.rs` for the rationale (single-segment basename rules
+/// are identical between the two surfaces). The response shape mirrors
+/// the rest of `skins_handler` (`{"error": "..."}`).
+fn bad_skin_name(name: &str, err: NameError) -> (StatusCode, Json<serde_json::Value>) {
+    warn!(reason = ?err, name_len = name.len(), "rejected skin name");
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": err.to_string() })),
+    )
+}
+
 /// Resolve the skins directory path.
 fn skins_dir() -> PathBuf {
     std::env::var("GARRAIA_SKINS_DIR")
@@ -40,15 +56,11 @@ pub async fn list_skins() -> impl IntoResponse {
 
 /// POST /api/skins — save a custom skin as a JSON file.
 pub async fn create_skin(Json(body): Json<Skin>) -> impl IntoResponse {
-    let dir = skins_dir();
-
-    // Validate name (no path traversal).
-    if body.name.contains('/') || body.name.contains('\\') || body.name.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "invalid skin name" })),
-        );
+    if let Err(e) = validate_skill_name(&body.name) {
+        return bad_skin_name(&body.name, e);
     }
+
+    let dir = skins_dir();
 
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         warn!("failed to create skins directory: {e}");
@@ -83,6 +95,9 @@ pub async fn create_skin(Json(body): Json<Skin>) -> impl IntoResponse {
 
 /// GET /api/skins/{name} — get a specific skin by name.
 pub async fn get_skin(Path(name): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skin_name(&name, e);
+    }
     let dir = skins_dir();
     let file_path = dir.join(format!("{name}.json"));
 
@@ -110,6 +125,9 @@ pub async fn get_skin(Path(name): Path<String>) -> impl IntoResponse {
 
 /// DELETE /api/skins/{name} — delete a custom skin.
 pub async fn delete_skin(Path(name): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skin_name(&name, e);
+    }
     let dir = skins_dir();
     let file_path = dir.join(format!("{name}.json"));
 
