@@ -183,3 +183,100 @@ async fn create_skin_with_path_traversal_returns_400() {
 
     assert_eq!(resp.status(), 400, "path traversal should be rejected");
 }
+
+// GAR-490 PR A: extra negative-matrix cases that exercise the centralized
+// `validate_skill_name` helper end-to-end. Each rejection must travel
+// through the real Axum router (Path extractor + handler) so we know the
+// fix actually fires in production, not just in unit tests.
+
+#[tokio::test]
+#[serial]
+async fn get_skin_with_dot_in_name_returns_400() {
+    // Using `evil.json` instead of literal `..` because clients (and
+    // matchit) collapse `..` segments before they reach the handler.
+    // Any `.` is rejected by the helper, so this still exercises the
+    // path-injection guard end-to-end on the GET handler.
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let skins_path = tmp.path().join("skins_get_dot");
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{base}/api/skins/evil.json"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_skin_with_backslash_returns_400() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let skins_path = tmp.path().join("skins_del_back");
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    // %5C = '\' — the prior narrow validation in create_skin caught the
+    // literal but the get/delete handlers did not validate at all.
+    let resp = client
+        .delete(format!("{base}/api/skins/a%5Cb"))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+#[serial]
+async fn create_skin_rejects_underscore_per_project_convention() {
+    // Aligns with `garraia_skills::validate_skill` (parser.rs:64):
+    // underscore is not part of the project's name-charset convention.
+    // The unified helper applies the same rule to skin basenames.
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let skins_path = tmp.path().join("skins_underscore");
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/api/skins"))
+        .json(&json!({
+            "name": "valid_skin_name",
+            "color": "#abcdef"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+#[serial]
+async fn create_skin_with_dot_in_name_returns_400() {
+    // Matches `foo.md` test in path_validation::tests — `.` is rejected
+    // because a malicious caller could embed an extension that confuses
+    // the on-disk layout (e.g., `evil.json.md` collisions).
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let skins_path = tmp.path().join("skins_dot");
+    let base =
+        start_test_gateway_with_skins_dir(skins_path.to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/api/skins"))
+        .json(&json!({
+            "name": "foo.json",
+            "color": "#000"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(resp.status(), 400);
+}

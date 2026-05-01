@@ -16,7 +16,26 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::path_validation::{NameError, validate_skill_name};
 use crate::state::SharedState;
+
+/// Build a 400 response for a rejected skill basename.
+///
+/// Centralizes the audit log + response shape used by every handler in this
+/// module. Keeps handler bodies focused on their own happy path while
+/// preserving the existing `{status, message}` envelope.
+fn bad_skill_name(name: &str, err: NameError) -> (StatusCode, Json<serde_json::Value>) {
+    // Log the *kind* of rejection but never the raw byte sequence — control
+    // chars in the name could corrupt downstream log consumers.
+    warn!(reason = ?err, name_len = name.len(), "rejected skill name");
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "status": "error",
+            "message": err.to_string(),
+        })),
+    )
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -140,6 +159,9 @@ pub async fn get_skill(
     State(_state): State<SharedState>,
     Path(name): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skill_name(&name, e);
+    }
     let skill_path = skills_dir().join(format!("{name}.md"));
 
     if !skill_path.exists() {
@@ -195,15 +217,8 @@ pub async fn create_skill(
     State(_state): State<SharedState>,
     Json(body): Json<CreateSkillRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Validate name
-    if body.name.is_empty() || !body.name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "status": "error",
-                "message": "skill name must be non-empty and contain only alphanumeric characters and hyphens",
-            })),
-        );
+    if let Err(e) = validate_skill_name(&body.name) {
+        return bad_skill_name(&body.name, e);
     }
 
     let dir = skills_dir();
@@ -282,6 +297,16 @@ pub async fn update_skill(
     Path(name): Path<String>,
     Json(body): Json<CreateSkillRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skill_name(&name, e);
+    }
+    // The body.name is unused for the path here (the URL `name` is the
+    // canonical identifier), but a malicious body could still smuggle
+    // a bad name into `build_skill_content`'s YAML frontmatter. Reject
+    // it for the same reason.
+    if let Err(e) = validate_skill_name(&body.name) {
+        return bad_skill_name(&body.name, e);
+    }
     let skill_path = skills_dir().join(format!("{name}.md"));
 
     if !skill_path.exists() {
@@ -342,6 +367,9 @@ pub async fn delete_skill(
     State(_state): State<SharedState>,
     Path(name): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skill_name(&name, e);
+    }
     let installer = garraia_skills::SkillInstaller::new(skills_dir());
 
     match installer.remove(&name) {
@@ -476,6 +504,9 @@ pub async fn export_skill(
     State(_state): State<SharedState>,
     Path(name): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skill_name(&name, e);
+    }
     let skill_path = skills_dir().join(format!("{name}.md"));
 
     if !skill_path.exists() {
@@ -529,6 +560,9 @@ pub async fn set_skill_triggers(
     Path(name): Path<String>,
     Json(body): Json<SetTriggersRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = validate_skill_name(&name) {
+        return bad_skill_name(&name, e);
+    }
     let skill_path = skills_dir().join(format!("{name}.md"));
 
     if !skill_path.exists() {
