@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-04-13 (local America/New_York)
+> **Última atualização:** 2026-05-01 (local America/New_York)
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -61,6 +61,60 @@
 - Cobertura de testes: baixa nos crates de domínio; quase zero em integração.
 
 Esse baseline define o que as fases seguintes precisam mover.
+
+---
+
+## 1.5. Atualização 2026-05-01 — Green Security Baseline e progresso Q6
+
+> Esta seção é um snapshot incremental sobre o §1 acima: NÃO substitui o
+> baseline original, apenas reporta o que mudou desde 2026-04-13. Próxima
+> revisão estrutural do §1 fica para depois de GAR-491/GAR-490 mergearem.
+
+### Sprint **Green Security Baseline 2026-04-30** (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486))
+
+Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 em andamento.
+
+| PR | Commit | Conteúdo |
+|----|--------|----------|
+| [#104](https://github.com/michelbr84/GarraRUST/pull/104) (A) | `eccfb85` | Secret cleanup + `.gitleaksignore` + pre-commit gitleaks hook + runbook |
+| [#105](https://github.com/michelbr84/GarraRUST/pull/105) (B) | `e35ecd7` | `jsonwebtoken 9 → 10` com backend `rust_crypto` + `getrandom::fill` direto (substituiu/fechou Dependabot PR #103) |
+| [#106](https://github.com/michelbr84/GarraRUST/pull/106) (C) | `895b6ee` | CodeQL **advanced setup** (`.github/workflows/codeql.yml` + `.github/codeql-config.yml`) excluindo `garraia-desktop` (Tauri) |
+| [#107](https://github.com/michelbr84/GarraRUST/pull/107) (D) | `09d805c` | `docs/security/dependabot-status.md` — alert-to-rationale index com Linear ownership map |
+| [#108](https://github.com/michelbr84/GarraRUST/pull/108) (E) | `7fc838b` | `wasmtime 44.0.0 → 44.0.1` lockfile-only fix-forward (fecha [GHSA-p8xm-42r7-89xg](https://github.com/advisories/GHSA-p8xm-42r7-89xg)) |
+
+**Métricas do sprint:**
+
+- Secret-scanning alerts: 1 → **0** (alert #1 resolved/revoked 2026-04-30T15:55:45Z)
+- Dependabot alerts: **20 → 7** — todos os 7 residuais com Linear ownership em [`docs/security/dependabot-status.md`](docs/security/dependabot-status.md)
+- CodeQL alerts no escopo de produção: ~90 → **71** (redução só por `paths-ignore`, ainda sem triagem ativa de alertas)
+- GitHub-native CodeQL default setup: `configured` → `not-configured` (advanced setup é canonical)
+- `continue-on-error: true` em workflows: 4 removidos no Lote 2 (PR #64, GAR-438) + 1 no Lote 4 (PR sobre Playwright `data-testid`); restante intencional (1 RUSTSEC residual)
+
+### CodeQL triage **ainda em aberto** (esta sessão)
+
+Sub-issues 4 e 5 de GAR-486 estão em execução agora:
+
+- **[GAR-491](https://linear.app/chatgpt25/issue/GAR-491) — CodeQL Wave 2 (fixtures + suppression convention)** — sub-issue 5/5, **In Progress** desde 2026-05-01, PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft. Estabelece a convenção de suppression para Rust CodeQL via REST API dismissal + ledger versionado em [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) + [`docs/security/codeql-suppressions.json`](docs/security/codeql-suppressions.json) + script [`scripts/security/codeql-reapply-dismissals.sh`](scripts/security/codeql-reapply-dismissals.sh) com fail-closed validation (rule_id/path/line). 6 alertas em escopo, 21 deferidos para `GAR-491.1`.
+- **[GAR-490](https://linear.app/chatgpt25/issue/GAR-490) — CodeQL Wave 1 (production paths)** — sub-issue 4/5, **Backlog**, bloqueada por GAR-491. 16 path-injection (`skills_handler.rs`, `skins_handler.rs`) + 8 sql-injection (`rest_v1/groups.rs`, `rest_v1/invites.rs`). Plano de ataque: helper `validate_skill_name` em handlers + integração de `garraia_storage::sanitise_key` em `skins_handler.rs` (single-segment) + experimento `SELECT set_config('app.current_user_id', $1, true)` substituindo `SET LOCAL ... format!()` antes de qualquer dismissal.
+
+**Decisão central documentada**: Rust CodeQL ainda **não suporta** comentários inline `// codeql[rule]: ...` em 2026 ([github/codeql#21638](https://github.com/github/codeql/issues/21637) aberto). `paths-ignore` global não serve porque os testes do GarraRUST são INLINE (`#[cfg(test)] mod tests {}`) dentro de produção. Mecanismo escolhido: ledger versionado + REST dismissal por alerta + script fail-closed. **Sem fallback global**: se a empirical proof falhar, abort + nova decisão (sem `query-filters: exclude` por rule-id). Ver [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) §3-§6.
+
+### Quality gates Q6 — status atual
+
+- **GAR-436 (mutation testing baseline)** ✅ — `cargo-mutants` pilot em `garraia-auth`. Run inicial 85% killed (19 missed). PR [#94](https://github.com/michelbr84/GarraRUST/pull/94) appended run `25116031135`: **85.04% → 90.78% killed (+5.74 p.p.)**.
+- **GAR-463 Q6.1** ✅ — kill 5 critical mutation bypasses em `garraia-auth/src/hashing.rs` + `lib.rs` (PR #92).
+- **GAR-468 Q6.6** ✅ — kill 3 Debug-redaction mutation bypasses em `garraia-auth` (PR [#96](https://github.com/michelbr84/GarraRUST/pull/96)). **Memória local**: rodar Q6 sub-issues 6.1-6.7 ainda pendentes (`project_next_session_q6_queue`).
+- **GAR-469 Q6.7** ✅ — `mutants.yml` timeout bumped 90 → 150 min (PR #93).
+- **GAR-481 Q6.8** ✅ — workflows migrated to **Node 24** (`actions/{checkout,setup-node,upload-artifact,download-artifact,cache}` v4 → latest, deprecation pre-announce 2026-Q3) (PR [#95](https://github.com/michelbr84/GarraRUST/pull/95)).
+
+### CI infrastructure
+
+- **GAR-438 (Lote 2)** ✅ (PR [#64](https://github.com/michelbr84/GarraRUST/pull/64), `1828625`) — fix `e2e` + `playwright` jobs que tentavam executar `./target/release/garraia-gateway` (binário inexistente — `garraia-gateway` é biblioteca). Substituído por `cargo build --bin garraia --release` + `services: postgres:16.8-alpine` + envs de auth via `::add-mask::`. 4 de 7 `continue-on-error: true` removidos.
+- **GAR-443 (Lote 4)** ✅ — Playwright admin specs migrados para `getByTestId(...)` ancorados em `data-testid` estáveis (`admin.html`). Convenção: especificações Playwright do admin DEVEM preferir `data-testid` em vez de `placeholder*=` ou `getByRole(button,{name})`.
+
+### Status do umbrella GAR-486
+
+GAR-486 fica em **In Progress** até GAR-491 e GAR-490 mergearem. Não promover para Done sem essas duas sub-issues fecharem.
 
 ---
 
@@ -798,13 +852,15 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-04-15** após entrega de Fase 2.3 (OTel ✅), schema completo da Fase 3.2 (9 migrations ✅), Fase 3.3 ADR 0005 ✅, GAR-391a/b/c (crate `garraia-auth` com verify path real + extractor + endpoints ✅), GAR-392 (RLS matrix 81 cenários ✅, plan 0013 path C) e **GAR-391d (app-layer cross-group authz matrix via HTTP, plan 0014 ✅, PR #17 squash `a688497`)**. Epic **GAR-391 FECHADO 2026-04-15**. A CI também foi desbloqueada via PR #18 (squash `4219ed8`) — fix matrix rustfmt/glib/playwright + 16 `#[ignore]` TODO em testes pré-existentes deferidos a follow-ups.
+**Atualizado 2026-05-01** após o sprint **Green Security Baseline 2026-04-30** (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486), 5 PRs `#104..#108`, Dependabot 20 → 7, CodeQL advanced setup ✅, secret-scanning alerts → 0). Ver §1.5 acima para o detalhamento por sub-issue.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
-1. **Fase 3.4 — API REST `/v1` OpenAPI** — materializa os handlers de produto (`/v1/chats`, `/v1/messages`, `/v1/memory`, `/v1/tasks`, `/v1/groups` completo, `/v1/me` rico). Plan 0016 M5 pendente com sweep de review follow-ups (admin_url accessor, exec_with_tenant closure API, URL parsing, test-support rename, fail-soft `/docs/{*path}`, get_group transactional wrap, scenario 8 coverage gap). Próximo slice a decidir entre M5 ou um novo plan 0017 para o próximo endpoint-de-recurso.
-3. **ADR 0004 — Object storage** ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374)) — bloqueia GAR-387 (migration 003 files) e o crate `garraia-storage` (Fase 3.5). Único ADR ainda pendente que afeta caminho crítico.
-4. **Fase 5.1 — CredentialVault final (GAR-291)** — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3.
+1. **Fechar GAR-491 → GAR-490 → GAR-486** — sub-issues abertas do umbrella de segurança. GAR-491 (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft) entrega a convenção de suppression para Rust CodeQL e está em **empirical-proof** sobre alerta #43; só fecha quando o batch dos 5 dismissals adicionais aplicar limpo. GAR-490 entra na sequência (path-injection real-fix em `skills_handler.rs`/`skins_handler.rs` + experimento `SELECT set_config(..., $1, true)` substituindo `SET LOCAL ... format!()` em `rest_v1/groups.rs`/`invites.rs`).
+2. **Fase 3.4 — API REST `/v1` OpenAPI** — materializa os handlers de produto (`/v1/chats`, `/v1/messages`, `/v1/memory`, `/v1/tasks`, `/v1/groups` completo, `/v1/me` rico). Plan 0016 M5 pendente com sweep de review follow-ups (admin_url accessor, `exec_with_tenant` closure API, URL parsing, test-support rename, fail-soft `/docs/{*path}`, `get_group` transactional wrap, scenario 8 coverage gap). Próximo slice a decidir entre M5 ou um novo plan 0017 para o próximo endpoint-de-recurso.
+3. **Q6 follow-ups (mutation testing)** — sub-issues `Q6.1..Q6.7` registradas em memória local (`project_next_session_q6_queue`). PR #94 levou `garraia-auth` a **90.78% killed**; estender para outros crates (`garraia-security`, `garraia-workspace`) é trabalho remanescente.
+4. **ADR 0004 — Object storage** ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374)) e Fase 3.5 já entregues parcialmente (GAR-394/395, plans 0037/0038/0041/0044/0047). Resta validar o S3-compatible path em produção quando feature `storage-s3` ligar.
+5. **Fase 5.1 — CredentialVault final (GAR-291)** — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3.
 
 Trilha paralela disponível para um segundo dev/agente: **Fase 1.3 — Config reativo**, ainda não materializado.
 
