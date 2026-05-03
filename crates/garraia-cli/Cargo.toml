@@ -41,7 +41,7 @@ dotenvy.workspace = true
 
 # Plan 0039 — `migrate workspace` deps.
 # Use workspace-pinned versions where available to avoid drift.
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "derive"] }
 rusqlite = { workspace = true }
 base64 = "0.22"
 secrecy = "0.10"
