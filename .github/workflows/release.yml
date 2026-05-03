@@ -28,12 +28,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release --package garraia-cli
+        run: cargo build --release --package garraia
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp target/release/garraia release/garraia-linux-x86_64
+          cp target/release/garra release/garraia-linux-x86_64
           chmod +x release/garraia-linux-x86_64
 
       - name: Upload artifact
@@ -57,12 +57,12 @@ jobs:
         run: cargo install cross
 
       - name: Build with cross
-        run: cross build --release --target aarch64-unknown-linux-gnu --package garraia-cli
+        run: cross build --release --target aarch64-unknown-linux-gnu --package garraia
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp target/aarch64-unknown-linux-gnu/release/garraia release/garraia-linux-arm64
+          cp target/aarch64-unknown-linux-gnu/release/garra release/garraia-linux-arm64
           chmod +x release/garraia-linux-arm64
 
       - name: Upload artifact
@@ -83,13 +83,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release --package garraia-cli
+        run: cargo build --release --package garraia
 
       - name: Package binary
         shell: bash
         run: |
           mkdir -p release
-          cp target/release/garraia.exe release/garraia-windows-x86_64.exe
+          cp target/release/garra.exe release/garraia-windows-x86_64.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -109,12 +109,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release --package garraia-cli
+        run: cargo build --release --package garraia
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp target/release/garraia release/garraia-macos-x86_64
+          cp target/release/garra release/garraia-macos-x86_64
           chmod +x release/garraia-macos-x86_64
 
       - name: Upload artifact
@@ -135,12 +135,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release --package garraia-cli
+        run: cargo build --release --package garraia
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp target/release/garraia release/garraia-macos-arm64
+          cp target/release/garra release/garraia-macos-arm64
           chmod +x release/garraia-macos-arm64
 
       - name: Upload artifact

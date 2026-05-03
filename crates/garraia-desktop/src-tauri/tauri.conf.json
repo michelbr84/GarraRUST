@@ -24,7 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/garraia"],
+    "externalBin": ["binaries/garra"],
     "resources": ["resources/config.default.yml"],
     "icon": [
       "icons/32x32.png",
