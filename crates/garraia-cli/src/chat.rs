@@ -129,6 +129,34 @@ fn scan_directory_context(cwd: &str) -> String {
     result
 }
 
+/// Helper to resolve the API key checking env var, explicit config, and "main" config.
+fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option<String> {
+    if !env_var.is_empty() {
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    if let Some(cfg) = config.llm.get(provider_name) {
+        if let Some(ref k) = cfg.api_key {
+            if !k.is_empty() {
+                return Some(k.clone());
+            }
+        }
+    }
+    if let Some(cfg) = config.llm.get("main") {
+        if cfg.provider == provider_name {
+            if let Some(ref k) = cfg.api_key {
+                if !k.is_empty() {
+                    return Some(k.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Detect which provider to use based on config and availability.
 pub async fn detect_provider(
     config: &AppConfig,
@@ -176,9 +204,7 @@ pub async fn detect_provider(
     }
 
     // 2. Try Anthropic (cloud)
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
-        && !key.is_empty()
-    {
+    if let Some(key) = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY") {
         let model = config
             .llm
             .get("anthropic")
@@ -194,9 +220,7 @@ pub async fn detect_provider(
     }
 
     // 3. Try OpenAI (cloud)
-    if let Ok(key) = std::env::var("OPENAI_API_KEY")
-        && !key.is_empty()
-    {
+    if let Some(key) = get_api_key(config, "openai", "OPENAI_API_KEY") {
         let model = config
             .llm
             .get("openai")
@@ -212,9 +236,7 @@ pub async fn detect_provider(
     }
 
     // 4. Try OpenRouter (cloud fallback)
-    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
-        && !key.is_empty()
-    {
+    if let Some(key) = get_api_key(config, "openrouter", "OPENROUTER_API_KEY") {
         let model = config
             .llm
             .get("openrouter")
@@ -264,8 +286,8 @@ pub async fn run_chat(
                 provider = Arc::new(ollama);
             }
             "anthropic" => {
-                let key =
-                    std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?;
+                let key = get_api_key(&config, "anthropic", "ANTHROPIC_API_KEY")
+                    .context("ANTHROPIC_API_KEY not set and not found in config")?;
                 let model =
                     model_override.unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
                 let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
@@ -274,15 +296,29 @@ pub async fn run_chat(
                 provider = Arc::new(ap);
             }
             "openai" => {
-                let key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?;
+                let key = get_api_key(&config, "openai", "OPENAI_API_KEY")
+                    .context("OPENAI_API_KEY not set and not found in config")?;
                 let model = model_override.unwrap_or_else(|| "gpt-4o".to_string());
                 let op = OpenAiProvider::new(&key, Some(model.clone()), None);
                 model_name = model;
                 provider_name = "openai".to_string();
                 provider = Arc::new(op);
             }
+            "openrouter" => {
+                let key = get_api_key(&config, "openrouter", "OPENROUTER_API_KEY")
+                    .context("OPENROUTER_API_KEY not set and not found in config")?;
+                let model = model_override.unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
+                let op = OpenAiProvider::new(
+                    &key,
+                    Some(model.clone()),
+                    Some("https://openrouter.ai/api/v1".to_string()),
+                );
+                model_name = model;
+                provider_name = "openrouter".to_string();
+                provider = Arc::new(op);
+            }
             other => {
-                anyhow::bail!("Provider desconhecido: {other}. Use: ollama, anthropic, openai");
+                anyhow::bail!("Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter");
             }
         }
     } else if let Some(ref m) = model_override {

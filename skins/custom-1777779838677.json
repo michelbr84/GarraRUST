@@ -1,0 +1,17 @@
+{
+  "name": "custom-1777779838677",
+  "variables": {
+    "--accent": "#ffdf00",
+    "--accent-hover": "#ffc400",
+    "--bg-ai-msg": "#003399",
+    "--bg-chat": "#002060",
+    "--bg-primary": "#002776",
+    "--bg-secondary": "#003399",
+    "--bg-user-msg": "#009c3b",
+    "--border": "#0055aa",
+    "--error": "#cc0000",
+    "--success": "#009c3b",
+    "--text-primary": "#f4f4f4",
+    "--text-secondary": "#b8c5d6"
+  }
+}
