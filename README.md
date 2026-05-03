@@ -52,32 +52,51 @@ O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tie
 ## Início Rápido
 
 ```bash
-# Instalar (Linux, macOS)
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
+cargo build --release -p garraia
 
 # Configuração interativa - escolha seu provedor de LLM, armazene chaves de API em cofre criptografado
-garraia init
+./target/release/garraia init
 
 # Iniciar
-garraia start
-```
-
-<details>
-<summary>Compilar a partir do código-fonte</summary>
-
-```bash
-# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
-cargo build --release
-./target/release/garraia init
 ./target/release/garraia start
 
 # Opcional: incluir suporte a plugins WASM
-cargo build --release --features plugins
+cargo build --release -p garraia --features plugins
+```
+
+<details>
+<summary>Compilar o app desktop (Tauri)</summary>
+
+O app desktop requer que o binário CLI já esteja compilado como sidecar:
+
+```bash
+# 1. Compilar o CLI primeiro
+cargo build --release -p garraia
+
+# 2. Copiar para o diretório de sidecar esperado pelo Tauri
+cp target/release/garraia crates/garraia-desktop/src-tauri/binaries/garraia-$(rustc -vV | grep host | cut -d' ' -f2)
+
+# 3. Compilar o desktop
+cargo build --release -p garraia-desktop
 ```
 
 </details>
 
-Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) e Windows (x86_64) estão disponíveis nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
+<details>
+<summary>Instalar via script (Linux, macOS) — requer binários publicados no release</summary>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+garraia init
+garraia start
+```
+
+> **Nota:** o script de instalação requer que binários CLI pré-compilados estejam publicados nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Enquanto isso, compile a partir do código-fonte conforme acima.
+
+</details>
+
+Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disponíveis nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
 
 ## Por que GarraIA?
 
