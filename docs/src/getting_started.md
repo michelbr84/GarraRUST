@@ -23,8 +23,8 @@ Você também pode compilar o GarraIA a partir do código-fonte, caso tenha o Ru
 
 ```bash
 cargo build --release
-./target/release/garraia init
-./target/release/garraia start
+./target/release/garra init
+./target/release/garra start
 ```
 
 No Windows:
