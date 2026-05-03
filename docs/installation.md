@@ -56,7 +56,7 @@ cargo build --release --features plugins
 
 ```bash
 # Copy to PATH
-sudo cp target/release/garraia /usr/local/bin/
+sudo cp target/release/garra /usr/local/bin/
 
 # Or use cargo install
 cargo install --path crates/garraia-cli
@@ -128,7 +128,7 @@ FROM rust:1.92-bookworm
 RUN apt-get update && apt-get install -y ffmpeg libssl3
 
 # Build and copy binary
-COPY target/release/garraia /usr/local/bin/
+COPY target/release/garra /usr/local/bin/
 
 ENTRYPOINT ["garraia"]
 CMD ["start"]

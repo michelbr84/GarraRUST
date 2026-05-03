@@ -241,7 +241,7 @@ pub async fn detect_provider(
             .llm
             .get("openrouter")
             .and_then(|c| c.model.as_deref())
-            .unwrap_or("anthropic/claude-sonnet-4-5")
+            .unwrap_or("openrouter/auto")
             .to_string();
         let provider = OpenAiProvider::new(
             &key,
@@ -307,7 +307,7 @@ pub async fn run_chat(
             "openrouter" => {
                 let key = get_api_key(&config, "openrouter", "OPENROUTER_API_KEY")
                     .context("OPENROUTER_API_KEY not set and not found in config")?;
-                let model = model_override.unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
+                let model = model_override.unwrap_or_else(|| "openrouter/auto".to_string());
                 let op = OpenAiProvider::new(
                     &key,
                     Some(model.clone()),

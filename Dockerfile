@@ -39,8 +39,8 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo build --release --package garraia-gateway \
-    && strip target/release/garraia-gateway
+RUN cargo build --release --package garraia \
+    && strip target/release/garra
 
 # ---------------------------------------------------------------------------
 # Stage 4: Node — install Node.js 22 minimal for MCP servers
@@ -80,7 +80,7 @@ COPY --from=node-installer /usr/bin/npm /usr/bin/npm
 COPY --from=node-installer /usr/lib/node_modules /usr/lib/node_modules
 
 # Copy compiled binary
-COPY --from=builder /build/target/release/garraia-gateway /usr/local/bin/garraia
+COPY --from=builder /build/target/release/garra /usr/local/bin/garra
 
 # Create non-root user
 RUN groupadd --gid 1000 garraia \
@@ -98,5 +98,5 @@ EXPOSE 3888
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:3888/health || exit 1
 
-ENTRYPOINT ["tini", "--", "garraia"]
+ENTRYPOINT ["tini", "--", "garra"]
 CMD ["start", "--host", "0.0.0.0"]

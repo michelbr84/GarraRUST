@@ -6,7 +6,7 @@ license.workspace = true
 description = "GarraIA CLI - Personal AI assistant platform"
 
 [[bin]]
-name = "garraia"
+name = "garra"
 path = "src/main.rs"
 
 [dependencies]
