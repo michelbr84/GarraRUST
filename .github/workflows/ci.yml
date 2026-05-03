@@ -371,11 +371,11 @@ jobs:
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24):
     # The previous "gateway exits immediately" hypothesis was wrong. Root cause
     # was that `garraia-gateway` is a library crate (no production [[bin]]);
-    # the real binary is `garraia` from `garraia-cli`. The job used to
+    # the real binary is `garra` from `garraia-cli`. The job used to
     # `cargo build -p garraia-gateway --release` + `./target/release/garraia-gateway`
     # — that binary never existed, the `&` backgrounded a non-existent
     # process with exit 0, and `continue-on-error: true` masked the failure.
-    # Fix: build `--bin garraia`, start via `garraia start`, add Postgres
+    # Fix: build `--bin garra`, start via `garra start`, add Postgres
     # service + minimal auth envs so `AuthConfig::from_env` does not bail.
     services:
       # Pin to 16.8-alpine (minor+patch) for deterministic CI runs —
@@ -442,8 +442,8 @@ jobs:
       # `AgentRuntime::build_agent_runtime` wires the deterministic echo
       # LLM provider when the e2e config declares `[llm.echo] provider = "echo"`.
       # Default OFF in the workspace — never enabled by a release binary.
-      - name: Build garraia binary (release, dev-echo-provider)
-        run: cargo build --bin garraia --release --features dev-echo-provider
+      - name: Build garra binary (release, dev-echo-provider)
+        run: cargo build --bin garra --release --features dev-echo-provider
 
       # Plan 0051 (GAR-444): seed a minimal config with one echo provider so
       # the AgentRuntime has a registered LlmProvider when the gateway boots.
@@ -466,7 +466,7 @@ jobs:
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-e2e
         run: |
-          ./target/release/garraia start --host 0.0.0.0 --port 3888 &
+          ./target/release/garra start --host 0.0.0.0 --port 3888 &
           echo $! > /tmp/garraia.pid
           # Wait up to 30s for health endpoint to respond
           for i in $(seq 1 30); do
@@ -505,7 +505,7 @@ jobs:
     runs-on: ubuntu-latest
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24): same root cause
     # as the `e2e` job — the previous workflow ran a binary that never existed
-    # (`./target/release/garraia-gateway`, but the real binary is `garraia`
+    # (`./target/release/garraia-gateway`, but the real binary is `garra`
     # from `garraia-cli`). See the `e2e` job comment for the full causal
     # chain.
     services:
@@ -562,9 +562,9 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-playwright-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build garraia binary (release)
+      - name: Build garra binary (release)
         working-directory: .
-        run: cargo build --bin garraia --release
+        run: cargo build --bin garra --release
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -597,7 +597,7 @@ jobs:
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-test-config
         run: |
-          ./target/release/garraia start --host 0.0.0.0 --port 3888 &
+          ./target/release/garra start --host 0.0.0.0 --port 3888 &
           echo $! > /tmp/garraia.pid
           for i in $(seq 1 30); do
             if curl -sf http://localhost:3888/health; then

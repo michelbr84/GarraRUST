@@ -41,7 +41,7 @@ fn init_telemetry_guard() -> (
 }
 
 #[derive(Parser)]
-#[command(name = "garraia", version, about = "GarraIA - Personal AI Assistant")]
+#[command(name = "garra", version, about = "GarraIA - Personal AI Assistant")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -521,7 +521,11 @@ fn main() -> Result<()> {
     // Attempt to load .env file from the current directory, ignoring errors if missing
     dotenvy::dotenv().ok();
 
-    let cli = Cli::parse();
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.len() == 1 {
+        args.push(std::ffi::OsString::from("chat"));
+    }
+    let cli = Cli::parse_from(args);
 
     // Show update notice (non-blocking, from cache)
     if !matches!(cli.command, Commands::Update { .. })
