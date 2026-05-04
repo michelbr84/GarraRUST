@@ -133,6 +133,302 @@ pub struct ChatListResponse {
     pub items: Vec<ChatSummary>,
 }
 
+/// `POST /v1/groups/{group_id}/chats` — create a new channel inside a group.
+///
+/// Authz: caller must be a member of the group AND have
+/// `Action::ChatsWrite`. All 5 roles (Owner/Admin/Member/Guest/Child) hold
+/// this capability per the migration 002 seed; the explicit `can()` check
+/// stays in place so a future role with reduced chat permissions slots in
+/// cleanly. Non-members never reach this code — the `Principal` extractor
+/// already 403'd them.
+///
+/// Tenancy: the handler opens a transaction, sets BOTH `app.current_user_id`
+/// AND `app.current_group_id`, then issues two INSERTs (`chats` then
+/// `chat_members[owner]`) plus one audit row. The whole sequence commits or
+/// rolls back atomically — there is no path that leaves a `chats` row
+/// without an owner member.
+///
+/// ## Error matrix
+///
+/// | Condition                                        | Status | Source         |
+/// |--------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                              | 401    | Principal ext. |
+/// | Non-member of target group                       | 403    | Principal ext. |
+/// | `X-Group-Id` missing / mismatched                | 400    | this handler   |
+/// | Body: empty name / unknown type / dm / thread    | 400    | validate()     |
+/// | Body: topic > 4000 chars                         | 400    | validate()     |
+/// | Caller has no role (defensive — extractor sets it)| 403   | `can()`        |
+/// | Happy path                                       | 201    |                |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/chats",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+    ),
+    request_body = CreateChatRequest,
+    responses(
+        (status = 201, description = "Chat created; caller auto-enrolled as `'owner'` in `chat_members`.", body = ChatResponse),
+        (status = 400, description = "Invalid body, header/path mismatch, or unsupported type.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the requested group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_chat(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(group_id): Path<Uuid>,
+    Json(body): Json<CreateChatRequest>,
+) -> Result<(StatusCode, Json<ChatResponse>), RestError> {
+    // 1. Header/path coherence — same rule as get_group/patch_group/create_invite.
+    match principal.group_id {
+        Some(hdr) if hdr == group_id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check. All 5 roles have ChatsWrite seeded; stays here
+    //    so a future role with reduced chat permissions slots in cleanly.
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural validation (no DB access; PII-safe messages).
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let trimmed_name = body.name.trim().to_string();
+    let trimmed_topic: Option<String> = body
+        .topic
+        .as_ref()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+
+    // 4. Open transaction. SET LOCAL is tx-scoped — auto-commit would
+    //    drop the setting between statements (team-coordinator gate
+    //    risk #6, plan 0016 M4).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Tenant context — BOTH user and group required because `chats`
+    //    is FORCE RLS on `app.current_group_id` (migration 007:89-94),
+    //    `chat_members` is JOIN-RLS via chats (007:99-112) and
+    //    `audit_events` requires both (007:161-168). `Uuid::Display`
+    //    is 36 hex-with-dashes, injection-safe by construction.
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_group_id = '{group_id}'"
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. INSERT chat. RETURNING gives us id + created_at in one roundtrip.
+    let (chat_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO chats (group_id, type, name, topic, created_by) \
+         VALUES ($1, $2, $3, $4, $5) \
+         RETURNING id, created_at",
+    )
+    .bind(group_id)
+    .bind(&body.chat_type)
+    .bind(&trimmed_name)
+    .bind(trimmed_topic.as_deref())
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 7. Auto-enroll the creator as the chat owner. Same tx so the
+    //    chat row + member row are atomic. The JOIN-RLS subquery resolves
+    //    correctly inside the same tx because the freshly-inserted chats
+    //    row is visible to subsequent statements before commit.
+    sqlx::query(
+        "INSERT INTO chat_members (chat_id, user_id, role) \
+         VALUES ($1, $2, 'owner')",
+    )
+    .bind(chat_id)
+    .bind(principal.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 8. Audit. Metadata carries STRUCTURE only — chat name/topic are
+    //    user-controlled and may contain PII (family nickname, customer
+    //    name, internal codename). The `chats` row itself is the source
+    //    of truth for read-back via GET (plan 0054 invariant 7).
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ChatCreated,
+        principal.user_id,
+        group_id,
+        "chats",
+        chat_id.to_string(),
+        json!({
+            "name_len": trimmed_name.chars().count(),
+            "type": body.chat_type,
+            "has_topic": trimmed_topic.is_some(),
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ChatResponse {
+            id: chat_id,
+            group_id,
+            chat_type: body.chat_type,
+            name: trimmed_name,
+            topic: trimmed_topic,
+            created_by: principal.user_id,
+            created_at,
+        }),
+    ))
+}
+
+/// `GET /v1/groups/{group_id}/chats` — list active chats in a group.
+///
+/// Returns up to 100 active (`archived_at IS NULL`) chats ordered by
+/// `created_at DESC`. No cursor pagination in slice 1.
+///
+/// ## Error matrix
+///
+/// | Condition                                  | Status | Source         |
+/// |--------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                        | 401    | Principal ext. |
+/// | Non-member of target group                 | 403    | Principal ext. |
+/// | `X-Group-Id` missing / mismatched          | 400    | this handler   |
+/// | Caller has no role (defensive)             | 403    | `can()`        |
+/// | Happy path                                 | 200    |                |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/chats",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+    ),
+    responses(
+        (status = 200, description = "Up to 100 active chats, newest first.", body = ChatListResponse),
+        (status = 400, description = "`X-Group-Id` header missing or mismatched.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the requested group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_chats(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<ChatListResponse>, RestError> {
+    // 1. Header/path coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == group_id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability gate — all 5 roles pass; defensive.
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Tx-bound tenant context. SELECT on chats requires
+    //    `app.current_group_id` because chats is FORCE RLS.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_user_id = '{}'",
+        principal.user_id
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query(&format!(
+        "SET LOCAL app.current_group_id = '{group_id}'"
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. SELECT — RLS enforces group isolation; explicit `archived_at IS
+    //    NULL` filter excludes soft-deleted rows from this slice.
+    //    LIMIT 100 fixed; cursor pagination lands when messages do.
+    type ChatRow = (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    );
+    let rows: Vec<ChatRow> = sqlx::query_as(
+        "SELECT id, type, name, topic, created_by, created_at, updated_at \
+         FROM chats \
+         WHERE archived_at IS NULL \
+         ORDER BY created_at DESC \
+         LIMIT 100",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, ct, name, topic, created_by, created_at, updated_at)| ChatSummary {
+                id,
+                chat_type: ct,
+                name,
+                topic,
+                created_by,
+                created_at,
+                updated_at,
+            },
+        )
+        .collect();
+
+    Ok(Json(ChatListResponse { items }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
