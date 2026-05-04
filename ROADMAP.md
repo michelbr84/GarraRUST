@@ -163,6 +163,80 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 
 - Um bug real do backlog é corrigido end-to-end via `/fix-issue` sem intervenção manual além de approve/merge.
 
+#### 1.2.1 GarraMaxPower — modo agente avançado nativo do Garra
+
+> Adaptação **nativa** das ideias de ClaudeMaxPower/Superpowers para o runtime do Garra. **Não é** copiar `.claude/` literalmente nem rodar `scripts/setup.sh` do ClaudeMaxPower — é trazer as primitivas (capability prompt, workflow brainstorm→spec→plan→execute→review→finish, skills, agent team, safety gates, handoff/Auto Dream, validações locais) para dentro do binário `garra` e dos crates do workspace, com superfície pequena, versionada e executável.
+
+**Objetivo:**
+
+Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra max-power` (ou equivalente) que orquestra brainstorm → spec → plan → execute → review → finish usando os providers/canais/tools que o gateway já expõe, com safety gates contra comandos destrutivos e memória persistente entre sessões.
+
+**Escopo do MVP:**
+
+- Comando `garra max-power` (no `garraia-cli`) que ativa o modo, imprime banner e roteia para a próxima ação certa.
+- **Capability prompt** nativo (não importado do `.claude/`) montado em runtime a partir do que o `AgentRuntime` realmente expõe (providers, tools, canais, MCP servers ativos).
+- Workflow `brainstorm → spec → plan → execute → review → finish` como máquina de estados explícita em `garraia-agents` (ou novo crate `garraia-maxpower`), com gate obrigatório no `spec` antes de qualquer escrita de código.
+- **Repo workflow seguro** para GitHub: clonar/branch/PR via `gh`/`git` com checagens de "branch atual não é `main`" e "tree limpo antes de force operations".
+- **Safety gates de bash** centralizados (uma única função que valida antes de spawnar): bloqueia `rm -rf /`, `rm -rf ~`, fork bombs, `git push --force` em `main`, escrita em `.env`/credenciais.
+- 3-5 **skills MVP** nativas (não markdown solto): `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify` — registradas no `garraia-skills` registry.
+- **Agent team MVP**: orquestrador + 2 sub-agentes (revisor + executor) usando `AgentRuntime` real, sem depender do plugin Superpowers do Claude Code.
+- **Handoff / Auto Dream**: arquivo `.garra-estado.md` versionado com último spec, último plan, último review, próxima ação — lido no início da próxima sessão.
+- `garra verify` — validação local idempotente: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `flutter analyze` (se presente), `gitleaks` (se presente). Sai com exit code estilo `sysexits` (0/2/65).
+
+**Fora de escopo (explícito):**
+
+- Não copiar/sincronizar `.claude/`, `cmp-skills/`, `superpowers-bridge.md` ou qualquer arquivo do harness do Claude Code para dentro do runtime do Garra.
+- Não rodar `scripts/setup.sh` do ClaudeMaxPower como parte do bootstrap do Garra.
+- Não escrever tokens/credenciais em config local — qualquer secret continua via `CredentialVault` ou env, conforme regra absoluta §6 do `CLAUDE.md`.
+- Não reescrever `garraia-agents` para isso. GarraMaxPower **consome** o runtime existente; não substitui.
+- Não criar dependência hard de Claude Code, Anthropic SDK ou qualquer provider específico — o capability prompt é provider-agnóstico.
+- Não tentar reproduzir 100% das skills do plugin Superpowers em uma única tacada. MVP = 3-5 skills.
+
+**Entregáveis:**
+
+1. ADR `docs/adr/0009-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
+2. Subseção §1.2.1 deste ROADMAP (este documento).
+3. Subcomando `garra max-power` no `garraia-cli` (esqueleto + roteamento, sem implementação dos passos pesados).
+4. Crate ou módulo `garraia-maxpower` (ou seção em `garraia-skills`) com a máquina de estados do workflow.
+5. Função `safety_gate(cmd: &str) -> Result<()>` em `garraia-tools` ou `garraia-common`, com testes unitários cobrindo a denylist mínima.
+6. Skills MVP em `garraia-skills` (registry-driven, não arquivos markdown soltos).
+7. `garra verify` em `garraia-cli` com pipeline Rust+Flutter+gitleaks.
+8. `.garra-estado.md` schema documentado + leitor/escritor.
+9. Issues Linear filhas (épico GarraMaxPower abaixo) referenciadas neste documento.
+
+**Critérios de aceite:**
+
+- `garra max-power --help` imprime o pipeline e os entry points alternativos sem panic.
+- `garra max-power --goal "fix bug X"` roteia para `systematic-debugging` com rationale visível.
+- Tentativa de executar `rm -rf /` ou `git push --force origin main` via tool/agent é bloqueada pela safety gate com erro determinístico (testado).
+- `garra verify` em `main` limpo retorna exit 0 e relatório markdown; em árvore com clippy warning retorna exit ≠ 0.
+- Workflow brainstorm→spec→plan→execute em um bug real do backlog termina com PR aberto + review pelo agent team, sem intervenção manual além de approve.
+- `cargo check --workspace` e `cargo clippy --workspace -- -D warnings` permanecem verdes.
+- ADR 0009 está em `Accepted` antes do merge da última issue filha.
+
+**Riscos:**
+
+- **Escopo creep:** virar uma reescrita do `garraia-agents`. Mitigação: fora-de-escopo explícito acima; cada issue filha é pequena e fecha sozinha.
+- **Acoplamento ao Claude Code:** capability prompt acabar dependente de campos específicos do Anthropic SDK. Mitigação: prompt provider-agnóstico, testado contra OpenAI + OpenRouter + Ollama mínimo.
+- **Safety gate falso-negativo:** denylist incompleta deixa passar comando destrutivo. Mitigação: testes unitários table-driven + revisão por `@security-auditor` antes de merge.
+- **Drift com ClaudeMaxPower upstream:** as ideias evoluem fora do nosso repo. Mitigação: ADR registra qual *snapshot* das ideias foi adaptado; updates futuros viram issues separadas.
+- **Memória/Auto Dream PII-leak:** `.garra-estado.md` versionado com prompt do usuário pode vazar dados. Mitigação: schema com allow-list de campos; nada de message bodies por padrão.
+- **CI overhead:** `garra verify` em CI pode ficar lento. Mitigação: passos paralelos + cache; budget documentado por etapa.
+
+**Issues Linear sugeridas (épico abaixo):**
+
+- `GarraMaxPower roadmap + ADR` — esta seção + ADR 0009 (umbrella já registra; issue filha amarra commits).
+- `/max-power MVP` — subcomando `garra max-power` esqueleto + roteamento + banner.
+- `Capability prompt nativo` — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
+- `Repo workflow seguro` — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
+- `Safety gates para bash` — `safety_gate(cmd)` + denylist + testes + integração com tools.
+- `Skills MVP` — 3-5 skills nativas via registry `garraia-skills`.
+- `Agent team MVP` — orquestrador + 2 sub-agentes, dogfooded em um bug real.
+- `Auto Dream / handoff` — schema `.garra-estado.md` + reader/writer + redaction.
+- `garra verify` — pipeline local idempotente, exit-codes sysexits, relatório markdown.
+
+**Estimativa:** 3 / 5 / 8 semanas, em paralelo a 1.2 e 1.3.
+
 ### 1.3 Config & Runtime Wiring unificado
 
 - [ ] **Schema único** de config em `garraia-config` (novo crate) com `serde` + `validator`; fontes: `.garraia/config.toml` > `mcp.json` > env > CLI flags.
