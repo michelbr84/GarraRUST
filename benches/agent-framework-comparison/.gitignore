@@ -1,0 +1,4 @@
+# Logs raw e build outputs grandes — opcional commitar.
+# Sumários (results/*/README.md, results/*/environment.txt, results/*/raw/*.json)
+# DEVEM ser commitados como evidência reproduzível.
+results/*/raw/*.log

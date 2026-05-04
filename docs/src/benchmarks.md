@@ -2,6 +2,12 @@
 
 Esta página descreve a metodologia de benchmark do GarraIA e apresenta resultados comparativos com frameworks similares.
 
+> **Status (2026-05-04):** metodologia de referência; harness reprodutível em
+> construção em [`benches/agent-framework-comparison`](../../benches/agent-framework-comparison/).
+> Os números nesta página são **preliminares** e serão substituídos por
+> resultados versionados em `benches/agent-framework-comparison/results/<DATE>-<host>/`
+> assim que a primeira execução com versões pinadas for commitada.
+
 ---
 
 ## Metodologia
@@ -20,10 +26,14 @@ Todos os benchmarks foram executados em condições idênticas:
 - Média de 100 iterações por métrica (exceto startup time: 20 iterações)
 - Ferramentas: `hyperfine` (latência), `/proc/status` (memória), `perf` (CPU)
 
-**Versões testadas:**
-- GarraIA v0.9.0 (Rust 1.85, compilado em `--release`)
-- OpenClaw v2.3.1 (Node.js 22.x)
-- ZeroClaw v0.4.0 (Rust 1.84)
+**Versões alvo (a serem medidas pelo harness reprodutível):**
+- GarraIA: checkout atual da branch sob teste (`HEAD`), Rust toolchain do `rust-toolchain.toml`, compilado em `--release`
+- OpenClaw v2.3.1 (Node.js 22.x) — pinado via `OPENCLAW_REF`
+- ZeroClaw v0.4.0 (Rust 1.84) — pinado via `ZEROCLAW_REF`
+
+> Os números das tabelas a seguir não foram medidos com versões pinadas; serão
+> substituídos pela saída do harness `benches/agent-framework-comparison/run.sh`
+> assim que a primeira run for commitada.
 
 ---
 
@@ -85,23 +95,28 @@ Tamanho do executável compilado em modo release, sem assets externos.
 
 ## Como reproduzir
 
-Todos os benchmarks podem ser reproduzidos com o script incluído no repositório:
+> **Aviso:** os números desta página foram registrados antes do harness
+> reprodutível existir. O script abaixo é o substituto canônico; até a
+> primeira run real ser commitada, considere os resultados acima como
+> **preliminares** e use a saída do `run.sh` como fonte de verdade.
 
 ```bash
-# Instalar dependências de benchmark
+# Instalar dependências de benchmark (uma vez)
 cargo install hyperfine
-sudo apt-get install linux-perf
 
-# Executar suite completa
-./scripts/benchmark.sh --all
+# Executar suite completa (escopo atual: binsize + peak RSS + cold start de --help)
+cd benches/agent-framework-comparison
+./run.sh --all
 
-# Benchmark específico
-./scripts/benchmark.sh --startup
-./scripts/benchmark.sh --memory
-./scripts/benchmark.sh --throughput
+# Apenas um framework
+./run.sh --garraia
+./run.sh --openclaw
+./run.sh --zeroclaw
 ```
 
-Os resultados são gravados em `benchmark-results/` com timestamp.
+Os resultados ficam em `benches/agent-framework-comparison/results/<DATE>-<host>/`
+com `environment.txt` (CPU, RAM, OS, kernel, versões) e `raw/` (logs hyperfine
++ /usr/bin/time + ls -lh).
 
 ---
 
