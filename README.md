@@ -104,9 +104,9 @@ Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disp
 
 | | | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
 |---|---|---|---|---|
-| | **Tamanho do binário** | 16 MB | ~1.2 GB (com node_modules) | ~25 MB |
-| | **Memória em idle** | 13 MB | ~388 MB | ~20 MB |
-| | **Início a frio** | 3 ms | 13.9 s | ~50 ms |
+| | **Tamanho do binário** | Em medição | Em medição | Em medição |
+| | **Pico de RSS (`--help`)** | Em medição | Em medição | Em medição |
+| | **Início a frio (`--help`)** | Em medição | Em medição | Em medição |
 | | **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
 | | **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
 | | **Agendamento** | Cron, intervalo, único | Sim | Não |
@@ -123,7 +123,7 @@ Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disp
 | | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
 | | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
 
-*Benchmarks medidos em um droplet DigitalOcean com 1 vCPU, 1 GB RAM. [Reproduza você mesmo](bench/).*
+*Benchmarks em reconstrução. A metodologia reproduzível está em [benches/agent-framework-comparison](benches/agent-framework-comparison/). Resultados reais serão publicados em `results/YYYY-MM-DD-<host>/` após execução versionada.*
 
 ## Recursos
 
