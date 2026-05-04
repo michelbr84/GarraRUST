@@ -113,10 +113,13 @@ Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 - **GAR-438 (Lote 2)** ✅ (PR [#64](https://github.com/michelbr84/GarraRUST/pull/64), `1828625`) — fix `e2e` + `playwright` jobs que tentavam executar `./target/release/garraia-gateway` (binário inexistente — `garraia-gateway` é biblioteca). Substituído por `cargo build --bin garraia --release` + `services: postgres:16.8-alpine` + envs de auth via `::add-mask::`. 4 de 7 `continue-on-error: true` removidos.
 - **GAR-443 (Lote 4)** ✅ — Playwright admin specs migrados para `getByTestId(...)` ancorados em `data-testid` estáveis (`admin.html`). Convenção: especificações Playwright do admin DEVEM preferir `data-testid` em vez de `placeholder*=` ou `getByRole(button,{name})`.
 - **GitHub Actions annotations follow-up (2026-05-03)** — CI voltou a ficar verde após PR [#113](https://github.com/michelbr84/GarraRUST/pull/113), mas os jobs `Analyze (javascript-typescript)` e `Analyze (rust)` ainda emitem 2 annotations não-bloqueantes: (a) `github/codeql-action/init@v3` + `analyze@v3` rodam em Node.js 20 (forced switch 2026-06-02, removido em 2026-09-16) — escopo expandido em [GAR-482](https://linear.app/chatgpt25/issue/GAR-482) (Q6.9 third-party Node 24 readiness); (b) CodeQL Action v3 será deprecated em dezembro de 2026 — rastreado em [GAR-502](https://linear.app/chatgpt25/issue/GAR-502) (chore migrate v3 → v4). Manutenção preventiva de CI/runtime, **não** alerta CodeQL real (esses ficam em [GAR-490](https://linear.app/chatgpt25/issue/GAR-490) / [GAR-491](https://linear.app/chatgpt25/issue/GAR-491)) e **não** bloqueia o merge verde atual.
+- **CARGO_BIN_EXE_garraia removal** ([GAR-503](https://linear.app/chatgpt25/issue/GAR-503)) — fallback dead-code em `crates/garraia-cli/tests/migrate_workspace_integration.rs:34-42` para remover.
+- **Benchmark evidence run** ([GAR-504](https://linear.app/chatgpt25/issue/GAR-504)) — primeira execução real de `benches/agent-framework-comparison/run.sh --all` em droplet DigitalOcean 1 vCPU / 1 GB para repor a tabela do `README.md` (PR [#117](https://github.com/michelbr84/GarraRUST/pull/117) §"Open follow-ups").
+- **Mutation Testing 2026-05-04 missed mutants** ([GAR-505](https://linear.app/chatgpt25/issue/GAR-505)) — sub-issue de [GAR-436](https://linear.app/chatgpt25/issue/GAR-436) cobrindo 6 NEW missed mutants em `jwt.rs` / `storage_redacted.rs` / `app_pool.rs` + 3 timeouts (run [25307117776](https://github.com/michelbr84/GarraRUST/actions/runs/25307117776)).
 
-### Status do umbrella GAR-486
+### Status do umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)
 
-GAR-486 fica em **In Progress** até GAR-491 e GAR-490 mergearem. Não promover para Done sem essas duas sub-issues fecharem.
+✅ **Done** (2026-05-04). Fechado após [GAR-490](https://linear.app/chatgpt25/issue/GAR-490) (PR [#112](https://github.com/michelbr84/GarraRUST/pull/112), 2026-05-04) e [GAR-491](https://linear.app/chatgpt25/issue/GAR-491) (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109), 2026-05-01) mergearem.
 
 ---
 
@@ -223,17 +226,17 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - **Memória/Auto Dream PII-leak:** `.garra-estado.md` versionado com prompt do usuário pode vazar dados. Mitigação: schema com allow-list de campos; nada de message bodies por padrão.
 - **CI overhead:** `garra verify` em CI pode ficar lento. Mitigação: passos paralelos + cache; budget documentado por etapa.
 
-**Issues Linear sugeridas (épico abaixo):**
+**Issues Linear filhas do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492):**
 
-- `GarraMaxPower roadmap + ADR` — esta seção + ADR 0009 (umbrella já registra; issue filha amarra commits).
-- `/max-power MVP` — subcomando `garra max-power` esqueleto + roteamento + banner.
-- `Capability prompt nativo` — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
-- `Repo workflow seguro` — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
-- `Safety gates para bash` — `safety_gate(cmd)` + denylist + testes + integração com tools.
-- `Skills MVP` — 3-5 skills nativas via registry `garraia-skills`.
-- `Agent team MVP` — orquestrador + 2 sub-agentes, dogfooded em um bug real.
-- `Auto Dream / handoff` — schema `.garra-estado.md` + reader/writer + redaction.
-- `garra verify` — pipeline local idempotente, exit-codes sysexits, relatório markdown.
+- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0009 (umbrella já registra; issue filha amarra commits).
+- `/max-power MVP` ([GAR-494](https://linear.app/chatgpt25/issue/GAR-494)) — subcomando `garra max-power` esqueleto + roteamento + banner.
+- `Capability prompt nativo` ([GAR-495](https://linear.app/chatgpt25/issue/GAR-495)) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
+- `Repo workflow seguro` ([GAR-496](https://linear.app/chatgpt25/issue/GAR-496)) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
+- `Safety gates para bash` ([GAR-497](https://linear.app/chatgpt25/issue/GAR-497)) — `safety_gate(cmd)` + denylist + testes + integração com tools.
+- `Skills MVP` ([GAR-498](https://linear.app/chatgpt25/issue/GAR-498)) — 3-5 skills nativas via registry `garraia-skills`.
+- `Agent team MVP` ([GAR-499](https://linear.app/chatgpt25/issue/GAR-499)) — orquestrador + 2 sub-agentes, dogfooded em um bug real.
+- `Auto Dream / handoff` ([GAR-500](https://linear.app/chatgpt25/issue/GAR-500)) — schema `.garra-estado.md` + reader/writer + redaction.
+- `garra verify` ([GAR-501](https://linear.app/chatgpt25/issue/GAR-501)) — pipeline local idempotente, exit-codes sysexits, relatório markdown.
 
 **Estimativa:** 3 / 5 / 8 semanas, em paralelo a 1.2 e 1.3.
 
