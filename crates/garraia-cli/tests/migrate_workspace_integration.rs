@@ -22,6 +22,26 @@ use testcontainers::core::{ImageExt, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
 
+/// Resolve the path to the integration-test target binary.
+///
+/// The crate's `[[bin]]` is currently named `garra` (see
+/// `crates/garraia-cli/Cargo.toml`), so Cargo exports
+/// `CARGO_BIN_EXE_garra` when building this integration test. We use a
+/// runtime lookup (`std::env::var_os`) instead of the compile-time
+/// `env!` macro so a future bin rename produces a clean runtime panic
+/// rather than a compile-time hard fail.
+///
+/// The `CARGO_BIN_EXE_garraia` fallback is **temporary backward
+/// compatibility** for any local checkouts still on the legacy bin
+/// name; it is dead in CI today and SHOULD be removed once we are
+/// confident no environment depends on it.
+fn garra_bin() -> std::path::PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_garra")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_garraia"))
+        .map(std::path::PathBuf::from)
+        .expect("expected Cargo to define CARGO_BIN_EXE_garra for integration tests")
+}
+
 const PBKDF2_ITERATIONS: u32 = 600_000;
 const PBKDF2_OUTPUT_LEN: usize = 32;
 
@@ -194,7 +214,7 @@ async fn stage1_happy_path_and_idempotency() {
 
     // Invoke the migration command via the binary under test.
     // We exec via `cargo run` — simpler than wrangling cli::Parser in-process.
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -240,7 +260,7 @@ async fn stage1_happy_path_and_idempotency() {
     assert_eq!(audit_count, 3, "audit events emitted atomically");
 
     // Re-run must be a no-op (idempotency).
-    let rerun = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let rerun = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -300,7 +320,7 @@ async fn stage3_creates_group_and_members_happy_path() {
         ],
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -414,7 +434,7 @@ async fn stage3_idempotent_rerun() {
 
     // First run.
     assert!(
-        std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        std::process::Command::new(garra_bin())
             .args([
                 "migrate",
                 "workspace",
@@ -431,7 +451,7 @@ async fn stage3_idempotent_rerun() {
 
     // Second run with --confirm-backup (users.count > 0 now).
     assert!(
-        std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        std::process::Command::new(garra_bin())
             .args([
                 "migrate",
                 "workspace",
@@ -537,7 +557,7 @@ async fn stage3_resolves_preexisting_group_by_name() {
         ],
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -670,7 +690,7 @@ async fn stage3_promotes_first_legacy_user_when_group_has_no_owner() {
         ],
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -727,7 +747,7 @@ async fn stage3_skips_when_no_legacy_users() {
     // Empty SQLite — no mobile_users rows, just the table.
     seed_sqlite(&sqlite_path, &[]);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -838,7 +858,7 @@ async fn stage5_happy_path_creates_chats_and_members() {
         r#"{"title":"DMs"}"#,
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -978,7 +998,7 @@ async fn stage5_idempotent_rerun() {
 
     // First run.
     assert!(
-        std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+        std::process::Command::new(garra_bin())
             .args([
                 "migrate",
                 "workspace",
@@ -1000,7 +1020,7 @@ async fn stage5_idempotent_rerun() {
     assert_eq!(after_first_chats, 2);
 
     // Second run — Postgres has rows already, need --confirm-backup.
-    let rerun = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let rerun = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -1068,7 +1088,7 @@ async fn stage5_skips_when_no_sessions_table() {
     // Only mobile_users — NO sessions table on purpose.
     seed_sqlite(&sqlite_path, &[("u1", "alice@example.com", "pw-a")]);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -1144,7 +1164,7 @@ async fn stage5_skips_sessions_without_migrated_user() {
         r#"{"title":"Ghost"}"#,
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
@@ -1202,7 +1222,7 @@ async fn stage1_dry_run_does_not_persist() {
         &[("u1", "drake@example.com", "pw-drake-1111")],
     );
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_garraia"))
+    let output = std::process::Command::new(garra_bin())
         .args([
             "migrate",
             "workspace",
