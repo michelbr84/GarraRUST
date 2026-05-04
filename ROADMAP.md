@@ -393,8 +393,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Chats**
 
-- [ ] `POST /v1/groups/{group_id}/chats`
-- [ ] `GET /v1/groups/{group_id}/chats`
+- [x] `POST /v1/groups/{group_id}/chats` — plan 0054 / [GAR-506](https://linear.app/chatgpt25/issue/GAR-506), implementado 2026-05-04 (Florida)
+- [x] `GET /v1/groups/{group_id}/chats` — plan 0054 / [GAR-506](https://linear.app/chatgpt25/issue/GAR-506), implementado 2026-05-04 (Florida)
 - [ ] `POST /v1/chats/{chat_id}/messages`
 - [ ] `GET /v1/chats/{chat_id}/messages?cursor=...`
 - [ ] `POST /v1/messages/{message_id}/threads`

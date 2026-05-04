@@ -100,6 +100,18 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ upload_offset, upload_length, age_secs,
     /// object_key_hash }`.
     UploadExpired,
+
+    /// A new chat (channel/dm/thread) was created in a group via
+    /// `POST /v1/groups/{group_id}/chats` (plan 0054 / GAR-506,
+    /// epic GAR-WS-CHAT slice 1).
+    ///
+    /// `resource_type = "chats"`, `resource_id = "{chat_id}"`.
+    /// Metadata: `{ name_len, type, has_topic }`. Carries STRUCTURAL
+    /// metadata only — chat name and topic are user-controlled and may
+    /// contain PII (family nickname, customer name, internal project
+    /// codename). They live exclusively in the `chats` row, accessible
+    /// via authorized read-back through `GET /v1/groups/{id}/chats`.
+    ChatCreated,
 }
 
 impl WorkspaceAuditAction {
@@ -112,6 +124,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::UploadCompleted => "upload.completed",
             WorkspaceAuditAction::UploadTerminated => "upload.terminated",
             WorkspaceAuditAction::UploadExpired => "upload.expired",
+            WorkspaceAuditAction::ChatCreated => "chat.created",
         }
     }
 }
@@ -194,6 +207,15 @@ mod tests {
             WorkspaceAuditAction::UploadCompleted.as_str(),
             "upload.completed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::UploadTerminated.as_str(),
+            "upload.terminated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::UploadExpired.as_str(),
+            "upload.expired"
+        );
+        assert_eq!(WorkspaceAuditAction::ChatCreated.as_str(), "chat.created");
     }
 
     #[test]
@@ -204,6 +226,9 @@ mod tests {
             WorkspaceAuditAction::MemberRoleChanged.as_str(),
             WorkspaceAuditAction::MemberRemoved.as_str(),
             WorkspaceAuditAction::UploadCompleted.as_str(),
+            WorkspaceAuditAction::UploadTerminated.as_str(),
+            WorkspaceAuditAction::UploadExpired.as_str(),
+            WorkspaceAuditAction::ChatCreated.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
@@ -230,18 +255,23 @@ mod tests {
             format!("{}", WorkspaceAuditAction::MemberRemoved),
             "member.removed"
         );
+        assert_eq!(
+            format!("{}", WorkspaceAuditAction::ChatCreated),
+            "chat.created"
+        );
 
         // Concat test — verifies `format!` composition (common tracing
         // scenario with multiple placeholders).
         let combined = format!(
-            "{} + {} + {}",
+            "{} + {} + {} + {}",
             WorkspaceAuditAction::InviteAccepted,
             WorkspaceAuditAction::MemberRoleChanged,
             WorkspaceAuditAction::MemberRemoved,
+            WorkspaceAuditAction::ChatCreated,
         );
         assert_eq!(
             combined,
-            "invite.accepted + member.role_changed + member.removed"
+            "invite.accepted + member.role_changed + member.removed + chat.created"
         );
     }
 }
