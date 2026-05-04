@@ -465,6 +465,43 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
 
+    // Channels: warn when a channel is enabled but its well-known token
+    // env var is not set and no inline credential is present. This helps
+    // operators catch the common mistake of enabling a channel without
+    // providing the secret. We only check env vars here — the vault is
+    // runtime-only and out of scope for config-check.
+    for (name, ch) in &config.channels {
+        let enabled = ch.enabled.unwrap_or(true);
+        if !enabled {
+            continue;
+        }
+        let has_inline_token = ch.settings.get("bot_token").is_some()
+            || ch.settings.get("access_token").is_some()
+            || ch.settings.get("app_token").is_some();
+        if has_inline_token {
+            continue;
+        }
+        let env_var = match ch.channel_type.as_str() {
+            "telegram" => Some("TELEGRAM_BOT_TOKEN"),
+            "discord" => Some("DISCORD_BOT_TOKEN"),
+            "slack" => Some("SLACK_BOT_TOKEN"),
+            "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
+            _ => None,
+        };
+        if let Some(var) = env_var {
+            if std::env::var_os(var).is_none() {
+                push_warn(
+                    &mut findings,
+                    &format!("channels.{name}"),
+                    format!(
+                        "channel '{name}' (type={}) is enabled but no token found in config or env var {var}",
+                        ch.channel_type
+                    ),
+                );
+            }
+        }
+    }
+
     findings
 }
 
@@ -1218,6 +1255,69 @@ mod tests {
                 .filter(|f| f.severity == Severity::Error)
                 .all(|f| !f.field.starts_with("auth")),
             "default AuthSection produced auth error(s): {findings:?}"
+        );
+    }
+
+    #[test]
+    fn telegram_enabled_without_token_is_warning() {
+        let mut cfg = AppConfig::default();
+        cfg.channels.insert(
+            "telegram".into(),
+            crate::model::ChannelConfig {
+                channel_type: "telegram".into(),
+                enabled: Some(true),
+                settings: HashMap::new(),
+            },
+        );
+        // Ensure env var is NOT set for this test
+        // (TELEGRAM_BOT_TOKEN is almost certainly absent in CI/test anyway)
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning
+                && f.field == "channels.telegram"
+                && f.message.contains("TELEGRAM_BOT_TOKEN")),
+            "expected warning about missing token: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn telegram_enabled_with_inline_token_no_warning() {
+        let mut cfg = AppConfig::default();
+        let mut settings = HashMap::new();
+        settings.insert(
+            "bot_token".to_string(),
+            serde_json::json!("fake-token-for-test"),
+        );
+        cfg.channels.insert(
+            "telegram".into(),
+            crate::model::ChannelConfig {
+                channel_type: "telegram".into(),
+                enabled: Some(true),
+                settings,
+            },
+        );
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| f.field != "channels.telegram"),
+            "inline token should suppress channel warning: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_channel_no_token_warning() {
+        let mut cfg = AppConfig::default();
+        cfg.channels.insert(
+            "telegram".into(),
+            crate::model::ChannelConfig {
+                channel_type: "telegram".into(),
+                enabled: Some(false),
+                settings: HashMap::new(),
+            },
+        );
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| f.field != "channels.telegram"),
+            "disabled channel should not warn about missing token: {findings:?}"
         );
     }
 }
