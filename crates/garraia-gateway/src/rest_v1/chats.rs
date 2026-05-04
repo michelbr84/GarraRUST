@@ -33,9 +33,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use garraia_auth::{
-    Action, Principal, WorkspaceAuditAction, audit_workspace_event, can,
-};
+use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
@@ -81,14 +79,10 @@ impl CreateChatRequest {
         match self.chat_type.as_str() {
             "channel" => {}
             "dm" => {
-                return Err(
-                    "type 'dm' is not yet supported in this slice; only 'channel'",
-                );
+                return Err("type 'dm' is not yet supported in this slice; only 'channel'");
             }
             "thread" => {
-                return Err(
-                    "type 'thread' is not yet supported in this slice; only 'channel'",
-                );
+                return Err("type 'thread' is not yet supported in this slice; only 'channel'");
             }
             _ => return Err("invalid chat type; must be 'channel'"),
         }
@@ -234,12 +228,10 @@ pub async fn create_chat(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_group_id = '{group_id}'"
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 6. INSERT chat. RETURNING gives us id + created_at in one roundtrip.
     let (chat_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
@@ -377,12 +369,10 @@ pub async fn list_chats(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_group_id = '{group_id}'"
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 4. SELECT — RLS enforces group isolation; explicit `archived_at IS
     //    NULL` filter excludes soft-deleted rows from this slice.

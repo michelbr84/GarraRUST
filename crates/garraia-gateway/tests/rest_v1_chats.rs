@@ -77,11 +77,7 @@ fn post_chat(
     req
 }
 
-fn get_chats(
-    token: Option<&str>,
-    group_path: &str,
-    x_group_id: Option<&str>,
-) -> Request<Body> {
+fn get_chats(token: Option<&str>, group_path: &str, x_group_id: Option<&str>) -> Request<Body> {
     let mut req = Request::builder()
         .method("GET")
         .uri(format!("/v1/groups/{group_path}/chats"))
@@ -111,10 +107,9 @@ async fn v1_chats_scenarios() {
     let h = Harness::get().await;
 
     // Seed owner of group A used by C1..C5 + G1..G3.
-    let (owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "owner@chats-slice1.test")
-            .await
-            .expect("seed owner+group");
+    let (owner_id, group_id, owner_token) = seed_user_with_group(&h, "owner@chats-slice1.test")
+        .await
+        .expect("seed owner+group");
 
     // ── C1. POST 201 happy path ─────────────────────────────────────
     let resp = h
@@ -139,14 +134,13 @@ async fn v1_chats_scenarios() {
     let chat_id: uuid::Uuid = chat_id_str.parse().expect("C1 chat_id parses");
 
     // C1 — verify chat_members owner row exists in same tx.
-    let (cm_role,): (String,) = sqlx::query_as(
-        "SELECT role FROM chat_members WHERE chat_id = $1 AND user_id = $2",
-    )
-    .bind(chat_id)
-    .bind(owner_id)
-    .fetch_one(&h.admin_pool)
-    .await
-    .expect("C1 chat_members row");
+    let (cm_role,): (String,) =
+        sqlx::query_as("SELECT role FROM chat_members WHERE chat_id = $1 AND user_id = $2")
+            .bind(chat_id)
+            .bind(owner_id)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("C1 chat_members row");
     assert_eq!(cm_role, "owner", "C1 chat_members.role = owner");
 
     // C1 — verify audit row exists with structural metadata only (no PII).
@@ -162,7 +156,10 @@ async fn v1_chats_scenarios() {
     assert_eq!(actor.as_ref(), Some(&owner_id), "C1 audit actor");
     assert_eq!(resource_type, "chats", "C1 audit resource_type");
     assert_eq!(resource_id, &chat_id_str, "C1 audit resource_id");
-    assert_eq!(metadata["name_len"], 7, "C1 audit name_len = chars in 'general'");
+    assert_eq!(
+        metadata["name_len"], 7,
+        "C1 audit name_len = chars in 'general'"
+    );
     assert_eq!(metadata["type"], "channel", "C1 audit type");
     assert_eq!(metadata["has_topic"], true, "C1 audit has_topic");
     assert!(
@@ -318,10 +315,9 @@ async fn v1_chats_scenarios() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "G4 status");
 
     // ── G5. GET 200 empty (fresh group with zero chats) ─────────────
-    let (_, group2_id, owner2_token) =
-        seed_user_with_group(&h, "owner2@chats-slice1.test")
-            .await
-            .expect("G5 seed second group");
+    let (_, group2_id, owner2_token) = seed_user_with_group(&h, "owner2@chats-slice1.test")
+        .await
+        .expect("G5 seed second group");
     let resp = h
         .router
         .clone()
