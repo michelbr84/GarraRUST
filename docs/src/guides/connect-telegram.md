@@ -37,28 +37,48 @@ channels:
   telegram:
     type: telegram
     enabled: true
-    bot_token: "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
-    # Opcional: restrinja quem pode interagir com o bot
-    # allowlist:
-    #   - 123456789   # seu ID numérico do Telegram
-    #   - 987654321
 ```
 
-Para armazenar o token de forma segura no cofre (recomendado):
+> **Segurança:** NÃO coloque o token diretamente no `config.yml` em repositórios versionados.
+> O token deve ser fornecido via variável de ambiente `TELEGRAM_BOT_TOKEN`.
+
+### Configurar o token via variável de ambiente (recomendado)
+
+**Linux / macOS:**
 
 ```bash
-garraia vault set TELEGRAM_BOT_TOKEN "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
+export TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
 ```
 
-Com o token no cofre, use a variável de ambiente no config:
+Para persistir, adicione ao `~/.bashrc`, `~/.zshrc`, ou use um arquivo `.env` no diretório de trabalho.
+
+**Windows (PowerShell):**
+
+```powershell
+[Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ", "User")
+```
+
+Feche e reabra o terminal após definir a variável.
+
+### Alternativa: token no config.yml (uso local/dev)
+
+Se preferir (apenas para uso local, nunca commite o token):
 
 ```yaml
 channels:
   telegram:
     type: telegram
     enabled: true
-    # bot_token é resolvido automaticamente do cofre via TELEGRAM_BOT_TOKEN
+    bot_token: "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
 ```
+
+### Ordem de precedência do token
+
+O runtime resolve o token nesta ordem:
+
+1. **Cofre criptografado** (`~/.garraia/credentials/vault.json`, requer `GARRAIA_VAULT_PASSPHRASE`)
+2. **`bot_token` no config.yml** (campo `settings`)
+3. **Variável de ambiente `TELEGRAM_BOT_TOKEN`**
 
 ---
 
@@ -150,13 +170,14 @@ Saída esperada:
 
 **O bot não responde:**
 
-- Verifique se o token está correto: `garraia vault get TELEGRAM_BOT_TOKEN`
+- Verifique se o token está configurado: `echo $TELEGRAM_BOT_TOKEN` (Linux/macOS) ou `$env:TELEGRAM_BOT_TOKEN` (PowerShell)
 - Confirme que o servidor está rodando: `curl http://127.0.0.1:3888/health`
-- Verifique os logs: `garraia logs --channel telegram`
+- Verifique os logs em `~/.garraia/garraia.log`
+- Verifique o status do canal: `garraia channel status telegram`
 
 **Erro "Unauthorized" no log:**
 
-O token do bot está inválido ou foi revogado. Gere um novo token no BotFather com `/revoketoken` e atualize o cofre.
+O token do bot está inválido ou foi revogado. Gere um novo token no BotFather com `/revoketoken` e atualize a variável de ambiente `TELEGRAM_BOT_TOKEN`.
 
 **Bot responde mas sem formatação:**
 
