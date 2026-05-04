@@ -274,3 +274,132 @@ Recomenda-se atacar GAR-481 primeiro (deadline) e GAR-468 logo em seguida.
 - Run anterior (cancelled): https://github.com/michelbr84/GarraRUST/actions/runs/25109221846
 - Run atual (completo): https://github.com/michelbr84/GarraRUST/actions/runs/25116031135
 - Linear Q6.1..Q6.8: GAR-463, GAR-464, GAR-465, GAR-466, GAR-467, GAR-468, GAR-469, GAR-481
+
+---
+
+## Atualização — Run 25307117776 (GAR-505, 2026-05-04)
+
+Triage dos 6 missed novos + 3 timeouts em `garraia-auth`. Esta seção precede o
+merge do PR de GAR-505 e documenta o estado pré-PR (run scheduled de segunda
+05:00 UTC, ficou vermelho) e o estado esperado pós-PR.
+
+### Metadata
+
+| Campo | Valor |
+|---|---|
+| Run ID | `25307117776` |
+| Workflow | `Mutation Testing — garraia-auth (pilot)` (`mutants.yml`) |
+| Trigger | `schedule` (cron Monday 05:00 UTC) |
+| Commit base | `5c63a162` (`main`, após PR #118) |
+| Duração | 2h05m29s (dentro do limite de 150 min) |
+| Conclusão | `failure` (esperado — havia missed/timeouts) |
+
+### Score (pré-PR)
+
+```
+total_mutants:    179
+caught:           128  (vs 125 em 25116031135 — +3 por crescimento de testes existente)
+missed:            10  (-3 vs 13)
+timeout:            3  (=)
+unviable:          38  (=)
+```
+
+- Mutantes viáveis: `179 - 38 = 141`
+- Killed (caught + timeout): `128 + 3 = 131`
+- **Score: `131 / 141 = 92.91%`** (vs `90.78%` → **+2.13 p.p.**)
+
+### Triage GAR-505 (5 caught + 4 skip via `mutants::skip`)
+
+| # | File:line | Mutação | Resolução |
+|---|---|---|---|
+| 1 | `jwt.rs:31` | `*` → `+` em `ACCESS_TTL_SECS` | killed por `access_token_ttl_window_is_900_seconds` |
+| 2 | `jwt.rs:31` | `*` → `/` em `ACCESS_TTL_SECS` | killed pelo mesmo teste |
+| 3 | `jwt.rs:177` | `<` → `<=` em `JwtIssuer::new_for_test` | killed por `new_for_test_does_not_pad_already_32_byte_secret` (HMAC oracle) |
+| 4 | `jwt.rs:250` | `<` → `<=` em `extract_bearer_token` | killed por `extract_bearer_token_accepts_seven_char_boundary` |
+| 5 | `storage_redacted.rs:71` | `<` → `<=` em `redact_urls` | **equivalente** — `#[cfg_attr(any(), mutants::skip)]` em `redact_urls` |
+| 6 | `app_pool.rs:203` | `!=` → `==` em `AppPool::from_dedicated_config` | killed por integration test `app_pool_role_guard.rs::from_dedicated_config_rejects_non_app_role` |
+| T1 | `storage_redacted.rs:91` | `+=` → `-=` em `redact_urls` | **timeout** (underflow `usize` ou loop) — coberto pelo mesmo skip da função |
+| T2 | `storage_redacted.rs:91` | `+=` → `*=` em `redact_urls` | **timeout** (`i = 0` estagnado em URL no offset 0) — coberto pelo mesmo skip |
+| T3 | `storage_redacted.rs:104` | `+=` → `*=` em `redact_urls` | **timeout** (`i *= 1` estagnado em ASCII) — coberto pelo mesmo skip |
+
+### Score esperado pós-PR
+
+| Métrica | Pré-PR (`25307117776`) | Pós-PR (estimado) | Δ |
+|---|---|---|---|
+| `total_mutants` | 179 | ~179 (idem; novos tests não geram mutants extras significativos) | ~0 |
+| `caught` | 128 | **133** (+5 dos novos tests) | +5 |
+| `missed` | 10 | **4** (sites #1..#4 + #6 mortos; site #5 sai como skipped) | −6 |
+| `timeout` | 3 | **0** (T1..T3 saem como skipped) | −3 |
+| `unviable` | 38 | 38 | 0 |
+| `skipped` | 0 | **4** (mutants em `redact_urls` cobertos pelo `cfg_attr(any(), mutants::skip)`) | +4 |
+| **Mutantes viáveis** | 141 | **137** (`179 - 38 - 4`) | −4 |
+| **Killed (caught+timeout)** | 131 | **133** | +2 |
+| **Score** | **92.91%** | **97.08%** (`133 / 137`) | **+4.17 p.p.** |
+| Workflow | `failure` | `failure` ainda esperado se ≥1 dos 4 missed remanescentes não estiver resolvido em outras issues | — |
+
+> Os 4 missed remanescentes pertencem a GAR-464/467/483/468 e estão fora do escopo de GAR-505:
+> `audit_workspace.rs:156` (GAR-467), `internal.rs:430` (GAR-466 ou GAR-464), `signup_pool.rs:153`
+> (GAR-483, Debug), `app_pool.rs:218` (GAR-483, Debug). O workflow só ficará completamente
+> verde quando essas issues fecharem ou quando os mutantes correspondentes forem reclassificados
+> em PRs subsequentes.
+
+### Decisão técnica — `redact_urls` skip
+
+`cargo-mutants` 25.x não suporta skip por linha/coluna nem inline:
+
+- `cargo-mutants.toml`: aceita só `exclude_globs` / `examine_globs` (file-path) — confirmado em
+  https://mutants.rs/skip_files.html.
+- Atributos: sempre function-level (`#[mutants::skip]` ou qualquer attr contendo essa
+  string) — confirmado em https://mutants.rs/attrs.html ("it only looks for the
+  sequence `mutants::skip` in the attribute").
+- Não existe `// mutants: skip` line comment.
+
+As três alternativas avaliadas:
+
+- **A — function-level skip em `redact_urls`** (escolhida): perde mutation signal dentro de
+  uma função. Compensação: 7 unit tests no `mod tests` (linhas 156-242) cobrem `redact()`
+  end-to-end com inputs realistas (URL com porta/path, `postgresql://`, multi-key, passthrough,
+  source chain).
+- **B — só documentar, sem skip**: deixa workflow vermelho perpetuamente por causa do site #5
+  (mutante equivalente — não há teste possível que o distingua). **Recusada.**
+- **C — `exclude_globs` no arquivo**: perderia signal de `redact()` e `redact_key_value()`
+  que estão saudáveis. **Recusada.**
+
+### Padrão `cfg_attr(any(), mutants::skip)` — justificativa
+
+`#[cfg_attr(any(), mutants::skip)]` evita adicionar a crate `mutants` (`0.0.3`) como
+dependência. cargo-mutants greps o source pela string literal `mutants::skip` antes da
+compilação; `cfg_attr(any(), …)` nunca é expandido pelo rustc porque `any()` é vazio
+(= false), então o atributo `mutants::skip` interno nunca chega ao type-checker. Resultado:
+cargo-mutants reconhece o skip; rustc compila sem dep adicional.
+
+### Não-silenciamento — invariantes preservadas
+
+- `.github/workflows/mutants.yml` permanece **inalterado** em GAR-505 (zero diff).
+- `continue-on-error: true` continua **ausente** em todo o workflow.
+- O skip é classificação explícita, não supressão de erro.
+- Cada um dos 4 mutantes cobertos pelo skip tem prova técnica linha-a-linha no comentário
+  acima de `redact_urls` (storage_redacted.rs).
+
+### Status atualizado das sub-issues Q6.x
+
+| Sub-issue | State (pós-GAR-505) | Mutantes restantes |
+|---|---|---|
+| GAR-463 (Q6.1 security bypass) | Done | 0 |
+| GAR-464 (Q6.2 boundary) | Backlog | 0 ou 1 (depende do mapeamento de `internal.rs:430`) |
+| GAR-465 (Q6.3 TTL arithmetic) | Done (incorporado em GAR-505 #1+#2) | 0 |
+| GAR-466 (Q6.4 unique-violation) | Backlog | 1 (`internal.rs:430`) |
+| GAR-467 (Q6.5 audit observability) | Backlog | 1 (`audit_workspace.rs:156`) |
+| GAR-468 (Q6.6 Debug skip) | Done para `JwtConfig`/`RefreshTokenPair`/`Credential` | 2 (alocados a GAR-483) |
+| GAR-469 (Q6.7 timeout 90→150) | Done | 0 |
+| GAR-481 (Q6.8 Node 24) | Backlog | — (não relacionado a mutants) |
+| GAR-483 (Debug skip pendentes) | Backlog | 2 (`signup_pool.rs:153`, `app_pool.rs:218`) |
+| **GAR-505** (este triage) | **em PR** | 0 dentro do escopo |
+
+### Referências adicionais (GAR-505)
+
+- Run vermelho: https://github.com/michelbr84/GarraRUST/actions/runs/25307117776
+- PR (a preencher após `gh pr create`): https://github.com/michelbr84/GarraRUST/pull/XX
+- Linear: https://linear.app/chatgpt25/issue/GAR-505
+- cargo-mutants attrs spec: https://mutants.rs/attrs.html
+- cargo-mutants config spec: https://mutants.rs/skip_files.html

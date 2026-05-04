@@ -479,4 +479,66 @@ mod tests {
         assert_eq!(claims.sub, uid);
         assert_eq!(claims.iss, ISSUER);
     }
+
+    /// GAR-505 #1+#2 — kills `jwt.rs:31` `*` → `+` (yields TTL = 75) and
+    /// `*` → `/` (yields TTL = 0). Asserts the access-token expiry window
+    /// is exactly 900 seconds, the contract of `15 * 60`.
+    #[test]
+    fn access_token_ttl_window_is_900_seconds() {
+        let issuer = JwtIssuer::new(cfg()).expect("ctor");
+        let (token, _) = issuer.issue_access(Uuid::now_v7()).expect("issue");
+        let claims = issuer.verify_access(&token).expect("verify");
+        assert_eq!(
+            claims.exp - claims.iat,
+            900,
+            "ACCESS_TTL_SECS must be 15 * 60 = 900 seconds"
+        );
+    }
+
+    /// GAR-505 #3 — kills `jwt.rs:177` `<` → `<=` in `JwtIssuer::new_for_test`.
+    /// The padding loop must stop at `padded.len() == 32` (original `<`),
+    /// not at `padded.len() == 33` (mutant `<=`). With a 32-byte input the
+    /// mutant pushes one extra `=` to 33 bytes; the resulting HMAC differs
+    /// from the oracle computed against the literal 32-byte secret.
+    #[test]
+    fn new_for_test_does_not_pad_already_32_byte_secret() {
+        // `Mac` trait brings `new_from_slice`, `update`, `finalize` into scope
+        // for the local oracle. Keep the import local so the rest of the test
+        // module is unaffected.
+        use hmac::Mac;
+
+        let secret = "x".repeat(32);
+        let issuer = JwtIssuer::new_for_test(&secret);
+        let plaintext = "GAR-505-oracle";
+        let actual = issuer
+            .hmac_refresh(plaintext)
+            .expect("hmac_refresh on 32-byte secret");
+
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("32 bytes is a valid HMAC key");
+        mac.update(plaintext.as_bytes());
+        let expected = hex_encode(&mac.finalize().into_bytes());
+
+        assert_eq!(
+            actual, expected,
+            "secret must NOT be padded when input length is already 32"
+        );
+    }
+
+    /// GAR-505 #4 — kills `jwt.rs:250` `<` → `<=` in `extract_bearer_token`.
+    /// Header `"Bearer "` (exactly 7 bytes) must pass the length guard
+    /// under the original `<`, returning `Some("")`. The mutant `<=` would
+    /// reject and return `None`.
+    #[test]
+    fn extract_bearer_token_accepts_seven_char_boundary() {
+        use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_static("Bearer "));
+        assert_eq!(
+            extract_bearer_token(&h),
+            Some(""),
+            "header `Bearer ` (7 bytes) must satisfy `len < 7` rejection guard"
+        );
+    }
 }
