@@ -38,7 +38,7 @@ irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | ie
 git clone https://github.com/michelbr84/GarraRUST.git
 cd GarraRUST
 cargo build --release
-# O binário estará em: target/release/garraia (ou garraia.exe no Windows)
+# O binário estará em: target/release/garra (ou garra.exe no Windows)
 ```
 
 Verifique a instalação:

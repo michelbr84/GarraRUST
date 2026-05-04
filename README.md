@@ -52,32 +52,51 @@ O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tie
 ## Início Rápido
 
 ```bash
-# Instalar (Linux, macOS)
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
+cargo build --release -p garraia
 
 # Configuração interativa - escolha seu provedor de LLM, armazene chaves de API em cofre criptografado
-garraia init
+./target/release/garra init
 
 # Iniciar
-garraia start
+./target/release/garra start
+
+# Opcional: incluir suporte a plugins WASM
+cargo build --release -p garraia --features plugins
 ```
 
 <details>
-<summary>Compilar a partir do código-fonte</summary>
+<summary>Compilar o app desktop (Tauri)</summary>
+
+O app desktop requer que o binário CLI já esteja compilado como sidecar:
 
 ```bash
-# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
-cargo build --release
-./target/release/garraia init
-./target/release/garraia start
+# 1. Compilar o CLI primeiro
+cargo build --release -p garraia
 
-# Opcional: incluir suporte a plugins WASM
-cargo build --release --features plugins
+# 2. Copiar para o diretório de sidecar esperado pelo Tauri
+cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garra-$(rustc -vV | grep host | cut -d' ' -f2)
+
+# 3. Compilar o desktop
+cargo build --release -p garraia-desktop
 ```
 
 </details>
 
-Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) e Windows (x86_64) estão disponíveis nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
+<details>
+<summary>Instalar via script (Linux, macOS) — requer binários publicados no release</summary>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+garra init
+garra start
+```
+
+> **Nota:** o script de instalação requer que binários CLI pré-compilados estejam publicados nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Enquanto isso, compile a partir do código-fonte conforme acima.
+
+</details>
+
+Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disponíveis nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
 
 ## Por que GarraIA?
 
@@ -99,7 +118,7 @@ Binários pré-compilados para Linux (x86_64, aarch64), macOS (Intel, Apple Sili
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
 | | **Recarregamento de config a quente** | Sim | Não | Não |
 | | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
+| | **Auto-atualização** | Sim (`garra update`) | npm | Compilar a partir do código-fonte |
 | | **Arquitetura 100% local** | ✅ Sim | Não | Não |
 | | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
 | | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
@@ -170,7 +189,7 @@ Além dos comandos embutidos, qualquer servidor MCP que exponha **prompts** via 
 - **TTS Providers** - Chatterbox (GPU, multilíngue), Hibiki, ElevenLabs, Kokoro, OpenAI TTS API
 - **Síntese multilíngue** - pt, en, es, fr, de, it, hi via GPU local
 - **Endpoint REST** - `POST /api/tts` para síntese sob demanda
-- **Ativação** - `garraia start --with-voice` habilita o modo de voz
+- **Ativação** - `garra start --with-voice` habilita o modo de voz
 - **Health check automático** - verificação HTTP do Chatterbox no boot
 - **Integração Telegram** - resposta por áudio automática no pipeline voice
 - **Conversão de formato** - via ffmpeg, streaming de áudio em tempo real
@@ -268,7 +287,7 @@ O GarraIA mantém **histórico unificado** entre todos os canais:
 - Conecte qualquer servidor compatível com MCP (sistema de arquivos, GitHub, bancos de dados, busca na web)
 - Ferramentas aparecem como ferramentas nativas do agente com nomes namespaced (`server.tool`)
 - Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop)
-- CLI: `garraia mcp list`, `garraia mcp inspect <name>`
+- CLI: `garra mcp list`, `garra mcp inspect <name>`
 
 ### Modos de Execução (Agent Modes)
 
@@ -406,12 +425,12 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
 - Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
-- CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
+- CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
 
 ### MCP Tool Integration com Marketplace
 
 - Conecte qualquer servidor compatível com MCP (filesystem, GitHub, bancos de dados, busca na web)
-- **Marketplace de ferramentas** - descubra e instale servidores MCP via `garraia mcp install`
+- **Marketplace de ferramentas** - descubra e instale servidores MCP via `garra mcp install`
 - Ferramentas aparecem como ferramentas nativas com nomes namespaced (`server.tool`)
 - Prompts MCP viram slash commands automaticamente
 - Admin API para adicionar/remover servidores sem reiniciar
@@ -428,7 +447,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
 - Auto-descoberta de `~/.garraia/skills/`
 - **Editor visual** na WebChat UI para criar/editar skills
-- CLI: `garraia skill list`, `garraia skill install <url>`, `garraia skill remove <name>`
+- CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
 - CRUD completo via API REST (`GET/POST/PATCH/DELETE /api/skills`)
 
 ### Autenticacao OAuth2/OIDC + TOTP 2FA
@@ -462,16 +481,16 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 ### Infraestrutura
 
 - **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
-- **Daemonização** - `garraia start --daemon` com gerenciamento de PID
-- **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
-- **Reinicialização** - `garraia restart` para graciosamente parar e iniciar o daemon
+- **Daemonização** - `garra start --daemon` com gerenciamento de PID
+- **Auto-atualização** - `garra update` baixa a versão mais recente com verificação SHA-256, `garra rollback` para reverter
+- **Reinicialização** - `garra restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
 - **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
 - **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
 - **Rate limiting por IP** - proteção automática configurável (`per_second`, `burst_size`) via `config.yml`
 - **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
-- **Ferramenta de migração** - `garraia migrate openclaw` importa skills, canais e credenciais
-- **Configuração interativa** - `garraia init` wizard para configuração de provedor e chave de API
+- **Ferramenta de migração** - `garra migrate openclaw` importa skills, canais e credenciais
+- **Configuração interativa** - `garra init` wizard para configuração de provedor e chave de API
 
 ## Memória e Auto-Aprendizado
 
@@ -543,11 +562,11 @@ embeddings:
 
 | Comando | Descrição |
 |---------|-----------|
-| `garraia memory list` | Listar todos os fatos |
-| `garraia memory search <query>` | Buscar fatos por相似idade |
-| `garraia memory add <fato>` | Adicionar um fato manualmente |
-| `garraia memory clear` | Limpar todos os fatos |
-| `garraia memory export` | Exportar fatos para JSON |
+| `garra memory list` | Listar todos os fatos |
+| `garra memory search <query>` | Buscar fatos por相似idade |
+| `garra memory add <fato>` | Adicionar um fato manualmente |
+| `garra memory clear` | Limpar todos os fatos |
+| `garra memory export` | Exportar fatos para JSON |
 
 ## Segurança
 
@@ -579,7 +598,7 @@ O GarraIA foi projetado para funcionar 100% no seu computador:
 Um comando importa suas skills, configurações de canais e credenciais (criptografadas no cofre):
 
 ```bash
-garraia migrate openclaw
+garra migrate openclaw
 ```
 
 Use `--dry-run` para visualizar as alterações antes de confirmar. Use `--source /caminho/para/openclaw` para especificar um diretório de configuração personalizado do OpenClaw.

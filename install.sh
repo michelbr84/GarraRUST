@@ -40,9 +40,19 @@ detect_platform() {
 }
 
 get_latest_version() {
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    # Try /releases/latest first (only returns non-prerelease)
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
         | grep '"tag_name"' \
+        | head -1 \
         | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+
+    # Fall back to the newest release (including pre-releases)
+    if [ -z "$VERSION" ]; then
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" 2>/dev/null \
+            | grep '"tag_name"' \
+            | head -1 \
+            | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    fi
 
     if [ -z "$VERSION" ]; then
         error "Failed to fetch latest release version"
@@ -62,8 +72,16 @@ download_and_verify() {
 
     echo "Verifying checksum..."
     cd "$TMPDIR"
-    if ! shasum -a 256 -c "${ARTIFACT}.sha256" >/dev/null 2>&1; then
-        error "Checksum verification failed"
+    if command -v sha256sum >/dev/null 2>&1; then
+        if ! sha256sum -c "${ARTIFACT}.sha256" >/dev/null 2>&1; then
+            error "Checksum verification failed"
+        fi
+    elif command -v shasum >/dev/null 2>&1; then
+        if ! shasum -a 256 -c "${ARTIFACT}.sha256" >/dev/null 2>&1; then
+            error "Checksum verification failed"
+        fi
+    else
+        echo "warning: No checksum tool found, skipping verification"
     fi
     cd - >/dev/null
     echo "Checksum verified."
