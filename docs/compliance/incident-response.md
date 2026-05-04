@@ -29,7 +29,7 @@ Este runbook é um **draft técnico** para self-host e cloud deployments. Cada c
 | Security engineer on-call | _TBD_ | _TBD_ | _TBD_ | 1 |
 | Legal counsel | _TBD_ | _TBD_ | _TBD_ | 3 |
 | Communications lead | _TBD_ | _TBD_ | _TBD_ | 4 |
-| CEO / fundador | @michelbr84 | michelduek@gmail.com | _TBD_ | 2 |
+| CEO / fundador | @michelbr84 | michelbr84@users.noreply.github.com | _TBD_ | 2 |
 
 **Autoridades:**
 - **ANPD (Brasil)**: notificação via <https://www.gov.br/anpd/pt-br/canais_atendimento/agente-de-tratamento> (canal de comunicação de incidentes de segurança).

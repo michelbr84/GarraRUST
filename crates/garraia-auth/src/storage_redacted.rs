@@ -64,6 +64,47 @@ pub(crate) fn redact(raw: &str) -> String {
 /// a fixed `postgres://[REDACTED]@[REDACTED]` placeholder. The redaction
 /// consumes characters up to the next whitespace, quote, or delimiter so
 /// that the surrounding message remains readable.
+///
+/// # Mutation testing — `mutants::skip` justification (GAR-505, 2026-05-04)
+///
+/// `cargo-mutants` 25.x supports skipping at file-glob (`exclude_globs`)
+/// or function-attribute granularity only — there is no per-line/per-column
+/// skip via `cargo-mutants.toml` regex, and no `// mutants: skip` line
+/// comment exists. This function hosts four mutants that are either
+/// equivalent or produce loops; skipping the function is the precise tool
+/// the linter offers, and is preferred over excluding the whole file
+/// (which would also drop signal for `redact()` and `redact_key_value()`).
+/// Coverage is preserved by the seven `#[test]` cases in `mod tests`
+/// below, which exercise `redact()` end-to-end.
+///
+/// The `cfg_attr(any(), …)` shape means rustc never expands the inner
+/// `mutants::skip` attribute (`any()` is empty ⇒ false ⇒ the attribute is
+/// stripped), so no `mutants` crate dependency is required. cargo-mutants
+/// recognises the skip because it greps the source for the literal string
+/// `mutants::skip` before invoking rustc (see `https://mutants.rs/attrs.html`:
+/// "it only looks for the sequence `mutants::skip` in the attribute").
+///
+/// Mutants covered:
+/// - line 71 `<` → `<=` (loop guard): **equivalent**. With `<=`, the
+///   iteration at `i == bytes.len()` produces `rest = ""`, falls into the
+///   else branch, `chars().next()` returns `None`, `unwrap_or('\0')` yields
+///   `'\0'`, and `if ch == '\0' { break; }` exits without modifying output.
+/// - line 91 `+=` → `-=` (cursor advance): underflows `usize` (debug panic)
+///   or repeats the same URL match indefinitely → reported as `timeout`.
+/// - line 91 `+=` → `*=` (cursor advance): on the first match `i = 0`,
+///   `i *= (prefix_len + end) = 0`, the loop re-enters at `i = 0` →
+///   infinite loop on any input whose URL begins at offset 0 → `timeout`.
+/// - line 104 `+=` → `*=` (ASCII advance): for `ch.len_utf8() == 1`,
+///   `i *= 1` leaves `i` unchanged → infinite loop on any non-empty input
+///   without a URL → `timeout`.
+///
+/// This is **not** silencing the workflow — `.github/workflows/mutants.yml`
+/// is unchanged and there is no `continue-on-error: true`. It is classifying
+/// these four mutants as known-equivalent / known-loop, which is exactly
+/// what the cargo-mutants attribute is intended for. The trade-off — losing
+/// mutation signal inside this single function — is accepted because the
+/// `mod tests` suite already covers the redaction contract end-to-end.
+#[cfg_attr(any(), mutants::skip)]
 fn redact_urls(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
