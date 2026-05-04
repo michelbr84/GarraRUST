@@ -8,7 +8,7 @@
 //!   * `POST /v1/groups`         — plan 0016 M4
 //!   * `GET /v1/groups/{id}`     — plan 0016 M4
 //!
-//! 23 scenarios, bundled into ONE `#[tokio::test]` to avoid the
+//! 40 scenarios, bundled into ONE `#[tokio::test]` to avoid the
 //! sqlx runtime-teardown race documented in plan 0016 M3 fixup
 //! (commit `4f8be37`). Every scenario runs against the shared
 //! `Harness` via `tower::ServiceExt::oneshot`.
@@ -853,6 +853,88 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::UNAUTHORIZED,
             expected_body_contains: None,
         },
+        // ── /v1/groups/{id}/chats — plan 0054 / GAR-506 (cases 35–40) ──
+        MatrixCase {
+            id: 35,
+            name: "POST /v1/groups/{alice_group}/chats as alice -> 201",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/groups/{}/chats", a.alice_group),
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({"name": "matrix-channel-35", "type": "channel"}),
+                )
+            }),
+            expected_status: StatusCode::CREATED,
+            expected_body_contains: Some("\"type\":\"channel\""),
+        },
+        MatrixCase {
+            id: 36,
+            name: "POST /v1/groups/{bob_group}/chats as alice -> 403 (cross-group)",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/groups/{}/chats", a.bob_group),
+                    Some(&a.alice_token),
+                    Some(&a.bob_group.to_string()),
+                    json!({"name": "alice-attempt-on-bob", "type": "channel"}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 37,
+            name: "POST /v1/groups/{alice_group}/chats as alice with mismatched X-Group-Id -> 400",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/groups/{}/chats", a.alice_group),
+                    Some(&a.alice_token),
+                    Some(&a.bob_group.to_string()),
+                    json!({"name": "header-mismatch", "type": "channel"}),
+                )
+            }),
+            expected_status: StatusCode::BAD_REQUEST,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 38,
+            name: "GET /v1/groups/{alice_group}/chats as alice -> 200",
+            build: Box::new(|a| {
+                req_get(
+                    &format!("/v1/groups/{}/chats", a.alice_group),
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                )
+            }),
+            expected_status: StatusCode::OK,
+            expected_body_contains: Some("\"items\""),
+        },
+        MatrixCase {
+            id: 39,
+            name: "GET /v1/groups/{bob_group}/chats as alice -> 403 (cross-group)",
+            build: Box::new(|a| {
+                req_get(
+                    &format!("/v1/groups/{}/chats", a.bob_group),
+                    Some(&a.alice_token),
+                    Some(&a.bob_group.to_string()),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 40,
+            name: "GET /v1/groups/{alice_group}/chats as alice with mismatched X-Group-Id -> 400",
+            build: Box::new(|a| {
+                req_get(
+                    &format!("/v1/groups/{}/chats", a.alice_group),
+                    Some(&a.alice_token),
+                    Some(&a.bob_group.to_string()),
+                )
+            }),
+            expected_status: StatusCode::BAD_REQUEST,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -864,8 +946,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        34,
-        "GAR-391d + plans 0017/0018/0019/0020 matrix must have exactly 34 cases; got {}",
+        40,
+        "GAR-391d + plans 0017/0018/0019/0020/0054 matrix must have exactly 40 cases; got {}",
         matrix.len()
     );
 
