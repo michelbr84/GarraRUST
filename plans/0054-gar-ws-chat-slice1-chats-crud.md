@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Linear issue:** [GAR-WS-CHAT slice 1] — TBD (issue child a ser criada sob épico `GAR-WS-CHAT` da Fase 3.6 / §3.4 do `ROADMAP.md`). Quando a issue for criada, atualizar este plan + `plans/README.md` com o id real (`GAR-NNN`).
+**Linear issue:** [GAR-506](https://linear.app/chatgpt25/issue/GAR-506) — "REST /v1 chats slice 1: POST + GET /v1/groups/{group_id}/chats (channels)" (Backlog → In Progress, High). Labels: `epic:ws-chat`, `epic:ws-api`. Project: "Fase 3 — Group Workspace".
 
 **Status:** ⏳ Draft — aprovado 2026-05-04 (Florida). Pré-requisitos validados empiricamente neste plan §"Validações pré-plano".
 
