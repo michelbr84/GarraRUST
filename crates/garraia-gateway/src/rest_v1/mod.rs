@@ -263,6 +263,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(groups::get_group).patch(groups::patch_group),
                 )
                 .route("/v1/groups/{id}/invites", post(groups::create_invite))
+                // Plan 0054 (GAR-506) — chats slice 1.
+                .route(
+                    "/v1/groups/{group_id}/chats",
+                    post(chats::create_chat).get(chats::list_chats),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -291,6 +296,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
+                // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/chats",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
@@ -325,6 +335,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
+                // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/chats",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
