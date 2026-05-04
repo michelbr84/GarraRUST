@@ -29,6 +29,7 @@
 //! In mode 3 the routes are registered explicitly (no `.fallback()`)
 //! so the merged main router keeps its own 404 behavior.
 
+pub mod chats;
 pub mod groups;
 pub mod invites;
 pub mod me;
