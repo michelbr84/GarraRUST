@@ -114,9 +114,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         println!();
 
         let token: String = Password::new()
-            .with_prompt(
-                "Enter your Telegram bot token (or set TELEGRAM_BOT_TOKEN env var later)",
-            )
+            .with_prompt("Enter your Telegram bot token (or set TELEGRAM_BOT_TOKEN env var later)")
             .allow_empty_password(true)
             .interact()
             .context("telegram token input cancelled")?;
@@ -183,7 +181,9 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
                     Some(vault)
                 }
                 Err(e) => {
-                    println!("  Warning: vault creation failed ({e}), will store in config instead.");
+                    println!(
+                        "  Warning: vault creation failed ({e}), will store in config instead."
+                    );
                     None
                 }
             }
@@ -241,9 +241,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
                         "  Set TELEGRAM_BOT_TOKEN environment variable before starting the server."
                     );
                 } else {
-                    println!(
-                        "  Telegram enabled. Set TELEGRAM_BOT_TOKEN env var before starting."
-                    );
+                    println!("  Telegram enabled. Set TELEGRAM_BOT_TOKEN env var before starting.");
                 }
             }
         }

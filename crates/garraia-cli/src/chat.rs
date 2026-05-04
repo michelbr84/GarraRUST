@@ -131,28 +131,24 @@ fn scan_directory_context(cwd: &str) -> String {
 
 /// Helper to resolve the API key checking env var, explicit config, and "main" config.
 fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option<String> {
-    if !env_var.is_empty() {
-        if let Ok(key) = std::env::var(env_var) {
-            if !key.is_empty() {
-                return Some(key);
-            }
-        }
+    if !env_var.is_empty()
+        && let Ok(key) = std::env::var(env_var)
+        && !key.is_empty()
+    {
+        return Some(key);
     }
-    if let Some(cfg) = config.llm.get(provider_name) {
-        if let Some(ref k) = cfg.api_key {
-            if !k.is_empty() {
-                return Some(k.clone());
-            }
-        }
+    if let Some(cfg) = config.llm.get(provider_name)
+        && let Some(ref k) = cfg.api_key
+        && !k.is_empty()
+    {
+        return Some(k.clone());
     }
-    if let Some(cfg) = config.llm.get("main") {
-        if cfg.provider == provider_name {
-            if let Some(ref k) = cfg.api_key {
-                if !k.is_empty() {
-                    return Some(k.clone());
-                }
-            }
-        }
+    if let Some(cfg) = config.llm.get("main")
+        && cfg.provider == provider_name
+        && let Some(ref k) = cfg.api_key
+        && !k.is_empty()
+    {
+        return Some(k.clone());
     }
     None
 }
@@ -318,7 +314,9 @@ pub async fn run_chat(
                 provider = Arc::new(op);
             }
             other => {
-                anyhow::bail!("Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter");
+                anyhow::bail!(
+                    "Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter"
+                );
             }
         }
     } else if let Some(ref m) = model_override {

@@ -475,9 +475,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         if !enabled {
             continue;
         }
-        let has_inline_token = ch.settings.get("bot_token").is_some()
-            || ch.settings.get("access_token").is_some()
-            || ch.settings.get("app_token").is_some();
+        let has_inline_token = ch.settings.contains_key("bot_token")
+            || ch.settings.contains_key("access_token")
+            || ch.settings.contains_key("app_token");
         if has_inline_token {
             continue;
         }
@@ -488,17 +488,17 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
             _ => None,
         };
-        if let Some(var) = env_var {
-            if std::env::var_os(var).is_none() {
-                push_warn(
-                    &mut findings,
-                    &format!("channels.{name}"),
-                    format!(
-                        "channel '{name}' (type={}) is enabled but no token found in config or env var {var}",
-                        ch.channel_type
-                    ),
-                );
-            }
+        if let Some(var) = env_var
+            && std::env::var_os(var).is_none()
+        {
+            push_warn(
+                &mut findings,
+                &format!("channels.{name}"),
+                format!(
+                    "channel '{name}' (type={}) is enabled but no token found in config or env var {var}",
+                    ch.channel_type
+                ),
+            );
         }
     }
 
