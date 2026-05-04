@@ -64,15 +64,20 @@ llm:
     api_key: "your-key"
 
 # Channel Configuration
+# Tokens should be provided via environment variables (TELEGRAM_BOT_TOKEN,
+# DISCORD_BOT_TOKEN, etc.) rather than stored in this file.
+# See: docs/src/guides/connect-telegram.md for the full precedence chain.
 channels:
   telegram:
+    type: telegram
     enabled: true
-    bot_token: "YOUR_BOT_TOKEN"
+    # bot_token resolved from: vault → config → TELEGRAM_BOT_TOKEN env var
     
   discord:
+    type: discord
     enabled: false
-    bot_token: "YOUR_DISCORD_TOKEN"
-    application_id: "123456789"
+    # bot_token resolved from: vault → config → DISCORD_BOT_TOKEN env var
+    # application_id: "123456789"
     
   slack:
     enabled: false
@@ -199,23 +204,15 @@ Configuration changes in `config.yml` are applied automatically:
 
 ## CLI Configuration
 
-### View current config
-
-```bash
-garraia config show
-```
-
 ### Validate config
 
 ```bash
-garraia config validate
+garraia config check
 ```
 
-### Edit config
-
-```bash
-garraia config edit
-```
+Options:
+- `--json` — machine-readable JSON output
+- `--strict` — treat warnings as errors (useful for CI)
 
 ## Advanced Options
 
