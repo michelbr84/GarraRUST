@@ -155,6 +155,23 @@ pub enum WorkspaceAuditAction {
     /// removed — `deleted_at` is set to `now()`. Hard deletion is a
     /// future compliance/retention worker task (Fase 5.3).
     MemoryDeleted,
+
+    /// A task list's metadata was updated via
+    /// `PATCH /v1/groups/{group_id}/task-lists/{list_id}`
+    /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
+    ///
+    /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
+    /// Metadata: `{ name_len, type }`. `name` text is PII-excluded.
+    TaskListUpdated,
+
+    /// A task list was archived (soft-deleted) via
+    /// `DELETE /v1/groups/{group_id}/task-lists/{list_id}`
+    /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
+    ///
+    /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
+    /// Metadata: `{ type }`. List is not physically removed;
+    /// `archived_at` is set to `now()`.
+    TaskListArchived,
 }
 
 impl WorkspaceAuditAction {
@@ -172,6 +189,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ThreadCreated => "thread.created",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
+            WorkspaceAuditAction::TaskListUpdated => "task_list.updated",
+            WorkspaceAuditAction::TaskListArchived => "task_list.archived",
         }
     }
 }
@@ -276,6 +295,14 @@ mod tests {
             WorkspaceAuditAction::MemoryDeleted.as_str(),
             "memory.deleted"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskListUpdated.as_str(),
+            "task_list.updated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskListArchived.as_str(),
+            "task_list.archived"
+        );
     }
 
     #[test]
@@ -293,6 +320,8 @@ mod tests {
             WorkspaceAuditAction::ThreadCreated.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
+            WorkspaceAuditAction::TaskListUpdated.as_str(),
+            WorkspaceAuditAction::TaskListArchived.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
