@@ -1107,7 +1107,7 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::FORBIDDEN,
             expected_body_contains: None,
         },
-        // ── POST /v1/messages/{id}/threads — plan 0057 / GAR-509 (cases 47–49) ──
+        // ── POST /v1/messages/{id}/threads — plan 0058 / GAR-509 (cases 47–49) ──
         MatrixCase {
             id: 47,
             name: "POST /v1/messages/{alice_msg}/threads as alice -> 201",

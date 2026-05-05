@@ -126,7 +126,7 @@ pub enum WorkspaceAuditAction {
     MessageSent,
 
     /// A thread was created from a message via
-    /// `POST /v1/messages/{message_id}/threads` (plan 0057 / GAR-509,
+    /// `POST /v1/messages/{message_id}/threads` (plan 0058 / GAR-509,
     /// epic GAR-WS-CHAT slice 3).
     ///
     /// `resource_type = "message_threads"`, `resource_id = "{thread_id}"`.

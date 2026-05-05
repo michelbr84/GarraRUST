@@ -1,4 +1,4 @@
-# Plan 0057 — GAR-WS-CHAT Slice 3: `POST /v1/messages/{message_id}/threads`
+# Plan 0058 — GAR-WS-CHAT Slice 3: `POST /v1/messages/{message_id}/threads`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -85,7 +85,7 @@ crates/garraia-gateway/src/rest_v1/openapi.rs  — +1 path, +2 schemas
 crates/garraia-gateway/src/rest_v1/mod.rs      — +1 route in 3 modes
 crates/garraia-gateway/tests/rest_v1_messages.rs — +5 scenarios (T1-T5)
 crates/garraia-gateway/tests/authz_http_matrix.rs — +3 cases (47-49)
-plans/0057-gar-ws-chat-slice3-threads.md        — this file
+plans/0058-gar-ws-chat-slice3-threads.md        — this file
 plans/README.md                                  — +1 row
 ```
 
@@ -93,8 +93,8 @@ plans/README.md                                  — +1 row
 
 ## M1 tasks
 
-- [ ] **T1 — `WorkspaceAuditAction::ThreadCreated`** — add variant to `audit_workspace.rs`, add `"thread.created"` string mapping, add 1 unit test for `as_str()`. Commit: `test(auth): add ThreadCreated audit variant (plan 0057, GAR-509)`. Run `cargo check -p garraia-auth` → green.
-- [ ] **T2 — DTOs + validator** — add `CreateThreadRequest { title: Option<String> }` + `validate()` (title non-empty after trim if Some, max 500 chars) + `ThreadResponse { id, chat_id, root_message_id, title, created_by, created_at }` to `messages.rs`. Add unit tests for `CreateThreadRequest::validate`. Commit: `test(gateway): CreateThreadRequest validator unit tests (plan 0057, GAR-509)`. Run `cargo check -p garraia-gateway` → green.
+- [ ] **T1 — `WorkspaceAuditAction::ThreadCreated`** — add variant to `audit_workspace.rs`, add `"thread.created"` string mapping, add 1 unit test for `as_str()`. Commit: `test(auth): add ThreadCreated audit variant (plan 0058, GAR-509)`. Run `cargo check -p garraia-auth` → green.
+- [ ] **T2 — DTOs + validator** — add `CreateThreadRequest { title: Option<String> }` + `validate()` (title non-empty after trim if Some, max 500 chars) + `ThreadResponse { id, chat_id, root_message_id, title, created_by, created_at }` to `messages.rs`. Add unit tests for `CreateThreadRequest::validate`. Commit: `test(gateway): CreateThreadRequest validator unit tests (plan 0058, GAR-509)`. Run `cargo check -p garraia-gateway` → green.
 - [ ] **T3 — `create_thread` handler** — implement the full handler in `messages.rs`:
   1. Extract group_id from `principal.group_id`, 400 if None.
   2. `can(&principal, Action::ChatsWrite)` → 403.
@@ -104,17 +104,17 @@ plans/README.md                                  — +1 row
   6. `INSERT INTO message_threads (chat_id, root_message_id, title, created_by) VALUES ($1,$2,$3,$4) RETURNING id, created_at` → match 23505 → 409.
   7. `audit_workspace_event(ThreadCreated, ...)`.
   8. `tx.commit()` → 201 `ThreadResponse`.
-  Commit: `feat(gateway): POST /v1/messages/{id}/threads handler (plan 0057, GAR-509)`. Run `cargo check -p garraia-gateway` → green.
-- [ ] **T4 — OpenAPI + router** — register path in `openapi.rs`, wire route in `mod.rs` (all 3 modes), export DTOs. Commit: `feat(gateway): wire POST /v1/messages/{id}/threads in router + OpenAPI (plan 0057, GAR-509)`. Run `cargo clippy --workspace --tests --features garraia-gateway/test-helpers --no-deps -- -D warnings` → clean.
+  Commit: `feat(gateway): POST /v1/messages/{id}/threads handler (plan 0058, GAR-509)`. Run `cargo check -p garraia-gateway` → green.
+- [ ] **T4 — OpenAPI + router** — register path in `openapi.rs`, wire route in `mod.rs` (all 3 modes), export DTOs. Commit: `feat(gateway): wire POST /v1/messages/{id}/threads in router + OpenAPI (plan 0058, GAR-509)`. Run `cargo clippy --workspace --tests --features garraia-gateway/test-helpers --no-deps -- -D warnings` → clean.
 - [ ] **T5 — Integration tests** — extend `rest_v1_messages.rs` with bundled scenarios:
   - T1: POST 201 happy path — assert response shape, DB row in `message_threads`, audit row with `{has_title:false}`.
   - T2: POST 201 with title — assert title stored, audit `{has_title:true}`.
   - T3: POST 409 — create thread twice on same message.
   - T4: POST 404 — message_id belongs to a different group.
   - T5: POST 401 — missing bearer.
-  Commit: `test(gateway): integration tests for POST /v1/messages/{id}/threads (plan 0057, GAR-509)`. Run `cargo test -p garraia-gateway --features test-helpers -- rest_v1_messages` → green (requires Postgres).
-- [ ] **T6 — authz matrix** — add 3 cases (47-49) to `authz_http_matrix.rs` for cross-group POST (3 × thread-create against another group's message → 404). Update case count assertion to 49. Commit: `test(gateway): extend authz matrix to 49 cases (plan 0057, GAR-509)`.
-- [ ] **T7 — ROADMAP + README** — mark `POST /v1/messages/{message_id}/threads` as `[x]` in `ROADMAP.md §3.4`, add row to `plans/README.md`. Commit: `docs(plans): mark plan 0057 merged — GAR-509`.
+  Commit: `test(gateway): integration tests for POST /v1/messages/{id}/threads (plan 0058, GAR-509)`. Run `cargo test -p garraia-gateway --features test-helpers -- rest_v1_messages` → green (requires Postgres).
+- [ ] **T6 — authz matrix** — add 3 cases (47-49) to `authz_http_matrix.rs` for cross-group POST (3 × thread-create against another group's message → 404). Update case count assertion to 49. Commit: `test(gateway): extend authz matrix to 49 cases (plan 0058, GAR-509)`.
+- [ ] **T7 — ROADMAP + README** — mark `POST /v1/messages/{message_id}/threads` as `[x]` in `ROADMAP.md §3.4`, add row to `plans/README.md`. Commit: `docs(plans): mark plan 0058 merged — GAR-509`.
 
 ---
 

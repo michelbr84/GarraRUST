@@ -1,5 +1,5 @@
 //! Integration tests for `/v1/chats/{chat_id}/messages` (plan 0055, GAR-507)
-//! and `/v1/messages/{message_id}/threads` (plan 0057, GAR-509).
+//! and `/v1/messages/{message_id}/threads` (plan 0058, GAR-509).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` — same pattern as
 //! `rest_v1_chats.rs` / `rest_v1_groups.rs`. Splitting into multiple
