@@ -84,7 +84,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0058 | [GAR-WS-CHAT slice 3 — `POST /v1/messages/{message_id}/threads`](0058-gar-ws-chat-slice3-threads.md) | [GAR-509](https://linear.app/chatgpt25/issue/GAR-509) | ✅ Merged 2026-05-05 (`679cd9a`, PR #127) |
 | 0059 | [GAR-511 — uploads_worker.rs SET LOCAL format! → set_config() + admin.html XSS cleanup](0059-gar-511-uploads-worker-set-config.md) | [GAR-511](https://linear.app/chatgpt25/issue/GAR-511) | ✅ Merged 2026-05-05 (`f9091f0`, PR #130) |
 | 0060 | [GAR-503 — remove `CARGO_BIN_EXE_garraia` dead-code fallback + doc bookkeeping](0060-gar-503-cargo-bin-exe-cleanup.md) | [GAR-503](https://linear.app/chatgpt25/issue/GAR-503) | ✅ Merged 2026-05-05 (`750fb50`, PR #132) |
-| 0061 | [GAR-512 — webchat.html XSS: fix 5 unescaped innerHTML sinks](0061-gar-512-webchat-xss-escapehtml.md) | [GAR-512](https://linear.app/chatgpt25/issue/GAR-512) | 🟡 Em execução 2026-05-05 (health routine) |
+| 0061 | [GAR-512 — webchat.html XSS: fix 5 unescaped innerHTML sinks](0061-gar-512-webchat-xss-escapehtml.md) | [GAR-512](https://linear.app/chatgpt25/issue/GAR-512) | ✅ Merged 2026-05-05 (`5944ad1`, PR #133) |
 
 ## Arquivos não-versionados
 
