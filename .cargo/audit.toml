@@ -117,35 +117,35 @@ ignore = [
     "RUSTSEC-2026-0104",  # reachable panic in CRL parsing — patched in 0.103.13
 
     # =========================================================================
-    # GAR-437 carve-out — unsound warnings (glib + lru + rand)
+    # GAR-513 carve-out — unsound warnings (glib + lru + rand)
     # =========================================================================
-    # No individual sub-issue carved out yet — tracked under epic GAR-437
-    # ("Q7 RUSTSEC triage"). All 3 crates remain in `Cargo.lock` (verified
-    # empirically 2026-04-26). Without these ignores, the nightly
+    # GAR-437 (Q7 RUSTSEC triage) was marked Done 2026-04-27. These three
+    # suppressions are now tracked under GAR-513 (created 2026-05-05 by
+    # daily security routine). All 3 crates remain in `Cargo.lock` (verified
+    # empirically 2026-05-05). Without these ignores, the nightly
     # `cargo audit --no-fetch --deny unsound` workflow (cargo-audit.yml)
     # fails because cargo-audit treats `unsound` as denied. Expirations
-    # force re-triage 2026-07-31; if not addressed by then, dedicated
-    # sub-issue (analogous to GAR-454/455) must be opened.
+    # force re-triage 2026-07-31.
     #
     # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
-    # Tauri surface (garraia-desktop), excluded from CI builds. Low
-    # runtime risk in server deployments. Fix path: bump glib OR gate
-    # ignore behind `desktop` feature.
+    # Tauri surface (garraia-desktop), excluded from CI builds. Zero
+    # runtime risk in server deployments. Fix path: gtk-rs GTK4 migration
+    # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-07-31.
     "RUSTSEC-2024-0429",
 
     # lru 0.12.5 — `IterMut` stacked-borrows violation. Pulled
     # transitively via `aws-sdk-s3 1.119.0 → garraia-storage` (feature
-    # `storage-s3`). Verified 2026-04-26: `cargo audit` reports lru
-    # in the lockfile dependency tree even when feature-gated, because
-    # lockfile resolution is feature-agnostic. Fix path: wait for
-    # aws-sdk-s3 to bump lru OR exclude `storage-s3` from cargo audit
-    # surface (changes runtime contract; not in this PR's scope).
+    # `storage-s3`). Verified 2026-05-05: aws-sdk-s3 1.131.0 available but
+    # cargo update is solver-blocked; lru patch requires ≥ 0.16.3. Fix
+    # path: wait for aws-sdk-s3 to bump lru (see GAR-455 aws-smithy chain).
+    # Tracked by: GAR-513. Expires: 2026-07-31.
     "RUSTSEC-2026-0002",
 
-    # rand 0.10.1 — custom logger unsoundness in `rand::rng()`. Used
-    # broadly across the workspace; pre-bump audit of call sites required
-    # because patch versions between 0.8 and 0.9 family are
-    # semver-incompatible.
+    # rand 0.7.3 — `thread_rng` unsound custom-logger reentrance. This
+    # version is a BUILD-TIME dep only: phf_codegen → phf_generator →
+    # selectors → tauri-utils → garraia-desktop. Zero server runtime risk.
+    # No patch exists for the 0.7.x line; fix requires phf_codegen to
+    # upgrade its rand dep. Tracked by: GAR-513. Expires: 2026-07-31.
     "RUSTSEC-2026-0097",
 
     # NOTE: RUSTSEC-2026-0037 (quinn-proto DoS in Quinn endpoints) was
