@@ -29,7 +29,8 @@ use super::messages::{
 use super::problem::ProblemDetails;
 use super::tasks::{
     CreateTaskListRequest, CreateTaskRequest, ListTaskListsResponse, ListTasksResponse,
-    PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+    PatchTaskListRequest, PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse,
+    TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -96,8 +97,11 @@ impl Modify for SecurityAddon {
         super::memory::delete_memory,
         super::tasks::create_task_list,
         super::tasks::list_task_lists,
+        super::tasks::patch_task_list,
+        super::tasks::delete_task_list,
         super::tasks::create_task,
         super::tasks::list_tasks,
+        super::tasks::get_task,
         super::tasks::patch_task,
         super::tasks::delete_task,
     ),
@@ -133,6 +137,7 @@ impl Modify for SecurityAddon {
         TaskListResponse,
         TaskListSummary,
         ListTaskListsResponse,
+        PatchTaskListRequest,
         CreateTaskRequest,
         TaskResponse,
         TaskSummary,
