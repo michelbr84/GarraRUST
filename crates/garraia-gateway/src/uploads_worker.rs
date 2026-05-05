@@ -205,12 +205,12 @@ async fn emit_expiration_audit(
     age_secs: i64,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.pool_for_handlers().begin().await?;
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{actor_user_id}'"
-    ))
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(actor_user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await?;
 
