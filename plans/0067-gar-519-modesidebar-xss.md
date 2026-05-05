@@ -1,6 +1,6 @@
 # Plan 0067 — GAR-519: modeSidebar.js XSS — wrap mode.name/description/id in escapeHtml/escapeAttr
 
-**Status:** 🟡 Em execução  
+**Status:** ✅ Merged `ca744ce` (PR #149, 2026-05-05)  
 **Issue:** [GAR-519](https://linear.app/chatgpt25/issue/GAR-519)  
 **Branch:** `health/202605051500-modesidebar-xss`  
 **Created:** 2026-05-05 (Florida local time)
@@ -63,11 +63,11 @@ Revert the single commit on `modeSidebar.js`. No data migration needed.
 - [x] T2 — Create this plan file
 - [x] T3 — Update `plans/README.md` with plan 0067 row
 - [x] T4 — Implement fix in `modeSidebar.js` (add import + wrap 7 sinks)
-- [ ] T5 — Commit `fix(gateway): GAR-519 — modeSidebar.js XSS: escapeHtml/escapeAttr on 7 sinks`
-- [ ] T6 — Push and open PR to main
-- [ ] T7 — CI green (all 18 checks pass)
-- [ ] T8 — Squash-merge via GitHub MCP
-- [ ] T9 — Mark GAR-519 Done in Linear
+- [x] T5 — Commit `fix(gateway): GAR-519 — modeSidebar.js XSS: escapeHtml/escapeAttr on 7 sinks`
+- [x] T6 — Push and open PR to main
+- [x] T7 — CI green (all 18 checks pass)
+- [x] T8 — Squash-merge via GitHub MCP
+- [x] T9 — Mark GAR-519 Done in Linear
 
 ## 9. Risk Register
 
