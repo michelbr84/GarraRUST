@@ -156,6 +156,30 @@ pub enum WorkspaceAuditAction {
     /// future compliance/retention worker task (Fase 5.3).
     MemoryDeleted,
 
+    /// A task list was created via
+    /// `POST /v1/groups/{group_id}/task-lists`
+    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    ///
+    /// `resource_type = "task_lists"`, `resource_id = "{task_list_id}"`.
+    /// Metadata: `{ name_len, type }`. `name` text is PII-excluded.
+    TaskListCreated,
+
+    /// A task was created via
+    /// `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks`
+    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    ///
+    /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ title_len, status, priority }`. `title` text is PII-excluded.
+    TaskCreated,
+
+    /// A task was soft-deleted via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}`
+    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    ///
+    /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ title_len, status }`. `title` text is PII-excluded.
+    TaskDeleted,
+
     /// A task list's metadata was updated via
     /// `PATCH /v1/groups/{group_id}/task-lists/{list_id}`
     /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
@@ -189,6 +213,9 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ThreadCreated => "thread.created",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
+            WorkspaceAuditAction::TaskListCreated => "task_list.created",
+            WorkspaceAuditAction::TaskCreated => "task.created",
+            WorkspaceAuditAction::TaskDeleted => "task.deleted",
             WorkspaceAuditAction::TaskListUpdated => "task_list.updated",
             WorkspaceAuditAction::TaskListArchived => "task_list.archived",
         }
@@ -296,6 +323,12 @@ mod tests {
             "memory.deleted"
         );
         assert_eq!(
+            WorkspaceAuditAction::TaskListCreated.as_str(),
+            "task_list.created"
+        );
+        assert_eq!(WorkspaceAuditAction::TaskCreated.as_str(), "task.created");
+        assert_eq!(WorkspaceAuditAction::TaskDeleted.as_str(), "task.deleted");
+        assert_eq!(
             WorkspaceAuditAction::TaskListUpdated.as_str(),
             "task_list.updated"
         );
@@ -320,6 +353,9 @@ mod tests {
             WorkspaceAuditAction::ThreadCreated.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
+            WorkspaceAuditAction::TaskListCreated.as_str(),
+            WorkspaceAuditAction::TaskCreated.as_str(),
+            WorkspaceAuditAction::TaskDeleted.as_str(),
             WorkspaceAuditAction::TaskListUpdated.as_str(),
             WorkspaceAuditAction::TaskListArchived.as_str(),
         ];

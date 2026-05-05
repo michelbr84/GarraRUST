@@ -65,7 +65,7 @@ thiserror = { workspace = true }
 # The handlers need sqlx types (`query_as`, transactions) directly.
 # Feature set mirrors dev-dependencies so prod + test link the
 # same version.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "macros"] }
 dirs = "6"
 governor = "0.8"
 tower_governor = "0.8"
