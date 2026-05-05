@@ -157,7 +157,7 @@ pub enum WorkspaceAuditAction {
     MemoryDeleted,
 
     /// A task list was created via
-    /// `POST /v1/groups/{group_id}/task-lists` (plan 0065 / GAR-516,
+    /// `POST /v1/groups/{group_id}/task-lists` (plan 0066 / GAR-516,
     /// epic ws-api tasks slice 1).
     ///
     /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
@@ -169,7 +169,7 @@ pub enum WorkspaceAuditAction {
 
     /// A task was created via
     /// `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks`
-    /// (plan 0065 / GAR-516, epic ws-api tasks slice 1).
+    /// (plan 0066 / GAR-516, epic ws-api tasks slice 1).
     ///
     /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ title_len, status, priority }`. Carries STRUCTURAL
@@ -180,13 +180,31 @@ pub enum WorkspaceAuditAction {
 
     /// A task was soft-deleted via
     /// `DELETE /v1/groups/{group_id}/tasks/{task_id}`
-    /// (plan 0065 / GAR-516, epic ws-api tasks slice 1).
+    /// (plan 0066 / GAR-516, epic ws-api tasks slice 1).
     ///
     /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ title_len, status }`. The task is not physically
     /// removed — `deleted_at` is set to `now()`. Hard deletion is a
     /// future compliance/retention worker task (Fase 5.3).
     TaskDeleted,
+
+    /// A task list's metadata was updated via
+    /// `PATCH /v1/groups/{group_id}/task-lists/{list_id}`
+    /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
+    ///
+    /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
+    /// Metadata: `{ name_len, type }`. Carries STRUCTURAL metadata ONLY —
+    /// task list name is user-controlled and may contain PII.
+    TaskListUpdated,
+
+    /// A task list was archived (soft-deleted) via
+    /// `DELETE /v1/groups/{group_id}/task-lists/{list_id}`
+    /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
+    ///
+    /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
+    /// Metadata: `{ type }`. List is not physically removed;
+    /// `archived_at` is set to `now()`.
+    TaskListArchived,
 }
 
 impl WorkspaceAuditAction {
@@ -207,6 +225,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskListCreated => "task_list.created",
             WorkspaceAuditAction::TaskCreated => "task.created",
             WorkspaceAuditAction::TaskDeleted => "task.deleted",
+            WorkspaceAuditAction::TaskListUpdated => "task_list.updated",
+            WorkspaceAuditAction::TaskListArchived => "task_list.archived",
         }
     }
 }
@@ -317,6 +337,14 @@ mod tests {
         );
         assert_eq!(WorkspaceAuditAction::TaskCreated.as_str(), "task.created");
         assert_eq!(WorkspaceAuditAction::TaskDeleted.as_str(), "task.deleted");
+        assert_eq!(
+            WorkspaceAuditAction::TaskListUpdated.as_str(),
+            "task_list.updated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskListArchived.as_str(),
+            "task_list.archived"
+        );
     }
 
     #[test]
@@ -337,6 +365,8 @@ mod tests {
             WorkspaceAuditAction::TaskListCreated.as_str(),
             WorkspaceAuditAction::TaskCreated.as_str(),
             WorkspaceAuditAction::TaskDeleted.as_str(),
+            WorkspaceAuditAction::TaskListUpdated.as_str(),
+            WorkspaceAuditAction::TaskListArchived.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

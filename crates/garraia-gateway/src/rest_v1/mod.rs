@@ -287,10 +287,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(memory::list_memory).post(memory::create_memory),
                 )
                 .route("/v1/memory/{id}", delete(memory::delete_memory))
-                // Plan 0065 (GAR-516) — tasks API slice 1.
+                // Plan 0066/0067 (GAR-516/GAR-518) — tasks API slices 1+2.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(tasks::create_task_list).get(tasks::list_task_lists),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-lists/{list_id}",
+                    patch(tasks::patch_task_list).delete(tasks::delete_task_list),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",
@@ -298,7 +302,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}",
-                    patch(tasks::patch_task).delete(tasks::delete_task),
+                    get(tasks::get_task)
+                        .patch(tasks::patch_task)
+                        .delete(tasks::delete_task),
                 )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
@@ -349,10 +355,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).post(unconfigured_handler),
                 )
                 .route("/v1/memory/{id}", delete(unconfigured_handler))
-                // Plan 0065 (GAR-516) — tasks API slice 1, fail-soft 503.
+                // Plan 0066/0067 (GAR-516/GAR-518) — tasks API slices 1+2, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-lists/{list_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",
@@ -360,7 +370,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
@@ -417,10 +429,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).post(unconfigured_handler),
                 )
                 .route("/v1/memory/{id}", delete(unconfigured_handler))
-                // Plan 0065 (GAR-516) — tasks API slice 1, no-auth stub.
+                // Plan 0066/0067 (GAR-516/GAR-518) — tasks API slices 1+2, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-lists/{list_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",
@@ -428,7 +444,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
