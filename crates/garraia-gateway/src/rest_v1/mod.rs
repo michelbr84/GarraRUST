@@ -33,6 +33,7 @@ pub mod chats;
 pub mod groups;
 pub mod invites;
 pub mod me;
+pub mod messages;
 pub mod openapi;
 pub mod problem;
 pub mod uploads;
@@ -268,6 +269,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/chats",
                     post(chats::create_chat).get(chats::list_chats),
                 )
+                // Plan 0055 (GAR-507) — messages slice 2.
+                .route(
+                    "/v1/chats/{chat_id}/messages",
+                    post(messages::send_message).get(messages::list_messages),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -299,6 +305,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/chats",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0055 (GAR-507) — messages slice 2, fail-soft 503.
+                .route(
+                    "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(
@@ -338,6 +349,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/chats",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0055 (GAR-507) — messages slice 2, fail-soft 503.
+                .route(
+                    "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(

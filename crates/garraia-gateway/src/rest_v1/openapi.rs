@@ -19,6 +19,7 @@ use super::groups::{
 };
 use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
+use super::messages::{MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest};
 use super::problem::ProblemDetails;
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -77,6 +78,8 @@ impl Modify for SecurityAddon {
         super::uploads::options_uploads,
         super::chats::create_chat,
         super::chats::list_chats,
+        super::messages::send_message,
+        super::messages::list_messages,
     ),
     components(schemas(
         MeResponse,
@@ -96,6 +99,10 @@ impl Modify for SecurityAddon {
         ChatResponse,
         ChatSummary,
         ChatListResponse,
+        SendMessageRequest,
+        MessageResponse,
+        MessageSummary,
+        MessageListResponse,
     )),
     modifiers(&SecurityAddon)
 )]

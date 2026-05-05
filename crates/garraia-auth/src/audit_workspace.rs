@@ -112,6 +112,18 @@ pub enum WorkspaceAuditAction {
     /// codename). They live exclusively in the `chats` row, accessible
     /// via authorized read-back through `GET /v1/groups/{id}/chats`.
     ChatCreated,
+
+    /// A message was sent to a chat via
+    /// `POST /v1/chats/{chat_id}/messages` (plan 0055 / GAR-507,
+    /// epic GAR-WS-CHAT slice 2).
+    ///
+    /// `resource_type = "messages"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ body_len, has_reply_to }`. Carries STRUCTURAL
+    /// metadata ONLY — message body is user-controlled and may contain
+    /// PII (personal communications, health data, secrets). The
+    /// `messages` row is the source of truth for authorized read-back
+    /// via `GET /v1/chats/{id}/messages`.
+    MessageSent,
 }
 
 impl WorkspaceAuditAction {
@@ -125,6 +137,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::UploadTerminated => "upload.terminated",
             WorkspaceAuditAction::UploadExpired => "upload.expired",
             WorkspaceAuditAction::ChatCreated => "chat.created",
+            WorkspaceAuditAction::MessageSent => "message.sent",
         }
     }
 }
@@ -216,6 +229,7 @@ mod tests {
             "upload.expired"
         );
         assert_eq!(WorkspaceAuditAction::ChatCreated.as_str(), "chat.created");
+        assert_eq!(WorkspaceAuditAction::MessageSent.as_str(), "message.sent");
     }
 
     #[test]
@@ -229,6 +243,7 @@ mod tests {
             WorkspaceAuditAction::UploadTerminated.as_str(),
             WorkspaceAuditAction::UploadExpired.as_str(),
             WorkspaceAuditAction::ChatCreated.as_str(),
+            WorkspaceAuditAction::MessageSent.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
@@ -262,16 +277,22 @@ mod tests {
 
         // Concat test — verifies `format!` composition (common tracing
         // scenario with multiple placeholders).
+        assert_eq!(
+            format!("{}", WorkspaceAuditAction::MessageSent),
+            "message.sent"
+        );
+
         let combined = format!(
-            "{} + {} + {} + {}",
+            "{} + {} + {} + {} + {}",
             WorkspaceAuditAction::InviteAccepted,
             WorkspaceAuditAction::MemberRoleChanged,
             WorkspaceAuditAction::MemberRemoved,
             WorkspaceAuditAction::ChatCreated,
+            WorkspaceAuditAction::MessageSent,
         );
         assert_eq!(
             combined,
-            "invite.accepted + member.role_changed + member.removed + chat.created"
+            "invite.accepted + member.role_changed + member.removed + chat.created + message.sent"
         );
     }
 }
