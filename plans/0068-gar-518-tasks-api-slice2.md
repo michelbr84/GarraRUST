@@ -1,10 +1,11 @@
 # Plan 0068 — GAR-518: REST /v1 Tasks slice 2 (single task GET + task-list PATCH/DELETE)
 
-**Status:** Em execução
+**Status:** ✅ Merged 2026-05-05 via PR #150 (`58421d6e`)
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-05, America/New_York)
 **Data:** 2026-05-05 (America/New_York)
 **Issue:** [GAR-518](https://linear.app/chatgpt25/issue/GAR-518)
-**Branch:** `routine/<UTC-yyyymmddhhmm>-tasks-api-slice2`
+**PR:** [#150](https://github.com/michelbr84/GarraRUST/pull/150) — merged `58421d6e`
+**Branch:** `routine/202605051432-tasks-api-slice2`
 **Epic:** `epic:ws-api`
 
 ---
@@ -129,10 +130,10 @@ None — schema and RLS already shipped; all DTOs and DB row structs in tasks.rs
 
 ## M1 Tasks
 
-- [ ] T1: Add `TaskListUpdated` + `TaskListArchived` to `WorkspaceAuditAction` + unit tests
-- [ ] T2: DTO: `PatchTaskListRequest` (name/description Option<Option<String>>/type all optional)
-- [ ] T3: Handler: `get_task` — `GET /v1/groups/{group_id}/tasks/{task_id}`
-- [ ] T4: Handler: `patch_task_list` — `PATCH /v1/groups/{group_id}/task-lists/{list_id}`
-- [ ] T5: Handler: `delete_task_list` — `DELETE /v1/groups/{group_id}/task-lists/{list_id}` (archive, idempotent)
-- [ ] T6: Route wiring in `mod.rs` + OpenAPI paths + schemas in `openapi.rs`
-- [ ] T7: Integration tests (get_task 200/404/cross-group, patch_task_list 200/404/null-clear, delete_task_list 204/idempotent)
+- [x] T1: Add `TaskListUpdated` + `TaskListArchived` to `WorkspaceAuditAction` + unit tests
+- [x] T2: DTO: `PatchTaskListRequest` (name/description Option<Option<String>>/type all optional)
+- [x] T3: Handler: `get_task` — `GET /v1/groups/{group_id}/tasks/{task_id}`
+- [x] T4: Handler: `patch_task_list` — `PATCH /v1/groups/{group_id}/task-lists/{list_id}`
+- [x] T5: Handler: `delete_task_list` — `DELETE /v1/groups/{group_id}/task-lists/{list_id}` (archive, idempotent)
+- [x] T6: Route wiring in `mod.rs` + OpenAPI paths + schemas in `openapi.rs`
+- [x] T7: Integration tests (get_task 200/404/cross-group, patch_task_list 200/404/null-clear, delete_task_list 204/idempotent)
