@@ -1,4 +1,4 @@
-# Plan 0065 — GAR-516: REST /v1 Tasks slice 1 (task-lists + tasks CRUD)
+# Plan 0066 — GAR-516: REST /v1 Tasks slice 1 (task-lists + tasks CRUD)
 
 **Status:** Em execução
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-05, America/New_York)
