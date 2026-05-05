@@ -1574,12 +1574,11 @@ pub async fn create_task_comment(
         return Err(RestError::NotFound);
     }
 
-    let (author_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (author_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let row: CommentRow = sqlx::query_as(
         "INSERT INTO task_comments \

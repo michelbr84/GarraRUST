@@ -897,7 +897,10 @@ async fn rest_v1_tasks_scenarios() {
     let c1_body = body_json(resp).await;
     let comment_id = c1_body["id"].as_str().expect("C1 comment id").to_string();
     assert_eq!(c1_body["task_id"], t8_task_id, "C1 task_id");
-    assert_eq!(c1_body["body_md"], "This is a **test** comment.", "C1 body_md");
+    assert_eq!(
+        c1_body["body_md"], "This is a **test** comment.",
+        "C1 body_md"
+    );
     assert!(
         c1_body.get("author_label").is_some(),
         "C1 author_label present"
@@ -936,7 +939,11 @@ async fn rest_v1_tasks_scenarios() {
         ))
         .await
         .expect("C2 oneshot");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "C2 empty body_md must be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "C2 empty body_md must be 400"
+    );
 
     // ── C3. POST 404 — unknown task_id ────────────────────────────────────
     let unknown_task = uuid::Uuid::new_v4().to_string();
@@ -952,13 +959,22 @@ async fn rest_v1_tasks_scenarios() {
         ))
         .await
         .expect("C3 oneshot");
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "C3 unknown task must be 404");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "C3 unknown task must be 404"
+    );
 
     // ── C4. GET 200 — list comments; includes C1; cursor pagination ────────
     let resp = h
         .router
         .clone()
-        .oneshot(get_comments(Some(&owner_token), Some(&gid), &gid, &t8_task_id))
+        .oneshot(get_comments(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+        ))
         .await
         .expect("C4 oneshot");
     assert_eq!(resp.status(), StatusCode::OK, "C4 status");
@@ -1011,7 +1027,12 @@ async fn rest_v1_tasks_scenarios() {
     let resp = h
         .router
         .clone()
-        .oneshot(get_comments(Some(&owner_token), Some(&gid), &gid, &t8_task_id))
+        .oneshot(get_comments(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+        ))
         .await
         .expect("C6 list after delete");
     let c6_list = body_json(resp).await;
