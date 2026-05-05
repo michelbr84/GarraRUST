@@ -74,8 +74,8 @@ ROADMAP.md                                                  ← flip 3 checkboxe
 - [x] **T2** — Remove dead `.or_else(|| std::env::var_os("CARGO_BIN_EXE_garraia"))` + paragraph
 - [x] **T3** — Update `plans/README.md` (rows 0058, 0059 → ✅ Merged; add row 0060)
 - [x] **T4** — Update `ROADMAP.md §3.4 Grupos` (3 checkboxes)
-- [ ] **T5** — Commit, push, open PR, wait for CI green, merge
-- [ ] **T6** — Mark GAR-503 Done in Linear
+- [x] **T5** — Commit, push, open PR, wait for CI green, merge
+- [x] **T6** — Mark GAR-503 Done in Linear
 
 ## §10 Risk register
 
