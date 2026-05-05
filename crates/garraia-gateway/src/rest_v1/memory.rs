@@ -74,6 +74,31 @@ const ALLOWED_KINDS: &[&str] = &["fact", "preference", "note", "reminder", "rule
 const ALLOWED_SENSITIVITIES: &[&str] = &["public", "group", "private"];
 // 'secret' is a valid DB value but must NOT be settable via this API in slice 1.
 
+// ─── Private type aliases ────────────────────────────────────────────────────
+
+/// Row tuple returned by the list_memory SELECT.
+/// (id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)
+type MemoryListRow = (
+    Uuid,
+    String,
+    Uuid,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
+
+/// Row tuple returned by the INSERT ... RETURNING in create_memory.
+/// (id, created_by, group_id, ttl_expires_at, created_at, updated_at)
+type MemoryInsertRow = (
+    Uuid,
+    Option<Uuid>,
+    Option<Uuid>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+);
+
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
 /// Request body for `POST /v1/memory`.
@@ -123,10 +148,8 @@ impl CreateMemoryRequest {
         if content_chars > MAX_CONTENT_CHARS {
             return Err("content exceeds 10,000 character limit");
         }
-        if let Some(ttl) = self.ttl_expires_at {
-            if ttl <= Utc::now() {
-                return Err("ttl_expires_at must be in the future");
-            }
+        if self.ttl_expires_at.is_some_and(|ttl| ttl <= Utc::now()) {
+            return Err("ttl_expires_at must be in the future");
         }
         Ok(())
     }
@@ -259,7 +282,11 @@ pub async fn list_memory(
 ) -> Result<Json<ListMemoryResponse>, RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
 
     if !can(&principal, Action::MemoryRead) {
@@ -291,7 +318,7 @@ pub async fn list_memory(
         _ => unreachable!(),
     }
 
-    let effective_limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT).max(1);
+    let effective_limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
@@ -322,10 +349,9 @@ pub async fn list_memory(
 
     // Cursor-keyset pagination: items older than the cursor (by created_at, id
     // tiebreak). First page: no cursor.
-    let rows: Vec<(Uuid, String, Uuid, String, String, Option<DateTime<Utc>>, DateTime<Utc>)> =
-        if let Some(cursor_id) = params.cursor {
-            sqlx::query_as(
-                "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
+    let rows: Vec<MemoryListRow> = if let Some(cursor_id) = params.cursor {
+        sqlx::query_as(
+            "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
                         left(m.content, 200) AS content_preview, \
                         m.ttl_expires_at, m.created_at \
                  FROM memory_items m \
@@ -339,17 +365,17 @@ pub async fn list_memory(
                    ) \
                  ORDER BY m.created_at DESC, m.id DESC \
                  LIMIT $4",
-            )
-            .bind(&params.scope_type)
-            .bind(params.scope_id)
-            .bind(cursor_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        } else {
-            sqlx::query_as(
-                "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
+        )
+        .bind(&params.scope_type)
+        .bind(params.scope_id)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
                         left(m.content, 200) AS content_preview, \
                         m.ttl_expires_at, m.created_at \
                  FROM memory_items m \
@@ -360,14 +386,14 @@ pub async fn list_memory(
                    AND (m.ttl_expires_at IS NULL OR m.ttl_expires_at > now()) \
                  ORDER BY m.created_at DESC, m.id DESC \
                  LIMIT $3",
-            )
-            .bind(&params.scope_type)
-            .bind(params.scope_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        };
+        )
+        .bind(&params.scope_type)
+        .bind(params.scope_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
 
     tx.commit()
         .await
@@ -377,18 +403,20 @@ pub async fn list_memory(
     let items: Vec<MemoryItemSummary> = rows
         .into_iter()
         .take(effective_limit as usize)
-        .map(|(id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)| {
-            MemoryItemSummary {
-                id,
-                scope_type,
-                scope_id,
-                kind,
-                content_preview,
-                sensitivity: String::new(), // not exposed in summary for security
-                ttl_expires_at,
-                created_at,
-            }
-        })
+        .map(
+            |(id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)| {
+                MemoryItemSummary {
+                    id,
+                    scope_type,
+                    scope_id,
+                    kind,
+                    content_preview,
+                    sensitivity: String::new(), // not exposed in summary for security
+                    ttl_expires_at,
+                    created_at,
+                }
+            },
+        )
         .collect();
 
     let next_cursor = if has_more {
@@ -437,7 +465,11 @@ pub async fn create_memory(
 ) -> Result<(StatusCode, Json<MemoryItemResponse>), RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
 
     if !can(&principal, Action::MemoryWrite) {
@@ -510,14 +542,7 @@ pub async fn create_memory(
             .map_err(|e| RestError::Internal(e.into()))?;
 
     // INSERT memory item.
-    let row: (
-        Uuid,
-        Option<Uuid>,
-        Option<Uuid>,
-        Option<DateTime<Utc>>,
-        DateTime<Utc>,
-        DateTime<Utc>,
-    ) = sqlx::query_as(
+    let row: MemoryInsertRow = sqlx::query_as(
         "INSERT INTO memory_items \
              (scope_type, scope_id, group_id, created_by, created_by_label, \
               kind, content, sensitivity, source_chat_id, source_message_id, ttl_expires_at) \
@@ -621,7 +646,11 @@ pub async fn delete_memory(
 ) -> Result<StatusCode, RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
 
     if !can(&principal, Action::MemoryDelete) {
