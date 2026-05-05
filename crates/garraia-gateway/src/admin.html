@@ -757,7 +757,7 @@ async function pageDashboard() {
     ];
     metricCards.forEach(c => {
       var card = el('div', { className: 'metric-card ' + c.cls });
-      card.innerHTML = '<div class="metric-label">' + c.icon + ' ' + c.label + '</div><div class="metric-value">' + c.value + '</div>';
+      card.innerHTML = '<div class="metric-label">' + c.icon + ' ' + escapeHtml(c.label) + '</div><div class="metric-value">' + escapeHtml(c.value) + '</div>';
       grid.appendChild(card);
     });
     frag.appendChild(grid);
@@ -1218,7 +1218,7 @@ async function pageSessions() {
     var frag = document.createDocumentFragment();
     var grid = el('div', { className: 'card-grid', style: 'margin-bottom:16px' });
     var sc = el('div', { className: 'metric-card metric-blue' });
-    sc.innerHTML = '<div class="metric-label">Active Sessions</div><div class="metric-value">' + (data.count || sessions.length) + '</div>';
+    sc.innerHTML = '<div class="metric-label">Active Sessions</div><div class="metric-value">' + escapeHtml(String(data.count || sessions.length)) + '</div>';
     grid.appendChild(sc);
     frag.appendChild(grid);
     var card = el('div', { className: 'card' });
@@ -1335,7 +1335,7 @@ async function pageMetrics() {
       { label: 'Active Sessions', value: String(data.active_sessions || 0), cls: 'metric-blue' },
     ].forEach(item => {
       var sc = el('div', { className: 'metric-card ' + item.cls });
-      sc.innerHTML = '<div class="metric-label">' + item.label + '</div><div class="metric-value">' + item.value + '</div>';
+      sc.innerHTML = '<div class="metric-label">' + escapeHtml(item.label) + '</div><div class="metric-value">' + escapeHtml(item.value) + '</div>';
       grid.appendChild(sc);
     });
     frag.appendChild(grid);
