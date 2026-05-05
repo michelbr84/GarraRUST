@@ -1,13 +1,14 @@
 import { GarraState } from './state.js';
 import { EventBus } from './eventBus.js';
 import { dom } from './dom.js';
+import { escapeHtml } from './utils.js';
 
 export async function refreshStatus() {
   try {
     const r = await fetch("/api/status");
     const j = await r.json();
     if (dom.apiStatusEl) {
-        dom.apiStatusEl.innerHTML = `<span class="status-dot dot-ok"></span>${j.status}`;
+        dom.apiStatusEl.innerHTML = `<span class="status-dot dot-ok"></span>${escapeHtml(j.status)}`;
     }
     if (dom.sessionCountEl) dom.sessionCountEl.textContent = j.sessions;
 
@@ -16,9 +17,9 @@ export async function refreshStatus() {
       if (dismissed !== j.latest_version) {
         if (dom.updateBannerText) {
           dom.updateBannerText.innerHTML = (window.t ? window.t("update.available", {
-            version: j.version,
-            latest: j.latest_version.replace(/^v/, "")
-          }) : `Update available: ${j.latest_version}`).replace("garraia update", "<code>garraia update</code>");
+            version: escapeHtml(j.version),
+            latest: escapeHtml(j.latest_version.replace(/^v/, ""))
+          }) : `Update available: ${escapeHtml(j.latest_version)}`).replace("garraia update", "<code>garraia update</code>");
         }
         dom.updateBanner.style.display = "";
       }
@@ -29,7 +30,7 @@ export async function refreshStatus() {
     if (dom.channelListEl) {
       if (j.channels && j.channels.length > 0) {
         dom.channelListEl.innerHTML = j.channels
-          .map((ch) => `<span class="channel-tag"><span class="status-dot dot-ok"></span>${ch}</span>`)
+          .map((ch) => `<span class="channel-tag"><span class="status-dot dot-ok"></span>${escapeHtml(ch)}</span>`)
           .join("");
       } else {
         dom.channelListEl.innerHTML = '<span class="no-channels">' + (window.t ? window.t("none_configured") : "No channels") + "</span>";
