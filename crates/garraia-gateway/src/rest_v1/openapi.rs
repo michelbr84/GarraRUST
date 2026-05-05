@@ -13,15 +13,13 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
-use super::messages::{
-    MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
-};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
+use super::messages::{MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest};
 use super::problem::ProblemDetails;
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 

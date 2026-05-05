@@ -69,7 +69,13 @@ async fn seed_actors(h: &Harness) -> Actors {
         .expect("seed eve");
 
     // Create chats for alice and bob so messages cases (41-46) have stable IDs.
-    let alice_chat_id = seed_chat(h, &alice_token, &alice_group.to_string(), "alice-matrix-chat").await;
+    let alice_chat_id = seed_chat(
+        h,
+        &alice_token,
+        &alice_group.to_string(),
+        "alice-matrix-chat",
+    )
+    .await;
     let bob_chat_id = seed_chat(h, &bob_token, &bob_group.to_string(), "bob-matrix-chat").await;
 
     Actors {

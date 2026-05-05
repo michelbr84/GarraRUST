@@ -224,13 +224,11 @@ pub async fn send_message(
 
     // 7. Resolve sender_label from users.display_name within the tx.
     //    display_name is NOT NULL in the users table (migration 001).
-    let (sender_label,): (String,) = sqlx::query_as(
-        "SELECT display_name FROM users WHERE id = $1",
-    )
-    .bind(principal.user_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let (sender_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 8. INSERT message. NEVER include body_tsv — it is GENERATED ALWAYS AS.
     let (msg_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
@@ -386,7 +384,15 @@ pub async fn list_messages(
     //    exist (already deleted or wrong group) the subquery returns NULL,
     //    making the WHERE condition `(created_at, id) < (NULL, NULL)` which
     //    is always false in Postgres → returns empty result (safe fallback).
-    type MsgRow = (Uuid, Uuid, Uuid, String, String, Option<Uuid>, DateTime<Utc>);
+    type MsgRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    );
     let rows: Vec<MsgRow> = if let Some(after_id) = params.after {
         sqlx::query_as(
             "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
@@ -471,7 +477,10 @@ mod tests {
             body: "".into(),
             reply_to_id: None,
         };
-        assert_eq!(req.validate().unwrap_err(), "message body must not be empty");
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "message body must not be empty"
+        );
     }
 
     #[test]
@@ -480,7 +489,10 @@ mod tests {
             body: "   \t\n  ".into(),
             reply_to_id: None,
         };
-        assert_eq!(req.validate().unwrap_err(), "message body must not be empty");
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "message body must not be empty"
+        );
     }
 
     #[test]

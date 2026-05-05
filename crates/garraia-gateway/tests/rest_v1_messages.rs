@@ -116,12 +116,7 @@ fn get_messages(
 }
 
 /// Helper: create a chat via POST /v1/groups/{group_id}/chats and return chat_id.
-async fn create_chat(
-    h: &Harness,
-    token: &str,
-    group_id: &str,
-    name: &str,
-) -> String {
+async fn create_chat(h: &Harness, token: &str, group_id: &str, name: &str) -> String {
     let resp = h
         .router
         .clone()
@@ -150,21 +145,18 @@ async fn create_chat(
 async fn rest_v1_messages_scenarios() {
     let h = Harness::get().await;
 
-    let (owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "owner@msg-slice2.test")
-            .await
-            .expect("seed owner+group");
+    let (owner_id, group_id, owner_token) = seed_user_with_group(&h, "owner@msg-slice2.test")
+        .await
+        .expect("seed owner+group");
 
     // Create a chat for this group.
     let chat_id = create_chat(&h, &owner_token, &group_id.to_string(), "general").await;
 
     // Create a second group+owner for cross-tenant tests.
-    let (_, group2_id, owner2_token) =
-        seed_user_with_group(&h, "owner2@msg-slice2.test")
-            .await
-            .expect("seed owner2+group2");
-    let chat2_id =
-        create_chat(&h, &owner2_token, &group2_id.to_string(), "other").await;
+    let (_, group2_id, owner2_token) = seed_user_with_group(&h, "owner2@msg-slice2.test")
+        .await
+        .expect("seed owner2+group2");
+    let chat2_id = create_chat(&h, &owner2_token, &group2_id.to_string(), "other").await;
 
     // ── M1. POST 201 happy path ──────────────────────────────────────────
     let resp = h
@@ -183,7 +175,11 @@ async fn rest_v1_messages_scenarios() {
     assert_eq!(body["body"], "Hello, world!", "M1 body");
     assert_eq!(body["chat_id"], chat_id, "M1 chat_id");
     assert_eq!(body["group_id"], group_id.to_string(), "M1 group_id");
-    assert_eq!(body["sender_user_id"], owner_id.to_string(), "M1 sender_user_id");
+    assert_eq!(
+        body["sender_user_id"],
+        owner_id.to_string(),
+        "M1 sender_user_id"
+    );
     // sender_label must be non-empty (resolved from users.display_name)
     assert!(
         !body["sender_label"].as_str().unwrap_or("").is_empty(),
@@ -202,7 +198,10 @@ async fn rest_v1_messages_scenarios() {
     let (_, _, resource_type, resource_id, metadata) = msg_event;
     assert_eq!(resource_type, "messages", "M1 audit resource_type");
     assert_eq!(resource_id, &msg1_id, "M1 audit resource_id");
-    assert_eq!(metadata["body_len"], 13, "M1 audit body_len = len('Hello, world!')");
+    assert_eq!(
+        metadata["body_len"], 13,
+        "M1 audit body_len = len('Hello, world!')"
+    );
     assert_eq!(metadata["has_reply_to"], false, "M1 audit has_reply_to");
     assert!(
         metadata.get("body").is_none(),
@@ -257,7 +256,7 @@ async fn rest_v1_messages_scenarios() {
         .clone()
         .oneshot(post_message(
             Some(&owner_token),
-            &chat2_id, // belongs to group2
+            &chat2_id,                   // belongs to group2
             Some(&group_id.to_string()), // owner1's group
             json!({"body": "cross-tenant attempt"}),
         ))
@@ -321,7 +320,10 @@ async fn rest_v1_messages_scenarios() {
     assert_eq!(items[0]["body"], "Third message", "G1 newest first");
     assert_eq!(items[2]["body"], "Hello, world!", "G1 oldest last");
     // With limit=3 and total=3, next_cursor should be None (not full page)
-    assert!(body["next_cursor"].is_null(), "G1 next_cursor null when < limit");
+    assert!(
+        body["next_cursor"].is_null(),
+        "G1 next_cursor null when < limit"
+    );
 
     // ── G2. GET 200 cursor pagination ────────────────────────────────────
     // after=msg3_id → should return only msg2 and msg1
@@ -345,8 +347,7 @@ async fn rest_v1_messages_scenarios() {
     assert_eq!(items[1]["body"], "Hello, world!", "G2 oldest");
 
     // ── G3. GET 200 empty chat ───────────────────────────────────────────
-    let empty_chat_id =
-        create_chat(&h, &owner_token, &group_id.to_string(), "empty").await;
+    let empty_chat_id = create_chat(&h, &owner_token, &group_id.to_string(), "empty").await;
     let resp = h
         .router
         .clone()
