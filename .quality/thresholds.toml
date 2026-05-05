@@ -1,0 +1,43 @@
+# .quality/thresholds.toml
+#
+# Limites de qualidade hardcoded usados pelo AI Quality Ratchet.
+#
+# Em PR-1 estes valores são INFORMATIVOS — `compare.py --mode report-only`
+# não bloqueia o CI. Em PR-4 (promoção a bloqueante), os mesmos valores
+# passam a ter força via `--mode enforce`.
+#
+# Atualizações deste arquivo seguem o mesmo protocolo do baseline.json:
+# CODEOWNERS lock + revisão explícita de Michel.
+
+[file_size]
+# Limite absoluto de linhas por arquivo .rs.
+# Baseline atual (2026-05-05): admin/handlers.rs com 3240 linhas — buffer
+# de ~8% deixa o limite em 3500 sem forçar refactor de status quo.
+max_file_lines = 3500
+
+# Soft thresholds (informativos em PR-1; viram trends bloqueantes em PR-4).
+warn_lines = 700
+strict_warn_lines = 1500
+
+[coverage]
+# Tolerância absoluta para coverage % (evita ruído de arredondamento).
+tolerance_pct = 0.1
+
+# Em PR-4: coverage não pode cair abaixo de baseline - tolerance_pct.
+# Em PR-1: registrado mas não enforce.
+min_coverage_pct = 0.0  # placeholder até primeira coleta de coverage real
+
+[audit]
+# Vulnerabilidades CRITICAL: absoluto zero, sempre.
+max_critical = 0
+# Vulnerabilidades HIGH: não pode crescer em relação ao baseline.
+max_high_delta = 0
+
+[clippy]
+# Warnings clippy: não pode crescer em relação ao baseline.
+# Em PR-1 só rastreia em modo --full (collect-metrics.sh --full).
+max_warnings_delta = 0
+
+[mode]
+# Modo padrão do compare.py em CI. Atualizado em PR-4 para "enforce".
+default = "report-only"

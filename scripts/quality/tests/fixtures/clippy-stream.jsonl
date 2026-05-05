@@ -1,0 +1,6 @@
+{"reason":"compiler-artifact","package_id":"foo","target":{"kind":["lib"],"name":"foo"}}
+{"reason":"compiler-message","package_id":"foo","target":{"kind":["lib"],"name":"foo"},"message":{"rendered":"warning: unused variable","level":"warning","code":{"code":"unused_variables","explanation":null}}}
+{"reason":"compiler-message","package_id":"foo","target":{"kind":["lib"],"name":"foo"},"message":{"rendered":"warning: clippy::needless_borrow","level":"warning","code":{"code":"clippy::needless_borrow","explanation":null}}}
+{"reason":"compiler-message","package_id":"foo","target":{"kind":["lib"],"name":"foo"},"message":{"rendered":"warning: clippy::redundant_clone","level":"warning","code":{"code":"clippy::redundant_clone","explanation":null}}}
+{"reason":"compiler-message","package_id":"foo","target":{"kind":["lib"],"name":"foo"},"message":{"rendered":"error: something","level":"error","code":{"code":"E0001","explanation":null}}}
+{"reason":"build-script-executed","package_id":"foo"}

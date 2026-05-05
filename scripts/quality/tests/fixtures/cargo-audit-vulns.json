@@ -1,0 +1,42 @@
+{
+  "database": {
+    "advisory_count": 800
+  },
+  "lockfile": {
+    "dependency_count": 600
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 3,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0001",
+          "package": "fakecrate",
+          "title": "fake high",
+          "severity": "high"
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0002",
+          "package": "fakecrate2",
+          "title": "fake medium",
+          "severity": "medium"
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0003",
+          "package": "fakecrate3",
+          "title": "fake without severity"
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {"advisory": {"id": "RUSTSEC-2025-9999", "package": "old"}}
+    ]
+  }
+}

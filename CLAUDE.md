@@ -328,6 +328,36 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 - Testar Flutter: `flutter test`
 - Lint Rust: `cargo clippy --workspace`
 
+## AI Quality Ratchet (`.quality/` + `scripts/quality/`)
+
+Sistema de Quality Gates inspirado no padrão Catraca: métricas só sobem ou ficam, **nunca regridem**. Vide `plans/0064-quality-ratchet-pr1.md` para o scaffold inicial e `.quality/README.md` para a filosofia completa.
+
+**Status atual: PR-1 — report-only.** Nenhum PR é bloqueado pelo ratchet ainda. Workflow `.github/workflows/quality-ratchet.yml` posta `quality-report.md` como comentário no PR e segue. Promoção a bloqueante (`compare.py --mode enforce`) entra em PR-4 com aprovação explícita.
+
+### Comandos rápidos
+
+```bash
+# Coleta rápida (default — sob 10s):
+bash scripts/quality/collect-metrics.sh > current-metrics.json
+
+# Comparar contra baseline (report-only — sempre exit 0):
+python3 scripts/quality/compare.py --mode report-only \
+    .quality/baseline.json current-metrics.json
+
+# Propor novo baseline (gera .proposed.json — NÃO commita):
+python3 scripts/quality/freeze-baseline.py current-metrics.json
+
+# Rodar testes dos parsers:
+python3 -m pytest scripts/quality/tests/
+```
+
+### Regras absolutas (ratchet)
+
+- **NUNCA** editar `.quality/baseline.json` manualmente para "passar" o ratchet — é fraude. Use `freeze-baseline.py` que gera `.quality/baseline.proposed.json` para review humano.
+- **NUNCA** adicionar `continue-on-error: true` em workflows. Modo report-only é controlado pela flag `compare.py --mode report-only`.
+- **NUNCA** desativar gates pré-existentes do `ci.yml` (fmt/clippy/test/audit/deny/etc.).
+- Se o `/quality-babysit` propuser correção que toca segurança, auth, storage, RLS, secrets ou CI crítico → chamar `security-auditor` + `code-reviewer` agents antes de continuar (ver `.claude/commands/quality-babysit.md` §Guardrails).
+
 ## Referências
 
 - @imports `.claude/agents/` para agentes especializados

@@ -149,3 +149,7 @@ crates/garraia-desktop/src-tauri/binaries/
 # node_modules/ covered by global rule above
 # Sprite sheet is generated — do not commit large binary
 crates/garraia-desktop/ui/assets/parrot-sprite.png
+.quality-tmp/
+current-metrics.json
+quality-report.md
+.quality/baseline.proposed.json
