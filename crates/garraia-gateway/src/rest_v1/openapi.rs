@@ -12,6 +12,7 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
+use super::audit::{AuditEventSummary, ListAuditResponse};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
@@ -104,6 +105,7 @@ impl Modify for SecurityAddon {
         super::tasks::get_task,
         super::tasks::patch_task,
         super::tasks::delete_task,
+        super::audit::list_audit,
     ),
     components(schemas(
         MeResponse,
@@ -143,6 +145,8 @@ impl Modify for SecurityAddon {
         TaskSummary,
         ListTasksResponse,
         PatchTaskRequest,
+        AuditEventSummary,
+        ListAuditResponse,
     )),
     modifiers(&SecurityAddon)
 )]
