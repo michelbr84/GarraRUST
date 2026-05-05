@@ -80,7 +80,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 
 | 0055 | [GAR-WS-CHAT slice 2 — `POST/GET /v1/chats/{chat_id}/messages`](0055-gar-ws-chat-slice2-messages.md) | [GAR-507](https://linear.app/chatgpt25/issue/GAR-507) | ✅ Merged 2026-05-05 via PR #124 (`8ec6d8ca`) |
 | 0056 | [GAR-508 — replace SET LOCAL format! with set_config() parameterized SQL (sql-injection CodeQL real-fix)](0056-gar-508-set-config-sql-injection.md) | [GAR-508](https://linear.app/chatgpt25/issue/GAR-508) | ✅ Merged 2026-05-05 via PR #126 (`115104b`) |
-| 0057 | [GAR-510 — admin.html XSS: add escapeHtml + fix 3 unescaped innerHTML sinks](0057-gar-510-admin-xss-escapehtml.md) | [GAR-510](https://linear.app/chatgpt25/issue/GAR-510) | 🟡 Em execução 2026-05-05 (health routine) |
+| 0057 | [GAR-510 — admin.html XSS: add escapeHtml + fix 3 unescaped innerHTML sinks](0057-gar-510-admin-xss-escapehtml.md) | [GAR-510](https://linear.app/chatgpt25/issue/GAR-510) | ✅ Merged 2026-05-05 via PR #128 (`5e5302d`) |
 
 ## Arquivos não-versionados
 
