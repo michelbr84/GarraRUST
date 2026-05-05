@@ -424,7 +424,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Auditoria**
 
-- [ ] `GET /v1/groups/{group_id}/audit?cursor=...`
+- [x] `GET /v1/groups/{group_id}/audit?cursor=...` — plan 0070 / [GAR-522](https://linear.app/chatgpt25/issue/GAR-522), implementado 2026-05-05 (Florida)
 
 **Erros:** todos os erros seguem **RFC 9457 Problem Details**.
 
