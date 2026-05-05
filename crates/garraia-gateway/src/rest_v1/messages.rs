@@ -194,15 +194,14 @@ pub async fn send_message(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     // 5. Tenant context — both user and group required.
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -352,15 +351,14 @@ pub async fn list_messages(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;

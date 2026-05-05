@@ -101,13 +101,10 @@ pub struct AcceptInviteResponse {
 /// from one invite (B-1 blocker, code-reviewer). The guard closes
 /// that race atomically at the database layer.
 ///
-/// ## SQL injection posture
+/// ## Tenant-context SQL
 ///
-/// `SET LOCAL` does not accept bind parameters in Postgres, so the
-/// `user_id` UUID is interpolated via `format!`. `Uuid::Display`
-/// produces exactly 36 hex-with-dash characters and no metacharacters
-/// — injection-safe by construction. All other parameters use
-/// `sqlx::query::bind` as normal. Same pattern as `groups.rs`.
+/// Tenant-context calls use `SELECT set_config('app.current_X_id', $1,
+/// true)` (parameterized, tx-scoped). All other queries use bind params.
 #[utoipa::path(
     post,
     path = "/v1/invites/{token}/accept",
@@ -210,18 +207,17 @@ pub async fn accept_invite(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // Plan 0021: also set `app.current_group_id` — required by the
     // `audit_events_group_or_self` RLS policy (migration 007:161-168)
     // for the audit INSERT below. Uuid Display is injection-safe.
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;

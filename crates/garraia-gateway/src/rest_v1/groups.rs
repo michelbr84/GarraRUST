@@ -25,13 +25,13 @@
 //! setting becomes load-bearing in M5+ once RLS is extended to
 //! these tables.
 //!
-//! ## SQL injection posture
+//! ## Tenant-context SQL
 //!
-//! `SET LOCAL` does not accept bind parameters in Postgres, so the
-//! `user_id` UUID is interpolated via `format!`. `Uuid::Display`
-//! produces exactly 36 hex-with-dash characters and no metacharacters
-//! — injection-safe by construction. All other parameters use
-//! `sqlx::query::bind` as normal.
+//! All `SET LOCAL app.current_X_id` calls use the parameterized form
+//! `SELECT set_config('app.current_X_id', $1, true)`, which is
+//! semantically identical to `SET LOCAL` (transaction-scoped, resets on
+//! commit/rollback) but accepts a bind parameter. All other queries use
+//! `sqlx::query::bind` as normal. (GAR-508)
 
 use argon2::PasswordHasher;
 use axum::Json;
@@ -316,16 +316,13 @@ pub async fn create_group(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 3. SET LOCAL tenant context. MUST be the first statement
-    //    inside the transaction. Uuid Display is 36 hex-dashed
-    //    chars, injection-safe.
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    // 3. Set tenant context. MUST be the first statement
+    //    inside the transaction.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 4. INSERT groups, returning the generated id + timestamps.
     let (id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
@@ -579,21 +576,18 @@ pub async fn patch_group(
     //    same hazard) so the tenant context is already correct when
     //    `groups` eventually gains FORCE RLS.
     //
-    //    SET LOCAL does not accept bind params in Postgres; Uuid Display
-    //    is 36 hex-dashed chars, injection-safe by construction.
+    //    Tenant context uses set_config (parameterized, tx-scoped).
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 6. UPDATE with COALESCE ($new, column) — partial modification:
     //    only fields the caller set are overwritten, the rest stay
@@ -722,13 +716,11 @@ pub async fn create_invite(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 6. INSERT the invite with conflict-safe duplicate detection.
     //
@@ -924,28 +916,25 @@ pub async fn set_member_role(
         .as_str()
         .to_string();
 
-    // 5. Open tx and set tenant context. `SET LOCAL` MUST be the first
-    //    statement — plan 0016 M4 pattern. `Uuid::Display` is 36 hex
-    //    chars with dashes, injection-safe.
+    // 5. Open tx and set tenant context. MUST be the first
+    //    statement — plan 0016 M4 pattern.
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // Plan 0021 T4: also set `app.current_group_id` — required by the
     // `audit_events_group_or_self` RLS policy (migration 007:161-168)
-    // for the audit INSERT at the end of this handler. Uuid Display
-    // is injection-safe.
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{id}'"))
+    // for the audit INSERT at the end of this handler.
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -1182,18 +1171,16 @@ pub async fn delete_member(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // Plan 0021 T5: also set `app.current_group_id` — required by the
-    // `audit_events_group_or_self` RLS policy for the audit INSERT
-    // below. Uuid Display is injection-safe.
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{id}'"))
+    // `audit_events_group_or_self` RLS policy for the audit INSERT below.
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
