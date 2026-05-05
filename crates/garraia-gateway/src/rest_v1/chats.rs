@@ -218,17 +218,15 @@ pub async fn create_chat(
     // 5. Tenant context — BOTH user and group required because `chats`
     //    is FORCE RLS on `app.current_group_id` (migration 007:89-94),
     //    `chat_members` is JOIN-RLS via chats (007:99-112) and
-    //    `audit_events` requires both (007:161-168). `Uuid::Display`
-    //    is 36 hex-with-dashes, injection-safe by construction.
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    //    `audit_events` requires both (007:161-168).
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -361,15 +359,14 @@ pub async fn list_chats(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!(
-        "SET LOCAL app.current_user_id = '{}'",
-        principal.user_id
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
