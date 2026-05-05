@@ -88,7 +88,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0062 | [GAR-514 — REST /v1 memory slice 1: GET + POST + DELETE /v1/memory](0062-gar-514-memory-api-slice1.md) | [GAR-514](https://linear.app/chatgpt25/issue/GAR-514) | ✅ Merged 2026-05-05 (`3261409`, PR #135) |
 | 0063 | [GAR-515 — webchat.html XSS: DOMPurify for marked.parse() + langLabel + event delegation](0063-gar-515-webchat-dompurify.md) | [GAR-515](https://linear.app/chatgpt25/issue/GAR-515) | ✅ Merged 2026-05-05 via PR #136 (`8115d7a`) |
 | 0064 | [AI Quality Ratchet PR-1 — scaffold report-only](0064-quality-ratchet-pr1.md) | (epic Quality Ratchet — Linear issue TBD) | 🟡 Em execução 2026-05-05 |
-| 0065 | [GAR-517 — api.js + mcpView.js XSS: add escapeHtml utils module, wrap 7 innerHTML sinks](0065-gar-517-api-js-xss-utils.md) | [GAR-517](https://linear.app/chatgpt25/issue/GAR-517) | 🟡 Em execução 2026-05-05 (health-routine) |
+| 0065 | [GAR-517 — api.js + mcpView.js XSS: add escapeHtml utils module, wrap 7 innerHTML sinks](0065-gar-517-api-js-xss-utils.md) | [GAR-517](https://linear.app/chatgpt25/issue/GAR-517) | ✅ Merged PR #144 `15ec51e3` 2026-05-05 |
 
 ## Arquivos não-versionados
 
