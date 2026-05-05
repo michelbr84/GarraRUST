@@ -315,14 +315,8 @@ mod tests {
             WorkspaceAuditAction::TaskListCreated.as_str(),
             "task_list.created"
         );
-        assert_eq!(
-            WorkspaceAuditAction::TaskCreated.as_str(),
-            "task.created"
-        );
-        assert_eq!(
-            WorkspaceAuditAction::TaskDeleted.as_str(),
-            "task.deleted"
-        );
+        assert_eq!(WorkspaceAuditAction::TaskCreated.as_str(), "task.created");
+        assert_eq!(WorkspaceAuditAction::TaskDeleted.as_str(), "task.deleted");
     }
 
     #[test]

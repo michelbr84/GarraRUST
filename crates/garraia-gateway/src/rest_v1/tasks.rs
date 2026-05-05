@@ -39,7 +39,12 @@ const MAX_LIMIT: u32 = 100;
 
 const ALLOWED_LIST_TYPES: &[&str] = &["list", "board", "calendar"];
 const ALLOWED_STATUSES: &[&str] = &[
-    "backlog", "todo", "in_progress", "review", "done", "canceled",
+    "backlog",
+    "todo",
+    "in_progress",
+    "review",
+    "done",
+    "canceled",
 ];
 const ALLOWED_PRIORITIES: &[&str] = &["none", "low", "medium", "high", "urgent"];
 

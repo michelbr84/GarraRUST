@@ -218,7 +218,10 @@ async fn rest_v1_tasks_scenarios() {
         .iter()
         .find(|e| e["action"] == "task_list.created")
         .expect("TL1 audit row");
-    assert_eq!(tl_audit["resource_type"], "task_lists", "TL1 audit resource_type");
+    assert_eq!(
+        tl_audit["resource_type"], "task_lists",
+        "TL1 audit resource_type"
+    );
     assert_eq!(tl_audit["resource_id"], list_id, "TL1 audit resource_id");
     assert!(
         tl_audit["metadata"]["name_len"].as_u64().is_some(),
@@ -471,7 +474,10 @@ async fn rest_v1_tasks_scenarios() {
         .expect("T7 create bob list");
     assert_eq!(resp.status(), StatusCode::CREATED, "T7 bob list created");
     let bob_list_body = body_json(resp).await;
-    let bob_list_id = bob_list_body["id"].as_str().expect("T7 bob list id").to_string();
+    let bob_list_id = bob_list_body["id"]
+        .as_str()
+        .expect("T7 bob list id")
+        .to_string();
 
     let resp = h
         .router
@@ -487,7 +493,10 @@ async fn rest_v1_tasks_scenarios() {
         .expect("T7 create bob task");
     assert_eq!(resp.status(), StatusCode::CREATED, "T7 bob task created");
     let bob_task_body = body_json(resp).await;
-    let bob_task_id = bob_task_body["id"].as_str().expect("T7 bob task id").to_string();
+    let bob_task_id = bob_task_body["id"]
+        .as_str()
+        .expect("T7 bob task id")
+        .to_string();
 
     // Alice tries to delete Bob's task — RLS filters it → 404.
     let resp = h
