@@ -246,10 +246,10 @@ impl CreateTaskRequest {
                 return Err("description_md exceeds 50,000 character limit");
             }
         }
-        if let Some(mins) = self.estimated_minutes {
-            if !(0..=100_000).contains(&mins) {
-                return Err("estimated_minutes must be between 0 and 100000");
-            }
+        if let Some(mins) = self.estimated_minutes
+            && !(0..=100_000).contains(&mins)
+        {
+            return Err("estimated_minutes must be between 0 and 100000");
         }
         Ok(())
     }
@@ -376,22 +376,22 @@ impl PatchTaskRequest {
                 return Err("description_md exceeds 50,000 character limit");
             }
         }
-        if let Some(s) = &self.status {
-            if !ALLOWED_STATUSES.contains(&s.as_str()) {
-                return Err(
-                    "status must be one of: backlog, todo, in_progress, review, done, canceled",
-                );
-            }
+        if let Some(s) = &self.status
+            && !ALLOWED_STATUSES.contains(&s.as_str())
+        {
+            return Err(
+                "status must be one of: backlog, todo, in_progress, review, done, canceled",
+            );
         }
-        if let Some(p) = &self.priority {
-            if !ALLOWED_PRIORITIES.contains(&p.as_str()) {
-                return Err("priority must be one of: none, low, medium, high, urgent");
-            }
+        if let Some(p) = &self.priority
+            && !ALLOWED_PRIORITIES.contains(&p.as_str())
+        {
+            return Err("priority must be one of: none, low, medium, high, urgent");
         }
-        if let Some(mins) = self.estimated_minutes {
-            if !(0..=100_000).contains(&mins) {
-                return Err("estimated_minutes must be between 0 and 100000");
-            }
+        if let Some(mins) = self.estimated_minutes
+            && !(0..=100_000).contains(&mins)
+        {
+            return Err("estimated_minutes must be between 0 and 100000");
         }
         Ok(())
     }
@@ -796,12 +796,12 @@ pub async fn list_tasks(
         return Err(RestError::Forbidden);
     }
 
-    if let Some(s) = &params.status {
-        if !ALLOWED_STATUSES.contains(&s.as_str()) {
-            return Err(RestError::BadRequest(
-                "status must be one of: backlog, todo, in_progress, review, done, canceled".into(),
-            ));
-        }
+    if let Some(s) = &params.status
+        && !ALLOWED_STATUSES.contains(&s.as_str())
+    {
+        return Err(RestError::BadRequest(
+            "status must be one of: backlog, todo, in_progress, review, done, canceled".into(),
+        ));
     }
 
     let effective_limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
