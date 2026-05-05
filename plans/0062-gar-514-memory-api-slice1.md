@@ -137,11 +137,11 @@ None — schema and RLS already shipped; pattern established by plan 0056.
 
 ## M1 Tasks
 
-- [ ] T1: Add `MemoryCreated` + `MemoryDeleted` to `WorkspaceAuditAction` + unit tests
-- [ ] T2: DTOs: `CreateMemoryRequest` + `MemoryItemResponse` + `MemoryItemSummary` + `ListMemoryResponse` + `ListMemoryQuery`
-- [ ] T3: `GET /v1/memory` handler — scope-filtered cursor-paginated list
-- [ ] T4: `POST /v1/memory` handler — create + scope validation + audit
-- [ ] T5: `DELETE /v1/memory/{id}` handler — soft-delete + audit
-- [ ] T6: Route wiring in `mod.rs` (mode 1 real + mode 2 fail-soft + mode 3 stub)
-- [ ] T7: OpenAPI paths + schemas in `openapi.rs`
-- [ ] T8: Integration tests `rest_v1_memory.rs` (≥10 scenarios)
+- [x] T1: Add `MemoryCreated` + `MemoryDeleted` to `WorkspaceAuditAction` + unit tests
+- [x] T2: DTOs: `CreateMemoryRequest` + `MemoryItemResponse` + `MemoryItemSummary` + `ListMemoryResponse` + `ListMemoryQuery`
+- [x] T3: `GET /v1/memory` handler — scope-filtered cursor-paginated list
+- [x] T4: `POST /v1/memory` handler — create + scope validation + audit
+- [x] T5: `DELETE /v1/memory/{id}` handler — soft-delete + audit
+- [x] T6: Route wiring in `mod.rs` (mode 1 real + mode 2 fail-soft + mode 3 stub)
+- [x] T7: OpenAPI paths + schemas in `openapi.rs`
+- [x] T8: Integration tests `rest_v1_memory.rs` (12 scenarios, all green CI)
