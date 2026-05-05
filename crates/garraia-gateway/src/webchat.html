@@ -6,6 +6,7 @@
 <title>GarraIA Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.7/purify.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
@@ -1466,7 +1467,7 @@ renderer.code = function(codeObj) {
     highlighted = hljs.highlightAuto(text).value;
   }
   const langLabel = lang || 'code';
-  return `<div class="code-block-wrapper"><div class="code-block-header"><span>${langLabel}</span><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
+  return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-code-btn">Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
 };
 
 marked.setOptions({
@@ -1482,6 +1483,12 @@ window.copyCodeBlock = function(btn) {
     setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
   });
 };
+
+// DOMPurify strips onclick attributes — use event delegation for copy buttons
+chatMessages.addEventListener('click', function(e) {
+  const btn = e.target.closest('.copy-code-btn');
+  if (btn) copyCodeBlock(btn);
+});
 
 // ─── Theme System ─────────────────────────────────────────────────────
 function applyTheme(theme) {
@@ -1704,7 +1711,7 @@ function handleAssistantMessage(content) {
     const currentText = bodyEl.getAttribute('data-raw') || '';
     const newText = currentText + parsedContent;
     bodyEl.setAttribute('data-raw', newText);
-    bodyEl.innerHTML = marked.parse(newText);
+    bodyEl.innerHTML = DOMPurify.sanitize(marked.parse(newText));
     chatMessages.scrollTop = chatMessages.scrollHeight;
   } else {
     appendAIMsg(parsedContent, true);
@@ -1800,7 +1807,7 @@ function appendAIMsg(text, isStreaming) {
   const group = document.createElement('div');
   group.className = 'message-group ai-group';
 
-  const rendered = marked.parse(text);
+  const rendered = DOMPurify.sanitize(marked.parse(text));
   const bodyClass = isStreaming ? 'msg-body streaming-cursor' : 'msg-body';
   group.innerHTML = `
     <div class="msg-avatar ai-avatar">&#x1f99c;</div>
