@@ -83,6 +83,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0057 | [GAR-510 — admin.html XSS: add escapeHtml + fix 3 unescaped innerHTML sinks](0057-gar-510-admin-xss-escapehtml.md) | [GAR-510](https://linear.app/chatgpt25/issue/GAR-510) | ✅ Merged 2026-05-05 via PR #128 (`5e5302d`) |
 | 0058 | [GAR-WS-CHAT slice 3 — `POST /v1/messages/{message_id}/threads`](0058-gar-ws-chat-slice3-threads.md) | [GAR-509](https://linear.app/chatgpt25/issue/GAR-509) | 🟡 Em execução 2026-05-05 |
 | 0059 | [GAR-511 — uploads_worker.rs SET LOCAL format! → set_config() + admin.html XSS cleanup](0059-gar-511-uploads-worker-set-config.md) | [GAR-511](https://linear.app/chatgpt25/issue/GAR-511) | 🟡 Em execução 2026-05-05 (health routine) |
+| 0060 | [AI Quality Ratchet PR-1 — scaffold report-only](0060-quality-ratchet-pr1.md) | (epic Quality Ratchet — Linear issue TBD) | 🟡 Em execução 2026-05-05 |
 
 ## Arquivos não-versionados
 

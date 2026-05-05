@@ -1,0 +1,132 @@
+name: Quality Ratchet
+
+# AI Quality Ratchet — observation-only on PR-1.
+# Plan: plans/0060-quality-ratchet-pr1.md
+# Mode: ALWAYS exit 0 in PR-1 via `compare.py --mode report-only`. Promotion to
+# `--mode enforce` is PR-4 work, with explicit owner approval.
+#
+# Design invariants (per plan 0060):
+#   - NO `continue-on-error: true` (Michel ajuste #1). Mode is controlled by
+#     the explicit `--mode report-only` flag on compare.py.
+#   - Trigger is `pull_request` ONLY — NOT `workflow_run` (Michel ajuste #3).
+#     Coverage is best-effort: if `lcov.info` from the parallel `coverage` job
+#     in `ci.yml` lands as a downloadable artifact, we use it; else the report
+#     marks coverage as `not_collected_this_run`.
+#   - Fork PRs: comment posting is skipped (head.repo.full_name guard, same
+#     pattern as the `coverage` job in ci.yml).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write   # required for `gh pr comment`
+
+jobs:
+  ratchet:
+    name: Quality Ratchet (report-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends jq
+
+      - name: Install cargo-audit (best-effort)
+        # cargo-audit is fast (~30 s install, ~3 s run on warm cache). The
+        # parser handles the case where this step fails (parse-cargo-audit.py
+        # falls back to status="not_collected_this_run").
+        run: cargo install --locked --version '^0.22' cargo-audit
+
+      - name: Try downloading lcov.info from parallel coverage job (best-effort)
+        # The coverage job in ci.yml uploads `coverage-lcov-${{ github.run_id }}`,
+        # but ci.yml and quality-ratchet.yml are SEPARATE workflows triggered
+        # in parallel by the same PR push. Their `github.run_id` differs, so
+        # we cannot use actions/download-artifact directly. Instead, fetch the
+        # most recent successful coverage run for the same head SHA via gh API.
+        # If unavailable, the parser marks coverage as not_collected_this_run.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -uo pipefail
+          # Find the most recent successful run of the `coverage` job for HEAD_SHA.
+          # Fall back gracefully if not found.
+          run_id=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow ci.yml \
+            --commit "$HEAD_SHA" \
+            --limit 1 \
+            --json databaseId,conclusion \
+            --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty' \
+            2>/dev/null || true)
+
+          if [ -n "${run_id:-}" ]; then
+            echo "Found coverage run $run_id for $HEAD_SHA"
+            gh run download "$run_id" \
+              --repo "${{ github.repository }}" \
+              --name "coverage-lcov-$run_id" \
+              --dir . 2>/dev/null || echo "lcov artifact not yet available; coverage will be best-effort skipped"
+          else
+            echo "No completed ci.yml run found for $HEAD_SHA; coverage will be best-effort skipped"
+          fi
+          ls -la lcov.info 2>/dev/null || echo "(no lcov.info)"
+
+      - name: Collect metrics (fast mode)
+        run: bash scripts/quality/collect-metrics.sh > current-metrics.json
+
+      - name: Show collected metrics
+        run: |
+          echo "::group::current-metrics.json"
+          jq '.' current-metrics.json
+          echo "::endgroup::"
+
+      - name: Compare against baseline (report-only — always exit 0)
+        # PR-1: --mode report-only. The flag is the SINGLE source of truth for
+        # "report-only vs enforce" — we explicitly do NOT use `continue-on-error`.
+        run: |
+          python3 scripts/quality/compare.py \
+            --mode report-only \
+            .quality/baseline.json \
+            current-metrics.json \
+            --report quality-report.md
+
+      - name: Upload quality-report artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: quality-report-${{ github.run_id }}
+          path: |
+            quality-report.md
+            current-metrics.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Append summary to GitHub Step Summary
+        run: |
+          echo "## Quality Ratchet — report-only" >> "$GITHUB_STEP_SUMMARY"
+          cat quality-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post quality-report.md as PR comment
+        # Skip on push events AND on fork PRs (same fork-safe guard as the
+        # coverage job in ci.yml — Michel ajuste #3).
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          # The marker `<!-- quality-ratchet-comment -->` is already written
+          # inside quality-report.md by compare.py. We pass the file as-is.
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file quality-report.md

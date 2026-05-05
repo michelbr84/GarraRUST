@@ -1,0 +1,16 @@
+# CODEOWNERS — initial visibility layer.
+#
+# In PR-1, this file is documentation/visibility ONLY. CODEOWNERS only forces
+# a Code Owner Review when a branch protection rule explicitly requires it,
+# and we do NOT touch branch protection in PR-1 (per plan 0060 §"Design
+# invariants" #6 — Michel ajuste #5).
+#
+# Real anti-fraud enforcement (branch protection rule OR a dedicated blocking
+# job that validates a `quality:baseline-update` label + owner approval) is
+# explicit follow-up work in PR-4, with explicit Michel approval. Until then,
+# this file just makes Michel a suggested reviewer when the listed paths
+# change — useful, but not a hard gate.
+
+# AI Quality Ratchet — only Michel updates the baseline.
+/.quality/baseline.json   @michelbr84
+/.quality/thresholds.toml @michelbr84
