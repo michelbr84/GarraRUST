@@ -1885,11 +1885,11 @@ async function refreshStatus() {
   try {
     const r = await fetch('/api/status');
     const j = await r.json();
-    apiStatusEl.innerHTML = '<span class="dot dot-online" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:4px;"></span>' + j.status;
+    apiStatusEl.innerHTML = '<span class="dot dot-online" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:4px;"></span>' + escapeHtml(j.status);
     sessionCountEl.textContent = j.sessions;
     if (channelListEl) {
       if (j.channels && j.channels.length > 0) {
-        channelListEl.innerHTML = j.channels.map(ch => '<span class="channel-tag"><span class="dot dot-online" style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);"></span> ' + ch + '</span>').join('');
+        channelListEl.innerHTML = j.channels.map(ch => '<span class="channel-tag"><span class="dot dot-online" style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);"></span> ' + escapeHtml(ch) + '</span>').join('');
       } else {
         channelListEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No channels</span>';
       }
@@ -1964,7 +1964,7 @@ async function loadExtensions() {
         item.className = 'dropdown-item';
         item.style.fontSize = '12px';
         const statusColor = (s.status && s.status.state === 'running') ? 'var(--success)' : 'var(--text-muted)';
-        item.innerHTML = `<span style="color:${statusColor};font-size:8px;">&#9679;</span> <span>${s.name}</span> <span style="color:var(--text-muted);font-size:10px;">${s.transport || ''}</span>`;
+        item.innerHTML = `<span style="color:${statusColor};font-size:8px;">&#9679;</span> <span>${escapeHtml(s.name)}</span> <span style="color:var(--text-muted);font-size:10px;">${escapeHtml(s.transport || '')}</span>`;
         mcpList.appendChild(item);
       });
       const badge = $('ext-badge-count');
@@ -2120,7 +2120,7 @@ function addSessionToList(sessionId) {
   item.dataset.session = sessionId;
   item.innerHTML = `
     <span class="session-item-icon">&#128172;</span>
-    <span class="session-item-text">${sessionId.slice(0, 16)}...</span>
+    <span class="session-item-text">${escapeHtml(sessionId.slice(0, 16))}...</span>
     <span class="session-item-time">${formatTime(new Date())}</span>
   `;
   item.addEventListener('click', () => {
@@ -2650,7 +2650,7 @@ function renderSessionList(sessions) {
     item.className = 'session-item' + (id === State.session ? ' active' : '');
     item.dataset.session = id;
     item.dataset.channel = channel;
-    const channelBadge = channel !== 'web' ? `<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--accent-light);color:var(--accent);margin-left:auto;">${channel}</span>` : '';
+    const channelBadge = channel !== 'web' ? `<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--accent-light);color:var(--accent);margin-left:auto;">${escapeHtml(channel)}</span>` : '';
     item.innerHTML = `
       <span class="session-item-icon">&#128172;</span>
       <span class="session-item-text">${escapeHtml(id.slice(0, 16))}...</span>
