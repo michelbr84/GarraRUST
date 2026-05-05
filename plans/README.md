@@ -81,8 +81,9 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0055 | [GAR-WS-CHAT slice 2 — `POST/GET /v1/chats/{chat_id}/messages`](0055-gar-ws-chat-slice2-messages.md) | [GAR-507](https://linear.app/chatgpt25/issue/GAR-507) | ✅ Merged 2026-05-05 via PR #124 (`8ec6d8ca`) |
 | 0056 | [GAR-508 — replace SET LOCAL format! with set_config() parameterized SQL (sql-injection CodeQL real-fix)](0056-gar-508-set-config-sql-injection.md) | [GAR-508](https://linear.app/chatgpt25/issue/GAR-508) | ✅ Merged 2026-05-05 via PR #126 (`115104b`) |
 | 0057 | [GAR-510 — admin.html XSS: add escapeHtml + fix 3 unescaped innerHTML sinks](0057-gar-510-admin-xss-escapehtml.md) | [GAR-510](https://linear.app/chatgpt25/issue/GAR-510) | ✅ Merged 2026-05-05 via PR #128 (`5e5302d`) |
-| 0058 | [GAR-WS-CHAT slice 3 — `POST /v1/messages/{message_id}/threads`](0058-gar-ws-chat-slice3-threads.md) | [GAR-509](https://linear.app/chatgpt25/issue/GAR-509) | 🟡 Em execução 2026-05-05 |
-| 0059 | [GAR-511 — uploads_worker.rs SET LOCAL format! → set_config() + admin.html XSS cleanup](0059-gar-511-uploads-worker-set-config.md) | [GAR-511](https://linear.app/chatgpt25/issue/GAR-511) | 🟡 Em execução 2026-05-05 (health routine) |
+| 0058 | [GAR-WS-CHAT slice 3 — `POST /v1/messages/{message_id}/threads`](0058-gar-ws-chat-slice3-threads.md) | [GAR-509](https://linear.app/chatgpt25/issue/GAR-509) | ✅ Merged 2026-05-05 (`679cd9a`, PR #127) |
+| 0059 | [GAR-511 — uploads_worker.rs SET LOCAL format! → set_config() + admin.html XSS cleanup](0059-gar-511-uploads-worker-set-config.md) | [GAR-511](https://linear.app/chatgpt25/issue/GAR-511) | ✅ Merged 2026-05-05 (`f9091f0`, PR #130) |
+| 0060 | [GAR-503 — remove `CARGO_BIN_EXE_garraia` dead-code fallback + doc bookkeeping](0060-gar-503-cargo-bin-exe-cleanup.md) | [GAR-503](https://linear.app/chatgpt25/issue/GAR-503) | 🟡 Em execução 2026-05-05 |
 | 0061 | [GAR-512 — webchat.html XSS: fix 5 unescaped innerHTML sinks](0061-gar-512-webchat-xss-escapehtml.md) | [GAR-512](https://linear.app/chatgpt25/issue/GAR-512) | 🟡 Em execução 2026-05-05 (health routine) |
 
 ## Arquivos não-versionados
