@@ -55,6 +55,10 @@ struct Actors {
     alice_chat_id: String,
     /// Chat owned by bob — used for cross-tenant cases 42+45.
     bob_chat_id: String,
+    /// A message in alice's chat — used in cases 47-49 (threads authz).
+    alice_msg_id: String,
+    /// A message in bob's chat — used for cross-tenant case 48.
+    bob_msg_id: String,
 }
 
 async fn seed_actors(h: &Harness) -> Actors {
@@ -78,6 +82,10 @@ async fn seed_actors(h: &Harness) -> Actors {
     .await;
     let bob_chat_id = seed_chat(h, &bob_token, &bob_group.to_string(), "bob-matrix-chat").await;
 
+    // Seed one message per chat so threads cases (47-49) have stable message IDs.
+    let alice_msg_id = seed_message(h, &alice_token, &alice_chat_id, &alice_group.to_string()).await;
+    let bob_msg_id = seed_message(h, &bob_token, &bob_chat_id, &bob_group.to_string()).await;
+
     Actors {
         alice_id,
         alice_group,
@@ -89,6 +97,8 @@ async fn seed_actors(h: &Harness) -> Actors {
         eve_token,
         alice_chat_id,
         bob_chat_id,
+        alice_msg_id,
+        bob_msg_id,
     }
 }
 
@@ -116,6 +126,35 @@ async fn seed_chat(h: &Harness, token: &str, group_id: &str, name: &str) -> Stri
         .await
         .expect("seed_chat oneshot");
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_chat POST failed");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    v["id"].as_str().unwrap().to_string()
+}
+
+/// Send one message via `POST /v1/chats/{chat_id}/messages` and return its id.
+async fn seed_message(h: &Harness, token: &str, chat_id: &str, group_id: &str) -> String {
+    use http_body_util::BodyExt as _;
+    let resp = h
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/v1/chats/{chat_id}/messages"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-group-id", group_id)
+                .extension(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                    "127.0.0.1:1".parse().unwrap(),
+                ))
+                .body(Body::from(
+                    json!({"body": "matrix seed message"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("seed_message oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED, "seed_message POST failed");
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     v["id"].as_str().unwrap().to_string()
@@ -1063,6 +1102,49 @@ fn build_matrix() -> Vec<MatrixCase> {
             expected_status: StatusCode::FORBIDDEN,
             expected_body_contains: None,
         },
+        // ── POST /v1/messages/{id}/threads — plan 0057 / GAR-509 (cases 47–49) ──
+        MatrixCase {
+            id: 47,
+            name: "POST /v1/messages/{alice_msg}/threads as alice -> 201",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/messages/{}/threads", a.alice_msg_id),
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({}),
+                )
+            }),
+            expected_status: StatusCode::CREATED,
+            expected_body_contains: Some("\"root_message_id\""),
+        },
+        MatrixCase {
+            id: 48,
+            name: "POST /v1/messages/{bob_msg}/threads as alice with alice_group -> 404 (cross-tenant)",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/messages/{}/threads", a.bob_msg_id),
+                    Some(&a.alice_token),
+                    Some(&a.alice_group.to_string()),
+                    json!({}),
+                )
+            }),
+            expected_status: StatusCode::NOT_FOUND,
+            expected_body_contains: None,
+        },
+        MatrixCase {
+            id: 49,
+            name: "POST /v1/messages/{alice_msg}/threads as alice with bob_group X-Group-Id -> 403",
+            build: Box::new(|a| {
+                req_post_grouped(
+                    &format!("/v1/messages/{}/threads", a.alice_msg_id),
+                    Some(&a.alice_token),
+                    Some(&a.bob_group.to_string()),
+                    json!({}),
+                )
+            }),
+            expected_status: StatusCode::FORBIDDEN,
+            expected_body_contains: None,
+        },
     ]
 }
 
@@ -1074,8 +1156,8 @@ async fn gar_391d_app_layer_authz_matrix() {
     let matrix = build_matrix();
     assert_eq!(
         matrix.len(),
-        46,
-        "GAR-391d + plans 0017/0018/0019/0020/0054/0055 matrix must have exactly 46 cases; got {}",
+        49,
+        "GAR-391d + plans 0017/0018/0019/0020/0054/0055/0057 matrix must have exactly 49 cases; got {}",
         matrix.len()
     );
 
