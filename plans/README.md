@@ -86,6 +86,8 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0060 | [GAR-503 — remove `CARGO_BIN_EXE_garraia` dead-code fallback + doc bookkeeping](0060-gar-503-cargo-bin-exe-cleanup.md) | [GAR-503](https://linear.app/chatgpt25/issue/GAR-503) | ✅ Merged 2026-05-05 (`750fb50`, PR #132) |
 | 0061 | [GAR-512 — webchat.html XSS: fix 5 unescaped innerHTML sinks](0061-gar-512-webchat-xss-escapehtml.md) | [GAR-512](https://linear.app/chatgpt25/issue/GAR-512) | ✅ Merged 2026-05-05 (`5944ad1`, PR #133) |
 
+| 0062 | [GAR-514 — REST /v1 memory slice 1: GET + POST + DELETE /v1/memory](0062-gar-514-memory-api-slice1.md) | [GAR-514](https://linear.app/chatgpt25/issue/GAR-514) | 🟡 Em execução 2026-05-05 (garra-routine) |
+
 ## Arquivos não-versionados
 
 Drafts ad-hoc dentro de `plans/` que **não** sigam o padrão `NNNN-*.md` ficam gitignored por design — ver `.gitignore`. Útil para rascunhos pessoais antes de formalizar um plano numerado.
