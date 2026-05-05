@@ -1,4 +1,4 @@
-# Plan 0067 — GAR-518: REST /v1 Tasks slice 2 (single task GET + task-list PATCH/DELETE)
+# Plan 0068 — GAR-518: REST /v1 Tasks slice 2 (single task GET + task-list PATCH/DELETE)
 
 **Status:** Em execução
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-05, America/New_York)
@@ -42,7 +42,7 @@ AND `app.current_group_id` SET LOCAL in every transaction.
 4. `PATCH task-lists/{list_id}` allows clearing `description` via `{"description": null}` using `Option<Option<String>>` serde pattern.
 5. `DELETE task-lists/{list_id}` archives the list; tasks inside are NOT deleted (they become orphaned from the default UI view). Idempotent: already-archived list → 204.
 6. Audit metadata is STRUCTURAL only: `name_len` not `name`, `type`, `status`. No PII.
-7. `PATCH task-lists` does NOT expose or mutate `settings` jsonb (plan 0067+).
+7. `PATCH task-lists` does NOT expose or mutate `settings` jsonb (plan 0068+).
 8. Cross-tenant PATCH/DELETE task-lists → 404 (RLS filters to 0 rows; UPDATE affects 0 rows → 404).
 
 ## §5 Validações pré-plano
@@ -76,7 +76,7 @@ crates/garraia-gateway/src/rest_v1/tasks.rs        (+ 3 handlers + 2 new DTOs, ~
 crates/garraia-gateway/src/rest_v1/mod.rs          (3 route entries: GET + PATCH + DELETE task-lists)
 crates/garraia-gateway/src/rest_v1/openapi.rs      (+ 3 paths + 3 schemas)
 crates/garraia-gateway/tests/rest_v1_tasks.rs      (extend: +6 scenarios, ~120 LOC)
-plans/README.md                                    (+ row 0067)
+plans/README.md                                    (+ row 0068)
 ```
 
 ## §8 Rollback plan
