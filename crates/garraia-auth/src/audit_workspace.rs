@@ -124,6 +124,17 @@ pub enum WorkspaceAuditAction {
     /// `messages` row is the source of truth for authorized read-back
     /// via `GET /v1/chats/{id}/messages`.
     MessageSent,
+
+    /// A thread was created from a message via
+    /// `POST /v1/messages/{message_id}/threads` (plan 0056 / GAR-509,
+    /// epic GAR-WS-CHAT slice 3).
+    ///
+    /// `resource_type = "message_threads"`, `resource_id = "{thread_id}"`.
+    /// Metadata: `{ has_title }`. Carries STRUCTURAL metadata ONLY —
+    /// thread title is user-controlled and may contain PII. The
+    /// `message_threads` row is the source of truth for authorized
+    /// read-back.
+    ThreadCreated,
 }
 
 impl WorkspaceAuditAction {
@@ -138,6 +149,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::UploadExpired => "upload.expired",
             WorkspaceAuditAction::ChatCreated => "chat.created",
             WorkspaceAuditAction::MessageSent => "message.sent",
+            WorkspaceAuditAction::ThreadCreated => "thread.created",
         }
     }
 }
@@ -230,6 +242,10 @@ mod tests {
         );
         assert_eq!(WorkspaceAuditAction::ChatCreated.as_str(), "chat.created");
         assert_eq!(WorkspaceAuditAction::MessageSent.as_str(), "message.sent");
+        assert_eq!(
+            WorkspaceAuditAction::ThreadCreated.as_str(),
+            "thread.created"
+        );
     }
 
     #[test]
@@ -244,6 +260,7 @@ mod tests {
             WorkspaceAuditAction::UploadExpired.as_str(),
             WorkspaceAuditAction::ChatCreated.as_str(),
             WorkspaceAuditAction::MessageSent.as_str(),
+            WorkspaceAuditAction::ThreadCreated.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

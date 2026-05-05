@@ -274,6 +274,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/chats/{chat_id}/messages",
                     post(messages::send_message).get(messages::list_messages),
                 )
+                // Plan 0056 (GAR-509) — threads slice 3.
+                .route(
+                    "/v1/messages/{message_id}/threads",
+                    post(messages::create_thread),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -311,6 +316,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0056 (GAR-509) — threads slice 3, fail-soft 503.
+                .route(
+                    "/v1/messages/{message_id}/threads",
+                    post(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
@@ -355,6 +365,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0056 (GAR-509) — threads slice 3, fail-soft 503.
+                .route(
+                    "/v1/messages/{message_id}/threads",
+                    post(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",

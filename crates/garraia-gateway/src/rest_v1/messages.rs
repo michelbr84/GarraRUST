@@ -50,6 +50,9 @@ use super::problem::RestError;
 /// Maximum message body length (chars, mirrors DB CHECK).
 const MAX_BODY_CHARS: usize = 100_000;
 
+/// Maximum thread title length (chars).
+const MAX_TITLE_CHARS: usize = 500;
+
 /// Request body for `POST /v1/chats/{chat_id}/messages`.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -458,6 +461,198 @@ pub async fn list_messages(
     Ok(Json(MessageListResponse { items, next_cursor }))
 }
 
+/// Request body for `POST /v1/messages/{message_id}/threads`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateThreadRequest {
+    /// Optional display title for the thread. Must be non-empty after trim
+    /// if provided. Max 500 characters.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+impl CreateThreadRequest {
+    /// Structural validation. Returns `Ok(())` or `Err(&'static str)`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(ref t) = self.title {
+            if t.trim().is_empty() {
+                return Err("title must not be empty when provided");
+            }
+            if t.chars().count() > MAX_TITLE_CHARS {
+                return Err("title must be 500 characters or fewer");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Response body for `POST /v1/messages/{message_id}/threads` (201 Created).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ThreadResponse {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub root_message_id: Uuid,
+    pub title: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// `POST /v1/messages/{message_id}/threads` — create a thread from a message.
+///
+/// Promotes a top-level message to a thread root by inserting a
+/// `message_threads` row. The root message's `thread_id` column is **not**
+/// updated — that column tracks which thread a *reply* belongs to, not the
+/// root. See schema comment in migration 004 for the rationale.
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status | Source         |
+/// |----------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                    | 401    | Principal ext. |
+/// | Non-member of group                    | 403    | Principal ext. |
+/// | `X-Group-Id` header missing            | 400    | this handler   |
+/// | title provided but empty / too long    | 400    | validate()     |
+/// | Message not found in caller's group    | 404    | this handler   |
+/// | Thread already exists for message      | 409    | UNIQUE DB      |
+/// | Happy path                             | 201    |                |
+#[utoipa::path(
+    post,
+    path = "/v1/messages/{message_id}/threads",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID to promote to thread root."),
+    ),
+    request_body = CreateThreadRequest,
+    responses(
+        (status = 201, description = "Thread created.", body = ThreadResponse),
+        (status = 400, description = "Validation error or header mismatch.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found or not in caller's group.", body = super::problem::ProblemDetails),
+        (status = 409, description = "A thread already exists for this message.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_thread(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Json(body): Json<CreateThreadRequest>,
+) -> Result<(StatusCode, Json<ThreadResponse>), RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural validation.
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let title = body.title.as_deref().map(str::trim).map(String::from);
+
+    // 4. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Tenant context — both user and group required for message_threads
+    //    FORCE RLS (policy message_threads_through_chats requires
+    //    app.current_group_id; audit_events requires app.current_user_id).
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. Resolve message → chat_id. 0 rows → 404 (not 403) to avoid
+    //    leaking the existence of messages in other tenants.
+    let msg_row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT chat_id FROM messages \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (chat_id,) = match msg_row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 7. INSERT message_threads. UNIQUE (root_message_id) → 23505 → 409.
+    let insert_result: Result<(Uuid, DateTime<Utc>), sqlx::Error> = sqlx::query_as(
+        "INSERT INTO message_threads (chat_id, root_message_id, title, created_by) \
+         VALUES ($1, $2, $3, $4) \
+         RETURNING id, created_at",
+    )
+    .bind(chat_id)
+    .bind(message_id)
+    .bind(&title)
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await;
+
+    let (thread_id, created_at) = match insert_result {
+        Ok(r) => r,
+        Err(sqlx::Error::Database(ref db_err)) if db_err.code().as_deref() == Some("23505") => {
+            return Err(RestError::Conflict(
+                "a thread already exists for this message".into(),
+            ));
+        }
+        Err(e) => return Err(RestError::Internal(e.into())),
+    };
+
+    // 8. Audit. Metadata is STRUCTURAL only — title content is PII.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ThreadCreated,
+        principal.user_id,
+        group_id,
+        "message_threads",
+        thread_id.to_string(),
+        json!({
+            "has_title": title.is_some(),
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ThreadResponse {
+            id: thread_id,
+            chat_id,
+            root_message_id: message_id,
+            title,
+            created_by: principal.user_id,
+            created_at,
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +722,49 @@ mod tests {
             req.validate().is_ok(),
             "25_000 emoji chars must pass the chars()-based limit"
         );
+    }
+
+    #[test]
+    fn create_thread_request_accepts_no_title() {
+        let req = CreateThreadRequest { title: None };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn create_thread_request_accepts_valid_title() {
+        let req = CreateThreadRequest {
+            title: Some("Design discussion".into()),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn create_thread_request_rejects_empty_title() {
+        let req = CreateThreadRequest {
+            title: Some("   ".into()),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "title must not be empty when provided"
+        );
+    }
+
+    #[test]
+    fn create_thread_request_rejects_title_over_500_chars() {
+        let req = CreateThreadRequest {
+            title: Some("x".repeat(MAX_TITLE_CHARS + 1)),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "title must be 500 characters or fewer"
+        );
+    }
+
+    #[test]
+    fn create_thread_request_accepts_title_at_500_chars() {
+        let req = CreateThreadRequest {
+            title: Some("x".repeat(MAX_TITLE_CHARS)),
+        };
+        assert!(req.validate().is_ok());
     }
 }
