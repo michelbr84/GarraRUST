@@ -426,23 +426,23 @@ pub async fn tus_version_header_layer(req: Request<axum::body::Body>, next: Next
     resp
 }
 
-// ─── Tenant-context helper (SET LOCAL pair) ─────────────────────────────
+// ─── Tenant-context helper (set_config pair) ────────────────────────────
 //
-// Extracted (code review MEDIUM) so `create_upload` + `head_upload` +
-// any future handler in this module can share the exact pattern. `SET
-// LOCAL` does not accept bind parameters; `Uuid::Display` is fixed at
-// 36 chars of `[0-9a-f-]` by RFC 4122, so the `format!` interpolation
-// is injection-safe by construction.
+// Extracted so `create_upload` + `head_upload` + any future handler in
+// this module share the exact pattern. Uses `SELECT set_config(..., true)`
+// — the parameterized equivalent of `SET LOCAL` (tx-scoped, same semantics).
 async fn set_rls_context(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     group_id: Uuid,
 ) -> Result<(), RestError> {
-    sqlx::query(&format!("SET LOCAL app.current_user_id = '{user_id}'"))
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(user_id.to_string())
         .execute(&mut **tx)
         .await
         .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_user_id")))?;
-    sqlx::query(&format!("SET LOCAL app.current_group_id = '{group_id}'"))
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
         .execute(&mut **tx)
         .await
         .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("set current_group_id")))?;
