@@ -636,6 +636,8 @@ function el(tag, attrs, children) {
   return e;
 }
 
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+
 function clearEl(e) { while (e.firstChild) e.removeChild(e.firstChild); }
 function renderContent(node) {
   var area = document.getElementById('content-area');
@@ -791,7 +793,7 @@ async function pageDashboard() {
       channels.forEach(ch => {
         var row = el('div', { className: 'channel-status' });
         var dotCls = ch.connected ? 'channel-dot online' : 'channel-dot offline';
-        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name">' + ch.name + '</span><span class="channel-type">' + (ch.type || '') + '</span>';
+        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name">' + escapeHtml(ch.name) + '</span><span class="channel-type">' + escapeHtml(ch.type || '') + '</span>';
         chanCard.appendChild(row);
       });
       frag.appendChild(chanCard);
@@ -1182,7 +1184,7 @@ async function pageChannels() {
       channels.forEach(ch => {
         var row = el('div', { className: 'channel-status', style: 'padding:12px 0;border-bottom:1px solid var(--border)' });
         var dotCls = ch.connected ? 'channel-dot online' : 'channel-dot offline';
-        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name" style="font-weight:600;">' + ch.name + '</span><span class="channel-type">' + (ch.type || '') + '</span>';
+        row.innerHTML = '<span class="' + dotCls + '"></span><span class="channel-name" style="font-weight:600;">' + escapeHtml(ch.name) + '</span><span class="channel-type">' + escapeHtml(ch.type || '') + '</span>';
         row.innerHTML += '<span class="badge ' + (ch.enabled ? 'badge-success' : 'badge-neutral') + '" style="margin-left:8px;">' + (ch.enabled ? 'Enabled' : 'Disabled') + '</span>';
         row.innerHTML += '<span class="badge ' + (ch.connected ? 'badge-success' : 'badge-error') + '" style="margin-left:4px;">' + (ch.connected ? 'Connected' : 'Disconnected') + '</span>';
         card.appendChild(row);
@@ -1295,7 +1297,7 @@ async function pageLogs() {
         // Try to extract timestamp
         var tsMatch = line.match(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/);
         if (tsMatch) {
-          logLine.innerHTML = '<span class="log-timestamp">' + tsMatch[0] + '</span>' + line.slice(tsMatch[0].length);
+          logLine.innerHTML = '<span class="log-timestamp">' + tsMatch[0] + '</span>' + escapeHtml(line.slice(tsMatch[0].length));
         } else {
           logLine.textContent = line;
         }
