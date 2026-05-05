@@ -2,7 +2,7 @@
 """freeze-baseline.py — propose a new baseline from current metrics.
 
 NEVER commits. Always writes `.quality/baseline.proposed.json` for human review.
-The Quality Ratchet's anti-fraud invariant (plan 0060 §11.5) requires that
+The Quality Ratchet's anti-fraud invariant (plan 0064 §11.5) requires that
 baseline updates only happen via:
     1. Human inspection of `.quality/baseline.proposed.json`.
     2. Explicit move/rename to `.quality/baseline.json`.
@@ -162,7 +162,7 @@ def freeze(baseline: dict, current: dict) -> dict:
     out["_doc"] = (
         "Atualizado por scripts/quality/freeze-baseline.py. "
         "NÃO edite manualmente para 'passar' o ratchet — anti-fraud invariant "
-        "(plan 0060 §Design invariants #7). Updates só via review humano + commit explícito."
+        "(plan 0064 §Design invariants #7). Updates só via review humano + commit explícito."
     )
 
     return out

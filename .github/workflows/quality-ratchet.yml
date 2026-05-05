@@ -1,11 +1,11 @@
 name: Quality Ratchet
 
 # AI Quality Ratchet — observation-only on PR-1.
-# Plan: plans/0060-quality-ratchet-pr1.md
+# Plan: plans/0064-quality-ratchet-pr1.md
 # Mode: ALWAYS exit 0 in PR-1 via `compare.py --mode report-only`. Promotion to
 # `--mode enforce` is PR-4 work, with explicit owner approval.
 #
-# Design invariants (per plan 0060):
+# Design invariants (per plan 0064):
 #   - NO `continue-on-error: true` (Michel ajuste #1). Mode is controlled by
 #     the explicit `--mode report-only` flag on compare.py.
 #   - Trigger is `pull_request` ONLY — NOT `workflow_run` (Michel ajuste #3).

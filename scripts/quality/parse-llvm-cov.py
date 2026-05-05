@@ -17,7 +17,7 @@ Output JSON shape:
     }
 
 If the input file is missing or empty, exits 0 with status="not_collected_this_run".
-This is the best-effort contract from plan 0060 — the ratchet workflow will
+This is the best-effort contract from plan 0064 — the ratchet workflow will
 mark coverage as not collected rather than failing.
 """
 

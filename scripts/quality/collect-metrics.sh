@@ -18,7 +18,7 @@
 # than failing. The CI gates already enforce these tools (fmt/clippy/audit
 # are blocking in ci.yml); the ratchet only OBSERVES.
 #
-# Per plan 0060 §"collect-metrics.sh default = fast mode" (Michel ajuste #4):
+# Per plan 0064 §"collect-metrics.sh default = fast mode" (owner ajuste #4):
 # default does NOT duplicate the heavy gates the CI already runs.
 #
 # Required tools: bash 4+, git, jq, python3 (or `py` on Windows).

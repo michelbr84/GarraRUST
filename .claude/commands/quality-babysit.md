@@ -5,7 +5,7 @@ description: AI Quality Ratchet babysitting loop — read quality-report.md, fix
 # `/quality-babysit` — AI Quality Ratchet self-correction loop
 
 This skill drives Claude through the **babysitting loop** described in
-`plans/0060-quality-ratchet-pr1.md` §7. The loop reads the most recent
+`plans/0064-quality-ratchet-pr1.md` §7. The loop reads the most recent
 `quality-report.md`, identifies **one** regression, applies the minimal fix,
 runs local checks, commits, and pushes — repeating up to N=5 iterations until
 CI is green again.
@@ -94,7 +94,7 @@ For each iteration (up to 5):
 
 ## Cross-references
 
-- Plan 0060 (PR-1 scope): `plans/0060-quality-ratchet-pr1.md`
+- Plan 0064 (PR-1 scope): `plans/0064-quality-ratchet-pr1.md`
 - Plan-mãe (filosofia + 12 guardrails): `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md`
 - Workflow: `.github/workflows/quality-ratchet.yml`
 - Filosofia: `.quality/README.md`

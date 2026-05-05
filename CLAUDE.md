@@ -330,7 +330,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 
 ## AI Quality Ratchet (`.quality/` + `scripts/quality/`)
 
-Sistema de Quality Gates inspirado no padrão Catraca: métricas só sobem ou ficam, **nunca regridem**. Vide `plans/0060-quality-ratchet-pr1.md` para o scaffold inicial e `.quality/README.md` para a filosofia completa.
+Sistema de Quality Gates inspirado no padrão Catraca: métricas só sobem ou ficam, **nunca regridem**. Vide `plans/0064-quality-ratchet-pr1.md` para o scaffold inicial e `.quality/README.md` para a filosofia completa.
 
 **Status atual: PR-1 — report-only.** Nenhum PR é bloqueado pelo ratchet ainda. Workflow `.github/workflows/quality-ratchet.yml` posta `quality-report.md` como comentário no PR e segue. Promoção a bloqueante (`compare.py --mode enforce`) entra em PR-4 com aprovação explícita.
 

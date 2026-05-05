@@ -1,5 +1,5 @@
 {
-  "_doc": "Atualizado por scripts/quality/freeze-baseline.py. NÃO edite manualmente para 'passar' o ratchet — anti-fraud invariant (plan 0060 §Design invariants #7). Updates só via review humano + commit explícito.",
+  "_doc": "Atualizado por scripts/quality/freeze-baseline.py. NÃO edite manualmente para 'passar' o ratchet — anti-fraud invariant (plan 0064 §Design invariants #7). Updates só via review humano + commit explícito.",
   "audit": {
     "critical": 0,
     "high": 0,
@@ -23,7 +23,7 @@
   "files_over_1500": 7,
   "files_over_2500": 1,
   "files_over_700": 34,
-  "frozenAt": "2026-05-05T06:47:16Z",
+  "frozenAt": "2026-05-05T11:20:45Z",
   "max_file_lines": 3240,
   "max_file_path": "crates/garraia-gateway/src/admin/handlers.rs",
   "schema_version": "1.0",

@@ -8,7 +8,7 @@ Sistema de Quality Gates inspirado no padrão **Catraca (Ratchet)**: as métrica
 
 1. **Catraca**: métricas só sobem ou ficam.
 2. **Determinismo**: `compare.py` é pura comparação de dados — mesma entrada, mesma saída, sem chamada de IA.
-3. **Anti-fraude**: baseline só atualiza com aprovação manual (CODEOWNERS lock + revisão humana via `.quality/baseline.proposed.json`). Vide `plans/0060-quality-ratchet-pr1.md` §"Design invariants".
+3. **Anti-fraude**: baseline só atualiza com aprovação manual (CODEOWNERS lock + revisão humana via `.quality/baseline.proposed.json`). Vide `plans/0064-quality-ratchet-pr1.md` §"Design invariants".
 4. **Conservador**: PR-1 é puramente report-only. Bloqueante vem só depois de validação por 2+ semanas.
 
 ## Arquivos versionados
@@ -83,7 +83,7 @@ python3 -m pytest scripts/quality/tests/
 
 ## Cross-references
 
-- Plan 0060 (este PR): `plans/0060-quality-ratchet-pr1.md`
+- Plan 0064 (este PR): `plans/0064-quality-ratchet-pr1.md`
 - Plan-mãe (filosofia + decisões): `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md` (não versionado)
 - Skill de auto-correção: `.claude/commands/quality-babysit.md`
 - Workflow: `.github/workflows/quality-ratchet.yml`

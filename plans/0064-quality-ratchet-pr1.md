@@ -1,4 +1,6 @@
-# Plan 0060 — AI Quality Ratchet PR-1: scaffold report-only
+# Plan 0064 — AI Quality Ratchet PR-1: scaffold report-only
+
+> **Note (renumber 2026-05-05):** This plan was originally numbered `0060` but conflicted with `plans/0060-gar-503-cargo-bin-exe-cleanup.md` which was merged in parallel via `/garra-routine`. Renamed to 0064 (next free number after the 0061..0063 sequence on main) before merge.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -21,7 +23,7 @@
 3. `.github/workflows/quality-ratchet.yml` — trigger `pull_request` puro, chama `compare.py --mode report-only`, posta `quality-report.md` como comentário PR com marker `<!-- quality-ratchet-comment -->`. **Sem `continue-on-error`**, sem `workflow_run`.
 4. `.claude/commands/quality-babysit.md` — skill **documentada** com auto-loop N=5 + 12 guardrails. Em PR-1 modo é `manual-only` (lê e propõe, não commita).
 5. `CODEOWNERS` (criar em `.github/CODEOWNERS`) — entry `/.quality/baseline.json @michelbr84` como camada inicial de visibilidade.
-6. `CLAUDE.md` ganha §"Quality Ratchet"; `ROADMAP.md` ganha entrada para epic; `plans/README.md` ganha row 0060.
+6. `CLAUDE.md` ganha §"Quality Ratchet"; `ROADMAP.md` ganha entrada para epic; `plans/README.md` ganha row 0064.
 
 **Tech stack:** Bash 4+ (com `set -euo pipefail`), Python 3.x via `py` (Windows) ou `python3` (Linux CI), `jq`, pytest, GitHub Actions standard runners (`ubuntu-latest` em PR-1).
 
@@ -50,7 +52,7 @@
 - ✅ Arquivos `.rs` mapeados: 334 total, 33 >700, 7 >1500, max 3240 (`admin/handlers.rs`).
 - ✅ `clippy.toml`/`rustfmt.toml`/`deny.toml`/`.gitleaks.toml` mapeados.
 - ✅ Sem CODEOWNERS pré-existente (vai ser criado).
-- ✅ Plans dir: 0001..0059 ocupados; 0060 disponível.
+- ✅ Plans dir: 0001..0063 ocupados (com gap em 0062); 0064 disponível. (Nota: o número 0060 já foi tomado por GAR-503/cargo-bin-exe-cleanup que mergeou em paralelo via `/garra-routine`.)
 
 ---
 
@@ -64,7 +66,7 @@
 - 1 slash-command novo (`.claude/commands/quality-babysit.md`)
 - 1 arquivo `.github/CODEOWNERS` (criar)
 - 3 arquivos editados em modo append/section: `CLAUDE.md`, `ROADMAP.md`, `plans/README.md`
-- 1 arquivo de plan: este (`plans/0060-quality-ratchet-pr1.md`)
+- 1 arquivo de plan: este (`plans/0064-quality-ratchet-pr1.md`)
 
 **Out of scope** (PRs futuros):
 
@@ -83,7 +85,7 @@
 ## Acceptance criteria
 
 - [ ] Branch `chore/quality-ratchet-pr1-scaffold` criada off main, off de `a19e5f8`.
-- [ ] Plan `plans/0060-quality-ratchet-pr1.md` versionado (este arquivo).
+- [ ] Plan `plans/0064-quality-ratchet-pr1.md` versionado (este arquivo).
 - [ ] `.quality/baseline.json` capturado a partir do estado real desta branch (não hardcoded).
 - [ ] `bash scripts/quality/collect-metrics.sh > /tmp/m.json` roda em <2 min em fast mode.
 - [ ] `python3 scripts/quality/compare.py --mode report-only .quality/baseline.json /tmp/m.json` exit 0 + escreve `quality-report.md`.
@@ -92,7 +94,7 @@
 - [ ] Workflow `quality-ratchet.yml` roda na próprio PR, posta comentário com marker `<!-- quality-ratchet-comment -->`, sem introduzir `continue-on-error`.
 - [ ] CI inteiro verde (workflow novo é report-only via flag, então não falha).
 - [ ] `git diff main...HEAD -- 'crates/**/*.rs' | wc -l` = 0.
-- [ ] `git diff main...HEAD -- '.quality/**' 'scripts/quality/**' '.github/workflows/quality-ratchet.yml' '.claude/commands/quality-babysit.md' '.github/CODEOWNERS' 'CLAUDE.md' 'ROADMAP.md' 'plans/0060-quality-ratchet-pr1.md' 'plans/README.md'` cobre 100% do diff.
+- [ ] `git diff main...HEAD -- '.quality/**' 'scripts/quality/**' '.github/workflows/quality-ratchet.yml' '.claude/commands/quality-babysit.md' '.github/CODEOWNERS' 'CLAUDE.md' 'ROADMAP.md' 'plans/0064-quality-ratchet-pr1.md' 'plans/README.md'` cobre 100% do diff.
 - [ ] PR aberto com checklist do PULL_REQUEST_TEMPLATE.md preenchido + seção explícita de "Como honra cada ajuste de Michel".
 
 ---
@@ -153,8 +155,8 @@ scripts/quality/
 
 CLAUDE.md                    (edited — append §Quality Ratchet)
 ROADMAP.md                   (edited — append entry para epic Quality Ratchet)
-plans/README.md              (edited — add row 0060)
-plans/0060-quality-ratchet-pr1.md  (THIS FILE)
+plans/README.md              (edited — add row 0064)
+plans/0064-quality-ratchet-pr1.md  (THIS FILE)
 ```
 
 ---

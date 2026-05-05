@@ -2,7 +2,7 @@
 #
 # In PR-1, this file is documentation/visibility ONLY. CODEOWNERS only forces
 # a Code Owner Review when a branch protection rule explicitly requires it,
-# and we do NOT touch branch protection in PR-1 (per plan 0060 §"Design
+# and we do NOT touch branch protection in PR-1 (per plan 0064 §"Design
 # invariants" #6 — Michel ajuste #5).
 #
 # Real anti-fraud enforcement (branch protection rule OR a dedicated blocking

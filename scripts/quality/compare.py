@@ -7,7 +7,7 @@ Usage:
         path/to/current-metrics.json \\
         [--report path/to/quality-report.md]
 
-Modes (per plan 0060 §"Design invariants" #2 — Michel ajuste #1):
+Modes (per plan 0064 §"Design invariants" #2 — owner ajuste #1):
     --mode report-only  : ALWAYS exit 0. Writes quality-report.md with
                           PASS/WARN/REGRESSION rows. Used by PR-1 / PR-2 / PR-3
                           workflows where the ratchet is observation-only.
