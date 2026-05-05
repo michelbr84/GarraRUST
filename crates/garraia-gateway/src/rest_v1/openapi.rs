@@ -27,6 +27,10 @@ use super::messages::{
     ThreadResponse,
 };
 use super::problem::ProblemDetails;
+use super::tasks::{
+    CreateTaskListRequest, CreateTaskRequest, ListTaskListsResponse, ListTasksResponse,
+    PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+};
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
 /// Plan 0016 M3-T1 — registers a bearer JWT `SecurityScheme` in the
@@ -90,6 +94,12 @@ impl Modify for SecurityAddon {
         super::memory::list_memory,
         super::memory::create_memory,
         super::memory::delete_memory,
+        super::tasks::create_task_list,
+        super::tasks::list_task_lists,
+        super::tasks::create_task,
+        super::tasks::list_tasks,
+        super::tasks::patch_task,
+        super::tasks::delete_task,
     ),
     components(schemas(
         MeResponse,
@@ -119,6 +129,15 @@ impl Modify for SecurityAddon {
         MemoryItemResponse,
         MemoryItemSummary,
         ListMemoryResponse,
+        CreateTaskListRequest,
+        TaskListResponse,
+        TaskListSummary,
+        ListTaskListsResponse,
+        CreateTaskRequest,
+        TaskResponse,
+        TaskSummary,
+        ListTasksResponse,
+        PatchTaskRequest,
     )),
     modifiers(&SecurityAddon)
 )]
