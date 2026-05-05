@@ -30,14 +30,8 @@ use testcontainers::{ContainerAsync, GenericImage};
 /// runtime lookup (`std::env::var_os`) instead of the compile-time
 /// `env!` macro so a future bin rename produces a clean runtime panic
 /// rather than a compile-time hard fail.
-///
-/// The `CARGO_BIN_EXE_garraia` fallback is **temporary backward
-/// compatibility** for any local checkouts still on the legacy bin
-/// name; it is dead in CI today and SHOULD be removed once we are
-/// confident no environment depends on it.
 fn garra_bin() -> std::path::PathBuf {
     std::env::var_os("CARGO_BIN_EXE_garra")
-        .or_else(|| std::env::var_os("CARGO_BIN_EXE_garraia"))
         .map(std::path::PathBuf::from)
         .expect("expected Cargo to define CARGO_BIN_EXE_garra for integration tests")
 }
