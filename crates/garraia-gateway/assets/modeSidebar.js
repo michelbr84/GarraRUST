@@ -1,6 +1,7 @@
 import { GarraState } from './state.js';
 import { EventBus } from './eventBus.js';
 import { dom } from './dom.js';
+import { escapeHtml, escapeAttr } from './utils.js';
 
 // Mode icons (SVG paths)
 const MODE_ICONS = {
@@ -273,25 +274,30 @@ function renderModeItem(mode, isAuto = false, isCustom = false) {
   const currentMode = GarraState.currentMode || 'ask';
   const isActive = currentMode === mode.id;
   
+  const safeId = escapeAttr(mode.id);
+  const safeName = escapeHtml(mode.name);
+  const safeDesc = escapeHtml(mode.description);
+  const safeDescAttr = escapeAttr(mode.description);
+
   const actionsHtml = isCustom ? `
     <div class="mode-actions">
-      <button class="mode-edit-btn" data-mode-id="${mode.id}" title="Edit mode">
+      <button class="mode-edit-btn" data-mode-id="${safeId}" title="Edit mode">
         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
       </button>
-      <button class="mode-delete-btn" data-mode-id="${mode.id}" title="Delete mode">
+      <button class="mode-delete-btn" data-mode-id="${safeId}" title="Delete mode">
         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
       </button>
     </div>
   ` : '';
-  
+
   return `
-    <div class="mode-item ${isActive ? 'active' : ''} ${isAuto ? 'mode-auto' : ''} ${isCustom ? 'mode-custom' : ''}" 
-         data-mode-id="${mode.id}"
-         title="${mode.description}">
+    <div class="mode-item ${isActive ? 'active' : ''} ${isAuto ? 'mode-auto' : ''} ${isCustom ? 'mode-custom' : ''}"
+         data-mode-id="${safeId}"
+         title="${safeDescAttr}">
       <div class="mode-icon" style="color: ${color}">${icon}</div>
       <div class="mode-info">
-        <div class="mode-name">${mode.name}</div>
-        <div class="mode-desc">${mode.description}</div>
+        <div class="mode-name">${safeName}</div>
+        <div class="mode-desc">${safeDesc}</div>
       </div>
       ${actionsHtml}
       ${isActive ? '<div class="mode-check">✓</div>' : ''}
@@ -527,7 +533,7 @@ function updateModeBadge(modeId) {
   
   badgeEl.innerHTML = `
     <span class="mode-badge-icon" style="color: ${color}">${icon}</span>
-    <span class="mode-badge-text">${mode.name}</span>
+    <span class="mode-badge-text">${escapeHtml(mode.name)}</span>
   `;
   badgeEl.style.display = 'inline-flex';
 }
