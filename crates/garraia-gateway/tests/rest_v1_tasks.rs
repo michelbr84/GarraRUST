@@ -393,7 +393,10 @@ async fn rest_v1_tasks_scenarios() {
         tl6_meta.get("name").is_none(),
         "TL6 audit must not contain name text (PII guard)"
     );
-    assert_eq!(tl6_meta["type"], "board", "TL6 audit type reflects new value");
+    assert_eq!(
+        tl6_meta["type"], "board",
+        "TL6 audit type reflects new value"
+    );
 
     // ── TL7. PATCH 404 — unknown list_id ─────────────────────────────────
     let unknown_list = uuid::Uuid::new_v4().to_string();
@@ -787,12 +790,7 @@ async fn rest_v1_tasks_scenarios() {
     let resp = h
         .router
         .clone()
-        .oneshot(get_task_req(
-            Some(&owner_token),
-            Some(&gid),
-            &gid,
-            &task_id,
-        ))
+        .oneshot(get_task_req(Some(&owner_token), Some(&gid), &gid, &task_id))
         .await
         .expect("T10 deleted task GET oneshot");
     assert_eq!(
@@ -807,8 +805,8 @@ async fn rest_v1_tasks_scenarios() {
         .clone()
         .oneshot(patch_task_req(
             Some(&owner_token),
-            Some(&gid),  // X-Group-Id = alice's group
-            &g2id,       // path = bob's group → 403 mismatch
+            Some(&gid), // X-Group-Id = alice's group
+            &g2id,      // path = bob's group → 403 mismatch
             &t8_task_id,
             json!({ "status": "done" }),
         ))

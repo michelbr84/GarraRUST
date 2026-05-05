@@ -157,27 +157,35 @@ pub enum WorkspaceAuditAction {
     MemoryDeleted,
 
     /// A task list was created via
-    /// `POST /v1/groups/{group_id}/task-lists`
-    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    /// `POST /v1/groups/{group_id}/task-lists` (plan 0066 / GAR-516,
+    /// epic ws-api tasks slice 1).
     ///
-    /// `resource_type = "task_lists"`, `resource_id = "{task_list_id}"`.
-    /// Metadata: `{ name_len, type }`. `name` text is PII-excluded.
+    /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
+    /// Metadata: `{ name_len, type }`. Carries STRUCTURAL metadata ONLY —
+    /// task list name is user-controlled and may contain PII. The
+    /// `task_lists.name` column is the source of truth for authorized
+    /// read-back via `GET /v1/groups/{id}/task-lists`.
     TaskListCreated,
 
     /// A task was created via
     /// `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks`
-    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    /// (plan 0066 / GAR-516, epic ws-api tasks slice 1).
     ///
     /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
-    /// Metadata: `{ title_len, status, priority }`. `title` text is PII-excluded.
+    /// Metadata: `{ title_len, status, priority }`. Carries STRUCTURAL
+    /// metadata ONLY — task title is user-controlled and may contain PII.
+    /// The `tasks.title` column is the source of truth for authorized
+    /// read-back via `GET /v1/groups/{id}/task-lists/{list_id}/tasks`.
     TaskCreated,
 
     /// A task was soft-deleted via
     /// `DELETE /v1/groups/{group_id}/tasks/{task_id}`
-    /// (plan 0066 / GAR-516, epic GAR-WS-TASKS slice 1).
+    /// (plan 0066 / GAR-516, epic ws-api tasks slice 1).
     ///
     /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
-    /// Metadata: `{ title_len, status }`. `title` text is PII-excluded.
+    /// Metadata: `{ title_len, status }`. The task is not physically
+    /// removed — `deleted_at` is set to `now()`. Hard deletion is a
+    /// future compliance/retention worker task (Fase 5.3).
     TaskDeleted,
 
     /// A task list's metadata was updated via
@@ -185,7 +193,8 @@ pub enum WorkspaceAuditAction {
     /// (plan 0067 / GAR-518, epic GAR-WS-TASKS slice 2).
     ///
     /// `resource_type = "task_lists"`, `resource_id = "{list_id}"`.
-    /// Metadata: `{ name_len, type }`. `name` text is PII-excluded.
+    /// Metadata: `{ name_len, type }`. Carries STRUCTURAL metadata ONLY —
+    /// task list name is user-controlled and may contain PII.
     TaskListUpdated,
 
     /// A task list was archived (soft-deleted) via
