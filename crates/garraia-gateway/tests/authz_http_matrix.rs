@@ -83,7 +83,8 @@ async fn seed_actors(h: &Harness) -> Actors {
     let bob_chat_id = seed_chat(h, &bob_token, &bob_group.to_string(), "bob-matrix-chat").await;
 
     // Seed one message per chat so threads cases (47-49) have stable message IDs.
-    let alice_msg_id = seed_message(h, &alice_token, &alice_chat_id, &alice_group.to_string()).await;
+    let alice_msg_id =
+        seed_message(h, &alice_token, &alice_chat_id, &alice_group.to_string()).await;
     let bob_msg_id = seed_message(h, &bob_token, &bob_chat_id, &bob_group.to_string()).await;
 
     Actors {
@@ -154,7 +155,11 @@ async fn seed_message(h: &Harness, token: &str, chat_id: &str, group_id: &str) -
         )
         .await
         .expect("seed_message oneshot");
-    assert_eq!(resp.status(), StatusCode::CREATED, "seed_message POST failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "seed_message POST failed"
+    );
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     v["id"].as_str().unwrap().to_string()

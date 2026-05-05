@@ -456,8 +456,14 @@ async fn rest_v1_messages_scenarios() {
     let t1_body = body_json(resp).await;
     assert_eq!(t1_body["root_message_id"], msg1_id, "T1 root_message_id");
     assert!(t1_body["title"].is_null(), "T1 title must be null");
-    assert!(!t1_body["id"].as_str().unwrap_or("").is_empty(), "T1 id present");
-    assert!(!t1_body["chat_id"].as_str().unwrap_or("").is_empty(), "T1 chat_id present");
+    assert!(
+        !t1_body["id"].as_str().unwrap_or("").is_empty(),
+        "T1 id present"
+    );
+    assert!(
+        !t1_body["chat_id"].as_str().unwrap_or("").is_empty(),
+        "T1 chat_id present"
+    );
     let thread1_id = t1_body["id"].as_str().unwrap().to_string();
 
     // T1 — audit row: structural only, no title content.
@@ -492,8 +498,7 @@ async fn rest_v1_messages_scenarios() {
     assert_eq!(resp.status(), StatusCode::CREATED, "T2 status");
     let t2_body = body_json(resp).await;
     assert_eq!(
-        t2_body["title"],
-        "Design discussion",
+        t2_body["title"], "Design discussion",
         "T2 title stored correctly"
     );
     assert_eq!(t2_body["root_message_id"], msg3_id, "T2 root_message_id");
@@ -526,7 +531,11 @@ async fn rest_v1_messages_scenarios() {
         ))
         .await
         .expect("T3 oneshot");
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "T3 status (duplicate → 409)");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "T3 status (duplicate → 409)"
+    );
 
     // ── T4. POST /threads 404 — message belongs to a different group ──────
     // Send a message to group2's chat, then try to create a thread as owner1.
@@ -543,12 +552,18 @@ async fn rest_v1_messages_scenarios() {
                 .extension(axum::extract::ConnectInfo::<std::net::SocketAddr>(
                     "127.0.0.1:1".parse().unwrap(),
                 ))
-                .body(Body::from(json!({"body": "group2 message for T4"}).to_string()))
+                .body(Body::from(
+                    json!({"body": "group2 message for T4"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .expect("T4 seed msg in group2");
-    assert_eq!(resp_cross.status(), StatusCode::CREATED, "T4 seed msg status");
+    assert_eq!(
+        resp_cross.status(),
+        StatusCode::CREATED,
+        "T4 seed msg status"
+    );
     let cross_msg_body = body_json(resp_cross).await;
     let cross_msg_id = cross_msg_body["id"].as_str().unwrap().to_string();
 
