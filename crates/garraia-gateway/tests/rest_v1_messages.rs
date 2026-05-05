@@ -1,13 +1,14 @@
-//! Integration tests for `/v1/chats/{chat_id}/messages` (plan 0055, GAR-507).
+//! Integration tests for `/v1/chats/{chat_id}/messages` (plan 0055, GAR-507)
+//! and `/v1/messages/{message_id}/threads` (plan 0058, GAR-509).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` — same pattern as
 //! `rest_v1_chats.rs` / `rest_v1_groups.rs`. Splitting into multiple
 //! `#[tokio::test]`s triggers the sqlx runtime-teardown race documented
 //! in plan 0016 M3 commit `4f8be37`.
 //!
-//! Scenarios (10 total):
+//! Scenarios (15 total):
 //!
-//! POST scenarios (5):
+//! POST /messages scenarios (5):
 //!   M1. POST 201 — happy path: owner sends a message; asserts response
 //!       shape, DB row, sender_label match, and audit row with structural
 //!       metadata only (no body content — invariant 5 PII guard).
@@ -16,12 +17,20 @@
 //!   M4. POST 400 — `X-Group-Id` header missing.
 //!   M5. POST 404 — chat belongs to a different group (cross-tenant).
 //!
-//! GET scenarios (5):
+//! GET /messages scenarios (5):
 //!   G1. GET 200 — happy path: 3 messages returned newest-first.
 //!   G2. GET 200 — cursor pagination: `after=<mid_id>` returns only older.
 //!   G3. GET 200 — empty chat returns `items: []`.
 //!   G4. GET 401 — missing bearer.
 //!   G5. GET 404 — chat of a different group (cross-tenant).
+//!
+//! POST /threads scenarios (5):
+//!   T1. POST 201 — happy path no title: asserts response shape + audit
+//!       row with `{has_title: false}`. No PII in audit metadata.
+//!   T2. POST 201 — with title: asserts title stored + audit `{has_title: true}`.
+//!   T3. POST 409 — create thread twice on same message.
+//!   T4. POST 404 — message_id belongs to a different group (cross-tenant).
+//!   T5. POST 401 — missing bearer.
 
 mod common;
 
@@ -95,6 +104,37 @@ fn get_messages(
         .method("GET")
         .uri(format!("/v1/chats/{chat_id}/messages{query}"))
         .body(Body::empty())
+        .expect("request builder");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:1".parse().unwrap(),
+        ));
+    if let Some(t) = token {
+        req.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {t}")).unwrap(),
+        );
+    }
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
+    req
+}
+
+fn post_thread(
+    token: Option<&str>,
+    message_id: &str,
+    x_group_id: Option<&str>,
+    body: serde_json::Value,
+) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/messages/{message_id}/threads"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .expect("request builder");
     req.extensions_mut()
         .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
@@ -398,4 +438,163 @@ async fn rest_v1_messages_scenarios() {
         StatusCode::NOT_FOUND,
         "G5 status (cross-tenant → 404)"
     );
+
+    // ── T1. POST /threads 201 — happy path, no title ─────────────────────
+    // msg1_id was created in M1 above — use it as the thread root.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_thread(
+            Some(&owner_token),
+            &msg1_id,
+            Some(&group_id.to_string()),
+            json!({}),
+        ))
+        .await
+        .expect("T1 oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED, "T1 status");
+    let t1_body = body_json(resp).await;
+    assert_eq!(t1_body["root_message_id"], msg1_id, "T1 root_message_id");
+    assert!(t1_body["title"].is_null(), "T1 title must be null");
+    assert!(
+        !t1_body["id"].as_str().unwrap_or("").is_empty(),
+        "T1 id present"
+    );
+    assert!(
+        !t1_body["chat_id"].as_str().unwrap_or("").is_empty(),
+        "T1 chat_id present"
+    );
+    let thread1_id = t1_body["id"].as_str().unwrap().to_string();
+
+    // T1 — audit row: structural only, no title content.
+    let events = fetch_audit_events_for_group(&h, group_id)
+        .await
+        .expect("T1 fetch audit");
+    let thread_event = events
+        .iter()
+        .find(|e| e.0 == "thread.created" && e.3 == thread1_id)
+        .expect("T1 thread.created audit row missing");
+    let (_, _, resource_type, _, metadata) = thread_event;
+    assert_eq!(resource_type, "message_threads", "T1 audit resource_type");
+    assert_eq!(metadata["has_title"], false, "T1 audit has_title=false");
+    assert!(
+        metadata.get("title").is_none(),
+        "T1 audit MUST NOT carry title content"
+    );
+
+    // ── T2. POST /threads 201 — with title ───────────────────────────────
+    // Use msg3_id (created in G1 block) as a fresh root for a titled thread.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_thread(
+            Some(&owner_token),
+            &msg3_id,
+            Some(&group_id.to_string()),
+            json!({"title": "Design discussion"}),
+        ))
+        .await
+        .expect("T2 oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED, "T2 status");
+    let t2_body = body_json(resp).await;
+    assert_eq!(
+        t2_body["title"], "Design discussion",
+        "T2 title stored correctly"
+    );
+    assert_eq!(t2_body["root_message_id"], msg3_id, "T2 root_message_id");
+    let thread2_id = t2_body["id"].as_str().unwrap().to_string();
+
+    // T2 — audit row: has_title=true.
+    let events = fetch_audit_events_for_group(&h, group_id)
+        .await
+        .expect("T2 fetch audit");
+    let thread2_event = events
+        .iter()
+        .find(|e| e.0 == "thread.created" && e.3 == thread2_id)
+        .expect("T2 thread.created audit row missing");
+    let (_, _, _, _, t2_metadata) = thread2_event;
+    assert_eq!(t2_metadata["has_title"], true, "T2 audit has_title=true");
+    assert!(
+        t2_metadata.get("title").is_none(),
+        "T2 audit MUST NOT carry title content"
+    );
+
+    // ── T3. POST /threads 409 — duplicate (same message twice) ───────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_thread(
+            Some(&owner_token),
+            &msg1_id, // already has a thread from T1
+            Some(&group_id.to_string()),
+            json!({}),
+        ))
+        .await
+        .expect("T3 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "T3 status (duplicate → 409)"
+    );
+
+    // ── T4. POST /threads 404 — message belongs to a different group ──────
+    // Send a message to group2's chat, then try to create a thread as owner1.
+    let resp_cross = h
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/chats/{chat2_id}/messages"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {owner2_token}"))
+                .header("x-group-id", group2_id.to_string())
+                .extension(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+                    "127.0.0.1:1".parse().unwrap(),
+                ))
+                .body(Body::from(
+                    json!({"body": "group2 message for T4"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("T4 seed msg in group2");
+    assert_eq!(
+        resp_cross.status(),
+        StatusCode::CREATED,
+        "T4 seed msg status"
+    );
+    let cross_msg_body = body_json(resp_cross).await;
+    let cross_msg_id = cross_msg_body["id"].as_str().unwrap().to_string();
+
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_thread(
+            Some(&owner_token),
+            &cross_msg_id,               // belongs to group2
+            Some(&group_id.to_string()), // owner1's group
+            json!({}),
+        ))
+        .await
+        .expect("T4 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "T4 status (cross-tenant message → 404)"
+    );
+
+    // ── T5. POST /threads 401 — missing bearer ────────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_thread(
+            None,
+            &msg1_id,
+            Some(&group_id.to_string()),
+            json!({}),
+        ))
+        .await
+        .expect("T5 oneshot");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "T5 status");
 }
