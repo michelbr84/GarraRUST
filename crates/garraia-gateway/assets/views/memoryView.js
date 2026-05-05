@@ -1,6 +1,7 @@
 import { GarraState } from '../state.js';
 import { EventBus } from '../eventBus.js';
 import { dom } from '../dom.js';
+import { escapeHtml } from '../utils.js';
 
 let memoryAutoRefreshTimer = null;
 
@@ -22,7 +23,7 @@ export async function loadMemory(query = "") {
     dom.memoryList.innerHTML = `
       <div style="padding: 16px; background: var(--error); border: 1px solid var(--error-edge); border-radius: 8px; color: var(--ink);">
         <strong>Erro ao carregar memórias:</strong><br/>
-        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem">${e.message}</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem">${escapeHtml(e.message)}</span>
       </div>`;
   } finally {
     GarraState.setLoading('memory', false);
