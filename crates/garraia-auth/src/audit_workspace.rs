@@ -135,6 +135,26 @@ pub enum WorkspaceAuditAction {
     /// `message_threads` row is the source of truth for authorized
     /// read-back.
     ThreadCreated,
+
+    /// A memory item was created via `POST /v1/memory` (plan 0062 /
+    /// GAR-514, epic GAR-WS-MEMORY slice 1).
+    ///
+    /// `resource_type = "memory_items"`, `resource_id = "{memory_id}"`.
+    /// Metadata: `{ content_len, kind, scope_type }`. Carries STRUCTURAL
+    /// metadata ONLY — `content` is user-generated text and may contain
+    /// PII (schedules, preferences, personal notes, secrets). The
+    /// `memory_items.content` column is the source of truth for
+    /// authorized read-back via `GET /v1/memory`.
+    MemoryCreated,
+
+    /// A memory item was soft-deleted via `DELETE /v1/memory/{id}`
+    /// (plan 0062 / GAR-514, epic GAR-WS-MEMORY slice 1).
+    ///
+    /// `resource_type = "memory_items"`, `resource_id = "{memory_id}"`.
+    /// Metadata: `{ kind, scope_type }`. The item is not physically
+    /// removed — `deleted_at` is set to `now()`. Hard deletion is a
+    /// future compliance/retention worker task (Fase 5.3).
+    MemoryDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -150,6 +170,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ChatCreated => "chat.created",
             WorkspaceAuditAction::MessageSent => "message.sent",
             WorkspaceAuditAction::ThreadCreated => "thread.created",
+            WorkspaceAuditAction::MemoryCreated => "memory.created",
+            WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
         }
     }
 }
@@ -246,6 +268,14 @@ mod tests {
             WorkspaceAuditAction::ThreadCreated.as_str(),
             "thread.created"
         );
+        assert_eq!(
+            WorkspaceAuditAction::MemoryCreated.as_str(),
+            "memory.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::MemoryDeleted.as_str(),
+            "memory.deleted"
+        );
     }
 
     #[test]
@@ -261,6 +291,8 @@ mod tests {
             WorkspaceAuditAction::ChatCreated.as_str(),
             WorkspaceAuditAction::MessageSent.as_str(),
             WorkspaceAuditAction::ThreadCreated.as_str(),
+            WorkspaceAuditAction::MemoryCreated.as_str(),
+            WorkspaceAuditAction::MemoryDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
