@@ -1,10 +1,10 @@
-//! Integration tests for task-lists + tasks REST API (plan 0066/0067, GAR-516/GAR-518).
+//! Integration tests for task-lists + tasks REST API (plan 0066/0067/0069, GAR-516/GAR-518/GAR-520).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` — same pattern as
 //! `rest_v1_memory.rs` / `rest_v1_chats.rs`. Splitting triggers the
 //! sqlx runtime-teardown race documented in plan 0016 M3.
 //!
-//! Scenarios (21 total):
+//! Scenarios (29 total):
 //!
 //! Task-list scenarios (10):
 //!   TL1.  POST 201 — create task list; assert response shape + audit row.
@@ -30,6 +30,16 @@
 //!   T9.  GET 404 — cross-group task returns 404 (RLS isolation).
 //!   T10. GET 404 — deleted task returns 404.
 //!   T11. PATCH 403 — path group_id ≠ principal group_id returns 403.
+//!
+//! Task comment scenarios (8, plan 0069 / GAR-520):
+//!   C1.  POST 201 — create comment; assert response shape + audit row.
+//!   C2.  POST 400 — empty body_md fails validation.
+//!   C3.  POST 404 — unknown task_id.
+//!   C4.  GET 200 — list comments; returns C1 comment; cursor pagination present.
+//!   C5.  GET 404 — cross-group task_id returns 404 (RLS isolation).
+//!   C6.  DELETE 204 — soft-delete comment; no longer in list.
+//!   C7.  DELETE 404 — already-deleted comment is 404.
+//!   C8.  POST 404 — cross-group task returns 404 (RLS isolation).
 
 mod common;
 
@@ -220,6 +230,53 @@ fn get_task_req(
     auth_req(
         "GET",
         &format!("/v1/groups/{path_group_id}/tasks/{task_id}"),
+        token,
+        x_group_id,
+        None,
+    )
+}
+
+fn post_comment(
+    token: Option<&str>,
+    x_group_id: Option<&str>,
+    path_group_id: &str,
+    task_id: &str,
+    body: serde_json::Value,
+) -> Request<Body> {
+    auth_req(
+        "POST",
+        &format!("/v1/groups/{path_group_id}/tasks/{task_id}/comments"),
+        token,
+        x_group_id,
+        Some(body),
+    )
+}
+
+fn get_comments(
+    token: Option<&str>,
+    x_group_id: Option<&str>,
+    path_group_id: &str,
+    task_id: &str,
+) -> Request<Body> {
+    auth_req(
+        "GET",
+        &format!("/v1/groups/{path_group_id}/tasks/{task_id}/comments"),
+        token,
+        x_group_id,
+        None,
+    )
+}
+
+fn delete_comment_req(
+    token: Option<&str>,
+    x_group_id: Option<&str>,
+    path_group_id: &str,
+    task_id: &str,
+    comment_id: &str,
+) -> Request<Body> {
+    auth_req(
+        "DELETE",
+        &format!("/v1/groups/{path_group_id}/tasks/{task_id}/comments/{comment_id}"),
         token,
         x_group_id,
         None,
@@ -816,5 +873,199 @@ async fn rest_v1_tasks_scenarios() {
         resp.status(),
         StatusCode::FORBIDDEN,
         "T11 path group_id mismatch must return 403"
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Task comment scenarios (plan 0069 / GAR-520)
+    // t8_task_id is alice's live task used as the comment target.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── C1. POST 201 — create comment; response shape + audit row ─────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_comment(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+            json!({ "body_md": "This is a **test** comment." }),
+        ))
+        .await
+        .expect("C1 oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED, "C1 status");
+    let c1_body = body_json(resp).await;
+    let comment_id = c1_body["id"].as_str().expect("C1 comment id").to_string();
+    assert_eq!(c1_body["task_id"], t8_task_id, "C1 task_id");
+    assert_eq!(c1_body["body_md"], "This is a **test** comment.", "C1 body_md");
+    assert!(
+        c1_body.get("author_label").is_some(),
+        "C1 author_label present"
+    );
+    assert!(c1_body.get("created_at").is_some(), "C1 created_at present");
+
+    let c1_audit = fetch_audit_events_for_group(&h, group_id)
+        .await
+        .expect("C1 fetch audit");
+    let c1_audit_row = c1_audit
+        .iter()
+        .find(|e| e.0 == "task.comment.created")
+        .expect("C1 audit row task.comment.created");
+    let (_, _, c1_res_type, c1_res_id, c1_meta) = c1_audit_row;
+    assert_eq!(c1_res_type, "task_comments", "C1 audit resource_type");
+    assert_eq!(c1_res_id, &comment_id, "C1 audit resource_id");
+    assert!(
+        c1_meta["body_len"].as_u64().is_some(),
+        "C1 audit metadata has body_len"
+    );
+    assert!(
+        c1_meta.get("body_md").is_none(),
+        "C1 audit must not contain body_md text (PII guard)"
+    );
+
+    // ── C2. POST 400 — empty body_md fails validation ─────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_comment(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+            json!({ "body_md": "" }),
+        ))
+        .await
+        .expect("C2 oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "C2 empty body_md must be 400");
+
+    // ── C3. POST 404 — unknown task_id ────────────────────────────────────
+    let unknown_task = uuid::Uuid::new_v4().to_string();
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_comment(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &unknown_task,
+            json!({ "body_md": "comment on ghost task" }),
+        ))
+        .await
+        .expect("C3 oneshot");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "C3 unknown task must be 404");
+
+    // ── C4. GET 200 — list comments; includes C1; cursor pagination ────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(get_comments(Some(&owner_token), Some(&gid), &gid, &t8_task_id))
+        .await
+        .expect("C4 oneshot");
+    assert_eq!(resp.status(), StatusCode::OK, "C4 status");
+    let c4_body = body_json(resp).await;
+    let comments = c4_body["items"].as_array().expect("C4 items array");
+    assert!(
+        comments.iter().any(|it| it["id"] == comment_id),
+        "C4 should contain C1 comment"
+    );
+    assert!(
+        c4_body.get("next_cursor").is_some(),
+        "C4 next_cursor field present (null when no more pages)"
+    );
+
+    // ── C5. GET 404 — cross-group task_id hidden by RLS ───────────────────
+    // Alice uses her own gid but bob's task_id — RLS filters → 404.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(get_comments(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &bob_task_id,
+        ))
+        .await
+        .expect("C5 cross-group GET comments oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "C5 cross-group task_id must return 404"
+    );
+
+    // ── C6. DELETE 204 — soft-delete comment ──────────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(delete_comment_req(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+            &comment_id,
+        ))
+        .await
+        .expect("C6 oneshot");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "C6 status");
+
+    // Deleted comment must not appear in the list.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(get_comments(Some(&owner_token), Some(&gid), &gid, &t8_task_id))
+        .await
+        .expect("C6 list after delete");
+    let c6_list = body_json(resp).await;
+    let after_del = c6_list["items"].as_array().expect("C6 items array");
+    assert!(
+        !after_del.iter().any(|it| it["id"] == comment_id),
+        "C6 deleted comment must not appear in list"
+    );
+
+    let c6_audit = fetch_audit_events_for_group(&h, group_id)
+        .await
+        .expect("C6 fetch audit");
+    assert!(
+        c6_audit
+            .iter()
+            .any(|e| e.0 == "task.comment.deleted" && e.3 == comment_id),
+        "C6 audit row task.comment.deleted must be present"
+    );
+
+    // ── C7. DELETE 404 — already-deleted comment ───────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(delete_comment_req(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &t8_task_id,
+            &comment_id,
+        ))
+        .await
+        .expect("C7 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "C7 re-delete must return 404 (not idempotent)"
+    );
+
+    // ── C8. POST 404 — cross-group task returns 404 (RLS isolation) ────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_comment(
+            Some(&owner_token),
+            Some(&gid),
+            &gid,
+            &bob_task_id,
+            json!({ "body_md": "Alice trying to comment on Bob's task" }),
+        ))
+        .await
+        .expect("C8 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "C8 cross-group task must return 404 (not 403)"
     );
 }

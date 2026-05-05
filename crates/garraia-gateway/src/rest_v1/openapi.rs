@@ -28,9 +28,9 @@ use super::messages::{
 };
 use super::problem::ProblemDetails;
 use super::tasks::{
-    CreateTaskListRequest, CreateTaskRequest, ListTaskListsResponse, ListTasksResponse,
-    PatchTaskListRequest, PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse,
-    TaskSummary,
+    CommentResponse, CreateCommentRequest, CreateTaskListRequest, CreateTaskRequest,
+    ListCommentsResponse, ListTaskListsResponse, ListTasksResponse, PatchTaskListRequest,
+    PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -104,6 +104,9 @@ impl Modify for SecurityAddon {
         super::tasks::get_task,
         super::tasks::patch_task,
         super::tasks::delete_task,
+        super::tasks::create_task_comment,
+        super::tasks::list_task_comments,
+        super::tasks::delete_task_comment,
     ),
     components(schemas(
         MeResponse,
@@ -143,6 +146,9 @@ impl Modify for SecurityAddon {
         TaskSummary,
         ListTasksResponse,
         PatchTaskRequest,
+        CreateCommentRequest,
+        CommentResponse,
+        ListCommentsResponse,
     )),
     modifiers(&SecurityAddon)
 )]
