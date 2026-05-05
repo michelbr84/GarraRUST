@@ -169,6 +169,15 @@ name = "rest_v1_chats"
 path = "tests/rest_v1_chats.rs"
 required-features = ["test-helpers"]
 
+# Plan 0055 — GAR-507: REST /v1 messages slice 2 (POST + GET on
+# /v1/chats/{chat_id}/messages). 10 scenarios in one bundled
+# `#[tokio::test]`. Same feature gating as the other integration
+# suites so the harness compiles with JwtIssuer::new_for_test.
+[[test]]
+name = "rest_v1_messages"
+path = "tests/rest_v1_messages.rs"
+required-features = ["test-helpers"]
+
 # Plan 0022 T7 — F-05 regression guard for audit_events_group_or_self
 # policy branch 2. Uses the same harness as other integration tests
 # and needs the same feature gate so CI's default `cargo test`
