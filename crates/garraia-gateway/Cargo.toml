@@ -229,6 +229,16 @@ name = "rest_v1_memory"
 path = "tests/rest_v1_memory.rs"
 required-features = ["test-helpers"]
 
+# Plan 0065 — GAR-516 tasks API slice 1: task-lists + tasks CRUD.
+# 12 bundled scenarios covering create/list/patch/delete for task-lists
+# and tasks, plus cross-tenant isolation and validation error cases.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_tasks"
+path = "tests/rest_v1_tasks.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

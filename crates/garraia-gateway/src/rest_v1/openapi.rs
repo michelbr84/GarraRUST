@@ -22,6 +22,10 @@ use super::me::MeResponse;
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
 };
+use super::tasks::{
+    CreateTaskListRequest, CreateTaskRequest, ListTaskListsResponse, ListTasksResponse,
+    PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+};
 use super::messages::{
     CreateThreadRequest, MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
     ThreadResponse,
@@ -90,6 +94,12 @@ impl Modify for SecurityAddon {
         super::memory::list_memory,
         super::memory::create_memory,
         super::memory::delete_memory,
+        super::tasks::create_task_list,
+        super::tasks::list_task_lists,
+        super::tasks::create_task,
+        super::tasks::list_tasks,
+        super::tasks::patch_task,
+        super::tasks::delete_task,
     ),
     components(schemas(
         MeResponse,
@@ -119,6 +129,15 @@ impl Modify for SecurityAddon {
         MemoryItemResponse,
         MemoryItemSummary,
         ListMemoryResponse,
+        CreateTaskListRequest,
+        TaskListResponse,
+        TaskListSummary,
+        ListTaskListsResponse,
+        CreateTaskRequest,
+        TaskResponse,
+        TaskSummary,
+        ListTasksResponse,
+        PatchTaskRequest,
     )),
     modifiers(&SecurityAddon)
 )]
