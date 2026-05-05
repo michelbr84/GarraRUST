@@ -33,6 +33,7 @@ pub mod chats;
 pub mod groups;
 pub mod invites;
 pub mod me;
+pub mod memory;
 pub mod messages;
 pub mod openapi;
 pub mod problem;
@@ -279,6 +280,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/threads",
                     post(messages::create_thread),
                 )
+                // Plan 0062 (GAR-514) — memory API slice 1.
+                .route(
+                    "/v1/memory",
+                    get(memory::list_memory).post(memory::create_memory),
+                )
+                .route("/v1/memory/{id}", delete(memory::delete_memory))
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -322,6 +329,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/threads",
                     post(unconfigured_handler),
                 )
+                // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
+                .route(
+                    "/v1/memory",
+                    get(unconfigured_handler).post(unconfigured_handler),
+                )
+                .route("/v1/memory/{id}", delete(unconfigured_handler))
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
@@ -371,6 +384,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/threads",
                     post(unconfigured_handler),
                 )
+                // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
+                .route(
+                    "/v1/memory",
+                    get(unconfigured_handler).post(unconfigured_handler),
+                )
+                .route("/v1/memory/{id}", delete(unconfigured_handler))
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),

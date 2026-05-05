@@ -106,4 +106,4 @@ Total: ~20 min
 
 - [x] T1: Fix 5 innerHTML sinks in `webchat.html`
 - [x] T2: Update `plans/README.md` with row 0061
-- [ ] T3: CI green + merge
+- [x] T3: CI green + merge

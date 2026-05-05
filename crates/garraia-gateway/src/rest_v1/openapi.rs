@@ -19,6 +19,9 @@ use super::groups::{
 };
 use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
+use super::memory::{
+    CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
+};
 use super::messages::{
     CreateThreadRequest, MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
     ThreadResponse,
@@ -84,6 +87,9 @@ impl Modify for SecurityAddon {
         super::messages::send_message,
         super::messages::list_messages,
         super::messages::create_thread,
+        super::memory::list_memory,
+        super::memory::create_memory,
+        super::memory::delete_memory,
     ),
     components(schemas(
         MeResponse,
@@ -109,6 +115,10 @@ impl Modify for SecurityAddon {
         MessageListResponse,
         CreateThreadRequest,
         ThreadResponse,
+        CreateMemoryRequest,
+        MemoryItemResponse,
+        MemoryItemSummary,
+        ListMemoryResponse,
     )),
     modifiers(&SecurityAddon)
 )]
