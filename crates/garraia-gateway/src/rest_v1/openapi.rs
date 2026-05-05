@@ -13,6 +13,9 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
+use super::messages::{
+    MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
+};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
@@ -77,6 +80,8 @@ impl Modify for SecurityAddon {
         super::uploads::options_uploads,
         super::chats::create_chat,
         super::chats::list_chats,
+        super::messages::send_message,
+        super::messages::list_messages,
     ),
     components(schemas(
         MeResponse,
@@ -96,6 +101,10 @@ impl Modify for SecurityAddon {
         ChatResponse,
         ChatSummary,
         ChatListResponse,
+        SendMessageRequest,
+        MessageResponse,
+        MessageSummary,
+        MessageListResponse,
     )),
     modifiers(&SecurityAddon)
 )]
