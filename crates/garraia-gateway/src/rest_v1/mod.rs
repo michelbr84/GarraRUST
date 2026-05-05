@@ -33,6 +33,7 @@ pub mod chats;
 pub mod groups;
 pub mod invites;
 pub mod me;
+pub mod messages;
 pub mod openapi;
 pub mod problem;
 pub mod uploads;
