@@ -29,6 +29,7 @@
 //! In mode 3 the routes are registered explicitly (no `.fallback()`)
 //! so the merged main router keeps its own 404 behavior.
 
+pub mod audit;
 pub mod chats;
 pub mod groups;
 pub mod invites;
@@ -306,6 +307,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(tasks::patch_task)
                         .delete(tasks::delete_task),
                 )
+                // Plan 0070 (GAR-522) — audit API slice 1.
+                .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -374,6 +377,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                // Plan 0070 (GAR-522) — audit API slice 1, fail-soft 503.
+                .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
@@ -448,6 +453,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                // Plan 0070 (GAR-522) — audit API slice 1, no-auth stub.
+                .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
