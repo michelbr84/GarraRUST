@@ -1,0 +1,16 @@
+{
+  "database": {
+    "advisory_count": 800,
+    "last_commit": "abc1234",
+    "last_updated": "2026-05-05T07:00:00Z"
+  },
+  "lockfile": {
+    "dependency_count": 600
+  },
+  "vulnerabilities": {
+    "found": false,
+    "count": 0,
+    "list": []
+  },
+  "warnings": {}
+}
