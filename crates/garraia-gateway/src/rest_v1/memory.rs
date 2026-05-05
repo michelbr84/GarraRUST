@@ -7,40 +7,20 @@
 //!
 //! ## Tenant-context protocol
 //!
-//! `memory_items` is under FORCE RLS (migration 007) with a **dual policy**
-//! (`memory_items_group_or_self`): branch 1 covers `scope_type ∈ {group,
-//! chat}` via `group_id = app.current_group_id`; branch 2 covers
-//! `scope_type = user` (personal) via `created_by = app.current_user_id
-//! AND group_id IS NULL`.
+//! `memory_items` FORCE RLS dual policy (`memory_items_group_or_self`): group/chat scope uses
+//! `group_id = app.current_group_id`; user scope uses `created_by = app.current_user_id AND
+//! group_id IS NULL`. Both RLS vars set via parameterized `set_config` (plan 0056).
 //!
-//! Both `app.current_user_id` AND `app.current_group_id` are set in every
-//! transaction via the parameterized `set_config` pattern (plan 0056) —
-//! the same invariant required by all other FORCE-RLS handlers.
+//! ## Security filters applied to every SELECT
 //!
-//! ## Security filters
+//! `AND deleted_at IS NULL` · `AND sensitivity <> 'secret'` ·
+//! `AND (ttl_expires_at IS NULL OR ttl_expires_at > now())`.
+//! `sensitivity='secret'` items are never auto-returned.
 //!
-//! Every SELECT on `memory_items` MUST include:
-//! - `AND deleted_at IS NULL`
-//! - `AND sensitivity <> 'secret'`
-//! - `AND (ttl_expires_at IS NULL OR ttl_expires_at > now())`
+//! ## Scope validation (app-layer, on top of RLS)
 //!
-//! `sensitivity='secret'` items are NEVER auto-returned — callers must
-//! explicitly opt-in to secret retrieval (future plan).
-//!
-//! ## Scope validation
-//!
-//! App-layer, on top of RLS:
-//! - `scope_type='user'` → `scope_id` must equal `principal.user_id`.
-//! - `scope_type='group'` → `scope_id` must equal `principal.group_id`.
-//! - `scope_type='chat'` → chat's `group_id` must equal `principal.group_id`
-//!   (verified in-tx via SELECT before INSERT/DELETE).
-//!
-//! ## SQL injection posture
-//!
-//! All user-controlled values use `sqlx::query::bind`. UUIDs from the path
-//! and headers are typed `Uuid` (no shell metacharacters). The
-//! `set_config` parameterized pattern (plan 0056 / GAR-508) is used for
-//! RLS context; no `format!` interpolation of user data.
+//! `user` → `scope_id` = `principal.user_id`. `group` → `scope_id` = `principal.group_id`.
+//! `chat` → chat's `group_id` = `principal.group_id` (verified in-tx).
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -76,7 +56,6 @@ const ALLOWED_SENSITIVITIES: &[&str] = &["public", "group", "private"];
 
 // ─── Private type aliases ────────────────────────────────────────────────────
 
-/// Row tuple returned by the list_memory SELECT.
 /// (id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)
 type MemoryListRow = (
     Uuid,
@@ -88,7 +67,6 @@ type MemoryListRow = (
     DateTime<Utc>,
 );
 
-/// Row tuple returned by the INSERT ... RETURNING in create_memory.
 /// (id, created_by, group_id, ttl_expires_at, created_at, updated_at)
 type MemoryInsertRow = (
     Uuid,
