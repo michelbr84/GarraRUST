@@ -6,6 +6,7 @@
 <title>GarraIA Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.7/purify.min.js" integrity="sha384-XQqX/4yiUGu+oyr87jvWzRuqBUK/adrY0DunhL+tID9m/9dwSpV8h9Fk/Sg6ifVQ" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
@@ -1466,7 +1467,7 @@ renderer.code = function(codeObj) {
     highlighted = hljs.highlightAuto(text).value;
   }
   const langLabel = lang || 'code';
-  return `<div class="code-block-wrapper"><div class="code-block-header"><span>${langLabel}</span><button class="copy-code-btn" onclick="copyCodeBlock(this)">Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
+  return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-code-btn">Copy</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`;
 };
 
 marked.setOptions({
@@ -1482,6 +1483,12 @@ window.copyCodeBlock = function(btn) {
     setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
   });
 };
+
+// DOMPurify strips onclick attributes — use event delegation for copy buttons
+chatMessages.addEventListener('click', function(e) {
+  const btn = e.target.closest('.copy-code-btn');
+  if (btn) copyCodeBlock(btn);
+});
 
 // ─── Theme System ─────────────────────────────────────────────────────
 function applyTheme(theme) {
@@ -1704,7 +1711,7 @@ function handleAssistantMessage(content) {
     const currentText = bodyEl.getAttribute('data-raw') || '';
     const newText = currentText + parsedContent;
     bodyEl.setAttribute('data-raw', newText);
-    bodyEl.innerHTML = marked.parse(newText);
+    bodyEl.innerHTML = DOMPurify.sanitize(marked.parse(newText));
     chatMessages.scrollTop = chatMessages.scrollHeight;
   } else {
     appendAIMsg(parsedContent, true);
@@ -1800,7 +1807,7 @@ function appendAIMsg(text, isStreaming) {
   const group = document.createElement('div');
   group.className = 'message-group ai-group';
 
-  const rendered = marked.parse(text);
+  const rendered = DOMPurify.sanitize(marked.parse(text));
   const bodyClass = isStreaming ? 'msg-body streaming-cursor' : 'msg-body';
   group.innerHTML = `
     <div class="msg-avatar ai-avatar">&#x1f99c;</div>
@@ -1885,11 +1892,11 @@ async function refreshStatus() {
   try {
     const r = await fetch('/api/status');
     const j = await r.json();
-    apiStatusEl.innerHTML = '<span class="dot dot-online" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:4px;"></span>' + j.status;
+    apiStatusEl.innerHTML = '<span class="dot dot-online" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--success);margin-right:4px;"></span>' + escapeHtml(j.status);
     sessionCountEl.textContent = j.sessions;
     if (channelListEl) {
       if (j.channels && j.channels.length > 0) {
-        channelListEl.innerHTML = j.channels.map(ch => '<span class="channel-tag"><span class="dot dot-online" style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);"></span> ' + ch + '</span>').join('');
+        channelListEl.innerHTML = j.channels.map(ch => '<span class="channel-tag"><span class="dot dot-online" style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);"></span> ' + escapeHtml(ch) + '</span>').join('');
       } else {
         channelListEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No channels</span>';
       }
@@ -1964,7 +1971,7 @@ async function loadExtensions() {
         item.className = 'dropdown-item';
         item.style.fontSize = '12px';
         const statusColor = (s.status && s.status.state === 'running') ? 'var(--success)' : 'var(--text-muted)';
-        item.innerHTML = `<span style="color:${statusColor};font-size:8px;">&#9679;</span> <span>${s.name}</span> <span style="color:var(--text-muted);font-size:10px;">${s.transport || ''}</span>`;
+        item.innerHTML = `<span style="color:${statusColor};font-size:8px;">&#9679;</span> <span>${escapeHtml(s.name)}</span> <span style="color:var(--text-muted);font-size:10px;">${escapeHtml(s.transport || '')}</span>`;
         mcpList.appendChild(item);
       });
       const badge = $('ext-badge-count');
@@ -2120,7 +2127,7 @@ function addSessionToList(sessionId) {
   item.dataset.session = sessionId;
   item.innerHTML = `
     <span class="session-item-icon">&#128172;</span>
-    <span class="session-item-text">${sessionId.slice(0, 16)}...</span>
+    <span class="session-item-text">${escapeHtml(sessionId.slice(0, 16))}...</span>
     <span class="session-item-time">${formatTime(new Date())}</span>
   `;
   item.addEventListener('click', () => {
@@ -2650,7 +2657,7 @@ function renderSessionList(sessions) {
     item.className = 'session-item' + (id === State.session ? ' active' : '');
     item.dataset.session = id;
     item.dataset.channel = channel;
-    const channelBadge = channel !== 'web' ? `<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--accent-light);color:var(--accent);margin-left:auto;">${channel}</span>` : '';
+    const channelBadge = channel !== 'web' ? `<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--accent-light);color:var(--accent);margin-left:auto;">${escapeHtml(channel)}</span>` : '';
     item.innerHTML = `
       <span class="session-item-icon">&#128172;</span>
       <span class="session-item-text">${escapeHtml(id.slice(0, 16))}...</span>
