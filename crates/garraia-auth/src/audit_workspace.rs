@@ -172,6 +172,16 @@ pub enum WorkspaceAuditAction {
     /// `ttl_expires_at` is NOT restored — caller must re-set it.
     MemoryUnpinned,
 
+    /// A memory item's mutable fields were updated via
+    /// `PATCH /v1/memory/{id}` (plan 0074 / GAR-528, epic GAR-WS-MEMORY
+    /// slice 3). Mutable fields: `content`, `kind`, `sensitivity`,
+    /// `ttl_expires_at`.
+    ///
+    /// `resource_type = "memory_items"`, `resource_id = "{memory_id}"`.
+    /// Metadata: `{ content_len, kind, scope_type }`. Carries STRUCTURAL
+    /// metadata ONLY — `content` is user-generated text and may contain PII.
+    MemoryUpdated,
+
     /// A task list was created via
     /// `POST /v1/groups/{group_id}/task-lists` (plan 0066 / GAR-516,
     /// epic ws-api tasks slice 1).
@@ -257,6 +267,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
             WorkspaceAuditAction::MemoryPinned => "memory.pinned",
             WorkspaceAuditAction::MemoryUnpinned => "memory.unpinned",
+            WorkspaceAuditAction::MemoryUpdated => "memory.updated",
             WorkspaceAuditAction::TaskListCreated => "task_list.created",
             WorkspaceAuditAction::TaskCreated => "task.created",
             WorkspaceAuditAction::TaskDeleted => "task.deleted",

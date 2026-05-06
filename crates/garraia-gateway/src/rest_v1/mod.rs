@@ -287,7 +287,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/memory",
                     get(memory::list_memory).post(memory::create_memory),
                 )
-                .route("/v1/memory/{id}", delete(memory::delete_memory))
+                .route(
+                    "/v1/memory/{id}",
+                    get(memory::get_memory)
+                        .patch(memory::patch_memory)
+                        .delete(memory::delete_memory),
+                )
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin.
                 .route("/v1/memory/{id}/pin", post(memory::pin_memory))
                 .route("/v1/memory/{id}/unpin", post(memory::unpin_memory))
@@ -369,7 +374,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/memory",
                     get(unconfigured_handler).post(unconfigured_handler),
                 )
-                .route("/v1/memory/{id}", delete(unconfigured_handler))
+                .route(
+                    "/v1/memory/{id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
+                )
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, fail-soft 503.
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
@@ -456,7 +466,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/memory",
                     get(unconfigured_handler).post(unconfigured_handler),
                 )
-                .route("/v1/memory/{id}", delete(unconfigured_handler))
+                .route(
+                    "/v1/memory/{id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
+                )
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, no-auth stub.
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
