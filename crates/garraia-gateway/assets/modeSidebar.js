@@ -391,12 +391,12 @@ function showCustomModeForm(existingMode = null) {
         <form id="custom-mode-form">
           <div class="form-group">
             <label for="mode-name">Mode Name</label>
-            <input type="text" id="mode-name" name="name" required placeholder="My Custom Mode" value="${existingMode?.name || ''}">
+            <input type="text" id="mode-name" name="name" required placeholder="My Custom Mode" value="${escapeAttr(existingMode?.name || '')}">
           </div>
           
           <div class="form-group">
             <label for="mode-description">Description</label>
-            <input type="text" id="mode-description" name="description" placeholder="Brief description of this mode" value="${existingMode?.description || ''}">
+            <input type="text" id="mode-description" name="description" placeholder="Brief description of this mode" value="${escapeAttr(existingMode?.description || '')}">
           </div>
           
           <div class="form-group">
@@ -416,7 +416,7 @@ function showCustomModeForm(existingMode = null) {
           
           <div class="form-group">
             <label for="mode-prompt">System Prompt Override (optional)</label>
-            <textarea id="mode-prompt" name="promptOverride" rows="3" placeholder="Custom system prompt...">${existingMode?.promptOverride || ''}</textarea>
+            <textarea id="mode-prompt" name="promptOverride" rows="3" placeholder="Custom system prompt...">${escapeHtml(existingMode?.promptOverride || '')}</textarea>
           </div>
           
           <div class="form-group">
@@ -424,15 +424,15 @@ function showCustomModeForm(existingMode = null) {
             <div class="llmdefaults-grid">
               <div>
                 <label for="mode-temp">Temperature</label>
-                <input type="number" id="mode-temp" name="temperature" min="0" max="2" step="0.1" value="${existingMode?.defaults?.temperature || 0.7}">
+                <input type="number" id="mode-temp" name="temperature" min="0" max="2" step="0.1" value="${escapeAttr(existingMode?.defaults?.temperature ?? 0.7)}">
               </div>
               <div>
                 <label for="mode-maxtokens">Max Tokens</label>
-                <input type="number" id="mode-maxtokens" name="maxTokens" min="1" max="32000" value="${existingMode?.defaults?.max_tokens || 4096}">
+                <input type="number" id="mode-maxtokens" name="maxTokens" min="1" max="32000" value="${escapeAttr(existingMode?.defaults?.max_tokens ?? 4096)}">
               </div>
               <div>
                 <label for="mode-topp">Top P</label>
-                <input type="number" id="mode-topp" name="topP" min="0" max="1" step="0.1" value="${existingMode?.defaults?.top_p || 0.9}">
+                <input type="number" id="mode-topp" name="topP" min="0" max="1" step="0.1" value="${escapeAttr(existingMode?.defaults?.top_p ?? 0.9)}">
               </div>
             </div>
           </div>
