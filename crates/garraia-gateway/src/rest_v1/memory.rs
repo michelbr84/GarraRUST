@@ -56,13 +56,24 @@ const ALLOWED_SENSITIVITIES: &[&str] = &["public", "group", "private"];
 
 // ─── Private type aliases ────────────────────────────────────────────────────
 
-/// (id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)
+/// (id, scope_type, scope_id, kind, content_preview, ttl_expires_at, pinned_at, created_at)
 type MemoryListRow = (
     Uuid,
     String,
     Uuid,
     String,
     String,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
+
+/// (id, kind, scope_type, pinned_at, ttl_expires_at, updated_at)
+type MemoryPinRow = (
+    Uuid,
+    String,
+    String,
+    Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     DateTime<Utc>,
 );
@@ -148,7 +159,21 @@ pub struct MemoryItemResponse {
     pub source_chat_id: Option<Uuid>,
     pub source_message_id: Option<Uuid>,
     pub ttl_expires_at: Option<DateTime<Utc>>,
+    /// Non-null when the item is pinned. Pin clears `ttl_expires_at`.
+    pub pinned_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Response body for `POST /v1/memory/{id}:pin` and `:unpin`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PinMemoryResponse {
+    pub id: Uuid,
+    /// Non-null when pinned. `null` when unpinned.
+    pub pinned_at: Option<DateTime<Utc>>,
+    /// Always `null` when pinned (pin clears TTL). After unpin, TTL
+    /// is NOT restored — caller must re-set it explicitly.
+    pub ttl_expires_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -164,6 +189,8 @@ pub struct MemoryItemSummary {
     pub content_preview: String,
     pub sensitivity: String,
     pub ttl_expires_at: Option<DateTime<Utc>>,
+    /// Non-null when the item is pinned.
+    pub pinned_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -331,7 +358,7 @@ pub async fn list_memory(
         sqlx::query_as(
             "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
                         left(m.content, 200) AS content_preview, \
-                        m.ttl_expires_at, m.created_at \
+                        m.ttl_expires_at, m.pinned_at, m.created_at \
                  FROM memory_items m \
                  WHERE m.scope_type = $1 \
                    AND m.scope_id = $2 \
@@ -355,7 +382,7 @@ pub async fn list_memory(
         sqlx::query_as(
             "SELECT m.id, m.scope_type, m.scope_id, m.kind, \
                         left(m.content, 200) AS content_preview, \
-                        m.ttl_expires_at, m.created_at \
+                        m.ttl_expires_at, m.pinned_at, m.created_at \
                  FROM memory_items m \
                  WHERE m.scope_type = $1 \
                    AND m.scope_id = $2 \
@@ -382,7 +409,7 @@ pub async fn list_memory(
         .into_iter()
         .take(effective_limit as usize)
         .map(
-            |(id, scope_type, scope_id, kind, content_preview, ttl_expires_at, created_at)| {
+            |(id, scope_type, scope_id, kind, content_preview, ttl_expires_at, pinned_at, created_at)| {
                 MemoryItemSummary {
                     id,
                     scope_type,
@@ -391,6 +418,7 @@ pub async fn list_memory(
                     content_preview,
                     sensitivity: String::new(), // not exposed in summary for security
                     ttl_expires_at,
+                    pinned_at,
                     created_at,
                 }
             },
@@ -580,6 +608,7 @@ pub async fn create_memory(
             source_chat_id: body.source_chat_id,
             source_message_id: body.source_message_id,
             ttl_expires_at,
+            pinned_at: None,
             created_at,
             updated_at,
         }),
@@ -687,4 +716,209 @@ pub async fn delete_memory(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /v1/memory/{id}:pin` — pin a memory item (never expires).
+///
+/// Authz: caller must be a group member with `Action::MemoryWrite`.
+///
+/// Sets `pinned_at = now()` and `ttl_expires_at = NULL` atomically.
+/// Pinning is **idempotent**: re-pinning refreshes `pinned_at`. RLS
+/// filters cross-tenant rows to 0 rows → 404 (not 403).
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Item not found / cross-tenant      | 404    |
+/// | Item already deleted               | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    post,
+    path = "/v1/memory/{id}:pin",
+    params(
+        ("id" = Uuid, Path, description = "Memory item UUID."),
+    ),
+    responses(
+        (status = 200, description = "Memory item pinned.", body = PinMemoryResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Memory item not found or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn pin_memory(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(memory_id): Path<Uuid>,
+) -> Result<Json<PinMemoryResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::MemoryWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Pin: set pinned_at = now(), clear ttl_expires_at.
+    // RETURNING kind + scope_type for audit; id, pinned_at, ttl_expires_at,
+    // updated_at for response. RLS filters cross-tenant rows → 0 rows → 404.
+    let row: Option<MemoryPinRow> = sqlx::query_as(
+        "UPDATE memory_items \
+         SET pinned_at = now(), ttl_expires_at = NULL, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL \
+         RETURNING id, kind, scope_type, pinned_at, ttl_expires_at, updated_at",
+    )
+    .bind(memory_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (id, kind, scope_type, pinned_at, ttl_expires_at, updated_at) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemoryPinned,
+        principal.user_id,
+        group_id,
+        "memory_items",
+        id.to_string(),
+        json!({
+            "kind": kind,
+            "scope_type": scope_type,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(PinMemoryResponse {
+        id,
+        pinned_at,
+        ttl_expires_at,
+        updated_at,
+    }))
+}
+
+/// `POST /v1/memory/{id}:unpin` — remove pin from a memory item.
+///
+/// Authz: caller must be a group member with `Action::MemoryWrite`.
+///
+/// Sets `pinned_at = NULL`. `ttl_expires_at` is **NOT** restored —
+/// caller must re-set it explicitly if a TTL is desired. Unpinning
+/// an already-unpinned item is a no-op (returns 200).
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Item not found / cross-tenant      | 404    |
+/// | Item already deleted               | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    post,
+    path = "/v1/memory/{id}:unpin",
+    params(
+        ("id" = Uuid, Path, description = "Memory item UUID."),
+    ),
+    responses(
+        (status = 200, description = "Memory item unpinned.", body = PinMemoryResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Memory item not found or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn unpin_memory(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(memory_id): Path<Uuid>,
+) -> Result<Json<PinMemoryResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::MemoryWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Unpin: set pinned_at = NULL; ttl_expires_at intentionally NOT touched.
+    // Idempotent: already-unpinned items updated with no-op (pinned_at stays NULL).
+    let row: Option<MemoryPinRow> = sqlx::query_as(
+        "UPDATE memory_items \
+         SET pinned_at = NULL, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL \
+         RETURNING id, kind, scope_type, pinned_at, ttl_expires_at, updated_at",
+    )
+    .bind(memory_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (id, kind, scope_type, pinned_at, ttl_expires_at, updated_at) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemoryUnpinned,
+        principal.user_id,
+        group_id,
+        "memory_items",
+        id.to_string(),
+        json!({
+            "kind": kind,
+            "scope_type": scope_type,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(PinMemoryResponse {
+        id,
+        pinned_at,
+        ttl_expires_at,
+        updated_at,
+    }))
 }

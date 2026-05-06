@@ -22,6 +22,7 @@ use super::invites::AcceptInviteResponse;
 use super::me::MeResponse;
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
+    PinMemoryResponse,
 };
 use super::messages::{
     CreateThreadRequest, MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
@@ -96,6 +97,8 @@ impl Modify for SecurityAddon {
         super::memory::list_memory,
         super::memory::create_memory,
         super::memory::delete_memory,
+        super::memory::pin_memory,
+        super::memory::unpin_memory,
         super::tasks::create_task_list,
         super::tasks::list_task_lists,
         super::tasks::patch_task_list,
@@ -138,6 +141,7 @@ impl Modify for SecurityAddon {
         MemoryItemResponse,
         MemoryItemSummary,
         ListMemoryResponse,
+        PinMemoryResponse,
         CreateTaskListRequest,
         TaskListResponse,
         TaskListSummary,
