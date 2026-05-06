@@ -92,6 +92,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0066 | [GAR-516 — REST /v1 tasks slice 1: task-lists + tasks CRUD](0066-gar-516-tasks-api-slice1.md) | [GAR-516](https://linear.app/chatgpt25/issue/GAR-516) | ✅ Merged 2026-05-05 via PR #145 (`6432998`) |
 | 0067 | [GAR-519 — modeSidebar.js XSS: escapeHtml/escapeAttr on 7 sinks (mode.name/description/id)](0067-gar-519-modesidebar-xss.md) | [GAR-519](https://linear.app/chatgpt25/issue/GAR-519) | ✅ Merged 2026-05-05 (`ca744ce`, PR #149) |
 | 0068 | [GAR-518 — REST /v1 tasks slice 2: GET single task + task-list PATCH/DELETE](0068-gar-518-tasks-api-slice2.md) | [GAR-518](https://linear.app/chatgpt25/issue/GAR-518) | ✅ Merged 2026-05-05 via PR #150 (`58421d6`) |
+| 0071 | [GAR-523 — modeSidebar.js XSS: escapeAttr/escapeHtml on 3 sinks in showCustomModeForm](0071-gar-523-modesidebar-showmodeform-xss.md) | [GAR-523](https://linear.app/chatgpt25/issue/GAR-523) | 🟡 Em execução 2026-05-06 |
 
 ## Arquivos não-versionados
 
