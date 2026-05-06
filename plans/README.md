@@ -97,7 +97,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0071 | [GAR-523 — modeSidebar.js XSS: escapeAttr/escapeHtml on 3 sinks in showCustomModeForm](0071-gar-523-modesidebar-showmodeform-xss.md) | [GAR-523](https://linear.app/chatgpt25/issue/GAR-523) | ✅ Merged 2026-05-06 via PR #160 (`659f8184`) |
 | 0072 | [GAR-526 — REST /v1 memory slice 2: POST /v1/memory/{id}:pin + :unpin](0072-gar-526-memory-pin-slice2.md) | [GAR-526](https://linear.app/chatgpt25/issue/GAR-526) | ✅ Merged 2026-05-06 via PR #167 (`0558abb`) |
 | 0073 | [GAR-527 — openssl 0.10.78→0.10.79 + openssl-sys 0.9.114→0.9.115 security patch](0073-gar-527-openssl-0.10.79.md) | [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) | ✅ Merged 2026-05-06 via PR #168 (`8e41201`) |
-| 0074 | [GAR-528 — REST /v1 memory slice 3: GET + PATCH /v1/memory/{id}](0074-gar-528-memory-slice3-get-patch.md) | [GAR-528](https://linear.app/chatgpt25/issue/GAR-528) | 🟡 Em execução 2026-05-06 |
+| 0074 | [GAR-528 — REST /v1 memory slice 3: GET + PATCH /v1/memory/{id}](0074-gar-528-memory-slice3-get-patch.md) | [GAR-528](https://linear.app/chatgpt25/issue/GAR-528) | ✅ Merged 2026-05-06 via PR #171 (`63cec45`) |
 
 ## Arquivos não-versionados
 
