@@ -156,6 +156,22 @@ pub enum WorkspaceAuditAction {
     /// future compliance/retention worker task (Fase 5.3).
     MemoryDeleted,
 
+    /// A memory item was pinned via `POST /v1/memory/{id}:pin`
+    /// (plan 0072 / GAR-526, epic GAR-WS-MEMORY slice 2).
+    ///
+    /// `resource_type = "memory_items"`, `resource_id = "{memory_id}"`.
+    /// Metadata: `{ kind, scope_type }`. Pin sets `pinned_at = now()`
+    /// and clears `ttl_expires_at` so the item never expires.
+    MemoryPinned,
+
+    /// A memory item was unpinned via `POST /v1/memory/{id}:unpin`
+    /// (plan 0072 / GAR-526, epic GAR-WS-MEMORY slice 2).
+    ///
+    /// `resource_type = "memory_items"`, `resource_id = "{memory_id}"`.
+    /// Metadata: `{ kind, scope_type }`. Unpin sets `pinned_at = NULL`;
+    /// `ttl_expires_at` is NOT restored — caller must re-set it.
+    MemoryUnpinned,
+
     /// A task list was created via
     /// `POST /v1/groups/{group_id}/task-lists` (plan 0066 / GAR-516,
     /// epic ws-api tasks slice 1).
@@ -239,6 +255,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ThreadCreated => "thread.created",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
+            WorkspaceAuditAction::MemoryPinned => "memory.pinned",
+            WorkspaceAuditAction::MemoryUnpinned => "memory.unpinned",
             WorkspaceAuditAction::TaskListCreated => "task_list.created",
             WorkspaceAuditAction::TaskCreated => "task.created",
             WorkspaceAuditAction::TaskDeleted => "task.deleted",
@@ -350,6 +368,11 @@ mod tests {
             WorkspaceAuditAction::MemoryDeleted.as_str(),
             "memory.deleted"
         );
+        assert_eq!(WorkspaceAuditAction::MemoryPinned.as_str(), "memory.pinned");
+        assert_eq!(
+            WorkspaceAuditAction::MemoryUnpinned.as_str(),
+            "memory.unpinned"
+        );
         assert_eq!(
             WorkspaceAuditAction::TaskListCreated.as_str(),
             "task_list.created"
@@ -389,6 +412,8 @@ mod tests {
             WorkspaceAuditAction::ThreadCreated.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
+            WorkspaceAuditAction::MemoryPinned.as_str(),
+            WorkspaceAuditAction::MemoryUnpinned.as_str(),
             WorkspaceAuditAction::TaskListCreated.as_str(),
             WorkspaceAuditAction::TaskCreated.as_str(),
             WorkspaceAuditAction::TaskDeleted.as_str(),
