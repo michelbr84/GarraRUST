@@ -72,7 +72,7 @@ serial_test = "3"
 ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-rand = "0.9"
+rand = "0.10"
 # Plan personal-api-key-revogada-vectorized-matsumoto §Step 3 / Decisões §2:
 # `jsonwebtoken 10` requires explicit backend selection. We pick `rust_crypto`
 # because the workspace already depends on `password-hash`/`argon2`/`pbkdf2`/
