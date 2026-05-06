@@ -409,7 +409,16 @@ pub async fn list_memory(
         .into_iter()
         .take(effective_limit as usize)
         .map(
-            |(id, scope_type, scope_id, kind, content_preview, ttl_expires_at, pinned_at, created_at)| {
+            |(
+                id,
+                scope_type,
+                scope_id,
+                kind,
+                content_preview,
+                ttl_expires_at,
+                pinned_at,
+                created_at,
+            )| {
                 MemoryItemSummary {
                     id,
                     scope_type,

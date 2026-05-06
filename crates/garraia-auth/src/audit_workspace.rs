@@ -368,10 +368,7 @@ mod tests {
             WorkspaceAuditAction::MemoryDeleted.as_str(),
             "memory.deleted"
         );
-        assert_eq!(
-            WorkspaceAuditAction::MemoryPinned.as_str(),
-            "memory.pinned"
-        );
+        assert_eq!(WorkspaceAuditAction::MemoryPinned.as_str(), "memory.pinned");
         assert_eq!(
             WorkspaceAuditAction::MemoryUnpinned.as_str(),
             "memory.unpinned"
