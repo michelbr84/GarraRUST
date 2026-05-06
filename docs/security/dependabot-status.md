@@ -1,20 +1,26 @@
 # Dependabot Status
 
-> Last updated: **2026-04-30** (Green Security Baseline sprint).
+> Last updated: **2026-05-06** (health routine — GAR-527).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (this sprint) |
-|---|---|---|
-| Total Dependabot alerts open | 20 | **7** |
-| High severity | 1 | 1 |
-| Medium severity | 4 | 2 |
-| Low severity | 4 | 4 |
-| With Linear ownership | mixed | **7 / 7** |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-06 (today) |
+|---|---|---|---|
+| Total Dependabot alerts open | 20 | **7** | **6** (estimated — openssl advisory should auto-close on merge) |
+| High severity | 1 | 1 | 0 (if openssl advisory was the high) |
+| Medium severity | 4 | 2 | 2 |
+| Low severity | 4 | 4 | 4 |
+| With Linear ownership | mixed | **7 / 7** | **7 / 7** |
 
-## Closed in this sprint (2026-04-22 → 2026-04-30)
+## Closed 2026-05-06 (health routine)
+
+| Alert | Closure mechanism | Linear |
+|---|---|---|
+| `openssl` 0.10.78 → 0.10.79 + `openssl-sys` 0.9.114 → 0.9.115 security patch | plan 0073, health routine PR (Dependabot PR #166 was closed because it grouped a breaking `rand 0.8→0.10` major bump; this narrower follow-up applies only the openssl patch). | [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) |
+
+## Closed in sprint 2026-04-22 → 2026-04-30
 
 | Alert range | Closure mechanism | Linear |
 |---|---|---|
