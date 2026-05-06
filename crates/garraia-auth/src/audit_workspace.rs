@@ -205,6 +205,23 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ type }`. List is not physically removed;
     /// `archived_at` is set to `now()`.
     TaskListArchived,
+
+    /// A comment was created via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/comments`
+    /// (plan 0069 / GAR-520, epic GAR-WS-TASKS slice 3).
+    ///
+    /// `resource_type = "task_comments"`, `resource_id = "{comment_id}"`.
+    /// Metadata: `{ body_len }`. Body text is user-controlled PII — only
+    /// length is carried.
+    TaskCommentCreated,
+
+    /// A comment was soft-deleted via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}`
+    /// (plan 0069 / GAR-520, epic GAR-WS-TASKS slice 3).
+    ///
+    /// `resource_type = "task_comments"`, `resource_id = "{comment_id}"`.
+    /// Metadata: `{ body_len }`.
+    TaskCommentDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -227,6 +244,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskDeleted => "task.deleted",
             WorkspaceAuditAction::TaskListUpdated => "task_list.updated",
             WorkspaceAuditAction::TaskListArchived => "task_list.archived",
+            WorkspaceAuditAction::TaskCommentCreated => "task.comment.created",
+            WorkspaceAuditAction::TaskCommentDeleted => "task.comment.deleted",
         }
     }
 }
@@ -345,6 +364,14 @@ mod tests {
             WorkspaceAuditAction::TaskListArchived.as_str(),
             "task_list.archived"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskCommentCreated.as_str(),
+            "task.comment.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskCommentDeleted.as_str(),
+            "task.comment.deleted"
+        );
     }
 
     #[test]
@@ -367,6 +394,8 @@ mod tests {
             WorkspaceAuditAction::TaskDeleted.as_str(),
             WorkspaceAuditAction::TaskListUpdated.as_str(),
             WorkspaceAuditAction::TaskListArchived.as_str(),
+            WorkspaceAuditAction::TaskCommentCreated.as_str(),
+            WorkspaceAuditAction::TaskCommentDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
