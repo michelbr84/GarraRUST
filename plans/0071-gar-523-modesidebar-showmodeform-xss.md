@@ -1,6 +1,6 @@
 # Plan 0071 — GAR-523: modeSidebar.js XSS — escapeAttr/escapeHtml on 3 sinks in showCustomModeForm
 
-**Status:** 🟡 Em execução  
+**Status:** ✅ Merged `659f8184` (PR #160, 2026-05-06)  
 **Issue:** [GAR-523](https://linear.app/chatgpt25/issue/GAR-523)  
 **Branch:** `health/202605060045-modesidebar-showmodeform-xss`  
 **Created:** 2026-05-06 (Florida local time)
@@ -64,15 +64,15 @@ Revert the single commit on `modeSidebar.js`. No data migration needed.
 
 - [x] T1 — Create branch `health/202605060045-modesidebar-showmodeform-xss` off main
 - [x] T2 — Create this plan file
-- [ ] T3 — File Linear issue GAR-523 under GAR-486 umbrella
-- [ ] T4 — Update `plans/README.md` with plan 0071 row
-- [ ] T5 — Implement fix in `modeSidebar.js` (wrap 6 sinks with escapeAttr/escapeHtml)
-- [ ] T6 — Commit `fix(gateway): GAR-523 — modeSidebar.js XSS: escapeAttr/escapeHtml on 3 sinks in showCustomModeForm`
-- [ ] T7 — Push and open PR to main
-- [ ] T8 — CI green (all 18 checks pass)
-- [ ] T9 — Squash-merge via GitHub MCP
-- [ ] T10 — Mark GAR-523 Done in Linear
-- [ ] T11 — Update plan row with merged SHA + PR number
+- [x] T3 — File Linear issue GAR-523 under GAR-486 umbrella
+- [x] T4 — Update `plans/README.md` with plan 0071 row
+- [x] T5 — Implement fix in `modeSidebar.js` (wrap 6 sinks with escapeAttr/escapeHtml)
+- [x] T6 — Commit `fix(gateway): GAR-523 — modeSidebar.js XSS: escapeAttr/escapeHtml on 3 sinks in showCustomModeForm`
+- [x] T7 — Push and open PR to main
+- [x] T8 — CI green (all 18 checks pass)
+- [x] T9 — Squash-merge via GitHub MCP
+- [x] T10 — Mark GAR-523 Done in Linear
+- [x] T11 — Update plan row with merged SHA + PR number
 
 ## 9. Risk Register
 
