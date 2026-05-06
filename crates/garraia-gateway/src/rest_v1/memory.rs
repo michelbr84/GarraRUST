@@ -165,7 +165,7 @@ pub struct MemoryItemResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Response body for `POST /v1/memory/{id}:pin` and `:unpin`.
+/// Response body for `POST /v1/memory/{id}/pin` and `/unpin`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PinMemoryResponse {
     pub id: Uuid,
@@ -727,7 +727,7 @@ pub async fn delete_memory(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /v1/memory/{id}:pin` — pin a memory item (never expires).
+/// `POST /v1/memory/{id}/pin` — pin a memory item (never expires).
 ///
 /// Authz: caller must be a group member with `Action::MemoryWrite`.
 ///
@@ -746,7 +746,7 @@ pub async fn delete_memory(
 /// | Happy path                         | 200    |
 #[utoipa::path(
     post,
-    path = "/v1/memory/{id}:pin",
+    path = "/v1/memory/{id}/pin",
     params(
         ("id" = Uuid, Path, description = "Memory item UUID."),
     ),
@@ -830,7 +830,7 @@ pub async fn pin_memory(
     }))
 }
 
-/// `POST /v1/memory/{id}:unpin` — remove pin from a memory item.
+/// `POST /v1/memory/{id}/unpin` — remove pin from a memory item.
 ///
 /// Authz: caller must be a group member with `Action::MemoryWrite`.
 ///
@@ -849,7 +849,7 @@ pub async fn pin_memory(
 /// | Happy path                         | 200    |
 #[utoipa::path(
     post,
-    path = "/v1/memory/{id}:unpin",
+    path = "/v1/memory/{id}/unpin",
     params(
         ("id" = Uuid, Path, description = "Memory item UUID."),
     ),

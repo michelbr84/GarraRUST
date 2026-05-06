@@ -289,8 +289,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/memory/{id}", delete(memory::delete_memory))
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin.
-                .route("/v1/memory/{id}:pin", post(memory::pin_memory))
-                .route("/v1/memory/{id}:unpin", post(memory::unpin_memory))
+                .route("/v1/memory/{id}/pin", post(memory::pin_memory))
+                .route("/v1/memory/{id}/unpin", post(memory::unpin_memory))
                 // Plan 0066/0067 (GAR-516/GAR-518) — tasks API slices 1+2.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
@@ -371,8 +371,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/memory/{id}", delete(unconfigured_handler))
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, fail-soft 503.
-                .route("/v1/memory/{id}:pin", post(unconfigured_handler))
-                .route("/v1/memory/{id}:unpin", post(unconfigured_handler))
+                .route("/v1/memory/{id}/pin", post(unconfigured_handler))
+                .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
                 // Plan 0066/0067/0069 (GAR-516/GAR-518/GAR-520) — tasks API slices 1+2+3, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
@@ -458,8 +458,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/memory/{id}", delete(unconfigured_handler))
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, no-auth stub.
-                .route("/v1/memory/{id}:pin", post(unconfigured_handler))
-                .route("/v1/memory/{id}:unpin", post(unconfigured_handler))
+                .route("/v1/memory/{id}/pin", post(unconfigured_handler))
+                .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
                 // Plan 0066/0067/0069 (GAR-516/GAR-518/GAR-520) — tasks API slices 1+2+3, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
