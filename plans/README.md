@@ -92,8 +92,9 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0066 | [GAR-516 — REST /v1 tasks slice 1: task-lists + tasks CRUD](0066-gar-516-tasks-api-slice1.md) | [GAR-516](https://linear.app/chatgpt25/issue/GAR-516) | ✅ Merged 2026-05-05 via PR #145 (`6432998`) |
 | 0067 | [GAR-519 — modeSidebar.js XSS: escapeHtml/escapeAttr on 7 sinks (mode.name/description/id)](0067-gar-519-modesidebar-xss.md) | [GAR-519](https://linear.app/chatgpt25/issue/GAR-519) | ✅ Merged 2026-05-05 (`ca744ce`, PR #149) |
 | 0068 | [GAR-518 — REST /v1 tasks slice 2: GET single task + task-list PATCH/DELETE](0068-gar-518-tasks-api-slice2.md) | [GAR-518](https://linear.app/chatgpt25/issue/GAR-518) | ✅ Merged 2026-05-05 via PR #150 (`58421d6`) |
-| 0069 | [GAR-520 — REST /v1 tasks slice 3: task comments API (POST/GET/DELETE)](0069-gar-520-task-comments-api.md) | [GAR-520](https://linear.app/chatgpt25/issue/GAR-520) | 🟡 Em execução 2026-05-05 (garra-routine) |
-| 0070 | [GAR-522 — REST /v1 audit slice 1: GET /v1/groups/{group_id}/audit](0070-gar-522-audit-api-slice1.md) | [GAR-522](https://linear.app/chatgpt25/issue/GAR-522) | 🟡 Em execução 2026-05-05 (garra-routine) |
+| 0069 | [GAR-520 — REST /v1 tasks slice 3: task comments API (POST/GET/DELETE)](0069-gar-520-task-comments-api.md) | [GAR-520](https://linear.app/chatgpt25/issue/GAR-520) | ✅ Merged 2026-05-06 via PR #163 (`64927a7`) |
+| 0070 | [GAR-522 — REST /v1 audit slice 1: GET /v1/groups/{group_id}/audit](0070-gar-522-audit-api-slice1.md) | [GAR-522](https://linear.app/chatgpt25/issue/GAR-522) | 🟡 Em execução 2026-05-06 (garra-routine) |
+| 0071 | [GAR-523 — modeSidebar.js XSS: escapeAttr/escapeHtml on 3 sinks in showCustomModeForm](0071-gar-523-modesidebar-showmodeform-xss.md) | [GAR-523](https://linear.app/chatgpt25/issue/GAR-523) | ✅ Merged 2026-05-06 via PR #160 (`659f8184`) |
 
 ## Arquivos não-versionados
 
