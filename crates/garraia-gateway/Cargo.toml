@@ -229,6 +229,16 @@ name = "rest_v1_memory"
 path = "tests/rest_v1_memory.rs"
 required-features = ["test-helpers"]
 
+# Plan 0074 (GAR-528) — memory slice 3: GET + PATCH /v1/memory/{id}.
+# 9 bundled scenarios (GI1-GI3 GET + PA1-PA6 PATCH) covering happy paths,
+# 404-not-found, and cross-tenant isolation. Feature-gated so plain
+# `cargo test -p garraia-gateway` (without --features test-helpers) skips
+# compilation cleanly.
+[[test]]
+name = "rest_v1_memory_get_patch"
+path = "tests/rest_v1_memory_get_patch.rs"
+required-features = ["test-helpers"]
+
 # Plan 0065 — GAR-516 tasks API slice 1: task-lists + tasks CRUD.
 # 12 bundled scenarios covering create/list/patch/delete for task-lists
 # and tasks, plus cross-tenant isolation and validation error cases.

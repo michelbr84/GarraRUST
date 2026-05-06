@@ -1,9 +1,11 @@
-//! `/v1/memory` handlers (plan 0062, GAR-514, epic GAR-WS-MEMORY slice 1).
+//! `/v1/memory` handlers (plans 0062/0072/0074, GAR-514/526/528, epic GAR-WS-MEMORY).
 //!
-//! Three endpoints on the `garraia_app` RLS-enforced pool:
-//! - `GET /v1/memory` — cursor-paginated list with scope filtering
-//! - `POST /v1/memory` — create memory item
-//! - `DELETE /v1/memory/{id}` — soft-delete
+//! Five endpoints on the `garraia_app` RLS-enforced pool:
+//! - `GET /v1/memory` — cursor-paginated list with scope filtering (slice 1)
+//! - `POST /v1/memory` — create memory item (slice 1)
+//! - `DELETE /v1/memory/{id}` — soft-delete (slice 1)
+//! - `GET /v1/memory/{id}` — fetch single item with full content (slice 3)
+//! - `PATCH /v1/memory/{id}` — partial update of mutable fields (slice 3)
 //!
 //! ## Tenant-context protocol
 //!
@@ -83,6 +85,28 @@ type MemoryInsertRow = (
     Uuid,
     Option<Uuid>,
     Option<Uuid>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+);
+
+/// Full row returned by `GET /v1/memory/{id}` and `PATCH /v1/memory/{id}`.
+/// (id, scope_type, scope_id, group_id, created_by, created_by_label,
+///  kind, content, sensitivity, source_chat_id, source_message_id,
+///  ttl_expires_at, pinned_at, created_at, updated_at)
+type MemoryFullRow = (
+    Uuid,
+    String,
+    Uuid,
+    Option<Uuid>,
+    Option<Uuid>,
+    String,
+    String,
+    String,
+    String,
+    Option<Uuid>,
+    Option<Uuid>,
+    Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     DateTime<Utc>,
     DateTime<Utc>,
@@ -826,6 +850,358 @@ pub async fn pin_memory(
         id,
         pinned_at,
         ttl_expires_at,
+        updated_at,
+    }))
+}
+
+/// `GET /v1/memory/{id}` — fetch a single memory item with full content.
+///
+/// Authz: caller must be a group member with `Action::MemoryRead`.
+/// `sensitivity='secret'` items are treated as 404. Deleted items are 404.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Item not found / cross-tenant      | 404    |
+/// | Item deleted or secret             | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/memory/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Memory item UUID."),
+    ),
+    responses(
+        (status = 200, description = "Memory item.", body = MemoryItemResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Memory item not found, deleted, or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_memory(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(memory_id): Path<Uuid>,
+) -> Result<Json<MemoryItemResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::MemoryRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Full-row SELECT. `sensitivity <> 'secret'` and `deleted_at IS NULL` applied
+    // as security filters (invariants 1 + 2 from plan 0074).
+    let row: Option<MemoryFullRow> = sqlx::query_as(
+        "SELECT id, scope_type, scope_id, group_id, created_by, \
+                created_by_label, kind, content, sensitivity, \
+                source_chat_id, source_message_id, \
+                ttl_expires_at, pinned_at, created_at, updated_at \
+         FROM memory_items \
+         WHERE id = $1 \
+           AND deleted_at IS NULL \
+           AND sensitivity <> 'secret' \
+           AND (ttl_expires_at IS NULL OR ttl_expires_at > now())",
+    )
+    .bind(memory_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (
+        id,
+        scope_type,
+        scope_id,
+        returned_group_id,
+        created_by,
+        created_by_label,
+        kind,
+        content,
+        sensitivity,
+        source_chat_id,
+        source_message_id,
+        ttl_expires_at,
+        pinned_at,
+        created_at,
+        updated_at,
+    ) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    Ok(Json(MemoryItemResponse {
+        id,
+        scope_type,
+        scope_id,
+        group_id: returned_group_id,
+        created_by,
+        created_by_label,
+        kind,
+        content,
+        sensitivity,
+        source_chat_id,
+        source_message_id,
+        ttl_expires_at,
+        pinned_at,
+        created_at,
+        updated_at,
+    }))
+}
+
+/// Request body for `PATCH /v1/memory/{id}`.
+///
+/// All fields are optional; at least one must be present.
+/// Immutable fields (`scope_type`, `scope_id`, `group_id`, `created_by`, etc.)
+/// are NOT accepted — `deny_unknown_fields` rejects them with 400.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchMemoryRequest {
+    /// Update memory content. 1–10,000 characters.
+    pub content: Option<String>,
+    /// Update kind. One of `"fact"`, `"preference"`, `"note"`, `"reminder"`, `"rule"`, `"profile"`.
+    pub kind: Option<String>,
+    /// Update visibility tier. One of `"public"`, `"group"`, `"private"`.
+    /// `"secret"` may not be set via this endpoint.
+    pub sensitivity: Option<String>,
+    /// Set a new TTL. Must be in the future. Omit or send `null` to leave
+    /// the existing TTL unchanged. To clear TTL, use the pin endpoint (which
+    /// clears TTL atomically) then unpin.
+    /// Has no effect on `pinned_at` — pin status is managed via pin/unpin endpoints.
+    pub ttl_expires_at: Option<DateTime<Utc>>,
+}
+
+impl PatchMemoryRequest {
+    pub fn is_empty(&self) -> bool {
+        self.content.is_none()
+            && self.kind.is_none()
+            && self.sensitivity.is_none()
+            && self.ttl_expires_at.is_none()
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(ref kind) = self.kind
+            && !ALLOWED_KINDS.contains(&kind.as_str())
+        {
+            return Err("kind must be one of: fact, preference, note, reminder, rule, profile");
+        }
+        if let Some(ref sensitivity) = self.sensitivity
+            && !ALLOWED_SENSITIVITIES.contains(&sensitivity.as_str())
+        {
+            return Err("sensitivity must be one of: public, group, private");
+        }
+        if let Some(ref content) = self.content {
+            let chars = content.chars().count();
+            if chars == 0 {
+                return Err("content must not be empty");
+            }
+            if chars > MAX_CONTENT_CHARS {
+                return Err("content exceeds 10,000 character limit");
+            }
+        }
+        if self.ttl_expires_at.is_some_and(|ttl| ttl <= Utc::now()) {
+            return Err("ttl_expires_at must be in the future");
+        }
+        Ok(())
+    }
+}
+
+/// `PATCH /v1/memory/{id}` — partial update of mutable fields.
+///
+/// Authz: caller must be a group member with `Action::MemoryWrite`.
+/// At least one field must be provided. Empty body → 400.
+/// `sensitivity='secret'` items are treated as 404.
+///
+/// Mutable fields: `content`, `kind`, `sensitivity`, `ttl_expires_at`.
+/// Immutable fields are rejected by `deny_unknown_fields` on the DTO.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Item not found / cross-tenant      | 404    |
+/// | Item deleted or secret             | 404    |
+/// | Empty or invalid body              | 400    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    patch,
+    path = "/v1/memory/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Memory item UUID."),
+    ),
+    request_body = PatchMemoryRequest,
+    responses(
+        (status = 200, description = "Memory item updated.", body = MemoryItemResponse),
+        (status = 400, description = "Empty body or validation error.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Memory item not found, deleted, or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_memory(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(memory_id): Path<Uuid>,
+    Json(body): Json<PatchMemoryRequest>,
+) -> Result<Json<MemoryItemResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::MemoryWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    if body.is_empty() {
+        return Err(RestError::BadRequest(
+            "PATCH body must contain at least one mutable field".into(),
+        ));
+    }
+
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Fetch existing item for audit metadata + existence check.
+    // `sensitivity <> 'secret'` and `deleted_at IS NULL` are security filters.
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "SELECT kind, scope_type \
+         FROM memory_items \
+         WHERE id = $1 AND deleted_at IS NULL AND sensitivity <> 'secret'",
+    )
+    .bind(memory_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (existing_kind, scope_type) = match existing {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // `ttl_set` flag: true when caller explicitly included `ttl_expires_at` in the
+    // JSON body (even as `null` to clear it). This lets COALESCE distinguish
+    // "caller didn't send the field" from "caller sent null to clear TTL".
+    let ttl_set = body.ttl_expires_at.is_some();
+
+    let updated_row: MemoryFullRow = sqlx::query_as(
+        "UPDATE memory_items \
+         SET content        = COALESCE($2, content), \
+             kind           = COALESCE($3, kind), \
+             sensitivity    = COALESCE($4, sensitivity), \
+             ttl_expires_at = CASE WHEN $5 THEN $6 ELSE ttl_expires_at END, \
+             updated_at     = now() \
+         WHERE id = $1 \
+           AND deleted_at IS NULL \
+           AND sensitivity <> 'secret' \
+         RETURNING id, scope_type, scope_id, group_id, created_by, \
+                   created_by_label, kind, content, sensitivity, \
+                   source_chat_id, source_message_id, \
+                   ttl_expires_at, pinned_at, created_at, updated_at",
+    )
+    .bind(memory_id)
+    .bind(body.content.as_deref())
+    .bind(body.kind.as_deref())
+    .bind(body.sensitivity.as_deref())
+    .bind(ttl_set)
+    .bind(body.ttl_expires_at)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (
+        id,
+        upd_scope_type,
+        scope_id,
+        returned_group_id,
+        created_by,
+        created_by_label,
+        new_kind,
+        content,
+        sensitivity,
+        source_chat_id,
+        source_message_id,
+        ttl_expires_at,
+        pinned_at,
+        created_at,
+        updated_at,
+    ) = updated_row;
+
+    let content_len = content.chars().count();
+
+    // Audit: structural metadata only — no content (PII).
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MemoryUpdated,
+        principal.user_id,
+        group_id,
+        "memory_items",
+        id.to_string(),
+        json!({
+            "content_len": content_len,
+            "kind": new_kind,
+            "scope_type": scope_type,
+            "previous_kind": existing_kind,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(MemoryItemResponse {
+        id,
+        scope_type: upd_scope_type,
+        scope_id,
+        group_id: returned_group_id,
+        created_by,
+        created_by_label,
+        kind: new_kind,
+        content,
+        sensitivity,
+        source_chat_id,
+        source_message_id,
+        ttl_expires_at,
+        pinned_at,
+        created_at,
         updated_at,
     }))
 }
