@@ -239,6 +239,14 @@ name = "rest_v1_tasks"
 path = "tests/rest_v1_tasks.rs"
 required-features = ["test-helpers"]
 
+# Plan 0070 (GAR-522) — audit API slice 1: GET /v1/groups/{group_id}/audit.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_audit"
+path = "tests/rest_v1_audit.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
