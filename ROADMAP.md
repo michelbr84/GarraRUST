@@ -418,6 +418,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `DELETE /v1/memory/{id}` — plan 0062 / [GAR-514](https://linear.app/chatgpt25/issue/GAR-514), implementado 2026-05-05 (Florida)
 - [x] `POST /v1/memory/{id}/pin` — plan 0072 / [GAR-526](https://linear.app/chatgpt25/issue/GAR-526), implementado 2026-05-06 (Florida)
 - [x] `POST /v1/memory/{id}/unpin` — plan 0072 / [GAR-526](https://linear.app/chatgpt25/issue/GAR-526), implementado 2026-05-06 (Florida)
+- [x] `GET /v1/memory/{id}` — plan 0074 / [GAR-528](https://linear.app/chatgpt25/issue/GAR-528), implementado 2026-05-06 (Florida)
+- [x] `PATCH /v1/memory/{id}` — plan 0074 / [GAR-528](https://linear.app/chatgpt25/issue/GAR-528), implementado 2026-05-06 (Florida)
 
 **Busca unificada**
 
