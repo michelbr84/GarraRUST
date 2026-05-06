@@ -504,17 +504,21 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **API REST `/v1`:**
 
-- [ ] `POST /v1/groups/{group_id}/task-lists`
-- [ ] `GET /v1/groups/{group_id}/task-lists`
-- [ ] `POST /v1/task-lists/{list_id}/tasks`
-- [ ] `GET /v1/task-lists/{list_id}/tasks?status=...&assignee=...&cursor=...`
-- [ ] `GET /v1/tasks/{task_id}`
-- [ ] `PATCH /v1/tasks/{task_id}` (status, priority, assignees, due_at, labels)
-- [ ] `POST /v1/tasks/{task_id}/comments`
-- [ ] `POST /v1/tasks/{task_id}/attachments`
-- [ ] `POST /v1/tasks/{task_id}:move` (reordenar/mudar lista)
-- [ ] `DELETE /v1/tasks/{task_id}` (soft delete)
-- [ ] WebSocket `/v1/task-lists/{list_id}/stream` para updates em tempo real (kanban colaborativo)
+- [x] `POST /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
+- [x] `GET /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
+- [x] `PATCH /v1/groups/{group_id}/task-lists/{list_id}` — plan 0066 / GAR-516 ✅
+- [x] `DELETE /v1/groups/{group_id}/task-lists/{list_id}` (archive, idempotente) — plan 0066 / GAR-516 ✅
+- [x] `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks` — plan 0066 / GAR-516 ✅
+- [x] `GET /v1/groups/{group_id}/task-lists/{list_id}/tasks?status=...&cursor=...` — plan 0066 / GAR-516 ✅
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}` — plan 0068 / GAR-518 ✅
+- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}` (status, priority, title, due_at) — plan 0068 / GAR-518 ✅
+- [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}` (soft delete) — plan 0068 / GAR-518 ✅
+- [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / GAR-520 (em execução 2026-05-05)
+- [ ] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / GAR-520 (em execução 2026-05-05)
+- [ ] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / GAR-520 (em execução 2026-05-05)
+- [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
+- [ ] `POST /v1/groups/{group_id}/tasks/{task_id}:move` (reordenar/mudar lista)
+- [ ] WebSocket `/v1/groups/{group_id}/task-lists/{list_id}/stream` para updates em tempo real (kanban colaborativo)
 
 **RBAC:**
 
