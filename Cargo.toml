@@ -97,7 +97,7 @@ teloxide = { version = "0.17", default-features = false, features = ["rustls", "
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "0.16" }
+rmcp = { version = "1.4" }
 
 # System / OS interop
 libc = "0.2"
