@@ -257,6 +257,13 @@ name = "rest_v1_audit"
 path = "tests/rest_v1_audit.rs"
 required-features = ["test-helpers"]
 
+# Plan 0076 (GAR-530) — individual chat ops + member CRUD integration tests.
+# Feature-gated like all other harness tests.
+[[test]]
+name = "rest_v1_chat_mgmt"
+path = "tests/rest_v1_chat_mgmt.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

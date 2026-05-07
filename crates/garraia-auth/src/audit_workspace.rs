@@ -248,6 +248,40 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "task_comments"`, `resource_id = "{comment_id}"`.
     /// Metadata: `{ body_len }`.
     TaskCommentDeleted,
+
+    /// A chat was updated (name/topic changed) via
+    /// `PATCH /v1/chats/{chat_id}` (plan 0076 / GAR-530,
+    /// epic GAR-WS-CHAT slice 4).
+    ///
+    /// `resource_type = "chats"`, `resource_id = "{chat_id}"`.
+    /// Metadata: `{ changed_name, changed_topic }`. Boolean flags only —
+    /// new values are PII-adjacent (chat names may be project codenames).
+    ChatUpdated,
+
+    /// A chat was soft-archived via
+    /// `DELETE /v1/chats/{chat_id}` (plan 0076 / GAR-530,
+    /// epic GAR-WS-CHAT slice 4).
+    ///
+    /// `resource_type = "chats"`, `resource_id = "{chat_id}"`.
+    /// Metadata: `{ type }`. The chat row is not removed — `archived_at`
+    /// is set to `now()`.
+    ChatArchived,
+
+    /// A user was added to a chat via
+    /// `POST /v1/chats/{chat_id}/members` (plan 0076 / GAR-530,
+    /// epic GAR-WS-CHAT slice 4).
+    ///
+    /// `resource_type = "chat_members"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{ role }`.
+    ChatMemberAdded,
+
+    /// A user was removed from a chat via
+    /// `DELETE /v1/chats/{chat_id}/members/{user_id}` (plan 0076 / GAR-530,
+    /// epic GAR-WS-CHAT slice 4).
+    ///
+    /// `resource_type = "chat_members"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{ role }`.
+    ChatMemberRemoved,
 }
 
 impl WorkspaceAuditAction {
@@ -275,6 +309,10 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskListArchived => "task_list.archived",
             WorkspaceAuditAction::TaskCommentCreated => "task.comment.created",
             WorkspaceAuditAction::TaskCommentDeleted => "task.comment.deleted",
+            WorkspaceAuditAction::ChatUpdated => "chat.updated",
+            WorkspaceAuditAction::ChatArchived => "chat.archived",
+            WorkspaceAuditAction::ChatMemberAdded => "chat.member.added",
+            WorkspaceAuditAction::ChatMemberRemoved => "chat.member.removed",
         }
     }
 }
@@ -406,6 +444,16 @@ mod tests {
             WorkspaceAuditAction::TaskCommentDeleted.as_str(),
             "task.comment.deleted"
         );
+        assert_eq!(WorkspaceAuditAction::ChatUpdated.as_str(), "chat.updated");
+        assert_eq!(WorkspaceAuditAction::ChatArchived.as_str(), "chat.archived");
+        assert_eq!(
+            WorkspaceAuditAction::ChatMemberAdded.as_str(),
+            "chat.member.added"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::ChatMemberRemoved.as_str(),
+            "chat.member.removed"
+        );
     }
 
     #[test]
@@ -432,6 +480,10 @@ mod tests {
             WorkspaceAuditAction::TaskListArchived.as_str(),
             WorkspaceAuditAction::TaskCommentCreated.as_str(),
             WorkspaceAuditAction::TaskCommentDeleted.as_str(),
+            WorkspaceAuditAction::ChatUpdated.as_str(),
+            WorkspaceAuditAction::ChatArchived.as_str(),
+            WorkspaceAuditAction::ChatMemberAdded.as_str(),
+            WorkspaceAuditAction::ChatMemberRemoved.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

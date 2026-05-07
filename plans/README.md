@@ -99,6 +99,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0073 | [GAR-527 — openssl 0.10.78→0.10.79 + openssl-sys 0.9.114→0.9.115 security patch](0073-gar-527-openssl-0.10.79.md) | [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) | ✅ Merged 2026-05-06 via PR #168 (`8e41201`) |
 | 0074 | [GAR-528 — REST /v1 memory slice 3: GET + PATCH /v1/memory/{id}](0074-gar-528-memory-slice3-get-patch.md) | [GAR-528](https://linear.app/chatgpt25/issue/GAR-528) | ✅ Merged 2026-05-06 via PR #171 (`63cec45`) |
 | 0075 | [GAR-529 — tauri 2.10.3→2.11.1 security upgrade (ACL enforcement for remote origins)](0075-gar-529-tauri-2.11.1-acl-enforcement.md) | [GAR-529](https://linear.app/chatgpt25/issue/GAR-529) | ✅ Merged 2026-05-07 via PR #177 (`ba76287`) |
+| 0076 | [GAR-530 — Chat management slice 4: individual chat ops + member CRUD](0076-gar-530-chat-mgmt-slice4.md) | [GAR-530](https://linear.app/chatgpt25/issue/GAR-530) | ⏳ In Progress |
 
 ## Arquivos não-versionados
 
