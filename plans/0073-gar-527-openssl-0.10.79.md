@@ -2,7 +2,7 @@
 
 **Linear issue:** [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) — "openssl 0.10.78 → 0.10.79 security patch (Dependabot PR #166 follow-up)"
 
-**Status:** ⏳ In Progress — health routine, 2026-05-06 (Florida).
+**Status:** ✅ Merged — PR #168 (`8e41201`), 2026-05-06 (Florida).
 
 **Goal:** Apply the openssl 0.10.78 → 0.10.79 + openssl-sys 0.9.114 → 0.9.115 lockfile-only bump that was identified as a Dependabot security update (GH Dependabot PR #166). The grouped PR was intentionally closed by the repo owner because it included a breaking rand 0.8/0.9 → 0.10 major-version upgrade; the owner explicitly requested a narrower follow-up PR with just the openssl patch.
 
@@ -46,14 +46,14 @@
 
 - [x] T1: Create health/ branch `health/202505061650-openssl-0.10.79` from main
 - [x] T2: Create this plan file + README row + commit `docs(plans): add plan 0073 for GAR-527 openssl 0.10.79 security patch`
-- [ ] T3: Run `cargo update -p openssl --precise 0.10.79`; verify only openssl+openssl-sys change via `git diff Cargo.lock`
-- [ ] T4: Run `cargo build --workspace --exclude garraia-desktop` to confirm no compilation errors
-- [ ] T5: Run `cargo test --workspace --exclude garraia-desktop --no-run` to confirm test artifacts compile
-- [ ] T6: Run `cargo audit --no-fetch` to confirm openssl advisory no longer fires (or remains in allowlist if advisory not yet in local DB)
-- [ ] T7: Commit `fix(deps): GAR-527 — bump openssl 0.10.78→0.10.79 + openssl-sys 0.9.114→0.9.115 (security patch)`
-- [ ] T8: Update `docs/security/dependabot-status.md` snapshot row; commit
-- [ ] T9: Push + open PR via GitHub MCP; poll CI until green; squash-merge
-- [ ] T10: Mark GAR-527 Done in Linear; update plans/README.md row
+- [x] T3: Run `cargo update -p openssl --precise 0.10.79`; verify only openssl+openssl-sys change via `git diff Cargo.lock`
+- [x] T4: Run `cargo build --workspace --exclude garraia-desktop` to confirm no compilation errors
+- [x] T5: Run `cargo test --workspace --exclude garraia-desktop --no-run` to confirm test artifacts compile
+- [x] T6: Run `cargo audit --no-fetch` to confirm openssl advisory no longer fires (or remains in allowlist if advisory not yet in local DB)
+- [x] T7: Commit `fix(deps): GAR-527 — bump openssl 0.10.78→0.10.79 + openssl-sys 0.9.114→0.9.115 (security patch)`
+- [x] T8: Update `docs/security/dependabot-status.md` snapshot row; commit
+- [x] T9: Push + open PR via GitHub MCP; poll CI until green; squash-merge
+- [x] T10: Mark GAR-527 Done in Linear; update plans/README.md row
 
 ---
 
