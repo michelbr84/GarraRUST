@@ -299,6 +299,39 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "task_assignees"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ assignee_user_id_len: 36 }`.
     TaskAssigneeRemoved,
+
+    /// A task label was created via
+    /// `POST /v1/groups/{group_id}/task-labels` (plan 0078 / GAR-536,
+    /// epic GAR-WS-TASKS slice 5).
+    ///
+    /// `resource_type = "task_labels"`, `resource_id = "{label_id}"`.
+    /// Metadata: `{ name_len: N, color }` — no user-visible label name.
+    TaskLabelCreated,
+
+    /// A task label was deleted via
+    /// `DELETE /v1/groups/{group_id}/task-labels/{label_id}` (plan 0078 / GAR-536,
+    /// epic GAR-WS-TASKS slice 5).
+    ///
+    /// CASCADE removes all `task_label_assignments` referencing this label.
+    /// `resource_type = "task_labels"`, `resource_id = "{label_id}"`.
+    /// Metadata: `{ assignments_cascade: true }`.
+    TaskLabelDeleted,
+
+    /// A label was assigned to a task via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/labels` (plan 0078 / GAR-536,
+    /// epic GAR-WS-TASKS slice 5).
+    ///
+    /// `resource_type = "task_label_assignments"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ label_id_len: 36 }`.
+    TaskLabelAssigned,
+
+    /// A label was removed from a task via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}` (plan 0078 / GAR-536,
+    /// epic GAR-WS-TASKS slice 5).
+    ///
+    /// `resource_type = "task_label_assignments"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ label_id_len: 36 }`.
+    TaskLabelRemoved,
 }
 
 impl WorkspaceAuditAction {
@@ -332,6 +365,10 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ChatMemberRemoved => "chat.member.removed",
             WorkspaceAuditAction::TaskAssigneeAdded => "task.assignee.added",
             WorkspaceAuditAction::TaskAssigneeRemoved => "task.assignee.removed",
+            WorkspaceAuditAction::TaskLabelCreated => "task_label.created",
+            WorkspaceAuditAction::TaskLabelDeleted => "task_label.deleted",
+            WorkspaceAuditAction::TaskLabelAssigned => "task.label.assigned",
+            WorkspaceAuditAction::TaskLabelRemoved => "task.label.removed",
         }
     }
 }
@@ -481,6 +518,22 @@ mod tests {
             WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
             "task.assignee.removed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskLabelCreated.as_str(),
+            "task_label.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskLabelDeleted.as_str(),
+            "task_label.deleted"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskLabelAssigned.as_str(),
+            "task.label.assigned"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskLabelRemoved.as_str(),
+            "task.label.removed"
+        );
     }
 
     #[test]
@@ -513,6 +566,10 @@ mod tests {
             WorkspaceAuditAction::ChatMemberRemoved.as_str(),
             WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
             WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
+            WorkspaceAuditAction::TaskLabelCreated.as_str(),
+            WorkspaceAuditAction::TaskLabelDeleted.as_str(),
+            WorkspaceAuditAction::TaskLabelAssigned.as_str(),
+            WorkspaceAuditAction::TaskLabelRemoved.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
