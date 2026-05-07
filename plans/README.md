@@ -101,7 +101,8 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0075 | [GAR-529 — tauri 2.10.3→2.11.1 security upgrade (ACL enforcement for remote origins)](0075-gar-529-tauri-2.11.1-acl-enforcement.md) | [GAR-529](https://linear.app/chatgpt25/issue/GAR-529) | ✅ Merged 2026-05-07 via PR #177 (`ba76287`) |
 | 0076 | [GAR-530 — Chat management slice 4: individual chat ops + member CRUD](0076-gar-530-chat-mgmt-slice4.md) | [GAR-530](https://linear.app/chatgpt25/issue/GAR-530) | ✅ Merged 2026-05-07 via PR #181 (`b48a356`) |
 | 0077 | [GAR-533 — REST /v1 tasks slice 4: task assignees API (POST/GET/DELETE)](0077-gar-533-task-assignees-api.md) | [GAR-533](https://linear.app/chatgpt25/issue/GAR-533) | ✅ Merged 2026-05-07 via PR #184 (`22c423c`) |
-| 0078 | [GAR-536 — REST /v1 tasks slice 5: task labels API (POST/GET/DELETE label CRUD + assignment)](0078-gar-536-task-labels-api.md) | [GAR-536](https://linear.app/chatgpt25/issue/GAR-536) | ⏳ In Progress |
+| 0078 | [GAR-536 — REST /v1 tasks slice 5: task labels API (POST/GET/DELETE label CRUD + assignment)](0078-gar-536-task-labels-api.md) | [GAR-536](https://linear.app/chatgpt25/issue/GAR-536) | ✅ Merged 2026-05-07 via PR #189 (`7fc5cb3`) |
+| 0079 | [GAR-539 — REST /v1 tasks slice 6: task subscriptions API (POST/DELETE/GET)](0079-gar-539-task-subscriptions-api.md) | [GAR-539](https://linear.app/chatgpt25/issue/GAR-539) | ✅ Merged 2026-05-07 via PR #199 (`b6c60b0`) |
 
 ## Arquivos não-versionados
 
