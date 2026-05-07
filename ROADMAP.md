@@ -516,9 +516,12 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}` — plan 0068 / GAR-518 ✅
 - [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}` (status, priority, title, due_at) — plan 0068 / GAR-518 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}` (soft delete) — plan 0068 / GAR-518 ✅
-- [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / GAR-520 (em execução 2026-05-05)
-- [ ] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / GAR-520 (em execução 2026-05-05)
-- [ ] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / GAR-520 (em execução 2026-05-05)
+- [x] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / [GAR-520](https://linear.app/chatgpt25/issue/GAR-520), implementado 2026-05-06 (Florida)
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / [GAR-520](https://linear.app/chatgpt25/issue/GAR-520), implementado 2026-05-06 (Florida)
+- [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / [GAR-520](https://linear.app/chatgpt25/issue/GAR-520), implementado 2026-05-06 (Florida)
+- [x] `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / [GAR-539](https://linear.app/chatgpt25/issue/GAR-539), implementado 2026-05-07 (Florida)
+- [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / [GAR-539](https://linear.app/chatgpt25/issue/GAR-539), implementado 2026-05-07 (Florida)
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / [GAR-539](https://linear.app/chatgpt25/issue/GAR-539), implementado 2026-05-07 (Florida)
 - [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
 - [ ] `POST /v1/groups/{group_id}/tasks/{task_id}:move` (reordenar/mudar lista)
 - [ ] WebSocket `/v1/groups/{group_id}/task-lists/{list_id}/stream` para updates em tempo real (kanban colaborativo)

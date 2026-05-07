@@ -2636,3 +2636,300 @@ fn is_valid_hex_color(color: &str) -> bool {
     }
     bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
 }
+
+// ─── Slice 6 (plan 0079 / GAR-539): Task Subscriptions ───────────────────────
+
+/// DB row for a `task_subscriptions` entry.
+#[derive(sqlx::FromRow)]
+struct SubscriptionRow {
+    task_id: Uuid,
+    user_id: Uuid,
+    subscribed_at: DateTime<Utc>,
+    muted: bool,
+}
+
+/// Public response shape for a subscription record.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SubscriptionResponse {
+    pub task_id: Uuid,
+    pub user_id: Uuid,
+    pub subscribed_at: DateTime<Utc>,
+    pub muted: bool,
+}
+
+impl From<SubscriptionRow> for SubscriptionResponse {
+    fn from(r: SubscriptionRow) -> Self {
+        Self {
+            task_id: r.task_id,
+            user_id: r.user_id,
+            subscribed_at: r.subscribed_at,
+            muted: r.muted,
+        }
+    }
+}
+
+/// `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — subscribe caller to a task.
+///
+/// The calling user is subscribed to change notifications for the task.
+/// Returns 201 on success, 409 if already subscribed, 404 if task not found
+/// in this group. Authz: `Action::TasksRead` (watching requires only read access).
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Task not found / cross-tenant      | 404    |
+/// | Already subscribed                 | 409    |
+/// | Happy path                         | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+    ),
+    responses(
+        (status = 201, description = "Subscribed to task.", body = SubscriptionResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task not found in this group.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Already subscribed to this task.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn subscribe_task(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<(StatusCode, Json<SubscriptionResponse>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let task_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM tasks WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if task_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let row: SubscriptionRow = sqlx::query_as(
+        "INSERT INTO task_subscriptions (task_id, user_id) \
+         VALUES ($1, $2) \
+         RETURNING task_id, user_id, subscribed_at, muted",
+    )
+    .bind(task_id)
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e
+            && db_err.code().as_deref() == Some("23505")
+        {
+            return RestError::Conflict("already subscribed to this task".into());
+        }
+        RestError::Internal(e.into())
+    })?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::TaskSubscribed,
+        principal.user_id,
+        group_id,
+        "task_subscriptions",
+        task_id.to_string(),
+        json!({ "subscriber_user_id_len": 36 }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((StatusCode::CREATED, Json(SubscriptionResponse::from(row))))
+}
+
+/// `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — unsubscribe caller from a task.
+///
+/// Idempotent: returns 204 whether or not the subscription existed.
+/// Returns 404 if the task is not found in this group. Authz: `Action::TasksRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Task not found / cross-tenant      | 404    |
+/// | Happy path (was/wasn't subscribed) | 204    |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+    ),
+    responses(
+        (status = 204, description = "Unsubscribed (or was not subscribed)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task not found in this group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn unsubscribe_task(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let task_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM tasks WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if task_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    sqlx::query(
+        "DELETE FROM task_subscriptions WHERE task_id = $1 AND user_id = $2",
+    )
+    .bind(task_id)
+    .bind(principal.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::TaskUnsubscribed,
+        principal.user_id,
+        group_id,
+        "task_subscriptions",
+        task_id.to_string(),
+        json!({ "subscriber_user_id_len": 36 }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — list subscribers of a task.
+///
+/// Returns all current subscribers ordered by `subscribed_at ASC`.
+/// Authz: `Action::TasksRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Task not found / cross-tenant      | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+    ),
+    responses(
+        (status = 200, description = "List of subscribers.", body = Vec<SubscriptionResponse>),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task not found in this group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_task_subscriptions(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<SubscriptionResponse>>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let task_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM tasks WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if task_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let rows: Vec<SubscriptionRow> = sqlx::query_as(
+        "SELECT task_id, user_id, subscribed_at, muted \
+         FROM task_subscriptions \
+         WHERE task_id = $1 \
+         ORDER BY subscribed_at ASC",
+    )
+    .bind(task_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(rows.into_iter().map(SubscriptionResponse::from).collect()))
+}
