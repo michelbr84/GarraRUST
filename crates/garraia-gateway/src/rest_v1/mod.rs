@@ -348,6 +348,23 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(tasks::remove_task_assignee),
                 )
+                // Plan 0078 (GAR-536) — task labels API slice 5.
+                .route(
+                    "/v1/groups/{group_id}/task-labels",
+                    post(tasks::create_task_label).get(tasks::list_task_labels),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-labels/{label_id}",
+                    delete(tasks::delete_task_label),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels",
+                    post(tasks::assign_task_label),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
+                    delete(tasks::remove_task_label_from_task),
+                )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 .merge(rate_limited_routes)
