@@ -280,6 +280,14 @@ name = "rest_v1_task_labels"
 path = "tests/rest_v1_task_labels.rs"
 required-features = ["test-helpers"]
 
+# Plan 0079 (GAR-539) — tasks slice 6: task subscriptions API
+# (POST/GET/DELETE /v1/groups/{gid}/tasks/{tid}/subscriptions). Subject is
+# always principal.user_id; POST/DELETE take no body. 7 bundled scenarios.
+[[test]]
+name = "rest_v1_task_subscriptions"
+path = "tests/rest_v1_task_subscriptions.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
