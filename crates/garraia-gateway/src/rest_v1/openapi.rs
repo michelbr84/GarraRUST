@@ -30,7 +30,7 @@ use super::messages::{
 };
 use super::problem::ProblemDetails;
 use super::tasks::{
-    AddAssigneeRequest, AssigneeResponse, AssignTaskLabelRequest, CommentResponse,
+    AddAssigneeRequest, AssignTaskLabelRequest, AssigneeResponse, CommentResponse,
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
     LabelAssignmentResponse, ListCommentsResponse, ListTaskListsResponse, ListTasksResponse,
     PatchTaskListRequest, PatchTaskRequest, TaskLabelResponse, TaskListResponse, TaskListSummary,

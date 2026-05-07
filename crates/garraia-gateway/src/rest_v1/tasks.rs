@@ -1,7 +1,7 @@
-//! `/v1/groups/{group_id}/task-lists` and task/comment/assignee handlers
-//! (plan 0066/0067/0069/0077, GAR-516/GAR-518/GAR-520/GAR-533).
+//! `/v1/groups/{group_id}/task-lists` and task/comment/assignee/label handlers
+//! (plan 0066/0067/0069/0077/0078, GAR-516/GAR-518/GAR-520/GAR-533/GAR-536).
 //!
-//! Fifteen endpoints on the `garraia_app` RLS-enforced pool:
+//! Twenty endpoints on the `garraia_app` RLS-enforced pool:
 //!
 //! **Slice 1 (plan 0066 / GAR-516):**
 //! - `POST /v1/groups/{group_id}/task-lists` — create task list
@@ -25,6 +25,13 @@
 //! - `POST /v1/groups/{group_id}/tasks/{task_id}/assignees` — assign group member
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/assignees` — list assignees
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}` — remove assignee (idempotent)
+//!
+//! **Slice 5 (plan 0078 / GAR-536):**
+//! - `POST /v1/groups/{group_id}/task-labels` — create task label
+//! - `GET /v1/groups/{group_id}/task-labels` — list task labels
+//! - `DELETE /v1/groups/{group_id}/task-labels/{label_id}` — delete label (CASCADE assignments)
+//! - `POST /v1/groups/{group_id}/tasks/{task_id}/labels` — assign label to task
+//! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}` — remove label assignment (idempotent)
 //!
 //! ## Tenant-context protocol
 //!
@@ -1840,7 +1847,6 @@ pub async fn delete_task_comment(
     Ok(StatusCode::NO_CONTENT)
 }
 
-
 // ─── Slice 4 (plan 0077 / GAR-533): Task Assignees ───────────────────────────
 
 /// DB row returned from `task_assignees`.
@@ -2340,7 +2346,9 @@ pub async fn list_task_labels(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    Ok(Json(rows.into_iter().map(TaskLabelResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(TaskLabelResponse::from).collect(),
+    ))
 }
 
 /// `DELETE /v1/groups/{group_id}/task-labels/{label_id}` — delete a task label.
@@ -2483,14 +2491,13 @@ pub async fn assign_task_label(
     }
 
     // Verify label belongs to this group (cross-group injection guard).
-    let label_exists: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM task_labels WHERE id = $1 AND group_id = $2",
-    )
-    .bind(body.label_id)
-    .bind(group_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let label_exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM task_labels WHERE id = $1 AND group_id = $2")
+            .bind(body.label_id)
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     if label_exists.is_none() {
         return Err(RestError::NotFound);
