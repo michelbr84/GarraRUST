@@ -30,9 +30,10 @@ use super::messages::{
 };
 use super::problem::ProblemDetails;
 use super::tasks::{
-    CommentResponse, CreateCommentRequest, CreateTaskListRequest, CreateTaskRequest,
-    ListCommentsResponse, ListTaskListsResponse, ListTasksResponse, PatchTaskListRequest,
-    PatchTaskRequest, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+    AssignTaskLabelRequest, CommentResponse, CreateCommentRequest, CreateTaskLabelRequest,
+    CreateTaskListRequest, CreateTaskRequest, LabelAssignmentResponse, ListCommentsResponse,
+    ListTaskListsResponse, ListTasksResponse, PatchTaskListRequest, PatchTaskRequest,
+    TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -113,6 +114,11 @@ impl Modify for SecurityAddon {
         super::tasks::create_task_comment,
         super::tasks::list_task_comments,
         super::tasks::delete_task_comment,
+        super::tasks::create_task_label,
+        super::tasks::list_task_labels,
+        super::tasks::delete_task_label,
+        super::tasks::assign_task_label,
+        super::tasks::remove_task_label_from_task,
         super::audit::list_audit,
     ),
     components(schemas(
@@ -158,6 +164,10 @@ impl Modify for SecurityAddon {
         CreateCommentRequest,
         CommentResponse,
         ListCommentsResponse,
+        CreateTaskLabelRequest,
+        TaskLabelResponse,
+        AssignTaskLabelRequest,
+        LabelAssignmentResponse,
         AuditEventSummary,
         ListAuditResponse,
     )),
