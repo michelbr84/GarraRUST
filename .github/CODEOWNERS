@@ -14,3 +14,7 @@
 # AI Quality Ratchet — only Michel updates the baseline.
 /.quality/baseline.json   @michelbr84
 /.quality/thresholds.toml @michelbr84
+
+# Default owner — every path not matched above falls through to Michel.
+# Review routing only; ruleset 15901595 still has require_code_owner_review=false.
+*                          @michelbr84
