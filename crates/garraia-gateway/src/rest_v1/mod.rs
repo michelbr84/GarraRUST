@@ -272,6 +272,21 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/chats",
                     post(chats::create_chat).get(chats::list_chats),
                 )
+                // Plan 0076 (GAR-530) — chats slice 4: individual chat ops + member CRUD.
+                .route(
+                    "/v1/chats/{chat_id}",
+                    get(chats::get_chat)
+                        .patch(chats::patch_chat)
+                        .delete(chats::delete_chat),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members",
+                    get(chats::list_chat_members).post(chats::add_chat_member),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members/{user_id}",
+                    delete(chats::remove_chat_member),
+                )
                 // Plan 0055 (GAR-507) — messages slice 2.
                 .route(
                     "/v1/chats/{chat_id}/messages",
@@ -358,6 +373,21 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/chats",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0076 (GAR-530) — chats slice 4, fail-soft 503.
+                .route(
+                    "/v1/chats/{chat_id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members",
+                    get(unconfigured_handler).post(unconfigured_handler),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members/{user_id}",
+                    delete(unconfigured_handler),
                 )
                 // Plan 0055 (GAR-507) — messages slice 2, fail-soft 503.
                 .route(
@@ -446,17 +476,32 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
-                // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
+                // Plan 0054 (GAR-506) — chats slice 1, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/chats",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
-                // Plan 0055 (GAR-507) — messages slice 2, fail-soft 503.
+                // Plan 0076 (GAR-530) — chats slice 4, no-auth stub.
+                .route(
+                    "/v1/chats/{chat_id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members",
+                    get(unconfigured_handler).post(unconfigured_handler),
+                )
+                .route(
+                    "/v1/chats/{chat_id}/members/{user_id}",
+                    delete(unconfigured_handler),
+                )
+                // Plan 0055 (GAR-507) — messages slice 2, no-auth stub.
                 .route(
                     "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
-                // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
+                // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 .route(
                     "/v1/messages/{message_id}/threads",
                     post(unconfigured_handler),
