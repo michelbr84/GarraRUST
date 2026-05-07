@@ -544,7 +544,16 @@ pub async fn get_chat(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    type Row = (Uuid, Uuid, String, String, Option<String>, Uuid, DateTime<Utc>, DateTime<Utc>);
+    type Row = (
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    );
     let row: Option<Row> = sqlx::query_as(
         "SELECT id, group_id, type, name, topic, created_by, created_at, updated_at \
          FROM chats \
@@ -639,7 +648,16 @@ pub async fn patch_chat(
     // COALESCE keeps existing value when the caller did not provide the field.
     // For topic: if caller provided `topic` (even empty → None), we replace;
     // otherwise keep the DB value.
-    type Row = (Uuid, Uuid, String, String, Option<String>, Uuid, DateTime<Utc>, DateTime<Utc>);
+    type Row = (
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    );
     let row: Option<Row> = if body.topic.is_some() {
         // Caller supplied topic — may be clearing it (new_topic inner = None).
         sqlx::query_as(
@@ -946,31 +964,31 @@ pub async fn add_chat_member(
 
     // Verify target user is a member of this group (group_members is not
     // FORCE RLS — it is app-layer enforced).
-    let in_group: Option<(bool,)> = sqlx::query_as(
-        "SELECT true FROM group_members WHERE group_id = $1 AND user_id = $2",
-    )
-    .bind(group_id)
-    .bind(body.user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let in_group: Option<(bool,)> =
+        sqlx::query_as("SELECT true FROM group_members WHERE group_id = $1 AND user_id = $2")
+            .bind(group_id)
+            .bind(body.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     if in_group.is_none() {
         return Err(RestError::NotFound);
     }
 
     // Check for existing membership.
-    let already: Option<(bool,)> = sqlx::query_as(
-        "SELECT true FROM chat_members WHERE chat_id = $1 AND user_id = $2",
-    )
-    .bind(chat_id)
-    .bind(body.user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let already: Option<(bool,)> =
+        sqlx::query_as("SELECT true FROM chat_members WHERE chat_id = $1 AND user_id = $2")
+            .bind(chat_id)
+            .bind(body.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     if already.is_some() {
-        return Err(RestError::Conflict("user is already a member of this chat".into()));
+        return Err(RestError::Conflict(
+            "user is already a member of this chat".into(),
+        ));
     }
 
     let (joined_at,): (DateTime<Utc>,) = sqlx::query_as(
