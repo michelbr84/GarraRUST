@@ -1,18 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-05-06** (health routine — GAR-527).
+> Last updated: **2026-05-07** (health routine — post-PR #188 scan).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-06 (today) |
-|---|---|---|---|
-| Total Dependabot alerts open | 20 | **7** | **6** (estimated — openssl advisory should auto-close on merge) |
-| High severity | 1 | 1 | 0 (if openssl advisory was the high) |
-| Medium severity | 4 | 2 | 2 |
-| Low severity | 4 | 4 | 4 |
-| With Linear ownership | mixed | **7 / 7** | **7 / 7** |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-06 | 2026-05-07 (today) |
+|---|---|---|---|---|
+| Total Dependabot alerts open | 20 | **7** | **6** (estimated — openssl advisory should auto-close on merge) | **6** (confirmed — no new alerts) |
+| High severity | 1 | 1 | 0 (if openssl advisory was the high) | **0** |
+| Medium severity | 4 | 2 | 2 | **2** |
+| Low severity | 4 | 4 | 4 | **4** |
+| With Linear ownership | mixed | **7 / 7** | **7 / 7** | **6 / 6** |
+
+## Confirmed 2026-05-07 (health routine — no new alerts)
+
+Health routine ran on 2026-05-07. All 4 security surfaces scanned:
+
+| Surface | Result |
+|---|---|
+| Secret scanning (gitleaks) | ✅ pass |
+| cargo-deny (advisories) | ✅ pass — all allowlisted |
+| Security Audit (cargo-audit) | ✅ pass — all allowlisted |
+| Dependabot alerts | ✅ 6 open, all pre-existing, all allowlisted (GAR-455 / GAR-437 / GAR-456) |
+
+No new critical, high, or medium alerts. PR #188 (`health/ratchet-20260507-gitignore-local-reports`) merged — added `.github-health-reports/` and `audit/` to `.gitignore` to unblock future health routine iterations.
 
 ## Closed 2026-05-06 (health routine)
 
