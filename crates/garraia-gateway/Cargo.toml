@@ -264,6 +264,17 @@ name = "rest_v1_chat_mgmt"
 path = "tests/rest_v1_chat_mgmt.rs"
 required-features = ["test-helpers"]
 
+# Plan 0077 (GAR-533) — tasks slice 4: task assignees API
+# (POST/GET /v1/groups/{gid}/tasks/{tid}/assignees, DELETE .../assignees/{uid}).
+# 9 bundled scenarios covering happy paths, 409 duplicate, 404 cross-group
+# injection guard, and idempotent DELETE. Feature-gated so plain
+# `cargo test -p garraia-gateway` (without --features test-helpers) skips
+# compilation cleanly.
+[[test]]
+name = "rest_v1_task_assignees"
+path = "tests/rest_v1_task_assignees.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
