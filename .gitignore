@@ -156,3 +156,9 @@ quality-report.md
 
 # Local research / reference material (not committed)
 AI Quality Gates/
+
+# /github-health and /github-health-improve skill outputs — local audit
+# artifacts. Per the skill contract these are never auto-committed; they
+# persist on disk so iterations can read prior reports as input.
+.github-health-reports/
+audit/
