@@ -332,6 +332,26 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "task_label_assignments"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ label_id_len: 36 }`.
     TaskLabelRemoved,
+
+    /// The current user subscribed themselves to a task via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions`
+    /// (plan 0079 / GAR-539, epic GAR-WS-TASKS slice 6).
+    ///
+    /// `resource_type = "task_subscriptions"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ subscriber_user_id_len: 36 }` — never the subscriber's
+    /// email or display name.
+    TaskSubscribed,
+
+    /// The current user unsubscribed themselves from a task via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions`
+    /// (plan 0079 / GAR-539, epic GAR-WS-TASKS slice 6).
+    ///
+    /// Idempotent — emitted on every DELETE call, even when no row was
+    /// removed (the audit row is the receipt that the operation ran, not
+    /// proof that state changed).
+    /// `resource_type = "task_subscriptions"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ subscriber_user_id_len: 36 }`.
+    TaskUnsubscribed,
 }
 
 impl WorkspaceAuditAction {
@@ -369,6 +389,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskLabelDeleted => "task_label.deleted",
             WorkspaceAuditAction::TaskLabelAssigned => "task.label.assigned",
             WorkspaceAuditAction::TaskLabelRemoved => "task.label.removed",
+            WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
+            WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
         }
     }
 }
@@ -534,6 +556,14 @@ mod tests {
             WorkspaceAuditAction::TaskLabelRemoved.as_str(),
             "task.label.removed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskSubscribed.as_str(),
+            "task.subscribed"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskUnsubscribed.as_str(),
+            "task.unsubscribed"
+        );
     }
 
     #[test]
@@ -570,6 +600,8 @@ mod tests {
             WorkspaceAuditAction::TaskLabelDeleted.as_str(),
             WorkspaceAuditAction::TaskLabelAssigned.as_str(),
             WorkspaceAuditAction::TaskLabelRemoved.as_str(),
+            WorkspaceAuditAction::TaskSubscribed.as_str(),
+            WorkspaceAuditAction::TaskUnsubscribed.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
