@@ -229,6 +229,20 @@ Comente em uma issue antes de começar a trabalhar para evitar esforço duplicad
 
 ---
 
+## Acompanhamento e milestones
+
+Planejamento de releases e ciclos vive no [Linear (time GAR)](https://linear.app/chatgpt25/team/GAR/projects), não em GitHub milestones. Por design, **milestones do GitHub não são utilizados** neste repositório — a ferramenta de prioridade, sequenciamento e alocação por ciclo é o Linear.
+
+GitHub Issues neste repositório serve a três propósitos restritos:
+
+1. Bugs reportados externamente pela comunidade.
+2. Issues de automação geradas por workflows (ex.: `garra-routine-trigger.yml`, rotuladas com `automation` + `garra-routine`).
+3. Discussões pontuais que precisem de threading público.
+
+Trabalho interno ativo (slices, planos, refactors, dependências) é rastreado em Linear e correlacionado com PRs por título / branch (`feat(...): GAR-XXX — ...`). Se você for um colaborador externo procurando saber o que está em andamento, prefira o link do Linear acima ou o `ROADMAP.md` na raiz do repositório.
+
+---
+
 ## Comunicação
 
 - **Discord:** [discord.gg/aEXGq5cS](https://discord.gg/aEXGq5cS)
