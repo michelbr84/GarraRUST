@@ -283,6 +283,23 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ role }`.
     ChatMemberRemoved,
 
+    /// A user was assigned to a task via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/assignees`
+    /// (plan 0077 / GAR-533, epic GAR-WS-TASKS slice 4).
+    ///
+    /// `resource_type = "task_assignees"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ assignee_user_id_len: 36 }`. User IDs are UUIDs — length
+    /// is structural, not PII.
+    TaskAssigneeAdded,
+
+    /// A user was removed from task assignees via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}`
+    /// (plan 0077 / GAR-533, epic GAR-WS-TASKS slice 4).
+    ///
+    /// `resource_type = "task_assignees"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ assignee_user_id_len: 36 }`.
+    TaskAssigneeRemoved,
+
     /// A task label was created via
     /// `POST /v1/groups/{group_id}/task-labels` (plan 0078 / GAR-536,
     /// epic GAR-WS-TASKS slice 5).
@@ -346,6 +363,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ChatArchived => "chat.archived",
             WorkspaceAuditAction::ChatMemberAdded => "chat.member.added",
             WorkspaceAuditAction::ChatMemberRemoved => "chat.member.removed",
+            WorkspaceAuditAction::TaskAssigneeAdded => "task.assignee.added",
+            WorkspaceAuditAction::TaskAssigneeRemoved => "task.assignee.removed",
             WorkspaceAuditAction::TaskLabelCreated => "task_label.created",
             WorkspaceAuditAction::TaskLabelDeleted => "task_label.deleted",
             WorkspaceAuditAction::TaskLabelAssigned => "task.label.assigned",
@@ -492,6 +511,14 @@ mod tests {
             "chat.member.removed"
         );
         assert_eq!(
+            WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
+            "task.assignee.added"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
+            "task.assignee.removed"
+        );
+        assert_eq!(
             WorkspaceAuditAction::TaskLabelCreated.as_str(),
             "task_label.created"
         );
@@ -537,6 +564,8 @@ mod tests {
             WorkspaceAuditAction::ChatArchived.as_str(),
             WorkspaceAuditAction::ChatMemberAdded.as_str(),
             WorkspaceAuditAction::ChatMemberRemoved.as_str(),
+            WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
+            WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
             WorkspaceAuditAction::TaskLabelCreated.as_str(),
             WorkspaceAuditAction::TaskLabelDeleted.as_str(),
             WorkspaceAuditAction::TaskLabelAssigned.as_str(),

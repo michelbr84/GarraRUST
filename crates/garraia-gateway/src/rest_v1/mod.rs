@@ -339,6 +339,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
                     delete(tasks::delete_task_comment),
                 )
+                // Plan 0077 (GAR-533) — task assignees API slice 4.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees",
+                    post(tasks::add_task_assignee).get(tasks::list_task_assignees),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
+                    delete(tasks::remove_task_assignee),
+                )
                 // Plan 0078 (GAR-536) — task labels API slice 5.
                 .route(
                     "/v1/groups/{group_id}/task-labels",
@@ -430,7 +439,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, fail-soft 503.
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
-                // Plan 0066/0067/0069 (GAR-516/GAR-518/GAR-520) — tasks API slices 1+2+3, fail-soft 503.
+                // Plan 0066/0067/0069/0077 (GAR-516/GAR-518/GAR-520/GAR-533) — tasks API slices 1+2+3+4, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -457,6 +466,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
+                    delete(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
                 )
                 .route(
@@ -537,7 +554,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0072 (GAR-526) — memory API slice 2: pin/unpin, no-auth stub.
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
-                // Plan 0066/0067/0069 (GAR-516/GAR-518/GAR-520) — tasks API slices 1+2+3, no-auth stub.
+                // Plan 0066/0067/0069/0077 (GAR-516/GAR-518/GAR-520/GAR-533) — tasks API slices 1+2+3+4, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -564,6 +581,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
+                    delete(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
                 )
                 .route(
