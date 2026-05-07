@@ -1,6 +1,6 @@
 # Plan 0076 — GAR-530: Chat Management Slice 4
 
-> **Status:** ⏳ In Progress
+> **Status:** ✅ Merged 2026-05-07 via PR #181 (`b48a356`)
 > **Linear:** [GAR-530](https://linear.app/chatgpt25/issue/GAR-530)
 > **Branch:** `routine/202505070024-chat-mgmt-slice4`
 > **Epic:** GAR-WS-CHAT / Fase 3.4
@@ -138,8 +138,8 @@ plans/README.md                              — row added
       --features garraia-gateway/test-helpers --no-deps -- -D warnings` green
 
 ### T8 — Bookkeeping
-- [ ] PR merged, commit sha captured in this file
-- [ ] `plans/README.md` row updated
+- [x] PR merged, commit sha captured in this file (`b48a356`)
+- [x] `plans/README.md` row updated
 
 ---
 
