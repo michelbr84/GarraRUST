@@ -1,9 +1,9 @@
 # Plan 0085 — GAR-551: REST /v1 search slice 2 (chat + user scope)
 
-**Status:** 🟡 In Progress
+**Status:** ✅ Merged 2026-05-08 via PR #228 (`fdef9bc`)
 **Autor:** Claude Opus 4.7 (garra-routine 2026-05-08, America/New_York)
 **Data:** 2026-05-08 (America/New_York)
-**Issue:** [GAR-551](https://linear.app/chatgpt25/issue/GAR-551) — Backlog → In Progress
+**Issue:** [GAR-551](https://linear.app/chatgpt25/issue/GAR-551) — Done
 **Branch:** `routine/202605082234-search-slice2-chat-user-scope`
 **Epic:** `epic:ws-search`, `epic:ws-api`
 **Predecessor:** plan 0084 (GAR-549, slice 1)
