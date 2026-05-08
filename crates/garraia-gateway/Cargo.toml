@@ -288,6 +288,13 @@ name = "rest_v1_task_subscriptions"
 path = "tests/rest_v1_task_subscriptions.rs"
 required-features = ["test-helpers"]
 
+# Plan 0080 (GAR-541): task activity log writes + GET /activity endpoint.
+# 8 bundled scenarios (A1-A8).
+[[test]]
+name = "rest_v1_task_activity"
+path = "tests/rest_v1_task_activity.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

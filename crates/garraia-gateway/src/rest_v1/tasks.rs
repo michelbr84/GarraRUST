@@ -505,6 +505,32 @@ async fn set_rls_context(
     Ok(())
 }
 
+async fn insert_task_activity(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: Uuid,
+    group_id: Uuid,
+    actor_user_id: Uuid,
+    actor_label: &str,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), RestError> {
+    sqlx::query(
+        "INSERT INTO task_activity \
+             (task_id, group_id, actor_user_id, actor_label, kind, payload) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .bind(actor_user_id)
+    .bind(actor_label)
+    .bind(kind)
+    .bind(payload)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    Ok(())
+}
+
 fn require_group_id(principal: &Principal) -> Result<Uuid, RestError> {
     principal
         .group_id
@@ -833,6 +859,17 @@ pub async fn create_task(
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
 
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &created_by_label,
+        "created",
+        json!({}),
+    )
+    .await?;
+
     tx.commit()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -1031,6 +1068,36 @@ pub async fn patch_task(
         .map_err(|e| RestError::Internal(e.into()))?;
     set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
+    // Fetch old values before updating so we can emit precise activity events.
+    let needs_activity = body.status.is_some() || body.priority.is_some() || body.due_at.is_some();
+    let old: Option<(String, String, Option<DateTime<Utc>>)> = if needs_activity {
+        sqlx::query_as(
+            "SELECT status, priority, due_at FROM tasks \
+             WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        None
+    };
+    if needs_activity && old.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let actor_label: String = if needs_activity {
+        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map(|(l,): (String,)| l)
+            .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        String::new()
+    };
+
     let row: Option<TaskRow> = sqlx::query_as(
         "UPDATE tasks \
          SET title              = COALESCE($2, title), \
@@ -1064,6 +1131,46 @@ pub async fn patch_task(
         Some(r) => r,
         None => return Err(RestError::NotFound),
     };
+
+    if let Some((old_status, old_priority, old_due_at)) = old {
+        if let Some(new_status) = &body.status {
+            insert_task_activity(
+                &mut tx,
+                task_id,
+                group_id,
+                principal.user_id,
+                &actor_label,
+                "status_changed",
+                json!({ "old": old_status, "new": new_status }),
+            )
+            .await?;
+        }
+        if let Some(new_priority) = &body.priority {
+            insert_task_activity(
+                &mut tx,
+                task_id,
+                group_id,
+                principal.user_id,
+                &actor_label,
+                "priority_changed",
+                json!({ "old": old_priority, "new": new_priority }),
+            )
+            .await?;
+        }
+        if body.due_at.is_some() {
+            let set = body.due_at.is_some();
+            insert_task_activity(
+                &mut tx,
+                task_id,
+                group_id,
+                principal.user_id,
+                &actor_label,
+                "due_changed",
+                json!({ "set": set, "had_due": old_due_at.is_some() }),
+            )
+            .await?;
+        }
+    }
 
     tx.commit()
         .await
@@ -1137,6 +1244,12 @@ pub async fn delete_task(
 
     let title_len = title.chars().count();
 
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     sqlx::query("UPDATE tasks SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
         .bind(task_id)
         .execute(&mut *tx)
@@ -1154,6 +1267,17 @@ pub async fn delete_task(
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "deleted",
+        json!({}),
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -1628,6 +1752,17 @@ pub async fn create_task_comment(
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
 
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &author_label,
+        "commented",
+        json!({ "body_len": body_len }),
+    )
+    .await?;
+
     tx.commit()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -1949,6 +2084,12 @@ pub async fn add_task_assignee(
         return Err(RestError::NotFound);
     }
 
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     let row: AssigneeRow = sqlx::query_as(
         "INSERT INTO task_assignees (task_id, user_id, assigned_by) \
          VALUES ($1, $2, $3) \
@@ -1979,6 +2120,17 @@ pub async fn add_task_assignee(
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "assigned",
+        json!({ "assignee_id": body.user_id.to_string() }),
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -2126,6 +2278,12 @@ pub async fn remove_task_assignee(
         return Err(RestError::NotFound);
     }
 
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     sqlx::query("DELETE FROM task_assignees WHERE task_id = $1 AND user_id = $2")
         .bind(task_id)
         .bind(assignee_user_id)
@@ -2144,6 +2302,17 @@ pub async fn remove_task_assignee(
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "unassigned",
+        json!({ "assignee_id": assignee_user_id.to_string() }),
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -2508,6 +2677,12 @@ pub async fn assign_task_label(
         return Err(RestError::NotFound);
     }
 
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     let row: LabelAssignmentRow = sqlx::query_as(
         "INSERT INTO task_label_assignments (task_id, label_id) \
          VALUES ($1, $2) \
@@ -2537,6 +2712,17 @@ pub async fn assign_task_label(
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "labeled",
+        json!({ "label_id": body.label_id.to_string() }),
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -2604,6 +2790,12 @@ pub async fn remove_task_label_from_task(
         return Err(RestError::NotFound);
     }
 
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     sqlx::query("DELETE FROM task_label_assignments WHERE task_id = $1 AND label_id = $2")
         .bind(task_id)
         .bind(label_id)
@@ -2622,6 +2814,17 @@ pub async fn remove_task_label_from_task(
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "unlabeled",
+        json!({ "label_id": label_id.to_string() }),
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -2920,4 +3123,166 @@ pub async fn unsubscribe_from_task(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ─── Plan 0080 (GAR-541) — task activity API slice 7 ─────────────────────────
+//
+// Provides the read side of the task_activity table. Writes are emitted inline
+// by the mutation handlers above (create_task, patch_task, delete_task,
+// create_task_comment, add_task_assignee, remove_task_assignee,
+// assign_task_label, remove_task_label_from_task).
+
+/// DB row from `task_activity`.
+#[derive(sqlx::FromRow)]
+struct ActivityRow {
+    id: Uuid,
+    kind: String,
+    actor_label: String,
+    payload: serde_json::Value,
+    created_at: DateTime<Utc>,
+}
+
+/// Single activity event in the response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ActivityResponse {
+    pub id: Uuid,
+    pub kind: String,
+    pub actor_label: String,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<ActivityRow> for ActivityResponse {
+    fn from(r: ActivityRow) -> Self {
+        Self {
+            id: r.id,
+            kind: r.kind,
+            actor_label: r.actor_label,
+            payload: r.payload,
+            created_at: r.created_at,
+        }
+    }
+}
+
+/// Response for `GET /v1/groups/{group_id}/tasks/{task_id}/activity`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ListActivityResponse {
+    pub items: Vec<ActivityResponse>,
+    pub next_cursor: Option<Uuid>,
+}
+
+/// Query parameters for the activity log endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListActivityQuery {
+    /// Keyset cursor — UUID of the last activity row received. Omit for the first page.
+    pub cursor: Option<Uuid>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+}
+
+/// `GET /v1/groups/{group_id}/tasks/{task_id}/activity` — cursor-paginated task activity log.
+///
+/// Returns activity events for the task, newest first. Cross-group tasks return
+/// 404 (RLS filters them). Authz: `Action::TasksRead`.
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/activity",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+        ListActivityQuery,
+    ),
+    responses(
+        (status = 200, description = "Activity log.", body = ListActivityResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task not found or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_task_activity(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<ListActivityQuery>,
+) -> Result<Json<ListActivityResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let effective_limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let fetch_limit = i64::from(effective_limit + 1);
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Verify task exists in this group (and is not soft-deleted).
+    let task_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM tasks WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if task_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let rows: Vec<ActivityRow> = if let Some(cursor_id) = params.cursor {
+        sqlx::query_as(
+            "SELECT id, kind, actor_label, payload, created_at \
+             FROM task_activity \
+             WHERE task_id = $1 \
+               AND (created_at, id) < ( \
+                   SELECT created_at, id FROM task_activity WHERE id = $2 \
+               ) \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $3",
+        )
+        .bind(task_id)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "SELECT id, kind, actor_label, payload, created_at \
+             FROM task_activity \
+             WHERE task_id = $1 \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $2",
+        )
+        .bind(task_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let has_more = rows.len() as u32 > effective_limit;
+    let items: Vec<ActivityResponse> = rows
+        .into_iter()
+        .take(effective_limit as usize)
+        .map(ActivityResponse::from)
+        .collect();
+    let next_cursor = if has_more {
+        items.last().map(|it| it.id)
+    } else {
+        None
+    };
+
+    Ok(Json(ListActivityResponse { items, next_cursor }))
 }
