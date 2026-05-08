@@ -1,10 +1,10 @@
 # Plan 0082 — GAR-544: REST /v1 tasks slice 8 (move task between lists)
 
-**Status:** Em execução
+**Status:** ✅ Merged 2026-05-08 via PR #214 (`6232ec1`)
 **Autor:** Claude Opus 4.7 (garra-routine 2026-05-08, America/New_York)
 **Data:** 2026-05-08 (America/New_York)
-**Issue:** [GAR-544](https://linear.app/chatgpt25/issue/GAR-544)
-**Branch:** `routine/202605081115-task-move-api`
+**Issue:** [GAR-544](https://linear.app/chatgpt25/issue/GAR-544) — Done
+**Branch:** `routine/202605081115-task-move-api` (deletada após merge)
 **Epic:** `epic:ws-api`, `epic:ws-tasks`
 **Parent:** GAR-396
 
