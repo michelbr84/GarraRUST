@@ -1,18 +1,32 @@
 # Dependabot Status
 
-> Last updated: **2026-05-07** (health routine — post-PR #188 scan).
+> Last updated: **2026-05-08** (health routine — post-PR #216 scan).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-06 | 2026-05-07 (today) |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 (today) |
 |---|---|---|---|---|
-| Total Dependabot alerts open | 20 | **7** | **8** (rsa added as 2nd entry via jsonwebtoken 10 rust_crypto backend 2026-04-30; openssl patched and closed) | **8** (confirmed) |
-| High severity | 1 | 1 | **2** (rustls-webpki #37 + rsa RUSTSEC-2023-0071) | **2** |
-| Medium severity | 4 | 2 | 2 | **2** |
-| Low severity | 4 | 4 | 4 | **4** |
+| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) |
+| High severity | 1 | 1 | **2** | **2** |
+| Medium severity | 4 | 2 | **2** | **2** |
+| Low severity | 4 | 4 | **4** | **4** |
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** |
+
+## Confirmed 2026-05-08 (health routine — all surfaces green)
+
+Health routine ran on 2026-05-08. All 4 security surfaces scanned:
+
+| Surface | Result |
+|---|---|
+| Secret scanning (gitleaks) | ✅ pass |
+| cargo-deny (advisories) | ✅ pass — all allowlisted |
+| Security Audit (cargo-audit) | ✅ pass — all allowlisted |
+| Dependabot alerts | ✅ 8 open, all pre-existing, all allowlisted (GAR-455 / GAR-513 / GAR-456) |
+| CodeQL (code scanning) | ✅ 22 alerts all dismissed in ledger (alerts #40–#45 hard-coded-crypto-value + #67–#82 path-injection false positives). No new open alerts. Re-audit deadline: 2026-08-01. |
+
+No new untracked alerts. Count reconciled: 8 Dependabot open (2 HIGH, 2 MEDIUM, 4 LOW) — all pre-existing, all upstream-blocked, all allowlisted. Main branch CI green. Open routine/ PR: #217 (task subtasks slice 9 — roadmap routine, unrelated to health). Linear status note filed under GAR team (label: automation,health-routine).
 
 ## Confirmed 2026-05-07 (health routine — no new alerts)
 
