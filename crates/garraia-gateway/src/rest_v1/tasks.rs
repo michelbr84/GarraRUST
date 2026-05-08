@@ -1069,8 +1069,7 @@ pub async fn patch_task(
     set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
     // Fetch old values before updating so we can emit precise activity events.
-    let needs_activity =
-        body.status.is_some() || body.priority.is_some() || body.due_at.is_some();
+    let needs_activity = body.status.is_some() || body.priority.is_some() || body.due_at.is_some();
     let old: Option<(String, String, Option<DateTime<Utc>>)> = if needs_activity {
         sqlx::query_as(
             "SELECT status, priority, due_at FROM tasks \
@@ -1245,12 +1244,11 @@ pub async fn delete_task(
 
     let title_len = title.chars().count();
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     sqlx::query("UPDATE tasks SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
         .bind(task_id)
@@ -2086,12 +2084,11 @@ pub async fn add_task_assignee(
         return Err(RestError::NotFound);
     }
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let row: AssigneeRow = sqlx::query_as(
         "INSERT INTO task_assignees (task_id, user_id, assigned_by) \
@@ -2281,12 +2278,11 @@ pub async fn remove_task_assignee(
         return Err(RestError::NotFound);
     }
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     sqlx::query("DELETE FROM task_assignees WHERE task_id = $1 AND user_id = $2")
         .bind(task_id)
@@ -2681,12 +2677,11 @@ pub async fn assign_task_label(
         return Err(RestError::NotFound);
     }
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let row: LabelAssignmentRow = sqlx::query_as(
         "INSERT INTO task_label_assignments (task_id, label_id) \
@@ -2795,12 +2790,11 @@ pub async fn remove_task_label_from_task(
         return Err(RestError::NotFound);
     }
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     sqlx::query("DELETE FROM task_label_assignments WHERE task_id = $1 AND label_id = $2")
         .bind(task_id)
