@@ -34,7 +34,7 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use chrono::{DateTime, Utc};
-use garraia_auth::{Principal};
+use garraia_auth::Principal;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -152,10 +152,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     }
 
     // Parse types list.
-    let types_str = params
-        .types
-        .as_deref()
-        .unwrap_or("messages,memory");
+    let types_str = params.types.as_deref().unwrap_or("messages,memory");
     let mut include_messages = false;
     let mut include_memory = false;
     for t in types_str.split(',') {
@@ -437,11 +434,7 @@ pub async fn search(
     let limit = validated.limit as usize;
     let slice_end = (offset + limit).min(all.len());
     let has_more = all.len() > offset + limit;
-    let items: Vec<SearchResult> = all
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+    let items: Vec<SearchResult> = all.into_iter().skip(offset).take(limit).collect();
 
     // If offset >= slice_end, skip was past all results — return empty.
     let _ = slice_end; // used implicitly via skip+take

@@ -127,13 +127,7 @@ async fn send_message(
 }
 
 /// Helper: create a memory item.
-async fn create_memory(
-    h: &Harness,
-    token: &str,
-    group_id: &str,
-    content: &str,
-    sensitivity: &str,
-) {
+async fn create_memory(h: &Harness, token: &str, group_id: &str, content: &str, sensitivity: &str) {
     let resp = h
         .router
         .clone()
@@ -220,11 +214,7 @@ async fn search_scenarios() {
     let resp = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs))
         .await
         .expect("S1 oneshot");
     assert_eq!(resp.status(), StatusCode::OK, "S1 status");
@@ -239,9 +229,10 @@ async fn search_scenarios() {
         "S1 all items must be type=message"
     );
     assert!(
-        items
-            .iter()
-            .any(|it| it["excerpt"].as_str().unwrap_or("").contains("fluffernutter")),
+        items.iter().any(|it| it["excerpt"]
+            .as_str()
+            .unwrap_or("")
+            .contains("fluffernutter")),
         "S1 must find the matching message"
     );
 
@@ -253,17 +244,16 @@ async fn search_scenarios() {
     let resp2 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs2,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs2))
         .await
         .expect("S2 oneshot");
     assert_eq!(resp2.status(), StatusCode::OK, "S2 status");
     let body2 = body_json(resp2).await;
     let items2 = body2["items"].as_array().expect("S2 items");
-    assert!(!items2.is_empty(), "S2 must return at least one memory result");
+    assert!(
+        !items2.is_empty(),
+        "S2 must return at least one memory result"
+    );
     assert!(
         items2.iter().all(|it| it["type"] == "memory"),
         "S2 all items must be type=memory"
@@ -277,11 +267,7 @@ async fn search_scenarios() {
     let resp3 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs3,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs3))
         .await
         .expect("S3 oneshot");
     assert_eq!(resp3.status(), StatusCode::OK, "S3 status");
@@ -304,11 +290,7 @@ async fn search_scenarios() {
     let resp4 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs4,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs4))
         .await
         .expect("S4 oneshot");
     assert_eq!(resp4.status(), StatusCode::OK, "S4 status");
@@ -327,28 +309,17 @@ async fn search_scenarios() {
     let resp5 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs5,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs5))
         .await
         .expect("S5 oneshot");
     assert_eq!(resp5.status(), StatusCode::NOT_FOUND, "S5 expected 404");
 
     // ── S6. Empty q → 400 ────────────────────────────────────────────────
-    let qs6 = format!(
-        "q=&scope_type=group&scope_id={}&types=messages",
-        group_id
-    );
+    let qs6 = format!("q=&scope_type=group&scope_id={}&types=messages", group_id);
     let resp6 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs6,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs6))
         .await
         .expect("S6 oneshot");
     assert_eq!(resp6.status(), StatusCode::BAD_REQUEST, "S6 expected 400");
@@ -361,11 +332,7 @@ async fn search_scenarios() {
     let resp7 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs7,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs7))
         .await
         .expect("S7 oneshot");
     assert_eq!(resp7.status(), StatusCode::BAD_REQUEST, "S7 expected 400");
@@ -378,11 +345,7 @@ async fn search_scenarios() {
     let resp8 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs8,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs8))
         .await
         .expect("S8 oneshot");
     assert_eq!(resp8.status(), StatusCode::BAD_REQUEST, "S8 expected 400");
@@ -409,20 +372,13 @@ async fn search_scenarios() {
     let resp10 = h
         .router
         .clone()
-        .oneshot(search_req(
-            Some(&token),
-            Some(&group_id.to_string()),
-            &qs10,
-        ))
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs10))
         .await
         .expect("S10 oneshot");
     assert_eq!(resp10.status(), StatusCode::OK, "S10 status");
     let body10 = body_json(resp10).await;
     assert!(
-        body10["items"]
-            .as_array()
-            .expect("S10 items")
-            .is_empty(),
+        body10["items"].as_array().expect("S10 items").is_empty(),
         "S10 secret memory must not appear in search results"
     );
 

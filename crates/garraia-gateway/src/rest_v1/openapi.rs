@@ -13,7 +13,6 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
-use super::search::{SearchResponse, SearchResult, SearchResultType};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
@@ -30,6 +29,7 @@ use super::messages::{
     ThreadResponse,
 };
 use super::problem::ProblemDetails;
+use super::search::{SearchResponse, SearchResult, SearchResultType};
 use super::tasks::{
     AddAssigneeRequest, AssignTaskLabelRequest, AssigneeResponse, CommentResponse,
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
