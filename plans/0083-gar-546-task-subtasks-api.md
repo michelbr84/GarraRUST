@@ -1,6 +1,6 @@
 # Plan 0083 — GAR-546: REST /v1 tasks slice 9 (subtasks API)
 
-**Status:** Em execução
+**Status:** ✅ Merged 2026-05-08 via PR #217 (`ad394b7`)
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-08, America/New_York)
 **Data:** 2026-05-08 (America/New_York)
 **Issue:** [GAR-546](https://linear.app/chatgpt25/issue/GAR-546)
