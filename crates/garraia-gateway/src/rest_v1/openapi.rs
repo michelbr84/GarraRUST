@@ -33,8 +33,8 @@ use super::tasks::{
     AddAssigneeRequest, AssignTaskLabelRequest, AssigneeResponse, CommentResponse,
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
     LabelAssignmentResponse, ListCommentsResponse, ListTaskListsResponse, ListTasksResponse,
-    PatchTaskListRequest, PatchTaskRequest, SubscriptionResponse, TaskLabelResponse,
-    TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+    MoveTaskRequest, PatchTaskListRequest, PatchTaskRequest, SubscriptionResponse,
+    TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -126,6 +126,7 @@ impl Modify for SecurityAddon {
         super::tasks::subscribe_to_task,
         super::tasks::list_task_subscriptions,
         super::tasks::unsubscribe_from_task,
+        super::tasks::move_task,
         super::audit::list_audit,
     ),
     components(schemas(
@@ -178,6 +179,7 @@ impl Modify for SecurityAddon {
         AssignTaskLabelRequest,
         LabelAssignmentResponse,
         SubscriptionResponse,
+        MoveTaskRequest,
         AuditEventSummary,
         ListAuditResponse,
     )),
