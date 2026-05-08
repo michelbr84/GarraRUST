@@ -372,6 +372,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .get(tasks::list_task_subscriptions)
                         .delete(tasks::unsubscribe_from_task),
                 )
+                // Plan 0080 (GAR-541) — task activity API slice 7.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/activity",
+                    get(tasks::list_task_activity),
+                )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 .merge(rate_limited_routes)
@@ -482,6 +487,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
+                )
+                // Plan 0080 (GAR-541) — task activity API slice 7, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/activity",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
@@ -597,6 +607,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
+                )
+                // Plan 0080 (GAR-541) — task activity API slice 7, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/activity",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
