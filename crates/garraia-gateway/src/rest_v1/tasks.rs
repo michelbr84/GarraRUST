@@ -3408,12 +3408,11 @@ pub async fn move_task(
         None => return Err(RestError::NotFound),
     };
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     insert_task_activity(
         &mut tx,
