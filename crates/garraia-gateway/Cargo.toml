@@ -313,6 +313,14 @@ name = "rest_v1_task_subtasks"
 path = "tests/rest_v1_task_subtasks.rs"
 required-features = ["test-helpers"]
 
+# Plan 0084 (GAR-549): unified FTS search (GET /v1/search). required-features
+# gates the binary so `cargo test -p garraia-gateway` without
+# --features test-helpers skips compilation cleanly.
+[[test]]
+name = "rest_v1_search"
+path = "tests/rest_v1_search.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
