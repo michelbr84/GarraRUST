@@ -486,9 +486,14 @@ pub async fn search(
                 "include_messages with scope_type=user is rejected at parse_and_validate"
             ),
         };
-        let rows =
-            fetch_messages(&mut tx, &validated.q, caller_group_id, chat_filter, fetch_up_to)
-                .await?;
+        let rows = fetch_messages(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            chat_filter,
+            fetch_up_to,
+        )
+        .await?;
         for r in rows {
             all.push(SearchResult {
                 result_type: SearchResultType::Message,

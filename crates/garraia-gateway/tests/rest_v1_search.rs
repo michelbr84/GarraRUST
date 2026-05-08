@@ -185,11 +185,7 @@ async fn create_chat_memory(
         ))
         .await
         .expect("create_chat_memory oneshot");
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "setup: chat memory 201"
-    );
+    assert_eq!(resp.status(), StatusCode::CREATED, "setup: chat memory 201");
 }
 
 /// Helper: create a user-scoped (personal) memory item.
@@ -218,11 +214,7 @@ async fn create_user_memory(
         ))
         .await
         .expect("create_user_memory oneshot");
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "setup: user memory 201"
-    );
+    assert_eq!(resp.status(), StatusCode::CREATED, "setup: user memory 201");
 }
 
 /// Helper: GET /v1/search with the given query string.
@@ -590,7 +582,11 @@ async fn search_scenarios() {
     let resp14a = h
         .router
         .clone()
-        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs14a))
+        .oneshot(search_req(
+            Some(&token),
+            Some(&group_id.to_string()),
+            &qs14a,
+        ))
         .await
         .expect("S14a oneshot");
     assert_eq!(resp14a.status(), StatusCode::OK, "S14a status");
@@ -610,7 +606,11 @@ async fn search_scenarios() {
     let resp14b = h
         .router
         .clone()
-        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs14b))
+        .oneshot(search_req(
+            Some(&token),
+            Some(&group_id.to_string()),
+            &qs14b,
+        ))
         .await
         .expect("S14b oneshot");
     assert_eq!(resp14b.status(), StatusCode::OK, "S14b status");
