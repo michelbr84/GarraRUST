@@ -434,3 +434,29 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // GAR-466 / Q6.4 — kill the `is_unique_violation -> true` constant
+    // mutant (mutation-baseline-2026-04.md entry #2/#5). The integration
+    // test `signup_duplicate_email` (tests/signup_flow.rs) covers the
+    // positive case (Database/23505 → DuplicateEmail), but a constant-
+    // `true` mutant survives there because the observable outcome is
+    // identical. These negative-case tests close that gap by asserting
+    // that non-`Database` sqlx::Error variants do NOT classify as a
+    // unique violation.
+
+    #[test]
+    fn is_unique_violation_false_on_pool_timeout() {
+        let err = sqlx::Error::PoolTimedOut;
+        assert!(!is_unique_violation(&err));
+    }
+
+    #[test]
+    fn is_unique_violation_false_on_configuration() {
+        let err = sqlx::Error::Configuration("not a db error".into());
+        assert!(!is_unique_violation(&err));
+    }
+}
