@@ -295,6 +295,17 @@ name = "rest_v1_task_activity"
 path = "tests/rest_v1_task_activity.rs"
 required-features = ["test-helpers"]
 
+# Plan 0082 (GAR-544): task move endpoint POST tasks/{id}/move.
+# 8 bundled scenarios (M1-M8). required-features gates the binary so
+# `cargo clippy --all-targets` without `--features test-helpers`
+# (CI's clippy invocation) skips compilation — otherwise the
+# `mod common` import would pull `JwtIssuer::new_for_test` /
+# `build_router_for_test` which only exist behind `test-helpers`.
+[[test]]
+name = "rest_v1_task_move"
+path = "tests/rest_v1_task_move.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
