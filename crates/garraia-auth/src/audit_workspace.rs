@@ -352,6 +352,15 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "task_subscriptions"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ subscriber_user_id_len: 36 }`.
     TaskUnsubscribed,
+
+    /// A task was moved to a different list via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}:move`
+    /// (plan 0082 / GAR-544, epic GAR-WS-TASKS slice 8).
+    ///
+    /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ from_list_id, to_list_id }`. Both are UUIDs — structural,
+    /// not PII.
+    TaskMoved,
 }
 
 impl WorkspaceAuditAction {
@@ -391,6 +400,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskLabelRemoved => "task.label.removed",
             WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
+            WorkspaceAuditAction::TaskMoved => "task.moved",
         }
     }
 }

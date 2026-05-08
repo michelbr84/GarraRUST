@@ -377,6 +377,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/activity",
                     get(tasks::list_task_activity),
                 )
+                // Plan 0082 (GAR-544) — task move API slice 8.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}:move",
+                    post(tasks::move_task),
+                )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 .merge(rate_limited_routes)
