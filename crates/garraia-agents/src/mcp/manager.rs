@@ -461,10 +461,7 @@ impl McpManager {
             .get(name)
             .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
 
-        let params = rmcp::model::ReadResourceRequestParams {
-            meta: None,
-            uri: uri.to_string(),
-        };
+        let params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
 
         let result = conn.service.read_resource(params).await.map_err(|e| {
             Error::Mcp(format!(
@@ -528,11 +525,10 @@ impl McpManager {
             .get(name)
             .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
 
-        let params = rmcp::model::GetPromptRequestParams {
-            meta: None,
-            name: prompt_name.to_string(),
-            arguments: args,
-        };
+        let mut params = rmcp::model::GetPromptRequestParams::new(prompt_name.to_string());
+        if let Some(a) = args {
+            params = params.with_arguments(a);
+        }
 
         let result = conn.service.get_prompt(params).await.map_err(|e| {
             Error::Mcp(format!(
