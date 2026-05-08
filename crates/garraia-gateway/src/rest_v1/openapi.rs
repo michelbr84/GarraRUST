@@ -29,6 +29,7 @@ use super::messages::{
     ThreadResponse,
 };
 use super::problem::ProblemDetails;
+use super::search::{SearchResponse, SearchResult, SearchResultType};
 use super::tasks::{
     AddAssigneeRequest, AssignTaskLabelRequest, AssigneeResponse, CommentResponse,
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
@@ -130,6 +131,7 @@ impl Modify for SecurityAddon {
         super::tasks::move_task,
         super::tasks::list_subtasks,
         super::audit::list_audit,
+        super::search::search,
     ),
     components(schemas(
         MeResponse,
@@ -185,6 +187,9 @@ impl Modify for SecurityAddon {
         ListSubtasksResponse,
         AuditEventSummary,
         ListAuditResponse,
+        SearchResult,
+        SearchResponse,
+        SearchResultType,
     )),
     modifiers(&SecurityAddon)
 )]

@@ -423,7 +423,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Busca unificada**
 
-- [ ] `GET /v1/search?q=...&scope=group:{id}&types=messages,files,memory`
+- [x] `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory` — plan 0084 / [GAR-549](https://linear.app/chatgpt25/issue/GAR-549), implementado 2026-05-08 (Florida). Slice 1: messages (body_tsv GIN) + memory_items (runtime tsvector). Files e user/chat scope deferred.
 
 **Auditoria**
 

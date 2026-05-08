@@ -107,6 +107,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0081 | [GAR-466 — Q6.4: kill `is_unique_violation` constant-true mutant](0081-gar-466-q64-unique-violation-mutant.md) | [GAR-466](https://linear.app/chatgpt25/issue/GAR-466) | ✅ Merged 2026-05-07 via PR #206 (`48b55a2`) |
 | 0082 | [GAR-544 — REST `/v1` tasks slice 8 (move task between lists)](0082-gar-544-task-move-api.md) | [GAR-544](https://linear.app/chatgpt25/issue/GAR-544) | ✅ Merged 2026-05-08 via PR #214 (`6232ec1`) |
 | 0083 | [GAR-546 — REST `/v1` tasks slice 9 (subtasks API)](0083-gar-546-task-subtasks-api.md) | [GAR-546](https://linear.app/chatgpt25/issue/GAR-546) | ✅ Merged 2026-05-08 via PR #217 (`ad394b7`) |
+| 0084 | [GAR-549 — REST `/v1` search slice 1: GET /v1/search unified FTS](0084-gar-549-search-api-slice1.md) | [GAR-549](https://linear.app/chatgpt25/issue/GAR-549) | 🔄 In Progress |
 
 ## Arquivos não-versionados
 

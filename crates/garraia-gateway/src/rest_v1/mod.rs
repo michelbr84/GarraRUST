@@ -38,6 +38,7 @@ pub mod memory;
 pub mod messages;
 pub mod openapi;
 pub mod problem;
+pub mod search;
 pub mod tasks;
 pub mod uploads;
 
@@ -389,6 +390,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
+                // Plan 0084 (GAR-549) — search API slice 1.
+                .route("/v1/search", get(search::search))
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -482,6 +485,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0070 (GAR-522) — audit API slice 1, fail-soft 503.
                 .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
+                // Plan 0084 (GAR-549) — search API slice 1, fail-soft 503.
+                .route("/v1/search", get(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -612,6 +617,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0070 (GAR-522) — audit API slice 1, no-auth stub.
                 .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
+                // Plan 0084 (GAR-549) — search API slice 1, no-auth stub.
+                .route("/v1/search", get(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),
