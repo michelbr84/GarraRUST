@@ -382,6 +382,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/move",
                     post(tasks::move_task),
                 )
+                // Plan 0083 (GAR-546) — subtasks API slice 9.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
+                    get(tasks::list_subtasks),
+                )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 .merge(rate_limited_routes)
@@ -502,6 +507,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/move",
                     post(unconfigured_handler),
+                )
+                // Plan 0083 (GAR-546) — subtasks API slice 9, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
@@ -627,6 +637,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/move",
                     post(unconfigured_handler),
+                )
+                // Plan 0083 (GAR-546) — subtasks API slice 9, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
