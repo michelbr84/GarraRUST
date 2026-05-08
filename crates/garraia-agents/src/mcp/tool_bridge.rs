@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,12 +94,10 @@ impl Tool for McpTool {
             }
         };
 
-        let params = CallToolRequestParams {
-            name: Cow::Owned(self.nome_original.clone()),
-            arguments: argumentos,
-            meta: None,
-            task: None,
-        };
+        let mut params = CallToolRequestParams::new(self.nome_original.clone());
+        if let Some(a) = argumentos {
+            params = params.with_arguments(a);
+        }
 
         // Executa com timeout
         let resultado = tokio::time::timeout(self.timeout, self.peer.call_tool(params))
