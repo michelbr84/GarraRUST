@@ -3286,3 +3286,213 @@ pub async fn list_task_activity(
 
     Ok(Json(ListActivityResponse { items, next_cursor }))
 }
+
+// ─── Slice 8 — `POST tasks/{id}/move` (plan 0082 / GAR-544) ──────────────────
+
+/// Request body for `POST /v1/groups/{group_id}/tasks/{task_id}/move`.
+///
+/// Move semantics:
+/// - `target_list_id` MUST be a list in the same group, not archived.
+/// - If `target_list_id == current list_id`, the call is a no-op (200, no
+///   activity row, no audit row, `updated_at` unchanged).
+/// - Cross-group target → 404 (RLS filters lookup to 0 rows).
+/// - Schema-level compound FK `(list_id, group_id) → task_lists(id, group_id)`
+///   is the second line of defense if the §pre-validation SELECT is bypassed.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveTaskRequest {
+    /// Destination task list (must live in the caller's group).
+    pub target_list_id: Uuid,
+}
+
+/// `POST /v1/groups/{group_id}/tasks/{task_id}/move` — move task between lists.
+///
+/// Updates `tasks.list_id` to `target_list_id`. The new list MUST belong to
+/// the caller's group and MUST NOT be archived. On a real transition (target
+/// differs from current list) one `task_activity` row (kind=`'moved'`) and
+/// one `audit_events` row (`task.moved`) are written atomically inside the
+/// same transaction as the UPDATE; an idempotent self-move skips both writes.
+///
+/// Authz: `Action::TasksWrite`. Path `group_id` must equal `principal.group_id`.
+///
+/// Note on the path scheme: the GAR-544 spec used Google API verb-suffix
+/// `:move`, but Axum 0.8 / matchit 0.8 cannot route a literal segment-internal
+/// suffix after a named param. Plan 0082 §0 amends to `/move` sub-segment,
+/// matching the existing convention for sibling task routes.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Insufficient permission            | 403    |
+/// | Task not found / cross-tenant      | 404    |
+/// | Task soft-deleted                  | 404    |
+/// | Target list not found / cross-tenant | 404  |
+/// | Target list archived               | 404    |
+/// | Self-move (target == current)      | 200 (no-op) |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/move",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+    ),
+    request_body = MoveTaskRequest,
+    responses(
+        (status = 200, description = "Task moved (or self-move no-op).", body = TaskResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member, group mismatch, or insufficient permission.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task or target list not found / cross-tenant / archived / soft-deleted.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn move_task(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<MoveTaskRequest>,
+) -> Result<Json<TaskResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Fetch current list_id; 404 if task missing or soft-deleted.
+    let current: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT list_id FROM tasks \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let from_list_id = match current {
+        Some((id,)) => id,
+        None => return Err(RestError::NotFound),
+    };
+
+    // Idempotent self-move: same list — return current task body unchanged.
+    if from_list_id == body.target_list_id {
+        let row: TaskRow = sqlx::query_as(
+            "SELECT id, list_id, group_id, parent_task_id, title, description_md, \
+                    status, priority, due_at, started_at, completed_at, \
+                    estimated_minutes, created_by, created_by_label, \
+                    created_at, updated_at, deleted_at \
+             FROM tasks \
+             WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+        return Ok(Json(TaskResponse::from(row)));
+    }
+
+    // Validate target list — must live in the same group and not be archived.
+    // Cross-group targets are filtered to 0 rows by RLS, so the cross-tenant
+    // case collapses into a clean 404.
+    let target_ok: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM task_lists \
+         WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(body.target_list_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if target_ok.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Cache actor display name for audit + activity payloads.
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Apply the move. Compound FK `(list_id, group_id) → task_lists(id, group_id)`
+    // re-validates same-group at the DB layer — even a buggy app layer cannot
+    // point list_id at a foreign-group list (would fail with SQLSTATE 23503).
+    let row: Option<TaskRow> = sqlx::query_as(
+        "UPDATE tasks \
+         SET list_id    = $1, \
+             updated_at = now() \
+         WHERE id = $2 \
+           AND group_id = $3 \
+           AND deleted_at IS NULL \
+         RETURNING id, list_id, group_id, parent_task_id, title, description_md, \
+                   status, priority, due_at, started_at, completed_at, \
+                   estimated_minutes, created_by, created_by_label, \
+                   created_at, updated_at, deleted_at",
+    )
+    .bind(body.target_list_id)
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // Activity timeline entry — kind `'moved'` introduced in migration 016.
+    insert_task_activity(
+        &mut tx,
+        task_id,
+        group_id,
+        principal.user_id,
+        &actor_label,
+        "moved",
+        json!({
+            "from_list_id": from_list_id.to_string(),
+            "to_list_id": body.target_list_id.to_string(),
+        }),
+    )
+    .await?;
+
+    // Compliance audit row. Metadata carries UUIDs only — never list names.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::TaskMoved,
+        principal.user_id,
+        group_id,
+        "tasks",
+        task_id.to_string(),
+        json!({
+            "from_list_id": from_list_id.to_string(),
+            "to_list_id": body.target_list_id.to_string(),
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(TaskResponse::from(row)))
+}

@@ -352,6 +352,16 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "task_subscriptions"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ subscriber_user_id_len: 36 }`.
     TaskUnsubscribed,
+
+    /// A task was moved to a different list within the same group via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/move` (plan 0082 / GAR-544,
+    /// epic GAR-WS-TASKS slice 8).
+    ///
+    /// Idempotent self-move (`target_list_id == current list_id`) does NOT
+    /// emit this event — only actual transitions are audited.
+    /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ from_list_id, to_list_id }` — UUIDs only, never list names.
+    TaskMoved,
 }
 
 impl WorkspaceAuditAction {
@@ -391,6 +401,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskLabelRemoved => "task.label.removed",
             WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
+            WorkspaceAuditAction::TaskMoved => "task.moved",
         }
     }
 }
@@ -564,6 +575,7 @@ mod tests {
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
             "task.unsubscribed"
         );
+        assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
     }
 
     #[test]
@@ -602,6 +614,7 @@ mod tests {
             WorkspaceAuditAction::TaskLabelRemoved.as_str(),
             WorkspaceAuditAction::TaskSubscribed.as_str(),
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
+            WorkspaceAuditAction::TaskMoved.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
