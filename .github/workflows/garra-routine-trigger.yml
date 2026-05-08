@@ -5,18 +5,21 @@
 # - Schedule: every 2 hours at HH:15 UTC. Florida users wanting precise xH:15
 #   LOCAL time should use system cron via scripts/run-garra-routine.sh
 #   instead — see docs/automation/garra-routine.md for the trade-off.
-# - Effect: opens a tracking issue with action=run-now and a body that links
-#   to .claude/commands/garra-routine.md so a human (or an automated Claude
-#   Code Action wired separately) can pick it up.
-# - Idempotency: if a tracking issue with title prefix
-#   "garra-routine: {YYYY-MM-DDTHH}" already exists, this run skips the
-#   create — protects against double-fires from re-runs or schedule drift.
+# - Effect: ensures exactly ONE open tracking issue with the
+#   `garra-routine` label exists. If one is already open the workflow posts
+#   a brief tick comment on it and exits; otherwise it opens a fresh
+#   tracking issue.
+# - Idempotency: dedup is by **label** (`garra-routine`), not by exact
+#   title. The original title-based dedup compared every cron tick against
+#   a slot id that always changed (`garra-routine: YYYY-MM-DDTHH UTC`),
+#   so the dedup never matched and the repo accumulated 12 stale issues
+#   in 26 hours. See PR closing those (and this fix) for context.
 #
 # This workflow is intentionally low-cost: it does NOT compile, test, or
-# touch the codebase. It only files a tracking issue. The actual work
-# happens in a Claude Code session that responds to that issue (manual
-# /garra-routine, system cron via the wrapper script, or a separate
-# Claude Code Action workflow keyed on the issue label).
+# touch the codebase. It only files a tracking issue (or a comment).
+# The actual work happens in a Claude Code session that responds to that
+# issue (manual /garra-routine, system cron via the wrapper script, or a
+# separate Claude Code Action workflow keyed on the issue label).
 
 name: Garra Routine Trigger
 
@@ -36,7 +39,7 @@ concurrency:
 
 jobs:
   open-tracking-issue:
-    name: Open or skip tracking issue
+    name: Open or comment on tracking issue
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -47,25 +50,62 @@ jobs:
           echo "slot=$slot" >> "$GITHUB_OUTPUT"
           echo "title=garra-routine: $slot UTC" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if a tracking issue for this slot already exists
+      - name: Ensure tracking labels exist
+        # Ensured first so both branches (comment-on-existing or
+        # open-new) see the labels. Idempotent — `gh label create`
+        # exits non-zero if the label already exists; the `|| true`
+        # swallows that benign error.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh label create automation \
+            --repo "$GITHUB_REPOSITORY" \
+            --color "5319e7" \
+            --description "Automated workflow tracking" \
+            2>/dev/null || true
+
+          gh label create garra-routine \
+            --repo "$GITHUB_REPOSITORY" \
+            --color "0e8a16" \
+            --description "Garra routine tracking issues" \
+            2>/dev/null || true
+
+      - name: Find any open tracking issue with the garra-routine label
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TITLE: ${{ steps.slot.outputs.title }}
         run: |
           set -euo pipefail
           existing="$(gh issue list \
             --repo "$GITHUB_REPOSITORY" \
             --state open \
-            --search "in:title \"$TITLE\"" \
+            --label garra-routine \
+            --limit 1 \
             --json number \
             --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
-            echo "Existing tracking issue #$existing — skipping create"
+            echo "Existing tracking issue #$existing — will comment, not create"
+            echo "existing=$existing" >> "$GITHUB_OUTPUT"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
+            echo "No open tracking issue — will create"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Comment tick on existing tracking issue
+        if: steps.check.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXISTING: ${{ steps.check.outputs.existing }}
+          SLOT: ${{ steps.slot.outputs.slot }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$EXISTING" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "$(printf 'Cron tick `%s` UTC fired. Reusing this open tracking issue instead of opening a new one.\n\n- Workflow run: %s\n\nClose this issue when the routine produces a merged PR or a no-op summary; the next tick will then open a fresh tracking issue.' "$SLOT" "$RUN_URL")"
 
       - name: Render issue body
         if: steps.check.outputs.skip == 'false'
@@ -99,7 +139,8 @@ jobs:
             echo 'The routine ends with a one-paragraph summary on the merged PR. Once that'
             echo 'PR exists, link it here and close. If the routine determined no productive'
             echo 'slice was available (everything Done or blocked), close with a short note —'
-            echo 'that signal alone is worth keeping.'
+            echo 'that signal alone is worth keeping. Subsequent cron ticks will comment here'
+            echo 'instead of opening fresh issues until this one is closed.'
             echo
             echo '## Slot'
             echo
@@ -109,25 +150,6 @@ jobs:
             echo '---'
             echo '_Generated by `garra-routine-trigger.yml` — see `docs/automation/garra-routine.md`._'
           } > /tmp/garra-routine-body.md
-
-      - name: Ensure tracking labels exist
-        if: steps.check.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          gh label create automation \
-            --repo "$GITHUB_REPOSITORY" \
-            --color "5319e7" \
-            --description "Automated workflow tracking" \
-            2>/dev/null || true
-
-          gh label create garra-routine \
-            --repo "$GITHUB_REPOSITORY" \
-            --color "0e8a16" \
-            --description "Garra routine tracking issues" \
-            2>/dev/null || true
 
       - name: Open tracking issue
         if: steps.check.outputs.skip == 'false'
