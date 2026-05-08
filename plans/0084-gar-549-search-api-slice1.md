@@ -1,10 +1,10 @@
 # Plan 0084 — GAR-549: REST /v1 search slice 1 (unified FTS)
 
-**Status:** In Progress
+**Status:** ✅ Merged 2026-05-08 via PR #223 (`79199ab`)
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-08, America/New_York)
 **Data:** 2026-05-08 (America/New_York)
-**Issue:** [GAR-549](https://linear.app/chatgpt25/issue/GAR-549) — In Progress
-**Branch:** `routine/202605081815-search-api-slice10`
+**Issue:** [GAR-549](https://linear.app/chatgpt25/issue/GAR-549) — Done
+**Branch:** `routine/202605081815-search-api-slice10` (deletada após merge)
 **Epic:** `epic:ws-search`, `epic:ws-api`
 
 ---
