@@ -306,6 +306,13 @@ name = "rest_v1_task_move"
 path = "tests/rest_v1_task_move.rs"
 required-features = ["test-helpers"]
 
+# Plan 0083 (GAR-546): subtasks API (parent_task_id in CreateTaskRequest +
+# GET tasks/{id}/subtasks). required-features gate matches sibling tests.
+[[test]]
+name = "rest_v1_task_subtasks"
+path = "tests/rest_v1_task_subtasks.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

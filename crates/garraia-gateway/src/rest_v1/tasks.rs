@@ -1,7 +1,7 @@
 //! `/v1/groups/{group_id}/task-lists` and task/comment/assignee/label/subscription handlers
-//! (plan 0066/0067/0069/0077/0078/0079, GAR-516/GAR-518/GAR-520/GAR-533/GAR-536/GAR-539).
+//! (plan 0066/0067/0069/0077/0078/0079/0083, GAR-516/GAR-518/GAR-520/GAR-533/GAR-536/GAR-539/GAR-546).
 //!
-//! Twenty-three endpoints on the `garraia_app` RLS-enforced pool:
+//! Twenty-four endpoints on the `garraia_app` RLS-enforced pool:
 //!
 //! **Slice 1 (plan 0066 / GAR-516):**
 //! - `POST /v1/groups/{group_id}/task-lists` — create task list
@@ -37,6 +37,11 @@
 //! - `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — current user subscribes
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — list subscribers
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — current user unsubscribes (idempotent)
+//!
+//! **Slice 9 (plan 0083 / GAR-546):**
+//! - `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks` — cursor-paginated direct children
+//!   (`parent_task_id = task_id AND deleted_at IS NULL`); also enables `parent_task_id`
+//!   in `CreateTaskRequest` so tasks can be created as children of an existing task.
 //!
 //! ## Tenant-context protocol
 //!
@@ -299,6 +304,10 @@ pub struct CreateTaskRequest {
     pub due_at: Option<DateTime<Utc>>,
     /// Optional time estimate in minutes. 0–100,000.
     pub estimated_minutes: Option<i32>,
+    /// Optional parent task UUID. When provided the new task becomes a direct child
+    /// of the parent (depth limit: max 1 level of nesting; the parent must itself
+    /// have no parent). The parent must be in the same group and not soft-deleted.
+    pub parent_task_id: Option<Uuid>,
 }
 
 fn default_status() -> String {
@@ -820,11 +829,35 @@ pub async fn create_task(
 
     let title_trimmed = body.title.trim().to_string();
 
+    // Validate parent_task_id if provided.
+    if let Some(parent_id) = body.parent_task_id {
+        // Parent must exist in this group and not be soft-deleted.
+        let parent_row: Option<(Option<Uuid>,)> = sqlx::query_as(
+            "SELECT parent_task_id FROM tasks \
+             WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(parent_id)
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        match parent_row {
+            None => return Err(RestError::NotFound),
+            Some((Some(_),)) => {
+                return Err(RestError::BadRequest(
+                    "max nesting depth exceeded: parent task already has a parent".into(),
+                ));
+            }
+            Some((None,)) => {} // parent is a root task — allowed
+        }
+    }
+
     let row: TaskRow = sqlx::query_as(
         "INSERT INTO tasks \
-             (list_id, group_id, title, description_md, status, priority, \
+             (list_id, group_id, parent_task_id, title, description_md, status, priority, \
               due_at, estimated_minutes, created_by, created_by_label) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id, list_id, group_id, parent_task_id, title, description_md, \
                    status, priority, due_at, started_at, completed_at, \
                    estimated_minutes, created_by, created_by_label, \
@@ -832,6 +865,7 @@ pub async fn create_task(
     )
     .bind(list_id)
     .bind(group_id)
+    .bind(body.parent_task_id)
     .bind(&title_trimmed)
     .bind(&body.description_md)
     .bind(&body.status)
@@ -859,6 +893,10 @@ pub async fn create_task(
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
 
+    let activity_payload = match body.parent_task_id {
+        Some(pid) => json!({ "parent_task_id": pid.to_string() }),
+        None => json!({}),
+    };
     insert_task_activity(
         &mut tx,
         task_id,
@@ -866,7 +904,7 @@ pub async fn create_task(
         principal.user_id,
         &created_by_label,
         "created",
-        json!({}),
+        activity_payload,
     )
     .await?;
 
@@ -3285,6 +3323,221 @@ pub async fn list_task_activity(
     };
 
     Ok(Json(ListActivityResponse { items, next_cursor }))
+}
+
+// ─── Slice 9 — `GET tasks/{id}/subtasks` (plan 0083 / GAR-546) ───────────────
+
+/// Query parameters for `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListSubtasksQuery {
+    /// Optional status filter.
+    pub status: Option<String>,
+    /// Keyset cursor — UUID of the last item received.
+    pub cursor: Option<Uuid>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+}
+
+/// Response body for `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListSubtasksResponse {
+    pub items: Vec<TaskSummary>,
+    pub next_cursor: Option<Uuid>,
+}
+
+/// `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks` — cursor-paginated direct children.
+///
+/// Returns tasks whose `parent_task_id = task_id` and `deleted_at IS NULL`.
+/// Only direct children are listed (depth = 1). Cross-group parent task → 404.
+/// Authz: `Action::TasksRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Invalid status filter              | 400    |
+/// | Parent task not found              | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Parent task UUID."),
+        ListSubtasksQuery,
+    ),
+    responses(
+        (status = 200, description = "Direct child tasks.", body = ListSubtasksResponse),
+        (status = 400, description = "Invalid status filter.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Parent task not found or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_subtasks(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<ListSubtasksQuery>,
+) -> Result<Json<ListSubtasksResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    if params
+        .status
+        .as_deref()
+        .is_some_and(|s| !ALLOWED_STATUSES.contains(&s))
+    {
+        return Err(RestError::BadRequest(
+            "status must be one of: backlog, todo, in_progress, review, done, canceled".into(),
+        ));
+    }
+
+    let effective_limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let fetch_limit = i64::from(effective_limit + 1);
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Verify parent task exists in this group and is not soft-deleted.
+    let parent_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM tasks WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if parent_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let rows: Vec<TaskRow> = match (params.cursor, &params.status) {
+        (Some(cursor_id), Some(status)) => sqlx::query_as(
+            "SELECT id, list_id, group_id, parent_task_id, title, description_md, \
+                    status, priority, due_at, started_at, completed_at, \
+                    estimated_minutes, created_by, created_by_label, \
+                    created_at, updated_at, deleted_at \
+             FROM tasks \
+             WHERE parent_task_id = $1 \
+               AND group_id = $2 \
+               AND deleted_at IS NULL \
+               AND status = $3 \
+               AND (created_at, id) < ( \
+                   SELECT created_at, id FROM tasks WHERE id = $4 \
+               ) \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $5",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .bind(status)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (Some(cursor_id), None) => sqlx::query_as(
+            "SELECT id, list_id, group_id, parent_task_id, title, description_md, \
+                    status, priority, due_at, started_at, completed_at, \
+                    estimated_minutes, created_by, created_by_label, \
+                    created_at, updated_at, deleted_at \
+             FROM tasks \
+             WHERE parent_task_id = $1 \
+               AND group_id = $2 \
+               AND deleted_at IS NULL \
+               AND (created_at, id) < ( \
+                   SELECT created_at, id FROM tasks WHERE id = $3 \
+               ) \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $4",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (None, Some(status)) => sqlx::query_as(
+            "SELECT id, list_id, group_id, parent_task_id, title, description_md, \
+                    status, priority, due_at, started_at, completed_at, \
+                    estimated_minutes, created_by, created_by_label, \
+                    created_at, updated_at, deleted_at \
+             FROM tasks \
+             WHERE parent_task_id = $1 \
+               AND group_id = $2 \
+               AND deleted_at IS NULL \
+               AND status = $3 \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $4",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .bind(status)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (None, None) => sqlx::query_as(
+            "SELECT id, list_id, group_id, parent_task_id, title, description_md, \
+                    status, priority, due_at, started_at, completed_at, \
+                    estimated_minutes, created_by, created_by_label, \
+                    created_at, updated_at, deleted_at \
+             FROM tasks \
+             WHERE parent_task_id = $1 \
+               AND group_id = $2 \
+               AND deleted_at IS NULL \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $3",
+        )
+        .bind(task_id)
+        .bind(group_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let has_more = rows.len() as u32 > effective_limit;
+    let items: Vec<TaskSummary> = rows
+        .into_iter()
+        .take(effective_limit as usize)
+        .map(|r| TaskSummary {
+            id: r.id,
+            list_id: r.list_id,
+            group_id: r.group_id,
+            title: r.title,
+            status: r.status,
+            priority: r.priority,
+            due_at: r.due_at,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect();
+    let next_cursor = if has_more {
+        items.last().map(|it| it.id)
+    } else {
+        None
+    };
+
+    Ok(Json(ListSubtasksResponse { items, next_cursor }))
 }
 
 // ─── Slice 8 — `POST tasks/{id}/move` (plan 0082 / GAR-544) ──────────────────

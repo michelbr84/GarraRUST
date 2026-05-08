@@ -533,6 +533,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/activity?cursor=...` — plan 0080 / GAR-541 ✅
 - [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/move` — plan 0082 / GAR-544 ✅ (path scheme amendado de `:move` para `/move` por limitação Axum 0.8 / matchit; reordenar dentro da lista deferido — coluna `position` ainda não existe)
+- [x] `parent_task_id` em `CreateTaskRequest` — plan 0083 / [GAR-546](https://linear.app/chatgpt25/issue/GAR-546), implementado 2026-05-08 (Florida). Depth limit = 1 (grandchild → 400).
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks?cursor=&limit=&status=` — plan 0083 / GAR-546, implementado 2026-05-08 (Florida)
 - [ ] WebSocket `/v1/groups/{group_id}/task-lists/{list_id}/stream` para updates em tempo real (kanban colaborativo)
 
 **RBAC:**
