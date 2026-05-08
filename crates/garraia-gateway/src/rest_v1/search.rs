@@ -1,10 +1,13 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084, GAR-549, epic GAR-WS-SEARCH / Fase 3.4).
+//! (plan 0084 + plan 0085, GAR-549 + GAR-551, epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slice 1)
+//! ## Scope (slice 1 + slice 2)
 //!
-//! `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory
-//!               &limit=<1-50>&offset=<n>`
+//! ```text
+//! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
+//! GET /v1/search?q=<q>&scope_type=chat &scope_id=<chat_uuid> &types=messages,memory
+//! GET /v1/search?q=<q>&scope_type=user &scope_id=<user_uuid> &types=memory
+//! ```
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -19,6 +22,17 @@
 //!
 //! Both `app.current_user_id` and `app.current_group_id` are SET LOCAL via
 //! parameterized `set_config` before any SELECT. `true` = transaction-local.
+//! Memory RLS (`memory_items_group_or_self`, migration 007:133) is dual-branch
+//! and covers all three scopes — the user branch fires when `group_id IS NULL
+//! AND created_by = app.current_user_id`.
+//!
+//! ## Cross-tenant isolation
+//!
+//! - `scope_type=group` + `scope_id ≠ principal.group_id` → 404
+//! - `scope_type=chat`  + chat not in caller's group        → 404
+//! - `scope_type=user`  + `scope_id ≠ principal.user_id`    → 404
+//!
+//! 404 (not 403) avoids leaking the existence of resources in other tenants.
 //!
 //! ## Security filters on memory_items
 //!
@@ -122,9 +136,20 @@ pub struct SearchQuery {
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
+/// Discriminator for the validated scope. Maps directly to the three accepted
+/// `scope_type` values. Resolved app-layer cross-tenant checks (404) and SQL
+/// filter selection are driven by this enum in the handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatedScopeType {
+    Group,
+    Chat,
+    User,
+}
+
 /// Parsed, validated search parameters.
 struct ValidatedSearch {
     q: String,
+    scope_type: ValidatedScopeType,
     scope_id: Uuid,
     include_messages: bool,
     include_memory: bool,
@@ -144,12 +169,17 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         )));
     }
 
-    // scope_type: only "group" supported in slice 1.
-    if params.scope_type.as_str() != "group" {
-        return Err(RestError::BadRequest(
-            "scope_type must be 'group' (user/chat scope deferred)".into(),
-        ));
-    }
+    // scope_type ∈ {group, chat, user}.
+    let scope_type = match params.scope_type.as_str() {
+        "group" => ValidatedScopeType::Group,
+        "chat" => ValidatedScopeType::Chat,
+        "user" => ValidatedScopeType::User,
+        other => {
+            return Err(RestError::BadRequest(format!(
+                "scope_type must be one of: group, chat, user (got '{other}')"
+            )));
+        }
+    };
 
     // Parse types list.
     let types_str = params.types.as_deref().unwrap_or("messages,memory");
@@ -172,6 +202,14 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // Messages have no user scope — they always belong to a chat in a group.
+    // Reject the combination explicitly instead of silently filtering.
+    if scope_type == ValidatedScopeType::User && include_messages {
+        return Err(RestError::BadRequest(
+            "scope_type=user does not support types=messages; use types=memory".into(),
+        ));
+    }
+
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -182,6 +220,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
 
     Ok(ValidatedSearch {
         q,
+        scope_type,
         scope_id: params.scope_id,
         include_messages,
         include_memory,
@@ -242,10 +281,15 @@ async fn set_rls_context(
 // ─── FTS queries ─────────────────────────────────────────────────────────────
 
 /// Fetch message results from messages.body_tsv (GIN indexed).
+///
+/// `chat_filter`:
+/// - `None` → group-wide search (slice 1: `scope_type=group`)
+/// - `Some(chat_id)` → chat-scoped search (slice 2: `scope_type=chat`)
 async fn fetch_messages(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
     group_id: Uuid,
+    chat_filter: Option<Uuid>,
     fetch_up_to: i64,
 ) -> Result<Vec<MessageSearchRow>, RestError> {
     let rows = sqlx::query_as::<_, MessageSearchRow>(
@@ -259,12 +303,14 @@ async fn fetch_messages(
          FROM   messages m
          WHERE  m.body_tsv @@ websearch_to_tsquery('portuguese', $1)
            AND  m.group_id = $2
+           AND  ($3::uuid IS NULL OR m.chat_id = $3)
            AND  m.deleted_at IS NULL
          ORDER BY score DESC, m.created_at DESC, m.id DESC
-         LIMIT $3",
+         LIMIT $4",
     )
     .bind(q)
     .bind(group_id)
+    .bind(chat_filter)
     .bind(fetch_up_to)
     .fetch_all(&mut **tx)
     .await
@@ -274,10 +320,23 @@ async fn fetch_messages(
 }
 
 /// Fetch memory results using runtime `to_tsvector` on content.
+///
+/// Three scope variants share a single SQL statement with NULL-able predicates:
+///
+/// - **Group**: `group_filter=Some(g)`, `scope_type_filter=None`, `scope_id_filter=None`.
+///   Matches all memory rows visible at the group level (group-scope rows AND
+///   chat-scope rows whose `group_id = g`). Slice 1 behavior — preserved.
+/// - **Chat**:  `group_filter=Some(g)`, `scope_type_filter=Some("chat")`,
+///   `scope_id_filter=Some(chat_id)`. Restricts to the specific chat.
+/// - **User**:  `group_filter=None`,    `scope_type_filter=Some("user")`,
+///   `scope_id_filter=Some(user_id)`. RLS branch 2
+///   (`group_id IS NULL AND created_by = current_user_id`) handles the rest.
 async fn fetch_memory(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
-    group_id: Uuid,
+    group_filter: Option<Uuid>,
+    scope_type_filter: Option<&'static str>,
+    scope_id_filter: Option<Uuid>,
     fetch_up_to: i64,
 ) -> Result<Vec<MemorySearchRow>, RestError> {
     let rows = sqlx::query_as::<_, MemorySearchRow>(
@@ -294,15 +353,19 @@ async fn fetch_memory(
                 mi.created_at
          FROM   memory_items mi
          WHERE  to_tsvector('portuguese', mi.content) @@ websearch_to_tsquery('portuguese', $1)
-           AND  mi.group_id = $2
+           AND  ($2::uuid IS NULL OR mi.group_id = $2)
+           AND  ($3::text IS NULL OR mi.scope_type = $3)
+           AND  ($4::uuid IS NULL OR mi.scope_id = $4)
            AND  mi.deleted_at IS NULL
            AND  mi.sensitivity <> 'secret'
            AND  (mi.ttl_expires_at IS NULL OR mi.ttl_expires_at > now())
          ORDER BY score DESC, mi.created_at DESC, mi.id DESC
-         LIMIT $3",
+         LIMIT $5",
     )
     .bind(q)
-    .bind(group_id)
+    .bind(group_filter)
+    .bind(scope_type_filter)
+    .bind(scope_id_filter)
     .bind(fetch_up_to)
     .fetch_all(&mut **tx)
     .await
@@ -315,24 +378,27 @@ async fn fetch_memory(
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
 ///
-/// Requires the caller to be a group member. `scope_id` must equal the caller's
-/// active `group_id`; mismatches return 404 (cross-group isolation).
+/// Requires the caller to be a group member. Cross-tenant attempts return 404
+/// in every variant (avoids leaking the existence of resources in other tenants).
 ///
 /// Results are ranked by `ts_rank` (descending), then `created_at` (descending),
 /// then `id` (descending) for stable ordering. Offset-based pagination.
 ///
 /// ## Error matrix
 ///
-/// | Condition                           | Status |
-/// |-------------------------------------|--------|
-/// | Missing/invalid JWT                 | 401    |
-/// | Caller has no group membership      | 404    |
-/// | `scope_id` ≠ `principal.group_id`   | 404    |
-/// | `scope_type` ≠ `group`              | 400    |
-/// | Empty `q` or `q` > 256 chars        | 400    |
-/// | Unknown type in `types`             | 400    |
-/// | `offset` > 10 000                   | 400    |
-/// | Happy path                          | 200    |
+/// | Condition                                                     | Status |
+/// |---------------------------------------------------------------|--------|
+/// | Missing/invalid JWT                                           | 401    |
+/// | Caller has no group membership                                | 404    |
+/// | `scope_type=group` and `scope_id ≠ principal.group_id`        | 404    |
+/// | `scope_type=chat`  and chat not in caller's group / archived  | 404    |
+/// | `scope_type=user`  and `scope_id ≠ principal.user_id`         | 404    |
+/// | `scope_type` not in {group, chat, user}                       | 400    |
+/// | `scope_type=user` + `types=messages`                          | 400    |
+/// | Empty `q` or `q` > 256 chars                                  | 400    |
+/// | Unknown type in `types`                                       | 400    |
+/// | `offset` > 10 000                                             | 400    |
+/// | Happy path                                                    | 200    |
 #[utoipa::path(
     get,
     path = "/v1/search",
@@ -341,7 +407,7 @@ async fn fetch_memory(
         (status = 200, description = "Search results.", body = SearchResponse),
         (status = 400, description = "Invalid query parameters.", body = super::problem::ProblemDetails),
         (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
-        (status = 404, description = "Group not found or cross-group attempt.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Cross-tenant scope or chat not in caller's group.", body = super::problem::ProblemDetails),
     ),
     security(("bearer" = []))
 )]
@@ -350,7 +416,8 @@ pub async fn search(
     principal: Principal,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, RestError> {
-    // Caller must be in a group.
+    // Caller must be in a group (every scope_type still requires a tenant context
+    // for the RLS dual-branch policy on memory_items to fire correctly).
     let caller_group_id = match principal.group_id {
         Some(g) => g,
         None => return Err(RestError::NotFound),
@@ -359,9 +426,21 @@ pub async fn search(
     // Validate params.
     let validated = parse_and_validate(&params)?;
 
-    // Cross-group isolation: scope_id must equal the caller's group.
-    if validated.scope_id != caller_group_id {
-        return Err(RestError::NotFound);
+    // App-layer cross-tenant checks (SQL-independent).
+    match validated.scope_type {
+        ValidatedScopeType::Group => {
+            if validated.scope_id != caller_group_id {
+                return Err(RestError::NotFound);
+            }
+        }
+        ValidatedScopeType::User => {
+            if validated.scope_id != principal.user_id {
+                return Err(RestError::NotFound);
+            }
+        }
+        ValidatedScopeType::Chat => {
+            // In-tx check below — we need RLS context first.
+        }
     }
 
     // Fetch more than needed to detect has_more.
@@ -375,11 +454,46 @@ pub async fn search(
 
     set_rls_context(&mut tx, principal.user_id, caller_group_id).await?;
 
+    // For chat scope, verify the chat belongs to the caller's group and is not
+    // archived. Mirrors `memory.rs` and `messages.rs` patterns. RLS on `chats`
+    // (migration 007:90-94) already filters by `group_id = current_group_id`,
+    // so the explicit `group_id = $2` is defense-in-depth.
+    if validated.scope_type == ValidatedScopeType::Chat {
+        let chat_row: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+        )
+        .bind(validated.scope_id)
+        .bind(caller_group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        if chat_row.is_none() {
+            return Err(RestError::NotFound);
+        }
+    }
+
     // Collect all candidate results.
     let mut all: Vec<SearchResult> = Vec::new();
 
     if validated.include_messages {
-        let rows = fetch_messages(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
+        // User scope was rejected at parse_and_validate; messages here means
+        // either Group (chat_filter=None) or Chat (chat_filter=Some(chat_id)).
+        let chat_filter = match validated.scope_type {
+            ValidatedScopeType::Chat => Some(validated.scope_id),
+            ValidatedScopeType::Group => None,
+            ValidatedScopeType::User => unreachable!(
+                "include_messages with scope_type=user is rejected at parse_and_validate"
+            ),
+        };
+        let rows = fetch_messages(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            chat_filter,
+            fetch_up_to,
+        )
+        .await?;
         for r in rows {
             all.push(SearchResult {
                 result_type: SearchResultType::Message,
@@ -398,7 +512,29 @@ pub async fn search(
     }
 
     if validated.include_memory {
-        let rows = fetch_memory(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
+        // Memory query has three filter shapes — see fetch_memory rustdoc.
+        let (group_filter, scope_type_filter, scope_id_filter): (
+            Option<Uuid>,
+            Option<&'static str>,
+            Option<Uuid>,
+        ) = match validated.scope_type {
+            ValidatedScopeType::Group => (Some(caller_group_id), None, None),
+            ValidatedScopeType::Chat => (
+                Some(caller_group_id),
+                Some("chat"),
+                Some(validated.scope_id),
+            ),
+            ValidatedScopeType::User => (None, Some("user"), Some(principal.user_id)),
+        };
+        let rows = fetch_memory(
+            &mut tx,
+            &validated.q,
+            group_filter,
+            scope_type_filter,
+            scope_id_filter,
+            fetch_up_to,
+        )
+        .await?;
         for r in rows {
             all.push(SearchResult {
                 result_type: SearchResultType::Memory,
@@ -486,8 +622,72 @@ mod tests {
 
     #[test]
     fn unsupported_scope_type_rejected() {
+        let params = make_params("hello", "everyone", None);
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn scope_type_chat_accepted() {
+        let params = make_params("hello", "chat", None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.scope_type, ValidatedScopeType::Chat);
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+    }
+
+    #[test]
+    fn scope_type_user_with_memory_accepted() {
+        let params = make_params("hello", "user", Some("memory"));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.scope_type, ValidatedScopeType::User);
+        assert!(!v.include_messages);
+        assert!(v.include_memory);
+    }
+
+    #[test]
+    fn scope_type_user_with_default_types_rejected() {
+        // default types = "messages,memory" — messages not allowed for user scope.
         let params = make_params("hello", "user", None);
         assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn scope_type_user_with_messages_rejected() {
+        let params = make_params("hello", "user", Some("messages"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn scope_type_user_with_messages_and_memory_rejected() {
+        let params = make_params("hello", "user", Some("messages,memory"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn scope_type_chat_messages_only_accepted() {
+        let params = make_params("hello", "chat", Some("messages"));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.scope_type, ValidatedScopeType::Chat);
+        assert!(v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn scope_type_chat_memory_only_accepted() {
+        let params = make_params("hello", "chat", Some("memory"));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.scope_type, ValidatedScopeType::Chat);
+        assert!(!v.include_messages);
+        assert!(v.include_memory);
+    }
+
+    #[test]
+    fn scope_type_group_default_preserved_slice1() {
+        let params = make_params("hello", "group", None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.scope_type, ValidatedScopeType::Group);
+        assert!(v.include_messages);
+        assert!(v.include_memory);
     }
 
     #[test]
