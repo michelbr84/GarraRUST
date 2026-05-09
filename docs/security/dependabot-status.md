@@ -28,6 +28,121 @@ Health routine ran on 2026-05-08. All 4 security surfaces scanned:
 
 No new untracked alerts. Count reconciled: 8 Dependabot open (2 HIGH, 2 MEDIUM, 4 LOW) — all pre-existing, all upstream-blocked, all allowlisted. Main branch CI green. Open routine/ PR: #217 (task subtasks slice 9 — roadmap routine, unrelated to health). Linear status note filed under GAR team (label: automation,health-routine).
 
+A targeted deep-dive on GAR-455 / Dependabot alert #37
+(RUSTSEC-2026-0104, `rustls-webpki` panic in CRL parsing) ran the same
+day. Verdict: still upstream-blocked. Details and a new finding about
+the AWS sub-chain are recorded in the next sub-section.
+
+## GAR-455 deep-dive 2026-05-08 — alert #37 closure investigation
+
+Triggered by a question of whether GAR-455 could close today without
+breaking the project. Read-only investigation; no `Cargo.toml` /
+`Cargo.lock` / `deny.toml` / `.cargo/audit.toml` changes were made.
+
+### Verdict
+
+Alert #37 (RUSTSEC-2026-0104) **stays open and remains
+upstream-blocked**. The allowlist entry in `.cargo/audit.toml` and the
+mirror in `deny.toml` continue to be the correct mitigation.
+
+### Empirical chain map (verified 2026-05-08 via `cargo tree`)
+
+```
+rustls-webpki 0.102.8  ← serenity 0.12.5
+                         → tokio-tungstenite 0.21.0
+                         → rustls 0.22.4
+                         (always-on; reachable from garraia-channels +
+                          garraia-cli + garraia-gateway)
+                         carries ALL 4 RUSTSEC IDs of GAR-455
+                         (RUSTSEC-2026-0049 / -0098 / -0099 / -0104)
+
+rustls-webpki 0.101.7  ← aws-sdk-s3 1.119.0 (feature `rustls`)
+                         → aws-smithy-runtime 1.11.1 (feature `tls-rustls`)
+                         → aws-smithy-http-client 1.1.12
+                           (feature `legacy-rustls-ring`)
+                         → `legacy-rustls` (renamed dep, points at
+                           rustls 0.21.12)
+                         (only when `garraia-storage/storage-s3`
+                          feature is enabled)
+                         carries 3 of 4 RUSTSEC IDs (-0098, -0099, -0104)
+```
+
+### Upstream version snapshot (crates.io, 2026-05-08)
+
+| Crate | Lockfile | crates.io latest | Last published | Notes |
+|---|---|---|---|---|
+| `serenity` | 0.12.5 | **0.12.5** | 2025-12-20 | No 0.13.x or 0.14+ stable release. The `tokio-tungstenite 0.21` pin is internal to serenity 0.12.5; only serenity itself can lift it. |
+| `tokio-tungstenite` | 0.21.0 (via serenity) | 0.29.0 | 2026-03-17 | Workspace already declares 0.26 elsewhere; the 0.21 copy is exclusively dragged in by serenity. |
+| `aws-sdk-s3` | 1.119.0 | 1.132.0 | 2026-05-06 | A version bump alone does NOT remove rustls 0.21 — `aws-smithy-http-client` is still 1.1.12 underneath. |
+| `aws-smithy-http-client` | 1.1.12 | **1.1.12** | 2026-03-02 | Already supports modern rustls 0.23.31 via the `rustls-ring` / `rustls-aws-lc` features. The legacy chain is opt-in through `legacy-rustls-ring`. |
+
+Conclusion on the serenity side: **no upstream path exists today**.
+The 0.102.8 chain is purely waiting on a serenity 0.13 (or a 0.12
+maintenance release that bumps `tokio-tungstenite`). Re-check on the
+next monthly health routine.
+
+### New finding — the AWS sub-chain is feature-flag-fixable, not version-blocked
+
+The earlier mitigation column described the `0.101.7` chain as
+upstream-blocked on an `aws-smithy-http-client` upgrade. That framing
+is no longer accurate. Empirical reading of the upstream `Cargo.toml`s
+on 2026-05-08:
+
+- `aws-sdk-s3 1.119.0`: `rustls = ["aws-smithy-runtime/tls-rustls"]`
+- `aws-smithy-runtime 1.11.1`: `tls-rustls = ["aws-smithy-http-client?/legacy-rustls-ring", "connector-hyper-0-14-x"]`
+- `aws-smithy-http-client 1.1.12`:
+  - `legacy-rustls-ring = ["dep:legacy-hyper-rustls", "dep:legacy-rustls", ...]` (legacy `rustls 0.21.x` renamed)
+  - `rustls-ring` / `rustls-aws-lc` → `dep:rustls` at version `0.23.31`
+
+In other words, `aws-sdk-s3 1.119`'s `rustls` feature aliases to the
+**legacy** chain, while the same crate ships a separate
+`default-https-client` feature that maps to the **modern** rustls 0.23
+chain (via `aws-smithy-http-client/rustls-aws-lc`).
+
+`crates/garraia-storage/Cargo.toml` currently passes `features =
+["behavior-version-latest", "rustls", "rt-tokio"]` to both
+`aws-config` and `aws-sdk-s3`. Note that on `aws-config 1.8.16` the
+`rustls` alias already maps to modern rustls 0.23 (via `client-hyper`
+→ `aws-smithy-runtime/default-https-client` →
+`aws-smithy-http-client/rustls-aws-lc`); only the `aws-sdk-s3` side
+flips to the legacy chain.
+
+### What this finding does and does not change
+
+- It DOES open a defense-in-depth path on the AWS sub-chain: swapping
+  the `aws-sdk-s3` feature `"rustls"` for `"default-https-client"`
+  would remove `rustls 0.21.12` and `rustls-webpki 0.101.7` from
+  `Cargo.lock`, eliminating one of the two chains carrying
+  RUSTSEC-2026-0098 / -0099 / -0104.
+- It DOES NOT close Dependabot alert #37 (or any of the other 3
+  GAR-455 alerts). The serenity-driven `rustls-webpki 0.102.8` chain
+  carries all 4 RUSTSEC IDs independently. As long as serenity 0.12.5
+  is on the lockfile, the allowlist entries for the 4 IDs in
+  `.cargo/audit.toml` and `deny.toml` are required.
+- The `audit.toml` SYNC NOTE invariant is therefore unaffected: the 4
+  rustls-webpki IDs continue to mirror across both files, atomic drop
+  still gated on the serenity bump.
+
+### Recommended follow-up (not done in this PR)
+
+A separate, narrowly-scoped side PR — distinct from this docs-only
+update — could land the AWS-side feature-flag swap on
+`crates/garraia-storage/Cargo.toml`. Required validation for that PR:
+
+- `cargo check --workspace --exclude garraia-desktop --features storage-s3 --locked`
+- `cargo clippy --workspace --exclude garraia-desktop --all-targets --features storage-s3 --locked -- -D warnings`
+- The MinIO testcontainer integration tests gated by the
+  `storage-s3` feature must pass (no behavioral change expected — the
+  AWS SDK keeps speaking TLS, just on the modern rustls 0.23 + aws-lc
+  stack).
+- `cargo audit` and `cargo deny check` should still pass; the 4
+  rustls-webpki residual IDs continue to be triggered by the serenity
+  chain, so neither file changes.
+
+The Linear placement for that follow-up is GAR-455 itself (or a
+sub-issue under it) — not a new epic — because the residual surface
+remains the same RUSTSEC IDs.
+
 ## Confirmed 2026-05-07 (health routine — no new alerts)
 
 Health routine ran on 2026-05-07. All 4 security surfaces scanned:
@@ -67,7 +182,7 @@ is intentionally allowlisted, not silenced.
 
 | GH # | GHSA | Severity | Crate | RUSTSEC | Linear | Mitigation |
 |---|---|---|---|---|---|---|
-| #37 | GHSA-82j2-j2ch-gfr8 | HIGH | `rustls-webpki` | RUSTSEC-2026-0104 (panic in CRL parsing) | GAR-455 | Production hot path patched to `rustls-webpki 0.103.13` in plan 0053 PR-1 (PR #75). Residual lives in legacy `rustls-webpki 0.102.8` (serenity 0.12.5 EOL chain) and `0.101.7` (aws-smithy-http-client `storage-s3` feature). Closes when serenity 0.13 + aws-smithy upgrade lands. |
+| #37 | GHSA-82j2-j2ch-gfr8 | HIGH | `rustls-webpki` | RUSTSEC-2026-0104 (panic in CRL parsing) | GAR-455 | Production hot path patched to `rustls-webpki 0.103.13` in plan 0053 PR-1 (PR #75). Residual lives in legacy `rustls-webpki 0.102.8` (serenity 0.12.5 EOL chain) and `0.101.7` (aws-smithy-http-client `storage-s3` feature). 2026-05-08 deep-dive (see "GAR-455 deep-dive 2026-05-08" above): the 0.102.8 path is the actual blocker (carries the full RUSTSEC-2026-0104) and stays open until serenity 0.13 ships; the 0.101.7 path is feature-flag-fixable today via an `aws-sdk-s3` feature swap (`"rustls"` → `"default-https-client"`), but that swap is defense-in-depth only and does not by itself close #37. |
 | — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via two paths: (1) `sqlx-mysql` lockfile residual even with `default-features = false` on all sqlx deps; (2) `jsonwebtoken 10 rust_crypto` backend (added 2026-04-30). GarraRUST emits/verifies HS256 only (`Algorithm::HS256` in `garraia-auth/src/jwt.rs`) — no RSA code path is reachable. Fix paths: (a) `jsonwebtoken` upstream isolates `rsa` behind `asymmetric` feature; (b) migrate to `sqlx-postgres` direct or sqlx 0.9. |
 | #11 | GHSA-pwjx-qhcg-rvj4 | MEDIUM | `rustls-webpki` | RUSTSEC-2026-0049 (CRL Distribution Point matching) | GAR-455 | Same legacy chains as #37. Closes with the same upgrade. |
 | #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 (`VariantStrIter` Iterator unsoundness) | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. Low runtime risk in deployments. Fix path: bump glib OR gate ignore behind `desktop` feature. |
@@ -78,7 +193,7 @@ is intentionally allowlisted, not silenced.
 
 ## Linear ownership map
 
-- **GAR-455** — `rustls-webpki` legacy chains. 4 of 8 alerts (#37, #11, #23, #22). Closes when `serenity 0.12.5 → 0.13` AND `aws-smithy-http-client 1.1.12 → next` upgrades land. Both are upstream-blocked today.
+- **GAR-455** — `rustls-webpki` legacy chains. 4 of 8 alerts (#37, #11, #23, #22). Closes when the `serenity 0.12.5 → 0.13` upgrade lands (carries the full set of 4 IDs via `rustls-webpki 0.102.8`). The smaller `0.101.7` chain (carries 3 of the 4 IDs, only with `storage-s3`) is — per the 2026-05-08 deep-dive — feature-flag-fixable today via an `aws-sdk-s3` feature swap; that's a defense-in-depth follow-up that does not close any of the 4 alerts on its own.
 - **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 3 of 8 alerts (#2 glib, #25 rand, #5 lru). Each tracked individually as upstream fixes ship.
 - **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). 1 of 8 alerts (RUSTSEC-2023-0071; GH alert number unknown — cargo audit detects it as workspace advisory). GarraRUST emits and verifies HS256 only; no RSA call site is reachable. Same `2026-07-31` expiration.
 
