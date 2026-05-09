@@ -180,6 +180,23 @@ pub struct PatchFileRequest {
     pub name: String,
 }
 
+/// Body for `POST /v1/groups/{group_id}/folders` (plan 0091, GAR-561).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateFolderRequest {
+    /// Folder name. Trimmed; 1..=500 chars; no `/` or NUL.
+    pub name: String,
+    /// Parent folder UUID. `null` / absent = root-level folder.
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+}
+
+/// Body for `PATCH /v1/groups/{group_id}/folders/{folder_id}` (plan 0091, GAR-561).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchFolderRequest {
+    /// New folder name. Trimmed; 1..=500 chars; no `/` or NUL.
+    pub name: String,
+}
+
 /// Validation error message family. Plain strings — never embed
 /// the offending value (it is user-controlled and may include PII).
 const ERR_NAME_EMPTY: &str = "name must not be empty after trim";
@@ -795,6 +812,264 @@ pub async fn get_folder(
 
     let row = row.ok_or(RestError::NotFound)?;
     Ok(Json(FolderSummary::from(row)))
+}
+
+/// `POST /v1/groups/{group_id}/folders` — create a new folder.
+///
+/// Authz: `Action::FilesWrite`.
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Caller lacks `FilesWrite`          | 403    |
+/// | Validation error (name)            | 422    |
+/// | Happy path                         | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/folders",
+    params(("group_id" = Uuid, Path, description = "Group UUID.")),
+    request_body = CreateFolderRequest,
+    responses(
+        (status = 201, description = "Folder created.", body = FolderSummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 400, description = "Validation error.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(path_group_id): Path<Uuid>,
+    Json(body): Json<CreateFolderRequest>,
+) -> Result<(StatusCode, Json<FolderSummary>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let name = validate_file_name(&body.name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = name.chars().count();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let (created_by_label,): (String,) =
+        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let folder_id = Uuid::new_v4();
+    let row: FolderRow = sqlx::query_as(
+        "INSERT INTO folders (id, group_id, parent_id, name, created_by, created_by_label) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, name, parent_id, created_by, created_by_label, created_at, updated_at",
+    )
+    .bind(folder_id)
+    .bind(group_id)
+    .bind(body.parent_id)
+    .bind(&name)
+    .bind(principal.user_id)
+    .bind(&created_by_label)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderCreated,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({ "name_len": name_len, "group_id": group_id }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((StatusCode::CREATED, Json(FolderSummary::from(row))))
+}
+
+/// `PATCH /v1/groups/{group_id}/folders/{folder_id}` — rename a folder.
+///
+/// Authz: `Action::FilesWrite`.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Path group_id ≠ principal group_id             | 403    |
+/// | Caller lacks `FilesWrite`                      | 403    |
+/// | Folder not found, soft-deleted, or cross-group | 404    |
+/// | Validation error (name)                        | 422    |
+/// | Happy path                                     | 200    |
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/folders/{folder_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("folder_id" = Uuid, Path, description = "Folder UUID."),
+    ),
+    request_body = PatchFolderRequest,
+    responses(
+        (status = 200, description = "Folder renamed.", body = FolderSummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Folder not found, soft-deleted, or cross-group.", body = super::problem::ProblemDetails),
+        (status = 400, description = "Validation error.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, folder_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchFolderRequest>,
+) -> Result<Json<FolderSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let new_name =
+        validate_file_name(&body.name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = new_name.chars().count();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<FolderRow> = sqlx::query_as(
+        "UPDATE folders \
+         SET name = $1, updated_at = now() \
+         WHERE id = $2 AND group_id = $3 AND deleted_at IS NULL \
+         RETURNING id, name, parent_id, created_by, created_by_label, created_at, updated_at",
+    )
+    .bind(&new_name)
+    .bind(folder_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderRenamed,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({ "name_len": name_len, "group_id": group_id }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FolderSummary::from(row)))
+}
+
+/// `DELETE /v1/groups/{group_id}/folders/{folder_id}` — soft-delete a folder.
+///
+/// Authz: `Action::FilesDelete`.
+/// Files inside the folder are NOT cascaded; they become root-level orphans.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Path group_id ≠ principal group_id             | 403    |
+/// | Caller lacks `FilesDelete`                     | 403    |
+/// | Folder not found, already-deleted, cross-group | 404    |
+/// | Happy path                                     | 204    |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{group_id}/folders/{folder_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("folder_id" = Uuid, Path, description = "Folder UUID."),
+    ),
+    responses(
+        (status = 204, description = "Folder soft-deleted."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesDelete or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Folder not found, already-deleted, or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, folder_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesDelete) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row = sqlx::query(
+        "UPDATE folders SET deleted_at = now() \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(folder_id)
+    .bind(group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if row.rows_affected() == 0 {
+        return Err(RestError::NotFound);
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderDeleted,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({ "group_id": group_id }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────
