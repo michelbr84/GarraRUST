@@ -404,9 +404,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(files::get_file).patch(files::patch_file),
                 )
                 // Plan 0090 (GAR-559) — files API slice 3: GET single folder.
+                // Plan 0091 (GAR-561) — files API slice 4: PATCH folder rename.
                 .route(
                     "/v1/groups/{group_id}/folders/{folder_id}",
-                    get(files::get_folder),
+                    get(files::get_folder).patch(files::patch_folder),
                 )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
@@ -509,13 +510,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, fail-soft 503.
                 // Plan 0090 (GAR-559) — files API slice 3 GET single, fail-soft 503.
+                // Plan 0091 (GAR-561) — files API slice 4 PATCH folder, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/folders/{folder_id}",
-                    get(unconfigured_handler),
+                    get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
@@ -655,13 +657,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, no-auth stub.
                 // Plan 0090 (GAR-559) — files API slice 3 GET single, no-auth stub.
+                // Plan 0091 (GAR-561) — files API slice 4 PATCH folder, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/folders/{folder_id}",
-                    get(unconfigured_handler),
+                    get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",

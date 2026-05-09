@@ -180,6 +180,20 @@ pub struct PatchFileRequest {
     pub name: String,
 }
 
+/// Body for `PATCH /v1/groups/{group_id}/folders/{folder_id}`
+/// (plan 0091, GAR-561).
+///
+/// Only `name` is mutable in slice 4. Extra keys are silently ignored
+/// per `serde::Deserialize` defaults — we only act on the fields we
+/// declare here. Folder moves (changing `parent_id`) are out of scope.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchFolderRequest {
+    /// New folder name. Trimmed before validation. Length must be
+    /// 1..=200 chars after trim (matches DB CHECK on `folders.name`),
+    /// must not contain `/` or NUL byte.
+    pub name: String,
+}
+
 /// Validation error message family. Plain strings — never embed
 /// the offending value (it is user-controlled and may include PII).
 const ERR_NAME_EMPTY: &str = "name must not be empty after trim";
@@ -202,6 +216,36 @@ fn validate_file_name(raw: &str) -> Result<String, &'static str> {
     }
     if trimmed.contains('\0') {
         return Err(ERR_NAME_HAS_NUL);
+    }
+    Ok(trimmed.to_string())
+}
+
+// Folder validation has identical shape to file validation but a tighter
+// length cap (200 chars vs 500) — matches the DB CHECK on `folders.name`
+// at `migrations/003_files_and_folders.sql:59`. The only divergence
+// rationale: file names may legitimately encode long descriptive paths
+// inside the user's mental model (e.g. "2026-Q3 retrospective notes —
+// final v3.pdf"), while folder names tend to be short tags.
+const ERR_FOLDER_NAME_EMPTY: &str = "name must not be empty after trim";
+const ERR_FOLDER_NAME_TOO_LONG: &str = "name exceeds 200 characters";
+const ERR_FOLDER_NAME_HAS_SLASH: &str = "name must not contain '/'";
+const ERR_FOLDER_NAME_HAS_NUL: &str = "name must not contain NUL byte";
+
+/// Validate a candidate folder name. Returns the trimmed name on success
+/// or a user-safe error string on failure (no PII echoed).
+fn validate_folder_name(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ERR_FOLDER_NAME_EMPTY);
+    }
+    if trimmed.chars().count() > 200 {
+        return Err(ERR_FOLDER_NAME_TOO_LONG);
+    }
+    if trimmed.contains('/') {
+        return Err(ERR_FOLDER_NAME_HAS_SLASH);
+    }
+    if trimmed.contains('\0') {
+        return Err(ERR_FOLDER_NAME_HAS_NUL);
     }
     Ok(trimmed.to_string())
 }
@@ -797,6 +841,126 @@ pub async fn get_folder(
     Ok(Json(FolderSummary::from(row)))
 }
 
+/// `PATCH /v1/groups/{group_id}/folders/{folder_id}` — rename a folder
+/// (plan 0091, GAR-561, Fase 3.4 files slice 4).
+///
+/// Only the `name` field may change. Returns the updated `FolderSummary`
+/// (200) on success.
+///
+/// Authz: `Action::FilesWrite`. The `can()` matrix already grants this to
+/// Owner/Admin/Member; no separate `FoldersWrite` action exists in the
+/// 22-action enum and folder mutations are intentionally gated by the
+/// same capability as file mutations (mirrors plan 0089).
+///
+/// Concurrency note: `folders_unique_name_per_parent_idx` enforces unique
+/// `(group_id, COALESCE(parent_id, nil_uuid), name)` for non-deleted rows.
+/// A rename to a name already taken by a sibling under the same parent
+/// raises Postgres `23505`, which this handler maps to `409 Conflict`
+/// with a PII-safe detail (no echo of the conflicting name). Without this
+/// branch the same condition would surface as 5xx — wrong UX for a
+/// user-recoverable error.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Path group_id ≠ principal group_id             | 403    |
+/// | Caller lacks `FilesWrite`                      | 403    |
+/// | Body name empty/too long/has '/' or NUL        | 400    |
+/// | Folder not found, soft-deleted, or cross-group | 404    |
+/// | Name collides with sibling under same parent   | 409    |
+/// | Happy path                                     | 200    |
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/folders/{folder_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("folder_id" = Uuid, Path, description = "Folder UUID."),
+    ),
+    request_body = PatchFolderRequest,
+    responses(
+        (status = 200, description = "Folder renamed.", body = FolderSummary),
+        (status = 400, description = "Invalid name.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Folder not found, soft-deleted, or cross-group.", body = super::problem::ProblemDetails),
+        (status = 409, description = "A sibling folder under the same parent already uses this name.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, folder_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchFolderRequest>,
+) -> Result<Json<FolderSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let new_name =
+        validate_folder_name(&body.name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = new_name.chars().count();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let update_result: Result<Option<FolderRow>, sqlx::Error> = sqlx::query_as(
+        "UPDATE folders \
+         SET name = $1, updated_at = now() \
+         WHERE id = $2 AND group_id = $3 AND deleted_at IS NULL \
+         RETURNING id, name, parent_id, created_by, created_by_label, \
+                   created_at, updated_at",
+    )
+    .bind(&new_name)
+    .bind(folder_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await;
+
+    let row = match update_result {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err(RestError::NotFound),
+        Err(sqlx::Error::Database(ref db_err)) if db_err.code().as_deref() == Some("23505") => {
+            // UNIQUE collision on `folders_unique_name_per_parent_idx`.
+            // PII-safe detail: never echo the conflicting name back.
+            return Err(RestError::Conflict(
+                "a folder with this name already exists under the same parent".into(),
+            ));
+        }
+        Err(e) => return Err(RestError::Internal(e.into())),
+    };
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderRenamed,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({
+            "folder_id": folder_id,
+            "group_id": group_id,
+            "name_len": name_len,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FolderSummary::from(row)))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1076,6 +1240,60 @@ mod tests {
         // Multi-byte UTF-8 chars should count as chars, not bytes.
         let name = "café-relatório.pdf";
         let out = validate_file_name(name).expect("utf8");
+        assert_eq!(out, name);
+    }
+
+    // ─── PATCH folder validation helpers (plan 0091, GAR-561) ──────────
+
+    #[test]
+    fn validate_folder_name_happy_path_trims() {
+        let out = validate_folder_name("  Documents  ").expect("trim+accept");
+        assert_eq!(out, "Documents");
+    }
+
+    #[test]
+    fn validate_folder_name_rejects_empty_after_trim() {
+        let err = validate_folder_name("   ").expect_err("empty");
+        assert_eq!(err, ERR_FOLDER_NAME_EMPTY);
+    }
+
+    #[test]
+    fn validate_folder_name_rejects_zero_length() {
+        let err = validate_folder_name("").expect_err("empty literal");
+        assert_eq!(err, ERR_FOLDER_NAME_EMPTY);
+    }
+
+    #[test]
+    fn validate_folder_name_accepts_200_chars() {
+        // Boundary: exactly 200 chars passes (matches DB CHECK).
+        let name: String = "a".repeat(200);
+        let out = validate_folder_name(&name).expect("200 ok");
+        assert_eq!(out.chars().count(), 200);
+    }
+
+    #[test]
+    fn validate_folder_name_rejects_201_chars() {
+        let name: String = "a".repeat(201);
+        let err = validate_folder_name(&name).expect_err("too long");
+        assert_eq!(err, ERR_FOLDER_NAME_TOO_LONG);
+    }
+
+    #[test]
+    fn validate_folder_name_rejects_slash() {
+        let err = validate_folder_name("a/b").expect_err("slash");
+        assert_eq!(err, ERR_FOLDER_NAME_HAS_SLASH);
+    }
+
+    #[test]
+    fn validate_folder_name_rejects_nul_byte() {
+        let err = validate_folder_name("foo\0bar").expect_err("nul");
+        assert_eq!(err, ERR_FOLDER_NAME_HAS_NUL);
+    }
+
+    #[test]
+    fn validate_folder_name_accepts_unicode() {
+        let name = "Relatórios-2026";
+        let out = validate_folder_name(name).expect("utf8");
         assert_eq!(out, name);
     }
 
