@@ -1,9 +1,9 @@
 # Plan 0086 — GAR-552: REST /v1 search slice 3 (date-range + author_id filters)
 
-**Status:** 🔵 In Progress
+**Status:** ✅ Merged 2026-05-09 via PR #231 (`49c4a6b`)
 **Autor:** Claude Sonnet 4.6 (garra-routine 2026-05-09, America/New_York)
 **Data:** 2026-05-09 (America/New_York)
-**Issue:** [GAR-552](https://linear.app/chatgpt25/issue/GAR-552) — In Progress
+**Issue:** [GAR-552](https://linear.app/chatgpt25/issue/GAR-552) — Done
 **Branch:** `routine/202605090015-search-slice3-date-author-filters`
 **Epic:** `epic:ws-search`, `epic:ws-api`
 **Predecessor:** plan 0085 (GAR-551, slice 2)
@@ -137,14 +137,14 @@ plans/README.md                                               (edit: add row)
 
 ## §10 M1 tasks
 
-- [ ] T1: Extend `SearchQuery` + `ValidatedSearch` with 3 new fields; update `parse_and_validate`
-- [ ] T2: Update `fetch_messages` SQL + signature for date + author params
-- [ ] T3: Update `fetch_memory` SQL + signature for date params
-- [ ] T4: Wire new params through handler
-- [ ] T5: Add ≥ 10 unit tests for new validation branches
-- [ ] T6: `cargo check -p garraia-gateway` + `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings`
-- [ ] T7: Commit + push; open PR
-- [ ] T8: Update plans/README.md + ROADMAP checklist after merge
+- [x] T1: Extend `SearchQuery` + `ValidatedSearch` with 3 new fields; update `parse_and_validate`
+- [x] T2: Update `fetch_messages` SQL + signature for date + author params
+- [x] T3: Update `fetch_memory` SQL + signature for date params
+- [x] T4: Wire new params through handler
+- [x] T5: Add ≥ 10 unit tests for new validation branches
+- [x] T6: `cargo check -p garraia-gateway` + `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings`
+- [x] T7: Commit + push; open PR
+- [x] T8: Update plans/README.md + ROADMAP checklist after merge
 
 ---
 
@@ -160,13 +160,13 @@ plans/README.md                                               (edit: add row)
 
 ## §12 Acceptance criteria
 
-- [ ] `?from_date=2026-01-01T00:00:00Z` filters results to `created_at >= 2026-01-01`
-- [ ] `?to_date=2026-06-01T00:00:00Z` filters results to `created_at <= 2026-06-01`
-- [ ] `from_date > to_date` → 400 with descriptive message
-- [ ] `?author_id=<uuid>` on group/chat scope → filters messages to that sender
-- [ ] `?author_id=<uuid>` on user scope → 400
-- [ ] All slice 1 + slice 2 unit tests pass unchanged
-- [ ] `cargo clippy` clean, no warnings
+- [x] `?from_date=2026-01-01T00:00:00Z` filters results to `created_at >= 2026-01-01`
+- [x] `?to_date=2026-06-01T00:00:00Z` filters results to `created_at <= 2026-06-01`
+- [x] `from_date > to_date` → 400 with descriptive message
+- [x] `?author_id=<uuid>` on group/chat scope → filters messages to that sender
+- [x] `?author_id=<uuid>` on user scope → 400
+- [x] All slice 1 + slice 2 unit tests pass unchanged
+- [x] `cargo clippy` clean, no warnings
 
 ---
 
