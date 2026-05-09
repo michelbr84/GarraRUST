@@ -661,6 +661,142 @@ pub async fn patch_file(
     Ok(Json(FileSummary::from(row)))
 }
 
+/// `GET /v1/groups/{group_id}/files/{file_id}` — return a single file's metadata.
+///
+/// Returns 404 when the file is soft-deleted, cross-group, or not found.
+/// RLS ensures cross-group files are invisible regardless.
+///
+/// Authz: `Action::FilesRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                                    | Status |
+/// |----------------------------------------------|--------|
+/// | Missing/invalid JWT                          | 401    |
+/// | Path group_id ≠ principal group_id           | 403    |
+/// | Caller lacks `FilesRead`                     | 403    |
+/// | File not found, soft-deleted, or cross-group | 404    |
+/// | Happy path                                   | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/files/{file_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("file_id" = Uuid, Path, description = "File UUID."),
+    ),
+    responses(
+        (status = 200, description = "File metadata.", body = FileSummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesRead or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "File not found, soft-deleted, or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_file(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<FileSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<FileRow> = sqlx::query_as(
+        "SELECT id, name, mime_type, size_bytes, current_version, total_versions, \
+                folder_id, created_by, created_by_label, created_at, updated_at \
+         FROM files \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+    Ok(Json(FileSummary::from(row)))
+}
+
+/// `GET /v1/groups/{group_id}/folders/{folder_id}` — return a single folder's metadata.
+///
+/// Returns 404 when the folder is soft-deleted, cross-group, or not found.
+///
+/// Authz: `Action::FilesRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Path group_id ≠ principal group_id             | 403    |
+/// | Caller lacks `FilesRead`                       | 403    |
+/// | Folder not found, soft-deleted, or cross-group | 404    |
+/// | Happy path                                     | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/folders/{folder_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("folder_id" = Uuid, Path, description = "Folder UUID."),
+    ),
+    responses(
+        (status = 200, description = "Folder metadata.", body = FolderSummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesRead or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Folder not found, soft-deleted, or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, folder_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<FolderSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<FolderRow> = sqlx::query_as(
+        "SELECT id, name, parent_id, created_by, created_by_label, created_at, updated_at \
+         FROM folders \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(folder_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+    Ok(Json(FolderSummary::from(row)))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]

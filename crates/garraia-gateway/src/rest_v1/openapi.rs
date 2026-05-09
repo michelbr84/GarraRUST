@@ -139,6 +139,8 @@ impl Modify for SecurityAddon {
         super::files::list_folders,
         super::files::delete_file,
         super::files::patch_file,
+        super::files::get_file,
+        super::files::get_folder,
     ),
     components(schemas(
         MeResponse,
