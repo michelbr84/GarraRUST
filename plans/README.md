@@ -111,7 +111,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0085 | [GAR-551 — REST `/v1` search slice 2: chat + user scope](0085-gar-551-search-api-slice2-chat-user-scope.md) | [GAR-551](https://linear.app/chatgpt25/issue/GAR-551) | ✅ Merged 2026-05-08 via PR #228 (`fdef9bc`) |
 | 0086 | [GAR-552 — REST `/v1` search slice 3: from_date/to_date/author_id filters](0086-gar-552-search-api-slice3-date-author-filters.md) | [GAR-552](https://linear.app/chatgpt25/issue/GAR-552) | ✅ Merged 2026-05-09 via PR #231 (`49c4a6b`) |
 | 0087 | [GAR-553 — drop aws-sdk-s3 legacy rustls 0.21 chain (defense-in-depth)](0087-gar-553-aws-sdk-s3-drop-legacy-rustls-chain.md) | [GAR-553](https://linear.app/chatgpt25/issue/GAR-553) | ✅ Merged 2026-05-09 via PR #232 (`f69b794`) |
-| 0088 | [GAR-555 — Files REST API slice 1: GET files + GET folders + DELETE file](0088-gar-555-files-api-slice1.md) | [GAR-555](https://linear.app/chatgpt25/issue/GAR-555) | 🚧 In Progress |
+| 0088 | [GAR-555 — Files REST API slice 1: GET files + GET folders + DELETE file](0088-gar-555-files-api-slice1.md) | [GAR-555](https://linear.app/chatgpt25/issue/GAR-555) | ✅ Merged 2026-05-09 via PR #235 (`75d7a44`) |
 
 ## Arquivos não-versionados
 
