@@ -371,6 +371,13 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "files"`, `resource_id = "{file_id}"`.
     /// Metadata: `{ name_len, group_id }` — never the raw file name.
     FileDeleted,
+
+    /// A file was renamed via `PATCH /v1/groups/{group_id}/files/{file_id}`
+    /// (plan 0089 / GAR-557, Fase 3.4 files slice 2).
+    ///
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ name_len, group_id }` — never the raw name.
+    FileRenamed,
 }
 
 impl WorkspaceAuditAction {
@@ -412,6 +419,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
             WorkspaceAuditAction::TaskMoved => "task.moved",
             WorkspaceAuditAction::FileDeleted => "file.deleted",
+            WorkspaceAuditAction::FileRenamed => "file.renamed",
         }
     }
 }
@@ -587,6 +595,7 @@ mod tests {
         );
         assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
         assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
+        assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
     }
 
     #[test]
@@ -626,6 +635,8 @@ mod tests {
             WorkspaceAuditAction::TaskSubscribed.as_str(),
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskMoved.as_str(),
+            WorkspaceAuditAction::FileDeleted.as_str(),
+            WorkspaceAuditAction::FileRenamed.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

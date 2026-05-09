@@ -799,3 +799,205 @@ mod tests {
         assert_eq!(resp.next_cursor, Some(id1));
     }
 }
+
+// ─── Slice 2: rename ──────────────────────────────────────────────────────────
+
+/// Request body for `PATCH /v1/groups/{group_id}/files/{file_id}`.
+///
+/// Only `name` is mutable in this slice. Moving between folders and MIME
+/// overrides are deferred to a later slice.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchFileRequest {
+    /// New display name for the file. Trimmed before use. 1–500 chars. No `/` or NUL.
+    pub name: String,
+}
+
+/// `PATCH /v1/groups/{group_id}/files/{file_id}` — rename a file.
+///
+/// Updates `files.name` and `files.updated_at` atomically via a single
+/// `UPDATE … RETURNING` (no TOCTOU race). Returns the updated `FileSummary`.
+///
+/// Authz: `Action::FilesWrite`.
+///
+/// ## Validation
+///
+/// | Rule                  | Error |
+/// |-----------------------|-------|
+/// | name after trim is empty | 400 |
+/// | name > 500 chars      | 400 |
+/// | name contains `/`     | 400 |
+/// | name contains NUL byte| 400 |
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Not a group member                 | 403    |
+/// | Path group_id ≠ principal group_id | 403    |
+/// | Insufficient role (< Member)       | 403    |
+/// | Invalid name                       | 400    |
+/// | File not found / cross-tenant      | 404    |
+/// | Soft-deleted file                  | 404    |
+/// | Happy path                         | 200    |
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/files/{file_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("file_id"  = Uuid, Path, description = "File UUID."),
+    ),
+    request_body = PatchFileRequest,
+    responses(
+        (status = 200, description = "Updated file metadata.", body = FileSummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 400, description = "Invalid name.", body = super::problem::ProblemDetails),
+        (status = 404, description = "File not found, cross-tenant, or soft-deleted.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_file(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchFileRequest>,
+) -> Result<Json<FileSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let name = body.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 500 {
+        return Err(RestError::BadRequest(
+            "name must be between 1 and 500 characters".into(),
+        ));
+    }
+    if name.contains('/') || name.contains('\0') {
+        return Err(RestError::BadRequest(
+            "name must not contain '/' or NUL bytes".into(),
+        ));
+    }
+
+    let name_len = name.chars().count();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let updated: Option<FileRow> = sqlx::query_as(
+        "UPDATE files \
+         SET name = $1, updated_at = now() \
+         WHERE id = $2 AND group_id = $3 AND deleted_at IS NULL \
+         RETURNING id, name, mime_type, size_bytes, \
+                   current_version, total_versions, folder_id, \
+                   created_by, created_by_label, created_at, updated_at",
+    )
+    .bind(&name)
+    .bind(file_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = match updated {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileRenamed,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({ "name_len": name_len, "group_id": group_id }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FileSummary::from(row)))
+}
+
+// ─── Slice 2 unit tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn patch_request_name_field_accessible() {
+        let req = PatchFileRequest {
+            name: "renamed.pdf".to_string(),
+        };
+        assert_eq!(req.name, "renamed.pdf");
+    }
+
+    #[test]
+    fn name_validation_rejects_empty_after_trim() {
+        let name = "   ".trim().to_string();
+        assert!(name.is_empty());
+    }
+
+    #[test]
+    fn name_validation_rejects_too_long() {
+        let name: String = "a".repeat(501);
+        assert!(name.chars().count() > 500);
+    }
+
+    #[test]
+    fn name_validation_accepts_max_length() {
+        let name: String = "a".repeat(500);
+        assert_eq!(name.chars().count(), 500);
+        assert!(!name.is_empty());
+        assert!(!name.contains('/'));
+        assert!(!name.contains('\0'));
+    }
+
+    #[test]
+    fn name_validation_rejects_slash() {
+        let name = "dir/file.txt";
+        assert!(name.contains('/'));
+    }
+
+    #[test]
+    fn name_validation_rejects_nul_byte() {
+        let name = "bad\0name";
+        assert!(name.contains('\0'));
+    }
+
+    #[test]
+    fn name_validation_accepts_valid_name() {
+        let name = "My Report (Final).pdf".trim().to_string();
+        assert!(!name.is_empty());
+        assert!(name.chars().count() <= 500);
+        assert!(!name.contains('/'));
+        assert!(!name.contains('\0'));
+    }
+
+    #[test]
+    fn name_trim_removes_whitespace() {
+        let raw = "  report.pdf  ";
+        let trimmed = raw.trim().to_string();
+        assert_eq!(trimmed, "report.pdf");
+        assert!(!trimmed.is_empty());
+    }
+
+    #[test]
+    fn file_renamed_audit_action_string() {
+        assert_eq!(
+            WorkspaceAuditAction::FileRenamed.as_str(),
+            "file.renamed"
+        );
+    }
+}
