@@ -14,6 +14,7 @@ use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
+use super::files::{FileListResponse, FileSummary, FolderListResponse, FolderSummary};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
@@ -132,6 +133,9 @@ impl Modify for SecurityAddon {
         super::tasks::list_subtasks,
         super::audit::list_audit,
         super::search::search,
+        super::files::list_files,
+        super::files::list_folders,
+        super::files::delete_file,
     ),
     components(schemas(
         MeResponse,
@@ -190,6 +194,10 @@ impl Modify for SecurityAddon {
         SearchResult,
         SearchResponse,
         SearchResultType,
+        FileSummary,
+        FileListResponse,
+        FolderSummary,
+        FolderListResponse,
     )),
     modifiers(&SecurityAddon)
 )]

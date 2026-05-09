@@ -31,6 +31,7 @@
 
 pub mod audit;
 pub mod chats;
+pub mod files;
 pub mod groups;
 pub mod invites;
 pub mod me;
@@ -392,6 +393,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 // Plan 0084 (GAR-549) — search API slice 1.
                 .route("/v1/search", get(search::search))
+                // Plan 0088 (GAR-555) — files API slice 1.
+                .route("/v1/groups/{group_id}/files", get(files::list_files))
+                .route("/v1/groups/{group_id}/folders", get(files::list_folders))
+                .route("/v1/files/{file_id}", delete(files::delete_file))
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -487,6 +492,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
                 // Plan 0084 (GAR-549) — search API slice 1, fail-soft 503.
                 .route("/v1/search", get(unconfigured_handler))
+                // Plan 0088 (GAR-555) — files API slice 1, fail-soft 503.
+                .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
+                .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
+                .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -619,6 +628,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/audit", get(unconfigured_handler))
                 // Plan 0084 (GAR-549) — search API slice 1, no-auth stub.
                 .route("/v1/search", get(unconfigured_handler))
+                // Plan 0088 (GAR-555) — files API slice 1, no-auth stub.
+                .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
+                .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
+                .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),

@@ -362,6 +362,15 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "tasks"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ from_list_id, to_list_id }` — UUIDs only, never list names.
     TaskMoved,
+
+    /// A file was soft-deleted via `DELETE /v1/files/{file_id}`
+    /// (plan 0088 / GAR-555, Fase 3.4 files slice 1).
+    ///
+    /// Idempotent — emitted only when `deleted_at` transitions from NULL
+    /// (first soft-delete). Already-deleted files return 204 without emitting.
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ name_len, group_id }` — never the raw file name.
+    FileDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -402,6 +411,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
             WorkspaceAuditAction::TaskMoved => "task.moved",
+            WorkspaceAuditAction::FileDeleted => "file.deleted",
         }
     }
 }
@@ -576,6 +586,7 @@ mod tests {
             "task.unsubscribed"
         );
         assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
+        assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
     }
 
     #[test]
