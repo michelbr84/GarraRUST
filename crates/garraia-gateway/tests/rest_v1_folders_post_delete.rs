@@ -23,12 +23,15 @@
 //! C7. POST 403 — path group_id ≠ principal group_id.
 //! C8. POST 409 — sibling name collision under same parent.
 //!
-//! DELETE scenarios (D1–D5):
+//! DELETE scenarios (D1–D6):
 //! D1. DELETE 204 — live folder: DB shows deleted_at set, audit row emitted.
 //! D2. DELETE 204 — already soft-deleted (idempotent, NO audit re-emitted).
 //! D3. DELETE 404 — non-existent folder_id.
 //! D4. DELETE 404 — cross-group folder_id.
 //! D5. DELETE 403 — path group_id ≠ principal group_id.
+//! D6. DELETE 403 — Member role (has FilesWrite, lacks FilesDelete): proves
+//!     the canonical authz delta vs PR #248 — Members can rename/create
+//!     folders but cannot delete them. Uses `seed_member_via_admin`.
 
 mod common;
 
@@ -41,7 +44,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use common::Harness;
-use common::fixtures::{fetch_audit_events_for_group, seed_user_with_group};
+use common::fixtures::{fetch_audit_events_for_group, seed_member_via_admin, seed_user_with_group};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -518,4 +521,46 @@ async fn v1_folders_post_delete_scenarios() {
         .await
         .expect("D5 oneshot");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "D5 status");
+
+    // ── D6. DELETE 403 — Member lacks FilesDelete (canonical authz) ─────
+    // Member role has FilesWrite (can create/rename folders via POST/PATCH)
+    // but NOT FilesDelete (which is Owner/Admin only, per `can()` matrix
+    // mirroring migration 002 lines 78-111). This test guards against a
+    // regression where folder DELETE would inherit FilesWrite instead of
+    // matching the canonical `delete_file` precedent from plan 0088.
+    let (_member_id, member_token) =
+        seed_member_via_admin(&h, group_id, "member", "member@folders-slice5.test")
+            .await
+            .expect("D6 seed member");
+    let d6_id = seed_folder(&h, group_id, None, owner_id, "d6")
+        .await
+        .expect("D6 seed folder");
+    let resp = h
+        .router
+        .clone()
+        .oneshot(delete_folder_req(
+            Some(&member_token),
+            &group_id_str, // path matches principal's group
+            &d6_id.to_string(),
+            Some(&group_id_str),
+        ))
+        .await
+        .expect("D6 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "D6 status — Member must NOT be able to delete folders (FilesDelete is Owner/Admin)"
+    );
+
+    // D6 — DB confirms folder was NOT soft-deleted by the rejected request.
+    let (deleted_at,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT deleted_at FROM folders WHERE id = $1")
+            .bind(d6_id)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("D6 fetch deleted_at");
+    assert!(
+        deleted_at.is_none(),
+        "D6 folder MUST remain live after Member's rejected DELETE"
+    );
 }

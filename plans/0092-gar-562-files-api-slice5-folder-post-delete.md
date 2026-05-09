@@ -28,7 +28,12 @@ and DELETE as a self-contained slice.
 ### DELETE handler (`delete_folder`)
 
 1. `require_group_id` + `check_group_match` → 403
-2. `can(&principal, Action::FilesWrite)` → 403
+2. `can(&principal, Action::FilesDelete)` → 403  ← **canonical project pattern**:
+   matches `delete_file` from plan 0088 (the only existing soft-delete precedent
+   in the `/v1` files surface). `FilesDelete` is granted to **Owner + Admin only**
+   (NOT Member); `FilesWrite` would inherit Member, which is wrong for a destructive
+   operation that can orphan children files. See review-side-by-side analysis 2026-05-09
+   (PR #247 vs PR #248) for the rationale.
 3. Begin tx → `set_rls_context`
 4. SELECT `deleted_at, name` WHERE `id=$1 AND group_id=$2`
    - None → 404 (not found or cross-group)
@@ -42,7 +47,9 @@ Cascade semantics are deferred to a later slice.
 
 ## Tech stack
 
-* Axum 0.8, `garraia-auth::Principal`, `garraia-auth::Action::FilesWrite`
+* Axum 0.8, `garraia-auth::Principal`
+* `garraia-auth::Action::FilesWrite` (POST `create_folder`)
+* `garraia-auth::Action::FilesDelete` (DELETE `delete_folder` — Owner/Admin only)
 * `sqlx` (Postgres), `set_rls_context` for FORCE RLS compliance
 * `utoipa` annotations (`#[utoipa::path(...)]`), registered in `openapi.rs`
 * `garraia-auth::audit_workspace` — two new variants: `FolderCreated`, `FolderDeleted`
@@ -69,7 +76,8 @@ Cascade semantics are deferred to a later slice.
 
 * Cascade-delete of child folders/files.
 * Moving a folder (`parent_id` change via PATCH is slice 6).
-* Permissions beyond `FilesWrite` (no `FilesAdmin`-only route yet).
+* Folder DELETE auth differentiation beyond Owner/Admin (`FilesDelete`) is
+  intentional — Members can rename and create folders but NOT delete them.
 
 ## Rollback
 

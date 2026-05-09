@@ -1114,11 +1114,18 @@ pub async fn create_folder(
 /// files and sub-folders are NOT cascade-deleted — they become orphans
 /// visible at the group root. Cascade semantics are deferred to slice 6+.
 ///
+/// Authz: `Action::FilesDelete` — same gate as `DELETE /v1/files/{file_id}`
+/// (plan 0088). The `can()` matrix grants this only to Owner/Admin (NOT
+/// Member), which is the canonical project convention for destructive
+/// file/folder operations: `FilesWrite` is for create/rename mutations
+/// that are reversible (PATCH rename can be undone, soft-deleted folders
+/// require Admin to delete).
+///
 /// | Condition                                      | Status |
 /// |------------------------------------------------|--------|
 /// | Auth missing / invalid                         | 401    |
 /// | Principal group_id ≠ path group_id             | 403    |
-/// | Caller lacks FilesWrite                        | 403    |
+/// | Caller lacks `FilesDelete` (e.g. Member role)  | 403    |
 /// | Folder not found or cross-group                | 404    |
 /// | Already deleted (idempotent)                   | 204    |
 /// | Happy path (live folder deleted)               | 204    |
@@ -1132,7 +1139,7 @@ pub async fn create_folder(
     responses(
         (status = 204, description = "Folder deleted (or already deleted)."),
         (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
-        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesDelete or group mismatch.", body = super::problem::ProblemDetails),
         (status = 404, description = "Folder not found or cross-group.", body = super::problem::ProblemDetails),
     ),
     security(("bearer" = []))
@@ -1144,7 +1151,7 @@ pub async fn delete_folder(
 ) -> Result<StatusCode, RestError> {
     let group_id = require_group_id(&principal)?;
     check_group_match(path_group_id, group_id)?;
-    if !can(&principal, Action::FilesWrite) {
+    if !can(&principal, Action::FilesDelete) {
         return Err(RestError::Forbidden);
     }
 
