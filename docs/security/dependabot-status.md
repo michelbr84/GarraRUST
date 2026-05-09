@@ -1,18 +1,39 @@
 # Dependabot Status
 
-> Last updated: **2026-05-08** (health routine — post-PR #216 scan).
+> Last updated: **2026-05-09** (health routine — AWS sub-chain removal, plan 0087, PR health/202605090047).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 (today) |
-|---|---|---|---|---|
-| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) |
-| High severity | 1 | 1 | **2** | **2** |
-| Medium severity | 4 | 2 | **2** | **2** |
-| Low severity | 4 | 4 | **4** | **4** |
-| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 | 2026-05-09 (today) |
+|---|---|---|---|---|---|
+| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) | **8** (unchanged — serenity chain still carries all 4 RUSTSEC IDs) |
+| High severity | 1 | 1 | **2** | **2** | **2** |
+| Medium severity | 4 | 2 | **2** | **2** | **2** |
+| Low severity | 4 | 4 | **4** | **4** | **4** |
+| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** |
+| `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) |
+
+## Confirmed 2026-05-09 (health routine — AWS sub-chain removed, defense-in-depth)
+
+Health routine ran on 2026-05-09. Defense-in-depth follow-up from GAR-455 deep-dive (2026-05-08):
+
+| Change | Result |
+|---|---|
+| `aws-sdk-s3` feature swap: `"rustls"` → `"default-https-client"` in `crates/garraia-storage/Cargo.toml` | ✅ applied (plan 0087, GAR-553) |
+| `rustls-webpki 0.101.7` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| `rustls 0.21.12` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| `hyper-rustls 0.24.2` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| Dependabot alerts closed | ⚠️ 0 — serenity chain (`rustls-webpki 0.102.8`) still carries all 4 RUSTSEC IDs |
+| `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` | ✅ clean |
+| Secret scanning | ✅ pass |
+| CodeQL | ✅ 22 alerts all dismissed (unchanged) |
+
+Alert count unchanged (8 open). The `rustls-webpki 0.101.7` sub-chain that contributed to
+RUSTSEC-2026-0098/0099/0104 has been removed from the dependency graph. Dependabot alerts remain
+open because `rustls-webpki 0.102.8` (serenity 0.12.5 chain) still independently carries all 4 IDs.
+The `audit.toml`/`deny.toml` allowlists are UNCHANGED — still required for the serenity chain.
 
 ## Confirmed 2026-05-08 (health routine — all surfaces green)
 
@@ -123,18 +144,19 @@ flips to the legacy chain.
   rustls-webpki IDs continue to mirror across both files, atomic drop
   still gated on the serenity bump.
 
-### Recommended follow-up (not done in this PR)
+### Follow-up (COMPLETED 2026-05-09 — plan 0087, GAR-553, PR health/202605090047)
 
-A separate, narrowly-scoped side PR — distinct from this docs-only
-update — could land the AWS-side feature-flag swap on
-`crates/garraia-storage/Cargo.toml`. Required validation for that PR:
+The AWS-side feature-flag swap has been **landed** in plan 0087 (health
+routine 2026-05-09). `crates/garraia-storage/Cargo.toml` now uses
+`"default-https-client"` instead of `"rustls"` for `aws-sdk-s3`:
 
-- `cargo check --workspace --exclude garraia-desktop --features storage-s3 --locked`
-- `cargo clippy --workspace --exclude garraia-desktop --all-targets --features storage-s3 --locked -- -D warnings`
-- The MinIO testcontainer integration tests gated by the
-  `storage-s3` feature must pass (no behavioral change expected — the
-  AWS SDK keeps speaking TLS, just on the modern rustls 0.23 + aws-lc
-  stack).
+- `rustls 0.21.12`, `rustls-webpki 0.101.7`, `hyper-rustls 0.24.2`
+  removed from `Cargo.lock`.
+- S3 connectivity preserved via modern rustls 0.23 + aws-lc chain.
+- `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean.
+
+The originally-recommended validation from this section remains accurate:
+
 - `cargo audit` and `cargo deny check` should still pass; the 4
   rustls-webpki residual IDs continue to be triggered by the serenity
   chain, so neither file changes.
@@ -169,7 +191,7 @@ No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matc
 | 12 lockfile-only Dependabot bumps | PR #97 (`time` + bench refresh) + PR #99 (`openssl` 0.10.75 → 0.10.78) + PR #102 (rand + rustls-webpki bench cleanup) | GAR-484 (closed 2026-04-30) |
 | `jsonwebtoken 9 → 10` migration | PR #105 (this sprint, plan `personal-api-key-revogada-vectorized-matsumoto` §Step 3, replaces broken Dependabot PR #103). Adopts `rust_crypto` backend + decouples `garraia-auth` from `rand` churn via direct `getrandom::fill`. | GAR-XXX umbrella, sub-issue 2 |
 
-## Residuals (8 open, updated 2026-05-07)
+## Residuals (8 open, updated 2026-05-09)
 
 All 8 alerts already have:
 - A specific RUSTSEC ID matching `Cargo.lock`.
@@ -182,7 +204,7 @@ is intentionally allowlisted, not silenced.
 
 | GH # | GHSA | Severity | Crate | RUSTSEC | Linear | Mitigation |
 |---|---|---|---|---|---|---|
-| #37 | GHSA-82j2-j2ch-gfr8 | HIGH | `rustls-webpki` | RUSTSEC-2026-0104 (panic in CRL parsing) | GAR-455 | Production hot path patched to `rustls-webpki 0.103.13` in plan 0053 PR-1 (PR #75). Residual lives in legacy `rustls-webpki 0.102.8` (serenity 0.12.5 EOL chain) and `0.101.7` (aws-smithy-http-client `storage-s3` feature). 2026-05-08 deep-dive (see "GAR-455 deep-dive 2026-05-08" above): the 0.102.8 path is the actual blocker (carries the full RUSTSEC-2026-0104) and stays open until serenity 0.13 ships; the 0.101.7 path is feature-flag-fixable today via an `aws-sdk-s3` feature swap (`"rustls"` → `"default-https-client"`), but that swap is defense-in-depth only and does not by itself close #37. |
+| #37 | GHSA-82j2-j2ch-gfr8 | HIGH | `rustls-webpki` | RUSTSEC-2026-0104 (panic in CRL parsing) | GAR-455 | Production hot path patched to `rustls-webpki 0.103.13` in plan 0053 PR-1 (PR #75). Residual: `rustls-webpki 0.102.8` (serenity 0.12.5 EOL chain) — stays until serenity 0.13 ships. **2026-05-09 (plan 0087, GAR-553)**: the `0.101.7` chain (aws-smithy-http-client via `storage-s3`) removed from `Cargo.lock` by swapping `aws-sdk-s3` feature `"rustls"` → `"default-https-client"`. Alert stays open (serenity chain still triggers RUSTSEC-2026-0104). |
 | — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via two paths: (1) `sqlx-mysql` lockfile residual even with `default-features = false` on all sqlx deps; (2) `jsonwebtoken 10 rust_crypto` backend (added 2026-04-30). GarraRUST emits/verifies HS256 only (`Algorithm::HS256` in `garraia-auth/src/jwt.rs`) — no RSA code path is reachable. Fix paths: (a) `jsonwebtoken` upstream isolates `rsa` behind `asymmetric` feature; (b) migrate to `sqlx-postgres` direct or sqlx 0.9. |
 | #11 | GHSA-pwjx-qhcg-rvj4 | MEDIUM | `rustls-webpki` | RUSTSEC-2026-0049 (CRL Distribution Point matching) | GAR-455 | Same legacy chains as #37. Closes with the same upgrade. |
 | #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 (`VariantStrIter` Iterator unsoundness) | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. Low runtime risk in deployments. Fix path: bump glib OR gate ignore behind `desktop` feature. |

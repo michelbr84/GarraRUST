@@ -109,6 +109,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0083 | [GAR-546 — REST `/v1` tasks slice 9 (subtasks API)](0083-gar-546-task-subtasks-api.md) | [GAR-546](https://linear.app/chatgpt25/issue/GAR-546) | ✅ Merged 2026-05-08 via PR #217 (`ad394b7`) |
 | 0084 | [GAR-549 — REST `/v1` search slice 1: GET /v1/search unified FTS](0084-gar-549-search-api-slice1.md) | [GAR-549](https://linear.app/chatgpt25/issue/GAR-549) | ✅ Merged 2026-05-08 via PR #223 (`79199ab`) |
 | 0085 | [GAR-551 — REST `/v1` search slice 2: chat + user scope](0085-gar-551-search-api-slice2-chat-user-scope.md) | [GAR-551](https://linear.app/chatgpt25/issue/GAR-551) | ✅ Merged 2026-05-08 via PR #228 (`fdef9bc`) |
+| 0087 | [GAR-553 — drop aws-sdk-s3 legacy rustls 0.21 chain (defense-in-depth)](0087-gar-553-aws-sdk-s3-drop-legacy-rustls-chain.md) | [GAR-553](https://linear.app/chatgpt25/issue/GAR-553) | 🟡 Em execução 2026-05-09 |
 
 ## Arquivos não-versionados
 
