@@ -397,6 +397,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/files", get(files::list_files))
                 .route("/v1/groups/{group_id}/folders", get(files::list_folders))
                 .route("/v1/files/{file_id}", delete(files::delete_file))
+                // Plan 0089 (GAR-557) — files API slice 2: rename.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}",
+                    patch(files::patch_file),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -496,6 +501,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
                 .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
+                // Plan 0089 (GAR-557) — files API slice 2 PATCH, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}",
+                    patch(unconfigured_handler),
+                )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -632,6 +642,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
                 .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
+                // Plan 0089 (GAR-557) — files API slice 2 PATCH, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}",
+                    patch(unconfigured_handler),
+                )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
                     post(unconfigured_handler).get(unconfigured_handler),

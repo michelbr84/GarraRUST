@@ -167,6 +167,45 @@ pub struct ListFoldersQuery {
     pub limit: Option<u32>,
 }
 
+/// Body for `PATCH /v1/groups/{group_id}/files/{file_id}` (plan 0089, GAR-557).
+///
+/// Only `name` is mutable in slice 2. Extra keys are silently ignored
+/// per `serde::Deserialize` defaults — we only act on the fields we
+/// declare here. Future slices that allow folder moves or settings
+/// patches will add fields and be gated by their own validations.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchFileRequest {
+    /// New file name. Trimmed before validation. Length must be 1..=500
+    /// chars after trim, must not contain `/` or NUL byte.
+    pub name: String,
+}
+
+/// Validation error message family. Plain strings — never embed
+/// the offending value (it is user-controlled and may include PII).
+const ERR_NAME_EMPTY: &str = "name must not be empty after trim";
+const ERR_NAME_TOO_LONG: &str = "name exceeds 500 characters";
+const ERR_NAME_HAS_SLASH: &str = "name must not contain '/'";
+const ERR_NAME_HAS_NUL: &str = "name must not contain NUL byte";
+
+/// Validate a candidate name. Returns the trimmed name on success or
+/// a user-safe error string on failure.
+fn validate_file_name(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ERR_NAME_EMPTY);
+    }
+    if trimmed.chars().count() > 500 {
+        return Err(ERR_NAME_TOO_LONG);
+    }
+    if trimmed.contains('/') {
+        return Err(ERR_NAME_HAS_SLASH);
+    }
+    if trimmed.contains('\0') {
+        return Err(ERR_NAME_HAS_NUL);
+    }
+    Ok(trimmed.to_string())
+}
+
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 /// Set RLS GUCs for the transaction (plan 0056 pattern).
@@ -528,6 +567,100 @@ pub async fn delete_file(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `PATCH /v1/groups/{group_id}/files/{file_id}` — rename a file
+/// (plan 0089, GAR-557, Fase 3.4 files slice 2).
+///
+/// Only the `name` field may change. Returns the updated `FileSummary`
+/// (200) on success.
+///
+/// Authz: `Action::FilesWrite`.
+///
+/// ## Error matrix
+///
+/// | Condition                                    | Status |
+/// |----------------------------------------------|--------|
+/// | Missing/invalid JWT                          | 401    |
+/// | Path group_id ≠ principal group_id           | 403    |
+/// | Caller lacks `FilesWrite`                    | 403    |
+/// | Body name empty/too long/has '/' or NUL      | 400    |
+/// | File not found, soft-deleted, or cross-group | 404    |
+/// | Happy path                                   | 200    |
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/files/{file_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("file_id" = Uuid, Path, description = "File UUID."),
+    ),
+    request_body = PatchFileRequest,
+    responses(
+        (status = 200, description = "File renamed.", body = FileSummary),
+        (status = 400, description = "Invalid name.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "File not found, soft-deleted, or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_file(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchFileRequest>,
+) -> Result<Json<FileSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let new_name =
+        validate_file_name(&body.name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = new_name.chars().count();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<FileRow> = sqlx::query_as(
+        "UPDATE files \
+         SET name = $1, updated_at = now() \
+         WHERE id = $2 AND group_id = $3 AND deleted_at IS NULL \
+         RETURNING id, name, mime_type, size_bytes, current_version, \
+                   total_versions, folder_id, created_by, created_by_label, \
+                   created_at, updated_at",
+    )
+    .bind(&new_name)
+    .bind(file_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileRenamed,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({ "name_len": name_len, "group_id": group_id }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FileSummary::from(row)))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -753,6 +886,61 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         assert!(check_group_match(a, b).is_err());
+    }
+
+    // ─── PATCH validation helpers (plan 0089, GAR-557) ────────────────
+
+    #[test]
+    fn validate_file_name_happy_path_trims() {
+        let out = validate_file_name("  report.pdf  ").expect("trim+accept");
+        assert_eq!(out, "report.pdf");
+    }
+
+    #[test]
+    fn validate_file_name_rejects_empty_after_trim() {
+        let err = validate_file_name("   ").expect_err("empty");
+        assert_eq!(err, ERR_NAME_EMPTY);
+    }
+
+    #[test]
+    fn validate_file_name_rejects_zero_length() {
+        let err = validate_file_name("").expect_err("empty literal");
+        assert_eq!(err, ERR_NAME_EMPTY);
+    }
+
+    #[test]
+    fn validate_file_name_accepts_500_chars() {
+        // Boundary: exactly 500 chars passes.
+        let name: String = "a".repeat(500);
+        let out = validate_file_name(&name).expect("500 ok");
+        assert_eq!(out.chars().count(), 500);
+    }
+
+    #[test]
+    fn validate_file_name_rejects_501_chars() {
+        let name: String = "a".repeat(501);
+        let err = validate_file_name(&name).expect_err("too long");
+        assert_eq!(err, ERR_NAME_TOO_LONG);
+    }
+
+    #[test]
+    fn validate_file_name_rejects_slash() {
+        let err = validate_file_name("dir/file.txt").expect_err("slash");
+        assert_eq!(err, ERR_NAME_HAS_SLASH);
+    }
+
+    #[test]
+    fn validate_file_name_rejects_nul_byte() {
+        let err = validate_file_name("foo\0bar").expect_err("nul");
+        assert_eq!(err, ERR_NAME_HAS_NUL);
+    }
+
+    #[test]
+    fn validate_file_name_accepts_unicode() {
+        // Multi-byte UTF-8 chars should count as chars, not bytes.
+        let name = "café-relatório.pdf";
+        let out = validate_file_name(name).expect("utf8");
+        assert_eq!(out, name);
     }
 
     #[test]
