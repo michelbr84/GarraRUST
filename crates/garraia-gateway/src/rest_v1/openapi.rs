@@ -13,8 +13,8 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
-use super::files::{FileListResponse, FileSummary, FolderListResponse, FolderSummary};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
+use super::files::{FileListResponse, FileSummary, FolderListResponse, FolderSummary};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     MemberResponse, SetRoleRequest, UpdateGroupRequest,

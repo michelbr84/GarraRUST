@@ -394,14 +394,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0084 (GAR-549) — search API slice 1.
                 .route("/v1/search", get(search::search))
                 // Plan 0088 (GAR-555) — files API slice 1.
-                .route(
-                    "/v1/groups/{group_id}/files",
-                    get(files::list_files),
-                )
-                .route(
-                    "/v1/groups/{group_id}/folders",
-                    get(files::list_folders),
-                )
+                .route("/v1/groups/{group_id}/files", get(files::list_files))
+                .route("/v1/groups/{group_id}/folders", get(files::list_folders))
                 .route("/v1/files/{file_id}", delete(files::delete_file))
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
@@ -499,14 +493,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0084 (GAR-549) — search API slice 1, fail-soft 503.
                 .route("/v1/search", get(unconfigured_handler))
                 // Plan 0088 (GAR-555) — files API slice 1, fail-soft 503.
-                .route(
-                    "/v1/groups/{group_id}/files",
-                    get(unconfigured_handler),
-                )
-                .route(
-                    "/v1/groups/{group_id}/folders",
-                    get(unconfigured_handler),
-                )
+                .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
+                .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
@@ -641,14 +629,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0084 (GAR-549) — search API slice 1, no-auth stub.
                 .route("/v1/search", get(unconfigured_handler))
                 // Plan 0088 (GAR-555) — files API slice 1, no-auth stub.
-                .route(
-                    "/v1/groups/{group_id}/files",
-                    get(unconfigured_handler),
-                )
-                .route(
-                    "/v1/groups/{group_id}/folders",
-                    get(unconfigured_handler),
-                )
+                .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
+                .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",

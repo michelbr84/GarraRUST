@@ -260,9 +260,8 @@ pub async fn list_files(
     set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
     let rows: Vec<FileRow> = match params.cursor {
-        Some(cursor_id) => {
-            sqlx::query_as(
-                "SELECT f.id, f.name, f.mime_type, f.size_bytes, \
+        Some(cursor_id) => sqlx::query_as(
+            "SELECT f.id, f.name, f.mime_type, f.size_bytes, \
                          f.current_version, f.total_versions, f.folder_id, \
                          f.created_by, f.created_by_label, f.created_at, f.updated_at \
                   FROM files f \
@@ -273,17 +272,15 @@ pub async fn list_files(
                     ) \
                   ORDER BY f.created_at DESC, f.id DESC \
                   LIMIT $3",
-            )
-            .bind(params.folder_id)
-            .bind(cursor_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
-        None => {
-            sqlx::query_as(
-                "SELECT f.id, f.name, f.mime_type, f.size_bytes, \
+        )
+        .bind(params.folder_id)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        None => sqlx::query_as(
+            "SELECT f.id, f.name, f.mime_type, f.size_bytes, \
                          f.current_version, f.total_versions, f.folder_id, \
                          f.created_by, f.created_by_label, f.created_at, f.updated_at \
                   FROM files f \
@@ -291,13 +288,12 @@ pub async fn list_files(
                     AND ($1::uuid IS NULL OR f.folder_id = $1::uuid) \
                   ORDER BY f.created_at DESC, f.id DESC \
                   LIMIT $2",
-            )
-            .bind(params.folder_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
+        )
+        .bind(params.folder_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
     };
 
     tx.commit()
@@ -310,7 +306,11 @@ pub async fn list_files(
         .take(effective_limit as usize)
         .map(FileSummary::from)
         .collect();
-    let next_cursor = if has_next { items.last().map(|f| f.id) } else { None };
+    let next_cursor = if has_next {
+        items.last().map(|f| f.id)
+    } else {
+        None
+    };
     if has_next {
         items.pop();
     }
@@ -371,9 +371,8 @@ pub async fn list_folders(
     set_rls_context(&mut tx, principal.user_id, group_id).await?;
 
     let rows: Vec<FolderRow> = match params.cursor {
-        Some(cursor_id) => {
-            sqlx::query_as(
-                "SELECT f.id, f.name, f.parent_id, \
+        Some(cursor_id) => sqlx::query_as(
+            "SELECT f.id, f.name, f.parent_id, \
                          f.created_by, f.created_by_label, f.created_at, f.updated_at \
                   FROM folders f \
                   WHERE f.deleted_at IS NULL \
@@ -383,30 +382,27 @@ pub async fn list_folders(
                     ) \
                   ORDER BY f.created_at DESC, f.id DESC \
                   LIMIT $3",
-            )
-            .bind(params.parent_id)
-            .bind(cursor_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
-        None => {
-            sqlx::query_as(
-                "SELECT f.id, f.name, f.parent_id, \
+        )
+        .bind(params.parent_id)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        None => sqlx::query_as(
+            "SELECT f.id, f.name, f.parent_id, \
                          f.created_by, f.created_by_label, f.created_at, f.updated_at \
                   FROM folders f \
                   WHERE f.deleted_at IS NULL \
                     AND f.parent_id IS NOT DISTINCT FROM $1::uuid \
                   ORDER BY f.created_at DESC, f.id DESC \
                   LIMIT $2",
-            )
-            .bind(params.parent_id)
-            .bind(fetch_limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
+        )
+        .bind(params.parent_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
     };
 
     tx.commit()
@@ -419,7 +415,11 @@ pub async fn list_folders(
         .take(effective_limit as usize)
         .map(FolderSummary::from)
         .collect();
-    let next_cursor = if has_next { items.last().map(|f| f.id) } else { None };
+    let next_cursor = if has_next {
+        items.last().map(|f| f.id)
+    } else {
+        None
+    };
     if has_next {
         items.pop();
     }
@@ -480,14 +480,13 @@ pub async fn delete_file(
     //   - not found / cross-group (0 rows) → 404
     //   - already deleted (deleted_at IS NOT NULL) → 204 idempotent, no audit
     //   - live file (deleted_at IS NULL) → UPDATE + audit + 204
-    let existing: Option<(Option<DateTime<Utc>>, String)> = sqlx::query_as(
-        "SELECT deleted_at, name FROM files WHERE id = $1 AND group_id = $2",
-    )
-    .bind(file_id)
-    .bind(group_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let existing: Option<(Option<DateTime<Utc>>, String)> =
+        sqlx::query_as("SELECT deleted_at, name FROM files WHERE id = $1 AND group_id = $2")
+            .bind(file_id)
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     let (deleted_at, name) = match existing {
         Some(row) => row,
