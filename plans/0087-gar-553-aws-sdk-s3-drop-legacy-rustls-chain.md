@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | 🟡 In Progress |
+| **Status** | ✅ Merged 2026-05-09 via PR #232 (`f69b794`) |
 | **Linear** | [GAR-553](https://linear.app/chatgpt25/issue/GAR-553) |
 | **Branch** | `health/202605090047-aws-sdk-s3-drop-legacy-rustls` |
 | **Parent epic** | GAR-430 (Quality Gates Phase 3.6) |
