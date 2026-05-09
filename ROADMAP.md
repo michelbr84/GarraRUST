@@ -405,10 +405,10 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 - [ ] `POST /v1/groups/{group_id}/files:initUpload` (presigned URL + multipart)
 - [ ] `POST /v1/groups/{group_id}/files:completeUpload`
-- [ ] `GET /v1/groups/{group_id}/files?folder_id=...`
+- [x] `GET /v1/groups/{group_id}/files?folder_id=...` + `GET /v1/groups/{group_id}/folders` ✅ PR #235 GAR-555
 - [ ] `GET /v1/files/{file_id}:download` (URL temporária curta duração)
 - [ ] `POST /v1/files/{file_id}:newVersion`
-- [ ] `DELETE /v1/files/{file_id}` (soft delete + lixeira)
+- [x] `DELETE /v1/files/{file_id}` (soft delete + lixeira) ✅ PR #235 GAR-555
 - [ ] Suporte a **tus** (resumable upload) como alternativa
 
 **Memória**
