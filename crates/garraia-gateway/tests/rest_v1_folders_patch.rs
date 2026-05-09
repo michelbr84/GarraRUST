@@ -1,3 +1,8 @@
+// Gated so `cargo clippy --all-targets` without `test-helpers` skips this
+// file and doesn't try to compile the `common` harness (which references
+// `JwtIssuer::new_for_test` and `issue_access_for_test`, both gated by
+// `garraia-auth/test-support`). Same pattern as `rest_v1_files_get_single.rs`.
+#![cfg(feature = "test-helpers")]
 //! Integration tests for `PATCH /v1/groups/{group_id}/folders/{folder_id}`
 //! (plan 0091, GAR-561, Fase 3.4 files slice 4).
 //!
