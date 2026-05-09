@@ -1,7 +1,7 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085, GAR-549 + GAR-551, epic GAR-WS-SEARCH / Fase 3.4).
+//! (plan 0084 + plan 0085 + plan 0086, GAR-549 + GAR-551 + GAR-552, epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slice 1 + slice 2)
+//! ## Scope (slice 1 + slice 2 + slice 3)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -128,6 +128,12 @@ pub struct SearchQuery {
     /// Comma-separated list of resource types to search.
     /// Supported: `messages`, `memory`. Default: `messages,memory`.
     pub types: Option<String>,
+    /// Filter: only results created at or after this timestamp (ISO 8601 UTC). Optional.
+    pub from_date: Option<DateTime<Utc>>,
+    /// Filter: only results created at or before this timestamp (ISO 8601 UTC). Optional.
+    pub to_date: Option<DateTime<Utc>>,
+    /// Filter: for message results only, restrict to this sender UUID. Rejected for `scope_type=user`.
+    pub author_id: Option<Uuid>,
     /// Page size. Default 20, max 50.
     pub limit: Option<u32>,
     /// Offset for pagination. Default 0, max 10 000.
@@ -153,6 +159,9 @@ struct ValidatedSearch {
     scope_id: Uuid,
     include_messages: bool,
     include_memory: bool,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
     limit: u32,
     offset: u32,
 }
@@ -210,6 +219,23 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // author_id is only meaningful for message results; user scope never has messages.
+    if params.author_id.is_some() && scope_type == ValidatedScopeType::User {
+        return Err(RestError::BadRequest(
+            "author_id is not supported for scope_type=user (user scope only searches memory)"
+                .into(),
+        ));
+    }
+
+    // When both dates are provided, from_date must not exceed to_date.
+    if let (Some(from), Some(to)) = (params.from_date, params.to_date)
+        && from > to
+    {
+        return Err(RestError::BadRequest(
+            "from_date must not be later than to_date".into(),
+        ));
+    }
+
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -224,6 +250,9 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         scope_id: params.scope_id,
         include_messages,
         include_memory,
+        from_date: params.from_date,
+        to_date: params.to_date,
+        author_id: params.author_id,
         limit,
         offset,
     })
@@ -285,11 +314,16 @@ async fn set_rls_context(
 /// `chat_filter`:
 /// - `None` → group-wide search (slice 1: `scope_type=group`)
 /// - `Some(chat_id)` → chat-scoped search (slice 2: `scope_type=chat`)
+///
+/// `from_date` / `to_date` / `author_id` are all optional; `NULL` binds skip the predicate.
 async fn fetch_messages(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
     group_id: Uuid,
     chat_filter: Option<Uuid>,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
     fetch_up_to: i64,
 ) -> Result<Vec<MessageSearchRow>, RestError> {
     let rows = sqlx::query_as::<_, MessageSearchRow>(
@@ -305,12 +339,18 @@ async fn fetch_messages(
            AND  m.group_id = $2
            AND  ($3::uuid IS NULL OR m.chat_id = $3)
            AND  m.deleted_at IS NULL
+           AND  ($4::timestamptz IS NULL OR m.created_at >= $4)
+           AND  ($5::timestamptz IS NULL OR m.created_at <= $5)
+           AND  ($6::uuid IS NULL OR m.sender_user_id = $6)
          ORDER BY score DESC, m.created_at DESC, m.id DESC
-         LIMIT $4",
+         LIMIT $7",
     )
     .bind(q)
     .bind(group_id)
     .bind(chat_filter)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(author_id)
     .bind(fetch_up_to)
     .fetch_all(&mut **tx)
     .await
@@ -331,12 +371,16 @@ async fn fetch_messages(
 /// - **User**:  `group_filter=None`,    `scope_type_filter=Some("user")`,
 ///   `scope_id_filter=Some(user_id)`. RLS branch 2
 ///   (`group_id IS NULL AND created_by = current_user_id`) handles the rest.
+///
+/// `from_date` / `to_date` are optional date filters (slice 3).
 async fn fetch_memory(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
     group_filter: Option<Uuid>,
     scope_type_filter: Option<&'static str>,
     scope_id_filter: Option<Uuid>,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
     fetch_up_to: i64,
 ) -> Result<Vec<MemorySearchRow>, RestError> {
     let rows = sqlx::query_as::<_, MemorySearchRow>(
@@ -359,13 +403,17 @@ async fn fetch_memory(
            AND  mi.deleted_at IS NULL
            AND  mi.sensitivity <> 'secret'
            AND  (mi.ttl_expires_at IS NULL OR mi.ttl_expires_at > now())
+           AND  ($5::timestamptz IS NULL OR mi.created_at >= $5)
+           AND  ($6::timestamptz IS NULL OR mi.created_at <= $6)
          ORDER BY score DESC, mi.created_at DESC, mi.id DESC
-         LIMIT $5",
+         LIMIT $7",
     )
     .bind(q)
     .bind(group_filter)
     .bind(scope_type_filter)
     .bind(scope_id_filter)
+    .bind(from_date)
+    .bind(to_date)
     .bind(fetch_up_to)
     .fetch_all(&mut **tx)
     .await
@@ -491,6 +539,9 @@ pub async fn search(
             &validated.q,
             caller_group_id,
             chat_filter,
+            validated.from_date,
+            validated.to_date,
+            validated.author_id,
             fetch_up_to,
         )
         .await?;
@@ -532,6 +583,8 @@ pub async fn search(
             group_filter,
             scope_type_filter,
             scope_id_filter,
+            validated.from_date,
+            validated.to_date,
             fetch_up_to,
         )
         .await?;
@@ -589,6 +642,9 @@ mod tests {
             scope_type: scope_type.to_owned(),
             scope_id: Uuid::new_v4(),
             types: types.map(|s| s.to_owned()),
+            from_date: None,
+            to_date: None,
+            author_id: None,
             limit: None,
             offset: None,
         }
@@ -727,6 +783,9 @@ mod tests {
             scope_type: "group".to_owned(),
             scope_id: Uuid::new_v4(),
             types: None,
+            from_date: None,
+            to_date: None,
+            author_id: None,
             limit: None,
             offset: Some(10_001),
         };
@@ -740,6 +799,9 @@ mod tests {
             scope_type: "group".to_owned(),
             scope_id: Uuid::new_v4(),
             types: None,
+            from_date: None,
+            to_date: None,
+            author_id: None,
             limit: Some(999),
             offset: None,
         };
@@ -756,5 +818,123 @@ mod tests {
         assert!(v.include_memory);
         assert_eq!(v.limit, DEFAULT_LIMIT);
         assert_eq!(v.offset, 0);
+    }
+
+    // ─── Slice 3: date-range + author_id filter tests ─────────────────────────
+
+    fn make_params_full(
+        q: &str,
+        scope_type: &str,
+        from_date: Option<DateTime<Utc>>,
+        to_date: Option<DateTime<Utc>>,
+        author_id: Option<Uuid>,
+    ) -> SearchQuery {
+        SearchQuery {
+            q: q.to_owned(),
+            scope_type: scope_type.to_owned(),
+            scope_id: Uuid::new_v4(),
+            types: None,
+            from_date,
+            to_date,
+            author_id,
+            limit: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn from_date_only_accepted() {
+        let from = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let params = make_params_full("hello", "group", Some(from), None, None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.from_date, Some(from));
+        assert_eq!(v.to_date, None);
+    }
+
+    #[test]
+    fn to_date_only_accepted() {
+        let to = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let params = make_params_full("hello", "group", None, Some(to), None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.from_date, None);
+        assert_eq!(v.to_date, Some(to));
+    }
+
+    #[test]
+    fn from_date_equal_to_date_accepted() {
+        let ts = "2026-03-15T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let params = make_params_full("hello", "group", Some(ts), Some(ts), None);
+        assert!(parse_and_validate(&params).is_ok());
+    }
+
+    #[test]
+    fn from_date_before_to_date_accepted() {
+        let from = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let to = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let params = make_params_full("hello", "group", Some(from), Some(to), None);
+        assert!(parse_and_validate(&params).is_ok());
+    }
+
+    #[test]
+    fn from_date_after_to_date_rejected() {
+        let from = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let to = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let params = make_params_full("hello", "group", Some(from), Some(to), None);
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn author_id_with_group_scope_accepted() {
+        let author = Uuid::new_v4();
+        let params = make_params_full("hello", "group", None, None, Some(author));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.author_id, Some(author));
+    }
+
+    #[test]
+    fn author_id_with_chat_scope_accepted() {
+        let author = Uuid::new_v4();
+        let params = make_params_full("hello", "chat", None, None, Some(author));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.author_id, Some(author));
+    }
+
+    #[test]
+    fn author_id_with_user_scope_rejected() {
+        let author = Uuid::new_v4();
+        // user scope does not support messages, so author_id is rejected.
+        let params = SearchQuery {
+            q: "hello".to_owned(),
+            scope_type: "user".to_owned(),
+            scope_id: Uuid::new_v4(),
+            types: Some("memory".to_owned()),
+            from_date: None,
+            to_date: None,
+            author_id: Some(author),
+            limit: None,
+            offset: None,
+        };
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn all_three_filters_together_accepted() {
+        let from = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let to = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let author = Uuid::new_v4();
+        let params = make_params_full("hello", "group", Some(from), Some(to), Some(author));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.from_date, Some(from));
+        assert_eq!(v.to_date, Some(to));
+        assert_eq!(v.author_id, Some(author));
+    }
+
+    #[test]
+    fn no_filter_params_has_none_defaults() {
+        let params = make_params("hello", "group", None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.from_date, None);
+        assert_eq!(v.to_date, None);
+        assert_eq!(v.author_id, None);
     }
 }
