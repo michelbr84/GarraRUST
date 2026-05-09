@@ -383,6 +383,20 @@ pub enum WorkspaceAuditAction {
     /// receipt-of-action ledger, not a full diff log, and the renamed row
     /// in `files` plus prior audit entries already reconstruct history.
     FileRenamed,
+
+    /// A folder was renamed via
+    /// `PATCH /v1/groups/{group_id}/folders/{folder_id}`
+    /// (plan 0091 / GAR-561, Fase 3.4 files slice 4).
+    ///
+    /// Emitted exactly once per successful 200 response. Not emitted on 4xx
+    /// (validation failure, soft-deleted target, cross-group, missing,
+    /// or 409 unique-name collision under the same parent).
+    /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
+    /// Metadata: `{ folder_id, group_id, name_len }` — `folder_id` is
+    /// duplicated alongside `resource_id` for log-search ergonomics
+    /// (consumers can filter on metadata.folder_id without parsing
+    /// resource_id). Never carries the raw folder name.
+    FolderRenamed,
 }
 
 impl WorkspaceAuditAction {
@@ -425,6 +439,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskMoved => "task.moved",
             WorkspaceAuditAction::FileDeleted => "file.deleted",
             WorkspaceAuditAction::FileRenamed => "file.renamed",
+            WorkspaceAuditAction::FolderRenamed => "folder.renamed",
         }
     }
 }
@@ -601,6 +616,10 @@ mod tests {
         assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
         assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
         assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
+        assert_eq!(
+            WorkspaceAuditAction::FolderRenamed.as_str(),
+            "folder.renamed"
+        );
     }
 
     #[test]
@@ -640,6 +659,7 @@ mod tests {
             WorkspaceAuditAction::TaskSubscribed.as_str(),
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskMoved.as_str(),
+            WorkspaceAuditAction::FolderRenamed.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
