@@ -1,3 +1,6 @@
+// Gated so `cargo clippy --all-targets` without `test-helpers` skips this
+// file and doesn't try to compile the `common` harness.
+#![cfg(feature = "test-helpers")]
 //! Integration tests for `PATCH /v1/groups/{group_id}/files/{file_id}` (plan 0089, GAR-557).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` — same pattern as other
@@ -26,7 +29,7 @@ use uuid::Uuid;
 use common::Harness;
 use common::fixtures::seed_user_with_group;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────────
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -90,7 +93,7 @@ async fn seed_file(h: &Harness, group_id: Uuid, user_id: Uuid, name: &str, delet
     file_id.0
 }
 
-// ─── Test ─────────────────────────────────────────────────────────────────────
+// ─── Test ─────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn files_patch_scenarios() {
@@ -114,7 +117,7 @@ async fn files_patch_scenarios() {
     let gid = group_id.to_string();
     let g2id = group2_id.to_string();
 
-    // ── L1: 200 — happy path ──────────────────────────────────────────────
+    // ── L1: 200 — happy path ──────────────────────────────────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -135,7 +138,7 @@ async fn files_patch_scenarios() {
         "L1 updated_at present"
     );
 
-    // ── L2: 200 — name with whitespace is trimmed ─────────────────────────
+    // ── L2: 200 — name with whitespace is trimmed ─────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -151,7 +154,7 @@ async fn files_patch_scenarios() {
     let body = body_json(resp).await;
     assert_eq!(body["name"], "trimmed name.txt", "L2 name trimmed");
 
-    // ── L3: 400 — empty name after trim ──────────────────────────────────
+    // ── L3: 400 — empty name after trim ────────────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -169,7 +172,7 @@ async fn files_patch_scenarios() {
         "L3 empty name → 400"
     );
 
-    // ── L4: 400 — name too long (501 chars) ──────────────────────────────
+    // ── L4: 400 — name too long (501 chars) ──────────────────────────────────────────
     let long_name: String = "a".repeat(501);
     let resp = h
         .router
@@ -184,7 +187,7 @@ async fn files_patch_scenarios() {
         .expect("oneshot L4");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "L4 too long → 400");
 
-    // ── L5: 400 — name contains '/' ──────────────────────────────────────
+    // ── L5: 400 — name contains '/' ──────────────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -198,7 +201,7 @@ async fn files_patch_scenarios() {
         .expect("oneshot L5");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "L5 slash → 400");
 
-    // ── L6: 403 — path group_id ≠ principal group_id ─────────────────────
+    // ── L6: 403 — path group_id ≠ principal group_id ─────────────────────────────────
     // token is for group1 but path uses group2
     let resp = h
         .router
@@ -217,7 +220,7 @@ async fn files_patch_scenarios() {
         "L6 group mismatch → 403"
     );
 
-    // ── L7: 404 — cross-tenant file (group2 file, group1 token) ──────────
+    // ── L7: 404 — cross-tenant file (group2 file, group1 token) ────────────────────
     let resp = h
         .router
         .clone()
@@ -235,7 +238,7 @@ async fn files_patch_scenarios() {
         "L7 cross-tenant → 404"
     );
 
-    // ── L8: 404 — soft-deleted file ───────────────────────────────────────
+    // ── L8: 404 — soft-deleted file ──────────────────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -253,7 +256,7 @@ async fn files_patch_scenarios() {
         "L8 deleted file → 404"
     );
 
-    // ── L9: 401 — missing bearer token ───────────────────────────────────
+    // ── L9: 401 — missing bearer token ──────────────────────────────────────────────
     let resp = h
         .router
         .clone()
@@ -267,7 +270,7 @@ async fn files_patch_scenarios() {
         .expect("oneshot L9");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "L9 no token → 401");
 
-    // ── Verify audit event was written for L1 ────────────────────────────
+    // ── Verify audit event was written for L1 ────────────────────────────────────────
     let audit: Vec<(String,)> = sqlx::query_as(
         "SELECT action FROM audit_events \
          WHERE resource_type = 'files' AND resource_id = $1 AND action = 'file.renamed' \
