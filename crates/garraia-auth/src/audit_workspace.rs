@@ -384,6 +384,13 @@ pub enum WorkspaceAuditAction {
     /// in `files` plus prior audit entries already reconstruct history.
     FileRenamed,
 
+    /// A folder was created via `POST /v1/groups/{group_id}/folders`
+    /// (plan 0092 / GAR-562, Fase 3.4 files slice 5).
+    ///
+    /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
+    /// Metadata: `{ name_len, group_id, has_parent }` — never the raw name.
+    FolderCreated,
+
     /// A folder was renamed via
     /// `PATCH /v1/groups/{group_id}/folders/{folder_id}`
     /// (plan 0091 / GAR-561, Fase 3.4 files slice 4).
@@ -397,6 +404,14 @@ pub enum WorkspaceAuditAction {
     /// (consumers can filter on metadata.folder_id without parsing
     /// resource_id). Never carries the raw folder name.
     FolderRenamed,
+
+    /// A folder was soft-deleted via
+    /// `DELETE /v1/groups/{group_id}/folders/{folder_id}`
+    /// (plan 0092 / GAR-562, Fase 3.4 files slice 5).
+    ///
+    /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
+    /// Metadata: `{ group_id }` — folder name not carried (PII-safe).
+    FolderDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -439,7 +454,9 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskMoved => "task.moved",
             WorkspaceAuditAction::FileDeleted => "file.deleted",
             WorkspaceAuditAction::FileRenamed => "file.renamed",
+            WorkspaceAuditAction::FolderCreated => "folder.created",
             WorkspaceAuditAction::FolderRenamed => "folder.renamed",
+            WorkspaceAuditAction::FolderDeleted => "folder.deleted",
         }
     }
 }
@@ -617,8 +634,16 @@ mod tests {
         assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
         assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
         assert_eq!(
+            WorkspaceAuditAction::FolderCreated.as_str(),
+            "folder.created"
+        );
+        assert_eq!(
             WorkspaceAuditAction::FolderRenamed.as_str(),
             "folder.renamed"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::FolderDeleted.as_str(),
+            "folder.deleted"
         );
     }
 
@@ -659,7 +684,9 @@ mod tests {
             WorkspaceAuditAction::TaskSubscribed.as_str(),
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskMoved.as_str(),
+            WorkspaceAuditAction::FolderCreated.as_str(),
             WorkspaceAuditAction::FolderRenamed.as_str(),
+            WorkspaceAuditAction::FolderDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
