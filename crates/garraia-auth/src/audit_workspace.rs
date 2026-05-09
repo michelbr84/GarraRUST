@@ -397,6 +397,26 @@ pub enum WorkspaceAuditAction {
     /// (consumers can filter on metadata.folder_id without parsing
     /// resource_id). Never carries the raw folder name.
     FolderRenamed,
+
+    /// A folder was created via
+    /// `POST /v1/groups/{group_id}/folders`
+    /// (plan 0092 / GAR-562, Fase 3.4 files slice 5).
+    ///
+    /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
+    /// Metadata: `{ folder_id, group_id, name_len, has_parent }`.
+    /// `has_parent` is a boolean flag — never carries the raw name or
+    /// parent path.
+    FolderCreated,
+
+    /// A folder was soft-deleted via
+    /// `DELETE /v1/groups/{group_id}/folders/{folder_id}`
+    /// (plan 0092 / GAR-562, Fase 3.4 files slice 5).
+    ///
+    /// Emitted only when `deleted_at` transitions from NULL (first
+    /// soft-delete). Already-deleted folders return 204 without emitting.
+    /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
+    /// Metadata: `{ folder_id, group_id, name_len }` — never the raw name.
+    FolderDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -440,6 +460,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FileDeleted => "file.deleted",
             WorkspaceAuditAction::FileRenamed => "file.renamed",
             WorkspaceAuditAction::FolderRenamed => "folder.renamed",
+            WorkspaceAuditAction::FolderCreated => "folder.created",
+            WorkspaceAuditAction::FolderDeleted => "folder.deleted",
         }
     }
 }
@@ -620,6 +642,14 @@ mod tests {
             WorkspaceAuditAction::FolderRenamed.as_str(),
             "folder.renamed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::FolderCreated.as_str(),
+            "folder.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::FolderDeleted.as_str(),
+            "folder.deleted"
+        );
     }
 
     #[test]
@@ -660,6 +690,8 @@ mod tests {
             WorkspaceAuditAction::TaskUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskMoved.as_str(),
             WorkspaceAuditAction::FolderRenamed.as_str(),
+            WorkspaceAuditAction::FolderCreated.as_str(),
+            WorkspaceAuditAction::FolderDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

@@ -180,6 +180,22 @@ pub struct PatchFileRequest {
     pub name: String,
 }
 
+/// Body for `POST /v1/groups/{group_id}/folders` (plan 0092, GAR-562).
+///
+/// `parent_id` is optional — omit (or `null`) for a root-level folder.
+/// If set, the parent must exist in the same group and must not be
+/// soft-deleted; a 400 is returned when the constraint is violated.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateFolderRequest {
+    /// Folder name. Trimmed before validation. Length must be 1..=200
+    /// chars after trim (matches DB CHECK on `folders.name`), must not
+    /// contain `/` or NUL byte.
+    pub name: String,
+    /// Optional parent folder UUID. `null` (or omitted) means root-level.
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+}
+
 /// Body for `PATCH /v1/groups/{group_id}/folders/{folder_id}`
 /// (plan 0091, GAR-561).
 ///
@@ -959,6 +975,246 @@ pub async fn patch_folder(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(Json(FolderSummary::from(row)))
+}
+
+/// `POST /v1/groups/{group_id}/folders` — create a folder (plan 0092, GAR-562).
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Auth missing / invalid                         | 401    |
+/// | Principal group_id ≠ path group_id             | 403    |
+/// | Caller lacks FilesWrite                        | 403    |
+/// | Invalid name (empty/long/slash/NUL)            | 400    |
+/// | `parent_id` not found or soft-deleted in group | 400    |
+/// | Name collision under same parent               | 409    |
+/// | Happy path                                     | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/folders",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+    ),
+    request_body = CreateFolderRequest,
+    responses(
+        (status = 201, description = "Folder created.", body = FolderSummary),
+        (status = 400, description = "Invalid name or unknown parent_id.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 409, description = "A sibling folder under the same parent already uses this name.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(path_group_id): Path<Uuid>,
+    Json(body): Json<CreateFolderRequest>,
+) -> Result<(StatusCode, Json<FolderSummary>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let name = validate_folder_name(&body.name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = name.chars().count();
+    let has_parent = body.parent_id.is_some();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Validate parent_id belongs to the same group and is not soft-deleted.
+    if let Some(parent_id) = body.parent_id {
+        let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM folders \
+             WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(parent_id)
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        if exists.is_none() {
+            return Err(RestError::BadRequest(
+                "parent_id not found or soft-deleted in this group".into(),
+            ));
+        }
+    }
+
+    // Resolve created_by_label from the users table within the same transaction.
+    let (created_by_label,): (String,) =
+        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let folder_id = Uuid::new_v4();
+
+    let insert_result: Result<FolderRow, sqlx::Error> = sqlx::query_as(
+        "INSERT INTO folders \
+             (id, group_id, parent_id, name, created_by, created_by_label) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, name, parent_id, created_by, created_by_label, \
+                   created_at, updated_at",
+    )
+    .bind(folder_id)
+    .bind(group_id)
+    .bind(body.parent_id)
+    .bind(&name)
+    .bind(principal.user_id)
+    .bind(&created_by_label)
+    .fetch_one(&mut *tx)
+    .await;
+
+    let row = match insert_result {
+        Ok(r) => r,
+        Err(sqlx::Error::Database(ref db_err)) if db_err.code().as_deref() == Some("23505") => {
+            return Err(RestError::Conflict(
+                "a folder with this name already exists under the same parent".into(),
+            ));
+        }
+        Err(e) => return Err(RestError::Internal(e.into())),
+    };
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderCreated,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({
+            "folder_id": folder_id,
+            "group_id": group_id,
+            "name_len": name_len,
+            "has_parent": has_parent,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((StatusCode::CREATED, Json(FolderSummary::from(row))))
+}
+
+/// `DELETE /v1/groups/{group_id}/folders/{folder_id}` — soft-delete a folder
+/// (plan 0092, GAR-562).
+///
+/// Idempotent: already-deleted folders return 204 without emitting an audit
+/// event (mirrors `DELETE /v1/files/{file_id}` from plan 0088). Children
+/// files and sub-folders are NOT cascade-deleted — they become orphans
+/// visible at the group root. Cascade semantics are deferred to slice 6+.
+///
+/// Authz: `Action::FilesDelete` — same gate as `DELETE /v1/files/{file_id}`
+/// (plan 0088). The `can()` matrix grants this only to Owner/Admin (NOT
+/// Member), which is the canonical project convention for destructive
+/// file/folder operations: `FilesWrite` is for create/rename mutations
+/// that are reversible (PATCH rename can be undone, soft-deleted folders
+/// require Admin to delete).
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Auth missing / invalid                         | 401    |
+/// | Principal group_id ≠ path group_id             | 403    |
+/// | Caller lacks `FilesDelete` (e.g. Member role)  | 403    |
+/// | Folder not found or cross-group                | 404    |
+/// | Already deleted (idempotent)                   | 204    |
+/// | Happy path (live folder deleted)               | 204    |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{group_id}/folders/{folder_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("folder_id" = Uuid, Path, description = "Folder UUID."),
+    ),
+    responses(
+        (status = 204, description = "Folder deleted (or already deleted)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesDelete or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Folder not found or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_folder(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, folder_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::FilesDelete) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Fetch the folder regardless of deleted_at to distinguish:
+    //   - not found / cross-group (0 rows) → 404
+    //   - already deleted                  → 204 idempotent, no audit
+    //   - live folder                      → UPDATE + audit + 204
+    let existing: Option<(Option<DateTime<Utc>>, String)> =
+        sqlx::query_as("SELECT deleted_at, name FROM folders WHERE id = $1 AND group_id = $2")
+            .bind(folder_id)
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (deleted_at, name) = match existing {
+        Some(row) => row,
+        None => return Err(RestError::NotFound),
+    };
+
+    if deleted_at.is_some() {
+        tx.commit()
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    let name_len = name.chars().count();
+
+    sqlx::query("UPDATE folders SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
+        .bind(folder_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FolderDeleted,
+        principal.user_id,
+        group_id,
+        "folders",
+        folder_id.to_string(),
+        json!({
+            "folder_id": folder_id,
+            "group_id": group_id,
+            "name_len": name_len,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────
