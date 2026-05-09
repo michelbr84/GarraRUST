@@ -406,6 +406,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [ ] `POST /v1/groups/{group_id}/files:initUpload` (presigned URL + multipart)
 - [ ] `POST /v1/groups/{group_id}/files:completeUpload`
 - [x] `GET /v1/groups/{group_id}/files?folder_id=...` + `GET /v1/groups/{group_id}/folders` ✅ PR #235 GAR-555
+- [x] `PATCH /v1/groups/{group_id}/files/{file_id}` (rename) — plan 0089 / [GAR-557](https://linear.app/chatgpt25/issue/GAR-557), implementado 2026-05-09 (Florida) ✅ PR #238 (`9255515`)
 - [ ] `GET /v1/files/{file_id}:download` (URL temporária curta duração)
 - [ ] `POST /v1/files/{file_id}:newVersion`
 - [x] `DELETE /v1/files/{file_id}` (soft delete + lixeira) ✅ PR #235 GAR-555
