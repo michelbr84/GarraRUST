@@ -398,9 +398,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/folders", get(files::list_folders))
                 .route("/v1/files/{file_id}", delete(files::delete_file))
                 // Plan 0089 (GAR-557) — files API slice 2: rename.
+                // Plan 0090 (GAR-559) — files API slice 3: GET single file.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
-                    patch(files::patch_file),
+                    get(files::get_file).patch(files::patch_file),
+                )
+                // Plan 0090 (GAR-559) — files API slice 3: GET single folder.
+                .route(
+                    "/v1/groups/{group_id}/folders/{folder_id}",
+                    get(files::get_folder),
                 )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
@@ -502,9 +508,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, fail-soft 503.
+                // Plan 0090 (GAR-559) — files API slice 3 GET single, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
-                    patch(unconfigured_handler),
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/folders/{folder_id}",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
@@ -643,9 +654,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/groups/{group_id}/folders", get(unconfigured_handler))
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, no-auth stub.
+                // Plan 0090 (GAR-559) — files API slice 3 GET single, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
-                    patch(unconfigured_handler),
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/folders/{folder_id}",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments",
