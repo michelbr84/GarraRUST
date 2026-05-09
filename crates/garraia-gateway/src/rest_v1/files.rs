@@ -995,9 +995,6 @@ mod patch_tests {
 
     #[test]
     fn file_renamed_audit_action_string() {
-        assert_eq!(
-            WorkspaceAuditAction::FileRenamed.as_str(),
-            "file.renamed"
-        );
+        assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
     }
 }
