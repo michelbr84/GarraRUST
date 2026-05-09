@@ -15,8 +15,8 @@
 #     When the upstream blockers close, the IDs MUST be dropped from
 #     BOTH files atomically. (quinn-proto previously here was closed
 #     by GAR-457 on 2026-04-27.)
-#   * The 23 unmaintained-only IDs (8 directly named: daemonize,
-#     derivative, fxhash, instant, paste, proc-macro-error, async-std,
+#   * The 22 unmaintained-only IDs (7 directly named: daemonize,
+#     derivative, fxhash, instant, proc-macro-error, async-std,
 #     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
 #     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
 #     "allowed warnings" and does NOT require explicit ignore.
@@ -67,7 +67,6 @@ ignore = [
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
     "RUSTSEC-2024-0384", # instant (transitive via notify)
-    "RUSTSEC-2024-0436", # paste (transitive via wasmtime)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
     "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
     # Added 2026-04-27 (PR #75 CI surfaced this — local cache was stale):
@@ -112,27 +111,27 @@ ignore = [
     # so runtime risk on Linux server deploys is zero, but `cargo deny` walks
     # the full lockfile. Upstream gtk-rs GTK3 bindings discontinued; GTK4
     # migration is a Tauri-side decision. Owner: epic GAR-430.
-    "RUSTSEC-2024-0411", # gdk
-    "RUSTSEC-2024-0412", # gdk-sys
+    "RUSTSEC-2024-0411", # gdkwayland-sys
+    "RUSTSEC-2024-0412", # gdk
     "RUSTSEC-2024-0413", # atk
-    "RUSTSEC-2024-0414", # atk-sys
-    "RUSTSEC-2024-0415", # gdkwayland-sys
-    "RUSTSEC-2024-0416", # gdkx11
-    "RUSTSEC-2024-0417", # gdkx11-sys
-    "RUSTSEC-2024-0418", # gtk
-    "RUSTSEC-2024-0419", # gtk-sys
-    "RUSTSEC-2024-0420", # gtk3-macros
+    "RUSTSEC-2024-0414", # gdkx11-sys
+    "RUSTSEC-2024-0415", # gtk
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdkx11
+    "RUSTSEC-2024-0418", # gdk-sys
+    "RUSTSEC-2024-0419", # gtk3-macros
+    "RUSTSEC-2024-0420", # gtk-sys
 
     # --- unic-* unmaintained — open-i18n/rust-unic discontinued (5 IDs) ---
     # Pulled via tauri-utils 2.8 → urlpattern 0.3 → unic-ucd-ident → unic-*.
     # Tauri 2.x uses urlpattern for permission scope matching; replacement
     # depends on a Tauri or urlpattern crate update. Owner: GAR-430.
     # Expires 2026-07-31.
-    "RUSTSEC-2025-0075", # unic-char-property
-    "RUSTSEC-2025-0080", # unic-char-range
-    "RUSTSEC-2025-0081", # unic-common
-    "RUSTSEC-2025-0098", # unic-ucd-ident
-    "RUSTSEC-2025-0100", # unic-ucd-version
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
 ]
 
 [licenses]

@@ -34,7 +34,7 @@
 #     from BOTH files atomically. When GAR-455 closes (serenity 0.13 +
 #     aws-smithy upgrade), ALL 4 rustls-webpki IDs below MUST be
 #     dropped from BOTH files atomically.
-#   * The 23 unmaintained-only IDs in `deny.toml` (8 directly named +
+#   * The 22 unmaintained-only IDs in `deny.toml` (7 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
 #     behavior of `cargo audit`.
