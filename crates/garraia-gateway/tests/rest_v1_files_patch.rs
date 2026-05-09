@@ -71,13 +71,7 @@ fn patch_req(
 
 /// Insert a minimal file row directly via the admin (superuser) pool.
 /// Returns the generated file UUID.
-async fn seed_file(
-    h: &Harness,
-    group_id: Uuid,
-    user_id: Uuid,
-    name: &str,
-    deleted: bool,
-) -> Uuid {
+async fn seed_file(h: &Harness, group_id: Uuid, user_id: Uuid, name: &str, deleted: bool) -> Uuid {
     let file_id: (Uuid,) = sqlx::query_as(
         "INSERT INTO files \
          (group_id, name, size_bytes, mime_type, created_by, created_by_label, \
@@ -103,14 +97,12 @@ async fn files_patch_scenarios() {
     let h = Harness::get().await;
 
     // Two isolated groups.
-    let (user_id, group_id, token) =
-        seed_user_with_group(&h, "owner@files-patch.test")
-            .await
-            .expect("seed owner");
-    let (_user2_id, group2_id, _token2) =
-        seed_user_with_group(&h, "owner2@files-patch.test")
-            .await
-            .expect("seed owner2");
+    let (user_id, group_id, token) = seed_user_with_group(&h, "owner@files-patch.test")
+        .await
+        .expect("seed owner");
+    let (_user2_id, group2_id, _token2) = seed_user_with_group(&h, "owner2@files-patch.test")
+        .await
+        .expect("seed owner2");
 
     // Seed files for group 1.
     let file_id = seed_file(&h, group_id, user_id, "original.txt", false).await;
@@ -138,7 +130,10 @@ async fn files_patch_scenarios() {
     let body = body_json(resp).await;
     assert_eq!(body["name"], "renamed.pdf", "L1 name updated");
     assert_eq!(body["id"], file_id.to_string(), "L1 id unchanged");
-    assert!(body["updated_at"].as_str().is_some(), "L1 updated_at present");
+    assert!(
+        body["updated_at"].as_str().is_some(),
+        "L1 updated_at present"
+    );
 
     // ── L2: 200 — name with whitespace is trimmed ─────────────────────────
     let resp = h
@@ -168,7 +163,11 @@ async fn files_patch_scenarios() {
         ))
         .await
         .expect("oneshot L3");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "L3 empty name → 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "L3 empty name → 400"
+    );
 
     // ── L4: 400 — name too long (501 chars) ──────────────────────────────
     let long_name: String = "a".repeat(501);
@@ -212,7 +211,11 @@ async fn files_patch_scenarios() {
         ))
         .await
         .expect("oneshot L6");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "L6 group mismatch → 403");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "L6 group mismatch → 403"
+    );
 
     // ── L7: 404 — cross-tenant file (group2 file, group1 token) ──────────
     let resp = h
@@ -226,7 +229,11 @@ async fn files_patch_scenarios() {
         ))
         .await
         .expect("oneshot L7");
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "L7 cross-tenant → 404");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "L7 cross-tenant → 404"
+    );
 
     // ── L8: 404 — soft-deleted file ───────────────────────────────────────
     let resp = h
@@ -240,7 +247,11 @@ async fn files_patch_scenarios() {
         ))
         .await
         .expect("oneshot L8");
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "L8 deleted file → 404");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "L8 deleted file → 404"
+    );
 
     // ── L9: 401 — missing bearer token ───────────────────────────────────
     let resp = h

@@ -14,7 +14,9 @@ use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
-use super::files::{FileListResponse, FileSummary, FolderListResponse, FolderSummary, PatchFileRequest};
+use super::files::{
+    FileListResponse, FileSummary, FolderListResponse, FolderSummary, PatchFileRequest,
+};
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
