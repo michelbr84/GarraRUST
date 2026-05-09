@@ -371,6 +371,18 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "files"`, `resource_id = "{file_id}"`.
     /// Metadata: `{ name_len, group_id }` — never the raw file name.
     FileDeleted,
+
+    /// A file was renamed via `PATCH /v1/groups/{group_id}/files/{file_id}`
+    /// (plan 0089 / GAR-557, Fase 3.4 files slice 2).
+    ///
+    /// Emitted exactly once per successful 200 response. Not emitted on 4xx
+    /// (validation failure, soft-deleted target, cross-group, missing).
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ name_len, group_id }` — never the raw file name. The
+    /// previous name is intentionally omitted: `audit_events` is a
+    /// receipt-of-action ledger, not a full diff log, and the renamed row
+    /// in `files` plus prior audit entries already reconstruct history.
+    FileRenamed,
 }
 
 impl WorkspaceAuditAction {
@@ -412,6 +424,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
             WorkspaceAuditAction::TaskMoved => "task.moved",
             WorkspaceAuditAction::FileDeleted => "file.deleted",
+            WorkspaceAuditAction::FileRenamed => "file.renamed",
         }
     }
 }
@@ -587,6 +600,7 @@ mod tests {
         );
         assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
         assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
+        assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
     }
 
     #[test]
