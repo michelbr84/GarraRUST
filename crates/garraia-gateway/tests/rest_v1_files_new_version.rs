@@ -59,11 +59,9 @@ fn new_version_req(
     content_type: Option<&str>,
     body_bytes: Vec<u8>,
 ) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/v1/groups/{path_group_id}/files/{file_id}/versions"
-        ));
+    let mut builder = Request::builder().method("POST").uri(format!(
+        "/v1/groups/{path_group_id}/files/{file_id}/versions"
+    ));
     if let Some(ct) = content_type {
         builder = builder.header("content-type", ct);
     }
@@ -172,9 +170,7 @@ async fn build_storage_router(h: &Harness, tmp: &Path) -> axum::Router {
     std::fs::create_dir_all(&fs_root).unwrap();
     std::fs::create_dir_all(&staging_dir).unwrap();
 
-    let local_fs = Arc::new(
-        garraia_storage::LocalFs::new(&fs_root).expect("LocalFs::new"),
-    );
+    let local_fs = Arc::new(garraia_storage::LocalFs::new(&fs_root).expect("LocalFs::new"));
     let staging = Arc::new(UploadStaging {
         staging_dir: std::fs::canonicalize(&staging_dir).unwrap(),
         max_patch_bytes: 10 * 1024 * 1024,
@@ -231,16 +227,9 @@ async fn v1_files_new_version_scenarios() {
 
     // ─── NV1. 201 happy path ───────────────────────────────────────────────
     let nv1_payload: &[u8] = b"version 2 content";
-    let nv1_id = seed_file(
-        &h,
-        group_id,
-        owner_id,
-        "doc.txt",
-        5,
-        "text/plain",
-    )
-    .await
-    .expect("NV1 seed file");
+    let nv1_id = seed_file(&h, group_id, owner_id, "doc.txt", 5, "text/plain")
+        .await
+        .expect("NV1 seed file");
     seed_file_version(
         &h,
         nv1_id,
@@ -291,13 +280,12 @@ async fn v1_files_new_version_scenarios() {
     assert_eq!(mime, "text/plain", "NV1 db mime_type");
 
     // NV1 — DB: file_versions row created.
-    let (fv_ver,): (i32,) = sqlx::query_as(
-        "SELECT version FROM file_versions WHERE file_id = $1 AND version = 2",
-    )
-    .bind(nv1_id)
-    .fetch_one(&h.admin_pool)
-    .await
-    .expect("NV1 fetch file_versions v2");
+    let (fv_ver,): (i32,) =
+        sqlx::query_as("SELECT version FROM file_versions WHERE file_id = $1 AND version = 2")
+            .bind(nv1_id)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("NV1 fetch file_versions v2");
     assert_eq!(fv_ver, 2, "NV1 db file_versions version");
 
     // ─── NV2. 404 non-existent file_id ────────────────────────────────────
@@ -387,10 +375,9 @@ async fn v1_files_new_version_scenarios() {
 
     // ─── NV5. 403 Child role lacks FilesWrite ────────────────────────────
     let child_email = "child@0094-new-version.test";
-    let (child_id, child_token) =
-        seed_member_via_admin(&h, group_id, "child", child_email)
-            .await
-            .expect("NV5 seed child");
+    let (child_id, child_token) = seed_member_via_admin(&h, group_id, "child", child_email)
+        .await
+        .expect("NV5 seed child");
     let _ = child_id;
 
     let nv5_id = seed_file(&h, group_id, owner_id, "child-target.txt", 2, "text/plain")
@@ -516,9 +503,5 @@ async fn v1_files_new_version_scenarios() {
         ))
         .await
         .expect("NV8 oneshot");
-    assert_eq!(
-        resp.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "NV8 status"
-    );
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "NV8 status");
 }
