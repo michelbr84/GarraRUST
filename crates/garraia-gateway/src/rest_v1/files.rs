@@ -1,6 +1,7 @@
 //! `/v1/groups/{group_id}/files`, `/v1/groups/{group_id}/folders`,
-//! `DELETE /v1/files/{file_id}`, and `GET /v1/files/{file_id}/download` handlers
-//! (plans 0088-0093, GAR-555/557/559/561/562/564, Fase 3.4 files slices 1-6).
+//! `DELETE /v1/files/{file_id}`, `GET /v1/files/{file_id}/download`, and
+//! `POST /v1/groups/{group_id}/files/{file_id}/versions` handlers
+//! (plans 0088-0094, GAR-555/557/559/561/562/564/567, Fase 3.4 files slices 1-7).
 //!
 //! Endpoints on the `garraia_app` RLS-enforced pool:
 //! - `GET /v1/groups/{group_id}/files?folder_id=&cursor=&limit=` — cursor-paginated list
@@ -20,12 +21,14 @@
 //! no group_id in path; RLS filters silently → 404.
 
 use axum::Json;
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Response;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
+use garraia_storage::PutOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -816,6 +819,254 @@ pub async fn download_file(
         .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
 
     Ok(response)
+}
+
+// ─── Slice 7: new file version ───────────────────────────────────────────────
+
+/// Response body for a successful new-version upload.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVersionResponse {
+    /// UUID of the logical file (unchanged across versions).
+    pub file_id: Uuid,
+    /// The version number of the newly created version.
+    pub version: i32,
+    /// Byte count of the new version's content.
+    pub size_bytes: u64,
+    /// MIME type of the new version.
+    pub mime_type: String,
+    /// UTC timestamp of the version creation (approximate — set after commit).
+    pub created_at: DateTime<Utc>,
+}
+
+/// `POST /v1/groups/{group_id}/files/{file_id}/versions` — upload a new content
+/// version for an existing file (plan 0094, GAR-567, Fase 3.4 files slice 7).
+///
+/// Accepts raw bytes in the request body (capped to `storage.max_patch_bytes`,
+/// default 100 MiB). Stores the bytes in the configured `ObjectStore`, inserts
+/// a new `file_versions` row, and bumps `files.current_version` + related
+/// counters atomically in one Postgres transaction.
+///
+/// Auth: `Action::FilesWrite`. `X-Group-Id` header required for RLS context.
+/// `path_group_id` must match `principal.group_id`.
+///
+/// ## Two-phase commit ordering
+///
+/// `ObjectStore::put` runs before the Postgres COMMIT. If the commit fails
+/// after the object write, the blob is orphaned — acceptable per plan 0044
+/// §5.3.1 (future maintenance job reclaims orphaned blobs).
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status |
+/// |----------------------------------------|--------|
+/// | Missing/invalid JWT                    | 401    |
+/// | Insufficient role (no `FilesWrite`)    | 403    |
+/// | `path_group_id` ≠ `principal.group_id` | 403    |
+/// | Missing `X-Group-Id` header            | 400    |
+/// | File not found / deleted               | 404    |
+/// | MIME type not in allow-list            | 415    |
+/// | Body exceeds cap                       | 413    |
+/// | ObjectStore not configured             | 503    |
+/// | Happy path                             | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/files/{file_id}/versions",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID (must match caller's group)."),
+        ("file_id"  = Uuid, Path, description = "File UUID to create a new version for."),
+    ),
+    request_body(
+        content = (),
+        description = "Raw file bytes. Set Content-Type to the MIME type of the new version.",
+    ),
+    responses(
+        (status = 201, description = "New version created.", body = FileVersionResponse),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "File not found or soft-deleted.", body = super::problem::ProblemDetails),
+        (status = 413, description = "Body exceeds operator cap.", body = super::problem::ProblemDetails),
+        (status = 415, description = "MIME type not in allow-list.", body = super::problem::ProblemDetails),
+        (status = 503, description = "Object store not configured.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn post_new_version(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<(StatusCode, Json<FileVersionResponse>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+    check_group_match(path_group_id, group_id)?;
+
+    let object_store = state
+        .storage
+        .object_store
+        .as_ref()
+        .ok_or(RestError::AuthUnconfigured)?
+        .clone();
+    let staging = state
+        .storage
+        .upload_staging
+        .as_ref()
+        .ok_or(RestError::AuthUnconfigured)?
+        .clone();
+
+    // Validate MIME type before reading body (fail fast — 415 before 413).
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_owned())
+        .ok_or(RestError::UnsupportedMediaType(
+            "Content-Type header missing".into(),
+        ))?;
+    if !garraia_storage::mime_allowlist::is_mime_allowed(&content_type) {
+        return Err(RestError::UnsupportedMediaType(format!(
+            "MIME type '{content_type}' is not in the allow-list"
+        )));
+    }
+
+    // Read body with operator cap.
+    let cap: usize = staging.max_patch_bytes.try_into().unwrap_or(usize::MAX);
+    let bytes = to_bytes(body, cap).await.map_err(|e| {
+        tracing::debug!(error = %e, "new-version body too large or read failed");
+        RestError::PayloadTooLarge(format!(
+            "body exceeds operator cap of {} bytes",
+            staging.max_patch_bytes
+        ))
+    })?;
+    let body_len = bytes.len() as i64;
+    let checksum_sha256 = sha256_hex_of_bytes(&bytes);
+
+    // DB transaction: lock the row + verify the file exists.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<(i32, Option<Uuid>, String)> = sqlx::query_as(
+        "SELECT current_version, created_by, created_by_label \
+         FROM   files \
+         WHERE  id         = $1 \
+           AND  deleted_at IS NULL \
+         FOR UPDATE",
+    )
+    .bind(file_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (current_version, _file_created_by, creator_label) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    let new_version = current_version + 1;
+    let version_uuid = Uuid::new_v4();
+    let object_key = format!("groups/{group_id}/files/{file_id}/v{new_version}/{version_uuid}");
+
+    // ObjectStore PUT — runs before Postgres COMMIT (two-phase ordering).
+    let put_opts = PutOptions {
+        content_type: Some(content_type.clone()),
+        hmac_secret: Some(staging.hmac_secret.clone()),
+        ..Default::default()
+    };
+    let put_meta = object_store
+        .put(&object_key, bytes, put_opts)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "ObjectStore::put failed for new file version");
+            RestError::BadGateway("object store write failed; please retry".into())
+        })?;
+
+    let integrity_hmac = put_meta.integrity_hmac.ok_or_else(|| {
+        RestError::Internal(anyhow::anyhow!(
+            "ObjectStore did not return integrity_hmac; GARRAIA_UPLOAD_HMAC_SECRET misconfigured"
+        ))
+    })?;
+
+    sqlx::query(
+        "INSERT INTO file_versions \
+            (file_id, group_id, version, object_key, etag, checksum_sha256, \
+             integrity_hmac, size_bytes, mime_type, created_by, created_by_label) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(new_version)
+    .bind(&object_key)
+    .bind(&put_meta.etag_sha256[..put_meta.etag_sha256.len().min(200)])
+    .bind(&checksum_sha256)
+    .bind(&integrity_hmac)
+    .bind(body_len)
+    .bind(&content_type)
+    .bind(principal.user_id)
+    .bind(&creator_label)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("insert file_versions")))?;
+
+    sqlx::query(
+        "UPDATE files \
+         SET current_version = $1, \
+             total_versions  = total_versions + 1, \
+             size_bytes      = $2, \
+             mime_type       = $3, \
+             updated_at      = now() \
+         WHERE id = $4",
+    )
+    .bind(new_version)
+    .bind(body_len)
+    .bind(&content_type)
+    .bind(file_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("update files")))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileVersionCreated,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({
+            "file_id": file_id,
+            "group_id": group_id,
+            "new_version": new_version,
+            "size_bytes": body_len,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(FileVersionResponse {
+            file_id,
+            version: new_version,
+            size_bytes: body_len as u64,
+            mime_type: content_type,
+            created_at: Utc::now(),
+        }),
+    ))
+}
+
+fn sha256_hex_of_bytes(input: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(input);
+    hex::encode(digest)
 }
 
 /// `PATCH /v1/groups/{group_id}/files/{file_id}` — rename a file

@@ -16,7 +16,8 @@ use super::audit::{AuditEventSummary, ListAuditResponse};
 use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
 use super::files::{
     CreateFolderRequest, FileListResponse, FileSummary, FileVersionListResponse,
-    FileVersionSummary, FolderListResponse, FolderSummary, PatchFileRequest, PatchFolderRequest,
+    FileVersionResponse, FileVersionSummary, FolderListResponse, FolderSummary, PatchFileRequest,
+    PatchFolderRequest,
 };
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
@@ -146,6 +147,7 @@ impl Modify for SecurityAddon {
         super::files::create_folder,
         super::files::delete_folder,
         super::files::download_file,
+        super::files::post_new_version,
         super::files::list_file_versions,
     ),
     components(schemas(
@@ -207,6 +209,7 @@ impl Modify for SecurityAddon {
         SearchResultType,
         FileSummary,
         FileListResponse,
+        FileVersionResponse,
         FolderSummary,
         FolderListResponse,
         PatchFileRequest,
