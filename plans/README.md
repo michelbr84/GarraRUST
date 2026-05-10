@@ -117,7 +117,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0091 | [GAR-561 — Files REST API slice 4: PATCH folder rename](0091-gar-561-files-api-slice4-folder-rename.md) | [GAR-561](https://linear.app/chatgpt25/issue/GAR-561) | ✅ Merged 2026-05-09 via PR #246 (`3679ccc`) |
 | 0092 | [GAR-562 — Files REST API slice 5: folder POST + DELETE](0092-gar-562-files-api-slice5-folder-post-delete.md) | [GAR-562](https://linear.app/chatgpt25/issue/GAR-562) | ✅ Merged 2026-05-09 via PR #247 (`28b3b0f`) |
 | 0093 | [GAR-564 — Files REST API slice 6: GET /v1/files/{file_id}/download](0093-gar-564-files-api-slice6-download.md) | [GAR-564](https://linear.app/chatgpt25/issue/GAR-564) | ✅ Merged 2026-05-10 via PR #250 (`b2de161`) |
-| 0094 | [GAR-567 — Files REST API slice 7: POST /v1/groups/{group_id}/files/{file_id}/versions (new version)](0094-gar-565-files-api-slice7-new-version.md) | [GAR-567](https://linear.app/chatgpt25/issue/GAR-567) | 🟡 Em execução 2026-05-10 |
+| 0094 | [GAR-567 — Files REST API slice 7: POST /v1/groups/{group_id}/files/{file_id}/versions (new version)](0094-gar-565-files-api-slice7-new-version.md) | [GAR-567](https://linear.app/chatgpt25/issue/GAR-567) | ✅ Merged 2026-05-10 via PR #254 (`5b0c5fd`) |
 | 0095 | [GAR-569 — Files REST API slice 8: GET /v1/groups/{group_id}/files/{file_id}/versions (list versions)](0095-gar-569-files-api-slice8-list-versions.md) | [GAR-569](https://linear.app/chatgpt25/issue/GAR-569) | ✅ Merged 2026-05-10 via PR #253 (`0cc9a85`) |
 
 ## Arquivos não-versionados
