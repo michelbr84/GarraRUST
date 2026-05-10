@@ -190,7 +190,7 @@ async fn build_storage_router(h: &Harness, tmp: &Path) -> axum::Router {
 }
 
 async fn build_no_storage_router(h: &Harness) -> axum::Router {
-    let staging_dir = tempfile::tempdir().expect("tempdir").keep().0;
+    let staging_dir = tempfile::tempdir().expect("tempdir").keep();
     let staging = Arc::new(UploadStaging {
         staging_dir,
         max_patch_bytes: 10 * 1024 * 1024,
