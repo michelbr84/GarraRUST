@@ -402,10 +402,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/files/{file_id}", delete(files::delete_file))
                 // Plan 0093 (GAR-564) — files API slice 6: download.
-                .route(
-                    "/v1/files/{file_id}/download",
-                    get(files::download_file),
-                )
+                .route("/v1/files/{file_id}/download", get(files::download_file))
                 // Plan 0089 (GAR-557) — files API slice 2: rename.
                 // Plan 0090 (GAR-559) — files API slice 3: GET single file.
                 .route(
@@ -525,10 +522,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0093 (GAR-564) — files API slice 6: download, fail-soft 503.
-                .route(
-                    "/v1/files/{file_id}/download",
-                    get(unconfigured_handler),
-                )
+                .route("/v1/files/{file_id}/download", get(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, fail-soft 503.
                 // Plan 0090 (GAR-559) — files API slice 3 GET single, fail-soft 503.
                 // Plan 0091 (GAR-561) — files API slice 4 PATCH folder, fail-soft 503.
@@ -684,10 +678,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/files/{file_id}", delete(unconfigured_handler))
                 // Plan 0093 (GAR-564) — files API slice 6: download, no-auth stub.
-                .route(
-                    "/v1/files/{file_id}/download",
-                    get(unconfigured_handler),
-                )
+                .route("/v1/files/{file_id}/download", get(unconfigured_handler))
                 // Plan 0089 (GAR-557) — files API slice 2 PATCH, no-auth stub.
                 // Plan 0090 (GAR-559) — files API slice 3 GET single, no-auth stub.
                 // Plan 0091 (GAR-561) — files API slice 4 PATCH folder, no-auth stub.

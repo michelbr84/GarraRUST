@@ -123,8 +123,8 @@ async fn seed_file_version(
     .bind(group_id)
     .bind(object_key)
     .bind("abc123") // short etag — allowed per migration comment
-    .bind(&hex64)   // checksum_sha256
-    .bind(&hex64)   // integrity_hmac
+    .bind(&hex64) // checksum_sha256
+    .bind(&hex64) // integrity_hmac
     .bind(size_bytes)
     .bind(mime_type)
     .bind(created_by)
@@ -191,10 +191,9 @@ async fn v1_files_download_scenarios() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (router, local_fs) = build_storage_router(&h, tmp.path()).await;
 
-    let (owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "owner@0093-download.test")
-            .await
-            .expect("seed owner+group");
+    let (owner_id, group_id, owner_token) = seed_user_with_group(&h, "owner@0093-download.test")
+        .await
+        .expect("seed owner+group");
     let gid_str = group_id.to_string();
 
     // ─── D1. 200 happy path ────────────────────────────────────────────
@@ -229,7 +228,11 @@ async fn v1_files_download_scenarios() {
 
     let resp = router
         .clone()
-        .oneshot(download_req(&owner_token, &d1_id.to_string(), Some(&gid_str)))
+        .oneshot(download_req(
+            &owner_token,
+            &d1_id.to_string(),
+            Some(&gid_str),
+        ))
         .await
         .expect("D1 oneshot");
     assert_eq!(resp.status(), StatusCode::OK, "D1 status");
@@ -244,9 +247,16 @@ async fn v1_files_download_scenarios() {
     assert_eq!(body.as_ref(), d1_bytes, "D1 body bytes");
 
     // ─── D2. 404 soft-deleted file ─────────────────────────────────────
-    let d2_id = seed_file(&h, group_id, owner_id, "d2.bin", 10, "application/octet-stream")
-        .await
-        .expect("D2 seed file");
+    let d2_id = seed_file(
+        &h,
+        group_id,
+        owner_id,
+        "d2.bin",
+        10,
+        "application/octet-stream",
+    )
+    .await
+    .expect("D2 seed file");
     sqlx::query("UPDATE files SET deleted_at = $1 WHERE id = $2")
         .bind(Utc::now())
         .bind(d2_id)
