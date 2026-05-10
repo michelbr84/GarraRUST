@@ -403,6 +403,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/files/{file_id}", delete(files::delete_file))
                 // Plan 0093 (GAR-564) — files API slice 6: download.
                 .route("/v1/files/{file_id}/download", get(files::download_file))
+                // Plan 0094 (GAR-567) — files API slice 7: new file version.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions",
+                    post(files::post_new_version),
+                )
                 // Plan 0089 (GAR-557) — files API slice 2: rename.
                 // Plan 0090 (GAR-559) — files API slice 3: GET single file.
                 .route(

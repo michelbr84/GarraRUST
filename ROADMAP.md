@@ -408,8 +408,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}/files?folder_id=...` + `GET /v1/groups/{group_id}/folders` ✅ PR #235 GAR-555
 - [x] `GET /v1/groups/{group_id}/files/{file_id}` + `GET /v1/groups/{group_id}/folders/{folder_id}` (single resource read) — plan 0090 / [GAR-559](https://linear.app/chatgpt25/issue/GAR-559), implementado 2026-05-09 (Florida) ✅ PR #242 (`4adcb02`)
 - [x] `PATCH /v1/groups/{group_id}/files/{file_id}` (rename) — plan 0089 / [GAR-557](https://linear.app/chatgpt25/issue/GAR-557), implementado 2026-05-09 (Florida) ✅ PR #238 (`9255515`)
-- [ ] `GET /v1/files/{file_id}:download` (URL temporária curta duração)
-- [ ] `POST /v1/files/{file_id}:newVersion`
+- [x] `GET /v1/files/{file_id}/download` (stream bytes, plan 0093 / [GAR-564](https://linear.app/chatgpt25/issue/GAR-564)) ✅ PR #250 (`b2de161`)
+- [x] `POST /v1/groups/{group_id}/files/{file_id}/versions` (new content version, direct upload) — plan 0094 / [GAR-567](https://linear.app/chatgpt25/issue/GAR-567), implementado 2026-05-10 (Florida)
 - [x] `DELETE /v1/files/{file_id}` (soft delete + lixeira) ✅ PR #235 GAR-555
 - [ ] Suporte a **tus** (resumable upload) como alternativa
 

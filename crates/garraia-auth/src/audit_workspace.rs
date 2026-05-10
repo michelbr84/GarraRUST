@@ -424,6 +424,17 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ file_id, group_id, filename_len: usize }` — never the
     /// raw filename (PII).
     FileDownloadIssued,
+
+    /// A new content version was uploaded via
+    /// `POST /v1/groups/{group_id}/files/{file_id}/versions`
+    /// (plan 0094 / GAR-567, Fase 3.4 files slice 7).
+    ///
+    /// Emitted exactly once per successful 201 response, inside the
+    /// same transaction that inserts `file_versions` and bumps `files`.
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ file_id, group_id, new_version: u32, size_bytes: u64 }`
+    /// — never raw filename or MIME type (PII-safe per CLAUDE.md rule 6).
+    FileVersionCreated,
 }
 
 impl WorkspaceAuditAction {
@@ -470,6 +481,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FolderCreated => "folder.created",
             WorkspaceAuditAction::FolderDeleted => "folder.deleted",
             WorkspaceAuditAction::FileDownloadIssued => "file.download_issued",
+            WorkspaceAuditAction::FileVersionCreated => "file.version.created",
         }
     }
 }
@@ -662,6 +674,10 @@ mod tests {
             WorkspaceAuditAction::FileDownloadIssued.as_str(),
             "file.download_issued"
         );
+        assert_eq!(
+            WorkspaceAuditAction::FileVersionCreated.as_str(),
+            "file.version.created"
+        );
     }
 
     #[test]
@@ -705,6 +721,7 @@ mod tests {
             WorkspaceAuditAction::FolderCreated.as_str(),
             WorkspaceAuditAction::FolderDeleted.as_str(),
             WorkspaceAuditAction::FileDownloadIssued.as_str(),
+            WorkspaceAuditAction::FileVersionCreated.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
