@@ -219,10 +219,9 @@ async fn v1_files_new_version_scenarios() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let router = build_storage_router(&h, tmp.path()).await;
 
-    let (owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "owner@0094-new-version.test")
-            .await
-            .expect("seed owner+group");
+    let (owner_id, group_id, owner_token) = seed_user_with_group(&h, "owner@0094-new-version.test")
+        .await
+        .expect("seed owner+group");
     let gid_str = group_id.to_string();
 
     // ─── NV1. 201 happy path ───────────────────────────────────────────────
