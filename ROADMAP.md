@@ -977,3 +977,4 @@ Trilha paralela disponível para um segundo dev/agente: **Fase 1.3 — Config re
 - `CLAUDE.md` — Convenções de código e protocolo de sessão.
 - `.garra-estado.md` — Estado da sessão anterior.
 - `docs/adr/` — Decisões arquiteturais (a popular).
+- OWASP ASVS L2, LGPD arts. 46-49, GDPR arts. 25/32/33, OpenTelemetry spec, RFC 9457 Problem Details, RFC 8446 TLS 1.3, RFC 9106 Argon2.
