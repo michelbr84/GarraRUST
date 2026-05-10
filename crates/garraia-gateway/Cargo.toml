@@ -331,6 +331,19 @@ name = "rest_v1_files_patch"
 path = "tests/rest_v1_files_patch.rs"
 required-features = ["test-helpers"]
 
+# Plan 0096 (GAR-572) — tasks slice 9: task attachments API
+# (POST/GET /v1/groups/{gid}/tasks/{tid}/attachments,
+#  DELETE .../attachments/{file_id}).
+# 8 bundled scenarios (AT1-AT8) covering happy paths, 409 duplicate,
+# 404 cross-group file guard, 404 soft-deleted file, 204 idempotent
+# DELETE, and cross-group task isolation. Feature-gated so
+# `cargo clippy --all-targets` without `--features test-helpers` skips
+# compilation cleanly.
+[[test]]
+name = "rest_v1_task_attachments"
+path = "tests/rest_v1_task_attachments.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
