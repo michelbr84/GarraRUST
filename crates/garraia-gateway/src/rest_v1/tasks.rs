@@ -4043,7 +4043,11 @@ pub async fn list_task_attachments(
         .take(limit as usize)
         .map(TaskAttachmentResponse::from)
         .collect();
-    let next_cursor = if has_more { items.last().map(|r| r.file_id) } else { None };
+    let next_cursor = if has_more {
+        items.last().map(|r| r.file_id)
+    } else {
+        None
+    };
 
     Ok(Json(ListAttachmentsResponse { items, next_cursor }))
 }
@@ -4105,14 +4109,12 @@ pub async fn delete_task_attachment(
         return Err(RestError::NotFound);
     }
 
-    let deleted = sqlx::query(
-        "DELETE FROM task_attachments WHERE task_id = $1 AND file_id = $2",
-    )
-    .bind(task_id)
-    .bind(file_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let deleted = sqlx::query("DELETE FROM task_attachments WHERE task_id = $1 AND file_id = $2")
+        .bind(task_id)
+        .bind(file_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // Emit audit only when a row was actually removed (idempotent: no event on no-op).
     if deleted.rows_affected() > 0 {
