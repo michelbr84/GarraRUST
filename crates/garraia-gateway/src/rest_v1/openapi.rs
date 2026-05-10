@@ -145,6 +145,7 @@ impl Modify for SecurityAddon {
         super::files::patch_folder,
         super::files::create_folder,
         super::files::delete_folder,
+        super::files::download_file,
     ),
     components(schemas(
         MeResponse,

@@ -417,6 +417,13 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "folders"`, `resource_id = "{folder_id}"`.
     /// Metadata: `{ folder_id, group_id, name_len }` — never the raw name.
     FolderDeleted,
+
+    /// Emitted when `GET /v1/files/{file_id}/download` succeeds and file
+    /// bytes are about to be streamed to the caller (plan 0093, GAR-564).
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ file_id, group_id, filename_len: usize }` — never the
+    /// raw filename (PII).
+    FileDownloadIssued,
 }
 
 impl WorkspaceAuditAction {
@@ -462,6 +469,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FolderRenamed => "folder.renamed",
             WorkspaceAuditAction::FolderCreated => "folder.created",
             WorkspaceAuditAction::FolderDeleted => "folder.deleted",
+            WorkspaceAuditAction::FileDownloadIssued => "file.download_issued",
         }
     }
 }
@@ -650,6 +658,10 @@ mod tests {
             WorkspaceAuditAction::FolderDeleted.as_str(),
             "folder.deleted"
         );
+        assert_eq!(
+            WorkspaceAuditAction::FileDownloadIssued.as_str(),
+            "file.download_issued"
+        );
     }
 
     #[test]
@@ -692,6 +704,7 @@ mod tests {
             WorkspaceAuditAction::FolderRenamed.as_str(),
             WorkspaceAuditAction::FolderCreated.as_str(),
             WorkspaceAuditAction::FolderDeleted.as_str(),
+            WorkspaceAuditAction::FileDownloadIssued.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

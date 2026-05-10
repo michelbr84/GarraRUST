@@ -1,11 +1,12 @@
 //! `/v1/groups/{group_id}/files`, `/v1/groups/{group_id}/folders`,
-//! and `DELETE /v1/files/{file_id}` handlers
-//! (plan 0088, GAR-555, Fase 3.4 files slice 1).
+//! `DELETE /v1/files/{file_id}`, and `GET /v1/files/{file_id}/download` handlers
+//! (plans 0088-0093, GAR-555/557/559/561/562/564, Fase 3.4 files slices 1-6).
 //!
-//! Three endpoints on the `garraia_app` RLS-enforced pool:
+//! Endpoints on the `garraia_app` RLS-enforced pool:
 //! - `GET /v1/groups/{group_id}/files?folder_id=&cursor=&limit=` — cursor-paginated list
 //! - `GET /v1/groups/{group_id}/folders?parent_id=&cursor=&limit=` — cursor-paginated list
 //! - `DELETE /v1/files/{file_id}` — idempotent soft-delete
+//! - `GET /v1/files/{file_id}/download` — stream current version bytes (plan 0093)
 //!
 //! ## Tenant-context protocol
 //!
@@ -15,11 +16,14 @@
 //! ## Cross-group protection
 //!
 //! For group-path endpoints: `path_group_id` must equal `principal.group_id` → 403.
-//! For `DELETE /v1/files/{file_id}`: no group_id in path; RLS filters silently → 404.
+//! For `DELETE /v1/files/{file_id}` and `GET /v1/files/{file_id}/download`:
+//! no group_id in path; RLS filters silently → 404.
 
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Response;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use serde::{Deserialize, Serialize};
@@ -625,6 +629,134 @@ pub async fn delete_file(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Private row returned by the download lookup query.
+#[derive(sqlx::FromRow)]
+struct DownloadRow {
+    name: String,
+    object_key: String,
+    mime_type: String,
+}
+
+/// `GET /v1/files/{file_id}/download` — stream the current file version
+/// (plan 0093, GAR-564, Fase 3.4 files slice 6).
+///
+/// Looks up the current `file_versions.object_key` via RLS-enforced JOIN,
+/// then reads the bytes from the configured `ObjectStore`. Returns a 200
+/// response with `Content-Type` and `Content-Disposition: attachment` so
+/// browsers offer a Save dialog. The raw filename is NOT reflected in any
+/// response header (PII-safe); clients use `GET .../files/{id}` for that.
+///
+/// Auth: `Action::FilesRead`. `X-Group-Id` header required for RLS context.
+/// Cross-group attempts are silently 404 via RLS filtering.
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status |
+/// |----------------------------------------|--------|
+/// | Missing/invalid JWT                    | 401    |
+/// | Insufficient role (no `FilesRead`)     | 403    |
+/// | Missing `X-Group-Id` header            | 400    |
+/// | File not found / deleted / cross-group | 404    |
+/// | `ObjectStore` not configured           | 503    |
+/// | Object missing from storage backend    | 404    |
+/// | Happy path                             | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/files/{file_id}/download",
+    params(
+        ("file_id" = Uuid, Path, description = "File UUID."),
+    ),
+    responses(
+        (status = 200, description = "File bytes streamed with Content-Type and Content-Disposition."),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesRead.", body = super::problem::ProblemDetails),
+        (status = 404, description = "File not found, deleted, or cross-group.", body = super::problem::ProblemDetails),
+        (status = 503, description = "Object store not configured.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn download_file(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(file_id): Path<Uuid>,
+) -> Result<Response, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<DownloadRow> = sqlx::query_as(
+        "SELECT f.name, fv.object_key, fv.mime_type \
+         FROM   files f \
+         JOIN   file_versions fv \
+                ON  fv.file_id  = f.id \
+                AND fv.version  = f.current_version \
+                AND fv.group_id = f.group_id \
+         WHERE  f.id         = $1 \
+           AND  f.deleted_at IS NULL",
+    )
+    .bind(file_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    let filename_len = row.name.chars().count();
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileDownloadIssued,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({ "file_id": file_id, "group_id": group_id, "filename_len": filename_len }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let object_store = state
+        .storage
+        .object_store
+        .as_ref()
+        .ok_or(RestError::AuthUnconfigured)?
+        .clone();
+
+    let result = object_store
+        .get(&row.object_key)
+        .await
+        .map_err(|e| match e {
+            garraia_storage::StorageError::NotFound { .. } => RestError::NotFound,
+            other => RestError::Internal(anyhow::anyhow!(other)),
+        })?;
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", row.mime_type)
+        .header("content-disposition", "attachment; filename=\"download\"")
+        .header("content-length", result.metadata.size_bytes.to_string())
+        .body(Body::from(result.bytes))
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    Ok(response)
 }
 
 /// `PATCH /v1/groups/{group_id}/files/{file_id}` — rename a file
