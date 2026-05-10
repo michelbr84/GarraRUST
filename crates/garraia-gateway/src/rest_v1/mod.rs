@@ -409,6 +409,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/files/{file_id}",
                     get(files::get_file).patch(files::patch_file),
                 )
+                // Plan 0095 (GAR-569) — files API slice 8: list versions.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions",
+                    get(files::list_file_versions),
+                )
                 // Plan 0090 (GAR-559) — files API slice 3: GET single folder.
                 // Plan 0091 (GAR-561) — files API slice 4: PATCH folder rename.
                 // Plan 0092 (GAR-562) — files API slice 5: DELETE folder.
@@ -530,6 +535,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
+                )
+                // Plan 0095 (GAR-569) — files API slice 8: list versions, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/folders/{folder_id}",
@@ -686,6 +696,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
+                )
+                // Plan 0095 (GAR-569) — files API slice 8: list versions, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions",
+                    get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/folders/{folder_id}",
