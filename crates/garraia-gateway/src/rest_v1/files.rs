@@ -171,6 +171,65 @@ pub struct ListFoldersQuery {
     pub limit: Option<u32>,
 }
 
+/// Query parameters for `GET /v1/groups/{group_id}/files/{file_id}/versions`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListFileVersionsQuery {
+    /// Cursor: last seen `version` integer (exclusive, descending). Omit for the first page.
+    pub cursor: Option<i32>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+}
+
+/// Private row from `file_versions` (excludes `object_key` and `integrity_hmac`).
+#[derive(sqlx::FromRow)]
+struct FileVersionRow {
+    version: i32,
+    size_bytes: i64,
+    mime_type: String,
+    checksum_sha256: String,
+    created_by: Option<Uuid>,
+    created_by_label: String,
+    created_at: DateTime<Utc>,
+}
+
+/// One version entry returned by `GET .../versions` (plan 0095, GAR-569).
+///
+/// `object_key` and `integrity_hmac` are intentionally absent — they are
+/// internal storage identifiers (ADR 0004 invariant).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVersionSummary {
+    pub version: i32,
+    pub size_bytes: i64,
+    pub mime_type: String,
+    /// Lowercase hex SHA-256 of the version content.
+    pub checksum_sha256: String,
+    pub created_by: Option<Uuid>,
+    pub created_by_label: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<FileVersionRow> for FileVersionSummary {
+    fn from(r: FileVersionRow) -> Self {
+        Self {
+            version: r.version,
+            size_bytes: r.size_bytes,
+            mime_type: r.mime_type,
+            checksum_sha256: r.checksum_sha256,
+            created_by: r.created_by,
+            created_by_label: r.created_by_label,
+            created_at: r.created_at,
+        }
+    }
+}
+
+/// Response body for `GET /v1/groups/{group_id}/files/{file_id}/versions`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVersionListResponse {
+    pub items: Vec<FileVersionSummary>,
+    /// Opaque integer cursor for the next page. `null` when list is exhausted.
+    pub next_cursor: Option<i32>,
+}
+
 /// Body for `PATCH /v1/groups/{group_id}/files/{file_id}` (plan 0089, GAR-557).
 ///
 /// Only `name` is mutable in slice 2. Extra keys are silently ignored
@@ -1347,6 +1406,123 @@ pub async fn delete_folder(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/groups/{group_id}/files/{file_id}/versions` — paginated version list
+/// (plan 0095, GAR-569). Returns versions newest-first (version DESC). Cursor is
+/// the last seen `version` integer (exclusive).
+///
+/// Auth: `Principal` + `X-Group-Id` header + `FilesRead` action.
+/// Cross-group guard: `path_group_id` must equal `principal.group_id` → 403.
+/// Non-existent or soft-deleted file → 404.
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/files/{file_id}/versions",
+    tag = "files",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID"),
+        ("file_id"  = Uuid, Path, description = "File UUID"),
+        ListFileVersionsQuery,
+    ),
+    responses(
+        (status = 200, description = "Version list", body = FileVersionListResponse),
+        (status = 400, description = "Missing X-Group-Id header"),
+        (status = 403, description = "Forbidden — cross-group or insufficient role"),
+        (status = 404, description = "File not found or soft-deleted"),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn list_file_versions(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<ListFileVersionsQuery>,
+) -> Result<Json<FileVersionListResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+
+    if path_group_id != group_id {
+        return Err(RestError::Forbidden);
+    }
+
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Verify parent file exists and is not soft-deleted.
+    let exists: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM files WHERE id = $1 AND deleted_at IS NULL")
+            .bind(file_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    if exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Paginated version list — cursor is exclusive upper bound on version (DESC).
+    let rows: Vec<FileVersionRow> = sqlx::query_as(
+        "SELECT version, size_bytes, mime_type, checksum_sha256, \
+                created_by, created_by_label, created_at \
+         FROM   file_versions \
+         WHERE  file_id  = $1 \
+           AND  group_id = $2 \
+           AND  ($3::int IS NULL OR version < $3) \
+         ORDER  BY version DESC \
+         LIMIT  $4",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(q.cursor)
+    .bind(limit + 1)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let has_more = rows.len() > limit as usize;
+    let mut rows = rows;
+    if has_more {
+        rows.truncate(limit as usize);
+    }
+    let next_cursor = if has_more {
+        rows.last().map(|r| r.version)
+    } else {
+        None
+    };
+    let version_count = rows.len();
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileVersionsListed,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({
+            "file_id": file_id,
+            "group_id": group_id,
+            "version_count": version_count,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let items: Vec<FileVersionSummary> = rows.into_iter().map(FileVersionSummary::from).collect();
+    Ok(Json(FileVersionListResponse { items, next_cursor }))
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────

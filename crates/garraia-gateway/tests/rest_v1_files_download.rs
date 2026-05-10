@@ -26,7 +26,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use garraia_gateway::rest_v1::uploads::UploadStaging;
 use garraia_gateway::server::build_router_for_test_with_storage;
-use garraia_storage::{LocalFs, PutOptions};
+use garraia_storage::{LocalFs, ObjectStore, PutOptions};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -162,7 +162,7 @@ async fn build_storage_router(h: &Harness, tmp: &Path) -> (axum::Router, Arc<Loc
 }
 
 async fn build_no_storage_router(h: &Harness) -> axum::Router {
-    let staging_dir = tempfile::tempdir().expect("tempdir").into_path();
+    let staging_dir = tempfile::tempdir().expect("tempdir").keep();
     let staging = Arc::new(UploadStaging {
         staging_dir,
         max_patch_bytes: 10 * 1024 * 1024,

@@ -424,6 +424,12 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ file_id, group_id, filename_len: usize }` — never the
     /// raw filename (PII).
     FileDownloadIssued,
+
+    /// Emitted when `GET /v1/groups/{group_id}/files/{file_id}/versions`
+    /// returns successfully (plan 0095, GAR-569).
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ file_id, group_id, version_count: usize }` — PII-safe.
+    FileVersionsListed,
 }
 
 impl WorkspaceAuditAction {
@@ -470,6 +476,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FolderCreated => "folder.created",
             WorkspaceAuditAction::FolderDeleted => "folder.deleted",
             WorkspaceAuditAction::FileDownloadIssued => "file.download_issued",
+            WorkspaceAuditAction::FileVersionsListed => "file.versions.listed",
         }
     }
 }
@@ -705,6 +712,7 @@ mod tests {
             WorkspaceAuditAction::FolderCreated.as_str(),
             WorkspaceAuditAction::FolderDeleted.as_str(),
             WorkspaceAuditAction::FileDownloadIssued.as_str(),
+            WorkspaceAuditAction::FileVersionsListed.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
