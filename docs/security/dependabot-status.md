@@ -1,19 +1,35 @@
 # Dependabot Status
 
-> Last updated: **2026-05-09** (health routine — AWS sub-chain removal, plan 0087, PR health/202605090047).
+> Last updated: **2026-05-11** (health routine — all surfaces green, no new alerts).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 | 2026-05-09 (today) |
-|---|---|---|---|---|---|
-| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) | **8** (unchanged — serenity chain still carries all 4 RUSTSEC IDs) |
-| High severity | 1 | 1 | **2** | **2** | **2** |
-| Medium severity | 4 | 2 | **2** | **2** | **2** |
-| Low severity | 4 | 4 | **4** | **4** | **4** |
-| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** |
-| `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 | 2026-05-09 | 2026-05-11 (today) |
+|---|---|---|---|---|---|---|
+| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) | **8** (unchanged — serenity chain still carries all 4 RUSTSEC IDs) | **8** (unchanged) |
+| High severity | 1 | 1 | **2** | **2** | **2** | **2** |
+| Medium severity | 4 | 2 | **2** | **2** | **2** | **2** |
+| Low severity | 4 | 4 | **4** | **4** | **4** | **4** |
+| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** |
+| `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent |
+
+## Confirmed 2026-05-11 (health routine — all surfaces green)
+
+Health routine ran on 2026-05-11. No new security action required.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #258 head (`70bff54`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ unchanged | 8 open (2 HIGH, 2 MEDIUM, 4 LOW) — all tracked, expiry 2026-07-31 |
+| Security Audit (`cargo audit`) | ✅ pass | All advisories in `audit.toml` allowlist; CI green |
+| cargo-deny | ✅ pass | `deny.toml` allowlist unchanged |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | 22 dismissed alerts, no new findings |
+| CI on main (latest: `2c1460c`) | ✅ green | All 18 checks pass |
+
+Alert count: **8 open, unchanged since 2026-05-09.** Priority ladder exhausted at (i). Exiting cleanly.
 
 ## Confirmed 2026-05-09 (health routine — AWS sub-chain removed, defense-in-depth)
 
