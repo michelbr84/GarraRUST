@@ -390,6 +390,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `POST /v1/groups/{group_id}/invites` — plan 0018, entregue 2026-04-16
 - [x] `POST /v1/groups/{group_id}/members/{user_id}:setRole` — plan 0020, entregue 2026-04-20
 - [x] `DELETE /v1/groups/{group_id}/members/{user_id}` — plan 0020, entregue 2026-04-20
+- [ ] `GET /v1/groups/{group_id}/members` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574)
+- [ ] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574)
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
 
 **Chats**
@@ -536,7 +538,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/activity?cursor=...` — plan 0080 / GAR-541 ✅
-- [ ] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
+- [x] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments` — plan 0096 / GAR-572 ✅
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/attachments` — plan 0096 / GAR-572 ✅
+- [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}` — plan 0096 / GAR-572 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/move` — plan 0082 / GAR-544 ✅ (path scheme amendado de `:move` para `/move` por limitação Axum 0.8 / matchit; reordenar dentro da lista deferido — coluna `position` ainda não existe)
 - [x] `parent_task_id` em `CreateTaskRequest` — plan 0083 / [GAR-546](https://linear.app/chatgpt25/issue/GAR-546), implementado 2026-05-08 (Florida). Depth limit = 1 (grandchild → 400).
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks?cursor=&limit=&status=` — plan 0083 / GAR-546, implementado 2026-05-08 (Florida)
