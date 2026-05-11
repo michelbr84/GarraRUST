@@ -1,4 +1,8 @@
-# Plan 0097 — GAR-576: CLI respects configured OpenRouter model + `default_provider`
+# Plan 0098 — GAR-576: CLI respects configured OpenRouter model + `default_provider`
+
+> Renumbered from 0097 to 0098 on 2026-05-11 after
+> `plans/0097-gar-574-groups-members-invites-api.md` landed via PR #261
+> while this branch was in flight.
 
 **Status:** Em execução
 **Autor:** Claude Opus 4.7 (sessão interativa 2026-05-10, America/New_York)
