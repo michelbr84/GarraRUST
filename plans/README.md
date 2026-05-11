@@ -123,3 +123,5 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0097 | [GAR-574 — Groups REST API slice 2: GET /v1/groups/{id}/members + GET /v1/groups/{id}/invites](0097-gar-574-groups-members-invites-api.md) | [GAR-574](https://linear.app/chatgpt25/issue/GAR-574) | 🔵 Em execução 2026-05-11 |
 
 ## Arquivos não-versionados
+
+Drafts ad-hoc dentro de `plans/` que **não** sigam o padrão `NNNN-*.md` ficam gitignored por design — ver `.gitignore`. Útil para rascunhos pessoais antes de formalizar um plano numerado.
