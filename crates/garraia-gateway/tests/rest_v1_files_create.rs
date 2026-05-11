@@ -183,10 +183,9 @@ async fn v1_files_create_scenarios() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let router = build_storage_router(&h, tmp.path()).await;
 
-    let (owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "owner@0099-create-file.test")
-            .await
-            .expect("seed owner+group");
+    let (owner_id, group_id, owner_token) = seed_user_with_group(&h, "owner@0099-create-file.test")
+        .await
+        .expect("seed owner+group");
     let gid_str = group_id.to_string();
 
     // ─── FC1. 201 happy path ──────────────────────────────────────────────────
@@ -248,16 +247,14 @@ async fn v1_files_create_scenarios() {
     // FC1 — file is readable via GET.
     let get_resp = router
         .clone()
-        .oneshot(
-            req_with_peer(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/groups/{gid_str}/files/{fc1_file_id}"))
-                    .header("authorization", format!("Bearer {owner_token}"))
-                    .header("x-group-id", &gid_str),
-                Body::empty(),
-            ),
-        )
+        .oneshot(req_with_peer(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/groups/{gid_str}/files/{fc1_file_id}"))
+                .header("authorization", format!("Bearer {owner_token}"))
+                .header("x-group-id", &gid_str),
+            Body::empty(),
+        ))
         .await
         .expect("FC1 GET oneshot");
     assert_eq!(get_resp.status(), StatusCode::OK, "FC1 GET status");
@@ -300,10 +297,9 @@ async fn v1_files_create_scenarios() {
         seed_user_with_group(&h, "other@0099-create-file.test")
             .await
             .expect("FC4 seed other group");
-    let other_folder_id =
-        seed_folder(&h, other_group_id, _other_id, "foreign-folder")
-            .await
-            .expect("FC4 seed folder in other group");
+    let other_folder_id = seed_folder(&h, other_group_id, _other_id, "foreign-folder")
+        .await
+        .expect("FC4 seed folder in other group");
 
     let resp = router
         .clone()
