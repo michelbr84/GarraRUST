@@ -195,6 +195,73 @@ Supported env var resolution:
 - `${VAR_NAME}` - Uses environment variable
 - Leave empty - Uses `GARRAIA_{PROVIDER}_API_KEY`
 
+## Provider / model resolution precedence
+
+> GAR-576 — clarifies how `garra chat` picks a provider and a model when
+> multiple signals compete (CLI flags, config blocks, environment
+> variables, `.env`).
+
+### Provider resolution
+
+When `garra chat` runs, the provider is chosen in this strict order:
+
+1. **`--provider <X>` CLI flag** — absolute precedence; the chosen kind
+   is used regardless of config or env.
+2. **`config.agent.default_provider`** — read as a *lookup key* into
+   `config.llm[...]`. If the matching block has a usable credential
+   (api_key in config, matching `*_API_KEY` env var, or, for OpenAI-
+   compatible local backends, a `base_url`), this provider wins.
+3. **Legacy autodetect chain** (compat) — Ollama health check →
+   `ANTHROPIC_API_KEY` env → `OPENAI_API_KEY` env → `OPENROUTER_API_KEY`
+   env → silent Ollama fallback.
+
+The chain in step 3 is what runs today and is preserved verbatim for
+operators who don't set `default_provider`.
+
+### Model resolution (per provider kind)
+
+Inside the chosen provider, the model is resolved in this order:
+
+1. **`--model <X>` CLI flag** — absolute precedence.
+2. **`config.llm[<key>].model`** with `<key>` matching the provider
+   name (key-match).
+3. **First `config.llm[*]` whose `provider:` field equals the chosen
+   kind** and supplies a non-empty `model` (provider-field match — lets
+   operators give blocks arbitrary names like `my-router`).
+4. **Hardcoded last-resort default** per kind: `llama3.1`,
+   `claude-sonnet-4-5-20250929`, `gpt-4o`, `openrouter/auto`.
+
+### OpenRouter cost policy
+
+The CLI ships with two recommended models for OpenRouter:
+
+| Model              | When to use                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `openrouter/free`  | Smoke tests, CI sanity checks, cheap validation runs. Default suggested in `config.yml`.     |
+| `openrouter/auto`  | Real tasks / complex reasoning. Only use explicitly via `--model openrouter/auto`.            |
+
+Recommended baseline `config.yml`:
+
+```yaml
+llm:
+  openrouter:
+    provider: openrouter
+    model: openrouter/free          # default for smoke tests
+    base_url: "https://openrouter.ai/api/v1"
+
+agent:
+  default_provider: openrouter      # honored by `garra chat` autodetect
+```
+
+To run a heavier task, pass the model explicitly:
+
+```bash
+garra chat --provider openrouter --model openrouter/auto
+```
+
+There is no automatic `free → auto` upgrade — paid traffic always
+requires an explicit `--model` flag.
+
 ## Hot Reload
 
 Configuration changes in `config.yml` are applied automatically:
