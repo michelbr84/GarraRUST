@@ -41,6 +41,18 @@ const ARG_TIMEOUT_SECS_MIN: u64 = 1;
 const ARG_TIMEOUT_SECS_MAX: u64 = 600;
 const ARG_TIMEOUT_SECS_DEFAULT: u64 = 60;
 
+/// GAR-587 — Default provider applied when the MCP caller omits `provider`.
+/// Matches the JSON-Schema `default` advertised by `garra_ask_tool`; the
+/// schema's `default` is advisory, so MCP hosts do not synthesize it before
+/// dispatching `tools/call`. The handler applies it explicitly to honor the
+/// advertised contract.
+const PROVIDER_DEFAULT: &str = "openrouter";
+
+/// GAR-587 — Default model applied when the MCP caller omits `model`.
+/// Stays at `openrouter/free`; `openrouter/auto` remains opt-in (must be
+/// passed explicitly by the caller).
+const MODEL_DEFAULT: &str = "openrouter/free";
+
 /// GAR-583 — Argument shape for the `garra_ask` MCP tool.
 ///
 /// Deserialized from `CallToolRequestParam.arguments`. `deny_unknown_fields`
@@ -58,6 +70,24 @@ pub(crate) struct GarraAskArgs {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+}
+
+/// GAR-587 — Apply MCP schema defaults to `(provider, model)` when the
+/// caller omitted them. JSON-Schema `default` is advisory; MCP hosts do
+/// **not** synthesize missing values, so the handler applies them
+/// explicitly to honor the contract advertised by [`garra_ask_tool`].
+///
+/// Pure function — no I/O, no allocation when both fields are `Some`.
+/// `openrouter/auto` is **only** reachable when the caller passes it
+/// explicitly; an absent `model` never resolves to `auto`.
+pub(crate) fn resolve_overrides(
+    provider: Option<String>,
+    model: Option<String>,
+) -> (String, String) {
+    (
+        provider.unwrap_or_else(|| PROVIDER_DEFAULT.to_string()),
+        model.unwrap_or_else(|| MODEL_DEFAULT.to_string()),
+    )
 }
 
 /// GAR-583 — Validate `GarraAskArgs` bounds. Returns the same error
@@ -207,10 +237,16 @@ impl ServerHandler for GarraToolHandler {
         }
 
         // Build opts + call the pure core.
+        //
+        // GAR-587: apply MCP schema defaults to `provider`/`model` before
+        // they reach `ask::ask_oneshot`. The schema descriptor advertises
+        // `default` values but MCP hosts do not synthesize them, so the
+        // handler honors the contract explicitly.
+        let (provider, model) = resolve_overrides(args.provider, args.model);
         let opts = AskOptions {
             message: args.message,
-            provider_override: args.provider,
-            model_override: args.model,
+            provider_override: Some(provider),
+            model_override: Some(model),
             url_override: None,
             timeout_secs: args.timeout_secs.unwrap_or(ARG_TIMEOUT_SECS_DEFAULT),
             system_prompt_override: args.system_prompt,
@@ -299,6 +335,21 @@ mod tests {
             .and_then(|m| m.get("default"))
             .and_then(|d| d.as_str());
         assert_eq!(model_default, Some("openrouter/free"));
+    }
+
+    /// GAR-587 — schema-side parity with `tool_descriptor_default_model_…`.
+    /// Pins the advertised default so the schema descriptor and the
+    /// runtime constant in [`resolve_overrides`] never drift.
+    #[test]
+    fn tool_descriptor_default_provider_is_openrouter() {
+        let t = garra_ask_tool();
+        let schema = (*t.input_schema).clone();
+        let provider_default = schema
+            .get("properties")
+            .and_then(|p| p.get("provider"))
+            .and_then(|m| m.get("default"))
+            .and_then(|d| d.as_str());
+        assert_eq!(provider_default, Some("openrouter"));
     }
 
     #[test]
@@ -433,6 +484,63 @@ mod tests {
             system_prompt: Some("be brief".to_string()),
         };
         assert!(validate_args(&a).is_ok());
+    }
+
+    // ─── Default resolution (GAR-587) ─────────────────────────────────
+
+    /// GAR-587 §5 case #1 — the load-bearing test. Minimum-payload calls
+    /// (`{ "message": "hi" }`) MUST resolve to the schema-advertised
+    /// defaults BEFORE reaching `ask::ask_oneshot`, otherwise the
+    /// `AppConfig` fallback path can route to an unrelated provider
+    /// (operator-side OpenAI 401 was the original repro on 2026-05-11).
+    #[test]
+    fn resolve_overrides_applies_defaults_when_args_are_none() {
+        let (provider, model) = resolve_overrides(None, None);
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model, "openrouter/free");
+    }
+
+    /// GAR-587 §5 case #2 — caller-explicit `provider`/`model` MUST
+    /// survive the helper unchanged. Otherwise the fix would clobber
+    /// legitimate per-call routing.
+    #[test]
+    fn resolve_overrides_keeps_explicit_provider_and_model() {
+        let (provider, model) = resolve_overrides(
+            Some("anthropic".to_string()),
+            Some("claude-opus-4-7".to_string()),
+        );
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-opus-4-7");
+    }
+
+    /// GAR-587 §5 case #3 — `openrouter/auto` MUST remain opt-in. Two
+    /// branches: (a) explicit `auto` survives; (b) `None` model never
+    /// promotes itself to `auto` — the default stays `openrouter/free`.
+    #[test]
+    fn resolve_overrides_passes_openrouter_auto_only_when_explicit() {
+        // (a) Explicit `auto` is preserved.
+        let (provider, model) = resolve_overrides(None, Some("openrouter/auto".to_string()));
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model, "openrouter/auto");
+
+        // (b) Absent model never becomes `auto`.
+        let (_, model_default) = resolve_overrides(None, None);
+        assert_ne!(model_default, "openrouter/auto");
+        assert_eq!(model_default, "openrouter/free");
+    }
+
+    /// GAR-587 — mixed-fill case (provider explicit, model omitted) and
+    /// its mirror (model explicit, provider omitted). Catches a class of
+    /// regressions where a future refactor swaps the two branches.
+    #[test]
+    fn resolve_overrides_handles_partial_overrides() {
+        let (provider, model) = resolve_overrides(Some("ollama".to_string()), None);
+        assert_eq!(provider, "ollama");
+        assert_eq!(model, "openrouter/free");
+
+        let (provider, model) = resolve_overrides(None, Some("gpt-4o-mini".to_string()));
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model, "gpt-4o-mini");
     }
 
     // ─── Audit invariants (load-bearing) ──────────────────────────────
