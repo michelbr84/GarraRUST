@@ -336,6 +336,78 @@ async fn try_build_default_provider(
     }
 }
 
+/// GAR-579 — Build a provider from an explicit `--provider <kind>` flag.
+///
+/// Returns the same `(display_name, model, Arc<dyn LlmProvider>)` triple
+/// that `detect_provider` returns. Honors `model_override` first, then
+/// `config.llm[*].model` via `resolve_provider_model`, then a hardcoded
+/// per-kind fallback. Unknown `kind` is an error; missing api_key for a
+/// cloud provider is an error.
+///
+/// Shared by `chat::run_chat` and `ask::run_ask` so the explicit-provider
+/// path lives in exactly one place.
+pub(crate) fn select_explicit_provider(
+    config: &AppConfig,
+    kind: &str,
+    model_override: Option<&str>,
+) -> Result<(String, String, Arc<dyn LlmProvider>)> {
+    match kind {
+        "ollama" => {
+            let model = resolve_provider_model(config, "ollama", model_override)
+                .unwrap_or_else(|| "llama3.1".to_string());
+            let ollama = OllamaProvider::new(Some(model.clone()), None);
+            Ok((
+                "ollama".to_string(),
+                model,
+                Arc::new(ollama) as Arc<dyn LlmProvider>,
+            ))
+        }
+        "anthropic" => {
+            let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")
+                .context("ANTHROPIC_API_KEY not set and not found in config")?;
+            let model = resolve_provider_model(config, "anthropic", model_override)
+                .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+            let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
+            Ok((
+                "anthropic".to_string(),
+                model,
+                Arc::new(ap) as Arc<dyn LlmProvider>,
+            ))
+        }
+        "openai" => {
+            let key = get_api_key(config, "openai", "OPENAI_API_KEY")
+                .context("OPENAI_API_KEY not set and not found in config")?;
+            let model = resolve_provider_model(config, "openai", model_override)
+                .unwrap_or_else(|| "gpt-4o".to_string());
+            let op = OpenAiProvider::new(&key, Some(model.clone()), None);
+            Ok((
+                "openai".to_string(),
+                model,
+                Arc::new(op) as Arc<dyn LlmProvider>,
+            ))
+        }
+        "openrouter" => {
+            let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")
+                .context("OPENROUTER_API_KEY not set and not found in config")?;
+            let model = resolve_provider_model(config, "openrouter", model_override)
+                .unwrap_or_else(|| "openrouter/auto".to_string());
+            let op = OpenAiProvider::new(
+                &key,
+                Some(model.clone()),
+                Some("https://openrouter.ai/api/v1".to_string()),
+            );
+            Ok((
+                "openrouter".to_string(),
+                model,
+                Arc::new(op) as Arc<dyn LlmProvider>,
+            ))
+        }
+        other => anyhow::bail!(
+            "Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter"
+        ),
+    }
+}
+
 /// Detect which provider to use based on config and availability.
 pub async fn detect_provider(
     config: &AppConfig,
@@ -486,62 +558,14 @@ pub async fn run_chat(
 
     // Apply overrides
     if let Some(ref p) = provider_override {
-        match p.as_str() {
-            "ollama" => {
-                // GAR-576: honor config.llm[*].model when --model not supplied.
-                let model = resolve_provider_model(&config, "ollama", model_override.as_deref())
-                    .unwrap_or_else(|| "llama3.1".to_string());
-                let ollama = OllamaProvider::new(Some(model.clone()), None);
-                model_name = model;
-                provider_name = "ollama".to_string();
-                provider = Arc::new(ollama);
-            }
-            "anthropic" => {
-                let key = get_api_key(&config, "anthropic", "ANTHROPIC_API_KEY")
-                    .context("ANTHROPIC_API_KEY not set and not found in config")?;
-                // GAR-576: honor config.llm[*].model when --model not supplied.
-                let model = resolve_provider_model(&config, "anthropic", model_override.as_deref())
-                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
-                let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
-                model_name = model;
-                provider_name = "anthropic".to_string();
-                provider = Arc::new(ap);
-            }
-            "openai" => {
-                let key = get_api_key(&config, "openai", "OPENAI_API_KEY")
-                    .context("OPENAI_API_KEY not set and not found in config")?;
-                // GAR-576: honor config.llm[*].model when --model not supplied.
-                let model = resolve_provider_model(&config, "openai", model_override.as_deref())
-                    .unwrap_or_else(|| "gpt-4o".to_string());
-                let op = OpenAiProvider::new(&key, Some(model.clone()), None);
-                model_name = model;
-                provider_name = "openai".to_string();
-                provider = Arc::new(op);
-            }
-            "openrouter" => {
-                let key = get_api_key(&config, "openrouter", "OPENROUTER_API_KEY")
-                    .context("OPENROUTER_API_KEY not set and not found in config")?;
-                // GAR-576: honor config.llm[*].model when --model not supplied
-                // (fixes the openrouter/auto hardcode that ignored
-                // config-declared models like openrouter/free).
-                let model =
-                    resolve_provider_model(&config, "openrouter", model_override.as_deref())
-                        .unwrap_or_else(|| "openrouter/auto".to_string());
-                let op = OpenAiProvider::new(
-                    &key,
-                    Some(model.clone()),
-                    Some("https://openrouter.ai/api/v1".to_string()),
-                );
-                model_name = model;
-                provider_name = "openrouter".to_string();
-                provider = Arc::new(op);
-            }
-            other => {
-                anyhow::bail!(
-                    "Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter"
-                );
-            }
-        }
+        // GAR-579: shared with `garra ask` — the explicit-provider path
+        // now lives in `select_explicit_provider` so chat and ask agree
+        // byte-for-byte on construction + model resolution + error msgs.
+        let (name, model, prov) =
+            select_explicit_provider(&config, p.as_str(), model_override.as_deref())?;
+        provider_name = name;
+        model_name = model;
+        provider = prov;
     } else if let Some(ref m) = model_override {
         model_name = m.clone();
     }

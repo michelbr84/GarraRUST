@@ -1,3 +1,4 @@
+mod ask;
 mod banner;
 mod chat;
 mod config_cmd;
@@ -164,6 +165,38 @@ enum Commands {
         /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
         #[arg(long, short = 'u')]
         url: Option<String>,
+    },
+
+    /// Non-interactive AI query — single message in, single answer out
+    /// (GAR-579). LLM-only, no tools registered, no banner, no ANSI.
+    Ask {
+        /// Message to send. If absent, reads from stdin (64 KiB cap).
+        message: Option<String>,
+
+        /// Override provider (ollama, anthropic, openai, openrouter)
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+
+        /// Override model name
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+
+        /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
+        #[arg(long, short = 'u')]
+        url: Option<String>,
+
+        /// Emit a single-line JSON envelope (`garra.ask.v1`) on stdout.
+        #[arg(long)]
+        json: bool,
+
+        /// LLM call timeout in seconds. Default 60, range [1, 600].
+        /// Exceeding the timeout returns exit code 124.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
+        timeout_secs: u64,
+
+        /// Override the system prompt with an inline string.
+        #[arg(long)]
+        system_prompt: Option<String>,
     },
 
     /// Inspect, validate, and diagnose the effective configuration
@@ -1195,6 +1228,35 @@ async fn async_main(
             url,
         } => {
             chat::run_chat(config, provider, model, url).await?;
+        }
+        Commands::Ask {
+            message,
+            provider,
+            model,
+            url,
+            json,
+            timeout_secs,
+            system_prompt,
+        } => {
+            // GAR-579: ask is non-interactive; tracing init kept off the
+            // stdout/stderr path (`init_tracing` writes to file + stderr
+            // and would pollute machine-readable output when --json is on).
+            // We still initialize because other crates may log warnings.
+            init_tracing(&effective_level);
+            let code = ask::run_ask(
+                config,
+                message,
+                provider,
+                model,
+                url,
+                json,
+                timeout_secs,
+                system_prompt,
+            )
+            .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::Config { .. } => {
             // Handled earlier in `main()` — the `config check` path must run
