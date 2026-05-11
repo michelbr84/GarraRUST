@@ -3,6 +3,7 @@ mod banner;
 mod chat;
 mod config_cmd;
 mod glob_cmd;
+mod mcp_server;
 mod migrate;
 mod migrate_workspace;
 mod update;
@@ -204,6 +205,12 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigCommands,
     },
+
+    /// Start an MCP (Model Context Protocol) server over stdio exposing
+    /// the `garra_ask` tool (GAR-583). Designed for Claude Desktop /
+    /// Claude Code integration. Stdout is reserved for the JSON-RPC
+    /// channel; logs go to stderr.
+    McpServer,
 }
 
 #[derive(Subcommand)]
@@ -1263,6 +1270,13 @@ async fn async_main(
             // before the global config is loaded so that EX_DATAERR (65) is
             // reported correctly when the file is present but unparseable.
             unreachable!("Commands::Config is intercepted in main() before async_main");
+        }
+        Commands::McpServer => {
+            // GAR-583: MCP server over stdio exposing `garra_ask` tool.
+            // Tracing init writes to stderr (RedactingWriter), keeping
+            // stdout reserved for the JSON-RPC channel (rmcp's job).
+            init_tracing(&effective_level);
+            mcp_server::run_mcp_server(config).await?;
         }
     }
 

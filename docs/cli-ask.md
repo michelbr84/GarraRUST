@@ -164,13 +164,17 @@ PRs separados manterão escopo limpo:
 - `--stream` para emit incremental.
 - `--enable-tools` + tool allowlist + auditoria.
 - `--system-prompt-file <PATH>`.
-- MCP server wrapper expondo `ask` como tool MCP.
+- ~~MCP server wrapper expondo `ask` como tool MCP~~ — entregue por
+  GAR-583, veja [`docs/cli-mcp-server.md`](cli-mcp-server.md).
 - `--session <id>` para continuação de conversa.
 - Automatic `openrouter/free → openrouter/auto` fallback.
 
 ## Ver também
 
+- [`docs/cli-mcp-server.md`](cli-mcp-server.md) — `garra mcp-server` (GAR-583),
+  MCP stdio wrapper que reutiliza `ask::ask_oneshot` in-process.
 - [`docs/configuration.md`](configuration.md) — provider/model resolution (GAR-576).
 - [`docs/src/providers.md`](src/providers.md) — OpenRouter cost policy.
 - `plans/0098-gar-576-cli-openrouter-model-respect.md` — base já estável.
-- `plans/0099-gar-579-cli-non-interactive-ask.md` — este PR.
+- `plans/0100-gar-579-cli-non-interactive-ask.md` — este PR.
+- `plans/0102-gar-583-mcp-server-stdio.md` — MCP wrapper sobre este comando.
