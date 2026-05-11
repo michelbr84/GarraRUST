@@ -344,6 +344,15 @@ name = "rest_v1_task_attachments"
 path = "tests/rest_v1_task_attachments.rs"
 required-features = ["test-helpers"]
 
+# Plan 0097 (GAR-574) — groups slice 2: GET /v1/groups/{id}/members
+# and GET /v1/groups/{id}/invites. 6+ bundled scenarios (GM1/GM1b/GM2/
+# GM3 + GI1/GI2/GI3). Feature-gated so `cargo clippy --all-targets`
+# without `--features test-helpers` skips compilation cleanly.
+[[test]]
+name = "rest_v1_groups_members_invites"
+path = "tests/rest_v1_groups_members_invites.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
