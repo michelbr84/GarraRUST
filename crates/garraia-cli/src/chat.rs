@@ -153,6 +153,189 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
     None
 }
 
+/// GAR-576 — Resolve the model name for a given provider kind.
+///
+/// Lookup order:
+///   1. `model_override` (the CLI `--model` flag, absolute precedence).
+///   2. `config.llm[provider_kind].model` (key-match).
+///   3. The first `config.llm[*]` entry whose `provider` field equals
+///      `provider_kind` and whose `model` is `Some(non-empty)`.
+///
+/// Returns `None` only when no source supplies a usable model name; the
+/// caller is then responsible for picking a hardcoded fallback.
+fn resolve_provider_model(
+    config: &AppConfig,
+    provider_kind: &str,
+    model_override: Option<&str>,
+) -> Option<String> {
+    if let Some(m) = model_override
+        && !m.is_empty()
+    {
+        return Some(m.to_string());
+    }
+    if let Some(cfg) = config.llm.get(provider_kind)
+        && let Some(m) = cfg.model.as_deref()
+        && !m.is_empty()
+    {
+        return Some(m.to_string());
+    }
+    for cfg in config.llm.values() {
+        if cfg.provider == provider_kind
+            && let Some(m) = cfg.model.as_deref()
+            && !m.is_empty()
+        {
+            return Some(m.to_string());
+        }
+    }
+    None
+}
+
+/// GAR-576 — Decision returned by [`decide_default_provider`].
+///
+/// `UseDefault` says "the operator configured `agent.default_provider`,
+/// the matching `llm[<key>]` block is present, and a credential is
+/// reachable — go build the provider". `FallThroughToChain` says
+/// "either no default is configured, the lookup failed, or there is no
+/// usable credential — fall back to the legacy autodetect heuristic".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DefaultProviderDecision {
+    UseDefault {
+        config_key: String,
+        provider_kind: String,
+        model: String,
+    },
+    FallThroughToChain {
+        reason: &'static str,
+    },
+}
+
+/// GAR-576 — Decide whether to honor `config.agent.default_provider`
+/// before the legacy autodetect chain.
+///
+/// Pure function: takes presence-bool flags for the relevant env vars
+/// instead of reading `std::env` directly, so unit tests can assert
+/// regression scenarios (e.g. `OPENAI_API_KEY` in `.env` no longer
+/// hijacks the provider when `agent.default_provider = "openrouter"`)
+/// without mutating process-global env state.
+fn decide_default_provider(
+    config: &AppConfig,
+    env_has_openai_key: bool,
+    env_has_openrouter_key: bool,
+    env_has_anthropic_key: bool,
+) -> DefaultProviderDecision {
+    let Some(default_key) = config.agent.default_provider.as_deref() else {
+        return DefaultProviderDecision::FallThroughToChain {
+            reason: "no agent.default_provider configured",
+        };
+    };
+    let Some(cfg) = config.llm.get(default_key) else {
+        return DefaultProviderDecision::FallThroughToChain {
+            reason: "agent.default_provider key not present in llm map",
+        };
+    };
+    let provider_kind = cfg.provider.as_str();
+
+    let cfg_has_key = cfg.api_key.as_deref().is_some_and(|k| !k.is_empty());
+    let credential_ok = match provider_kind {
+        // Local — health-checked by the caller.
+        "ollama" => true,
+        "anthropic" => env_has_anthropic_key || cfg_has_key,
+        // OpenAI-compatible local backends (e.g. LM Studio) commonly omit
+        // the api_key and rely on `base_url` reachability. Treat them as
+        // credential-ok for the purposes of routing.
+        "openai" => cfg.base_url.is_some() || env_has_openai_key || cfg_has_key,
+        "openrouter" => env_has_openrouter_key || cfg_has_key,
+        _ => {
+            return DefaultProviderDecision::FallThroughToChain {
+                reason: "unknown provider kind in agent.default_provider",
+            };
+        }
+    };
+
+    if !credential_ok {
+        return DefaultProviderDecision::FallThroughToChain {
+            reason: "no credential available for agent.default_provider",
+        };
+    }
+
+    let model = resolve_provider_model(config, provider_kind, None)
+        .unwrap_or_else(|| hardcoded_default_model(provider_kind));
+
+    DefaultProviderDecision::UseDefault {
+        config_key: default_key.to_string(),
+        provider_kind: provider_kind.to_string(),
+        model,
+    }
+}
+
+/// GAR-576 — Last-resort fallback model name per provider kind, used
+/// only when neither the CLI flag nor `config.llm` supplies one.
+fn hardcoded_default_model(provider_kind: &str) -> String {
+    match provider_kind {
+        "ollama" => "llama3.1",
+        "anthropic" => "claude-sonnet-4-5-20250929",
+        "openai" => "gpt-4o",
+        "openrouter" => "openrouter/auto",
+        _ => "auto",
+    }
+    .to_string()
+}
+
+/// GAR-576 — Construct an [`LlmProvider`] from a config-resolved default.
+///
+/// Returns `None` when construction is infeasible (e.g. Ollama daemon
+/// unreachable, or required api_key absent at build time); the caller
+/// then falls through to the legacy autodetect chain.
+async fn try_build_default_provider(
+    config: &AppConfig,
+    provider_kind: &str,
+    cfg: &garraia_config::LlmProviderConfig,
+    model: &str,
+) -> Option<Arc<dyn LlmProvider>> {
+    // GAR-576: return ONLY the trait object — the display strings
+    // (config_key, model) are formed at the call site from inputs that
+    // never pass through this function. That keeps CodeQL's cleartext-
+    // logging dataflow analysis from conservatively tainting the model
+    // name through this scope, which also calls `get_api_key`.
+    match provider_kind {
+        "ollama" => {
+            let ollama = OllamaProvider::new(Some(model.to_string()), cfg.base_url.clone());
+            if !ollama.health_check().await.unwrap_or(false) {
+                return None;
+            }
+            Some(Arc::new(ollama) as Arc<dyn LlmProvider>)
+        }
+        "anthropic" => {
+            let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")?;
+            let ap = AnthropicProvider::new(&key, Some(model.to_string()), None);
+            Some(Arc::new(ap) as Arc<dyn LlmProvider>)
+        }
+        "openai" => {
+            // OpenAI-compatible local backends (e.g. LM Studio) usually
+            // omit the api_key; accept "not-needed" when `base_url` is set.
+            let key = get_api_key(config, "openai", "OPENAI_API_KEY").or_else(|| {
+                if cfg.base_url.is_some() {
+                    Some("not-needed".to_string())
+                } else {
+                    None
+                }
+            })?;
+            let op = OpenAiProvider::new(&key, Some(model.to_string()), cfg.base_url.clone());
+            Some(Arc::new(op) as Arc<dyn LlmProvider>)
+        }
+        "openrouter" => {
+            let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")?;
+            let base = cfg
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+            let op = OpenAiProvider::new(&key, Some(model.to_string()), Some(base));
+            Some(Arc::new(op) as Arc<dyn LlmProvider>)
+        }
+        _ => None,
+    }
+}
+
 /// Detect which provider to use based on config and availability.
 pub async fn detect_provider(
     config: &AppConfig,
@@ -183,6 +366,35 @@ pub async fn detect_provider(
             model,
             Arc::new(provider) as Arc<dyn LlmProvider>,
         );
+    }
+
+    // GAR-576 — honor `config.agent.default_provider` BEFORE the env-based
+    // autodetect chain below. This prevents a stale `OPENAI_API_KEY` loaded
+    // from cwd `.env` (via `dotenvy::dotenv()` in main.rs) from hijacking the
+    // provider when the operator explicitly configured a different default.
+    let env_has = |name: &str| std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false);
+    let decision = decide_default_provider(
+        config,
+        env_has("OPENAI_API_KEY"),
+        env_has("OPENROUTER_API_KEY"),
+        env_has("ANTHROPIC_API_KEY"),
+    );
+    if let DefaultProviderDecision::UseDefault {
+        config_key,
+        provider_kind,
+        model,
+    } = decision
+        && let Some(cfg) = config.llm.get(&config_key)
+        && let Some(provider) =
+            try_build_default_provider(config, &provider_kind, cfg, &model).await
+    {
+        // GAR-576: form the display tuple here from the (untainted)
+        // strings returned by `decide_default_provider` — they never
+        // pass through the function that calls `get_api_key`.
+        return (config_key, model, provider);
+        // If construction fails (e.g. Ollama health-check fails) the
+        // outer `if-let` chain shorts out and we fall through to the
+        // legacy autodetect chain below.
     }
 
     // 1. Try Ollama first (local, offline)
@@ -276,16 +488,20 @@ pub async fn run_chat(
     if let Some(ref p) = provider_override {
         match p.as_str() {
             "ollama" => {
-                let ollama = OllamaProvider::new(model_override.clone(), None);
-                model_name = model_override.unwrap_or_else(|| "llama3.1".to_string());
+                // GAR-576: honor config.llm[*].model when --model not supplied.
+                let model = resolve_provider_model(&config, "ollama", model_override.as_deref())
+                    .unwrap_or_else(|| "llama3.1".to_string());
+                let ollama = OllamaProvider::new(Some(model.clone()), None);
+                model_name = model;
                 provider_name = "ollama".to_string();
                 provider = Arc::new(ollama);
             }
             "anthropic" => {
                 let key = get_api_key(&config, "anthropic", "ANTHROPIC_API_KEY")
                     .context("ANTHROPIC_API_KEY not set and not found in config")?;
-                let model =
-                    model_override.unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+                // GAR-576: honor config.llm[*].model when --model not supplied.
+                let model = resolve_provider_model(&config, "anthropic", model_override.as_deref())
+                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
                 let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
                 model_name = model;
                 provider_name = "anthropic".to_string();
@@ -294,7 +510,9 @@ pub async fn run_chat(
             "openai" => {
                 let key = get_api_key(&config, "openai", "OPENAI_API_KEY")
                     .context("OPENAI_API_KEY not set and not found in config")?;
-                let model = model_override.unwrap_or_else(|| "gpt-4o".to_string());
+                // GAR-576: honor config.llm[*].model when --model not supplied.
+                let model = resolve_provider_model(&config, "openai", model_override.as_deref())
+                    .unwrap_or_else(|| "gpt-4o".to_string());
                 let op = OpenAiProvider::new(&key, Some(model.clone()), None);
                 model_name = model;
                 provider_name = "openai".to_string();
@@ -303,7 +521,12 @@ pub async fn run_chat(
             "openrouter" => {
                 let key = get_api_key(&config, "openrouter", "OPENROUTER_API_KEY")
                     .context("OPENROUTER_API_KEY not set and not found in config")?;
-                let model = model_override.unwrap_or_else(|| "openrouter/auto".to_string());
+                // GAR-576: honor config.llm[*].model when --model not supplied
+                // (fixes the openrouter/auto hardcode that ignored
+                // config-declared models like openrouter/free).
+                let model =
+                    resolve_provider_model(&config, "openrouter", model_override.as_deref())
+                        .unwrap_or_else(|| "openrouter/auto".to_string());
                 let op = OpenAiProvider::new(
                     &key,
                     Some(model.clone()),
@@ -548,4 +771,259 @@ pub async fn run_chat(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! GAR-576 — Pure tests for provider/model resolution. None of these
+    //! touch `std::env` or the filesystem; env presence is passed in as
+    //! bool flags so the `OPENAI_API_KEY` hijack regression can be
+    //! asserted without mutating process-global state.
+
+    use super::*;
+    use garraia_config::{AgentConfig, AppConfig, LlmProviderConfig};
+    use std::collections::HashMap;
+
+    fn make_llm_cfg(
+        provider: &str,
+        model: Option<&str>,
+        api_key: Option<&str>,
+        base_url: Option<&str>,
+    ) -> LlmProviderConfig {
+        LlmProviderConfig {
+            provider: provider.to_string(),
+            model: model.map(String::from),
+            api_key: api_key.map(String::from),
+            base_url: base_url.map(String::from),
+            extra: HashMap::new(),
+        }
+    }
+
+    fn config_with(entries: &[(&str, LlmProviderConfig)]) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        for (k, v) in entries {
+            cfg.llm.insert((*k).to_string(), v.clone());
+        }
+        cfg
+    }
+
+    fn config_with_default(default_key: &str, entries: &[(&str, LlmProviderConfig)]) -> AppConfig {
+        let mut cfg = config_with(entries);
+        cfg.agent = AgentConfig {
+            default_provider: Some(default_key.to_string()),
+            ..AgentConfig::default()
+        };
+        cfg
+    }
+
+    // ─── resolve_provider_model ────────────────────────────────────────
+
+    #[test]
+    fn resolve_provider_model_override_wins() {
+        let cfg = config_with(&[(
+            "openrouter",
+            make_llm_cfg("openrouter", Some("openrouter/free"), Some("k"), None),
+        )]);
+        let got = resolve_provider_model(&cfg, "openrouter", Some("openrouter/auto"));
+        assert_eq!(got.as_deref(), Some("openrouter/auto"));
+    }
+
+    #[test]
+    fn resolve_provider_model_key_match() {
+        let cfg = config_with(&[(
+            "openrouter",
+            make_llm_cfg("openrouter", Some("openrouter/free"), Some("k"), None),
+        )]);
+        let got = resolve_provider_model(&cfg, "openrouter", None);
+        assert_eq!(got.as_deref(), Some("openrouter/free"));
+    }
+
+    #[test]
+    fn resolve_provider_model_provider_field_match() {
+        // Key name is arbitrary (`my-router`), but the `provider` field
+        // matches the requested kind — the helper must still find the model.
+        let cfg = config_with(&[(
+            "my-router",
+            make_llm_cfg("openrouter", Some("openrouter/free"), Some("k"), None),
+        )]);
+        let got = resolve_provider_model(&cfg, "openrouter", None);
+        assert_eq!(got.as_deref(), Some("openrouter/free"));
+    }
+
+    #[test]
+    fn resolve_provider_model_no_match() {
+        let cfg = AppConfig::default();
+        assert!(resolve_provider_model(&cfg, "openrouter", None).is_none());
+    }
+
+    #[test]
+    fn resolve_provider_model_empty_string_skipped() {
+        let cfg = config_with(&[(
+            "openrouter",
+            make_llm_cfg("openrouter", Some(""), Some("k"), None),
+        )]);
+        // Empty string in config must not be returned as a valid model.
+        assert!(resolve_provider_model(&cfg, "openrouter", None).is_none());
+    }
+
+    // ─── decide_default_provider ───────────────────────────────────────
+
+    #[test]
+    fn decide_default_provider_no_default_falls_through() {
+        let cfg = AppConfig::default();
+        let decision = decide_default_provider(&cfg, false, false, false);
+        assert!(matches!(
+            decision,
+            DefaultProviderDecision::FallThroughToChain { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_default_provider_missing_llm_key_falls_through() {
+        let cfg = config_with_default("missing", &[]);
+        let decision = decide_default_provider(&cfg, false, false, false);
+        assert!(matches!(
+            decision,
+            DefaultProviderDecision::FallThroughToChain { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_default_provider_openrouter_wins_over_openai_env() {
+        // GAR-576 regression: this is the exact scenario from the bug
+        // report — operator configured OpenRouter as the default, but
+        // OPENAI_API_KEY is loaded from cwd `.env` and was hijacking
+        // the autodetect chain. The new branch must pick OpenRouter.
+        let cfg = config_with_default(
+            "openrouter",
+            &[(
+                "openrouter",
+                make_llm_cfg(
+                    "openrouter",
+                    Some("openrouter/free"),
+                    Some("test-key"),
+                    None,
+                ),
+            )],
+        );
+        let decision = decide_default_provider(
+            &cfg, /* env_has_openai */ true, /* env_has_openrouter */ true,
+            /* env_has_anthropic */ false,
+        );
+        match decision {
+            DefaultProviderDecision::UseDefault {
+                config_key,
+                provider_kind,
+                model,
+            } => {
+                assert_eq!(config_key, "openrouter");
+                assert_eq!(provider_kind, "openrouter");
+                assert_eq!(model, "openrouter/free");
+            }
+            other => panic!("expected UseDefault(openrouter), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_default_provider_falls_through_when_no_credential() {
+        // default_provider points to a kind that needs a key, but neither
+        // the env nor the config supplies one — fall through to the
+        // legacy chain rather than building a doomed provider.
+        let cfg = config_with_default(
+            "openrouter",
+            &[(
+                "openrouter",
+                make_llm_cfg("openrouter", Some("openrouter/free"), None, None),
+            )],
+        );
+        let decision = decide_default_provider(&cfg, false, false, false);
+        assert!(matches!(
+            decision,
+            DefaultProviderDecision::FallThroughToChain { .. }
+        ));
+    }
+
+    #[test]
+    fn decide_default_provider_ollama_no_credential_needed() {
+        // Ollama has no api_key concept — the credential gate is the
+        // async health-check inside try_build_default_provider, not
+        // the decision function.
+        let cfg = config_with_default(
+            "ollama-local",
+            &[(
+                "ollama-local",
+                make_llm_cfg(
+                    "ollama",
+                    Some("llama3.2"),
+                    None,
+                    Some("http://localhost:11434"),
+                ),
+            )],
+        );
+        let decision = decide_default_provider(&cfg, false, false, false);
+        match decision {
+            DefaultProviderDecision::UseDefault {
+                config_key,
+                provider_kind,
+                model,
+            } => {
+                assert_eq!(config_key, "ollama-local");
+                assert_eq!(provider_kind, "ollama");
+                assert_eq!(model, "llama3.2");
+            }
+            other => panic!("expected UseDefault(ollama), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_default_provider_openai_compat_with_base_url_accepts_no_key() {
+        // LM Studio scenario: provider kind is `openai` but the
+        // base_url points at a local server that does not enforce an
+        // api_key. The helper must accept the config and route there.
+        let cfg = config_with_default(
+            "lm-studio",
+            &[(
+                "lm-studio",
+                make_llm_cfg(
+                    "openai",
+                    Some("local-model"),
+                    None,
+                    Some("http://localhost:1234/v1"),
+                ),
+            )],
+        );
+        let decision = decide_default_provider(&cfg, false, false, false);
+        match decision {
+            DefaultProviderDecision::UseDefault {
+                config_key,
+                provider_kind,
+                model,
+            } => {
+                assert_eq!(config_key, "lm-studio");
+                assert_eq!(provider_kind, "openai");
+                assert_eq!(model, "local-model");
+            }
+            other => panic!("expected UseDefault(openai-compat), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_default_provider_uses_hardcoded_fallback_when_model_missing() {
+        // Config declares the provider but no model. The helper must
+        // fall back to hardcoded_default_model rather than refusing.
+        let cfg = config_with_default(
+            "openrouter",
+            &[(
+                "openrouter",
+                make_llm_cfg("openrouter", None, Some("test-key"), None),
+            )],
+        );
+        let decision = decide_default_provider(&cfg, false, true, false);
+        match decision {
+            DefaultProviderDecision::UseDefault { model, .. } => {
+                assert_eq!(model, "openrouter/auto");
+            }
+            other => panic!("expected UseDefault with hardcoded model, got {other:?}"),
+        }
+    }
 }
