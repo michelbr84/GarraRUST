@@ -187,11 +187,167 @@ fn emit_error(err: &AskError, json: bool) -> i32 {
     err.exit_code()
 }
 
+/// GAR-583 — Pure input options for [`ask_oneshot`].
+///
+/// `message` is required (the resolved prompt). Other fields mirror the
+/// CLI flags. Used by both `run_ask` (the CLI wrapper) and the MCP
+/// server's `garra_ask` tool handler. No I/O is performed by code that
+/// consumes this struct directly.
+#[derive(Debug, Clone)]
+pub(crate) struct AskOptions {
+    pub message: String,
+    pub provider_override: Option<String>,
+    pub model_override: Option<String>,
+    pub url_override: Option<String>,
+    pub timeout_secs: u64,
+    pub system_prompt_override: Option<String>,
+}
+
+/// GAR-583 — Pure outcome of [`ask_oneshot`].
+///
+/// Distinguishes the success path (carries answer + provider + model +
+/// latency) from the failure path (carries the typed [`AskError`]).
+/// Callers map this to whatever output format they need: `run_ask`
+/// produces JSON on stdout; the MCP server packs it into a
+/// `CallToolResult` text-content envelope.
+#[derive(Debug, Clone)]
+pub(crate) enum AskOutcome {
+    Success {
+        answer: String,
+        provider: String,
+        model: String,
+        latency_ms: u128,
+    },
+    Failure(AskError),
+}
+
+impl AskOutcome {
+    pub(crate) fn is_ok(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    /// Build the `garra.ask.v1` JSON envelope for this outcome.
+    /// Shape matches `success_envelope` / `error_envelope`.
+    pub(crate) fn to_envelope(&self) -> serde_json::Value {
+        match self {
+            Self::Success {
+                answer,
+                provider,
+                model,
+                latency_ms,
+            } => success_envelope(answer, provider, model, *latency_ms),
+            Self::Failure(err) => error_envelope(err.kind_str(), &err.message()),
+        }
+    }
+
+    /// Process exit code for this outcome. Success → 0; Failure →
+    /// typed [`AskError`] code.
+    ///
+    /// Not currently consumed by `run_ask` (which does its own variant
+    /// match for emission), but kept as part of the public crate API for
+    /// future callers and to give MCP integrators a stable mapping —
+    /// the unit tests `ask_outcome_exit_code_mapping_table_driven`
+    /// exercise it directly.
+    #[allow(dead_code)]
+    pub(crate) fn exit_code(&self) -> i32 {
+        match self {
+            Self::Success { .. } => 0,
+            Self::Failure(err) => err.exit_code(),
+        }
+    }
+}
+
+/// GAR-583 — Pure async core of `garra ask`: builds a provider, calls
+/// the LLM with the configured timeout, and returns the structured
+/// outcome.
+///
+/// **Zero I/O outside of HTTP to the provider**. No `println!`,
+/// `eprintln!`, stdin read, or filesystem access. Callers are
+/// responsible for emitting the [`AskOutcome`] in whatever form they
+/// need (CLI JSON line, MCP `CallToolResult`, etc.).
+///
+/// Invariants:
+///   - **NEVER** registers a tool on the `AgentRuntime` (LLM-only,
+///     same audit invariant from GAR-579).
+///   - Provider errors pass through [`sanitize_provider_error`] before
+///     being returned in the [`AskError`].
+///   - Timeout is enforced via `tokio::time::timeout`; the streaming
+///     channel is drained on a background task so the producer never
+///     blocks on a slow consumer.
+pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutcome {
+    let start = Instant::now();
+
+    // 1. Resolve provider.
+    let (provider_name, model_name, provider) = if let Some(ref p) = opts.provider_override {
+        match chat::select_explicit_provider(config, p.as_str(), opts.model_override.as_deref()) {
+            Ok(triple) => triple,
+            Err(e) => {
+                return AskOutcome::Failure(AskError::NoProvider(sanitize_provider_error(
+                    &format!("{e:#}"),
+                )));
+            }
+        }
+    } else {
+        // detect_provider also handles url_override + autodetect chain
+        // (see chat::detect_provider for the precedence rules — GAR-576).
+        chat::detect_provider(config, opts.url_override.as_deref()).await
+    };
+
+    // 2. Build a minimal AgentRuntime — LLM only. NO tool registration.
+    let mut runtime = AgentRuntime::new();
+    runtime.register_provider(provider);
+
+    let system_prompt = opts.system_prompt_override.unwrap_or_else(|| {
+        "Voce e o GarraIA. Responda de forma concisa, direta e no idioma do usuario.".to_string()
+    });
+    runtime.set_system_prompt(system_prompt);
+    runtime.set_max_tokens(4096);
+
+    // 3. Call LLM with timeout. We use the streaming API (no non-streaming
+    //    variant exists today) and drain deltas in a background task so
+    //    the channel never blocks the producer.
+    let session_id = format!("ask-{}", uuid::Uuid::new_v4());
+    let history: Vec<ChatMessage> = Vec::new();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+    let drain_handle = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    let call = runtime.process_message_streaming(
+        &session_id,
+        &opts.message,
+        &history,
+        tx,
+        Some(&model_name),
+    );
+    let result = tokio::time::timeout(Duration::from_secs(opts.timeout_secs), call).await;
+
+    // Drop the drain task (channel closure ends it naturally too).
+    drain_handle.abort();
+
+    let latency_ms = start.elapsed().as_millis();
+
+    match result {
+        Ok(Ok(full)) => AskOutcome::Success {
+            answer: full,
+            provider: provider_name,
+            model: model_name,
+            latency_ms,
+        },
+        Ok(Err(e)) => AskOutcome::Failure(AskError::ProviderError(sanitize_provider_error(
+            &format!("{e:#}"),
+        ))),
+        Err(_elapsed) => AskOutcome::Failure(AskError::Timeout(opts.timeout_secs)),
+    }
+}
+
 /// GAR-579 — entry point invoked by `Commands::Ask` in `main.rs`.
 ///
 /// Returns an exit code; the caller is responsible for `std::process::exit`.
 /// Does not panic on provider/network errors — every failure path returns
 /// a sanitized error through `emit_error`.
+///
+/// GAR-583 — refactored as a thin wrapper over [`ask_oneshot`]. Stdin
+/// reading + JSON/text emission stay here; the pure LLM-call core moved
+/// into `ask_oneshot` so the MCP server can reuse it without I/O.
 ///
 /// Invariants:
 ///   - **NEVER** registers a tool on the `AgentRuntime` (LLM-only).
@@ -209,8 +365,6 @@ pub async fn run_ask(
     timeout_secs: u64,
     system_prompt_override: Option<String>,
 ) -> Result<i32> {
-    let start = Instant::now();
-
     // 1. Resolve message — read stdin only if arg absent.
     let stdin_bytes: Vec<u8> = if message_arg.is_none() {
         let mut buf = Vec::with_capacity(8192);
@@ -230,78 +384,38 @@ pub async fn run_ask(
         Err(e) => return Ok(emit_error(&e, json)),
     };
 
-    // 2. Resolve provider.
-    let (provider_name, model_name, provider) = if let Some(ref p) = provider_override {
-        match chat::select_explicit_provider(&config, p.as_str(), model_override.as_deref()) {
-            Ok(triple) => triple,
-            Err(e) => {
-                return Ok(emit_error(
-                    &AskError::NoProvider(sanitize_provider_error(&format!("{e:#}"))),
-                    json,
-                ));
+    // 2. Call the pure core (GAR-583).
+    let opts = AskOptions {
+        message,
+        provider_override,
+        model_override,
+        url_override,
+        timeout_secs,
+        system_prompt_override,
+    };
+    let outcome = ask_oneshot(&config, opts).await;
+
+    // 3. Emit on stdout / stderr per --json flag.
+    match outcome {
+        AskOutcome::Success {
+            answer,
+            provider,
+            model,
+            latency_ms,
+        } => {
+            if json {
+                let env = success_envelope(&answer, &provider, &model, latency_ms);
+                let line = serde_json::to_string(&env).unwrap_or_else(|_| {
+                    String::from("{\"schema\":\"garra.ask.v1\",\"ok\":false,\"error\":{\"kind\":\"io\",\"message\":\"json serialization failed\"}}")
+                });
+                println!("{line}");
+            } else {
+                println!("{}", answer.trim_end());
             }
+            Ok(0)
         }
-    } else {
-        // detect_provider also handles url_override + autodetect chain
-        // (see chat::detect_provider for the precedence rules — GAR-576).
-        chat::detect_provider(&config, url_override.as_deref()).await
-    };
-
-    // 3. Build a minimal AgentRuntime — LLM only. NO tool registration.
-    //    The `ask_module_never_registers_a_tool` test below enforces this
-    //    invariant at compile time by scanning production code for any
-    //    tool-registration patterns.
-    let mut runtime = AgentRuntime::new();
-    runtime.register_provider(provider);
-
-    let system_prompt = system_prompt_override.unwrap_or_else(|| {
-        "Voce e o GarraIA. Responda de forma concisa, direta e no idioma do usuario.".to_string()
-    });
-    runtime.set_system_prompt(system_prompt);
-    runtime.set_max_tokens(4096);
-
-    // 4. Call LLM with timeout. We use the streaming API (no non-streaming
-    //    variant exists today) and drain deltas in a background task so
-    //    the channel never blocks the producer.
-    let session_id = format!("ask-{}", uuid::Uuid::new_v4());
-    let history: Vec<ChatMessage> = Vec::new();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
-    let drain_handle = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-
-    let call =
-        runtime.process_message_streaming(&session_id, &message, &history, tx, Some(&model_name));
-    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), call).await;
-
-    // Drop the drain task (channel closure ends it naturally too).
-    drain_handle.abort();
-
-    let answer = match result {
-        Ok(Ok(full)) => full,
-        Ok(Err(e)) => {
-            return Ok(emit_error(
-                &AskError::ProviderError(sanitize_provider_error(&format!("{e:#}"))),
-                json,
-            ));
-        }
-        Err(_elapsed) => {
-            return Ok(emit_error(&AskError::Timeout(timeout_secs), json));
-        }
-    };
-
-    let latency_ms = start.elapsed().as_millis();
-
-    // 5. Emit.
-    if json {
-        let env = success_envelope(&answer, &provider_name, &model_name, latency_ms);
-        let line = serde_json::to_string(&env).unwrap_or_else(|_| {
-            String::from("{\"schema\":\"garra.ask.v1\",\"ok\":false,\"error\":{\"kind\":\"io\",\"message\":\"json serialization failed\"}}")
-        });
-        println!("{line}");
-    } else {
-        println!("{}", answer.trim_end());
+        AskOutcome::Failure(err) => Ok(emit_error(&err, json)),
     }
-
-    Ok(0)
 }
 
 #[cfg(test)]
@@ -437,6 +551,70 @@ mod tests {
     fn sanitize_passes_clean_messages_through() {
         let benign = "Connection refused at localhost:11434";
         assert_eq!(sanitize_provider_error(benign), benign);
+    }
+
+    // ─── AskOutcome / AskOptions (GAR-583 refactor) ────────────────────
+
+    fn make_success() -> AskOutcome {
+        AskOutcome::Success {
+            answer: "hello".to_string(),
+            provider: "openrouter".to_string(),
+            model: "openrouter/free".to_string(),
+            latency_ms: 1234,
+        }
+    }
+
+    fn make_failure(err: AskError) -> AskOutcome {
+        AskOutcome::Failure(err)
+    }
+
+    #[test]
+    fn ask_outcome_is_ok_distinguishes_variants() {
+        assert!(make_success().is_ok());
+        assert!(!make_failure(AskError::Timeout(30)).is_ok());
+    }
+
+    #[test]
+    fn ask_outcome_to_envelope_success_shape() {
+        let env = make_success().to_envelope();
+        assert_eq!(env["schema"], "garra.ask.v1");
+        assert_eq!(env["ok"], true);
+        assert_eq!(env["answer"], "hello");
+        assert_eq!(env["provider"], "openrouter");
+        assert_eq!(env["model"], "openrouter/free");
+        assert_eq!(env["latency_ms"], 1234);
+        assert!(env.get("error").is_none());
+    }
+
+    #[test]
+    fn ask_outcome_to_envelope_error_shape() {
+        let env = make_failure(AskError::ProviderError("bad".to_string())).to_envelope();
+        assert_eq!(env["schema"], "garra.ask.v1");
+        assert_eq!(env["ok"], false);
+        assert_eq!(env["error"]["kind"], "provider_error");
+        assert_eq!(env["error"]["message"], "bad");
+        assert!(env.get("answer").is_none());
+    }
+
+    #[test]
+    fn ask_outcome_exit_code_mapping_table_driven() {
+        // GAR-583 — `AskOutcome::exit_code` mirrors `AskError::exit_code`
+        // on failure and returns 0 on success.
+        let cases: &[(AskOutcome, i32)] = &[
+            (make_success(), 0),
+            (make_failure(AskError::UsageError("x".into())), 2),
+            (make_failure(AskError::NoProvider("x".into())), 69),
+            (make_failure(AskError::ProviderError("x".into())), 69),
+            (make_failure(AskError::Timeout(60)), 124),
+            (make_failure(AskError::IoError("x".into())), 74),
+        ];
+        for (outcome, expected) in cases {
+            assert_eq!(
+                outcome.exit_code(),
+                *expected,
+                "exit_code mismatch for {outcome:?}"
+            );
+        }
     }
 
     // ─── Audit: this module never registers a tool ─────────────────────

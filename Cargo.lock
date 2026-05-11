@@ -3354,6 +3354,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "ring",
+ "rmcp",
  "rusqlite",
  "secrecy 0.10.3",
  "serde",

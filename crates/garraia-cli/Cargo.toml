@@ -39,6 +39,12 @@ ring = { workspace = true }
 tracing-appender = "0.2.4"
 dotenvy.workspace = true
 
+# GAR-583: MCP server (`garra mcp-server`) exposing `garra_ask` as a stdio
+# tool. Reuses `rmcp` already in the workspace via `garraia-agents` (client
+# side). Adding server + stdio transport features here; `garraia-cli`-scoped
+# dependency so other crates are unaffected.
+rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
+
 # Plan 0039 — `migrate workspace` deps.
 # Use workspace-pinned versions where available to avoid drift.
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "derive"] }

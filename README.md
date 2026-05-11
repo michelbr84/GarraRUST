@@ -65,6 +65,9 @@ cargo build --release -p garraia
 ./target/release/garra ask --provider openrouter --model openrouter/free \
   --json --timeout-secs 30 "Responda apenas: GAR-ASK-OK"
 
+# MCP server stdio (GAR-583) — expõe `garra_ask` para Claude Desktop / Claude Code
+./target/release/garra mcp-server   # ver docs/cli-mcp-server.md
+
 # Opcional: incluir suporte a plugins WASM
 cargo build --release -p garraia --features plugins
 ```
