@@ -491,8 +491,8 @@ pub async fn create_file(
         .get("x-file-name")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| RestError::BadRequest("X-File-Name header is required".into()))?;
-    let file_name = validate_file_name(raw_name)
-        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let file_name =
+        validate_file_name(raw_name).map_err(|msg| RestError::BadRequest(msg.into()))?;
     let name_len = file_name.chars().count();
 
     // Parse optional X-Folder-Id header.
@@ -553,8 +553,7 @@ pub async fn create_file(
 
     let file_id = Uuid::new_v4();
     let version_uuid = Uuid::new_v4();
-    let object_key =
-        format!("groups/{group_id}/files/{file_id}/v1/{version_uuid}");
+    let object_key = format!("groups/{group_id}/files/{file_id}/v1/{version_uuid}");
 
     // ObjectStore PUT — runs before Postgres COMMIT (two-phase ordering).
     let put_opts = PutOptions {
