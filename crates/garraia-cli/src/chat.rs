@@ -288,31 +288,27 @@ fn hardcoded_default_model(provider_kind: &str) -> String {
 /// then falls through to the legacy autodetect chain.
 async fn try_build_default_provider(
     config: &AppConfig,
-    config_key: &str,
     provider_kind: &str,
+    cfg: &garraia_config::LlmProviderConfig,
     model: &str,
-) -> Option<(String, String, Arc<dyn LlmProvider>)> {
-    let cfg = config.llm.get(config_key)?;
+) -> Option<Arc<dyn LlmProvider>> {
+    // GAR-576: return ONLY the trait object — the display strings
+    // (config_key, model) are formed at the call site from inputs that
+    // never pass through this function. That keeps CodeQL's cleartext-
+    // logging dataflow analysis from conservatively tainting the model
+    // name through this scope, which also calls `get_api_key`.
     match provider_kind {
         "ollama" => {
             let ollama = OllamaProvider::new(Some(model.to_string()), cfg.base_url.clone());
             if !ollama.health_check().await.unwrap_or(false) {
                 return None;
             }
-            Some((
-                config_key.to_string(),
-                model.to_string(),
-                Arc::new(ollama) as Arc<dyn LlmProvider>,
-            ))
+            Some(Arc::new(ollama) as Arc<dyn LlmProvider>)
         }
         "anthropic" => {
             let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")?;
             let ap = AnthropicProvider::new(&key, Some(model.to_string()), None);
-            Some((
-                config_key.to_string(),
-                model.to_string(),
-                Arc::new(ap) as Arc<dyn LlmProvider>,
-            ))
+            Some(Arc::new(ap) as Arc<dyn LlmProvider>)
         }
         "openai" => {
             // OpenAI-compatible local backends (e.g. LM Studio) usually
@@ -325,11 +321,7 @@ async fn try_build_default_provider(
                 }
             })?;
             let op = OpenAiProvider::new(&key, Some(model.to_string()), cfg.base_url.clone());
-            Some((
-                config_key.to_string(),
-                model.to_string(),
-                Arc::new(op) as Arc<dyn LlmProvider>,
-            ))
+            Some(Arc::new(op) as Arc<dyn LlmProvider>)
         }
         "openrouter" => {
             let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")?;
@@ -338,11 +330,7 @@ async fn try_build_default_provider(
                 .clone()
                 .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
             let op = OpenAiProvider::new(&key, Some(model.to_string()), Some(base));
-            Some((
-                config_key.to_string(),
-                model.to_string(),
-                Arc::new(op) as Arc<dyn LlmProvider>,
-            ))
+            Some(Arc::new(op) as Arc<dyn LlmProvider>)
         }
         _ => None,
     }
@@ -396,10 +384,14 @@ pub async fn detect_provider(
         provider_kind,
         model,
     } = decision
-        && let Some(spec) =
-            try_build_default_provider(config, &config_key, &provider_kind, &model).await
+        && let Some(cfg) = config.llm.get(&config_key)
+        && let Some(provider) =
+            try_build_default_provider(config, &provider_kind, cfg, &model).await
     {
-        return spec;
+        // GAR-576: form the display tuple here from the (untainted)
+        // strings returned by `decide_default_provider` — they never
+        // pass through the function that calls `get_api_key`.
+        return (config_key, model, provider);
         // If construction fails (e.g. Ollama health-check fails) the
         // outer `if-let` chain shorts out and we fall through to the
         // legacy autodetect chain below.
