@@ -22,7 +22,8 @@ use anyhow::Result;
 use garraia_config::AppConfig;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams, Tool,
+    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -157,6 +158,22 @@ impl GarraToolHandler {
 }
 
 impl ServerHandler for GarraToolHandler {
+    /// GAR-585 — advertise the `tools` capability in the `initialize`
+    /// handshake. Without this override, `rmcp 1.6`'s default `get_info`
+    /// returns `ServerInfo::default()` whose `capabilities` field is
+    /// empty (`{}`); MCP hosts (Claude Code's `/mcp` panel, Claude
+    /// Desktop) read that as "no tools" and never call `tools/list`,
+    /// leaving `garra_ask` invisible to the model even though the
+    /// `list_tools` handler below is wired correctly.
+    ///
+    /// Mirrors the canonical example in `rmcp-1.6.0/tests/common/
+    /// calculator.rs` (`enable_tools()` flips `tools` to
+    /// `Some(ToolsCapability::default())`). No other capabilities are
+    /// enabled here on purpose — see `get_info_advertises_only_tools_capability`.
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
     async fn list_tools(
         &self,
         _: Option<PaginatedRequestParams>,
@@ -443,6 +460,45 @@ mod tests {
                 "mcp_server.rs production code must not contain `{needle}` (GAR-583 stdio invariant)"
             );
         }
+    }
+
+    // ─── ServerHandler::get_info (GAR-585) ────────────────────────────
+
+    /// GAR-585 — the MCP `initialize` handshake serves whatever
+    /// `ServerHandler::get_info` returns; the default impl in `rmcp 1.6`
+    /// hands back `ServerInfo::default()` with `ServerCapabilities::default()`
+    /// (every field `None`), which serializes as `"capabilities":{}`.
+    /// Hosts read that as "no tools" and skip `tools/list`, leaving
+    /// `garra_ask` invisible to Claude Code / Desktop even though
+    /// `list_tools` is wired correctly. This test pins the override.
+    #[test]
+    fn get_info_advertises_tools_capability() {
+        let cfg = std::sync::Arc::new(garraia_config::AppConfig::default());
+        let handler = GarraToolHandler::new(cfg);
+        let info = ServerHandler::get_info(&handler);
+        assert!(
+            info.capabilities.tools.is_some(),
+            "GAR-585: `initialize` must advertise the `tools` capability so MCP hosts call `tools/list`"
+        );
+    }
+
+    /// GAR-585 §3 (out of scope) — the override touches the `tools`
+    /// capability only; we must not silently start advertising
+    /// resources/prompts/logging/sampling/etc., which would change the
+    /// contract surface MCP hosts negotiate against us.
+    #[test]
+    fn get_info_advertises_only_tools_capability() {
+        let cfg = std::sync::Arc::new(garraia_config::AppConfig::default());
+        let handler = GarraToolHandler::new(cfg);
+        let info = ServerHandler::get_info(&handler);
+        let caps = &info.capabilities;
+        assert!(caps.experimental.is_none(), "experimental must stay off");
+        assert!(caps.extensions.is_none(), "extensions must stay off");
+        assert!(caps.logging.is_none(), "logging must stay off");
+        assert!(caps.completions.is_none(), "completions must stay off");
+        assert!(caps.prompts.is_none(), "prompts must stay off");
+        assert!(caps.resources.is_none(), "resources must stay off");
+        assert!(caps.tasks.is_none(), "tasks must stay off");
     }
 
     /// GAR-583 §4 invariant #2 — production code MUST NOT register
