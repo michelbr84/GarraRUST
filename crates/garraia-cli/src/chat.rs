@@ -329,7 +329,11 @@ async fn try_build_default_provider(
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-            let op = OpenAiProvider::new(&key, Some(model.to_string()), Some(base));
+            // GAR-582: name the provider "openrouter" so AgentRuntime's
+            // lookup-by-name resolves correctly. Without this, the runtime
+            // emits `WARN Provider 'openrouter' not found, falling back to default`.
+            let op = OpenAiProvider::new(&key, Some(model.to_string()), Some(base))
+                .with_name("openrouter");
             Some(Arc::new(op) as Arc<dyn LlmProvider>)
         }
         _ => None,
@@ -391,11 +395,14 @@ pub(crate) fn select_explicit_provider(
                 .context("OPENROUTER_API_KEY not set and not found in config")?;
             let model = resolve_provider_model(config, "openrouter", model_override)
                 .unwrap_or_else(|| "openrouter/auto".to_string());
+            // GAR-582: name the provider "openrouter" so AgentRuntime's
+            // lookup-by-name resolves correctly (avoids WARN at request time).
             let op = OpenAiProvider::new(
                 &key,
                 Some(model.clone()),
                 Some("https://openrouter.ai/api/v1".to_string()),
-            );
+            )
+            .with_name("openrouter");
             Ok((
                 "openrouter".to_string(),
                 model,
@@ -523,11 +530,14 @@ pub async fn detect_provider(
             .and_then(|c| c.model.as_deref())
             .unwrap_or("openrouter/auto")
             .to_string();
+        // GAR-582: name the provider "openrouter" so AgentRuntime's
+        // lookup-by-name resolves correctly (avoids WARN at request time).
         let provider = OpenAiProvider::new(
             &key,
             Some(model.clone()),
             Some("https://openrouter.ai/api/v1".to_string()),
-        );
+        )
+        .with_name("openrouter");
         return (
             "openrouter".to_string(),
             model,
