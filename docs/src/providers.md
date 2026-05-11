@@ -156,6 +156,40 @@ Site oficial:
 
 [https://openrouter.ai](https://openrouter.ai)
 
+### Política `openrouter/free` vs `openrouter/auto`
+
+> GAR-576 — alinhamento de custo entre testes e tarefas reais.
+
+| Modelo              | Quando usar                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `openrouter/free`   | Smoke tests, validações rápidas, diagnóstico. Default sugerido em `config.yml`.               |
+| `openrouter/auto`   | Tarefas reais / complexas. Use **apenas** explicitamente via `--model openrouter/auto`.       |
+
+O CLI `garra chat` resolve o modelo na seguinte ordem (ver
+`docs/configuration.md` §"Provider / model resolution precedence"):
+
+1. Flag `--model <X>` (precedência absoluta).
+2. `config.llm[<key>].model` (key match).
+3. Primeiro `config.llm[*]` cujo campo `provider:` casa com o tipo escolhido.
+4. Fallback hardcoded (`openrouter/auto`).
+
+Exemplo de uso barato:
+
+```bash
+# Smoke test — resolve openrouter/free a partir do config.yml.
+garra chat --provider openrouter
+```
+
+Exemplo de uso real:
+
+```bash
+# Tarefa pesada — força openrouter/auto.
+garra chat --provider openrouter --model openrouter/auto
+```
+
+Não existe upgrade automático `free → auto` — tráfego pago sempre
+exige `--model` explícito.
+
 ---
 
 ## Sansa

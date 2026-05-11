@@ -35,7 +35,7 @@
 
 use argon2::PasswordHasher;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -44,7 +44,7 @@ use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_even
 use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::RestV1FullState;
@@ -1277,6 +1277,442 @@ pub async fn delete_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── Constants for list handlers ──────────────────────────────────────────────
+
+const DEFAULT_LIST_LIMIT: u32 = 50;
+const MAX_LIST_LIMIT: u32 = 100;
+
+// ─── DTOs: list_members ───────────────────────────────────────────────────────
+
+/// Query parameters for `GET /v1/groups/{id}/members`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListMembersQuery {
+    /// Keyset cursor — `user_id` UUID of the last member received. Omit for the first page.
+    pub cursor: Option<Uuid>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+    /// Filter by role (`owner`, `admin`, `member`, `guest`, `child`).
+    pub role: Option<String>,
+    /// Filter by status. Default excludes `removed` and `banned`.
+    pub status: Option<String>,
+}
+
+/// One member entry in the list response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MemberSummary {
+    pub user_id: Uuid,
+    pub role: String,
+    pub status: String,
+    pub joined_at: DateTime<Utc>,
+    pub invited_by: Option<Uuid>,
+}
+
+/// Response body for `GET /v1/groups/{id}/members`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListMembersResponse {
+    pub items: Vec<MemberSummary>,
+    pub next_cursor: Option<Uuid>,
+}
+
+// ─── DTOs: list_invites ───────────────────────────────────────────────────────
+
+/// Query parameters for `GET /v1/groups/{id}/invites`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListInvitesQuery {
+    /// Keyset cursor — `id` UUID of the last invite received. Omit for the first page.
+    pub cursor: Option<Uuid>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+}
+
+/// One pending invite entry in the list response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InviteSummary {
+    pub id: Uuid,
+    pub invited_email: String,
+    pub proposed_role: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Response body for `GET /v1/groups/{id}/invites`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListInvitesResponse {
+    pub items: Vec<InviteSummary>,
+    pub next_cursor: Option<Uuid>,
+}
+
+// ─── Handlers ─────────────────────────────────────────────────────────────────
+
+/// `GET /v1/groups/{id}/members` — cursor-paginated list of group members (plan 0097, GAR-574).
+///
+/// Any active group member may call this endpoint; no extra capability required.
+/// `group_members` is a tenant-root table (no FORCE RLS). Cross-group isolation
+/// is enforced via `WHERE group_id = $path_id` + the path/header coherence guard.
+///
+/// ## Cursor scheme
+///
+/// Ordered by `user_id ASC` (stable PK component). Cursor = `user_id` of the
+/// last item received. Pass `?cursor=<uuid>` for subsequent pages.
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{id}/members",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID."),
+        ListMembersQuery
+    ),
+    responses(
+        (status = 200, description = "Paginated member list.", body = ListMembersResponse),
+        (status = 400, description = "Missing or mismatched X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not an active group member.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_members(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListMembersQuery>,
+) -> Result<Json<ListMembersResponse>, RestError> {
+    // 1. Path/header coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Clamp limit.
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .min(MAX_LIST_LIMIT) as i64;
+
+    // 3. Open tx + SET LOCAL (defensive; group_members has no FORCE RLS).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Build query. Default excludes removed/banned unless caller filters explicitly.
+    //    Cursor: WHERE user_id > $cursor (keyset on user_id ASC).
+    //    Role/status filters are optional.
+    #[derive(sqlx::FromRow)]
+    struct MemberRow {
+        user_id: Uuid,
+        role: String,
+        status: String,
+        joined_at: DateTime<Utc>,
+        invited_by: Option<Uuid>,
+    }
+
+    let default_excluded: &[&str] = &["removed", "banned"];
+    let rows: Vec<MemberRow> = if let Some(cursor_user_id) = params.cursor {
+        // Keyset page 2+.
+        match (&params.role, &params.status) {
+            (Some(role), Some(status)) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND user_id > $2 AND role = $3 AND status = $4 \
+                     ORDER BY user_id ASC LIMIT $5",
+                )
+                .bind(id)
+                .bind(cursor_user_id)
+                .bind(role)
+                .bind(status)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (Some(role), None) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND user_id > $2 AND role = $3 \
+                       AND status != ALL($4) \
+                     ORDER BY user_id ASC LIMIT $5",
+                )
+                .bind(id)
+                .bind(cursor_user_id)
+                .bind(role)
+                .bind(default_excluded)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (None, Some(status)) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND user_id > $2 AND status = $3 \
+                     ORDER BY user_id ASC LIMIT $4",
+                )
+                .bind(id)
+                .bind(cursor_user_id)
+                .bind(status)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (None, None) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND user_id > $2 AND status != ALL($3) \
+                     ORDER BY user_id ASC LIMIT $4",
+                )
+                .bind(id)
+                .bind(cursor_user_id)
+                .bind(default_excluded)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+        }
+    } else {
+        // First page.
+        match (&params.role, &params.status) {
+            (Some(role), Some(status)) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND role = $2 AND status = $3 \
+                     ORDER BY user_id ASC LIMIT $4",
+                )
+                .bind(id)
+                .bind(role)
+                .bind(status)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (Some(role), None) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND role = $2 AND status != ALL($3) \
+                     ORDER BY user_id ASC LIMIT $4",
+                )
+                .bind(id)
+                .bind(role)
+                .bind(default_excluded)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (None, Some(status)) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND status = $2 \
+                     ORDER BY user_id ASC LIMIT $3",
+                )
+                .bind(id)
+                .bind(status)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+            (None, None) => {
+                sqlx::query_as(
+                    "SELECT user_id, role, status, joined_at, invited_by \
+                     FROM group_members \
+                     WHERE group_id = $1 AND status != ALL($2) \
+                     ORDER BY user_id ASC LIMIT $3",
+                )
+                .bind(id)
+                .bind(default_excluded)
+                .bind(limit + 1)
+                .fetch_all(&mut *tx)
+                .await
+            }
+        }
+    }
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Cursor-next trick: pop last if we fetched limit+1.
+    let has_more = rows.len() > limit as usize;
+    let mut rows = rows;
+    let next_cursor = if has_more {
+        rows.pop().map(|r| r.user_id)
+    } else {
+        None
+    };
+
+    let items = rows
+        .into_iter()
+        .map(|r| MemberSummary {
+            user_id: r.user_id,
+            role: r.role,
+            status: r.status,
+            joined_at: r.joined_at,
+            invited_by: r.invited_by,
+        })
+        .collect();
+
+    Ok(Json(ListMembersResponse { items, next_cursor }))
+}
+
+/// `GET /v1/groups/{id}/invites` — cursor-paginated list of pending group invites (plan 0097, GAR-574).
+///
+/// Requires `Action::MembersManage` (owner/admin) because `invited_email` is PII.
+/// Only returns invites where `accepted_at IS NULL` (pending).
+/// `token_hash` is never exposed.
+///
+/// ## Cursor scheme
+///
+/// Ordered by `(created_at ASC, id ASC)`. Cursor = `id` UUID of the last invite
+/// received. Next page: `WHERE id > $cursor` (approximation — stable enough for
+/// low-cardinality invite lists; exact keyset would need compound cursor encoding).
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{id}/invites",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID."),
+        ListInvitesQuery
+    ),
+    responses(
+        (status = 200, description = "Paginated pending invite list.", body = ListInvitesResponse),
+        (status = 400, description = "Missing or mismatched X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` capability.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_invites(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListInvitesQuery>,
+) -> Result<Json<ListInvitesResponse>, RestError> {
+    // 1. Path/header coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check — email is PII, owner/admin only.
+    if !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Clamp limit.
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .min(MAX_LIST_LIMIT) as i64;
+
+    // 4. Open tx + SET LOCAL (defensive).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Fetch pending invites. token_hash is deliberately excluded from SELECT.
+    #[derive(sqlx::FromRow)]
+    struct InviteRow {
+        id: Uuid,
+        invited_email: String,
+        proposed_role: String,
+        expires_at: DateTime<Utc>,
+        created_by: Uuid,
+        created_at: DateTime<Utc>,
+    }
+
+    let rows: Vec<InviteRow> = if let Some(cursor_id) = params.cursor {
+        sqlx::query_as(
+            "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
+             FROM group_invites \
+             WHERE group_id = $1 AND accepted_at IS NULL \
+               AND (created_at, id) > (\
+                   SELECT created_at, id FROM group_invites WHERE id = $2\
+               ) \
+             ORDER BY created_at ASC, id ASC LIMIT $3",
+        )
+        .bind(id)
+        .bind(cursor_id)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
+             FROM group_invites \
+             WHERE group_id = $1 AND accepted_at IS NULL \
+             ORDER BY created_at ASC, id ASC LIMIT $2",
+        )
+        .bind(id)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+    }
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. Cursor-next trick.
+    let has_more = rows.len() > limit as usize;
+    let mut rows = rows;
+    let next_cursor = if has_more {
+        rows.pop().map(|r| r.id)
+    } else {
+        None
+    };
+
+    let items = rows
+        .into_iter()
+        .map(|r| InviteSummary {
+            id: r.id,
+            invited_email: r.invited_email,
+            proposed_role: r.proposed_role,
+            expires_at: r.expires_at,
+            created_by: r.created_by,
+            created_at: r.created_at,
+        })
+        .collect();
+
+    Ok(Json(ListInvitesResponse { items, next_cursor }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1477,6 +1913,22 @@ mod tests {
             req.validate().unwrap_err(),
             "cannot promote to owner via setRole"
         );
+    }
+
+    #[test]
+    fn list_members_query_default_limit() {
+        let q: ListMembersQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.cursor.is_none());
+        assert!(q.limit.is_none());
+        assert!(q.role.is_none());
+        assert!(q.status.is_none());
+    }
+
+    #[test]
+    fn list_invites_query_default_limit() {
+        let q: ListInvitesQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.cursor.is_none());
+        assert!(q.limit.is_none());
     }
 
     #[test]
