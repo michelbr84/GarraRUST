@@ -152,6 +152,28 @@ pub struct FolderListResponse {
     pub next_cursor: Option<Uuid>,
 }
 
+/// Response body for `POST /v1/groups/{group_id}/files` (201 Created).
+/// (plan 0099 / GAR-577, Fase 3.4 files slice 9)
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileCreatedResponse {
+    /// UUID of the newly created file (logical identity across versions).
+    pub file_id: Uuid,
+    /// Human-readable name supplied in the `X-File-Name` header.
+    pub name: String,
+    /// Group this file belongs to.
+    pub group_id: Uuid,
+    /// Parent folder, or `null` for root-level files.
+    pub folder_id: Option<Uuid>,
+    /// Always `1` for the initial upload.
+    pub version: i32,
+    /// Byte count of the uploaded content.
+    pub size_bytes: i64,
+    /// MIME type (from `Content-Type` header).
+    pub mime_type: String,
+    /// UTC timestamp of file creation.
+    pub created_at: DateTime<Utc>,
+}
+
 /// Query parameters for `GET /v1/groups/{group_id}/files`.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListFilesQuery {
@@ -371,6 +393,265 @@ fn check_group_match(path_group_id: Uuid, principal_group_id: Uuid) -> Result<()
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
+
+/// `POST /v1/groups/{group_id}/files` — create a new file (direct upload).
+/// (plan 0099 / GAR-577, Fase 3.4 files slice 9)
+///
+/// Accepts the file bytes as the raw request body (Content-Type = MIME type).
+/// Two required headers in addition to JWT + X-Group-Id:
+/// - `X-File-Name`: 1-500 char human name (no `/`, no control chars).
+/// - `Content-Type`: MIME type — must be in the storage allow-list.
+///
+/// One optional header:
+/// - `X-Folder-Id`: UUID of an existing, non-deleted folder in this group.
+///
+/// The handler creates `files` (v1) + `file_versions` (version=1) atomically
+/// in a single Postgres transaction. The ObjectStore PUT runs before COMMIT
+/// (two-phase ordering per ADR 0004 §5.3.1 — orphaned blobs on rollback are
+/// acceptable and reclaimed by a future maintenance job).
+///
+/// ## Error matrix
+///
+/// | Condition                               | Status |
+/// |-----------------------------------------|--------|
+/// | Missing/invalid JWT                     | 401    |
+/// | Caller lacks `FilesWrite`               | 403    |
+/// | `path_group_id` ≠ `principal.group_id` | 403    |
+/// | Missing `X-Group-Id` header             | 400    |
+/// | Missing or invalid `X-File-Name`        | 400    |
+/// | `X-Folder-Id` not found / soft-deleted  | 400    |
+/// | MIME type not in allow-list             | 415    |
+/// | Body exceeds operator cap               | 413    |
+/// | ObjectStore not configured              | 503    |
+/// | Happy path                              | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/groups/{group_id}/files",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID (must match caller's group)."),
+    ),
+    request_body(
+        content = (),
+        description = "Raw file bytes. Set Content-Type to the MIME type. \
+                       Also set X-File-Name and optionally X-Folder-Id.",
+    ),
+    responses(
+        (status = 201, description = "File created (v1).", body = FileCreatedResponse),
+        (status = 400, description = "Missing/invalid X-File-Name or bad X-Folder-Id.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks FilesWrite or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 413, description = "Body exceeds operator cap.", body = super::problem::ProblemDetails),
+        (status = 415, description = "MIME type not in allow-list.", body = super::problem::ProblemDetails),
+        (status = 503, description = "Object store not configured.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_file(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(path_group_id): Path<Uuid>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<(StatusCode, Json<FileCreatedResponse>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::FilesWrite) {
+        return Err(RestError::Forbidden);
+    }
+    check_group_match(path_group_id, group_id)?;
+
+    let object_store = state
+        .storage
+        .object_store
+        .as_ref()
+        .ok_or(RestError::AuthUnconfigured)?
+        .clone();
+    let staging = state
+        .storage
+        .upload_staging
+        .as_ref()
+        .ok_or(RestError::AuthUnconfigured)?
+        .clone();
+
+    // Validate MIME type (fail fast — 415 before 413).
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_owned())
+        .ok_or(RestError::UnsupportedMediaType(
+            "Content-Type header missing".into(),
+        ))?;
+    if !garraia_storage::mime_allowlist::is_mime_allowed(&content_type) {
+        return Err(RestError::UnsupportedMediaType(format!(
+            "MIME type '{content_type}' is not in the allow-list"
+        )));
+    }
+
+    // Validate X-File-Name header.
+    let raw_name = headers
+        .get("x-file-name")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| RestError::BadRequest("X-File-Name header is required".into()))?;
+    let file_name =
+        validate_file_name(raw_name).map_err(|msg| RestError::BadRequest(msg.into()))?;
+    let name_len = file_name.chars().count();
+
+    // Parse optional X-Folder-Id header.
+    let folder_id: Option<Uuid> = headers
+        .get("x-folder-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.parse::<Uuid>()
+                .map_err(|_| RestError::BadRequest("X-Folder-Id is not a valid UUID".into()))
+        })
+        .transpose()?;
+
+    // Read body with operator cap.
+    let cap: usize = staging.max_patch_bytes.try_into().unwrap_or(usize::MAX);
+    let bytes = to_bytes(body, cap).await.map_err(|e| {
+        tracing::debug!(error = %e, "create_file body too large or read failed");
+        RestError::PayloadTooLarge(format!(
+            "body exceeds operator cap of {} bytes",
+            staging.max_patch_bytes
+        ))
+    })?;
+    let body_len = bytes.len() as i64;
+    let checksum_sha256 = sha256_hex_of_bytes(&bytes);
+
+    // Open DB transaction + set RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Validate folder_id belongs to this group and is not soft-deleted.
+    if let Some(fid) = folder_id {
+        let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM folders WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(fid)
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        if exists.is_none() {
+            return Err(RestError::BadRequest(
+                "X-Folder-Id not found or soft-deleted in this group".into(),
+            ));
+        }
+    }
+
+    // Resolve creator label from users table.
+    let (created_by_label,): (String,) =
+        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let file_id = Uuid::new_v4();
+    let version_uuid = Uuid::new_v4();
+    let object_key = format!("groups/{group_id}/files/{file_id}/v1/{version_uuid}");
+
+    // ObjectStore PUT — runs before Postgres COMMIT (two-phase ordering).
+    let put_opts = PutOptions {
+        content_type: Some(content_type.clone()),
+        hmac_secret: Some(staging.hmac_secret.clone()),
+        ..Default::default()
+    };
+    let put_meta = object_store
+        .put(&object_key, bytes, put_opts)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "ObjectStore::put failed for new file");
+            RestError::BadGateway("object store write failed; please retry".into())
+        })?;
+
+    let integrity_hmac = put_meta.integrity_hmac.ok_or_else(|| {
+        RestError::Internal(anyhow::anyhow!(
+            "ObjectStore did not return integrity_hmac; \
+             GARRAIA_UPLOAD_HMAC_SECRET misconfigured"
+        ))
+    })?;
+
+    // INSERT files row first (file_versions FK depends on it).
+    sqlx::query(
+        "INSERT INTO files \
+            (id, group_id, folder_id, name, current_version, total_versions, \
+             size_bytes, mime_type, created_by, created_by_label) \
+         VALUES ($1, $2, $3, $4, 1, 1, $5, $6, $7, $8)",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(folder_id)
+    .bind(&file_name)
+    .bind(body_len)
+    .bind(&content_type)
+    .bind(principal.user_id)
+    .bind(&created_by_label)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("insert files")))?;
+
+    // INSERT file_versions row (v1).
+    sqlx::query(
+        "INSERT INTO file_versions \
+            (file_id, group_id, version, object_key, etag, checksum_sha256, \
+             integrity_hmac, size_bytes, mime_type, created_by, created_by_label) \
+         VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(&object_key)
+    .bind(&put_meta.etag_sha256[..put_meta.etag_sha256.len().min(200)])
+    .bind(&checksum_sha256)
+    .bind(&integrity_hmac)
+    .bind(body_len)
+    .bind(&content_type)
+    .bind(principal.user_id)
+    .bind(&created_by_label)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e).context("insert file_versions")))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileCreated,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        serde_json::json!({
+            "file_id": file_id,
+            "group_id": group_id,
+            "name_len": name_len,
+            "size_bytes": body_len,
+            "has_folder": folder_id.is_some(),
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(FileCreatedResponse {
+            file_id,
+            name: file_name,
+            group_id,
+            folder_id,
+            version: 1,
+            size_bytes: body_len,
+            mime_type: content_type,
+            created_at: Utc::now(),
+        }),
+    ))
+}
 
 /// `GET /v1/groups/{group_id}/files` — cursor-paginated file listing.
 ///

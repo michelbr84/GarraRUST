@@ -363,6 +363,16 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ from_list_id, to_list_id }` — UUIDs only, never list names.
     TaskMoved,
 
+    /// A new file was created via `POST /v1/groups/{group_id}/files`
+    /// (plan 0099 / GAR-577, Fase 3.4 files slice 9).
+    ///
+    /// Emitted exactly once per successful 201 response, inside the same
+    /// transaction that inserts `files` + `file_versions` (v1).
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ file_id, group_id, name_len: usize, size_bytes: u64,
+    /// has_folder: bool }` — never the raw file name (PII-safe, CLAUDE.md §6).
+    FileCreated,
+
     /// A file was soft-deleted via `DELETE /v1/files/{file_id}`
     /// (plan 0088 / GAR-555, Fase 3.4 files slice 1).
     ///
@@ -498,6 +508,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
             WorkspaceAuditAction::TaskUnsubscribed => "task.unsubscribed",
             WorkspaceAuditAction::TaskMoved => "task.moved",
+            WorkspaceAuditAction::FileCreated => "file.created",
             WorkspaceAuditAction::FileDeleted => "file.deleted",
             WorkspaceAuditAction::FileRenamed => "file.renamed",
             WorkspaceAuditAction::FolderRenamed => "folder.renamed",
@@ -682,6 +693,7 @@ mod tests {
             "task.unsubscribed"
         );
         assert_eq!(WorkspaceAuditAction::TaskMoved.as_str(), "task.moved");
+        assert_eq!(WorkspaceAuditAction::FileCreated.as_str(), "file.created");
         assert_eq!(WorkspaceAuditAction::FileDeleted.as_str(), "file.deleted");
         assert_eq!(WorkspaceAuditAction::FileRenamed.as_str(), "file.renamed");
         assert_eq!(
