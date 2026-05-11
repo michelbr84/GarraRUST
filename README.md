@@ -61,6 +61,10 @@ cargo build --release -p garraia
 # Iniciar
 ./target/release/garra start
 
+# Conversa rápida não-interativa (GAR-579) — ideal para Claude Code, CI, scripts
+./target/release/garra ask --provider openrouter --model openrouter/free \
+  --json --timeout-secs 30 "Responda apenas: GAR-ASK-OK"
+
 # Opcional: incluir suporte a plugins WASM
 cargo build --release -p garraia --features plugins
 ```

@@ -262,6 +262,11 @@ garra chat --provider openrouter --model openrouter/auto
 There is no automatic `free → auto` upgrade — paid traffic always
 requires an explicit `--model` flag.
 
+> GAR-579 — esta mesma precedência é consumida por
+> [`garra ask`](cli-ask.md), o comando não-interativo. Tanto `garra chat`
+> quanto `garra ask` compartilham `chat::select_explicit_provider` /
+> `chat::detect_provider`, então o comportamento é byte-equivalente.
+
 ## Hot Reload
 
 Configuration changes in `config.yml` are applied automatically:
