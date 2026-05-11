@@ -441,6 +441,23 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "files"`, `resource_id = "{file_id}"`.
     /// Metadata: `{ file_id, group_id, version_count: usize }` — PII-safe.
     FileVersionsListed,
+
+    /// An existing file was attached to a task via
+    /// `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
+    /// (plan 0096 / GAR-572, Fase 3.4 tasks slice 9).
+    ///
+    /// `resource_type = "task_attachments"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ task_id, file_id }` — both UUIDs, no display names (PII-safe).
+    TaskFileAttached,
+
+    /// A file was detached from a task via
+    /// `DELETE /v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}`
+    /// (plan 0096 / GAR-572, Fase 3.4 tasks slice 9).
+    ///
+    /// Emitted only when a row was actually deleted (idempotent: no event if
+    /// already absent). `resource_type = "task_attachments"`, `resource_id = "{task_id}"`.
+    /// Metadata: `{ task_id, file_id }` — PII-safe.
+    TaskFileDetached,
 }
 
 impl WorkspaceAuditAction {
@@ -489,6 +506,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FileDownloadIssued => "file.download_issued",
             WorkspaceAuditAction::FileVersionCreated => "file.version.created",
             WorkspaceAuditAction::FileVersionsListed => "file.versions.listed",
+            WorkspaceAuditAction::TaskFileAttached => "task.file.attached",
+            WorkspaceAuditAction::TaskFileDetached => "task.file.detached",
         }
     }
 }
@@ -685,6 +704,14 @@ mod tests {
             WorkspaceAuditAction::FileVersionCreated.as_str(),
             "file.version.created"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskFileAttached.as_str(),
+            "task.file.attached"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::TaskFileDetached.as_str(),
+            "task.file.detached"
+        );
     }
 
     #[test]
@@ -730,6 +757,8 @@ mod tests {
             WorkspaceAuditAction::FileDownloadIssued.as_str(),
             WorkspaceAuditAction::FileVersionCreated.as_str(),
             WorkspaceAuditAction::FileVersionsListed.as_str(),
+            WorkspaceAuditAction::TaskFileAttached.as_str(),
+            WorkspaceAuditAction::TaskFileDetached.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

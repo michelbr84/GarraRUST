@@ -389,6 +389,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
                     get(tasks::list_subtasks),
                 )
+                // Plan 0096 (GAR-572) — task attachments API slice 9.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments",
+                    post(tasks::post_task_attachment).get(tasks::list_task_attachments),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}",
+                    delete(tasks::delete_task_attachment),
+                )
                 // Plan 0070 (GAR-522) — audit API slice 1.
                 .route("/v1/groups/{group_id}/audit", get(audit::list_audit))
                 // Plan 0084 (GAR-549) — search API slice 1.
@@ -583,6 +592,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
                     get(unconfigured_handler),
                 )
+                // Plan 0096 (GAR-572) — task attachments, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
+                )
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
@@ -743,6 +761,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/subtasks",
                     get(unconfigured_handler),
+                )
+                // Plan 0096 (GAR-572) — task attachments, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/uploads",
