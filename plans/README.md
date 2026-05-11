@@ -125,6 +125,7 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0099 | [GAR-577 — Files REST API slice 9: POST /v1/groups/{group_id}/files (direct file upload / create)](0099-gar-577-files-api-slice9-create.md) | [GAR-577](https://linear.app/chatgpt25/issue/GAR-577) | ✅ Merged 2026-05-11 via PR #264 (`725cf54`) |
 | 0100 | [GAR-579 — CLI: add non-interactive garra ask command](0100-gar-579-cli-non-interactive-ask.md) | [GAR-579](https://linear.app/chatgpt25/issue/GAR-579) | ✅ Merged 2026-05-11 via PR #267 (`6fdc1b4`) |
 | 0103 | [GAR-585 — advertise `tools` capability in garra mcp-server](0103-gar-585-mcp-tools-capability.md) | [GAR-585](https://linear.app/chatgpt25/issue/GAR-585) | 🚧 In progress (branch `fix/gar-585-mcp-tools-capability`) |
+| 0104 | [GAR-587 — apply `garra_ask` schema defaults before calling `ask_oneshot`](0104-gar-587-mcp-garra-ask-defaults.md) | [GAR-587](https://linear.app/chatgpt25/issue/GAR-587) | 🚧 In progress (branch `fix/gar-587-mcp-garra-ask-defaults`) |
 
 ## Arquivos não-versionados
 
