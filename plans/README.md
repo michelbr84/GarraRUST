@@ -21,7 +21,7 @@ O número é sequencial e permanente — nunca reutilizado.
 | 0011.5 | [user_identities.hash_upgraded_at (GAR-391b prereq)](0011.5-hash-upgraded-at.md) | [GAR-391b](https://linear.app/chatgpt25/issue/GAR-391) | ✅ Merged |
 | 0012 | [Auth endpoints + extractor + wiring (GAR-391a/b/c)](0012-gar-391c-extractor-and-wiring.md) | [GAR-391](https://linear.app/chatgpt25/issue/GAR-391) | ✅ Merged |
 | 0013 | [RLS matrix pura (GAR-392, plan C)](0013-gar-392-rls-matrix.md) | [GAR-392](https://linear.app/chatgpt25/issue/GAR-392) | ✅ Merged |
-| 0014 | [App-layer cross-group authz via HTTP (GAR-391d)](0014-gar-391d-app-layer-authz.md) | [GAR-391d](https://linear.app/chatgpt25/issue/GAR-391) | ✅ Merged |
+| 0014 | [App-layer cross-group authz via HTTP (GAR-391d)](0014-gar-391d-app-layer-authz.md) | [GAR-391](https://linear.app/chatgpt25/issue/GAR-391) | ✅ Merged |
 | 0015 | [REST /v1 foundation: OpenAPI + Swagger UI + /me (GAR-386)](0015-gar-386-rest-v1-foundation.md) | [GAR-386](https://linear.app/chatgpt25/issue/GAR-386) | ✅ Merged |
 | 0016 | [REST /v1/groups CRUD (GAR-388)](0016-gar-388-rest-v1-groups.md) | [GAR-388](https://linear.app/chatgpt25/issue/GAR-388) | ✅ Merged |
 | 0017 | [REST /v1/groups/{id}/members CRUD (GAR-389)](0017-gar-389-rest-v1-group-members.md) | [GAR-389](https://linear.app/chatgpt25/issue/GAR-389) | ✅ Merged |
@@ -103,7 +103,7 @@ O número é sequencial e permanente — nunca reutilizado.
 | 0093 | [GAR-564 — Files REST API slice 6: GET /v1/files/{file_id}/download](0093-gar-564-files-api-slice6-download.md) | [GAR-564](https://linear.app/chatgpt25/issue/GAR-564) | ✅ Merged 2026-05-10 via PR #250 (`b2de161`) |
 | 0094 | [GAR-567 — Files REST API slice 7: POST /v1/groups/{group_id}/files/{file_id}/versions (new version)](0094-gar-565-files-api-slice7-new-version.md) | [GAR-567](https://linear.app/chatgpt25/issue/GAR-567) | ✅ Merged 2026-05-10 via PR #254 (`5b0c5fd`) |
 | 0095 | [GAR-569 — Files REST API slice 8: GET /v1/groups/{group_id}/files/{file_id}/versions (list versions)](0095-gar-569-files-api-slice8-list-versions.md) | [GAR-569](https://linear.app/chatgpt25/issue/GAR-569) | ✅ Merged 2026-05-10 via PR #253 (`0cc9a85`) |
-| 0096 | [GAR-572 — Tasks REST API slice 9: task_attachments (migration 017 + POST/GET/DELETE)](0096-gar-572-task-attachments-api.md) | [GAR-572](https://linear.app/chatgpt25/issue/GAR-572) | ✅ Merged 2026-05-11 via PR #257 (`2c1460c`) |
+| 0096 | [GAR-572 — Tasks REST API slice 9: task_attachments (migration 017 + POST/GET/DELETE)](0096-gar-572-task-attachments-api.md) | [GAR-572](https://linear.app/chatgpt25/issue/GAR-572) | ✅ Merged 2026-05-10 via PR #257 (`2c1460c`) |
 | 0097 | [GAR-574 — Groups REST API slice 2: GET /v1/groups/{id}/members + GET /v1/groups/{id}/invites](0097-gar-574-groups-members-invites-api.md) | [GAR-574](https://linear.app/chatgpt25/issue/GAR-574) | 🔵 Em execução 2026-05-11 |
 
 ## Arquivos não-versionados
