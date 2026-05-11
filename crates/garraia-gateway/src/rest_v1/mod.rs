@@ -409,7 +409,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/search", get(search::search))
                 // Plan 0088 (GAR-555) — files API slice 1.
                 // Plan 0092 (GAR-562) — files API slice 5: POST folder.
-                .route("/v1/groups/{group_id}/files", get(files::list_files))
+                // Plan 0099 (GAR-577) — files API slice 9: POST create file.
+                .route(
+                    "/v1/groups/{group_id}/files",
+                    get(files::list_files).post(files::create_file),
+                )
                 .route(
                     "/v1/groups/{group_id}/folders",
                     get(files::list_folders).post(files::create_folder),
@@ -544,7 +548,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/search", get(unconfigured_handler))
                 // Plan 0088 (GAR-555) — files API slice 1, fail-soft 503.
                 // Plan 0092 (GAR-562) — files API slice 5: POST folder, fail-soft 503.
-                .route("/v1/groups/{group_id}/files", get(unconfigured_handler))
+                // Plan 0099 (GAR-577) — files API slice 9: POST create, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/files",
+                    get(unconfigured_handler).post(unconfigured_handler),
+                )
                 .route(
                     "/v1/groups/{group_id}/folders",
                     get(unconfigured_handler).post(unconfigured_handler),
