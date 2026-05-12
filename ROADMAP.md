@@ -370,6 +370,7 @@ Novo crate: `garraia-auth` (separado de `garraia-security`).
 - [x] **Capabilities (22 variants):** `files.*`, `chats.*`, `memory.*`, `tasks.*`, `docs.*`, `members.manage`, `group.{settings,delete}`, `export.{self,group}` — `Action` enum mapeado via `fn can()`. ✅
 - [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`.
 - [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — 18 tabelas com FORCE RLS + NULLIF fail-closed. Migrations 006 e 007. ✅
+- [x] **FORCE RLS em `groups` + `group_members`** — migration 018, plan 0106 / [GAR-589](https://linear.app/chatgpt25/issue/GAR-589), merged 2026-05-12 via PR #294 (`36b2b72`). `groups_member_access` + `group_members_visible` policies; fixes `get_group` FIXME (missing SET LOCAL) e `list_members` (missing `app.current_group_id`). ✅
 - [x] **Identity provider decision:** [ADR 0005](docs/adr/0005-identity-provider.md) — BYPASSRLS dedicated role (`garraia_login` NOLOGIN BYPASSRLS) + Argon2id (m=64MiB, t=3, p=4) + HS256 JWT + PBKDF2→Argon2id lazy upgrade dual-verify + `IdentityProvider` trait shape congelada. ✅
 - [ ] **Guardrails Child/Dependent**: sem export, sem share externo, content filter aplicado pré-LLM.
 
@@ -402,6 +403,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `POST /v1/chats/{chat_id}/messages` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
 - [x] `GET /v1/chats/{chat_id}/messages?cursor=...` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
 - [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / [GAR-509](https://linear.app/chatgpt25/issue/GAR-509), implementado 2026-05-05 (Florida)
+- [x] `PATCH /v1/messages/{message_id}` (edit body, sender-only) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
+- [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
 - [ ] WebSocket `/v1/chats/{chat_id}/stream` com backpressure
 
 **Arquivos**
