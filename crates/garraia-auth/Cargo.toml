@@ -52,7 +52,7 @@ password-hash = "0.5"
 # Constant-time refresh-token comparison.
 subtle = "2.6"
 # HMAC-SHA256 for refresh-token hash + sha2 for the digest primitive.
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 # Wraps secrets so they never reach `Debug`/`Display` accidentally.
 secrecy = { version = "0.10", features = ["serde"] }

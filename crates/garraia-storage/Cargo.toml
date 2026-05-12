@@ -23,7 +23,7 @@ storage-s3 = [
 async-trait = "0.1"
 bytes = "1"
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 serde = { workspace = true }
 sha2 = "0.10"
 subtle = "2"
