@@ -19,11 +19,11 @@
 //! evaporates in Postgres auto-commit mode. Both handlers below
 //! follow this rule.
 //!
-//! For M4 the `SET LOCAL` is defensive scaffolding — `groups` and
-//! `group_members` are not under FORCE RLS (see migrations 001 and
-//! 007). The `garraia_app` role has direct INSERT grants. The
-//! setting becomes load-bearing in M5+ once RLS is extended to
-//! these tables.
+//! Migration 018 (GAR-589) added FORCE RLS to `groups` and `group_members`.
+//! `SET LOCAL app.current_user_id` is now load-bearing for every handler
+//! that reads or writes those tables. `SET LOCAL app.current_group_id` is
+//! additionally required for handlers that need to see ALL members of a
+//! specific group (list_members, set_member_role, delete_member, get_group).
 //!
 //! ## Tenant-context SQL
 //!
@@ -410,29 +410,44 @@ pub async fn get_group(
         }
     }
 
-    // 2. Fetch the group row. `groups` is not under FORCE RLS today
-    //    (migration 001 line 100 + migration 007), so no
-    //    tenant-context `SET LOCAL` is needed for this SELECT and
-    //    `fetch_optional` runs directly on the pool without a
-    //    transaction wrapper. `garraia_app` has direct SELECT
-    //    grants on `groups`.
-    //
-    //    FIXME(plan-0016-M5 or whenever `groups` gains FORCE RLS):
-    //    convert this to a `tx = pool.begin()` + `SET LOCAL
-    //    app.current_user_id` sequence mirroring `create_group`
-    //    above. The M4 security-auditor flagged this as a
-    //    forward-compat hazard — silent `groups` SELECT bypass
-    //    if RLS is later applied and this handler is left
-    //    untouched.
+    // 2. Fetch the group row inside a transaction with SET LOCAL tenant context.
+    //    Migration 018 (GAR-589) added FORCE RLS to `groups`; without SET LOCAL
+    //    the garraia_app role sees 0 rows and the handler would return 404.
+    //    Both app.current_user_id and app.current_group_id are set:
+    //    - current_user_id: required by groups_member_access USING clause.
+    //    - current_group_id: not strictly required for this SELECT (the USING
+    //      subquery only checks group_members.user_id), but set as defensive
+    //      forward-compat for any future policy that may use it.
     let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> =
         sqlx::query_as("SELECT id, name, type, created_at, created_by FROM groups WHERE id = $1")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(|e| RestError::Internal(e.into()))?;
 
     let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 3. Assemble response. The caller's `Principal.role` MUST be
     //    `Some(_)` here: the extractor only populates `group_id`
@@ -1397,7 +1412,11 @@ pub async fn list_members(
         .unwrap_or(DEFAULT_LIST_LIMIT)
         .min(MAX_LIST_LIMIT) as i64;
 
-    // 3. Open tx + SET LOCAL (defensive; group_members has no FORCE RLS).
+    // 3. Open tx + SET LOCAL tenant context.
+    //    Migration 018 (GAR-589) added FORCE RLS to `group_members`.
+    //    app.current_group_id is now load-bearing: the group_members_visible
+    //    policy Branch 1 (`group_id = current_group_id`) must be set so all
+    //    members of the group are visible, not just the caller's own row.
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
         .begin()
@@ -1406,6 +1425,12 @@ pub async fn list_members(
 
     sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
         .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -1787,7 +1812,10 @@ pub async fn list_groups(
         .unwrap_or(DEFAULT_LIST_LIMIT)
         .min(MAX_LIST_LIMIT) as i64;
 
-    // 2. Open tx + SET LOCAL (defensive; group_members has no FORCE RLS).
+    // 2. Open tx + SET LOCAL. Migration 018 (GAR-589) made app.current_user_id
+    //    load-bearing: groups_member_access USING subquery reads group_members under
+    //    FORCE RLS, which allows only rows where user_id = current_user_id (Branch 2).
+    //    app.current_group_id is intentionally NOT set — this is a cross-group endpoint.
     let pool = state.app_pool.pool_for_handlers();
     let mut tx = pool
         .begin()
