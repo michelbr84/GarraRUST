@@ -308,6 +308,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/threads",
                     post(messages::create_thread),
                 )
+                // Plan 0107 (GAR-592) — messages slice 5: edit + soft-delete.
+                .route(
+                    "/v1/messages/{message_id}",
+                    patch(messages::patch_message).delete(messages::delete_message),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1.
                 .route(
                     "/v1/memory",
@@ -513,6 +518,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/threads",
                     post(unconfigured_handler),
                 )
+                // Plan 0107 (GAR-592) — messages slice 5, fail-soft 503.
+                .route(
+                    "/v1/messages/{message_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
                 .route(
                     "/v1/memory",
@@ -691,6 +701,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/messages/{message_id}/threads",
                     post(unconfigured_handler),
+                )
+                // Plan 0107 (GAR-592) — messages slice 5, no-auth stub.
+                .route(
+                    "/v1/messages/{message_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
                 .route(
