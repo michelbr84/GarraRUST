@@ -16,24 +16,22 @@
 # fix availability honestly, (5) must have an expiration date.
 #
 # SYNC NOTE — `audit.toml` vs `deny.toml` (HONEST asymmetry,
-# refreshed 2026-04-27 by GAR-458 PR #75):
+# refreshed 2026-05-12 by health-routine / GAR-593):
 #
 #   * `audit.toml` controls vulnerabilities flagged by `cargo audit`.
 #     It carries every RUSTSEC ID that would otherwise make `cargo audit`
 #     exit non-zero on `Cargo.lock`.
 #   * `deny.toml` controls advisories flagged by `cargo deny check
 #     advisories` (now invoked in CI via cargo-deny-action default
-#     `command: check`). It carries the same RUSTSEC wasmtime IDs AND
-#     the same 4 rustls-webpki residual IDs (mandatory sync, see below)
-#     PLUS 23 `unmaintained-only` advisories that `cargo audit`
+#     `command: check`). It mirrors the same vuln/unsound IDs (rsa, glib,
+#     rand) PLUS 22 `unmaintained-only` advisories that `cargo audit`
 #     auto-classifies as "allowed warnings" and does NOT require
 #     explicit ignore here.
-#   * **Mandatory sync between the two files: wasmtime IDs (15) AND
-#     rustls-webpki residuals (4).** When GAR-454 (Q7b) bumps wasmtime
-#     to ≥ 40.0.4 / ≥ 41.0.4, ALL 15 wasmtime IDs below MUST be dropped
-#     from BOTH files atomically. When GAR-455 closes (serenity 0.13 +
-#     aws-smithy upgrade), ALL 4 rustls-webpki IDs below MUST be
-#     dropped from BOTH files atomically.
+#   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
+#     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
+#     (rand / GAR-513). Drop any of these atomically from BOTH files when
+#     the upstream fix lands. Closed history: wasmtime ×15 (GAR-454),
+#     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR).**
 #   * The 22 unmaintained-only IDs in `deny.toml` (7 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
@@ -105,15 +103,13 @@ ignore = [
     # Removed: RUSTSEC-2026-0049, RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104.
 
     # =========================================================================
-    # GAR-513 carve-out — unsound warnings (glib + lru + rand)
+    # GAR-513 carve-out — unsound warnings (glib + rand)
     # =========================================================================
-    # GAR-437 (Q7 RUSTSEC triage) was marked Done 2026-04-27. These three
-    # suppressions are now tracked under GAR-513 (created 2026-05-05 by
-    # daily security routine). All 3 crates remain in `Cargo.lock` (verified
-    # empirically 2026-05-05). Without these ignores, the nightly
-    # `cargo audit --no-fetch --deny unsound` workflow (cargo-audit.yml)
-    # fails because cargo-audit treats `unsound` as denied. Expirations
-    # force re-triage 2026-07-31.
+    # GAR-437 (Q7 RUSTSEC triage) was marked Done 2026-04-27. Originally
+    # 3 crates (glib, lru, rand); lru closed 2026-05-12 by GAR-593 when
+    # aws-sdk-s3 1.132.0 pulled lru 0.16.4 (patched). 2 crates remain.
+    # Without these ignores, the nightly `cargo audit --no-fetch --deny
+    # unsound` workflow (cargo-audit.yml) fails. Expirations: 2026-07-31.
     #
     # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
     # Tauri surface (garraia-desktop), excluded from CI builds. Zero
@@ -121,13 +117,10 @@ ignore = [
     # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-07-31.
     "RUSTSEC-2024-0429",
 
-    # lru 0.12.5 — `IterMut` stacked-borrows violation. Pulled
-    # transitively via `aws-sdk-s3 1.119.0 → garraia-storage` (feature
-    # `storage-s3`). Verified 2026-05-05: aws-sdk-s3 1.131.0 available but
-    # cargo update is solver-blocked; lru patch requires ≥ 0.16.3. Fix
-    # path: wait for aws-sdk-s3 to bump lru (see GAR-455 aws-smithy chain).
-    # Tracked by: GAR-513. Expires: 2026-07-31.
-    "RUSTSEC-2026-0002",
+    # NOTE: RUSTSEC-2026-0002 (lru 0.12.5 IterMut stacked-borrows violation)
+    # closed by GAR-593 (2026-05-12, health routine PR health/202605121530).
+    # Resolution: aws-sdk-s3 1.119→1.132 (PR #297) pulled lru 0.16.4 which
+    # patches the advisory. Removed from BOTH audit.toml and deny.toml.
 
     # rand 0.7.3 — `thread_rng` unsound custom-logger reentrance. This
     # version is a BUILD-TIME dep only: phf_codegen → phf_generator →

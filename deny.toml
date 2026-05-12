@@ -8,13 +8,11 @@
 #   * `deny.toml` controls advisories flagged by `cargo deny check
 #     advisories`. Now invoked in CI via `cargo-deny-action` default
 #     `command: check` (since GAR-458 enabled the advisories category).
-#   * **Mandatory sync between the two files: wasmtime IDs (15),
-#     rustls-webpki residuals (4), AND 4 audit.toml mirrors that
-#     cargo-deny ALSO requires (rsa, glib, lru, rand — differing
-#     severity classification between cargo-deny and cargo-audit).**
-#     When the upstream blockers close, the IDs MUST be dropped from
-#     BOTH files atomically. (quinn-proto previously here was closed
-#     by GAR-457 on 2026-04-27.)
+#   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
+#     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
+#     (rand / GAR-513). Closed: wasmtime ×15 (GAR-454), webpki ×4
+#     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530). Drop
+#     atomically from BOTH files when an upstream fix lands.**
 #   * The 22 unmaintained-only IDs (7 directly named: daemonize,
 #     derivative, fxhash, instant, proc-macro-error, async-std,
 #     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
@@ -80,13 +78,13 @@ ignore = [
     # audit.toml under GAR-437 carve-out. Desktop-only via Tauri surface.
     # Expires 2026-07-31.
     "RUSTSEC-2024-0429",
-    # lru 0.12.5 — IterMut stacked-borrows violation. Mirror of audit.toml
-    # under GAR-437 carve-out. Pulled via aws-sdk-s3 → garraia-storage
-    # (feature `storage-s3`). Expires 2026-07-31.
-    "RUSTSEC-2026-0002",
+    # NOTE: RUSTSEC-2026-0002 (lru IterMut stacked-borrows) closed by
+    # GAR-593 (2026-05-12). aws-sdk-s3 1.132.0 pulled lru 0.16.4 (patched).
+    # Removed from BOTH audit.toml and deny.toml atomically (PR #297+this).
     # NOTE: RUSTSEC-2026-0037 (quinn-proto) closed by GAR-457 (2026-04-27)
     # via lockfile-only `cargo update -p quinn-proto --precise 0.11.14`.
     # Removed from BOTH audit.toml and deny.toml.
+
     # rand 0.10.1 — custom logger unsound in rand::rng(). Mirror of
     # audit.toml under GAR-437 carve-out. Used broadly; semver-incompatible
     # bump path under audit. Expires 2026-07-31.
