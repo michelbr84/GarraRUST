@@ -124,8 +124,11 @@ Histórico de planos de execução do GarraIA. Cada plano está atrelado a uma i
 | 0098 | [GAR-576 — fix(cli): respect configured OpenRouter model and default provider](0098-gar-576-cli-openrouter-model-respect.md) | [GAR-576](https://linear.app/chatgpt25/issue/GAR-576) | ✅ Merged 2026-05-11 via PR #263 (`c952b6b`) |
 | 0099 | [GAR-577 — Files REST API slice 9: POST /v1/groups/{group_id}/files (direct file upload / create)](0099-gar-577-files-api-slice9-create.md) | [GAR-577](https://linear.app/chatgpt25/issue/GAR-577) | ✅ Merged 2026-05-11 via PR #264 (`725cf54`) |
 | 0100 | [GAR-579 — CLI: add non-interactive garra ask command](0100-gar-579-cli-non-interactive-ask.md) | [GAR-579](https://linear.app/chatgpt25/issue/GAR-579) | ✅ Merged 2026-05-11 via PR #267 (`6fdc1b4`) |
-| 0103 | [GAR-585 — advertise `tools` capability in garra mcp-server](0103-gar-585-mcp-tools-capability.md) | [GAR-585](https://linear.app/chatgpt25/issue/GAR-585) | 🚧 In progress (branch `fix/gar-585-mcp-tools-capability`) |
-| 0104 | [GAR-587 — apply `garra_ask` schema defaults before calling `ask_oneshot`](0104-gar-587-mcp-garra-ask-defaults.md) | [GAR-587](https://linear.app/chatgpt25/issue/GAR-587) | 🚧 In progress (branch `fix/gar-587-mcp-garra-ask-defaults`) |
+| 0101 | [GAR-582 — name OpenRouter provider explicitly in chat.rs](0101-gar-582-cli-openrouter-provider-name.md) | [GAR-582](https://linear.app/chatgpt25/issue/GAR-582) | ✅ Merged 2026-05-11 via PR #269 (`753f881`) |
+| 0102 | [GAR-583 — MCP server exposing garra ask as stdio tool](0102-gar-583-mcp-server-stdio.md) | [GAR-583](https://linear.app/chatgpt25/issue/GAR-583) | ✅ Merged 2026-05-11 via PR #270 (`47be4a4`) |
+| 0103 | [GAR-585 — advertise `tools` capability in garra mcp-server](0103-gar-585-mcp-tools-capability.md) | [GAR-585](https://linear.app/chatgpt25/issue/GAR-585) | ✅ Merged 2026-05-11 via PR #271 (`97403c7`) |
+| 0104 | [GAR-587 — apply `garra_ask` schema defaults before calling `ask_oneshot`](0104-gar-587-mcp-garra-ask-defaults.md) | [GAR-587](https://linear.app/chatgpt25/issue/GAR-587) | ✅ Merged 2026-05-12 via PR #272 (`3dc1932`) |
+| 0105 | [GAR-580 — REST /v1 groups slice 3: GET /v1/groups (list user's groups)](0105-gar-580-groups-list-api.md) | [GAR-580](https://linear.app/chatgpt25/issue/GAR-580) | 🚧 In progress (branch `routine/202605120022-groups-list`) |
 
 ## Arquivos não-versionados
 

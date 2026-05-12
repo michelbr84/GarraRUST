@@ -263,7 +263,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
 
             Router::new()
                 .route("/v1/me", get(me::get_me))
-                .route("/v1/groups", post(groups::create_group))
+                // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
+                .route(
+                    "/v1/groups",
+                    post(groups::create_group).get(groups::list_groups),
+                )
                 .route(
                     "/v1/groups/{id}",
                     get(groups::get_group).patch(groups::patch_group),

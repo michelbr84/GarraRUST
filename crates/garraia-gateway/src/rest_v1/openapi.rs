@@ -88,9 +88,12 @@ impl Modify for SecurityAddon {
     paths(
         super::me::get_me,
         super::groups::create_group,
+        super::groups::list_groups,
         super::groups::get_group,
         super::groups::patch_group,
         super::groups::create_invite,
+        super::groups::list_invites,
+        super::groups::list_members,
         super::groups::set_member_role,
         super::groups::delete_member,
         super::invites::accept_invite,
