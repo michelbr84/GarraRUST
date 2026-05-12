@@ -651,6 +651,299 @@ pub async fn create_thread(
     ))
 }
 
+/// Request body for `PATCH /v1/messages/{message_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchMessageRequest {
+    /// New message text. Must be non-empty after trim. Max 100,000 characters.
+    pub body: String,
+}
+
+impl PatchMessageRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.body.trim().is_empty() {
+            return Err("message body must not be empty");
+        }
+        if self.body.chars().count() > MAX_BODY_CHARS {
+            return Err("message body must be 100,000 characters or fewer");
+        }
+        Ok(())
+    }
+}
+
+/// Response body for `PATCH /v1/messages/{message_id}` (200 OK).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EditedMessageResponse {
+    pub id: Uuid,
+    pub body: String,
+    pub edited_at: DateTime<Utc>,
+    pub group_id: Uuid,
+}
+
+/// `PATCH /v1/messages/{message_id}` — edit the body of a message.
+///
+/// Only the original sender may edit their own message. Editing a deleted
+/// message or a message sent by another user returns 404 (no existence leak).
+///
+/// `body_tsv` is `GENERATED ALWAYS AS … STORED` — Postgres regenerates it
+/// automatically when `body` is updated; it must NOT appear in the UPDATE list.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status | Source         |
+/// |------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                            | 401    | Principal ext. |
+/// | Non-member of group                            | 403    | Principal ext. |
+/// | `X-Group-Id` header missing                   | 400    | this handler   |
+/// | Body empty or > 100,000 chars                  | 400    | validate()     |
+/// | Message not found / deleted / wrong sender     | 404    | this handler   |
+/// | Happy path                                     | 200    |                |
+#[utoipa::path(
+    patch,
+    path = "/v1/messages/{message_id}",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+    ),
+    request_body = PatchMessageRequest,
+    responses(
+        (status = 200, description = "Message edited.", body = EditedMessageResponse),
+        (status = 400, description = "Validation error or header mismatch.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found, already deleted, or sent by a different user.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_message(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Json(body): Json<PatchMessageRequest>,
+) -> Result<Json<EditedMessageResponse>, RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural validation.
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let new_body = body.body.trim().to_string();
+
+    // 4. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Tenant context.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. UPDATE — sender-only, non-deleted.
+    //    body_tsv is GENERATED ALWAYS AS — must NOT appear in the column list.
+    let row: Option<(DateTime<Utc>,)> = sqlx::query_as(
+        "UPDATE messages \
+         SET body = $1, edited_at = now() \
+         WHERE id = $2 \
+           AND group_id = $3 \
+           AND sender_user_id = $4 \
+           AND deleted_at IS NULL \
+         RETURNING edited_at",
+    )
+    .bind(&new_body)
+    .bind(message_id)
+    .bind(group_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (edited_at,) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 7. Audit — structural metadata only; body content is PII.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MessageEdited,
+        principal.user_id,
+        group_id,
+        "messages",
+        message_id.to_string(),
+        json!({ "body_len": new_body.chars().count() }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(EditedMessageResponse {
+        id: message_id,
+        body: new_body,
+        edited_at,
+        group_id,
+    }))
+}
+
+/// `DELETE /v1/messages/{message_id}` — soft-delete a message.
+///
+/// Sets `deleted_at = now()`. Deleted messages are excluded from list
+/// endpoints and full-text search. The original sender may always delete
+/// their own message. Group Owners and Admins (role tier ≥ 80) may delete
+/// any message in their group.
+///
+/// Returns 404 if the message is not found, already deleted, or the caller
+/// lacks permission to delete it.
+///
+/// ## Error matrix
+///
+/// | Condition                                        | Status | Source         |
+/// |--------------------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                              | 401    | Principal ext. |
+/// | Non-member of group                              | 403    | Principal ext. |
+/// | `X-Group-Id` header missing                     | 400    | this handler   |
+/// | Message not found / already deleted / no perms  | 404    | this handler   |
+/// | Happy path                                       | 204    |                |
+#[utoipa::path(
+    delete,
+    path = "/v1/messages/{message_id}",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+    ),
+    responses(
+        (status = 204, description = "Message deleted."),
+        (status = 400, description = "Header mismatch.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found, already deleted, or insufficient permission.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_message(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Tenant context.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Determine if caller has admin-override permission (Owner/Admin).
+    let is_admin = principal.role.map(|r| r.tier() >= 80).unwrap_or(false);
+
+    // 6. Soft-delete. Admin/Owner may delete any message; others only their own.
+    let row: Option<(Uuid,)> = if is_admin {
+        sqlx::query_as(
+            "UPDATE messages \
+             SET deleted_at = now() \
+             WHERE id = $1 \
+               AND group_id = $2 \
+               AND deleted_at IS NULL \
+             RETURNING id",
+        )
+        .bind(message_id)
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "UPDATE messages \
+             SET deleted_at = now() \
+             WHERE id = $1 \
+               AND group_id = $2 \
+               AND sender_user_id = $3 \
+               AND deleted_at IS NULL \
+             RETURNING id",
+        )
+        .bind(message_id)
+        .bind(group_id)
+        .bind(principal.user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
+
+    if row.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // 7. Audit.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MessageDeleted,
+        principal.user_id,
+        group_id,
+        "messages",
+        message_id.to_string(),
+        json!({ "admin_override": is_admin }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

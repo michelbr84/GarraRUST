@@ -89,8 +89,12 @@ wasmtime = "44"
 wasmtime-wasi = { version = "44", features = ["p1"] }
 
 # Discord
-serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "rustls_backend"] }
-poise = "0.6"
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }
+# poise 0.6.x: default feature includes `serenity/rustls_backend` which would re-union the rustls
+# chain into serenity's feature set even though we use `native_tls_backend` above. Disable defaults
+# and keep only what we actually need (no poise:: code is referenced in garraia-channels today,
+# but keep `cache`/`chrono` so the dep stays drop-in if/when Discord slash framework is wired).
+poise = { version = "0.6", default-features = false, features = ["cache", "chrono", "handle_panics"] }
 # Telegram
 teloxide = { version = "0.17", default-features = false, features = ["rustls", "macros"] }
 # Slack (Socket Mode)

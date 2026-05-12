@@ -88,33 +88,21 @@ ignore = [
     # (CRITICAL CVSS 9.0), -0096 (CRITICAL CVSS 9.0).
 
     # =========================================================================
-    # GAR-455 — rustls-webpki residuals (serenity 0.12.5 + aws-smithy 1.1.12)
+    # GAR-455 (CLOSED 2026-05-12) — rustls-webpki legacy chains fully removed
     # =========================================================================
-    # Plan 0053 PR-1 (GAR-447, 2026-04-25) applied the lockfile-only patch
-    # `cargo update -p rustls-webpki@0.103.9 --precise 0.103.13`, closing
-    # the 4 IDs below on the **production hot path** (rustls 0.23 chain:
-    # reqwest, hyper-rustls, tokio-rustls 0.26).
+    # Two-phase cleanup:
+    #   1. plan 0087 (GAR-553, 2026-05-09, PR health/202605090047): swapped
+    #      `aws-sdk-s3` feature `"rustls"` → `"default-https-client"`, removing
+    #      `rustls-webpki 0.101.7` (3 of 4 IDs) from Cargo.lock.
+    #   2. PR #293 (GAR-591, 2026-05-12): flipped serenity from `rustls_backend`
+    #      to `native_tls_backend` (+ poise default-features=false), removing
+    #      `rustls-webpki 0.102.8` / `rustls 0.22.4` / `tokio-rustls 0.25.0`
+    #      entirely from Cargo.lock.
     #
-    # The 4 IDs REMAIN ignored here because two legacy chains in
-    # `Cargo.lock` still trigger them with no upstream fix:
-    #
-    #   * `rustls-webpki 0.102.8` (all 4 IDs) — via serenity 0.12.5 →
-    #     tokio-tungstenite 0.21 → rustls 0.22. serenity 0.12.5 is the
-    #     latest stable; line 0.102.x is EOL (no 0.102.10+).
-    #   * `rustls-webpki 0.101.7` (3 of 4 IDs: 0098, 0099, 0104) — via
-    #     aws-smithy-http-client 1.1.12 → rustls 0.21. Latest stable;
-    #     feature-gated behind `storage-s3`.
-    #
-    # `cargo-audit` 0.22.x does NOT support per-(advisory, version)
-    # ignore. If a future advisory affects ONLY the 0.103.x line, this
-    # block MUST be revisited — the ignore would silence a real prod
-    # regression.
-    #
-    # Tracked by: GAR-455. Expires: 2026-07-31.
-    "RUSTSEC-2026-0049",  # CRL matching — patched in 0.103.10
-    "RUSTSEC-2026-0098",  # URI name constraints — patched in 0.103.12
-    "RUSTSEC-2026-0099",  # wildcard in name-constrained — patched in 0.103.12
-    "RUSTSEC-2026-0104",  # reachable panic in CRL parsing — patched in 0.103.13
+    # Cargo.lock now carries ONLY `rustls-webpki 0.103.13` (the safe chain).
+    # All 4 RUSTSEC IDs dropped atomically from BOTH audit.toml and deny.toml
+    # per the SYNC NOTE invariant above.
+    # Removed: RUSTSEC-2026-0049, RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104.
 
     # =========================================================================
     # GAR-513 carve-out — unsound warnings (glib + lru + rand)
