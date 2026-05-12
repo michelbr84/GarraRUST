@@ -114,6 +114,7 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0105 | [GAR-580 — REST /v1 groups slice 3: GET /v1/groups (list user's groups)](0105-gar-580-groups-list-api.md) | [GAR-580](https://linear.app/chatgpt25/issue/GAR-580) | ✅ Merged 2026-05-12 via PR #273 (`84115c2`) |
 | 0106 | [GAR-589 — FORCE RLS on groups + group\_members tables](0106-gar-589-rls-groups-and-members.md) | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) | ✅ Merged 2026-05-12 via PR #294 (`36b2b72`) |
 | 0107 | [GAR-592 — messages slice 5: PATCH + DELETE /v1/messages/{id}](0107-gar-592-messages-edit-delete.md) | [GAR-592](https://linear.app/chatgpt25/issue/GAR-592) | ✅ Merged 2026-05-12 via PR #300 (`3c843e4`) |
+| 0108 | [GAR-593 — drop stale RUSTSEC-2026-0002 (lru) after lru 0.16.4](0108-gar-593-lru-advisory-cleanup.md) | [GAR-593](https://linear.app/chatgpt25/issue/GAR-593) | 🔄 In Progress |
 
 ## Arquivos não-versionados
 
