@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-12** (health routine — PR #293 / GAR-591 merged; 4 rustls-webpki alerts pending auto-close via Dependabot rescan within 24-48h).
+> Last updated: **2026-05-12** (health routine run 2 — PR #299 / GAR-593: stale RUSTSEC-2026-0002 (lru) ignore removed after lru 0.16.4 landed via PR #297).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -38,6 +38,27 @@ Health routine ran on 2026-05-12. **PR #293 (GAR-591)** merged at commit `69c357
 
 Alert count: **8 open** (pre-rescan) → **4 expected** (post-rescan, within 24-48h).
 Remaining 4 alerts: rsa/RUSTSEC-2023-0071 (GAR-456), glib/RUSTSEC-2024-0429, lru/RUSTSEC-2026-0002, rand/RUSTSEC-2026-0097 (all GAR-513).
+
+## Confirmed 2026-05-12 run 2 (health routine — GAR-593: lru RUSTSEC-2026-0002 stale ignore removed)
+
+Health routine ran on 2026-05-12 (run 2, after PR #295 merged). **PR #297** (`8f73144`, `fix(security): bump aws-sdk-s3 1.119->1.132 to pull lru 0.16.4`) had already landed the fix; this run removes the stale audit config entries.
+
+| Change | Result |
+|---|---|
+| `lru` in `Cargo.lock` | ✅ **0.16.4** (patched; RUSTSEC-2026-0002 requires < 0.16.3) |
+| `RUSTSEC-2026-0002` in `audit.toml` | ✅ **REMOVED** — lru 0.16.4 patches advisory (PR #299, GAR-593) |
+| `RUSTSEC-2026-0002` in `deny.toml` | ✅ **REMOVED** atomically with audit.toml |
+| SYNC NOTE in both files | ✅ updated: mandatory-sync set now rsa + glib + rand only |
+| GAR-513 carve-out header | ✅ updated: `glib + lru + rand` → `glib + rand` |
+| PR #299 CI | ⏳ IN PROGRESS (queued 2026-05-12 ~12:56 UTC) |
+
+Residuals (3 remaining, all expires 2026-07-31):
+
+| Advisory | Crate | Owner | Status |
+|---|---|---|---|
+| RUSTSEC-2023-0071 | rsa 0.9.10 | GAR-456 | Active — no upstream fix |
+| RUSTSEC-2024-0429 | glib 0.18.5 | GAR-513 | Active — Tauri gtk-rs blocker |
+| RUSTSEC-2026-0097 | rand 0.7.3 | GAR-513 | Active — build-time dep only |
 
 ## Confirmed 2026-05-11 (health routine — all surfaces green)
 
@@ -242,9 +263,9 @@ No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matc
 
 Dependabot rescan expected within 24-48h. Until rescan completes, GH UI still shows 8 open.
 
-## Residuals (4 open post-rescan, updated 2026-05-12)
+## Residuals (3 open post-rescan, updated 2026-05-12 run 2)
 
-All 4 remaining alerts have:
+All 3 remaining alerts have:
 - A specific RUSTSEC ID matching `Cargo.lock`.
 - A documented rationale block in `.cargo/audit.toml` and/or `deny.toml`.
 - A concrete Linear owner.
@@ -258,12 +279,17 @@ is intentionally allowlisted, not silenced.
 | — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via two paths: (1) `sqlx-mysql` lockfile residual even with `default-features = false` on all sqlx deps; (2) `jsonwebtoken 10 rust_crypto` backend (added 2026-04-30). GarraRUST emits/verifies HS256 only (`Algorithm::HS256` in `garraia-auth/src/jwt.rs`) — no RSA code path is reachable. Fix paths: (a) `jsonwebtoken` upstream isolates `rsa` behind `asymmetric` feature; (b) migrate to `sqlx-postgres` direct or sqlx 0.9. |
 | #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 (`VariantStrIter` Iterator unsoundness) | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. Low runtime risk in deployments. Fix path: bump glib OR gate ignore behind `desktop` feature. |
 | #25 | GHSA-cq8v-f236-94qc | LOW | `rand` | RUSTSEC-2026-0097 (custom logger unsoundness in `rand::rng()`) | GAR-513 | Build-time dep only: `phf_codegen → phf_generator → selectors → tauri-utils → garraia-desktop`. Zero server runtime risk. No 0.7.x patch; fix requires phf_codegen to bump rand. |
-| #5  | GHSA-rhfx-m35p-ff5j | LOW | `lru` | RUSTSEC-2026-0002 (`IterMut` Stacked Borrows violation) | GAR-513 | Transitive via `aws-sdk-s3 1.119.0` (feature `storage-s3` of `garraia-storage`). `Cargo.lock` resolution is feature-agnostic — alert appears even when feature off. Closes when aws-sdk-s3 bumps lru, OR when `storage-s3` is excluded from cargo audit surface. |
+
+## Closed 2026-05-12 run 2 (PR #297 + PR #299 / GAR-593)
+
+| GH # | RUSTSEC | Crate | Closure mechanism |
+|---|---|---|---|
+| #5 | RUSTSEC-2026-0002 | `lru` | PR #297 (`8f73144`) bumped aws-sdk-s3 1.119→1.132, pulling lru 0.16.4 (patched ≥ 0.16.3). Audit config cleanup via PR #299 (GAR-593). |
 
 ## Linear ownership map
 
 - **GAR-455** — ✅ CLOSED 2026-05-12. `rustls-webpki` legacy chains fully removed. Both chains eliminated: aws-smithy (plan 0087, 2026-05-09) + serenity (PR #293, 2026-05-12). 4 of 8 former alerts (#37, #11, #23, #22) closing pending Dependabot rescan.
-- **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 3 of 4 remaining alerts (#2 glib, #25 rand, #5 lru). Each tracked individually as upstream fixes ship.
+- **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 2 of 3 remaining alerts (#2 glib, #25 rand). lru (#5 / RUSTSEC-2026-0002) closed 2026-05-12 by GAR-593 / PR #299. Each remaining entry tracked individually as upstream fixes ship.
 - **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). 1 of 4 remaining alerts (RUSTSEC-2023-0071; GH alert number unknown — cargo audit detects it as workspace advisory). GarraRUST emits and verifies HS256 only; no RSA call site is reachable. Same `2026-07-31` expiration.
 
 ## Re-triage cadence
@@ -288,8 +314,8 @@ gh api repos/michelbr84/GarraRUST/dependabot/alerts --paginate \
 # Audit allowlist consistency check
 grep -E "^\s*\"RUSTSEC-" .cargo/audit.toml | sort
 grep -E "^\s*\"RUSTSEC-" deny.toml | sort
-# (the two MUST share the wasmtime IDs (15) AND rustls-webpki residuals (4)
-#  per .cargo/audit.toml SYNC NOTE.)
+# (the two MUST share the mandatory-sync IDs: rsa, glib, rand
+#  per .cargo/audit.toml SYNC NOTE — refreshed 2026-05-12 by GAR-593)
 
 # Verify cargo audit / cargo deny stay green with the allowlist active
 cargo audit
