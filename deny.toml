@@ -35,27 +35,14 @@ ignore = [
     # RUSTSEC-2026-0020, -0021, -0085, -0086, -0087, -0088, -0089, -0091,
     # -0092, -0093, -0094, -0095 (CRITICAL CVSS 9.0), -0096 (CRITICAL CVSS 9.0).
 
-    # --- rustls-webpki residual — 4 IDs (GAR-455, expires 2026-07-31) ---
-    # MIRROR of the same 4 IDs in `.cargo/audit.toml`. Plan 0053 PR-1
-    # (GAR-447) closed the production hot path (rustls 0.23 chain) via
-    # lockfile-only `cargo update`, but `cargo deny` walks the full
-    # lockfile and still sees the legacy chains:
-    #   * `rustls-webpki 0.102.8` via serenity 0.12.5 → tokio-tungstenite
-    #     0.21 → rustls 0.22 (latest stable; 0.102.x line is EOL).
-    #   * `rustls-webpki 0.101.7` via aws-smithy-http-client 1.1.12 →
-    #     rustls 0.21 (feature `storage-s3`; latest stable).
-    # Neither has an upstream fix today. cargo-deny 0.16.x does not
-    # support per-(advisory, version) ignore.
-    #
-    # OPERATIONAL WARNING: enabling the `storage-s3` feature in production
-    # requires manual re-triage of GAR-455 BEFORE deploy. The expiration
-    # date below does not substitute that check — it only forces a
-    # scheduled re-audit. (Security review of PR #75 / GAR-458 flagged
-    # this LOW residual risk explicitly.)
-    "RUSTSEC-2026-0049", # CRL matching — patched in 0.103.10
-    "RUSTSEC-2026-0098", # URI name constraints — patched in 0.103.12
-    "RUSTSEC-2026-0099", # wildcard in name-constrained — patched in 0.103.12
-    "RUSTSEC-2026-0104", # reachable panic in CRL parsing — patched in 0.103.13
+    # --- rustls-webpki residual (GAR-455 CLOSED 2026-05-12) ---
+    # Both legacy chains removed from Cargo.lock as of 2026-05-12:
+    #   * 0.101.7 chain (aws-smithy): removed 2026-05-09 by plan 0087 / GAR-553.
+    #   * 0.102.8 chain (serenity): removed 2026-05-12 by PR #293 / GAR-591
+    #     (serenity feature flip rustls_backend → native_tls_backend).
+    # Cargo.lock now contains only rustls-webpki 0.103.13. All 4 IDs dropped
+    # atomically from deny.toml + audit.toml per SYNC NOTE invariant.
+    # Removed: RUSTSEC-2026-0049, RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104.
 
     # --- Unmaintained-only — deny.toml-exclusive (no audit.toml mirror) ---
     # These crates have RUSTSEC `unmaintained` advisories but no fixed
