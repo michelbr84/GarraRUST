@@ -384,6 +384,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Grupos**
 
+- [x] `GET /v1/groups` — plan 0105 / [GAR-580](https://linear.app/chatgpt25/issue/GAR-580), implementado 2026-05-12 (Florida)
 - [x] `POST /v1/groups` — plan 0016 M4, entregue 2026-04-14
 - [x] `GET /v1/groups/{group_id}` — plan 0016 M4, entregue 2026-04-14
 - [x] `PATCH /v1/groups/{group_id}` — plan 0017, entregue 2026-04-16

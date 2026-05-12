@@ -1713,6 +1713,203 @@ pub async fn list_invites(
     Ok(Json(ListInvitesResponse { items, next_cursor }))
 }
 
+// ─── DTOs: list_groups ────────────────────────────────────────────────────────
+
+/// Query parameters for `GET /v1/groups`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListGroupsQuery {
+    /// Keyset cursor — `group_id` UUID of the last group received. Omit on first page.
+    pub cursor: Option<Uuid>,
+    /// Page size. Default 50, max 100.
+    pub limit: Option<u32>,
+    /// Filter by the caller's role in the group (`owner`, `admin`, `member`, `guest`, `child`).
+    pub role: Option<String>,
+}
+
+/// One group entry in the list response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GroupListItem {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Uuid,
+    /// The caller's role in this group.
+    pub role: String,
+    /// When the caller joined this group.
+    pub joined_at: DateTime<Utc>,
+}
+
+/// Response body for `GET /v1/groups`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListGroupsResponse {
+    pub items: Vec<GroupListItem>,
+    pub next_cursor: Option<Uuid>,
+}
+
+// ─── Handler: list_groups ─────────────────────────────────────────────────────
+
+/// `GET /v1/groups` — cursor-paginated list of groups the caller belongs to (plan 0105, GAR-580).
+///
+/// Returns every group where the authenticated user has an **active** membership,
+/// ordered by `group_id ASC` (stable keyset). No `X-Group-Id` header is required or
+/// expected — this endpoint is inherently cross-group.
+///
+/// ## Cursor scheme
+///
+/// Ordered by `group_id ASC`. Cursor = `group_id` UUID of the last item received.
+/// Pass `?cursor=<uuid>` for subsequent pages.
+///
+/// ## Authz
+///
+/// Bearer JWT only. The handler sets `app.current_user_id` in a transaction for
+/// defensive forward-compat (neither `groups` nor `group_members` has FORCE RLS today,
+/// but they may in future migrations).
+#[utoipa::path(
+    get,
+    path = "/v1/groups",
+    params(ListGroupsQuery),
+    responses(
+        (status = 200, description = "Paginated list of the caller's groups.", body = ListGroupsResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_groups(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Query(params): Query<ListGroupsQuery>,
+) -> Result<Json<ListGroupsResponse>, RestError> {
+    // 1. Clamp limit.
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .min(MAX_LIST_LIMIT) as i64;
+
+    // 2. Open tx + SET LOCAL (defensive; group_members has no FORCE RLS).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 3. Build query. Only active memberships.
+    //    Cursor: WHERE gm.group_id > $cursor (keyset on group_id ASC).
+    //    Role filter is optional.
+    //    Fetch limit+1 to detect whether a next page exists.
+
+    #[derive(sqlx::FromRow)]
+    struct GroupRow {
+        group_id: Uuid,
+        name: String,
+        group_type: String,
+        created_at: DateTime<Utc>,
+        created_by: Uuid,
+        role: String,
+        joined_at: DateTime<Utc>,
+    }
+
+    let rows: Vec<GroupRow> = match (&params.cursor, &params.role) {
+        (Some(cursor_id), Some(role)) => sqlx::query_as(
+            "SELECT gm.group_id, g.name, g.type AS group_type, g.created_at, \
+                        g.created_by, gm.role, gm.joined_at \
+                 FROM group_members gm \
+                 JOIN groups g ON g.id = gm.group_id \
+                 WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND gm.group_id > $2 AND gm.role = $3 \
+                 ORDER BY gm.group_id ASC LIMIT $4",
+        )
+        .bind(principal.user_id)
+        .bind(cursor_id)
+        .bind(role)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (Some(cursor_id), None) => sqlx::query_as(
+            "SELECT gm.group_id, g.name, g.type AS group_type, g.created_at, \
+                        g.created_by, gm.role, gm.joined_at \
+                 FROM group_members gm \
+                 JOIN groups g ON g.id = gm.group_id \
+                 WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND gm.group_id > $2 \
+                 ORDER BY gm.group_id ASC LIMIT $3",
+        )
+        .bind(principal.user_id)
+        .bind(cursor_id)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (None, Some(role)) => sqlx::query_as(
+            "SELECT gm.group_id, g.name, g.type AS group_type, g.created_at, \
+                        g.created_by, gm.role, gm.joined_at \
+                 FROM group_members gm \
+                 JOIN groups g ON g.id = gm.group_id \
+                 WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND gm.role = $2 \
+                 ORDER BY gm.group_id ASC LIMIT $3",
+        )
+        .bind(principal.user_id)
+        .bind(role)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (None, None) => sqlx::query_as(
+            "SELECT gm.group_id, g.name, g.type AS group_type, g.created_at, \
+                        g.created_by, gm.role, gm.joined_at \
+                 FROM group_members gm \
+                 JOIN groups g ON g.id = gm.group_id \
+                 WHERE gm.user_id = $1 AND gm.status = 'active' \
+                 ORDER BY gm.group_id ASC LIMIT $2",
+        )
+        .bind(principal.user_id)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Cursor-next trick: pop last if we fetched limit+1.
+    let has_more = rows.len() > limit as usize;
+    let mut rows = rows;
+    if has_more {
+        rows.pop();
+    }
+    let next_cursor = if has_more {
+        rows.last().map(|r| r.group_id)
+    } else {
+        None
+    };
+
+    let items = rows
+        .into_iter()
+        .map(|r| GroupListItem {
+            id: r.group_id,
+            name: r.name,
+            group_type: r.group_type,
+            created_at: r.created_at,
+            created_by: r.created_by,
+            role: r.role,
+            joined_at: r.joined_at,
+        })
+        .collect();
+
+    Ok(Json(ListGroupsResponse { items, next_cursor }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
