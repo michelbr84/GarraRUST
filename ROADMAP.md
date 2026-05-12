@@ -403,6 +403,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `POST /v1/chats/{chat_id}/messages` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
 - [x] `GET /v1/chats/{chat_id}/messages?cursor=...` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
 - [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / [GAR-509](https://linear.app/chatgpt25/issue/GAR-509), implementado 2026-05-05 (Florida)
+- [x] `GET /v1/messages/{message_id}` (fetch single message) — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), implementado 2026-05-12 (Florida)
+- [x] `GET /v1/messages/{message_id}/threads` (list thread replies, cursor-paginated ASC) — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), implementado 2026-05-12 (Florida)
 - [x] `PATCH /v1/messages/{message_id}` (edit body, sender-only) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
 - [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
 - [ ] WebSocket `/v1/chats/{chat_id}/stream` com backpressure
