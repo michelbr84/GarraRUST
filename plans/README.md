@@ -112,6 +112,7 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0103 | [GAR-585 — advertise `tools` capability in garra mcp-server](0103-gar-585-mcp-tools-capability.md) | [GAR-585](https://linear.app/chatgpt25/issue/GAR-585) | ✅ Merged 2026-05-11 via PR #271 (`97403c7`) |
 | 0104 | [GAR-587 — apply `garra_ask` schema defaults before calling `ask_oneshot`](0104-gar-587-mcp-garra-ask-defaults.md) | [GAR-587](https://linear.app/chatgpt25/issue/GAR-587) | ✅ Merged 2026-05-12 via PR #272 (`3dc1932`) |
 | 0105 | [GAR-580 — REST /v1 groups slice 3: GET /v1/groups (list user's groups)](0105-gar-580-groups-list-api.md) | [GAR-580](https://linear.app/chatgpt25/issue/GAR-580) | ✅ Merged 2026-05-12 via PR #273 (`84115c2`) |
+| 0106 | [GAR-589 — FORCE RLS on groups + group_members tables](0106-gar-589-rls-groups-and-members.md) | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) | 🔄 In Progress |
 
 ## Arquivos não-versionados
 
