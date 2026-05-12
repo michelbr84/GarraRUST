@@ -249,7 +249,7 @@ name = "rest_v1_tasks"
 path = "tests/rest_v1_tasks.rs"
 required-features = ["test-helpers"]
 
-# Plan 0070 (GAR-522) — audit API slice 1: GET /v1/groups/{group_id}/audit.
+# Plan 0070 (GAR-572) — audit API slice 1: GET /v1/groups/{group_id}/audit.
 # Feature-gated so plain `cargo test -p garraia-gateway` (without
 # --features test-helpers) skips compilation cleanly.
 [[test]]
@@ -351,6 +351,13 @@ required-features = ["test-helpers"]
 [[test]]
 name = "rest_v1_groups_members_invites"
 path = "tests/rest_v1_groups_members_invites.rs"
+required-features = ["test-helpers"]
+
+# Plan 0105 (GAR-580) — GET /v1/groups list scenarios (GL1-GL6).
+# Requires test-helpers so `--all-targets` without the feature skips it.
+[[test]]
+name = "rest_v1_groups_list"
+path = "tests/rest_v1_groups_list.rs"
 required-features = ["test-helpers"]
 
 [dev-dependencies]
