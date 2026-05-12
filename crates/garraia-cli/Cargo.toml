@@ -36,7 +36,7 @@ dirs = "6"
 uuid = { workspace = true }
 regex = { workspace = true }
 ring = { workspace = true }
-tracing-appender = "0.2.4"
+tracing-appender = "0.2.5"
 dotenvy.workspace = true
 
 # GAR-583: MCP server (`garra mcp-server`) exposing `garra_ask` as a stdio
