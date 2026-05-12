@@ -125,6 +125,20 @@ pub enum WorkspaceAuditAction {
     /// via `GET /v1/chats/{id}/messages`.
     MessageSent,
 
+    /// A message body was edited via `PATCH /v1/messages/{message_id}`
+    /// (plan 0107 / GAR-592, epic GAR-WS-CHAT slice 5).
+    ///
+    /// `resource_type = "messages"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ body_len }`. Body content is PII — never logged.
+    MessageEdited,
+
+    /// A message was soft-deleted via `DELETE /v1/messages/{message_id}`
+    /// (plan 0107 / GAR-592, epic GAR-WS-CHAT slice 5).
+    ///
+    /// `resource_type = "messages"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ admin_override: bool }`.
+    MessageDeleted,
+
     /// A thread was created from a message via
     /// `POST /v1/messages/{message_id}/threads` (plan 0058 / GAR-509,
     /// epic GAR-WS-CHAT slice 3).
@@ -482,6 +496,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::UploadExpired => "upload.expired",
             WorkspaceAuditAction::ChatCreated => "chat.created",
             WorkspaceAuditAction::MessageSent => "message.sent",
+            WorkspaceAuditAction::MessageEdited => "message.edited",
+            WorkspaceAuditAction::MessageDeleted => "message.deleted",
             WorkspaceAuditAction::ThreadCreated => "thread.created",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
@@ -612,6 +628,14 @@ mod tests {
         assert_eq!(WorkspaceAuditAction::ChatCreated.as_str(), "chat.created");
         assert_eq!(WorkspaceAuditAction::MessageSent.as_str(), "message.sent");
         assert_eq!(
+            WorkspaceAuditAction::MessageEdited.as_str(),
+            "message.edited"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::MessageDeleted.as_str(),
+            "message.deleted"
+        );
+        assert_eq!(
             WorkspaceAuditAction::ThreadCreated.as_str(),
             "thread.created"
         );
@@ -738,6 +762,8 @@ mod tests {
             WorkspaceAuditAction::UploadExpired.as_str(),
             WorkspaceAuditAction::ChatCreated.as_str(),
             WorkspaceAuditAction::MessageSent.as_str(),
+            WorkspaceAuditAction::MessageEdited.as_str(),
+            WorkspaceAuditAction::MessageDeleted.as_str(),
             WorkspaceAuditAction::ThreadCreated.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
