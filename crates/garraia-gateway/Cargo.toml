@@ -82,7 +82,7 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 # Plan 0044: SHA-256 for audit `object_key_hash` (not for storage — the
 # `garraia-storage` crate computes object checksums internally).
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 bytes = { workspace = true }
 # Plan 0044: required only when compiling with the `storage-s3`
