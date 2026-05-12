@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-12** (health routine run 2 — PR #299 / GAR-593: stale RUSTSEC-2026-0002 (lru) ignore removed after lru 0.16.4 landed via PR #297).
+> Last updated: **2026-05-12** (health routine run 3 — bookkeeping: plan 0108 marked Merged; all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -50,7 +50,7 @@ Health routine ran on 2026-05-12 (run 2, after PR #295 merged). **PR #297** (`8f
 | `RUSTSEC-2026-0002` in `deny.toml` | ✅ **REMOVED** atomically with audit.toml |
 | SYNC NOTE in both files | ✅ updated: mandatory-sync set now rsa + glib + rand only |
 | GAR-513 carve-out header | ✅ updated: `glib + lru + rand` → `glib + rand` |
-| PR #299 CI | ⏳ IN PROGRESS (queued 2026-05-12 ~12:56 UTC) |
+| PR #299 CI | ✅ green — all 18 checks passed; merged as `7996dc4` |
 
 Residuals (3 remaining, all expires 2026-07-31):
 
@@ -59,6 +59,24 @@ Residuals (3 remaining, all expires 2026-07-31):
 | RUSTSEC-2023-0071 | rsa 0.9.10 | GAR-456 | Active — no upstream fix |
 | RUSTSEC-2024-0429 | glib 0.18.5 | GAR-513 | Active — Tauri gtk-rs blocker |
 | RUSTSEC-2026-0097 | rand 0.7.3 | GAR-513 | Active — build-time dep only |
+
+## Confirmed 2026-05-12 run 3 (health routine — bookkeeping only; all surfaces green)
+
+Health routine ran on 2026-05-12 (run 3). Full security scan completed; priority ladder exhausted at (i) — no new actionable fix.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on main (`77c8947`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
+| cargo-deny | ✅ pass | No `advisory-not-detected` warnings; SYNC NOTE audit.toml ↔ deny.toml intact |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | 22 alerts all dismissed; no new open findings |
+| CI on main (latest: `77c8947`) | ✅ green | Format + cargo-deny completed success; others in-flight on active PRs |
+
+**Bookkeeping completed this run:** `plans/README.md` row 0108 updated from `🔄 In Progress` to `✅ Merged 2026-05-12 via PR #299 (7996dc4)`. GAR-593 was already `Done` in Linear.
+
+Alert count: **3 open** (unchanged since PR #299 merged). All 3 are upstream-blocked with 2026-07-31 expiry. Patch-and-minor Dependabot PR #296 (17 non-security bumps) and major-version PRs #284-292 are open but no CVEs are involved — outside health routine scope.
 
 ## Confirmed 2026-05-11 (health routine — all surfaces green)
 
