@@ -360,6 +360,14 @@ name = "rest_v1_groups_list"
 path = "tests/rest_v1_groups_list.rs"
 required-features = ["test-helpers"]
 
+# Plan 0107 (GAR-592) — PATCH + DELETE /v1/messages/{id}: edit + soft-delete
+# (ME1-ME5, MD1-MD5 including cross-group isolation). Requires test-helpers so
+# `cargo clippy --all-targets` without `--features test-helpers` skips it.
+[[test]]
+name = "rest_v1_messages_edit_delete"
+path = "tests/rest_v1_messages_edit_delete.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

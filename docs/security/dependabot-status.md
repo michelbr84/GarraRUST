@@ -1,19 +1,43 @@
 # Dependabot Status
 
-> Last updated: **2026-05-11** (health routine — all surfaces green, no new alerts).
+> Last updated: **2026-05-12** (health routine — PR #293 / GAR-591 merged; 4 rustls-webpki alerts pending auto-close via Dependabot rescan within 24-48h).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
 ## Snapshot
 
-| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 | 2026-05-09 | 2026-05-11 (today) |
-|---|---|---|---|---|---|---|
-| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) | **8** (unchanged — serenity chain still carries all 4 RUSTSEC IDs) | **8** (unchanged) |
-| High severity | 1 | 1 | **2** | **2** | **2** | **2** |
-| Medium severity | 4 | 2 | **2** | **2** | **2** | **2** |
-| Low severity | 4 | 4 | **4** | **4** | **4** | **4** |
-| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** |
-| `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent |
+| Metric | 2026-04-22 | 2026-04-30 (last sprint) | 2026-05-07 | 2026-05-08 | 2026-05-09 | 2026-05-11 | 2026-05-12 (today) |
+|---|---|---|---|---|---|---|---|
+| Total Dependabot alerts open | 20 | **7** | **8** (confirmed) | **8** (confirmed — no new alerts) | **8** (unchanged — serenity chain still carries all 4 RUSTSEC IDs) | **8** (unchanged) | **8** → **4** pending (PR #293 merged, Dependabot rescan in progress) |
+| High severity | 1 | 1 | **2** | **2** | **2** | **2** | **2** → **1** (alert #37 closing) |
+| Medium severity | 4 | 2 | **2** | **2** | **2** | **2** | **2** → **1** (alert #11 closing) |
+| Low severity | 4 | 4 | **4** | **4** | **4** | **4** | **4** → **2** (alerts #23, #22 closing) |
+| With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
+| `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
+| `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-12 (health routine — GAR-591 merged, rustls-webpki 0.102.8 chain removed)
+
+Health routine ran on 2026-05-12. **PR #293 (GAR-591)** merged at commit `69c357a7ff2c6d8e27a3283d7b2d4bdc235b8e9f`.
+
+| Change | Result |
+|---|---|
+| serenity feature: `rustls_backend` → `native_tls_backend` | ✅ applied (PR #293, GAR-591) |
+| poise `default-features = false` | ✅ applied — prevents feature-unification re-enabling rustls_backend |
+| `rustls-webpki 0.102.8` in `Cargo.lock` | ✅ **REMOVED** — only `0.103.13` remains |
+| `rustls 0.22.4` in `Cargo.lock` | ✅ **REMOVED** |
+| `tokio-rustls 0.25.0` in `Cargo.lock` | ✅ **REMOVED** |
+| Dependabot alerts closed | ⏳ PENDING — rescan expected within 24-48h for alerts #37, #11, #23, #22 |
+| `audit.toml` + `deny.toml` cleanup | ✅ 4 RUSTSEC IDs removed atomically (this PR, GAR-455 CLOSED) |
+| Secret scanning (gitleaks) | ✅ clean — CI pass on PR #293 head |
+| Malware (cargo/npm) | ✅ none |
+| Security Audit (`cargo audit`) | ✅ pass — CI green on PR #293 |
+| cargo-deny | ✅ pass — CI green on PR #293 |
+| CodeQL (Analyze rust + js-ts) | ✅ pass — CI green on PR #293 |
+| CI on main (latest: `69c357a`) | ✅ green — all 18 checks pass |
+
+Alert count: **8 open** (pre-rescan) → **4 expected** (post-rescan, within 24-48h).
+Remaining 4 alerts: rsa/RUSTSEC-2023-0071 (GAR-456), glib/RUSTSEC-2024-0429, lru/RUSTSEC-2026-0002, rand/RUSTSEC-2026-0097 (all GAR-513).
 
 ## Confirmed 2026-05-11 (health routine — all surfaces green)
 
@@ -207,9 +231,20 @@ No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matc
 | 12 lockfile-only Dependabot bumps | PR #97 (`time` + bench refresh) + PR #99 (`openssl` 0.10.75 → 0.10.78) + PR #102 (rand + rustls-webpki bench cleanup) | GAR-484 (closed 2026-04-30) |
 | `jsonwebtoken 9 → 10` migration | PR #105 (this sprint, plan `personal-api-key-revogada-vectorized-matsumoto` §Step 3, replaces broken Dependabot PR #103). Adopts `rust_crypto` backend + decouples `garraia-auth` from `rand` churn via direct `getrandom::fill`. | GAR-XXX umbrella, sub-issue 2 |
 
-## Residuals (8 open, updated 2026-05-09)
+## Closed 2026-05-12 (PR #293 / GAR-591)
 
-All 8 alerts already have:
+| GH # | RUSTSEC | Crate | Closure mechanism |
+|---|---|---|---|
+| #37 | RUSTSEC-2026-0104 | `rustls-webpki` | PR #293 (GAR-591): serenity `rustls_backend` → `native_tls_backend`; 0.102.8 chain removed from Cargo.lock. |
+| #11 | RUSTSEC-2026-0049 | `rustls-webpki` | Same — part of same serenity chain. |
+| #23 | RUSTSEC-2026-0099 | `rustls-webpki` | Same — part of same serenity chain. |
+| #22 | RUSTSEC-2026-0098 | `rustls-webpki` | Same — part of same serenity chain. |
+
+Dependabot rescan expected within 24-48h. Until rescan completes, GH UI still shows 8 open.
+
+## Residuals (4 open post-rescan, updated 2026-05-12)
+
+All 4 remaining alerts have:
 - A specific RUSTSEC ID matching `Cargo.lock`.
 - A documented rationale block in `.cargo/audit.toml` and/or `deny.toml`.
 - A concrete Linear owner.
@@ -220,20 +255,16 @@ is intentionally allowlisted, not silenced.
 
 | GH # | GHSA | Severity | Crate | RUSTSEC | Linear | Mitigation |
 |---|---|---|---|---|---|---|
-| #37 | GHSA-82j2-j2ch-gfr8 | HIGH | `rustls-webpki` | RUSTSEC-2026-0104 (panic in CRL parsing) | GAR-455 | Production hot path patched to `rustls-webpki 0.103.13` in plan 0053 PR-1 (PR #75). Residual: `rustls-webpki 0.102.8` (serenity 0.12.5 EOL chain) — stays until serenity 0.13 ships. **2026-05-09 (plan 0087, GAR-553)**: the `0.101.7` chain (aws-smithy-http-client via `storage-s3`) removed from `Cargo.lock` by swapping `aws-sdk-s3` feature `"rustls"` → `"default-https-client"`. Alert stays open (serenity chain still triggers RUSTSEC-2026-0104). |
 | — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via two paths: (1) `sqlx-mysql` lockfile residual even with `default-features = false` on all sqlx deps; (2) `jsonwebtoken 10 rust_crypto` backend (added 2026-04-30). GarraRUST emits/verifies HS256 only (`Algorithm::HS256` in `garraia-auth/src/jwt.rs`) — no RSA code path is reachable. Fix paths: (a) `jsonwebtoken` upstream isolates `rsa` behind `asymmetric` feature; (b) migrate to `sqlx-postgres` direct or sqlx 0.9. |
-| #11 | GHSA-pwjx-qhcg-rvj4 | MEDIUM | `rustls-webpki` | RUSTSEC-2026-0049 (CRL Distribution Point matching) | GAR-455 | Same legacy chains as #37. Closes with the same upgrade. |
 | #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 (`VariantStrIter` Iterator unsoundness) | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. Low runtime risk in deployments. Fix path: bump glib OR gate ignore behind `desktop` feature. |
 | #25 | GHSA-cq8v-f236-94qc | LOW | `rand` | RUSTSEC-2026-0097 (custom logger unsoundness in `rand::rng()`) | GAR-513 | Build-time dep only: `phf_codegen → phf_generator → selectors → tauri-utils → garraia-desktop`. Zero server runtime risk. No 0.7.x patch; fix requires phf_codegen to bump rand. |
 | #5  | GHSA-rhfx-m35p-ff5j | LOW | `lru` | RUSTSEC-2026-0002 (`IterMut` Stacked Borrows violation) | GAR-513 | Transitive via `aws-sdk-s3 1.119.0` (feature `storage-s3` of `garraia-storage`). `Cargo.lock` resolution is feature-agnostic — alert appears even when feature off. Closes when aws-sdk-s3 bumps lru, OR when `storage-s3` is excluded from cargo audit surface. |
-| #23 | GHSA-xgp8-3hg3-c2mh | LOW | `rustls-webpki` | RUSTSEC-2026-0099 (wildcard in name-constrained) | GAR-455 | Same legacy chains as #37. Closes with the same upgrade. |
-| #22 | GHSA-965h-392x-2mh5 | LOW | `rustls-webpki` | RUSTSEC-2026-0098 (URI name constraints incorrectly accepted) | GAR-455 | Same legacy chains as #37. Closes with the same upgrade. |
 
 ## Linear ownership map
 
-- **GAR-455** — `rustls-webpki` legacy chains. 4 of 8 alerts (#37, #11, #23, #22). Closes when the `serenity 0.12.5 → 0.13` upgrade lands (carries the full set of 4 IDs via `rustls-webpki 0.102.8`). The smaller `0.101.7` chain (carries 3 of the 4 IDs, only with `storage-s3`) is — per the 2026-05-08 deep-dive — feature-flag-fixable today via an `aws-sdk-s3` feature swap; that's a defense-in-depth follow-up that does not close any of the 4 alerts on its own.
-- **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 3 of 8 alerts (#2 glib, #25 rand, #5 lru). Each tracked individually as upstream fixes ship.
-- **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). 1 of 8 alerts (RUSTSEC-2023-0071; GH alert number unknown — cargo audit detects it as workspace advisory). GarraRUST emits and verifies HS256 only; no RSA call site is reachable. Same `2026-07-31` expiration.
+- **GAR-455** — ✅ CLOSED 2026-05-12. `rustls-webpki` legacy chains fully removed. Both chains eliminated: aws-smithy (plan 0087, 2026-05-09) + serenity (PR #293, 2026-05-12). 4 of 8 former alerts (#37, #11, #23, #22) closing pending Dependabot rescan.
+- **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 3 of 4 remaining alerts (#2 glib, #25 rand, #5 lru). Each tracked individually as upstream fixes ship.
+- **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). 1 of 4 remaining alerts (RUSTSEC-2023-0071; GH alert number unknown — cargo audit detects it as workspace advisory). GarraRUST emits and verifies HS256 only; no RSA call site is reachable. Same `2026-07-31` expiration.
 
 ## Re-triage cadence
 
