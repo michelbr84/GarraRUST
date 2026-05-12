@@ -40,7 +40,12 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("response body is not JSON")
 }
 
-fn get_request(method: &str, path: &str, token: Option<&str>, x_group_id: Option<&str>) -> Request<Body> {
+fn get_request(
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    x_group_id: Option<&str>,
+) -> Request<Body> {
     let mut req = Request::builder()
         .method(method)
         .uri(path)
@@ -80,7 +85,9 @@ async fn create_chat(h: &Harness, token: &str, group_id: &str, name: &str) -> St
                 .extension(axum::extract::ConnectInfo::<std::net::SocketAddr>(
                     "127.0.0.1:1".parse().unwrap(),
                 ))
-                .body(Body::from(json!({"name": name, "type": "channel"}).to_string()))
+                .body(Body::from(
+                    json!({"name": name, "type": "channel"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -90,7 +97,13 @@ async fn create_chat(h: &Harness, token: &str, group_id: &str, name: &str) -> St
 }
 
 /// Send a message to a chat, return message_id.
-async fn send_message(h: &Harness, token: &str, chat_id: &str, group_id: &str, text: &str) -> String {
+async fn send_message(
+    h: &Harness,
+    token: &str,
+    chat_id: &str,
+    group_id: &str,
+    text: &str,
+) -> String {
     let resp = h
         .router
         .clone()
@@ -109,7 +122,11 @@ async fn send_message(h: &Harness, token: &str, chat_id: &str, group_id: &str, t
         )
         .await
         .expect("send_message");
-    assert_eq!(resp.status(), StatusCode::CREATED, "seed message should 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "seed message should 201"
+    );
     body_json(resp).await["id"].as_str().unwrap().to_string()
 }
 
@@ -175,7 +192,7 @@ async fn admin_seed_thread_reply(
 async fn rest_v1_messages_get_threads_scenarios() {
     let h = Harness::get().await;
 
-    // ── Setup: two groups ─────────────────────────────────────────────────────
+    // ── Setup: two groups ─────────────────────────────────────────────────────────────────────────────
     let (owner_a_id, group_a_id, token_a) =
         seed_user_with_group(&h, "owner@msg-get-threads-a.test")
             .await
@@ -200,14 +217,19 @@ async fn rest_v1_messages_get_threads_scenarios() {
     // Seed a message in group B (for cross-group tests)
     let msg_b = send_message(&h, &token_b, &chat_b, &group_b, "hello from B").await;
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MG1. GET 200 — fetch own group's message; verify fields
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let resp = h
             .router
             .clone()
-            .oneshot(get_request("GET", &format!("/v1/messages/{msg_a}"), Some(&token_a), Some(&group_a)))
+            .oneshot(get_request(
+                "GET",
+                &format!("/v1/messages/{msg_a}"),
+                Some(&token_a),
+                Some(&group_a),
+            ))
             .await
             .expect("MG1");
         assert_eq!(resp.status(), StatusCode::OK, "MG1 status");
@@ -218,23 +240,28 @@ async fn rest_v1_messages_get_threads_scenarios() {
         assert!(body["sender_user_id"].as_str().is_some(), "MG1 has sender");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MG2. GET 404 — random UUID not in DB
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let random_id = Uuid::new_v4().to_string();
         let resp = h
             .router
             .clone()
-            .oneshot(get_request("GET", &format!("/v1/messages/{random_id}"), Some(&token_a), Some(&group_a)))
+            .oneshot(get_request(
+                "GET",
+                &format!("/v1/messages/{random_id}"),
+                Some(&token_a),
+                Some(&group_a),
+            ))
             .await
             .expect("MG2");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "MG2 status");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MG3. GET 404 — soft-deleted message
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let msg_del = send_message(&h, &token_a, &chat_a, &group_a, "will be deleted").await;
         admin_soft_delete_message(&h, &msg_del).await;
@@ -242,41 +269,56 @@ async fn rest_v1_messages_get_threads_scenarios() {
         let resp = h
             .router
             .clone()
-            .oneshot(get_request("GET", &format!("/v1/messages/{msg_del}"), Some(&token_a), Some(&group_a)))
+            .oneshot(get_request(
+                "GET",
+                &format!("/v1/messages/{msg_del}"),
+                Some(&token_a),
+                Some(&group_a),
+            ))
             .await
             .expect("MG3");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "MG3 status");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MG4. GET 404 — cross-group: message in group B, caller in group A
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let resp = h
             .router
             .clone()
-            .oneshot(get_request("GET", &format!("/v1/messages/{msg_b}"), Some(&token_a), Some(&group_a)))
+            .oneshot(get_request(
+                "GET",
+                &format!("/v1/messages/{msg_b}"),
+                Some(&token_a),
+                Some(&group_a),
+            ))
             .await
             .expect("MG4");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "MG4 status");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MG5. GET 400 — missing X-Group-Id header
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let resp = h
             .router
             .clone()
-            .oneshot(get_request("GET", &format!("/v1/messages/{msg_a}"), Some(&token_a), None))
+            .oneshot(get_request(
+                "GET",
+                &format!("/v1/messages/{msg_a}"),
+                Some(&token_a),
+                None,
+            ))
             .await
             .expect("MG5");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "MG5 status");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MT1. GET /threads 200 — root message exists, no thread → thread=null
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let msg_no_thread = send_message(&h, &token_a, &chat_a, &group_a, "no thread yet").await;
         let resp = h
@@ -293,13 +335,17 @@ async fn rest_v1_messages_get_threads_scenarios() {
         assert_eq!(resp.status(), StatusCode::OK, "MT1 status");
         let body = body_json(resp).await;
         assert!(body["thread"].is_null(), "MT1 thread should be null");
-        assert_eq!(body["messages"].as_array().unwrap().len(), 0, "MT1 messages empty");
+        assert_eq!(
+            body["messages"].as_array().unwrap().len(),
+            0,
+            "MT1 messages empty"
+        );
         assert!(body["next_cursor"].is_null(), "MT1 next_cursor null");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MT2. GET /threads 200 — thread exists, no replies → thread metadata present
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let msg_root = send_message(&h, &token_a, &chat_a, &group_a, "thread root").await;
         let thread_id = create_thread(&h, &token_a, &msg_root, &group_a).await;
@@ -320,21 +366,33 @@ async fn rest_v1_messages_get_threads_scenarios() {
         let thread = &body["thread"];
         assert!(!thread.is_null(), "MT2 thread should not be null");
         assert_eq!(thread["id"].as_str().unwrap(), thread_id, "MT2 thread id");
-        assert_eq!(thread["root_message_id"].as_str().unwrap(), msg_root, "MT2 root_message_id");
-        assert_eq!(body["messages"].as_array().unwrap().len(), 0, "MT2 no replies yet");
+        assert_eq!(
+            thread["root_message_id"].as_str().unwrap(),
+            msg_root,
+            "MT2 root_message_id"
+        );
+        assert_eq!(
+            body["messages"].as_array().unwrap().len(),
+            0,
+            "MT2 no replies yet"
+        );
         assert!(body["next_cursor"].is_null(), "MT2 next_cursor null");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MT3. GET /threads 200 — thread with 2 replies in ASC order
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let msg_root2 = send_message(&h, &token_a, &chat_a, &group_a, "thread root 2").await;
         let thread_id2 = create_thread(&h, &token_a, &msg_root2, &group_a).await;
 
         // Seed 2 replies directly via admin pool (send_message doesn't expose thread_id yet)
-        let reply1 = admin_seed_thread_reply(&h, &chat_a, &group_a, &owner_a, &thread_id2, "first reply").await;
-        let reply2 = admin_seed_thread_reply(&h, &chat_a, &group_a, &owner_a, &thread_id2, "second reply").await;
+        let reply1 =
+            admin_seed_thread_reply(&h, &chat_a, &group_a, &owner_a, &thread_id2, "first reply")
+                .await;
+        let reply2 =
+            admin_seed_thread_reply(&h, &chat_a, &group_a, &owner_a, &thread_id2, "second reply")
+                .await;
 
         let resp = h
             .router
@@ -353,14 +411,22 @@ async fn rest_v1_messages_get_threads_scenarios() {
         let messages = body["messages"].as_array().expect("MT3 messages array");
         assert_eq!(messages.len(), 2, "MT3 two replies");
         // Replies should be in ASC order (oldest first)
-        assert_eq!(messages[0]["id"].as_str().unwrap(), reply1, "MT3 first reply first");
-        assert_eq!(messages[1]["id"].as_str().unwrap(), reply2, "MT3 second reply second");
+        assert_eq!(
+            messages[0]["id"].as_str().unwrap(),
+            reply1,
+            "MT3 first reply first"
+        );
+        assert_eq!(
+            messages[1]["id"].as_str().unwrap(),
+            reply2,
+            "MT3 second reply second"
+        );
         assert!(body["next_cursor"].is_null(), "MT3 no more pages");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MT4. GET /threads 404 — root message_id is random UUID
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let random_id = Uuid::new_v4().to_string();
         let resp = h
@@ -377,9 +443,9 @@ async fn rest_v1_messages_get_threads_scenarios() {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "MT4 status");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     // MT5. GET /threads 404 — cross-group: root message in group B, caller in A
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────────────
     {
         let resp = h
             .router

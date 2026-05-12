@@ -944,7 +944,7 @@ pub async fn delete_message(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ─── GET /v1/messages/{id} ────────────────────────────────────────────────
+// ─── GET /v1/messages/{id} ─────────────────────────────────────────────
 
 /// Response body for `GET /v1/messages/{message_id}/threads`.
 #[derive(Debug, Serialize, ToSchema)]
@@ -1018,7 +1018,16 @@ pub async fn get_message(
 
     // 4. Fetch message. group_id check is defense-in-depth (RLS already
     //    filters by current_group_id). 0 rows → 404 to avoid existence leaks.
-    type MsgRow = (Uuid, Uuid, Uuid, Uuid, String, String, Option<Uuid>, DateTime<Utc>);
+    type MsgRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    );
     let row: Option<MsgRow> = sqlx::query_as(
         "SELECT id, chat_id, group_id, sender_user_id, sender_label, body, reply_to_id, created_at \
          FROM messages \
@@ -1036,22 +1045,29 @@ pub async fn get_message(
 
     match row {
         None => Err(RestError::NotFound),
-        Some((id, chat_id, grp_id, sender_user_id, sender_label, body, reply_to_id, created_at)) => {
-            Ok(Json(MessageResponse {
-                id,
-                chat_id,
-                group_id: grp_id,
-                sender_user_id,
-                sender_label,
-                body,
-                reply_to_id,
-                created_at,
-            }))
-        }
+        Some((
+            id,
+            chat_id,
+            grp_id,
+            sender_user_id,
+            sender_label,
+            body,
+            reply_to_id,
+            created_at,
+        )) => Ok(Json(MessageResponse {
+            id,
+            chat_id,
+            group_id: grp_id,
+            sender_user_id,
+            sender_label,
+            body,
+            reply_to_id,
+            created_at,
+        })),
     }
 }
 
-// ─── GET /v1/messages/{id}/threads ────────────────────────────────────────
+// ─── GET /v1/messages/{id}/threads ──────────────────────────────────────────
 
 /// Query parameters for `GET /v1/messages/{message_id}/threads`.
 #[derive(Debug, Deserialize)]
@@ -1165,22 +1181,30 @@ pub async fn list_thread_messages(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    let thread = thread_row.map(|(id, chat_id, root_message_id, title, created_by, created_at)| {
-        ThreadResponse {
+    let thread = thread_row.map(
+        |(id, chat_id, root_message_id, title, created_by, created_at)| ThreadResponse {
             id,
             chat_id,
             root_message_id,
             title,
             created_by,
             created_at,
-        }
-    });
+        },
+    );
 
     // 7. If there is a thread, fetch its replies (cursor-paginated, ASC).
     let messages: Vec<MessageSummary> = if let Some(ref t) = thread {
         let thread_id = t.id;
 
-        type ReplyRow = (Uuid, Uuid, Uuid, String, String, Option<Uuid>, DateTime<Utc>);
+        type ReplyRow = (
+            Uuid,
+            Uuid,
+            Uuid,
+            String,
+            String,
+            Option<Uuid>,
+            DateTime<Utc>,
+        );
         let rows: Vec<ReplyRow> = if let Some(after_id) = params.after {
             sqlx::query_as(
                 "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
