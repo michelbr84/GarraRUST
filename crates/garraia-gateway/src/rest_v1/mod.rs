@@ -304,14 +304,18 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     post(messages::send_message).get(messages::list_messages),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3.
+                // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
                 .route(
                     "/v1/messages/{message_id}/threads",
-                    post(messages::create_thread),
+                    post(messages::create_thread).get(messages::list_thread_messages),
                 )
                 // Plan 0107 (GAR-592) — messages slice 5: edit + soft-delete.
+                // Plan 0109 (GAR-595) — messages slice 6: GET single message.
                 .route(
                     "/v1/messages/{message_id}",
-                    patch(messages::patch_message).delete(messages::delete_message),
+                    get(messages::get_message)
+                        .patch(messages::patch_message)
+                        .delete(messages::delete_message),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1.
                 .route(
@@ -514,14 +518,18 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
+                // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
                     "/v1/messages/{message_id}/threads",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0107 (GAR-592) — messages slice 5, fail-soft 503.
+                // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
                     "/v1/messages/{message_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
                 .route(
@@ -698,14 +706,18 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
+                // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.
                 .route(
                     "/v1/messages/{message_id}/threads",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0107 (GAR-592) — messages slice 5, no-auth stub.
+                // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.
                 .route(
                     "/v1/messages/{message_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
                 .route(
