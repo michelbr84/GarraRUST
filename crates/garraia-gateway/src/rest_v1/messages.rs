@@ -944,6 +944,338 @@ pub async fn delete_message(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── GET /v1/messages/{id} ────────────────────────────────────────────────────────────────────
+
+/// Response body for `GET /v1/messages/{message_id}/threads`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ThreadMessagesResponse {
+    /// The thread anchored on this message, or `null` if no thread exists.
+    pub thread: Option<ThreadResponse>,
+    /// Replies in this thread, oldest-first (`created_at ASC`).
+    pub messages: Vec<MessageSummary>,
+    /// Cursor for the next page. `null` when all replies have been returned.
+    pub next_cursor: Option<Uuid>,
+}
+
+/// `GET /v1/messages/{message_id}` — fetch a single message by ID.
+///
+/// Returns the full `MessageResponse` for the message if it belongs to the
+/// caller's group and has not been soft-deleted. Returns 404 in all other
+/// cases to avoid leaking the existence of messages in other tenants.
+#[utoipa::path(
+    get,
+    path = "/v1/messages/{message_id}",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+    ),
+    responses(
+        (status = 200, description = "Message found.", body = MessageResponse),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found, deleted, or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_message(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Fetch message. group_id check is defense-in-depth (RLS already
+    //    filters by current_group_id). 0 rows → 404 to avoid existence leaks.
+    type MsgRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    );
+    let row: Option<MsgRow> = sqlx::query_as(
+        "SELECT id, chat_id, group_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+         FROM messages \
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    match row {
+        None => Err(RestError::NotFound),
+        Some((
+            id,
+            chat_id,
+            grp_id,
+            sender_user_id,
+            sender_label,
+            body,
+            reply_to_id,
+            created_at,
+        )) => Ok(Json(MessageResponse {
+            id,
+            chat_id,
+            group_id: grp_id,
+            sender_user_id,
+            sender_label,
+            body,
+            reply_to_id,
+            created_at,
+        })),
+    }
+}
+
+// ─── GET /v1/messages/{id}/threads ─────────────────────────────────────────────────────────────────────────
+
+/// Query parameters for `GET /v1/messages/{message_id}/threads`.
+#[derive(Debug, Deserialize)]
+pub struct ListThreadMessagesQuery {
+    /// Keyset cursor — UUID of the last reply received. Returns replies
+    /// newer than this one (exclusive). Omit for the first page.
+    pub after: Option<Uuid>,
+    /// Page size. Default 50, max 100. Values < 1 are rejected with 400.
+    pub limit: Option<i64>,
+}
+
+/// `GET /v1/messages/{message_id}/threads` — list replies in the thread.
+///
+/// Returns the thread metadata (or `null` if no thread exists) together with
+/// the replies in oldest-first (`created_at ASC`) order. The root message
+/// itself is NOT included in the `messages` array — only replies whose
+/// `thread_id` matches the thread id.
+///
+/// If the root message exists but has no thread, returns
+/// `{ thread: null, messages: [], next_cursor: null }` (not 404).
+#[utoipa::path(
+    get,
+    path = "/v1/messages/{message_id}/threads",
+    params(
+        ("message_id" = Uuid, Path, description = "Root message UUID."),
+        ("after" = Option<Uuid>, Query, description = "Cursor for pagination."),
+        ("limit" = Option<i64>, Query, description = "Page size (default 50, max 100)."),
+    ),
+    responses(
+        (status = 200, description = "Thread info and replies.", body = ThreadMessagesResponse),
+        (status = 400, description = "Missing X-Group-Id header or bad limit.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Root message not found, deleted, or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_thread_messages(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Query(params): Query<ListThreadMessagesQuery>,
+) -> Result<Json<ThreadMessagesResponse>, RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Parse + clamp limit.
+    let limit: i64 = match params.limit {
+        None => 50,
+        Some(n) if n < 1 => {
+            return Err(RestError::BadRequest("limit must be at least 1".into()));
+        }
+        Some(n) => n.min(100),
+    };
+
+    // 4. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Verify root message exists and belongs to caller's group.
+    //    0 rows → 404 to avoid existence leaks across tenants.
+    let root_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if root_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // 6. Look up thread anchored at this message (may not exist).
+    type ThreadRow = (Uuid, Uuid, Uuid, Option<String>, Uuid, DateTime<Utc>);
+    let thread_row: Option<ThreadRow> = sqlx::query_as(
+        "SELECT id, chat_id, root_message_id, title, created_by, created_at \
+         FROM message_threads \
+         WHERE root_message_id = $1",
+    )
+    .bind(message_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let thread = thread_row.map(
+        |(id, chat_id, root_message_id, title, created_by, created_at)| ThreadResponse {
+            id,
+            chat_id,
+            root_message_id,
+            title,
+            created_by,
+            created_at,
+        },
+    );
+
+    // 7. If there is a thread, fetch its replies (cursor-paginated, ASC).
+    let messages: Vec<MessageSummary> = if let Some(ref t) = thread {
+        let thread_id = t.id;
+
+        type ReplyRow = (
+            Uuid,
+            Uuid,
+            Uuid,
+            String,
+            String,
+            Option<Uuid>,
+            DateTime<Utc>,
+        );
+        let rows: Vec<ReplyRow> = if let Some(after_id) = params.after {
+            sqlx::query_as(
+                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+                 FROM messages \
+                 WHERE thread_id = $1 \
+                   AND deleted_at IS NULL \
+                   AND (created_at, id) > ( \
+                       SELECT created_at, id FROM messages \
+                       WHERE id = $2 AND thread_id = $1 AND deleted_at IS NULL \
+                   ) \
+                 ORDER BY created_at ASC, id ASC \
+                 LIMIT $3",
+            )
+            .bind(thread_id)
+            .bind(after_id)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?
+        } else {
+            sqlx::query_as(
+                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+                 FROM messages \
+                 WHERE thread_id = $1 \
+                   AND deleted_at IS NULL \
+                 ORDER BY created_at ASC, id ASC \
+                 LIMIT $2",
+            )
+            .bind(thread_id)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?
+        };
+
+        rows.into_iter()
+            .map(
+                |(id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at)| {
+                    MessageSummary {
+                        id,
+                        chat_id,
+                        sender_user_id,
+                        sender_label,
+                        body,
+                        reply_to_id,
+                        created_at,
+                    }
+                },
+            )
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let next_cursor = if messages.len() as i64 == limit {
+        messages.last().map(|m| m.id)
+    } else {
+        None
+    };
+
+    Ok(Json(ThreadMessagesResponse {
+        thread,
+        messages,
+        next_cursor,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
