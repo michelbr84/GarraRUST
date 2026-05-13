@@ -692,11 +692,72 @@ fn validate_storage(
     }
 }
 
+/// Pure validation of the config directory path. Separated from the
+/// loader/env read so it can be unit-tested without touching process state.
+///
+/// `env_explicitly_set` is `true` when the user set `GARRAIA_CONFIG_DIR`
+/// (or whichever env var produced this path) directly — in that case a
+/// missing directory is suspicious. When `false`, we assume the loader
+/// fell back to a default location and skip the missing-dir warning to
+/// avoid spooking fresh installs that haven't run anything yet.
+///
+/// Findings:
+/// - `CONFIG_DIR_PLACEHOLDER`: matches a known placeholder leaked from
+///   `.env.example` (`/custom/config/path`) or generic templating
+///   patterns (`/path/to/`, `your-`, `change-me`). Always warn.
+/// - `CONFIG_DIR_MISSING`: gated on `env_explicitly_set`. Warns when the
+///   resolved path does not exist on disk.
+fn validate_config_dir_inner(dir: &std::path::Path, env_explicitly_set: bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let display = dir.to_string_lossy();
+
+    // CONFIG_DIR_PLACEHOLDER: substring lookup — we deliberately avoid
+    // pulling `regex` for four substrings.
+    const PLACEHOLDER_NEEDLES: &[&str] =
+        &["/custom/config/path", "/path/to/", "/your-", "change-me"];
+    if PLACEHOLDER_NEEDLES
+        .iter()
+        .any(|needle| display.contains(needle))
+    {
+        findings.push(Finding {
+            severity: Severity::Warning,
+            field: "config_dir".to_owned(),
+            message: format!(
+                "config directory `{}` looks like a placeholder copied from `.env.example`. \
+                 Unset `GARRAIA_CONFIG_DIR` or point it at a real path before starting the gateway.",
+                display
+            ),
+        });
+    }
+
+    if env_explicitly_set && !dir.exists() {
+        findings.push(Finding {
+            severity: Severity::Warning,
+            field: "config_dir".to_owned(),
+            message: format!(
+                "config directory `{}` was set via GARRAIA_CONFIG_DIR but does not exist on disk",
+                display
+            ),
+        });
+    }
+
+    findings
+}
+
+/// Thin wrapper that reads the process env to drive
+/// [`validate_config_dir_inner`].
+fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
+    let env_set = std::env::var_os("GARRAIA_CONFIG_DIR").is_some();
+    validate_config_dir_inner(loader.config_dir(), env_set)
+}
+
 /// Run the full validation + reporting pipeline.
 pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
+    let mut findings = validate(config);
+    findings.extend(validate_config_dir(loader));
     ConfigCheck {
         source: source_report(loader),
-        findings: validate(config),
+        findings,
         summary: summarise(config),
     }
 }
@@ -1318,6 +1379,69 @@ mod tests {
         assert!(
             findings.iter().all(|f| f.field != "channels.telegram"),
             "disabled channel should not warn about missing token: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_dir_flags_posix_placeholder() {
+        // The literal value shipped in `.env.example` line 59.
+        let path = PathBuf::from("/custom/config/path");
+        let findings = validate_config_dir_inner(&path, true);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning
+                && f.field == "config_dir"
+                && f.message.contains("placeholder")),
+            "findings = {findings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_dir_flags_generic_path_to_pattern() {
+        let path = PathBuf::from("/path/to/garraia");
+        let findings = validate_config_dir_inner(&path, false);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.message.contains("placeholder")),
+            "findings = {findings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_dir_flags_missing_only_when_env_set() {
+        // A real-looking, definitely-not-existing path.
+        let path = PathBuf::from("/nonexistent/garraia-test-path-zzz-12345");
+
+        // env_explicitly_set = true => MISSING warning fires.
+        let with_env = validate_config_dir_inner(&path, true);
+        assert!(
+            with_env
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.message.contains("does not exist")),
+            "with_env should fire MISSING warning: {with_env:?}"
+        );
+
+        // env_explicitly_set = false => MISSING warning does NOT fire.
+        let without_env = validate_config_dir_inner(&path, false);
+        assert!(
+            !without_env
+                .iter()
+                .any(|f| f.message.contains("does not exist")),
+            "without_env should NOT fire MISSING warning: {without_env:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_dir_quiet_for_real_existing_path() {
+        // Use a directory we know exists: the OS temp dir.
+        let path = std::env::temp_dir();
+        assert!(path.exists(), "precondition: temp_dir must exist");
+        let findings = validate_config_dir_inner(&path, true);
+        // No placeholder warning (the temp dir path doesn't match any needle),
+        // no missing warning (path exists). Should be empty.
+        assert!(
+            findings.is_empty(),
+            "real existing path should produce no findings: {findings:?}"
         );
     }
 }
