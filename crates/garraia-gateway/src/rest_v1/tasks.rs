@@ -1397,6 +1397,75 @@ pub async fn get_task(
     }
 }
 
+/// `GET /v1/groups/{group_id}/task-lists/{list_id}` — fetch a single task list.
+///
+/// Returns 404 for archived, cross-tenant, or non-existent lists (no 403 leak).
+/// Authz: `Action::TasksRead`. Path `group_id` must equal `principal.group_id`.
+///
+/// ## Error matrix
+///
+/// | Condition                               | Status |
+/// |-----------------------------------------|--------|
+/// | Missing/invalid JWT                     | 401    |
+/// | Non-member of group                     | 403    |
+/// | Path group_id ≠ principal group_id      | 403    |
+/// | List not found / archived / cross-tenant | 404   |
+/// | Happy path                              | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/task-lists/{list_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("list_id" = Uuid, Path, description = "Task list UUID."),
+    ),
+    responses(
+        (status = 200, description = "Task list.", body = TaskListResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Task list not found, archived, or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_task_list(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, list_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<TaskListResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<TaskListRow> = sqlx::query_as(
+        "SELECT id, group_id, name, type AS list_type, description, \
+                created_by, created_by_label, created_at, updated_at, archived_at \
+         FROM task_lists \
+         WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(list_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    match row {
+        Some(r) => Ok(Json(TaskListResponse::from(r))),
+        None => Err(RestError::NotFound),
+    }
+}
+
 /// `PATCH /v1/groups/{group_id}/task-lists/{list_id}` — update a task list.
 ///
 /// All fields are optional. `description` supports three-way semantics: omit
@@ -4136,4 +4205,32 @@ pub async fn delete_task_attachment(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn task_list_response_from_row_roundtrip() {
+        let now = Utc::now();
+        let row = TaskListRow {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            name: "Backlog".into(),
+            list_type: "list".into(),
+            description: Some("desc".into()),
+            created_by: None,
+            created_by_label: "Alice".into(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+        };
+        let resp = TaskListResponse::from(row);
+        assert_eq!(resp.name, "Backlog");
+        assert_eq!(resp.list_type, "list");
+        assert_eq!(resp.description, Some("desc".into()));
+        assert!(resp.archived_at.is_none());
+    }
 }

@@ -24,7 +24,7 @@ opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "trace", "met
 opentelemetry-semantic-conventions = "0.26"
 
 # Metrics
-metrics = "0.23"
+metrics = "0.24"
 metrics-exporter-prometheus = "0.15"
 
 # HTTP layers
