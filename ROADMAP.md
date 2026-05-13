@@ -774,6 +774,38 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **docker-compose** para dev local com Postgres, MinIO, Ollama, OTel collector.
 - [ ] **Terraform modules** (`infra/terraform/`) para AWS/GCP/Hetzner (opcional).
 
+#### 6.1.1 Runpod Load Balancer Serverless compatibility ([GAR-603](https://linear.app/chatgpt25/issue/GAR-603))
+
+> **Goal:** make GarraRUST/GarraIA deployable as a Runpod **Load Balancer Serverless** HTTP worker (not the queue-based serverless model — the container must run a real HTTP server, and Runpod routes traffic only to workers whose `GET /ping` on `PORT_HEALTH` returns 200).
+>
+> **Evidence:** observed during a Runpod test on 2026-05-13 against endpoint `k3d2h9xumk2r4o` (`https://k3d2h9xumk2r4o.api.runpod.ai`, internal port `3888`): build succeeded, worker reached `running`, but `GET /ping` returned `400 Bad Request` with `{"detail":"timed out waiting for worker"}`. Endpoint reachable; worker not yet healthy under the LB. Root cause not pinned — likely binding to `127.0.0.1`, missing `/ping`, REPL start command, or `PORT`/`PORT_HEALTH` not respected.
+
+**Scope**
+
+- [ ] HTTP server mode for containers (e.g. `garra serve --host 0.0.0.0 --port $PORT`, or the equivalent existing command if already present).
+- [ ] Bind to `0.0.0.0` (not `127.0.0.1`) when running in container/serverless mode.
+- [ ] `GET /ping` returns HTTP 200 fast (no DB/provider dependency).
+- [ ] `GET /health` returns useful health information.
+- [ ] Honor `PORT` and `PORT_HEALTH` env vars from the environment.
+- [ ] Dockerfile / start command launches HTTP server mode, **not** REPL/chat mode.
+- [ ] Local Docker verification recipe documented (`docker run -p 3888:3888 …` + `curl http://localhost:3888/ping`).
+- [ ] Runpod endpoint settings documented: `PORT=3888`, `PORT_HEALTH=3888`, exposed HTTP port `3888`.
+- [ ] Document that the public URL is `https://ENDPOINT_ID.api.runpod.ai/<route>` (no `:3888` suffix — the port is internal).
+- [ ] Document the difference between Runpod **queue-based** serverless and **Load Balancer** serverless.
+- [ ] No API keys / endpoint tokens / secrets in docs or logs (per `CLAUDE.md` §"Regras absolutas" 1 & 6).
+
+**Acceptance**
+
+- [ ] Local container responds to `GET /ping` with HTTP 200.
+- [ ] Local container responds to `GET /health` with useful status.
+- [ ] App binds to `0.0.0.0:$PORT` in container mode.
+- [ ] Runpod worker becomes healthy under Load Balancer Serverless.
+- [ ] `GET https://<ENDPOINT_ID>.api.runpod.ai/ping` returns HTTP 200.
+- [ ] No REPL blocks the container start command.
+- [ ] CI remains green before merge.
+
+Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Backlog) is the closest sibling and shares the cloud-deploy goal; GAR-603 narrows it to the Runpod LB Serverless surface.
+
 ### 6.2 Observabilidade em prod
 
 - [ ] **SLOs definidos**: chat p95 < 500ms, upload success > 99%, auth < 100ms.
