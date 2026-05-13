@@ -31,7 +31,7 @@ use super::memory::{
 };
 use super::messages::{
     CreateThreadRequest, MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
-    ThreadResponse,
+    ThreadMessagesResponse, ThreadResponse,
 };
 use super::problem::ProblemDetails;
 use super::search::{SearchResponse, SearchResult, SearchResultType};
@@ -106,6 +106,8 @@ impl Modify for SecurityAddon {
         super::messages::send_message,
         super::messages::list_messages,
         super::messages::create_thread,
+        super::messages::get_message,
+        super::messages::list_thread_messages,
         super::memory::list_memory,
         super::memory::create_memory,
         super::memory::delete_memory,
@@ -178,6 +180,7 @@ impl Modify for SecurityAddon {
         MessageListResponse,
         CreateThreadRequest,
         ThreadResponse,
+        ThreadMessagesResponse,
         CreateMemoryRequest,
         PatchMemoryRequest,
         MemoryItemResponse,

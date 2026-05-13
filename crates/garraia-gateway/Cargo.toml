@@ -368,6 +368,15 @@ name = "rest_v1_messages_edit_delete"
 path = "tests/rest_v1_messages_edit_delete.rs"
 required-features = ["test-helpers"]
 
+# Plan 0109 (GAR-595) — GET /v1/messages/{id} + GET /v1/messages/{id}/threads.
+# 10 bundled scenarios (MG1-MG5 single-message + MT1-MT5 thread listing).
+# Requires test-helpers so `cargo clippy --all-targets` without
+# `--features test-helpers` skips compilation cleanly.
+[[test]]
+name = "rest_v1_messages_get_threads"
+path = "tests/rest_v1_messages_get_threads.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
