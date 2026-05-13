@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, head, patch, post};
+use axum::routing::{delete, get, head, post};
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -262,7 +262,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .layer(axum::middleware::from_fn(uploads::tus_version_header_layer));
 
             Router::new()
-                .route("/v1/me", get(me::get_me))
+                // Plan 0110 (GAR-599) — PATCH /v1/me self-service profile update.
+                .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -332,13 +333,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/memory/{id}/pin", post(memory::pin_memory))
                 .route("/v1/memory/{id}/unpin", post(memory::unpin_memory))
                 // Plan 0066/0067 (GAR-516/GAR-518) — tasks API slices 1+2.
+                // Plan 0110 (GAR-599) — GET task-list single item.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(tasks::create_task_list).get(tasks::list_task_lists),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}",
-                    patch(tasks::patch_task_list).delete(tasks::delete_task_list),
+                    get(tasks::get_task_list)
+                        .patch(tasks::patch_task_list)
+                        .delete(tasks::delete_task_list),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",
@@ -471,7 +475,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // mode 1 so clients see consistent URLs regardless of
             // whether `GARRAIA_APP_DATABASE_URL` is set.
             Router::new()
-                .route("/v1/me", get(me::get_me))
+                // Plan 0110 (GAR-599) — PATCH /v1/me stub (no AppPool in mode 2).
+                .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -546,13 +551,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
                 // Plan 0066/0067/0069/0077 (GAR-516/GAR-518/GAR-520/GAR-533) — tasks API slices 1+2+3+4, fail-soft 503.
+                // Plan 0110 (GAR-599) — GET task-list, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",
@@ -659,7 +667,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // `OPTIONS /v1/uploads` which has no auth requirements
             // by spec — always return the discovery headers.
             Router::new()
-                .route("/v1/me", get(unconfigured_handler))
+                // Plan 0110 (GAR-599) — PATCH /v1/me stub (no-auth mode).
+                .route(
+                    "/v1/me",
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -734,13 +746,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/memory/{id}/pin", post(unconfigured_handler))
                 .route("/v1/memory/{id}/unpin", post(unconfigured_handler))
                 // Plan 0066/0067/0069/0077 (GAR-516/GAR-518/GAR-520/GAR-533) — tasks API slices 1+2+3+4, no-auth stub.
+                // Plan 0110 (GAR-599) — GET task-list, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/task-lists",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-lists/{list_id}/tasks",

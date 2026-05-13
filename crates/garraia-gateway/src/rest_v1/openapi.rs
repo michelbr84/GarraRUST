@@ -24,7 +24,7 @@ use super::groups::{
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
-use super::me::MeResponse;
+use super::me::{MeResponse, PatchMeRequest, PatchMeResponse};
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
     PatchMemoryRequest, PinMemoryResponse,
@@ -87,6 +87,7 @@ impl Modify for SecurityAddon {
     ),
     paths(
         super::me::get_me,
+        super::me::patch_me,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -117,6 +118,7 @@ impl Modify for SecurityAddon {
         super::memory::unpin_memory,
         super::tasks::create_task_list,
         super::tasks::list_task_lists,
+        super::tasks::get_task_list,
         super::tasks::patch_task_list,
         super::tasks::delete_task_list,
         super::tasks::create_task,
@@ -158,6 +160,8 @@ impl Modify for SecurityAddon {
     ),
     components(schemas(
         MeResponse,
+        PatchMeRequest,
+        PatchMeResponse,
         ProblemDetails,
         CreateGroupRequest,
         UpdateGroupRequest,
