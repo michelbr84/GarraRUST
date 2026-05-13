@@ -472,10 +472,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // whether `GARRAIA_APP_DATABASE_URL` is set.
             Router::new()
                 // Plan 0110 (GAR-599) — PATCH /v1/me stub (no AppPool in mode 2).
-                .route(
-                    "/v1/me",
-                    get(me::get_me).patch(unconfigured_handler),
-                )
+                .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",

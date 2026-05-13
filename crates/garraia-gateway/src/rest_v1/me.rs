@@ -197,7 +197,10 @@ mod tests {
         let req = PatchMeRequest {
             display_name: Some("x".repeat(129)),
         };
-        assert!(req.validate().is_err(), "129-char name must fail validation");
+        assert!(
+            req.validate().is_err(),
+            "129-char name must fail validation"
+        );
     }
 
     #[test]

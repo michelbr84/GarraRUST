@@ -157,10 +157,7 @@ async fn rest_v1_me_patch_scenarios() {
         let resp = h
             .router
             .clone()
-            .oneshot(patch_me_req(
-                None,
-                json!({ "display_name": "No auth" }),
-            ))
+            .oneshot(patch_me_req(None, json!({ "display_name": "No auth" })))
             .await
             .expect("ME-PATCH-5 oneshot");
         assert_eq!(

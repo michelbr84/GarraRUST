@@ -103,10 +103,9 @@ async fn rest_v1_task_list_get_scenarios() {
     let h = Harness::get().await;
 
     // Seed two independent groups for cross-tenant isolation.
-    let (_owner_id, group_id, owner_token) =
-        seed_user_with_group(&h, "alice@task-list-get.test")
-            .await
-            .expect("seed alice+group1");
+    let (_owner_id, group_id, owner_token) = seed_user_with_group(&h, "alice@task-list-get.test")
+        .await
+        .expect("seed alice+group1");
     let (_, group2_id, owner2_token) = seed_user_with_group(&h, "bob@task-list-get.test")
         .await
         .expect("seed bob+group2");
@@ -126,7 +125,11 @@ async fn rest_v1_task_list_get_scenarios() {
         ))
         .await
         .expect("seed: create task list");
-    assert_eq!(resp.status(), StatusCode::CREATED, "seed: task list created");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "seed: task list created"
+    );
     let created = body_json(resp).await;
     let list_id = created["id"].as_str().expect("seed: list id").to_string();
 
@@ -150,14 +153,8 @@ async fn rest_v1_task_list_get_scenarios() {
         assert_eq!(v["name"], "Sprint Backlog", "TL-GET-1 name");
         assert_eq!(v["type"], "list", "TL-GET-1 type");
         assert_eq!(v["description"], "Initial backlog", "TL-GET-1 description");
-        assert!(
-            v.get("created_at").is_some(),
-            "TL-GET-1 created_at present"
-        );
-        assert!(
-            v.get("updated_at").is_some(),
-            "TL-GET-1 updated_at present"
-        );
+        assert!(v.get("created_at").is_some(), "TL-GET-1 created_at present");
+        assert!(v.get("updated_at").is_some(), "TL-GET-1 updated_at present");
         assert!(
             v["archived_at"].is_null() || v.get("archived_at").is_none(),
             "TL-GET-1 archived_at null/absent"
