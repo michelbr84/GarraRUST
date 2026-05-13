@@ -20,11 +20,20 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Workflow-level default: read-only GITHUB_TOKEN. The `coverage` and
+# `dependency-review` jobs override with `pull-requests: write` to post their
+# PR comments. Closes CodeQL rule `actions/missing-workflow-permissions`
+# (Medium).
+permissions:
+  contents: read
+
 jobs:
   # Check formatting
   fmt:
     name: Format Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -41,6 +50,8 @@ jobs:
   clippy:
     name: Clippy Linting
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Plan 0049 (GAR-429 Lote Q.1, 2026-04-22) limpou os 26 warnings
     # pré-existentes (too_many_arguments, collapsible_if, explicit_auto_deref,
     # assertions_on_constants, new_without_default, items_after_test_module,
@@ -77,6 +88,8 @@ jobs:
   cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -93,6 +106,12 @@ jobs:
     name: Dependency Review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      # `comment-summary-in-pr: on-failure` below posts a PR comment via the
+      # GITHUB_TOKEN — requires pull-requests write. Without this, the comment
+      # silently 403s on first regression and the team loses signal.
+      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -115,6 +134,8 @@ jobs:
   gitleaks:
     name: Secret Scan (gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -132,6 +153,8 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -338,6 +361,8 @@ jobs:
   build:
     name: Build Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -364,6 +389,8 @@ jobs:
   msrv:
     name: MSRV check (1.92)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -378,6 +405,8 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24):
     # The previous "gateway exits immediately" hypothesis was wrong. Root cause
     # was that `garraia-gateway` is a library crate (no production [[bin]]);
@@ -513,6 +542,8 @@ jobs:
   playwright:
     name: Playwright E2E (MCP UI)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24): same root cause
     # as the `e2e` job — the previous workflow ran a binary that never existed
     # (`./target/release/garraia-gateway`, but the real binary is `garra`
