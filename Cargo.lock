@@ -3617,7 +3617,7 @@ dependencies = [
  "garraia-tools",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -3710,7 +3710,7 @@ dependencies = [
  "garraia-common",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
