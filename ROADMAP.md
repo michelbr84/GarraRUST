@@ -395,6 +395,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}/members` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
 - [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
+- [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
 
 **Chats**
 
@@ -405,6 +406,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / [GAR-509](https://linear.app/chatgpt25/issue/GAR-509), implementado 2026-05-05 (Florida)
 - [x] `PATCH /v1/messages/{message_id}` (edit body, sender-only) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
 - [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
+- [x] `GET /v1/messages/{message_id}` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
+- [x] `GET /v1/messages/{message_id}/threads` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
 - [ ] WebSocket `/v1/chats/{chat_id}/stream` com backpressure
 
 **Arquivos**
@@ -521,6 +524,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 - [x] `POST /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
 - [x] `GET /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
+- [x] `GET /v1/groups/{group_id}/task-lists/{list_id}` — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
 - [x] `PATCH /v1/groups/{group_id}/task-lists/{list_id}` — plan 0066 / GAR-516 ✅
 - [x] `DELETE /v1/groups/{group_id}/task-lists/{list_id}` (archive, idempotente) — plan 0066 / GAR-516 ✅
 - [x] `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks` — plan 0066 / GAR-516 ✅

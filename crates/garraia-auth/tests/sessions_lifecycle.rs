@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use garraia_auth::{JwtConfig, JwtIssuer, LoginConfig, LoginPool, SessionId, SessionStore};
 use garraia_workspace::{Workspace, WorkspaceConfig};
 use secrecy::{ExposeSecret, SecretString};
@@ -224,5 +224,98 @@ async fn revoke_is_idempotent_and_persists() -> anyhow::Result<()> {
         "revoked_at must be populated after revoke — mutant `Ok(())` (no-op) \
          leaves it NULL"
     );
+    Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TTL arithmetic — kills sessions.rs:81 `now + Duration::days(REFRESH_TTL_DAYS)`
+// ───────────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sessions_issue_expires_approximately_30_days_from_now() -> anyhow::Result<()> {
+    let f = boot().await?;
+    let user_id = seed_user(&f.admin_pool).await?;
+
+    let before = Utc::now();
+    let (_plaintext, _sid, expires_at) = issue_session_for(&f, user_id).await?;
+    let after = Utc::now();
+
+    assert!(
+        expires_at >= before + Duration::days(29),
+        "expires_at {expires_at} must be at least 29 days from now — mutant \
+         replacing Duration::days(REFRESH_TTL_DAYS) with a smaller value \
+         triggers this"
+    );
+    assert!(
+        expires_at <= after + Duration::days(31),
+        "expires_at {expires_at} must be at most 31 days from now — sanity \
+         upper bound"
+    );
+    Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Expiry boundary — kills sessions.rs:147 `expires_at <= Utc::now()`
+// ───────────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verify_refresh_returns_none_for_session_expired_1ms_ago() -> anyhow::Result<()> {
+    let f = boot().await?;
+    let user_id = seed_user(&f.admin_pool).await?;
+    let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
+
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 millisecond' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
+
+    let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
+    assert!(
+        result.is_none(),
+        "verify_refresh must return None for a session expired 1ms ago — \
+         mutant replacing `<=` with `<` would return Some here"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verify_refresh_returns_none_for_session_expired_1s_ago() -> anyhow::Result<()> {
+    let f = boot().await?;
+    let user_id = seed_user(&f.admin_pool).await?;
+    let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
+
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
+
+    let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
+    assert!(
+        result.is_none(),
+        "verify_refresh must return None for a session expired 1s ago"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verify_refresh_returns_some_for_session_expiring_tomorrow() -> anyhow::Result<()> {
+    let f = boot().await?;
+    let user_id = seed_user(&f.admin_pool).await?;
+    let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
+
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
+
+    let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
+    let Some((found_sid, found_uid)) = result else {
+        panic!(
+            "verify_refresh must return Some for a session expiring tomorrow — \
+             mutant replacing `<=` with always-reject would fail here"
+        );
+    };
+    assert_eq!(found_sid, sid);
+    assert_eq!(found_uid, user_id);
     Ok(())
 }
