@@ -115,7 +115,8 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0106 | [GAR-589 — FORCE RLS on groups + group\_members tables](0106-gar-589-rls-groups-and-members.md) | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) | ✅ Merged 2026-05-12 via PR #294 (`36b2b72`) |
 | 0107 | [GAR-592 — messages slice 5: PATCH + DELETE /v1/messages/{id}](0107-gar-592-messages-edit-delete.md) | [GAR-592](https://linear.app/chatgpt25/issue/GAR-592) | ✅ Merged 2026-05-12 via PR #300 (`3c843e4`) |
 | 0108 | [GAR-593 — drop stale RUSTSEC-2026-0002 (lru) after lru 0.16.4](0108-gar-593-lru-advisory-cleanup.md) | [GAR-593](https://linear.app/chatgpt25/issue/GAR-593) | ✅ Merged 2026-05-12 via PR #299 (`7996dc4`) |
-| 0109 | [GAR-595 — messages slice 6: GET /v1/messages/{id} + GET /v1/messages/{id}/threads](0109-gar-595-messages-get-single-threads.md) | [GAR-595](https://linear.app/chatgpt25/issue/GAR-595) | 🔄 In Progress |
+| 0109 | [GAR-595 — messages slice 6: GET /v1/messages/{id} + GET /v1/messages/{id}/threads](0109-gar-595-messages-get-single-threads.md) | [GAR-595](https://linear.app/chatgpt25/issue/GAR-595) | ✅ Merged 2026-05-13 via PR #305 (`e8cc44d`) |
+| 0110 | [GAR-599 — GET /v1/groups/{group_id}/task-lists/{list_id} + PATCH /v1/me](0110-gar-599-task-list-get-patch-me.md) | [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) | 🔄 In Progress |
 
 ## Arquivos não-versionados
 
