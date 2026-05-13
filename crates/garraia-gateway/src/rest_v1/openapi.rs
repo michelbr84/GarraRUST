@@ -24,14 +24,14 @@ use super::groups::{
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
-use super::me::MeResponse;
+use super::me::{MeResponse, PatchMeRequest, PatchMeResponse};
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
     PatchMemoryRequest, PinMemoryResponse,
 };
 use super::messages::{
     CreateThreadRequest, MessageListResponse, MessageResponse, MessageSummary, SendMessageRequest,
-    ThreadResponse,
+    ThreadMessagesResponse, ThreadResponse,
 };
 use super::problem::ProblemDetails;
 use super::search::{SearchResponse, SearchResult, SearchResultType};
@@ -87,6 +87,7 @@ impl Modify for SecurityAddon {
     ),
     paths(
         super::me::get_me,
+        super::me::patch_me,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -106,6 +107,8 @@ impl Modify for SecurityAddon {
         super::messages::send_message,
         super::messages::list_messages,
         super::messages::create_thread,
+        super::messages::get_message,
+        super::messages::list_thread_messages,
         super::memory::list_memory,
         super::memory::create_memory,
         super::memory::delete_memory,
@@ -115,6 +118,7 @@ impl Modify for SecurityAddon {
         super::memory::unpin_memory,
         super::tasks::create_task_list,
         super::tasks::list_task_lists,
+        super::tasks::get_task_list,
         super::tasks::patch_task_list,
         super::tasks::delete_task_list,
         super::tasks::create_task,
@@ -156,6 +160,8 @@ impl Modify for SecurityAddon {
     ),
     components(schemas(
         MeResponse,
+        PatchMeRequest,
+        PatchMeResponse,
         ProblemDetails,
         CreateGroupRequest,
         UpdateGroupRequest,
@@ -178,6 +184,7 @@ impl Modify for SecurityAddon {
         MessageListResponse,
         CreateThreadRequest,
         ThreadResponse,
+        ThreadMessagesResponse,
         CreateMemoryRequest,
         PatchMemoryRequest,
         MemoryItemResponse,
