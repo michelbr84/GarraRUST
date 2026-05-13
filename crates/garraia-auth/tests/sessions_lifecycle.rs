@@ -264,12 +264,10 @@ async fn verify_refresh_returns_none_for_session_expired_1ms_ago() -> anyhow::Re
     let user_id = seed_user(&f.admin_pool).await?;
     let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
 
-    sqlx::query(
-        "UPDATE sessions SET expires_at = now() - interval '1 millisecond' WHERE id = $1",
-    )
-    .bind(sid.0)
-    .execute(&f.admin_pool)
-    .await?;
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 millisecond' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
 
     let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
     assert!(
@@ -286,12 +284,10 @@ async fn verify_refresh_returns_none_for_session_expired_1s_ago() -> anyhow::Res
     let user_id = seed_user(&f.admin_pool).await?;
     let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
 
-    sqlx::query(
-        "UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1",
-    )
-    .bind(sid.0)
-    .execute(&f.admin_pool)
-    .await?;
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
 
     let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
     assert!(
@@ -307,12 +303,10 @@ async fn verify_refresh_returns_some_for_session_expiring_tomorrow() -> anyhow::
     let user_id = seed_user(&f.admin_pool).await?;
     let (plaintext, sid, _exp) = issue_session_for(&f, user_id).await?;
 
-    sqlx::query(
-        "UPDATE sessions SET expires_at = now() + interval '1 day' WHERE id = $1",
-    )
-    .bind(sid.0)
-    .execute(&f.admin_pool)
-    .await?;
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day' WHERE id = $1")
+        .bind(sid.0)
+        .execute(&f.admin_pool)
+        .await?;
 
     let result = f.store.verify_refresh(&plaintext, &f.issuer).await?;
     let Some((found_sid, found_uid)) = result else {
