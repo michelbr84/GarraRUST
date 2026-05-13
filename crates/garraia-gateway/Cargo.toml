@@ -31,7 +31,7 @@ secrecy = "0.10"
 # Auth metrics — same version pin as garraia-telemetry to share the global
 # Prometheus exporter recorder. Behind cfg(feature = "telemetry") at the
 # call sites in `auth_metrics.rs`.
-metrics = "0.23"
+metrics = "0.24"
 
 # Telegram (for voice handler)
 teloxide = { workspace = true }
