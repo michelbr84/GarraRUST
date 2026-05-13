@@ -1,8 +1,9 @@
 # Plan 0113 — GAR-601: Bump aws-actions/configure-aws-credentials v4 → v6
 
-**Status:** In Progress  
+**Status:** ✅ Merged  
 **Branch:** `health/202605131257-aws-actions-v6`  
-**PR:** TBD  
+**PR:** [#313](https://github.com/michelbr84/GarraRUST/pull/313)  
+**Commit:** `4374623`  
 **Linear:** [GAR-601](https://linear.app/chatgpt25/issue/GAR-601)  
 **Triggered by:** Health routine 2026-05-13, priority (h) — GitHub Actions Node20 deprecation deadline (2026-06-02)
 
@@ -52,9 +53,9 @@ plans/README.md                # new row
 
 - [x] Edit `deploy.yml` line 91: `aws-actions/configure-aws-credentials@v4` → `@v6`
 - [x] Verify no other workflow files reference the old version
-- [ ] Commit, push, open PR
-- [ ] CI green (all ≥16 checks)
-- [ ] Squash-merge, mark GAR-601 Done
+- [x] Commit, push, open PR (#313)
+- [x] CI green (all 18 checks)
+- [x] Squash-merge, mark GAR-601 Done
 
 ## Risk register
 

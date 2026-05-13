@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-12** (health routine run 3 — bookkeeping: plan 0108 marked Merged; all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked).
+> Last updated: **2026-05-13** (health routine — bookkeeping: plan 0113 marked Merged (PR #313 / GAR-601 aws-actions v4→v6); all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -59,6 +59,24 @@ Residuals (3 remaining, all expires 2026-07-31):
 | RUSTSEC-2023-0071 | rsa 0.9.10 | GAR-456 | Active — no upstream fix |
 | RUSTSEC-2024-0429 | glib 0.18.5 | GAR-513 | Active — Tauri gtk-rs blocker |
 | RUSTSEC-2026-0097 | rand 0.7.3 | GAR-513 | Active — build-time dep only |
+
+## Confirmed 2026-05-13 (health routine — plan 0113 bookkeeping; all surfaces green)
+
+Health routine ran on 2026-05-13. Full security scan completed; no new actionable security issue found.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on main (`0e0edfb`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
+| cargo-deny | ✅ pass | SYNC NOTE audit.toml ↔ deny.toml intact (mandatory IDs: rsa, glib, rand) |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | No new open findings |
+| CI on main (latest: `0e0edfb`) | ✅ green | All 18 checks pass (confirmed via PR #317 check-runs) |
+
+**Bookkeeping completed this run:** `plans/0113-gar-601-aws-actions-v6.md` and `plans/README.md` row 0113 updated from `🔄 In Progress` to `✅ Merged 2026-05-13 via PR #313 (4374623)`. GAR-601 was the aws-actions/configure-aws-credentials v4→v6 bump (Node20 deprecation deadline 2026-06-02) — the fix landed in main via PR #313 on a prior session; only the plan tracking files were pending.
+
+Alert count: **3 open** (unchanged). All 3 are upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
 ## Confirmed 2026-05-12 run 3 (health routine — bookkeeping only; all surfaces green)
 
