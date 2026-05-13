@@ -1,4 +1,4 @@
-# Plan 0112 — GAR-601: Bump aws-actions/configure-aws-credentials v4 → v6
+# Plan 0113 — GAR-601: Bump aws-actions/configure-aws-credentials v4 → v6
 
 **Status:** In Progress  
 **Branch:** `health/202605131257-aws-actions-v6`  
@@ -44,7 +44,7 @@ None.
 
 ```
 .github/workflows/deploy.yml   # line 91: @v4 → @v6
-plans/0112-gar-601-aws-actions-v6.md  # this file
+plans/0113-gar-601-aws-actions-v6.md  # this file
 plans/README.md                # new row
 ```
 
