@@ -31,7 +31,7 @@ secrecy = "0.10"
 # Auth metrics — same version pin as garraia-telemetry to share the global
 # Prometheus exporter recorder. Behind cfg(feature = "telemetry") at the
 # call sites in `auth_metrics.rs`.
-metrics = "0.23"
+metrics = "0.24"
 
 # Telegram (for voice handler)
 teloxide = { workspace = true }
@@ -297,10 +297,10 @@ required-features = ["test-helpers"]
 
 # Plan 0082 (GAR-544): task move endpoint POST tasks/{id}/move.
 # 8 bundled scenarios (M1-M8). required-features gates the binary so
-# `cargo clippy --all-targets` without `--features test-helpers`
-# (CI's clippy invocation) skips compilation — otherwise the
-# `mod common` import would pull `JwtIssuer::new_for_test` /
-# `build_router_for_test` which only exist behind `test-helpers`.
+# `cargo clippy --all-targets` without `--features test-helpers` (CI's
+# clippy invocation) skips compilation — otherwise the `mod common`
+# import would pull `JwtIssuer::new_for_test` / `build_router_for_test`
+# which only exist behind `test-helpers`.
 [[test]]
 name = "rest_v1_task_move"
 path = "tests/rest_v1_task_move.rs"
@@ -366,6 +366,31 @@ required-features = ["test-helpers"]
 [[test]]
 name = "rest_v1_messages_edit_delete"
 path = "tests/rest_v1_messages_edit_delete.rs"
+required-features = ["test-helpers"]
+
+# Plan 0109 (GAR-595) — GET /v1/messages/{id} + GET /v1/messages/{id}/threads.
+# 10 bundled scenarios (MG1-MG5 single-message + MT1-MT5 thread listing).
+# Requires test-helpers so `cargo clippy --all-targets` without
+# `--features test-helpers` skips compilation cleanly.
+[[test]]
+name = "rest_v1_messages_get_threads"
+path = "tests/rest_v1_messages_get_threads.rs"
+required-features = ["test-helpers"]
+
+# Plan 0110 (GAR-599) — GET /v1/groups/{group_id}/task-lists/{list_id}.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_task_list_get"
+path = "tests/rest_v1_task_list_get.rs"
+required-features = ["test-helpers"]
+
+# Plan 0110 (GAR-599) — PATCH /v1/me.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_me_patch"
+path = "tests/rest_v1_me_patch.rs"
 required-features = ["test-helpers"]
 
 [dev-dependencies]
