@@ -3527,7 +3527,7 @@ dependencies = [
  "http-body-util",
  "ipnet",
  "jsonwebtoken",
- "metrics",
+ "metrics 0.24.5",
  "metrics-exporter-prometheus",
  "password-hash",
  "reqwest 0.12.28",
@@ -3686,7 +3686,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
- "metrics",
+ "metrics 0.24.5",
  "metrics-exporter-prometheus",
  "opentelemetry 0.26.0",
  "opentelemetry-otlp",
@@ -5423,6 +5423,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics"
+version = "0.24.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff56c2e7dce6bd462e3b8919986a617027481b1dcc703175b58cf9dd98a2f071"
+dependencies = [
+ "portable-atomic",
+ "rapidhash",
+]
+
+[[package]]
 name = "metrics-exporter-prometheus"
 version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5435,7 +5445,7 @@ dependencies = [
  "hyper-util",
  "indexmap 2.14.0",
  "ipnet",
- "metrics",
+ "metrics 0.23.1",
  "metrics-util",
  "quanta",
  "thiserror 1.0.69",
@@ -5452,7 +5462,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.14.5",
- "metrics",
+ "metrics 0.23.1",
  "num_cpus",
  "quanta",
  "sketches-ddsketch",
@@ -7320,6 +7330,15 @@ name = "rangemap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
+
+[[package]]
+name = "rapidhash"
+version = "4.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e48930979c155e2f33aa36ab3119b5ee81332beb6482199a8ecd6029b80b59"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "raw-cpuid"
