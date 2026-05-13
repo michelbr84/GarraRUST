@@ -115,6 +115,7 @@ impl Modify for SecurityAddon {
         super::memory::unpin_memory,
         super::tasks::create_task_list,
         super::tasks::list_task_lists,
+        super::tasks::get_task_list,
         super::tasks::patch_task_list,
         super::tasks::delete_task_list,
         super::tasks::create_task,
