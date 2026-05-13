@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:garraia_mobile/screens/settings_screen.dart';
 import 'package:garraia_mobile/services/api_service.dart';
+import 'package:go_router/go_router.dart';
 
 class _StubApiService implements ApiService {
   final MeResult _me;
@@ -64,10 +65,28 @@ ProviderContainer _container(_StubApiService api) {
 }
 
 Widget _wrap(ProviderContainer container, Widget child) {
+  // SettingsScreen calls `context.go('/login')` on logout, so the widget
+  // tree needs a real GoRouter ancestor. Wiring the real `appRouterProvider`
+  // would drag in the app's auth-redirect logic and `flutter_secure_storage`
+  // — overkill for a UI test. A minimal local router with `/` and `/login`
+  // gives the screen exactly what `context.go` needs without coupling to
+  // production navigation behaviour.
+  final router = GoRouter(
+    initialLocation: '/',
+    routes: [
+      GoRoute(path: '/', builder: (_, __) => child),
+      GoRoute(
+        path: '/login',
+        builder: (_, __) => const Scaffold(
+          body: Center(child: Text('login-stub')),
+        ),
+      ),
+    ],
+  );
   return UncontrolledProviderScope(
     container: container,
-    child: MaterialApp(
-      home: child,
+    child: MaterialApp.router(
+      routerConfig: router,
       theme: ThemeData(useMaterial3: true, brightness: Brightness.dark),
     ),
   );
@@ -143,7 +162,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(api.logoutCalled, isTrue,
-          'logout() must be called after dialog confirm');
+          reason: 'logout() must be called after dialog confirm');
     });
   });
 }

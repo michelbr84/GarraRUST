@@ -1,0 +1,7 @@
+# Placeholder for the Flutter `assets/` directory declared in pubspec.yaml.
+#
+# Drop UI assets (mascot Rive files, icons, fonts, JSON, etc.) into this
+# directory. The pubspec.yaml entry `- assets/` already picks everything
+# up recursively at build time.
+#
+# Planned first asset: `garra_mascot.riv` — see lib/widgets/mascot_widget.dart.
