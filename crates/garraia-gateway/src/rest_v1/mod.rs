@@ -262,7 +262,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .layer(axum::middleware::from_fn(uploads::tus_version_header_layer));
 
             Router::new()
-                .route("/v1/me", get(me::get_me))
+                // Plan 0110 (GAR-599) — PATCH /v1/me self-service profile update.
+                .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -470,7 +471,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // mode 1 so clients see consistent URLs regardless of
             // whether `GARRAIA_APP_DATABASE_URL` is set.
             Router::new()
-                .route("/v1/me", get(me::get_me))
+                // Plan 0110 (GAR-599) — PATCH /v1/me stub (no AppPool in mode 2).
+                .route(
+                    "/v1/me",
+                    get(me::get_me).patch(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -657,7 +662,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // `OPTIONS /v1/uploads` which has no auth requirements
             // by spec — always return the discovery headers.
             Router::new()
-                .route("/v1/me", get(unconfigured_handler))
+                // Plan 0110 (GAR-599) — PATCH /v1/me stub (no-auth mode).
+                .route(
+                    "/v1/me",
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
