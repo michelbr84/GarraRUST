@@ -1,8 +1,8 @@
 # Plan 0111 — GAR-600: Patch-and-minor batch upgrade May 13, 2026
 
-**Status:** In Progress  
+**Status:** Merged  
 **Branch:** `health/202505130900-patch-minor-batch`  
-**PR:** (pending)  
+**PR:** #309 — merged at `c9196ac4af73ad1b5ccb3a441842c85d104ecf21`  
 **Linear:** [GAR-600](https://linear.app/chatgpt25/issue/GAR-600)  
 **Triggered by:** Health routine 2026-05-13, priority (h) — medium-severity Dependabot batch
 
@@ -69,9 +69,9 @@ Port Dependabot PR #296 (which became `dirty` against main) to a fresh `health/`
 - [x] T3: Run `cargo update -p <pkg> --precise <ver>` for all 17 packages
 - [x] T4: `cargo check --workspace --exclude garraia-desktop` → clean
 - [x] T5: Create plan file + Linear GAR-600
-- [ ] T6: Commit + push + open PR
-- [ ] T7: Wait for 18 CI checks green
-- [ ] T8: Squash-merge, mark GAR-600 Done, update plans/README.md
+- [x] T6: Commit + push + open PR
+- [x] T7: Wait for 18 CI checks green (all success)
+- [x] T8: Squash-merge, mark GAR-600 Done, update plans/README.md
 
 ## Risk register
 
