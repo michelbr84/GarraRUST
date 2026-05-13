@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, head, patch, post};
+use axum::routing::{delete, get, head, post};
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
