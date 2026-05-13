@@ -297,10 +297,10 @@ required-features = ["test-helpers"]
 
 # Plan 0082 (GAR-544): task move endpoint POST tasks/{id}/move.
 # 8 bundled scenarios (M1-M8). required-features gates the binary so
-# `cargo clippy --all-targets` without `--features test-helpers`
-# (CI's clippy invocation) skips compilation — otherwise the
-# `mod common` import would pull `JwtIssuer::new_for_test` /
-# `build_router_for_test` which only exist behind `test-helpers`.
+# `cargo clippy --all-targets` without `--features test-helpers` (CI's
+# clippy invocation) skips compilation — otherwise the `mod common`
+# import would pull `JwtIssuer::new_for_test` / `build_router_for_test`
+# which only exist behind `test-helpers`.
 [[test]]
 name = "rest_v1_task_move"
 path = "tests/rest_v1_task_move.rs"
@@ -375,6 +375,22 @@ required-features = ["test-helpers"]
 [[test]]
 name = "rest_v1_messages_get_threads"
 path = "tests/rest_v1_messages_get_threads.rs"
+required-features = ["test-helpers"]
+
+# Plan 0110 (GAR-599) — GET /v1/groups/{group_id}/task-lists/{list_id}.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_task_list_get"
+path = "tests/rest_v1_task_list_get.rs"
+required-features = ["test-helpers"]
+
+# Plan 0110 (GAR-599) — PATCH /v1/me.
+# Feature-gated so plain `cargo test -p garraia-gateway` (without
+# --features test-helpers) skips compilation cleanly.
+[[test]]
+name = "rest_v1_me_patch"
+path = "tests/rest_v1_me_patch.rs"
 required-features = ["test-helpers"]
 
 [dev-dependencies]
