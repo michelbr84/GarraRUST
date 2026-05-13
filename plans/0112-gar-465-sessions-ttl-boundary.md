@@ -50,10 +50,10 @@ Delete the branch; zero schema/production-code impact.
 - [x] T2: Add `Duration` to imports and 4 new tests to `sessions_lifecycle.rs`
 - [x] T3: `cargo check -p garraia-auth` + `cargo clippy -p garraia-auth --tests` green
 - [x] T4: Commit `test(auth): GAR-465 — kill Q6.3 session TTL + expiry boundary mutants`
-- [ ] T5: Push + open PR
-- [ ] T6: CI green
-- [ ] T7: Merge (squash)
-- [ ] T8: Mark GAR-465 Done in Linear + update plans/README.md row
+- [x] T5: Push + open PR
+- [x] T6: CI green
+- [x] T7: Merge (squash)
+- [x] T8: Mark GAR-465 Done in Linear + update plans/README.md row
 
 ## Acceptance criteria
 
