@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Chef — prepare recipe for dependency caching
 # ---------------------------------------------------------------------------
-FROM rust:1.86-slim AS chef
+FROM rust:1.92-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config libssl-dev \
@@ -32,8 +32,10 @@ FROM chef AS builder
 
 COPY --from=planner /build/recipe.json recipe.json
 
-# Build dependencies only (cached layer)
-RUN cargo chef cook --release --recipe-path recipe.json
+# Build dependencies only (cached layer) — scoped to the `garra` binary so
+# we don't warm up Tauri/glib for `garraia-desktop`, which is workspace-only
+# and not part of this image.
+RUN cargo chef cook --release --recipe-path recipe.json --bin garra
 
 # Copy full source and build
 COPY Cargo.toml Cargo.lock ./
