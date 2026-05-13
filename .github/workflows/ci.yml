@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main, develop, master]
 
+# Cancel superseded in-flight runs on the same PR to avoid empilhar FAILUREs
+# em Dependabot rebases e PRs que serão fechados (ex.: #289/#286/#291 hoje
+# 2026-05-13 geraram 33 jobs vermelhos cada um substituindo o anterior).
+# Pushes em main/develop/master NÃO são cancelados — merges + post-merge
+# runs precisam completar. Padrão alinhado a codeql.yml (que comentava
+# "mirrors ci.yml convention" antes deste bloco existir).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
