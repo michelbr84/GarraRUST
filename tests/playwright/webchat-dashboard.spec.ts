@@ -57,8 +57,9 @@ test.describe('Garra Glass Dashboard (GAR-618 PR-4)', () => {
     await page.getByTestId('garra-dashboard-nav').click();
     await expect(page.getByTestId('garra-page-dashboard')).toBeVisible();
 
-    // main has a sidebar-page-btn with data-page="chat"
-    await page.locator('[data-page="chat"]').first().click();
+    // Use the sidebar-page-btn specifically — the header nav also has
+    // data-page="chat" but has no click handler wired by setupPageRouter
+    await page.locator('.sidebar-page-btn[data-page="chat"]').click();
     await expect(page.locator('.chat-area')).toHaveClass(/\bactive\b/);
     await expect(page.getByTestId('garra-page-dashboard')).not.toHaveClass(/\bactive\b/);
   });
