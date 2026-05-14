@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-14** (health routine — GAR-605: merged PR #321 (plan 0114 bookkeeping `c45fcff`) + PR #323 (add `actions` language to CodeQL matrix, closes 15 stale Medium `actions/missing-workflow-permissions` alerts); 3 residual Dependabot alerts all upstream-blocked).
+> Last updated: **2026-05-14** (health routine — GAR-605: merged PR #321 (plan 0114 bookkeeping) + PR #323 (add `actions` language to CodeQL, closes 15 stale Medium alerts); metrics 0.24.5 yanked → 0.24.6 lockfile fix; all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked, expiry 2026-07-31).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,32 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-14 (health routine — metrics 0.24.5 yanked → 0.24.6 lockfile-only fix)
+
+Health routine ran on 2026-05-14. Full `cargo audit` + `cargo deny check` scan completed.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #326 head (`84cf09f`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings (3 unsound + 18 unmaintained). No new untracked advisories. |
+| cargo-deny | ✅ pass | `advisories ok` — 2 stale `advisory-not-detected` (rustls-pemfile, rand) are expected asymmetry (documented in SYNC NOTE). |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | PR #326 Analyze jobs all green |
+| CI on main (latest: `ae0306d`) | ✅ green | PR #326 all 18 checks green |
+
+**Fix applied this run:**
+
+| Package | Before | After | Type |
+|---|---|---|---|
+| `metrics` | 0.24.5 (**yanked**) | **0.24.6** | Lockfile-only patch (`cargo update -p "metrics@0.24.5"`) |
+
+`metrics 0.24.5` was yanked from crates.io (Dependabot PR #287 introduced it). Updated to `0.24.6` (latest non-yanked patch). The API surface is unchanged — `counter`, `gauge`, `histogram` macros remain stable. `cargo audit --deny unsound` warning count: **22 → 21** (yanked warning resolved).
+
+**Dependency hygiene observation:** `tracing-opentelemetry` bumped from 0.27.0 → 0.32.1 (PR #285, Dependabot) introduced a second copy of `opentelemetry 0.31.0` alongside the existing `0.26.0`. Both are transitive via `garraia-telemetry`; no security advisory affects either version. This is a quality concern (duplicate major version), not a security risk. Tracked under normal dependency hygiene.
+
+Alert count: **3 open** (unchanged). All 3 are upstream-blocked with 2026-07-31 expiry.
 
 ## Confirmed 2026-05-12 (health routine — GAR-591 merged, rustls-webpki 0.102.8 chain removed)
 
