@@ -126,4 +126,10 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0116a | [Web Console redesign "Garra Glass" — Chat slice](0116a-web-console-redesign-garra-glass.md) | [GAR-607](https://linear.app/chatgpt25/issue/GAR-607) | ✅ Merged 2026-05-14 via PRs #330 (foundation), #331 (chat), #332 (right panel) |
 | 0116b | [Web Console multi-page vision](0116b-transformar-a-tela-atual-do-GarraIA.md) | [GAR-607](https://linear.app/chatgpt25/issue/GAR-607) | ✅ Merged 2026-05-14 via PRs #333, #335, #337, #338, #339, #340 + plan 0123 finalization |
 | 0117 | [GAR-618 — Web Console PR-4: Dashboard page + GET /api/stats](0117-gar-618-web-console-pr4-dashboard.md) | [GAR-618](https://linear.app/chatgpt25/issue/GAR-618) | ✅ Merged 2026-05-14 via PR #334 (`9e9deab`) |
+| 0118 | GAR-612 — Web Console PR-5: `/api/health` + `/api/capabilities` | [GAR-612](https://linear.app/chatgpt25/issue/GAR-612) | ✅ Merged 2026-05-14 via PR #335 |
+| 0119 | GAR-613 — Web Console PR-6: Providers page + `/api/providers/{test,default}` | [GAR-613](https://linear.app/chatgpt25/issue/GAR-613) | ✅ Merged 2026-05-14 via PR #337 |
+| 0120 | GAR-614 — Web Console PR-7: Channels + Sessions pages + `/api/channels` | [GAR-614](https://linear.app/chatgpt25/issue/GAR-614) | ✅ Merged 2026-05-14 via PR #338 |
+| 0121 | GAR-615 — Web Console PR-8: Settings Registry + `/api/settings/{schema,effective}` + `PATCH /api/settings` | [GAR-615](https://linear.app/chatgpt25/issue/GAR-615) | ✅ Merged 2026-05-14 via PR #339 |
+| 0122 | GAR-616 — Web Console PR-9: Diagnostics + Logs pages + `/api/diagnostics` | [GAR-616](https://linear.app/chatgpt25/issue/GAR-616) | ✅ Merged 2026-05-14 via PR #340 |
+| 0123 | GAR-617 — Web Console PR-10: E2E Playwright matrix + ROADMAP/README/CLAUDE finalization | [GAR-617](https://linear.app/chatgpt25/issue/GAR-617) | ✅ Merged 2026-05-14 via PR #341 (`e570631`) |
 | 0124 | [GAR-620 — bump `metrics 0.24.5` (yanked) → `0.24.6` (health routine 2026-05-14)](0124-gar-620-metrics-yanked-0246.md) | [GAR-620](https://linear.app/chatgpt25/issue/GAR-620) | ✅ Merged 2026-05-14 via PR #336 (`adbe00af`) |

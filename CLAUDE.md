@@ -63,8 +63,8 @@ crates/
                         #338 (Channels + Sessions + `/api/channels`),
                         #339 (Settings Registry + `/api/settings/{schema,effective}` +
                         `PATCH /api/settings` dry-run),
-                        #340 (Diagnostics + Logs + `/api/diagnostics`), PR final (E2E +
-                        ROADMAP/README/CLAUDE). **Nunca** importar Bootstrap/AdminLTE/
+                        #340 (Diagnostics + Logs + `/api/diagnostics`),
+                        #341 (E2E + ROADMAP/README/CLAUDE). **Nunca** importar Bootstrap/AdminLTE/
                         Animate.css de CDN — ports inline (ADR 0009 §3). Endpoints
                         novos do Web Console (todos auth-free em `/api/*`, secret-free):
                         `/api/health` (Dashboard schema com `version`, `gateway_url`,
