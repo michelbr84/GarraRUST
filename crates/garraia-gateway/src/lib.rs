@@ -10,6 +10,7 @@ pub mod bootstrap;
 pub mod cluster;
 pub mod commands;
 pub mod context_summarizer;
+pub mod diagnostics_handler;
 pub mod externalization;
 pub mod health;
 pub mod logs_handler;

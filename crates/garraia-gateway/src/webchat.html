@@ -1404,6 +1404,67 @@ nav.sidebar#sidebar .sidebar-page-btn .page-tag {
 [data-theme="light"] .provider-card .provider-actions button,
 [data-bs-theme="light"] .provider-card .provider-actions button { background: rgba(255, 255, 255, 0.6); color: #06142b; }
 
+/* Diagnostics (plan 0122) */
+.diagnostics-summary {
+  display: flex; align-items: center; gap: 14px;
+  padding: 18px 22px;
+  border-radius: 18px;
+  background: var(--garra-panel-2);
+  border: 1px solid var(--garra-border);
+}
+.diagnostics-summary .icon-circle {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  display: grid; place-items: center;
+  background: rgba(var(--garra-accent-rgb), 0.18);
+  color: var(--garra-accent);
+}
+.diagnostics-summary.ok .icon-circle { background: rgba(32, 232, 135, 0.18); color: var(--garra-success); }
+.diagnostics-summary.warning .icon-circle { background: rgba(255, 176, 32, 0.18); color: var(--garra-warning); }
+.diagnostics-summary.error .icon-circle { background: rgba(255, 92, 122, 0.18); color: var(--garra-danger); }
+.diagnostics-summary .icon-circle .icon-svg { width: 24px; height: 24px; fill: currentColor; }
+.diagnostics-summary .summary-text strong {
+  font-family: var(--garra-font); font-weight: 800; font-size: 16px; color: var(--garra-text);
+}
+.diagnostics-summary .summary-text span { display: block; color: var(--garra-muted); font-size: 12px; }
+[data-theme="light"] .diagnostics-summary,
+[data-bs-theme="light"] .diagnostics-summary { background: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .diagnostics-summary .summary-text strong,
+[data-bs-theme="light"] .diagnostics-summary .summary-text strong { color: #06142b; }
+
+.diagnostic-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--garra-border);
+}
+.diagnostic-row:last-child { border-bottom: none; }
+.diagnostic-row .status-icon {
+  width: 24px; height: 24px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 14px; font-weight: 900;
+}
+.diagnostic-row.ok .status-icon { background: rgba(32, 232, 135, 0.18); color: var(--garra-success); }
+.diagnostic-row.warning .status-icon { background: rgba(255, 176, 32, 0.18); color: var(--garra-warning); }
+.diagnostic-row.error .status-icon { background: rgba(255, 92, 122, 0.18); color: var(--garra-danger); }
+.diagnostic-row.skipped .status-icon { background: rgba(255, 255, 255, 0.06); color: var(--garra-muted-2); }
+.diagnostic-row .check-label { font-weight: 700; color: var(--garra-text); font-size: 13px; }
+.diagnostic-row .check-id { color: var(--garra-muted-2); font-family: var(--garra-mono); font-size: 10px; margin-top: 2px; }
+.diagnostic-row .check-detail { font-size: 12px; color: var(--garra-muted); font-family: var(--garra-mono); }
+.diagnostic-row .check-next-step { font-size: 11px; color: var(--garra-warning); margin-top: 4px; }
+[data-theme="light"] .diagnostic-row .check-label,
+[data-bs-theme="light"] .diagnostic-row .check-label { color: #06142b; }
+
+/* Logs page console — colour-tag log lines by level */
+#logs-console .log-trace { color: var(--garra-muted-2); }
+#logs-console .log-debug { color: var(--garra-muted); }
+#logs-console .log-info  { color: var(--garra-text); }
+#logs-console .log-warn  { color: var(--garra-warning); }
+#logs-console .log-error { color: var(--garra-danger); }
+
 /* Settings Registry (plan 0121) */
 .settings-category {
   margin-bottom: 18px;
@@ -2785,34 +2846,55 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
   </section>
 
+  <!-- DIAGNOSTICS page (plan 0122) -->
   <section class="page-view" data-page="diagnostics" data-testid="garra-page-diagnostics">
     <div class="glass-panel page-card">
       <div class="panel-header">
         <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2z"/></svg></span> Diagnostics</h3>
-        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+        <div style="display:flex;gap:8px;">
+          <button class="icon-btn header-icon-btn" id="diagnostics-copy-btn" type="button" title="Copy report to clipboard">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>
+          </button>
+          <button class="icon-btn header-icon-btn" id="diagnostics-refresh-btn" type="button" title="Refresh">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.17 6.706a5 5 0 0 1 7.103-3.16.5.5 0 1 0 .454-.892A6 6 0 0 0 2.19 6.296a.5.5 0 1 0 .98.21z"/></svg>
+          </button>
+        </div>
       </div>
       <div class="page-body">
-        <div class="page-placeholder">
-          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
-          <h2>Diagnostics</h2>
-          <p>Health check visual, relatório copiável e detecção de placeholders. Endpoints Rust em <code>plan 0122 / PR-9</code>.</p>
-        </div>
+        <div id="diagnostics-summary" style="margin-bottom:18px;"></div>
+        <div id="diagnostics-checks"></div>
       </div>
     </div>
   </section>
 
+  <!-- LOGS page (plan 0122) -->
   <section class="page-view" data-page="logs" data-testid="garra-page-logs">
     <div class="glass-panel page-card">
       <div class="panel-header">
         <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2z"/></svg></span> Logs</h3>
-        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
-      </div>
-      <div class="page-body">
-        <div class="page-placeholder">
-          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
-          <h2>Logs</h2>
-          <p>Filtro por nível, busca, auto-scroll, export — com secret masking server-side. Endpoints Rust em <code>plan 0122 / PR-9</code>.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <select class="garra-select" id="logs-level-filter" style="width:auto;padding:6px 10px;font-size:12px;">
+            <option value="all">All levels</option>
+            <option value="trace">Trace</option>
+            <option value="debug">Debug</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+          <input class="garra-input" id="logs-search-input" placeholder="Search…" style="width:160px;padding:6px 10px;font-size:12px;" />
+          <button class="icon-btn header-icon-btn" id="logs-refresh-btn" type="button" title="Refresh">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.17 6.706a5 5 0 0 1 7.103-3.16.5.5 0 1 0 .454-.892A6 6 0 0 0 2.19 6.296a.5.5 0 1 0 .98.21z"/></svg>
+          </button>
+          <button class="icon-btn header-icon-btn" id="logs-clear-btn" type="button" title="Clear view (local only)">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+          </button>
+          <button class="icon-btn header-icon-btn" id="logs-export-btn" type="button" title="Export visible logs">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>
+          </button>
         </div>
+      </div>
+      <div class="page-body" style="padding:0;">
+        <pre id="logs-console" style="margin:0;padding:18px 22px;font-family:var(--garra-mono);font-size:12px;line-height:1.5;color:var(--garra-text);background:rgba(0,0,0,0.20);overflow:auto;max-height:calc(100vh - 220px);min-height:300px;white-space:pre-wrap;word-break:break-word;"></pre>
       </div>
     </div>
   </section>
@@ -3159,6 +3241,8 @@ function setPage(name) {
     case 'channels':    loadChannelsPage && loadChannelsPage(); break;
     case 'sessions':    loadSessionsPage && loadSessionsPage(); break;
     case 'settings':    loadSettingsPage && loadSettingsPage(); break;
+    case 'diagnostics': loadDiagnosticsPage && loadDiagnosticsPage(); break;
+    case 'logs':        loadLogsPage && loadLogsPage(); break;
     case 'dashboard':   hydrateDashboard && hydrateDashboard(); break;
     default: break;
   }
@@ -3283,6 +3367,120 @@ async function setDefaultProvider(id) {
       await loadProvidersPage(); // re-render with new default
     }
   } catch (_e) { /* swallow — UI will surface via reload */ }
+}
+
+// ─── Diagnostics page (plan 0122) ────────────────────────────────────
+let _diagnosticsLastReport = null;
+async function loadDiagnosticsPage() {
+  const summary = document.getElementById('diagnostics-summary');
+  const checks = document.getElementById('diagnostics-checks');
+  if (!summary || !checks) return;
+  summary.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Carregando diagnóstico…</div>';
+  checks.innerHTML = '';
+  try {
+    const r = await fetch('/api/diagnostics');
+    if (!r.ok) { summary.innerHTML = '<div class="warning-box">Falha ao carregar diagnostics.</div>'; return; }
+    const j = await r.json();
+    _diagnosticsLastReport = j;
+    const overall = j.status;
+    const overallLabel = overall === 'ok' ? 'Tudo OK' : overall === 'warning' ? 'Atenção' : 'Erro';
+    const overallText = overall === 'ok'
+      ? 'Gateway saudável. Versão ' + (j.version || '—') + ', uptime ' + (j.uptime_secs || 0) + 's.'
+      : overall === 'warning'
+        ? 'Funcionando, mas com alertas que merecem atenção.'
+        : 'Pelo menos um subsistema crítico falhou. Veja a lista abaixo.';
+    summary.outerHTML = `
+      <div id="diagnostics-summary" class="diagnostics-summary ${escapeHtml(overall)}">
+        <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg></div>
+        <div class="summary-text">
+          <strong>${escapeHtml(overallLabel)}</strong>
+          <span>${escapeHtml(overallText)} • Generated at ${escapeHtml(j.generated_at || '')}</span>
+        </div>
+      </div>`;
+    const rows = Array.isArray(j.checks) ? j.checks : [];
+    checks.innerHTML = rows.map(c => renderDiagnosticRow(c)).join('');
+  } catch (e) {
+    summary.innerHTML = '<div class="warning-box">Erro: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+function renderDiagnosticRow(c) {
+  const status = c.status || 'skipped';
+  const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'error' ? '×' : '–';
+  return `
+    <div class="diagnostic-row ${escapeHtml(status)}">
+      <div class="status-icon">${icon}</div>
+      <div>
+        <div class="check-label">${escapeHtml(c.label || c.id)}</div>
+        <div class="check-id">${escapeHtml(c.id)}</div>
+        ${c.next_step ? '<div class="check-next-step">→ ' + escapeHtml(c.next_step) + '</div>' : ''}
+      </div>
+      <div class="check-detail">${escapeHtml(c.detail || '')}</div>
+    </div>
+  `;
+}
+function copyDiagnosticsReport() {
+  if (!_diagnosticsLastReport) return;
+  const txt = JSON.stringify(_diagnosticsLastReport, null, 2);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).catch(() => {});
+  } else {
+    // Fallback: select-into-textarea.
+    const t = document.createElement('textarea');
+    t.value = txt; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } catch (_e) {}
+    document.body.removeChild(t);
+  }
+}
+
+// ─── Logs page (plan 0122) ───────────────────────────────────────────
+let _logsLastRaw = '';
+async function loadLogsPage() {
+  const pre = document.getElementById('logs-console');
+  if (!pre) return;
+  pre.textContent = 'Carregando logs…';
+  try {
+    const r = await fetch('/api/logs');
+    const j = await r.json();
+    _logsLastRaw = String(j.logs || '');
+    renderLogs();
+  } catch (e) {
+    pre.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+function renderLogs() {
+  const pre = document.getElementById('logs-console');
+  const levelSel = document.getElementById('logs-level-filter');
+  const searchIn = document.getElementById('logs-search-input');
+  if (!pre) return;
+  const level = levelSel ? levelSel.value : 'all';
+  const query = searchIn ? searchIn.value.trim().toLowerCase() : '';
+  const lines = _logsLastRaw.split('\n');
+  const filtered = lines.filter(line => {
+    if (query && line.toLowerCase().indexOf(query) === -1) return false;
+    if (level === 'all') return true;
+    const upper = level.toUpperCase();
+    return line.indexOf(upper) !== -1 || line.indexOf(level) !== -1;
+  });
+  pre.innerHTML = filtered.map(l => {
+    let cls = 'log-info';
+    if (/ERROR|\berror\b/i.test(l)) cls = 'log-error';
+    else if (/WARN|\bwarn\b/i.test(l)) cls = 'log-warn';
+    else if (/DEBUG|\bdebug\b/i.test(l)) cls = 'log-debug';
+    else if (/TRACE|\btrace\b/i.test(l)) cls = 'log-trace';
+    return '<span class="' + cls + '">' + escapeHtml(l) + '</span>';
+  }).join('\n');
+  // Auto-scroll to bottom on refresh.
+  pre.scrollTop = pre.scrollHeight;
+}
+function clearLogsView() {
+  _logsLastRaw = '';
+  renderLogs();
+}
+function exportLogs() {
+  const blob = new Blob([_logsLastRaw], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'garra-logs-' + Date.now() + '.txt'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ─── Settings Registry page (plan 0121) ──────────────────────────────
@@ -4765,6 +4963,21 @@ async function boot() {
   if (setRefresh) setRefresh.addEventListener('click', () => loadSettingsPage && loadSettingsPage());
   const setSave = document.getElementById('settings-save-btn');
   if (setSave) setSave.addEventListener('click', () => saveSettings && saveSettings());
+  // Plan 0122: diagnostics + logs page controls.
+  const diagRefresh = document.getElementById('diagnostics-refresh-btn');
+  if (diagRefresh) diagRefresh.addEventListener('click', () => loadDiagnosticsPage && loadDiagnosticsPage());
+  const diagCopy = document.getElementById('diagnostics-copy-btn');
+  if (diagCopy) diagCopy.addEventListener('click', () => copyDiagnosticsReport && copyDiagnosticsReport());
+  const logsRefresh = document.getElementById('logs-refresh-btn');
+  if (logsRefresh) logsRefresh.addEventListener('click', () => loadLogsPage && loadLogsPage());
+  const logsClear = document.getElementById('logs-clear-btn');
+  if (logsClear) logsClear.addEventListener('click', () => clearLogsView && clearLogsView());
+  const logsExport = document.getElementById('logs-export-btn');
+  if (logsExport) logsExport.addEventListener('click', () => exportLogs && exportLogs());
+  const logsLevel = document.getElementById('logs-level-filter');
+  if (logsLevel) logsLevel.addEventListener('change', () => renderLogs && renderLogs());
+  const logsSearch = document.getElementById('logs-search-input');
+  if (logsSearch) logsSearch.addEventListener('input', () => renderLogs && renderLogs());
 
   try {
     const r = await fetch('/api/auth-check');
