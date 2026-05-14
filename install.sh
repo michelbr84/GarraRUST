@@ -42,14 +42,11 @@ detect_platform() {
         *)             error "Unsupported architecture: ${ARCH}" ;;
     esac
 
-    # Release workflow names the arm64 binary "arm64", not "aarch64".
-    case "${ARCH_NAME}" in
-        aarch64) ASSET_ARCH="arm64" ;;
-        *)       ASSET_ARCH="${ARCH_NAME}" ;;
-    esac
-
-    ARTIFACT="${BINARY}-${OS_NAME}-${ASSET_ARCH}"
-    echo "Detected platform: ${OS_NAME}-${ASSET_ARCH}"
+    # release.yml emits `garraia-{linux,macos}-aarch64` from v0.2.1 onwards
+    # (aligned with `std::env::consts::ARCH` consumed by garraia-cli's
+    # update command). No remapping needed.
+    ARTIFACT="${BINARY}-${OS_NAME}-${ARCH_NAME}"
+    echo "Detected platform: ${OS_NAME}-${ARCH_NAME}"
 }
 
 resolve_version() {

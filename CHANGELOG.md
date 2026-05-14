@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-14
+
+### Auto-update pipeline — fixes 404 on `garraia update`
+
+#### Fixed
+- **`/releases/latest` 404** — Every prior tag (`v0.1.0-beta`, `v0.1.0-beta.1`, `v0.2.0-beta`) shipped as a prerelease, so the GitHub endpoint that `garraia update` calls (`GET /repos/{owner}/{repo}/releases/latest`) returned 404. `v0.2.1` is the first **non-prerelease** tag — the workflow auto-flips `prerelease: true` only when the tag contains `alpha`/`beta`/`rc`. From now on, installed `0.2.0` binaries find an updatable release.
+- **Asset-name mismatch (`arm64` ↔ `aarch64`)** — `crates/garraia-cli/src/update.rs:43-50` selects assets by Rust's `std::env::consts::ARCH`, which on Apple Silicon and Linux ARMv8 is `aarch64`. The release workflow named those binaries `garraia-linux-arm64` / `garraia-macos-arm64`, so even if a non-prerelease existed the updater would have bailed with "release has no asset for this platform". Renamed to `garraia-linux-aarch64` / `garraia-macos-aarch64`.
+- **Missing per-asset `.sha256` files** — `update.rs:127` reads `<asset>.sha256` siblings for tamper-detection. The previous workflow only emitted a single aggregate `SHA256SUMS`. The "Generate checksums" step now emits both: aggregate `SHA256SUMS` (kept for `install.sh` + human verification) **and** one `<asset>.sha256` per binary, gathered into the release via `release/*.sha256` glob.
+
+#### Changed
+- Workspace `version = "0.2.1"` (Cargo.toml, `crates/garraia-desktop/src-tauri/Cargo.toml`, `tauri.conf.json`).
+- Prerelease gate widened to also detect `rc` in the tag string (was `alpha|beta`).
+
 ## [0.1.12] - 2026-02-27
 
 ### Fase 5: Delivery and Ecosystem

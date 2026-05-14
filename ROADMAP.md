@@ -122,6 +122,26 @@ Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 
 ✅ **Done** (2026-05-04). Fechado após [GAR-490](https://linear.app/chatgpt25/issue/GAR-490) (PR [#112](https://github.com/michelbr84/GarraRUST/pull/112), 2026-05-04) e [GAR-491](https://linear.app/chatgpt25/issue/GAR-491) (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109), 2026-05-01) mergearem.
 
+### Auto-update pipeline (`garraia update`) — entrega `v0.2.1` (2026-05-14)
+
+`garraia update` retornava `404 Not Found` em todas as instalações desde
+o lançamento do comando porque o repo só tinha **prereleases** (`v0.1.0-beta`,
+`v0.1.0-beta.1`, `v0.2.0-beta`), e `GET /repos/{owner}/{repo}/releases/latest`
+ignora prereleases por design ([GitHub REST docs](https://docs.github.com/rest/releases/releases)).
+A nota original do triagem está versionada em [`release.md`](release.md).
+
+Três mismatches estruturais entre [`release.yml`](.github/workflows/release.yml)
+e [`crates/garraia-cli/src/update.rs`](crates/garraia-cli/src/update.rs)
+foram corrigidos no mesmo PR:
+
+| # | Mismatch | Antes | Depois |
+|---|---------|-------|--------|
+| 1 | Todas as releases marcadas `prerelease: true` | `v0.2.0-beta` (prerelease) | Tag `v0.2.1` produz release **não-prerelease** automaticamente (gate `contains(alpha|beta|rc)`) |
+| 2 | Sufixo ARM64 errado | `garraia-{linux,macos}-arm64` | `garraia-{linux,macos}-aarch64` (alinha com `std::env::consts::ARCH` que `update.rs:43-50` consome) |
+| 3 | Só `SHA256SUMS` agregado | Falhava no `release is missing checksum file` | `SHA256SUMS` **mais** `<asset>.sha256` per-asset (loop sha256sum + glob `release/*.sha256` no `files:` da action) |
+
+Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desktop/src-tauri/Cargo.toml` e `tauri.conf.json` para fechar o gap de versão sem reuso de tag. Linear: [GAR-619](https://linear.app/chatgpt25/issue/GAR-619) (criada nesta sessão).
+
 ---
 
 ## 2. Estrutura do roadmap
