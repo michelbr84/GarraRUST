@@ -1932,6 +1932,80 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
 
 /* Misc hidden utility */
 .hidden { display: none !important; }
+
+/* ===== GARRA GLASS — DASHBOARD (plan 0117) ===== */
+.dashboard-section {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dashboard-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  padding: 24px;
+}
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 24px;
+  align-items: flex-start;
+}
+.metric-card .metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--garra-muted, var(--text-muted));
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.metric-card .metric-value {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--garra-gold, #ffd400);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  line-height: 1.1;
+}
+.metric-card .metric-status-online {
+  color: var(--garra-cyan, #16d9ff);
+}
+/* .reveal-card — stagger animation on Dashboard reveal */
+.reveal-card {
+  opacity: 0;
+  animation: fadeInUp 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.metric-grid.revealed .reveal-card:nth-child(1) { animation-delay: 0ms; }
+.metric-grid.revealed .reveal-card:nth-child(2) { animation-delay: 80ms; }
+.metric-grid.revealed .reveal-card:nth-child(3) { animation-delay: 160ms; }
+.metric-grid.revealed .reveal-card:nth-child(4) { animation-delay: 240ms; }
+/* sidebar nav item active state */
+.sidebar-footer-btn.active {
+  background: rgba(255,212,0,0.12) !important;
+  color: var(--garra-gold, #ffd400) !important;
+}
+nav.sidebar#sidebar .sidebar-footer-btn.active {
+  background: rgba(255,212,0,0.15) !important;
+  color: var(--garra-gold, #ffd400) !important;
+}
+nav.sidebar#sidebar .sidebar-footer-btn.active .icon-svg path,
+nav.sidebar#sidebar .sidebar-footer-btn.active .icon-svg rect {
+  fill: var(--garra-gold, #ffd400) !important;
+}
 </style>
 </head>
 <body>
@@ -1993,6 +2067,10 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       <!-- Sessions populated by JS -->
     </div>
     <div class="sidebar-footer">
+      <button class="sidebar-footer-btn" id="dashboard-nav-btn" data-section="dashboard" data-testid="garra-dashboard-nav" title="Dashboard">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zM1 12a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1z"/></svg>
+        Dashboard
+      </button>
       <button class="sidebar-footer-btn" id="settings-btn" title="Settings">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/></svg>
         Settings
@@ -2116,6 +2194,32 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
     </div><!-- /.glass-panel.chat-console -->
   </main>
+
+  <!-- DASHBOARD SECTION (plan 0117 / GAR-618) -->
+  <section id="dashboard-section" class="dashboard-section hidden" data-testid="garra-dashboard-section">
+    <div class="dashboard-header">
+      <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true" style="width:20px;height:20px;flex-shrink:0;"><path d="M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zM1 12a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1z"/></svg>
+      <h2 class="dashboard-title">Dashboard</h2>
+    </div>
+    <div class="metric-grid" id="metric-grid">
+      <article class="metric-card glass-panel reveal-card" data-testid="metric-card-status">
+        <span class="metric-label">Gateway Status</span>
+        <span class="metric-value metric-status-online" id="metric-status">—</span>
+      </article>
+      <article class="metric-card glass-panel reveal-card" data-testid="metric-card-uptime">
+        <span class="metric-label">Uptime</span>
+        <span class="metric-value" id="metric-uptime">—</span>
+      </article>
+      <article class="metric-card glass-panel reveal-card" data-testid="metric-card-version">
+        <span class="metric-label">Version</span>
+        <span class="metric-value" id="metric-version">—</span>
+      </article>
+      <article class="metric-card glass-panel reveal-card" data-testid="metric-card-sessions">
+        <span class="metric-label">Active Sessions</span>
+        <span class="metric-value" id="metric-sessions">—</span>
+      </article>
+    </div>
+  </section>
 
   <!-- RIGHT PANEL -->
   <aside class="right-panel" id="right-panel" data-testid="garra-context-panel">
@@ -3808,6 +3912,59 @@ window.setLanguage = function(lang) {
   localStorage.setItem('lang', lang);
   if (window.loadLocale) window.loadLocale(lang);
 };
+
+// ─── Dashboard section switching ──────────────────────────────────
+function showSection(name) {
+  const chatArea = document.querySelector('.chat-area');
+  const dashSection = document.getElementById('dashboard-section');
+  if (chatArea) chatArea.classList.toggle('hidden', name !== 'chat');
+  if (dashSection) {
+    dashSection.classList.toggle('hidden', name !== 'dashboard');
+    if (name === 'dashboard') {
+      const grid = document.getElementById('metric-grid');
+      if (grid) grid.classList.add('revealed');
+      fetchStats();
+    }
+  }
+  document.querySelectorAll('[data-section]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.section === name);
+  });
+}
+
+function formatUptime(secs) {
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+async function fetchStats() {
+  try {
+    const r = await fetch('/api/stats'); if (!r.ok) return;
+    const d = await r.json();
+    const elStatus = document.getElementById('metric-status');
+    const elUptime = document.getElementById('metric-uptime');
+    const elVersion = document.getElementById('metric-version');
+    const elSessions = document.getElementById('metric-sessions');
+    if (elStatus) elStatus.textContent = d.gateway_status ?? '—';
+    if (elUptime) elUptime.textContent = formatUptime(d.uptime_secs ?? 0);
+    if (elVersion) elVersion.textContent = d.version ? `v${d.version}` : '—';
+    if (elSessions) elSessions.textContent = d.active_sessions ?? '—';
+  } catch (_) {}
+}
+
+const dashNavBtn = document.getElementById('dashboard-nav-btn');
+if (dashNavBtn) {
+  dashNavBtn.addEventListener('click', () => showSection('dashboard'));
+}
+
+document.querySelectorAll('[data-section]').forEach(btn => {
+  if (btn.id !== 'dashboard-nav-btn') {
+    btn.addEventListener('click', () => showSection(btn.dataset.section || 'chat'));
+  }
+});
+
+setInterval(fetchStats, 30_000);
+
+showSection('chat');
 
 boot();
 
