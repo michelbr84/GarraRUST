@@ -33,10 +33,36 @@ pub struct HealthStatus {
 }
 
 /// Aggregate health response for the `/api/health` endpoint.
+///
+/// Plan 0118 / PR-5 extends the original `{status, checks}` shape with the
+/// fields the web-console Dashboard consumes (`version`, `gateway_url`,
+/// `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`,
+/// `warnings`). `checks` is retained for back-compat with any operator
+/// scripts that already parsed it.
+///
+/// Secret-free by construction: nothing in the response derives from
+/// `state.config.gateway.api_key` or any provider API key.
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthResponse {
     /// Overall status: "healthy", "degraded", or "unhealthy"
     pub status: String,
+    /// Gateway binary version (`CARGO_PKG_VERSION` at build time).
+    pub version: &'static str,
+    /// Effective listener URL (`http(s)://host:port`).
+    pub gateway_url: String,
+    /// Seconds since process boot.
+    pub uptime_secs: u64,
+    /// Number of in-memory sessions (DashMap entry count).
+    pub active_sessions: usize,
+    /// Default LLM provider id, if one is configured.
+    pub provider: Option<String>,
+    /// Configured model on the default provider, if any.
+    pub model: Option<String>,
+    /// Live channel registry list.
+    pub channels: Vec<String>,
+    /// Human-readable warnings derived from failed `checks`.
+    pub warnings: Vec<String>,
+    /// Per-check results (preserved for back-compat).
     pub checks: Vec<HealthStatus>,
 }
 
@@ -328,44 +354,71 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
 
 // ─── HTTP Endpoint ─────────────────────────────────────────────────────────
 
-/// GET /api/health — returns JSON with all provider health statuses.
+/// Computes the gateway URL from the live config (`scheme://host:port`).
+/// `scheme` is `https` when TLS is configured, otherwise `http`. Used in
+/// `/api/health` and `/api/capabilities`.
+fn gateway_url_from_config(cfg: &garraia_config::AppConfig) -> String {
+    let scheme = if cfg.gateway.tls_cert_path.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    format!("{}://{}:{}", scheme, cfg.gateway.host, cfg.gateway.port)
+}
+
+/// Builds the Dashboard-friendly fields shared by `/api/health` and the
+/// embedded status preview. Extracts a default-provider id + model and
+/// the live channel list without touching any secret.
+fn extras_from_state(state: &SharedState) -> (Vec<String>, Option<String>, Option<String>) {
+    // Channels — `state.channels.read()` is async, but we delegate to the
+    // caller; this helper only computes provider/model. Channels handled
+    // separately.
+    let provider = state.agents.default_provider_id().map(|s| s.to_string());
+    let model = provider
+        .as_deref()
+        .and_then(|p| state.agents.get_provider(p))
+        .and_then(|p| p.configured_model().map(|m| m.to_string()));
+    (Vec::new(), provider, model)
+}
+
+/// GET /api/health — Dashboard contract per plan 0116b §6.1 + back-compat
+/// `checks` array. Always 200; degraded/unhealthy is conveyed in the
+/// `status` field, never the HTTP code (the Web Console renders an amber
+/// or red warning-box without losing the rest of the payload).
 ///
 /// ```json
 /// {
 ///   "status": "degraded",
-///   "checks": [
-///     {"name": "openrouter", "ok": true, "latency_ms": 231},
-///     {"name": "ollama", "ok": false, "error": "connection refused"},
-///     {"name": "chatterbox", "ok": true, "latency_ms": 42}
-///   ]
+///   "version": "0.2.0",
+///   "gateway_url": "http://127.0.0.1:3888",
+///   "uptime_secs": 1234,
+///   "active_sessions": 2,
+///   "provider": "openrouter",
+///   "model": "openrouter/auto",
+///   "channels": ["web", "telegram"],
+///   "warnings": ["ollama: connection refused"],
+///   "checks": [ {"name": "openrouter", "ok": true, "latency_ms": 231}, ... ]
 /// }
 /// ```
 pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResponse> {
-    // Try to read from cache first
-    if let Some(cache) = &state.health_cache {
+    // Provider check results: prefer cache, fall back to a live run.
+    let checks = if let Some(cache) = &state.health_cache {
         let cached = cache.read().await;
         if !cached.is_empty() {
-            let healthy = cached.iter().filter(|r| r.ok).count();
-            let total = cached.len();
-            let status = if healthy == total {
-                "healthy"
-            } else if healthy > 0 {
-                "degraded"
-            } else {
-                "unhealthy"
-            };
-            return Json(HealthResponse {
-                status: status.to_string(),
-                checks: cached.clone(),
-            });
+            cached.clone()
+        } else {
+            run_all_checks(&state).await
         }
-    }
+    } else {
+        run_all_checks(&state).await
+    };
 
-    // No cache available — run checks now
-    let results = run_all_checks(&state).await;
-    let healthy = results.iter().filter(|r| r.ok).count();
-    let total = results.len();
-    let status = if healthy == total {
+    let healthy = checks.iter().filter(|r| r.ok).count();
+    let total = checks.len();
+    let status = if total == 0 {
+        // No registered checks — gateway itself is up; report healthy.
+        "healthy"
+    } else if healthy == total {
         "healthy"
     } else if healthy > 0 {
         "degraded"
@@ -373,8 +426,137 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         "unhealthy"
     };
 
+    let warnings: Vec<String> = checks
+        .iter()
+        .filter(|c| !c.ok)
+        .map(|c| match &c.error {
+            Some(e) => format!("{}: {}", c.name, e),
+            None => format!("{}: unhealthy", c.name),
+        })
+        .collect();
+
+    let channels: Vec<String> = state
+        .channels
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let (_unused, provider, model) = extras_from_state(&state);
+
     Json(HealthResponse {
         status: status.to_string(),
-        checks: results,
+        version: env!("CARGO_PKG_VERSION"),
+        gateway_url: gateway_url_from_config(&state.config),
+        uptime_secs: state.boot_time.elapsed().as_secs(),
+        active_sessions: state.sessions.len(),
+        provider,
+        model,
+        channels,
+        warnings,
+        checks,
+    })
+}
+
+// ─── /api/capabilities ─────────────────────────────────────────────────────
+
+/// What the Web Console + future remote clients can rely on. Each list is
+/// computed live from the running gateway (`AgentRuntime`,
+/// `ChannelRegistry`, `CommandRegistry`). Secret-free.
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilitiesResponse {
+    /// Cargo-feature-flag-shaped capability flags.
+    pub features: Vec<String>,
+    /// Provider IDs currently registered (sorted, deduped).
+    pub providers: Vec<String>,
+    /// Per-provider configured model — emitted as `provider/model`.
+    pub models: Vec<String>,
+    /// Live channel registry list.
+    pub channels: Vec<String>,
+    /// Slash-command registry — names only, no descriptions or aliases that
+    /// might leak admin paths.
+    pub commands: Vec<String>,
+    /// Skin / theme presets the front-end can offer.
+    pub skins: Vec<String>,
+    /// Forward-compat hook for `--experimental-*` flags. Empty for now.
+    pub experimental_flags: Vec<String>,
+    /// Gateway binary version, mirroring `/api/health`.
+    pub version: &'static str,
+}
+
+/// GET /api/capabilities — read-only snapshot of what the gateway can
+/// currently do. Renders the Dashboard "Arquitetura" card + drives the
+/// Skins page enumeration without hardcoded JS lists.
+pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<CapabilitiesResponse> {
+    // Static feature flags driven by Cargo cfg + runtime state shape.
+    let mut features: Vec<String> = Vec::new();
+    features.push("chat".into());
+    features.push("websocket".into());
+    features.push("multi-channel".into());
+    if state.voice_client.is_some() {
+        features.push("tts".into());
+    }
+    if state.stt_client.is_some() {
+        features.push("stt".into());
+    }
+    if state.mcp_manager_arc.is_some() {
+        features.push("mcp".into());
+    }
+    if state.openclaw_client.is_some() {
+        features.push("openclaw".into());
+    }
+    if state.auth_provider.is_some() {
+        features.push("auth-v1".into());
+    }
+
+    let mut providers: Vec<String> = state.agents.provider_ids().to_vec();
+    providers.sort();
+    providers.dedup();
+
+    let models: Vec<String> = providers
+        .iter()
+        .filter_map(|pid| {
+            state
+                .agents
+                .get_provider(pid)
+                .and_then(|p| p.configured_model().map(|m| format!("{}/{}", pid, m)))
+        })
+        .collect();
+
+    let channels: Vec<String> = state
+        .channels
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let commands: Vec<String> = state
+        .command_registry
+        .read()
+        .map(|r| r.list().into_iter().map(|(n, _d)| n.to_string()).collect())
+        .unwrap_or_default();
+
+    // Plan 0117 lists four canonical skins. The Settings Registry (PR-8)
+    // can later persist user-defined skins server-side.
+    let skins: Vec<String> = vec![
+        "garra-blue".into(),
+        "aurora-admin".into(),
+        "editorial".into(),
+        "cyber-garra".into(),
+    ];
+
+    Json(CapabilitiesResponse {
+        features,
+        providers,
+        models,
+        channels,
+        commands,
+        skins,
+        experimental_flags: Vec::new(),
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
