@@ -61,7 +61,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # ---------------------------------------------------------------------------
 # Stage 5: Runtime — minimal production image
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# Must match the builder's glibc. `rust:1.92-slim` (chef base, line 9) is
+# debian:trixie with glibc 2.39, so the `garra` binary is linked against
+# 2.39. Using bookworm here (glibc 2.36) made the binary fail at startup
+# with `GLIBC_2.39 not found` — discovered during the GAR-603 Runpod local
+# smoke test on 2026-05-13 (first runtime exercise of the image after the
+# rust:1.86 → 1.92 bump in PR #314, commit c1483e6). Same root cause as
+# the Runpod LB "timed out waiting for worker" symptom on endpoint
+# k3d2h9xumk2r4o: the worker container exited(1) before binding the port.
+#
+# Trixie's newer glibc is backward-compatible, so the Node 22 binary copied
+# from the bookworm-based node-installer stage continues to work here.
+FROM debian:trixie-slim AS runtime
 
 LABEL org.opencontainers.image.title="GarraIA Gateway" \
       org.opencontainers.image.description="Multi-channel, multi-provider LLM orchestration gateway" \
