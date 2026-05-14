@@ -98,6 +98,10 @@ pub fn build_router(
         .route("/health", get(health))
         .route("/ping", get(ping))
         .route("/api/health", get(crate::health::health_handler))
+        .route(
+            "/api/capabilities",
+            get(crate::health::capabilities_handler),
+        )
         .route("/ws", get(ws::ws_handler))
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
         // OpenAI-compatible endpoints
