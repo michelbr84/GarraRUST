@@ -48,7 +48,17 @@ crates/
                         { legacy_session_id → new_chat_id }` exposto em memória para
                         o stage 6 (messages) consumir em slice futuro. Stages 6+
                         (messages, memory, sessions, api_keys) em slices futuros.
-  garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router
+  garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router.
+                        `webchat.html` (servido em `GET /` via `web_chat()` em
+                        `crates/garraia-gateway/src/router.rs:382-387`) segue o design
+                        system **Garra Glass** documentado em ADR 0009 (plan 0116):
+                        tokens `--garra-*` canônicos, gold (`#ffd400`) para CTAs +
+                        cyan (`#16d9ff`) para info/foco, glassmorphism (`backdrop-filter`)
+                        em `app-header`/`chat-console`/`context-panel`, Inter 400-900 +
+                        JetBrains Mono. Roll-out em 10 PRs sequenciais (PR-A foundation:
+                        tokens + sidebar; PR-B chat; PR-C right panel + icons + light + mobile + tests;
+                        PR-4..PR-10 multi-page + endpoints Rust). **Nunca** importar
+                        Bootstrap/AdminLTE/Animate.css de CDN — ports inline (ADR 0009 §3).
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
                         Tipos: IdentityProvider trait + InternalProvider + LoginPool/SignupPool

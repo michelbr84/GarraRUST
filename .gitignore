@@ -58,6 +58,10 @@ parallel-review-*.md
 # Use mcp.json.example (committed, no secrets) as reference.
 mcp.json
 
+# Docker / Runpod / CI build logs occasionally dropped into the repo root
+# (e.g., `build-logs-<uuid>.txt`). Operational, never commit.
+build-logs-*.txt
+
 # Config (local secrets)
 credentials/
 
