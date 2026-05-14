@@ -55,10 +55,30 @@ crates/
                         tokens `--garra-*` canônicos, gold (`#ffd400`) para CTAs +
                         cyan (`#16d9ff`) para info/foco, glassmorphism (`backdrop-filter`)
                         em `app-header`/`chat-console`/`context-panel`, Inter 400-900 +
-                        JetBrains Mono. Roll-out em 10 PRs sequenciais (PR-A foundation:
-                        tokens + sidebar; PR-B chat; PR-C right panel + icons + light + mobile + tests;
-                        PR-4..PR-10 multi-page + endpoints Rust). **Nunca** importar
-                        Bootstrap/AdminLTE/Animate.css de CDN — ports inline (ADR 0009 §3).
+                        JetBrains Mono. Roll-out em 10 PRs sequenciais entregues
+                        2026-05-14: #330 (foundation), #331 (app-header + chat),
+                        #332 (right panel + Playwright), #333 (multi-page router +
+                        Dashboard + Skins), #335 (`/api/health` + `/api/capabilities`),
+                        #337 (Providers + `/api/providers/{test,default}`),
+                        #338 (Channels + Sessions + `/api/channels`),
+                        #339 (Settings Registry + `/api/settings/{schema,effective}` +
+                        `PATCH /api/settings` dry-run),
+                        #340 (Diagnostics + Logs + `/api/diagnostics`), PR final (E2E +
+                        ROADMAP/README/CLAUDE). **Nunca** importar Bootstrap/AdminLTE/
+                        Animate.css de CDN — ports inline (ADR 0009 §3). Endpoints
+                        novos do Web Console (todos auth-free em `/api/*`, secret-free):
+                        `/api/health` (Dashboard schema com `version`, `gateway_url`,
+                        `uptime_secs`, `active_sessions`, `provider`, `model`,
+                        `channels`, `warnings`, back-compat `checks`),
+                        `/api/capabilities` (features/providers/models/channels/
+                        commands/skins/experimental_flags), `/api/channels`
+                        (10 known channels com status active/offline/optional),
+                        `POST /api/providers/test`, `PATCH /api/providers/default`,
+                        `/api/settings/schema` + `/api/settings/effective` (com secret
+                        masking via `configured: bool` em vez de `value`),
+                        `PATCH /api/settings` (validate + audit + dry-run; persistência
+                        TOML em plan 0121a), `/api/diagnostics` (12 checks com
+                        `next_step` quando não-OK).
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
                         Tipos: IdentityProvider trait + InternalProvider + LoginPool/SignupPool
