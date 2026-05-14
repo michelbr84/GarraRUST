@@ -137,6 +137,7 @@ pub fn build_router(
         .route("/api/providers", get(list_providers).post(add_provider))
         .route("/api/providers/test", post(test_provider))
         .route("/api/providers/default", patch(set_default_provider))
+        .route("/api/channels", get(list_channels))
         .route("/api/mcp", get(list_mcp_servers))
         .route("/api/mcp/tools", get(list_mcp_runtime_tools))
         .route("/api/mcp/health", get(mcp_health))
@@ -969,6 +970,74 @@ async fn test_provider(
             }),
         ),
     }
+}
+
+// ─── Channels (plan 0120 / PR-7) ───────────────────────────────────────────
+
+/// Known channels — display metadata mirrors `KNOWN_PROVIDERS`. The `id`
+/// column matches `ChannelRegistry` entries; `needs_secret` is purely
+/// informational (the Web Console renders an amber pill when true but the
+/// actual secret value never crosses the API boundary).
+const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
+    ("web", "Web Chat", false),
+    ("api", "REST API", false),
+    ("telegram", "Telegram", true),
+    ("discord", "Discord", true),
+    ("slack", "Slack", true),
+    ("whatsapp", "WhatsApp", true),
+    ("imessage", "iMessage", false),
+    ("openclaw", "OpenClaw", false),
+    ("mcp", "MCP", false),
+    ("cli", "CLI", false),
+];
+
+#[derive(serde::Serialize)]
+struct ChannelInfo {
+    id: &'static str,
+    display_name: &'static str,
+    /// `"active"` (registered + live), `"configured"` (known but not registered),
+    /// `"offline"` (not registered, secret needed), `"optional"` (no secret needed).
+    status: &'static str,
+    needs_secret: bool,
+    /// Server-side timestamp of process boot — `last_activity` is not tracked
+    /// per channel yet (plan 0122 follow-up). Present as a stable placeholder
+    /// so the Web Console column always has SOMETHING to render.
+    boot_time_secs: u64,
+}
+
+/// GET /api/channels — Web Console Channels page payload. Secret-free.
+async fn list_channels(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+) -> axum::Json<serde_json::Value> {
+    let live: Vec<String> = state
+        .channels
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut channels: Vec<ChannelInfo> = Vec::with_capacity(KNOWN_CHANNELS.len());
+    for (id, display, needs_secret) in KNOWN_CHANNELS {
+        let active = live.iter().any(|name| name == *id);
+        let status = if active {
+            "active"
+        } else if *needs_secret {
+            "offline"
+        } else {
+            "optional"
+        };
+        channels.push(ChannelInfo {
+            id,
+            display_name: display,
+            status,
+            needs_secret: *needs_secret,
+            boot_time_secs: state.boot_time.elapsed().as_secs(),
+        });
+    }
+
+    axum::Json(serde_json::json!({ "channels": channels }))
 }
 
 /// PATCH /api/providers/default — switch the default LLM provider.
