@@ -141,10 +141,14 @@ Download from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases
 | Platform | Architecture | Filename |
 |----------|--------------|----------|
 | Linux | x86_64 | garraia-linux-x86_64 |
-| Linux | ARM64 | garraia-linux-arm64 |
+| Linux | aarch64 (ARM64) | garraia-linux-aarch64 |
 | macOS | x86_64 | garraia-macos-x86_64 |
-| macOS | ARM64 | garraia-macos-arm64 |
+| macOS | aarch64 (Apple Silicon) | garraia-macos-aarch64 |
 | Windows | x86_64 | garraia-windows-x86_64.exe |
+
+> From `v0.2.1` (2026-05-14) aarch64 binaries match Rust's `std::env::consts::ARCH`,
+> so `garraia update` selects the right asset automatically. Each binary ships with
+> a sibling `<name>.sha256` for verification.
 
 ## Verification
 
