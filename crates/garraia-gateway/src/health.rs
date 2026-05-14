@@ -389,7 +389,7 @@ fn extras_from_state(state: &SharedState) -> (Vec<String>, Option<String>, Optio
 /// ```json
 /// {
 ///   "status": "degraded",
-///   "version": "0.2.0",
+///   "version": "0.2.1",
 ///   "gateway_url": "http://127.0.0.1:3888",
 ///   "uptime_secs": 1234,
 ///   "active_sessions": 2,
