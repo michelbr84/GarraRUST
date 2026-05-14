@@ -508,7 +508,7 @@ pub async fn patch_handler(
         // Enum validation
         if matches!(schema.type_, SettingType::Enum)
             && let (Some(s), Some(choices)) = (new_value.as_str(), schema.choices.as_ref())
-            && !choices.iter().any(|c: &&str| *c == s)
+            && !choices.contains(&s)
         {
             rejected.push(RejectedEntry {
                 id: id.clone(),
