@@ -139,6 +139,10 @@ pub fn build_router(
         .route("/api/providers/default", patch(set_default_provider))
         .route("/api/channels", get(list_channels))
         .route(
+            "/api/diagnostics",
+            get(crate::diagnostics_handler::diagnostics_handler),
+        )
+        .route(
             "/api/settings/schema",
             get(crate::settings_handler::schema_handler),
         )
