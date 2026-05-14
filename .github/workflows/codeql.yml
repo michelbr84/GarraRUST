@@ -61,6 +61,15 @@ jobs:
           # and any project-internal scripts. No build needed.
           - language: javascript-typescript
             build-mode: none
+          # Workflow-level analysis (e.g. `actions/missing-workflow-permissions`,
+          # `actions/unpinned-tag`). The previous default setup analyzed this
+          # implicitly; the custom setup must list it explicitly. Without this,
+          # alerts created against .github/workflows/*.yml under the old setup
+          # never re-evaluate and stick in `open` forever even after the
+          # underlying YAML is fixed (verified on PR #322 — 2 of 17 Medium
+          # alerts closed, 15 stuck open until this language was added).
+          - language: actions
+            build-mode: none
     steps:
       - name: Checkout repository
         # Match version pinned in ci.yml (verified 2026-04-30).

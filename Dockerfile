@@ -97,8 +97,16 @@ WORKDIR /home/garraia
 
 EXPOSE 3888
 
+# GAR-603 — Use `/ping` for the container-level healthcheck so it matches
+# what Runpod Load Balancer Serverless probes on `PORT_HEALTH`. `/ping` is
+# stateless and DB-free; `/health` is heavier and aggregates provider
+# status (still available as a richer probe for orchestrators that want it).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:3888/health || exit 1
+    CMD curl -sf http://localhost:3888/ping || exit 1
 
 ENTRYPOINT ["tini", "--", "garra"]
+# `garra start` honors `PORT` and `HOST` env vars (GAR-603) — Runpod /
+# container runtimes that set them get the right binding without
+# overriding CMD. Explicit `--host 0.0.0.0` here ensures the default
+# `docker run` (no env) still binds to all interfaces.
 CMD ["start", "--host", "0.0.0.0"]
