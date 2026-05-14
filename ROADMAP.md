@@ -470,7 +470,7 @@ Novo crate: `garraia-storage`.
 
 ### 3.6 Chat compartilhado
 
-- [ ] Canais por grupo + DMs intra-grupo.
+- [x] Canais por grupo + DMs intra-grupo.
 - [ ] Threads (entidade dedicada, não só `parent_id`).
 - [ ] Reações, menções (`@user`, `@channel`), typing indicators.
 - [ ] Anexos via `message_attachments` → `files`.

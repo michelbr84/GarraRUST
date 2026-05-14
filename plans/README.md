@@ -121,3 +121,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0112 | [GAR-465 — Q6.3 Session TTL + Boundary Mutation Coverage](0112-gar-465-sessions-ttl-boundary.md) | [GAR-465](https://linear.app/chatgpt25/issue/GAR-465) | ✅ Merged 2026-05-13 via PR #312 (`5197581`) |
 | 0113 | [GAR-601 — bump aws-actions/configure-aws-credentials v4 → v6 (Node20 deprecation)](0113-gar-601-aws-actions-v6.md) | [GAR-601](https://linear.app/chatgpt25/issue/GAR-601) | ✅ Merged 2026-05-13 via PR #313 (`4374623`) |
 | 0114 | [GAR-483 — Q6.6.b Debug-Redaction Tests for SignupPool + AppPool](0114-gar-483-debug-redaction-signup-app-pools.md) | [GAR-483](https://linear.app/chatgpt25/issue/GAR-483) | ✅ Merged 2026-05-13 via PR #317 (`fc138f3`) |
+| 0115 | [GAR-604 — DM creation via POST /v1/groups/{id}/chats with type=dm](0115-gar-604-chats-dm-creation.md) | [GAR-604](https://linear.app/chatgpt25/issue/GAR-604) | ✅ Merged 2026-05-14 via PR #324 (`4ce9d75`) |
