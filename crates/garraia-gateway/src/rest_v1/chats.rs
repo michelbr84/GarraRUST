@@ -473,7 +473,24 @@ async fn create_dm_chat(
                 .await
                 .map_err(|e| RestError::Internal(e.into()))?;
 
-            // Fresh connection (outside the rolled-back tx) to read the existing DM.
+            // New transaction required: SET LOCAL is scoped to the tx, so the
+            // rolled-back tx's context is gone. FORCE RLS on `chats` requires
+            // both GUC variables to be set before the SELECT.
+            let mut tx2 = pool
+                .begin()
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
+            sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+                .bind(principal.user_id.to_string())
+                .execute(&mut *tx2)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
+            sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+                .bind(group_id.to_string())
+                .execute(&mut *tx2)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
+
             let (chat_id, created_at, name, topic, created_by): (
                 Uuid,
                 DateTime<Utc>,
@@ -489,9 +506,12 @@ async fn create_dm_chat(
             .bind(group_id)
             .bind(dm_user_a)
             .bind(dm_user_b)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx2)
             .await
             .map_err(|e| RestError::Internal(e.into()))?;
+            tx2.commit()
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
 
             Ok((
                 StatusCode::OK,
