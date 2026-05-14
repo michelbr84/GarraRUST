@@ -788,7 +788,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
       (extended Dashboard schema), `/api/capabilities`, `/api/channels`, `/api/providers/test`,
       `/api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings`
       (dry-run, audit), `/api/diagnostics`. ADR: `docs/adr/0009-web-console-design-system.md`.
-      Plans: 0116a/0116b/0117-0123. PRs: #330, #331, #332, #333, #335, #337, #338, #339, #340.
+      Plans: 0116a/0116b/0117-0123. PRs: #330, #331, #332, #333, #334, #335, #337, #338, #339, #340.
 
 **Estimativa fase 5:** 6 / 8 / 12 semanas (paralelo).
 **Épicos Linear sugeridos:** `GAR-SEC-HARDEN`, `GAR-TEST-COV`, `GAR-COMPLIANCE`, `GAR-UX-FTUE`.
