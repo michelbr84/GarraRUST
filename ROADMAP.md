@@ -759,6 +759,16 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **Sample data**: grupo "Playground" com mensagens, arquivos e memória de exemplo.
 - [ ] **Onboarding tour** com `shepherd.js` ou equivalente no Desktop.
 - [ ] **Empty states** ilustrados em toda a UI.
+- [x] **Web Console redesign "Garra Glass"** (plan 0116 + 0117-0122) ✅ entregue 2026-05-14.
+      Stack: HTML + CSS (custom properties `--garra-*`) + JS vanilla, sem novas deps runtime
+      (zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline). 9 páginas
+      multi-page roteadas por hash: Dashboard, Chat, Providers & Models, Channels, Sessions,
+      Settings Registry (schema-driven, dry-run), Diagnostics (12 checks), Logs (filter +
+      search + export), Themes & Skins (4 presets). Novos endpoints Rust: `/api/health`
+      (extended Dashboard schema), `/api/capabilities`, `/api/channels`, `/api/providers/test`,
+      `/api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings`
+      (dry-run, audit), `/api/diagnostics`. ADR: `docs/adr/0009-web-console-design-system.md`.
+      Plans: 0116a/0116b/0117-0123. PRs: #330, #331, #332, #333, #335, #337, #338, #339, #340.
 
 **Estimativa fase 5:** 6 / 8 / 12 semanas (paralelo).
 **Épicos Linear sugeridos:** `GAR-SEC-HARDEN`, `GAR-TEST-COV`, `GAR-COMPLIANCE`, `GAR-UX-FTUE`.
