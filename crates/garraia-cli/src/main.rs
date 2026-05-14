@@ -61,12 +61,14 @@ struct Cli {
 enum Commands {
     /// Start the gateway server
     Start {
-        /// Host to bind to
-        #[arg(long, default_value = "127.0.0.1")]
+        /// Host to bind to. Reads `HOST` env var (Runpod / container
+        /// runtimes set this); explicit `--host` flag wins. GAR-603.
+        #[arg(long, env = "HOST", default_value = "127.0.0.1")]
         host: String,
 
-        /// Port to listen on
-        #[arg(long, default_value = "3888")]
+        /// Port to listen on. Reads `PORT` env var (Runpod / container
+        /// runtimes set this); explicit `--port` flag wins. GAR-603.
+        #[arg(long, env = "PORT", default_value = "3888")]
         port: u16,
 
         /// Run as a background daemon
@@ -1488,6 +1490,8 @@ fn stop_daemon(_port: u16) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use serial_test::serial;
 
     #[test]
     fn test_validate_plugin_path() {
@@ -1501,5 +1505,51 @@ mod tests {
         // Invalid paths
         assert!(validate_plugin_path("").is_err());
         assert!(validate_plugin_path("   ").is_err());
+    }
+
+    /// GAR-603 — Runpod LB Serverless sets `PORT` and `HOST` env vars at
+    /// container start. `garra start` must honor them when no explicit
+    /// `--port` / `--host` flag is passed, with the CLI flag winning if
+    /// both are present, and falling back to clap defaults otherwise.
+    ///
+    /// Serialized because the test mutates process env vars; any future
+    /// env-mutating test in this binary should also carry `#[serial]`.
+    #[test]
+    #[serial]
+    fn start_subcommand_honors_port_and_host_env_with_cli_flag_precedence() {
+        // Helper — extract host+port from a Start subcommand parse result.
+        fn parsed(args: &[&str]) -> (String, u16) {
+            let cli = Cli::try_parse_from(args).expect("parse should succeed");
+            match cli.command {
+                Commands::Start { host, port, .. } => (host, port),
+                _ => panic!("expected Start subcommand"),
+            }
+        }
+
+        // Case A: env vars set, no CLI flags → env wins over clap defaults.
+        // SAFETY: env mutation is racy across threads; #[serial] above plus
+        // the unique var names mitigate. Cleanup at end of test.
+        unsafe {
+            std::env::set_var("PORT", "4000");
+            std::env::set_var("HOST", "0.0.0.0");
+        }
+        let (host, port) = parsed(&["garra", "start"]);
+        assert_eq!(port, 4000, "PORT env must override default 3888");
+        assert_eq!(host, "0.0.0.0", "HOST env must override default 127.0.0.1");
+
+        // Case B: env vars set AND CLI flags passed → CLI flags win.
+        let (host, port) = parsed(&["garra", "start", "--port", "5000", "--host", "1.2.3.4"]);
+        assert_eq!(port, 5000, "explicit --port must beat PORT env");
+        assert_eq!(host, "1.2.3.4", "explicit --host must beat HOST env");
+
+        // Case C: no env, no flags → clap defaults restored (host=127.0.0.1,
+        // port=3888). Confirms env unset is honored, not cached.
+        unsafe {
+            std::env::remove_var("PORT");
+            std::env::remove_var("HOST");
+        }
+        let (host, port) = parsed(&["garra", "start"]);
+        assert_eq!(port, 3888, "fallback default port must be 3888");
+        assert_eq!(host, "127.0.0.1", "fallback default host must be 127.0.0.1");
     }
 }
