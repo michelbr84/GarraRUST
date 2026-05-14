@@ -1338,6 +1338,72 @@ nav.sidebar#sidebar .sidebar-page-btn .page-tag {
 [data-theme="light"] .skin-card .skin-tag,
 [data-bs-theme="light"] .skin-card .skin-tag { color: #466080; }
 
+/* Providers & Models page (plan 0119) */
+.providers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.provider-card {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--garra-border);
+  background: var(--garra-panel-2);
+  display: flex; flex-direction: column;
+  gap: 10px;
+  animation: fadeInUp var(--garra-anim-duration) ease both;
+  animation-delay: calc(var(--garra-anim-delay) * var(--i, 0));
+}
+.provider-card .provider-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.provider-card .provider-card-head strong { font-family: var(--garra-font); font-weight: 800; font-size: 15px; color: var(--garra-text); }
+.provider-card .provider-card-head .pill { font-size: 11px; }
+.provider-card .provider-meta {
+  font-size: 12px;
+  color: var(--garra-muted);
+  font-family: var(--garra-mono);
+  word-break: break-all;
+}
+.provider-card .provider-models {
+  font-size: 11px;
+  color: var(--garra-muted-2);
+  border-top: 1px solid var(--garra-border);
+  padding-top: 8px;
+  max-height: 90px;
+  overflow-y: auto;
+  font-family: var(--garra-mono);
+}
+.provider-card .provider-actions { display: flex; gap: 8px; margin-top: auto; flex-wrap: wrap; }
+.provider-card .provider-actions button {
+  font-family: var(--garra-font);
+  font-weight: 700;
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--garra-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--garra-text);
+  cursor: pointer;
+}
+.provider-card .provider-actions button:hover { background: rgba(255, 255, 255, 0.10); }
+.provider-card .provider-actions button.primary {
+  background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+  color: #05142c;
+  border: none;
+  box-shadow: 0 10px 22px rgba(var(--garra-primary-rgb), 0.32);
+}
+.provider-card .provider-actions button.primary:hover { transform: translateY(-1px); }
+.provider-card .provider-test-result { font-size: 11px; color: var(--garra-muted); }
+.provider-card .provider-test-result.ok { color: var(--garra-success); }
+.provider-card .provider-test-result.err { color: var(--garra-danger); }
+[data-theme="light"] .provider-card,
+[data-bs-theme="light"] .provider-card { background: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .provider-card .provider-card-head strong,
+[data-bs-theme="light"] .provider-card .provider-card-head strong { color: #06142b; }
+[data-theme="light"] .provider-card .provider-actions button,
+[data-bs-theme="light"] .provider-card .provider-actions button { background: rgba(255, 255, 255, 0.6); color: #06142b; }
+
 /* Generic placeholder for not-yet-implemented pages */
 .page-placeholder {
   display: flex; flex-direction: column;
@@ -2512,19 +2578,18 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
   </section>
 
-  <!-- PLACEHOLDER pages (plans 0119-0122 — wire real data later) -->
+  <!-- PROVIDERS & MODELS page (plan 0119) -->
   <section class="page-view" data-page="providers" data-testid="garra-page-providers">
     <div class="glass-panel page-card">
       <div class="panel-header">
         <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Providers &amp; Models</h3>
-        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+        <button class="icon-btn header-icon-btn" id="providers-refresh-btn" type="button" title="Refresh providers">
+          <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.17 6.706a5 5 0 0 1 7.103-3.16.5.5 0 1 0 .454-.892A6 6 0 0 0 2.19 6.296a.5.5 0 1 0 .98.21z"/><path d="M3.17 6.706A.5.5 0 0 1 3.5 6.5h2a.5.5 0 0 1 0 1H3.823l.346 1.346a.5.5 0 0 1-.972.243l-.5-2a.5.5 0 0 1 .473-.621z"/></svg>
+        </button>
       </div>
       <div class="page-body">
-        <div class="page-placeholder">
-          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
-          <h2>Providers &amp; Models</h2>
-          <p>Configuração e teste de OpenAI, Anthropic, OpenRouter, Ollama e custom endpoints. Endpoints Rust em <code>plan 0119 / PR-6</code>.</p>
-        </div>
+        <p style="color: var(--garra-muted); margin-bottom: 16px;">Cada provider é exibido com seu estado atual, modelo configurado e os modelos disponíveis. Use <strong>Test connection</strong> para validar o canal sem mexer em chaves — nenhuma API key aparece aqui.</p>
+        <div id="providers-grid" class="providers-grid"></div>
       </div>
     </div>
   </section>
@@ -2945,6 +3010,12 @@ function setPage(name) {
       rp.style.display = 'none';
     }
   }
+  // Per-page hydration hooks.
+  switch (name) {
+    case 'providers':   loadProvidersPage && loadProvidersPage(); break;
+    case 'dashboard':   hydrateDashboard && hydrateDashboard(); break;
+    default: break;
+  }
 }
 function setupPageRouter() {
   document.querySelectorAll('.sidebar-page-btn').forEach(btn => {
@@ -2973,6 +3044,99 @@ function initSkinCards() {
       applyTheme(mode);
     });
   });
+}
+
+// ─── Providers & Models page (plan 0119) ─────────────────────────────
+async function loadProvidersPage() {
+  const grid = document.getElementById('providers-grid');
+  if (!grid) return;
+  grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Carregando providers…</div>';
+  try {
+    const r = await fetch('/api/providers');
+    if (!r.ok) {
+      grid.innerHTML = '<div class="warning-box">Falha ao carregar providers (HTTP ' + r.status + ').</div>';
+      return;
+    }
+    const j = await r.json();
+    const items = Array.isArray(j.providers) ? j.providers : [];
+    if (items.length === 0) {
+      grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Nenhum provider registrado. Use o painel direito para adicionar.</div>';
+      return;
+    }
+    grid.innerHTML = items.map((p, i) => renderProviderCard(p, i)).join('');
+    grid.querySelectorAll('[data-provider-test]').forEach(btn => {
+      btn.addEventListener('click', () => testProviderConnection(btn.dataset.providerTest, btn));
+    });
+    grid.querySelectorAll('[data-provider-default]').forEach(btn => {
+      btn.addEventListener('click', () => setDefaultProvider(btn.dataset.providerDefault));
+    });
+  } catch (e) {
+    grid.innerHTML = '<div class="warning-box">Erro ao carregar providers: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+function renderProviderCard(p, i) {
+  const active = !!p.active;
+  const isDefault = !!p.is_default;
+  const needsKey = !!p.needs_api_key;
+  const pillCls = active ? 'success' : (needsKey ? 'warning' : 'danger');
+  const pillTxt = active ? (isDefault ? 'Default • Active' : 'Active') : (needsKey ? 'Needs API key' : 'Offline');
+  const models = (Array.isArray(p.models) ? p.models : []).slice(0, 24);
+  return `
+    <div class="provider-card" style="--i:${i};" data-provider-id="${escapeHtml(p.id)}">
+      <div class="provider-card-head">
+        <strong>${escapeHtml(p.display_name || p.id)}</strong>
+        <span class="pill ${pillCls}"><span class="status-dot ${active ? '' : (needsKey ? 'warning' : 'offline')}"></span> ${escapeHtml(pillTxt)}</span>
+      </div>
+      <div class="provider-meta">id <code>${escapeHtml(p.id)}</code>${p.model ? ' • model <code>' + escapeHtml(p.model) + '</code>' : ''}</div>
+      ${models.length ? '<div class="provider-models">' + models.map(m => '<div>• ' + escapeHtml(m) + '</div>').join('') + '</div>' : ''}
+      <div class="provider-test-result" data-provider-result="${escapeHtml(p.id)}"></div>
+      <div class="provider-actions">
+        <button data-provider-test="${escapeHtml(p.id)}" ${active ? '' : 'disabled style="opacity:0.5;cursor:not-allowed;"'}>Test connection</button>
+        <button data-provider-default="${escapeHtml(p.id)}" class="primary" ${(!active || isDefault) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>${isDefault ? 'Default' : 'Set as default'}</button>
+      </div>
+    </div>
+  `;
+}
+async function testProviderConnection(id, btn) {
+  const out = document.querySelector('[data-provider-result="' + CSS.escape(id) + '"]');
+  if (out) { out.className = 'provider-test-result'; out.textContent = 'Testing…'; }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/providers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: id }),
+    });
+    const j = await r.json();
+    if (out) {
+      if (j.ok) {
+        out.className = 'provider-test-result ok';
+        out.textContent = `OK — ${j.model_count ?? '?'} models in ${j.latency_ms ?? '?'} ms`;
+      } else {
+        out.className = 'provider-test-result err';
+        out.textContent = `Failed: ${j.error || 'unknown error'}`;
+      }
+    }
+  } catch (e) {
+    if (out) { out.className = 'provider-test-result err'; out.textContent = 'Network error: ' + (e && e.message ? e.message : e); }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function setDefaultProvider(id) {
+  try {
+    const r = await fetch('/api/providers/default', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: id }),
+    });
+    if (r.ok) {
+      await loadProvidersPage(); // re-render with new default
+    }
+  } catch (_e) { /* swallow — UI will surface via reload */ }
 }
 
 // ─── Dashboard hydration (plan 0118 — uses /api/health + /api/capabilities) ──
@@ -4204,6 +4368,10 @@ async function boot() {
   setupPageRouter();
   initSkinCards();
   hydrateDashboard();
+  // Plan 0119: bind the Providers page refresh button. Page itself
+  // lazy-loads via setPage() when first visited.
+  const provRefresh = document.getElementById('providers-refresh-btn');
+  if (provRefresh) provRefresh.addEventListener('click', () => loadProvidersPage && loadProvidersPage());
 
   try {
     const r = await fetch('/api/auth-check');

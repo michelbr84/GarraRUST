@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::response::Html;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use tokio::sync::Mutex;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -135,6 +135,8 @@ pub fn build_router(
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))
+        .route("/api/providers/test", post(test_provider))
+        .route("/api/providers/default", patch(set_default_provider))
         .route("/api/mcp", get(list_mcp_servers))
         .route("/api/mcp/tools", get(list_mcp_runtime_tools))
         .route("/api/mcp/health", get(mcp_health))
@@ -889,6 +891,123 @@ fn persist_api_key(vault_key: &str, value: &str) {
     if let Some(vault_path) = crate::bootstrap::default_vault_path() {
         garraia_security::try_vault_set(&vault_path, vault_key, value);
     }
+}
+
+// ─── Provider test / default (plan 0119 / PR-6) ───────────────────────────
+
+/// POST /api/providers/test — exercise the registered provider by listing
+/// its models. The response is a small `{ok, latency_ms, error?}` payload
+/// that the Web Console renders next to each provider card. Never echoes
+/// the API key or any portion of the request.
+#[derive(serde::Deserialize)]
+struct ProviderTestRequest {
+    provider: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderTestResponse {
+    ok: bool,
+    provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn test_provider(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::Json(body): axum::Json<ProviderTestRequest>,
+) -> (axum::http::StatusCode, axum::Json<ProviderTestResponse>) {
+    let id = body.provider.trim();
+    if id.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: None,
+                model_count: None,
+                error: Some("provider id is required".into()),
+            }),
+        );
+    }
+    let Some(provider) = state.agents.get_provider(id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: None,
+                model_count: None,
+                error: Some("provider not registered".into()),
+            }),
+        );
+    };
+
+    let start = std::time::Instant::now();
+    match provider.available_models().await {
+        Ok(models) => (
+            axum::http::StatusCode::OK,
+            axum::Json(ProviderTestResponse {
+                ok: true,
+                provider: id.to_string(),
+                latency_ms: Some(start.elapsed().as_millis()),
+                model_count: Some(models.len()),
+                error: None,
+            }),
+        ),
+        Err(err) => (
+            axum::http::StatusCode::OK,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: Some(start.elapsed().as_millis()),
+                model_count: None,
+                error: Some(format!("{err}")),
+            }),
+        ),
+    }
+}
+
+/// PATCH /api/providers/default — switch the default LLM provider.
+#[derive(serde::Deserialize)]
+struct SetDefaultProviderRequest {
+    provider: String,
+}
+
+async fn set_default_provider(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::Json(body): axum::Json<SetDefaultProviderRequest>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    let id = body.provider.trim();
+    if id.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": "provider is required",
+            })),
+        );
+    }
+    if !state.agents.provider_ids().iter().any(|p| p == id) {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": "provider not registered",
+            })),
+        );
+    }
+    state.agents.set_default_provider_id(id);
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "default": id,
+        })),
+    )
 }
 
 /// GET /api/mcp — list connected MCP servers with tool counts and status.
