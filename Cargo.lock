@@ -3525,7 +3525,7 @@ dependencies = [
  "http-body-util",
  "ipnet",
  "jsonwebtoken",
- "metrics 0.24.5",
+ "metrics 0.24.6",
  "metrics-exporter-prometheus",
  "password-hash",
  "reqwest 0.12.28",
@@ -3684,7 +3684,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
- "metrics 0.24.5",
+ "metrics 0.24.6",
  "metrics-exporter-prometheus",
  "opentelemetry 0.26.0",
  "opentelemetry-otlp",
@@ -5403,9 +5403,9 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.24.5"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff56c2e7dce6bd462e3b8919986a617027481b1dcc703175b58cf9dd98a2f071"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
 dependencies = [
  "portable-atomic",
  "rapidhash",
