@@ -15,11 +15,19 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Workflow-level default: read-only GITHUB_TOKEN. The `release` job overrides
+# this with `contents: write` to upload artifacts via softprops/action-gh-release.
+# Closes CodeQL rule `actions/missing-workflow-permissions` (Medium).
+permissions:
+  contents: read
+
 jobs:
   # Build for Linux x86_64
   build-linux-x86_64:
     name: Build Linux x86_64
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -46,6 +54,8 @@ jobs:
   build-linux-arm64:
     name: Build Linux ARM64
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -75,6 +85,8 @@ jobs:
   build-windows-x86_64:
     name: Build Windows x86_64
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -101,6 +113,8 @@ jobs:
   build-macos-x86_64:
     name: Build macOS x86_64
     runs-on: macos-13
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -127,6 +141,8 @@ jobs:
   build-macos-arm64:
     name: Build macOS ARM64
     runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
