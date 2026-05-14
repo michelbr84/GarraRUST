@@ -105,19 +105,19 @@ garraia start
 </details>
 
 <details>
-<summary>Atualizar uma instalação existente — <code>garra update</code></summary>
+<summary>Atualizar uma instalação existente — <code>garraia update</code></summary>
 
 ```bash
 # Verifica a release mais recente, baixa o binário da sua plataforma,
 # confere SHA-256 contra <asset>.sha256 e troca o executável atomicamente.
-garra update          # interativo
-garra update --yes    # não interativo (CI)
+garraia update          # interativo
+garraia update --yes    # não interativo (CI)
 
 # Volta para o binário anterior se algo der errado:
-garra rollback
+garraia rollback
 ```
 
-> `garra update` falava com **404** em todas as versões anteriores a `v0.2.1` porque toda release publicada era marcada como prerelease (e o endpoint `releases/latest` ignora prereleases). Documentado no commit que introduziu este parágrafo + em [`CHANGELOG.md`](CHANGELOG.md#021---2026-05-14).
+> `garraia update` falava com **404** em todas as versões anteriores a `v0.2.1` porque toda release publicada era marcada como prerelease (e o endpoint `releases/latest` ignora prereleases). Detalhamento em [`CHANGELOG.md`](CHANGELOG.md#021---2026-05-14).
 
 </details>
 
@@ -507,7 +507,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 - **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
 - **Daemonização** - `garra start --daemon` com gerenciamento de PID
-- **Auto-atualização** - `garra update` baixa a versão mais recente com verificação SHA-256, `garra rollback` para reverter
+- **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
 - **Reinicialização** - `garra restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
 - **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
