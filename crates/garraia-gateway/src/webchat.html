@@ -9,7 +9,66 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.7/purify.min.js" integrity="sha384-XQqX/4yiUGu+oyr87jvWzRuqBUK/adrY0DunhL+tID9m/9dwSpV8h9Fk/Sg6ifVQ" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
 <style>
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+/* ========================================================================
+   GARRA GLASS — design system tokens (plan 0116, ADR 0009).
+   `--garra-*` is the canonical palette consumed by web console redesigns.
+   Default: dark. Light override below. Legacy `--bg-*` / `--accent` tokens
+   are aliased after the existing theme blocks so existing chat styling
+   continues to work unmodified until plan 0118 retires the aliases.
+   ======================================================================== */
+
+:root {
+  /* Background — dark default */
+  --garra-bg: #041531;
+  --garra-bg-2: #071f4c;
+  --garra-sidebar: #031126;
+  --garra-sidebar-2: #061b3d;
+  /* Glass panels */
+  --garra-panel: rgba(255, 255, 255, 0.075);
+  --garra-panel-2: rgba(255, 255, 255, 0.11);
+  --garra-border: rgba(255, 255, 255, 0.13);
+  --garra-border-strong: rgba(255, 255, 255, 0.22);
+  /* Text */
+  --garra-text: #f7fbff;
+  --garra-muted: #9fb2d4;
+  --garra-muted-2: #7186ae;
+  /* Accents — gold CTAs, cyan info/focus */
+  --garra-primary: #ffd400;
+  --garra-primary-rgb: 255, 212, 0;
+  --garra-accent: #16d9ff;
+  --garra-accent-rgb: 22, 217, 255;
+  --garra-success: #20e887;
+  --garra-warning: #ffb020;
+  --garra-danger: #ff5c7a;
+  --garra-purple: #a78bfa;
+  /* Shape */
+  --garra-radius: 22px;
+  --garra-radius-sm: 14px;
+  --garra-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+  /* Typography */
+  --garra-font: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --garra-mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  /* Motion */
+  --garra-anim-duration: 720ms;
+  --garra-anim-delay: 0.08s;
+}
+
+[data-bs-theme="light"], [data-theme="light"] {
+  --garra-bg: #edf4ff;
+  --garra-bg-2: #dbeaff;
+  --garra-sidebar: #071a38;
+  --garra-sidebar-2: #092552;
+  --garra-panel: rgba(255, 255, 255, 0.82);
+  --garra-panel-2: rgba(255, 255, 255, 0.96);
+  --garra-border: rgba(6, 24, 54, 0.13);
+  --garra-border-strong: rgba(6, 24, 54, 0.24);
+  --garra-text: #06142b;
+  --garra-muted: #466080;
+  --garra-muted-2: #607796;
+  --garra-shadow: 0 28px 90px rgba(44, 78, 125, 0.18);
+}
 
 /* ========== THEME SYSTEM — CSS Custom Properties ========== */
 :root, [data-theme="light"] {
@@ -232,12 +291,57 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 body {
-  font-family: var(--font);
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  font-family: var(--garra-font, var(--font));
+  background:
+    radial-gradient(circle at 12% 8%, rgba(var(--garra-primary-rgb), 0.16), transparent 30%),
+    radial-gradient(circle at 82% 0%, rgba(var(--garra-accent-rgb), 0.19), transparent 34%),
+    radial-gradient(circle at 78% 90%, rgba(167, 139, 250, 0.14), transparent 34%),
+    linear-gradient(135deg, var(--garra-bg), var(--garra-bg-2));
+  background-attachment: fixed;
+  color: var(--garra-text, var(--text-primary));
   font-size: 14px;
   line-height: 1.5;
+  position: relative;
   transition: background 200ms ease, color 200ms ease;
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 44px 44px;
+  z-index: 0;
+}
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.45;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.08 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  z-index: 0;
+}
+[data-theme="light"] body::before,
+[data-bs-theme="light"] body::before {
+  background-image:
+    linear-gradient(rgba(6, 24, 54, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 24, 54, 0.04) 1px, transparent 1px);
+}
+[data-theme="light"] body::after,
+[data-bs-theme="light"] body::after {
+  opacity: 0.18;
+}
+.app-shell { position: relative; z-index: 1; }
+@supports not (backdrop-filter: blur(1px)) {
+  /* Glass fallback: solid panel when blur is unavailable */
+  :root { --garra-panel: rgba(15, 28, 58, 0.92); --garra-panel-2: rgba(20, 36, 70, 0.96); }
+  [data-theme="light"], [data-bs-theme="light"] {
+    --garra-panel: rgba(255, 255, 255, 0.96); --garra-panel-2: #ffffff;
+  }
 }
 
 /* Scrollbar */
@@ -349,6 +453,108 @@ body {
   text-align: left;
 }
 .sidebar-footer-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* ========================================================================
+   GARRA GLASS — SIDEBAR (plan 0116 T2). Overrides the legacy sidebar styles
+   above. Sidebar is intentionally dark in both light and dark themes
+   (mockup §"sidebar continua escuro intencionalmente").
+   ======================================================================== */
+nav.sidebar#sidebar {
+  background: linear-gradient(180deg, var(--garra-sidebar), var(--garra-sidebar-2));
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 16px 0 70px rgba(0, 0, 0, 0.32);
+  color: var(--garra-text);
+}
+nav.sidebar#sidebar .sidebar-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
+nav.sidebar#sidebar .sidebar-actions { border-bottom-color: rgba(255, 255, 255, 0.08); }
+nav.sidebar#sidebar .sidebar-footer { border-top-color: rgba(255, 255, 255, 0.08); }
+
+nav.sidebar#sidebar .sidebar-logo {
+  width: 44px; height: 44px;
+  border-radius: 15px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+  color: #05142c;
+  font-family: var(--garra-font);
+  font-weight: 900;
+  font-size: 22px;
+  letter-spacing: -0.04em;
+  box-shadow: 0 16px 34px rgba(var(--garra-primary-rgb), 0.28);
+}
+nav.sidebar#sidebar .sidebar-brand { color: var(--garra-text); font-weight: 800; }
+nav.sidebar#sidebar .sidebar-subtitle { color: var(--garra-muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
+
+nav.sidebar#sidebar .new-chat-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: #05142c;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+  box-shadow: 0 14px 30px rgba(var(--garra-primary-rgb), 0.32);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+nav.sidebar#sidebar .new-chat-btn:hover {
+  transform: translateY(-1px);
+  background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+  box-shadow: 0 18px 36px rgba(var(--garra-primary-rgb), 0.42);
+}
+
+nav.sidebar#sidebar .channel-filter select#channel-filter {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--garra-text);
+  font-family: var(--garra-font);
+}
+nav.sidebar#sidebar .channel-filter select#channel-filter option { color: #06142b; }
+
+nav.sidebar#sidebar .session-list { padding: 8px 10px; }
+nav.sidebar#sidebar .session-item {
+  color: var(--garra-muted);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+nav.sidebar#sidebar .session-item:hover { background: rgba(255, 255, 255, 0.06); color: var(--garra-text); }
+nav.sidebar#sidebar .session-item.active { background: rgba(var(--garra-accent-rgb), 0.16); color: var(--garra-text); }
+nav.sidebar#sidebar .session-item-time { color: var(--garra-muted-2); }
+
+.sidebar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(var(--garra-accent-rgb), 0.15);
+  color: var(--garra-accent);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.sidebar-chip.success { background: rgba(32, 232, 135, 0.16); color: var(--garra-success); }
+.sidebar-chip.warning { background: rgba(255, 176, 32, 0.16); color: var(--garra-warning); }
+.sidebar-chip.danger  { background: rgba(255, 92, 122, 0.16); color: var(--garra-danger); }
+
+nav.sidebar#sidebar .sidebar-footer-btn {
+  color: var(--garra-muted);
+  border-radius: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+nav.sidebar#sidebar .sidebar-footer-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--garra-text); }
+nav.sidebar#sidebar .sidebar-footer-btn .icon-svg {
+  width: 16px; height: 16px;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: -2px;
+}
+nav.sidebar#sidebar .sidebar-footer-btn .icon-svg path,
+nav.sidebar#sidebar .sidebar-footer-btn .icon-svg circle,
+nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
+  fill: currentColor;
+}
 
 /* CENTER — Chat Area */
 .chat-area {
@@ -1146,7 +1352,7 @@ body {
   <!-- LEFT SIDEBAR -->
   <nav class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-logo">&#x1f99c;</div>
+      <div class="sidebar-logo" title="🦀 Powered by Rust" data-testid="garra-brand-logo">G</div>
       <div>
         <div class="sidebar-brand">GarraIA</div>
         <div class="sidebar-subtitle">AI Gateway</div>
@@ -1154,7 +1360,8 @@ body {
     </div>
     <div class="sidebar-actions">
       <button class="new-chat-btn" id="new-chat-btn">
-        <span>+</span> New Chat
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true" style="width:14px;height:14px;"><path d="M8 2a.5.5 0 0 1 .5.5V7.5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5V2.5A.5.5 0 0 1 8 2z"/></svg>
+        New Chat
       </button>
     </div>
     <div class="channel-filter" style="padding:4px 12px;">
@@ -1167,10 +1374,12 @@ body {
     </div>
     <div class="sidebar-footer">
       <button class="sidebar-footer-btn" id="settings-btn" title="Settings">
-        &#9881; Settings
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/></svg>
+        Settings
       </button>
       <button class="sidebar-footer-btn" id="skin-editor-btn" title="Skin Editor">
-        &#127912; Themes & Skins
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M15.825.12a.5.5 0 0 1 .132.584c-1.53 3.43-4.743 8.17-7.095 10.64a6.067 6.067 0 0 1-2.373 1.534c-.018.227-.06.538-.16.868-.201.659-.667 1.479-1.708 1.74a8.118 8.118 0 0 1-3.078.132 3.659 3.659 0 0 1-.562-.135 1.382 1.382 0 0 1-.466-.247.714.714 0 0 1-.204-.288.622.622 0 0 1 .004-.443c.095-.245.316-.38.461-.452.394-.197.625-.453.867-.826.095-.144.184-.297.287-.472l.117-.198c.151-.255.326-.54.546-.848.528-.739 1.201-.925 1.746-.896.126.007.243.025.348.048.062-.172.142-.38.238-.608.261-.619.658-1.419 1.187-2.069 2.176-2.67 6.18-6.206 9.117-8.104a.5.5 0 0 1 .596.04z"/></svg>
+        Themes &amp; Skins
       </button>
     </div>
   </nav>
