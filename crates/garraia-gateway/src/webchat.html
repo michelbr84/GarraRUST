@@ -862,6 +862,266 @@ main.chat-area > .glass-panel.chat-console > .chat-input-area .send-btn .icon-sv
 [data-theme="light"] main.chat-area > .glass-panel.chat-console > .chat-input-area .input-btn,
 [data-bs-theme="light"] main.chat-area > .glass-panel.chat-console > .chat-input-area .input-btn { color: var(--garra-muted-2); }
 
+/* ========================================================================
+   GARRA GLASS — RIGHT PANEL / CONTEXT PANEL (plan 0116 T5).
+   Wraps the existing #right-panel in a translucent glass card, replaces
+   the section list with an info-list, adds toolbar tabs (Status active +
+   CLI/Schema placeholders), and gives provider + auth inputs the
+   .garra-input / .garra-select treatment.
+   ======================================================================== */
+aside.right-panel#right-panel {
+  background: var(--garra-panel);
+  border: 1px solid var(--garra-border);
+  margin: 16px 16px 16px 0;
+  border-radius: var(--garra-radius);
+  box-shadow: var(--garra-shadow);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  width: 320px;
+  flex-shrink: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  z-index: 4;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  aside.right-panel#right-panel { background: var(--garra-panel-2); }
+}
+aside.right-panel#right-panel.collapsed { width: 0; margin-right: 16px; margin-left: 0; opacity: 0; overflow: hidden; border: none; box-shadow: none; }
+
+aside.right-panel#right-panel .right-panel-header {
+  border-bottom: 1px solid var(--garra-border);
+  background: transparent;
+  padding: 14px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+}
+aside.right-panel#right-panel .right-panel-header h3 {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--garra-font); font-weight: 800; font-size: 15px;
+  color: var(--garra-text);
+}
+aside.right-panel#right-panel .right-panel-header h3::before {
+  content: "";
+  display: inline-block;
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  background:
+    rgba(var(--garra-accent-rgb), 0.18)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%2316d9ff'><path d='M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z'/><path d='m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z'/></svg>")
+    center / 16px no-repeat;
+}
+aside.right-panel#right-panel .right-panel-close {
+  width: 32px; height: 32px;
+  border: 1px solid var(--garra-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--garra-text);
+  border-radius: 10px;
+  display: grid; place-items: center;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+aside.right-panel#right-panel .right-panel-close:hover { background: rgba(255, 255, 255, 0.1); }
+
+/* Toolbar tabs (Status / CLI / Schema). Only Status active for now;
+ * CLI/Schema show "em breve" — covered by plan 0117a follow-up. */
+.toolbar-tabs {
+  display: flex; gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--garra-border);
+}
+.toolbar-tabs .tab-btn {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--garra-muted);
+  font-family: var(--garra-font);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.toolbar-tabs .tab-btn:hover { color: var(--garra-text); background: rgba(255, 255, 255, 0.04); }
+.toolbar-tabs .tab-btn.active {
+  background: var(--garra-panel-2);
+  color: var(--garra-text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+.toolbar-tabs .tab-btn[disabled],
+.toolbar-tabs .tab-btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+
+.context-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 16px;
+}
+
+aside.right-panel#right-panel .right-section {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--garra-border);
+}
+aside.right-panel#right-panel .right-section:last-of-type { border-bottom: none; }
+aside.right-panel#right-panel .right-section h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--garra-muted-2);
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+aside.right-panel#right-panel .right-section .status-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--garra-border);
+  font-size: 13px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+aside.right-panel#right-panel .right-section .status-row:last-child { border-bottom: none; }
+aside.right-panel#right-panel .right-section .status-row .label { color: var(--garra-muted); }
+aside.right-panel#right-panel .right-section .status-row .value {
+  color: var(--garra-text);
+  font-family: var(--garra-mono);
+  font-size: 12px;
+}
+
+aside.right-panel#right-panel #channel-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.channel-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(var(--garra-accent-rgb), 0.10);
+  border: 1px solid rgba(var(--garra-accent-rgb), 0.22);
+  color: var(--garra-accent);
+  font-size: 12px; font-weight: 700;
+  margin: 4px 4px 0 0;
+}
+
+aside.right-panel#right-panel .provider-select-wrap select,
+aside.right-panel#right-panel .provider-select-wrap input,
+aside.right-panel#right-panel .gateway-key-form input,
+.garra-select, .garra-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--garra-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--garra-text);
+  font-family: var(--garra-font);
+  font-size: 13px;
+  outline: none;
+}
+aside.right-panel#right-panel .provider-select-wrap select option { color: #06142b; background: #fff; }
+aside.right-panel#right-panel .provider-select-wrap select:focus,
+aside.right-panel#right-panel .provider-select-wrap input:focus,
+aside.right-panel#right-panel .gateway-key-form input:focus,
+.garra-select:focus, .garra-input:focus {
+  border-color: rgba(var(--garra-accent-rgb), 0.6);
+  box-shadow: 0 0 0 4px rgba(var(--garra-accent-rgb), 0.18);
+}
+aside.right-panel#right-panel .provider-activate-btn {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: none;
+  background: linear-gradient(135deg, var(--garra-primary), #fff3a0);
+  color: #05142c;
+  font-weight: 800;
+  font-family: var(--garra-font);
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 8px;
+  box-shadow: 0 12px 26px rgba(var(--garra-primary-rgb), 0.32);
+  transition: transform 120ms ease;
+}
+aside.right-panel#right-panel .provider-activate-btn:hover { transform: translateY(-1px); }
+aside.right-panel#right-panel .provider-status-text { color: var(--garra-muted); font-size: 11px; margin-top: 4px; }
+aside.right-panel#right-panel #provider-model-status { color: var(--garra-muted-2); font-size: 11px; margin-top: 4px; }
+
+aside.right-panel#right-panel #refresh-status {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--garra-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--garra-text);
+  font-weight: 700;
+  font-family: var(--garra-font);
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+aside.right-panel#right-panel #refresh-status:hover { background: rgba(255, 255, 255, 0.10); }
+aside.right-panel#right-panel #refresh-status .icon-svg { width: 14px; height: 14px; fill: currentColor; }
+
+/* Light-theme contrast for the context panel */
+[data-theme="light"] aside.right-panel#right-panel,
+[data-bs-theme="light"] aside.right-panel#right-panel { color: #06142b; }
+[data-theme="light"] aside.right-panel#right-panel .right-section h4,
+[data-bs-theme="light"] aside.right-panel#right-panel .right-section h4 { color: var(--garra-muted); }
+[data-theme="light"] aside.right-panel#right-panel .right-section .status-row .label,
+[data-bs-theme="light"] aside.right-panel#right-panel .right-section .status-row .label { color: #466080; }
+[data-theme="light"] aside.right-panel#right-panel .right-section .status-row .value,
+[data-bs-theme="light"] aside.right-panel#right-panel .right-section .status-row .value { color: #06142b; }
+[data-theme="light"] aside.right-panel#right-panel .provider-select-wrap input,
+[data-theme="light"] aside.right-panel#right-panel .provider-select-wrap select,
+[data-theme="light"] aside.right-panel#right-panel .gateway-key-form input,
+[data-bs-theme="light"] aside.right-panel#right-panel .provider-select-wrap input,
+[data-bs-theme="light"] aside.right-panel#right-panel .provider-select-wrap select,
+[data-bs-theme="light"] aside.right-panel#right-panel .gateway-key-form input {
+  background: rgba(255, 255, 255, 0.55); color: #06142b;
+}
+[data-theme="light"] aside.right-panel#right-panel #refresh-status,
+[data-bs-theme="light"] aside.right-panel#right-panel #refresh-status { background: rgba(255, 255, 255, 0.55); color: #06142b; }
+
+/* ========================================================================
+   GARRA GLASS — ANIMATIONS (plan 0116 T7).
+   ======================================================================== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pulseDot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.7; }
+}
+.status-dot { animation: pulseDot 2.6s ease-in-out infinite; }
+.status-dot.offline { animation: none; }
+.reveal-card { animation: fadeInUp var(--garra-anim-duration) ease both; animation-delay: calc(var(--garra-anim-delay, 0.08s) * var(--i, 0)); }
+
+/* ========================================================================
+   GARRA GLASS — MOBILE / RESPONSIVE (plan 0116 T9).
+   ≤768px: sidebar overlays + right panel slides in from right.
+   Sidebar already has overlay logic from legacy code (hamburger-btn) —
+   we layer the right-panel slide-in here.
+   ======================================================================== */
+@media (max-width: 992px) {
+  aside.right-panel#right-panel {
+    width: min(360px, 100vw);
+    margin: 0;
+    border-radius: 0;
+    border-left: 1px solid var(--garra-border);
+    box-shadow: -16px 0 60px rgba(0, 0, 0, 0.35);
+  }
+}
+@media (max-width: 768px) {
+  main.chat-area { padding: 10px; }
+  main.chat-area > .glass-panel.chat-console { border-radius: 16px; }
+  aside.right-panel#right-panel {
+    position: fixed;
+    top: 58px; right: 0; bottom: 0;
+    width: min(360px, 100vw);
+    transform: translateX(100%);
+    transition: transform 240ms ease;
+    z-index: 50;
+  }
+  aside.right-panel#right-panel:not(.collapsed) { transform: translateX(0); }
+  aside.right-panel#right-panel.collapsed { transform: translateX(100%); width: min(360px, 100vw); opacity: 0; pointer-events: none; }
+  nav.sidebar#sidebar.collapsed { transform: translateX(-100%); }
+}
+
 nav.sidebar#sidebar .sidebar-footer-btn {
   color: var(--garra-muted);
   border-radius: 12px;
@@ -1858,11 +2118,19 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
   </main>
 
   <!-- RIGHT PANEL -->
-  <aside class="right-panel" id="right-panel">
+  <aside class="right-panel" id="right-panel" data-testid="garra-context-panel">
     <div class="right-panel-header">
       <h3>Context Info</h3>
-      <button class="right-panel-close" id="right-panel-close">&times;</button>
+      <button class="right-panel-close" id="right-panel-close" aria-label="Close context panel">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true" style="width:14px;height:14px;fill:currentColor;"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+      </button>
     </div>
+    <div class="toolbar-tabs" role="tablist" aria-label="Context view">
+      <button class="tab-btn active" type="button" role="tab" aria-selected="true">Status</button>
+      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Em breve (plan 0117a)">CLI</button>
+      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Em breve (plan 0117a)">Schema</button>
+    </div>
+    <div class="context-panel-body">
     <div class="right-section">
       <h4>Gateway</h4>
       <div class="status-row"><span class="label">Server</span><span class="value" id="api-status">checking...</span></div>
@@ -1897,8 +2165,12 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       <div id="file-tree-container" style="max-height:300px;overflow-y:auto;font-size:12px;"></div>
     </div>
     <div class="right-section">
-      <button class="btn-sm" id="refresh-status" style="width:100%;">&#8635; Refresh Status</button>
+      <button class="btn-sm" id="refresh-status" type="button">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.17 6.706a5 5 0 0 1 7.103-3.16.5.5 0 1 0 .454-.892A6 6 0 0 0 2.19 6.296a.5.5 0 1 0 .98.21z"/><path d="M3.17 6.706A.5.5 0 0 1 3.5 6.5h2a.5.5 0 0 1 0 1H3.823l.346 1.346a.5.5 0 0 1-.972.243l-.5-2a.5.5 0 0 1 .473-.621zm9.66 2.588a5 5 0 0 1-7.103 3.16.5.5 0 1 0-.454.892A6 6 0 0 0 13.81 9.704a.5.5 0 1 0-.98-.21z"/><path d="M12.83 9.294a.5.5 0 0 1-.33.206h-2a.5.5 0 0 1 0-1h1.677l-.346-1.346a.5.5 0 0 1 .972-.243l.5 2a.5.5 0 0 1-.473.621z"/></svg>
+        Refresh Status
+      </button>
     </div>
+    </div><!-- /.context-panel-body -->
   </aside>
 </div>
 
