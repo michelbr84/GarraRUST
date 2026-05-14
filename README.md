@@ -95,8 +95,8 @@ cargo build --release -p garraia-desktop
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-garra init
-garra start
+garraia init
+garraia start
 ```
 
 > **Nota:** o script de instalação requer que binários CLI pré-compilados estejam publicados nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Enquanto isso, compile a partir do código-fonte conforme acima.
@@ -125,7 +125,7 @@ Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disp
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
 | | **Recarregamento de config a quente** | Sim | Não | Não |
 | | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| | **Auto-atualização** | Sim (`garra update`) | npm | Compilar a partir do código-fonte |
+| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
 | | **Arquitetura 100% local** | ✅ Sim | Não | Não |
 | | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
 | | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
