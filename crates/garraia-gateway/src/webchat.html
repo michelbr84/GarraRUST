@@ -2975,23 +2975,40 @@ function initSkinCards() {
   });
 }
 
-// ─── Dashboard hydration (plan 0117 — wire to existing /api/status) ──
+// ─── Dashboard hydration (plan 0118 — uses /api/health + /api/capabilities) ──
 async function hydrateDashboard() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.textContent = String(v); };
   try {
-    const r = await fetch('/api/status');
-    if (!r.ok) return;
-    const j = await r.json();
-    const set = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.textContent = String(v); };
-    set('dashboard-version', j.version ? ('GarraIA v' + j.version) : 'GarraIA');
-    set('dashboard-metric-port', (j.gateway && j.gateway.port) || (location.port || '—'));
-    set('dashboard-metric-providers', Array.isArray(j.providers) ? j.providers.length : (j.llm ? Object.keys(j.llm).length : '—'));
-    set('dashboard-metric-channels', Array.isArray(j.channels) ? j.channels.length : '—');
-    set('dashboard-metric-sessions', (j.sessions !== undefined ? j.sessions : (j.active_sessions !== undefined ? j.active_sessions : '—')));
-    set('dashboard-health-server', j.status || 'ok');
-    set('dashboard-health-provider', j.provider || '—');
-    set('dashboard-health-model', j.model || '—');
-    set('dashboard-health-config', j.config_dir || '—');
-  } catch (_e) { /* dashboard renders with placeholders */ }
+    const [healthRes, capsRes] = await Promise.all([
+      fetch('/api/health').catch(() => null),
+      fetch('/api/capabilities').catch(() => null),
+    ]);
+    if (healthRes && healthRes.ok) {
+      const h = await healthRes.json();
+      set('dashboard-version', h.version ? ('GarraIA v' + h.version) : 'GarraIA');
+      set('dashboard-status-label', h.status === 'healthy' ? 'Gateway running' : ('Gateway ' + h.status));
+      if (h.gateway_url) {
+        try {
+          const u = new URL(h.gateway_url);
+          set('dashboard-metric-port', u.port || (u.protocol === 'https:' ? '443' : '80'));
+        } catch (_e) { set('dashboard-metric-port', '—'); }
+      }
+      set('dashboard-metric-sessions', h.active_sessions !== undefined ? h.active_sessions : '—');
+      set('dashboard-metric-channels', Array.isArray(h.channels) ? h.channels.length : '—');
+      set('dashboard-health-server', h.status || 'ok');
+      set('dashboard-health-provider', h.provider || '—');
+      set('dashboard-health-model', h.model || '—');
+    }
+    if (capsRes && capsRes.ok) {
+      const c = await capsRes.json();
+      set('dashboard-metric-providers', Array.isArray(c.providers) ? c.providers.length : '—');
+      // If /api/health didn't fill channels (older binary), fall back here.
+      const channelsEl = document.getElementById('dashboard-metric-channels');
+      if (channelsEl && channelsEl.textContent === '—' && Array.isArray(c.channels)) {
+        set('dashboard-metric-channels', c.channels.length);
+      }
+    }
+  } catch (_e) { /* dashboard renders with placeholders — non-fatal */ }
 }
 
 // Initialize skin editor
