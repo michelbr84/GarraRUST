@@ -92,7 +92,7 @@ Health routine ran on 2026-05-14 (run 2, ~8:50 AM ET). Full security scan comple
 
 | Change | Result |
 |---|---|
-| `metrics 0.24.5` (yanked) → `0.24.6` in `Cargo.lock` | ⏳ PENDING merge — PR #336 CI in progress |
+| `metrics 0.24.5` (yanked) → `0.24.6` in `Cargo.lock` | ✅ merged — `adbe00af` |
 | Secret scanning (gitleaks) | ✅ clean | CI pass on PR #336 head |
 | Malware (cargo/npm) | ✅ none | |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |

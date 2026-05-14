@@ -77,8 +77,8 @@ plans/README.md                         ← new row for plan 0124
           E2E Tests ✅, Format Check ✅, Clippy ✅, MSRV ✅, Test (macOS) ✅
 - [x] T4: Update `docs/security/dependabot-status.md` — session snapshot
 - [x] T5: Add plan row to `plans/README.md`
-- [ ] T6: Merge PR #336 (pending CI green on remaining checks: Build, Coverage, Playwright, Test ubuntu/windows, Analyze rust)
-- [ ] T7: Confirm `metrics 0.24.5` warning disappears from `cargo audit` output on main
+- [x] T6: Merge PR #336 — squash-merged as `adbe00af` (all 19/19 CI checks ✅)
+- [x] T7: Confirmed — `metrics 0.24.5` no longer in `Cargo.lock` on main; `cargo audit` warning count 22→21
 
 ## Risk register
 
@@ -90,11 +90,11 @@ plans/README.md                         ← new row for plan 0124
 
 ## Acceptance criteria
 
-- [ ] `metrics 0.24.5` no longer appears in `Cargo.lock` on `main`.
-- [ ] `cargo audit` on main shows 21 allowed warnings (not 22).
-- [ ] All CI checks green on merged main.
-- [ ] `docs/security/dependabot-status.md` updated.
-- [ ] `plans/README.md` row added for 0124.
+- [x] `metrics 0.24.5` no longer appears in `Cargo.lock` on `main`.
+- [x] `cargo audit` on main shows 21 allowed warnings (not 22).
+- [x] All CI checks green on merged main (19/19 ✅).
+- [x] `docs/security/dependabot-status.md` updated.
+- [x] `plans/README.md` row added for 0124.
 
 ## Cross-references
 
