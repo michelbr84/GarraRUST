@@ -1092,6 +1092,286 @@ aside.right-panel#right-panel #refresh-status .icon-svg { width: 14px; height: 1
 .reveal-card { animation: fadeInUp var(--garra-anim-duration) ease both; animation-delay: calc(var(--garra-anim-delay, 0.08s) * var(--i, 0)); }
 
 /* ========================================================================
+   GARRA GLASS — MULTI-PAGE LAYOUT (plan 0117).
+   The chat surface is now one of several pages. Each page lives as a
+   `.page-view` flex column. The internal router (`setPage`) toggles
+   `display` and the sidebar `.active` class. Hash-driven so URLs are
+   bookmarkable.
+   ======================================================================== */
+.page-view {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow: hidden;
+}
+.page-view.active { display: flex; }
+.page-view > .glass-panel.page-card {
+  flex: 1;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.page-view > .glass-panel.page-card > .panel-header { flex-shrink: 0; }
+.page-view > .glass-panel.page-card > .page-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 24px;
+}
+
+/* Sidebar nav list (multi-page) */
+nav.sidebar#sidebar .sidebar-pages {
+  padding: 4px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+}
+nav.sidebar#sidebar .sidebar-page-btn {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--garra-muted);
+  font-family: var(--garra-font);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+}
+nav.sidebar#sidebar .sidebar-page-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--garra-text); }
+nav.sidebar#sidebar .sidebar-page-btn.active {
+  background: linear-gradient(135deg, rgba(var(--garra-accent-rgb), 0.20), rgba(var(--garra-accent-rgb), 0.08));
+  border: 1px solid rgba(var(--garra-accent-rgb), 0.30);
+  color: var(--garra-text);
+  font-weight: 700;
+}
+nav.sidebar#sidebar .sidebar-page-btn .icon-svg {
+  width: 16px; height: 16px; flex-shrink: 0; fill: currentColor;
+}
+nav.sidebar#sidebar .sidebar-page-btn .page-tag {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(var(--garra-primary-rgb), 0.18);
+  color: var(--garra-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Dashboard hero + metric cards */
+.dashboard-hero {
+  position: relative;
+  padding: 32px 32px 28px;
+  border-radius: var(--garra-radius);
+  border: 1px solid var(--garra-border);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(var(--garra-primary-rgb), 0.22), transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(var(--garra-accent-rgb), 0.20), transparent 55%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  overflow: hidden;
+  margin-bottom: 22px;
+}
+.dashboard-hero h1 {
+  font-family: var(--garra-font);
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--garra-text);
+  margin: 0 0 10px;
+}
+.dashboard-hero p {
+  color: var(--garra-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 64ch;
+  margin: 0;
+}
+.dashboard-hero .hero-tags {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 18px;
+}
+[data-theme="light"] .dashboard-hero h1,
+[data-bs-theme="light"] .dashboard-hero h1 { color: #06142b; }
+[data-theme="light"] .dashboard-hero p,
+[data-bs-theme="light"] .dashboard-hero p { color: #466080; }
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.metric-card {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid var(--garra-border);
+  background: var(--garra-panel-2);
+  position: relative;
+  animation: fadeInUp var(--garra-anim-duration) ease both;
+  animation-delay: calc(var(--garra-anim-delay) * var(--i, 0));
+  overflow: hidden;
+}
+.metric-card .metric-label {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--garra-muted-2);
+  display: flex; align-items: center; gap: 8px;
+}
+.metric-card .metric-label .icon-box {
+  width: 24px; height: 24px;
+  border-radius: 8px;
+}
+.metric-card .metric-label .icon-box .icon-svg { width: 12px; height: 12px; }
+.metric-card .metric-value {
+  font-family: var(--garra-font);
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--garra-text);
+  margin-top: 8px;
+}
+.metric-card .metric-trend {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--garra-success);
+  margin-top: 4px;
+}
+.metric-card .metric-trend.muted { color: var(--garra-muted); }
+.metric-card .metric-trend.warning { color: var(--garra-warning); }
+.metric-card .metric-trend.danger { color: var(--garra-danger); }
+[data-theme="light"] .metric-card,
+[data-bs-theme="light"] .metric-card { background: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .metric-card .metric-value,
+[data-bs-theme="light"] .metric-card .metric-value { color: #06142b; }
+
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.dashboard-card {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid var(--garra-border);
+  background: var(--garra-panel-2);
+}
+.dashboard-card h3 {
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--garra-text);
+  margin: 0 0 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.dashboard-card h3 .icon-box { width: 28px; height: 28px; }
+.dashboard-card ul.dashboard-list { list-style: none; padding: 0; margin: 0; }
+.dashboard-card ul.dashboard-list li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--garra-border);
+  font-size: 13px;
+  color: var(--garra-muted);
+}
+.dashboard-card ul.dashboard-list li:last-child { border-bottom: none; }
+.dashboard-card ul.dashboard-list li .value {
+  color: var(--garra-text);
+  font-family: var(--garra-mono);
+  font-size: 12px;
+}
+[data-theme="light"] .dashboard-card,
+[data-bs-theme="light"] .dashboard-card { background: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .dashboard-card h3,
+[data-bs-theme="light"] .dashboard-card h3 { color: #06142b; }
+[data-theme="light"] .dashboard-card ul.dashboard-list li .value,
+[data-bs-theme="light"] .dashboard-card ul.dashboard-list li .value { color: #06142b; }
+
+/* Skins page */
+.skins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 18px;
+}
+.skin-card {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--garra-border);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+  position: relative;
+  background: var(--garra-panel-2);
+}
+.skin-card:hover { transform: translateY(-2px); box-shadow: 0 16px 36px rgba(0, 0, 0, 0.22); }
+.skin-card.active {
+  border-color: rgba(var(--garra-primary-rgb), 0.6);
+  box-shadow: 0 0 0 3px rgba(var(--garra-primary-rgb), 0.25);
+}
+.skin-card .skin-preview {
+  height: 80px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  position: relative;
+  overflow: hidden;
+}
+.skin-card .skin-name { font-family: var(--garra-font); font-weight: 800; color: var(--garra-text); font-size: 14px; }
+.skin-card .skin-tag { font-size: 11px; color: var(--garra-muted); margin-top: 2px; }
+.skin-card[data-skin="garra-blue"]   .skin-preview { background: linear-gradient(135deg, #041531, #16d9ff, #ffd400); }
+.skin-card[data-skin="aurora-admin"] .skin-preview { background: linear-gradient(135deg, #1a0036, #a78bfa, #16d9ff); }
+.skin-card[data-skin="editorial"]    .skin-preview { background: linear-gradient(135deg, #f7fbff, #e6efff, #c1d4ff); }
+.skin-card[data-skin="cyber-garra"]  .skin-preview { background: linear-gradient(135deg, #020812, #20e887, #ffd400); }
+[data-theme="light"] .skin-card,
+[data-bs-theme="light"] .skin-card { background: rgba(255, 255, 255, 0.92); }
+[data-theme="light"] .skin-card .skin-name,
+[data-bs-theme="light"] .skin-card .skin-name { color: #06142b; }
+[data-theme="light"] .skin-card .skin-tag,
+[data-bs-theme="light"] .skin-card .skin-tag { color: #466080; }
+
+/* Generic placeholder for not-yet-implemented pages */
+.page-placeholder {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center;
+  height: 100%;
+  padding: 60px 20px;
+  color: var(--garra-muted);
+  gap: 14px;
+}
+.page-placeholder .icon-circle {
+  width: 64px; height: 64px;
+  border-radius: 18px;
+  display: grid; place-items: center;
+  background: rgba(var(--garra-accent-rgb), 0.16);
+  color: var(--garra-accent);
+}
+.page-placeholder .icon-circle .icon-svg { width: 28px; height: 28px; fill: currentColor; }
+.page-placeholder h2 {
+  font-family: var(--garra-font);
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--garra-text);
+  margin: 0;
+}
+.page-placeholder p {
+  max-width: 48ch;
+  font-size: 14px;
+  margin: 0;
+}
+[data-theme="light"] .page-placeholder h2,
+[data-bs-theme="light"] .page-placeholder h2 { color: #06142b; }
+
+/* ========================================================================
    GARRA GLASS — MOBILE / RESPONSIVE (plan 0116 T9).
    ≤768px: sidebar overlays + right panel slides in from right.
    Sidebar already has overlay logic from legacy code (hamburger-btn) —
@@ -1984,6 +2264,45 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
         New Chat
       </button>
     </div>
+    <!-- Plan 0117 — multi-page navigation. The router toggles `.active`. -->
+    <nav class="sidebar-pages" aria-label="Console pages">
+      <button class="sidebar-page-btn" type="button" data-page="dashboard">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 1A1.5 1.5 0 0 0 5 2.5V3H1.5A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 14.5 3H11v-.5A1.5 1.5 0 0 0 9.5 1h-3zm0 1h3a.5.5 0 0 1 .5.5V3H6v-.5a.5.5 0 0 1 .5-.5z"/></svg>
+        Dashboard
+      </button>
+      <button class="sidebar-page-btn active" type="button" data-page="chat">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.678 11.894a1 1 0 0 1 .287.801 10.97 10.97 0 0 1-.398 2c1.395-.323 2.247-.697 2.634-.893a1 1 0 0 1 .71-.074A8.06 8.06 0 0 0 8 14c3.996 0 7-2.807 7-6 0-3.192-3.004-6-7-6S1 4.808 1 8c0 1.468.617 2.83 1.678 3.894z"/></svg>
+        Chat
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="providers">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4zm10 0a2 2 0 1 0-.195 1.41l1.695 3.09-1.695 3.09a2 2 0 1 0 .71.412l1.775-3.502L13.515 4.58A2 2 0 0 0 13 4z"/></svg>
+        Providers <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="channels">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 9.511c.076.954.83 1.697 2.182 1.785V12h.6v-.709c1.4-.098 2.218-.846 2.218-1.932 0-.987-.626-1.496-1.745-1.76l-.473-.112V5.57c.6.068.982.396 1.074.85h1.052c-.076-.93-.848-1.642-2.126-1.726V4h-.6v.719c-1.195.117-2.01.836-2.01 1.853 0 .9.606 1.472 1.613 1.707l.397.098v2.034c-.615-.093-1.022-.43-1.114-.9H5.5zm2.177-2.166c-.59-.137-.91-.416-.91-.836 0-.47.345-.822.915-.925v1.76h-.005zm.692 1.193c.717.166 1.048.435 1.048.91 0 .542-.412.914-1.135.982V8.518l.087.02z"/></svg>
+        Channels <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="sessions">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 3h-13a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/><path d="M3.5 5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9zm0 2.5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9zm0 2.5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9z"/></svg>
+        Sessions <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="settings">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/></svg>
+        Settings <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="diagnostics">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 1 0-6 0v4a5 5 0 1 0 6 0z"/></svg>
+        Diagnostics <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="logs">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2zM4.5 12.5A.5.5 0 0 1 5 12h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm0-2A.5.5 0 0 1 5 10h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm.5-2.5a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1H5z"/></svg>
+        Logs <span class="page-tag">Em breve</span>
+      </button>
+      <button class="sidebar-page-btn" type="button" data-page="skins">
+        <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M15.825.12a.5.5 0 0 1 .132.584c-1.53 3.43-4.743 8.17-7.095 10.64a6.067 6.067 0 0 1-2.373 1.534c-.018.227-.06.538-.16.868-.201.659-.667 1.479-1.708 1.74a8.118 8.118 0 0 1-3.078.132 3.659 3.659 0 0 1-.562-.135 1.382 1.382 0 0 1-.466-.247.714.714 0 0 1-.204-.288.622.622 0 0 1 .004-.443c.095-.245.316-.38.461-.452.394-.197.625-.453.867-.826.095-.144.184-.297.287-.472l.117-.198c.151-.255.326-.54.546-.848.528-.739 1.201-.925 1.746-.896.126.007.243.025.348.048.062-.172.142-.38.238-.608.261-.619.658-1.419 1.187-2.069 2.176-2.67 6.18-6.206 9.117-8.104a.5.5 0 0 1 .596.04z"/></svg>
+        Themes &amp; Skins
+      </button>
+    </nav>
     <div class="channel-filter" style="padding:4px 12px;">
       <select id="channel-filter" title="Filter by channel" style="width:100%;padding:6px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:12px;font-family:var(--font);">
         <option value="">All Channels</option>
@@ -2006,8 +2325,8 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
 
   <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-  <!-- CENTER — Chat -->
-  <main class="chat-area">
+  <!-- CENTER — Chat (Plan 0117: now one of several page-views; default page) -->
+  <main class="chat-area page-view active" data-page="chat">
     <div class="glass-panel chat-console" data-testid="garra-chat-panel">
     <div class="panel-header chat-header">
       <h3 class="panel-title">
@@ -2116,6 +2435,217 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
     </div><!-- /.glass-panel.chat-console -->
   </main>
+
+  <!-- DASHBOARD page (plan 0117) -->
+  <section class="page-view" data-page="dashboard" data-testid="garra-page-dashboard" aria-label="Dashboard">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title">
+          <span class="icon-box">
+            <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 1A1.5 1.5 0 0 0 5 2.5V3H1.5A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 14.5 3H11v-.5A1.5 1.5 0 0 0 9.5 1h-3z"/></svg>
+          </span>
+          Dashboard
+        </h3>
+        <span class="pill success"><span class="status-dot"></span> Live</span>
+      </div>
+      <div class="page-body">
+        <div class="dashboard-hero reveal-card" style="--i: 0;">
+          <h1>Painel completo do GarraIA</h1>
+          <p>Tudo que o gateway expõe — providers, canais, sessões e segurança — em uma única superfície vidro. Cada métrica abaixo reflete o estado real do `garraia-gateway` rodando agora.</p>
+          <div class="hero-tags">
+            <span class="pill"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 11.5A.5.5 0 0 1 5 11h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm-2-1A.5.5 0 0 1 3 10h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/></svg> <span id="dashboard-version">GarraIA v—</span></span>
+            <span class="pill success"><span class="status-dot"></span> <span id="dashboard-status-label">Gateway running</span></span>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-card reveal-card" style="--i: 1;">
+            <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 5.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5zm0 2.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1H4a.5.5 0 0 1-.5-.5z"/></svg></span> Gateway port</div>
+            <div class="metric-value" id="dashboard-metric-port">—</div>
+            <div class="metric-trend muted">Listening on 0.0.0.0</div>
+          </div>
+          <div class="metric-card reveal-card" style="--i: 2;">
+            <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Providers configurados</div>
+            <div class="metric-value" id="dashboard-metric-providers">—</div>
+            <div class="metric-trend muted">OpenAI / Anthropic / OpenRouter / Ollama</div>
+          </div>
+          <div class="metric-card reveal-card" style="--i: 3;">
+            <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 9.511c.076.954.83 1.697 2.182 1.785V12h.6v-.709c1.4-.098 2.218-.846 2.218-1.932 0-.987-.626-1.496-1.745-1.76l-.473-.112V5.57c.6.068.982.396 1.074.85h1.052c-.076-.93-.848-1.642-2.126-1.726V4h-.6v.719c-1.195.117-2.01.836-2.01 1.853 0 .9.606 1.472 1.613 1.707l.397.098v2.034c-.615-.093-1.022-.43-1.114-.9H5.5z"/></svg></span> Canais disponíveis</div>
+            <div class="metric-value" id="dashboard-metric-channels">—</div>
+            <div class="metric-trend muted">Web + Telegram + Discord + API</div>
+          </div>
+          <div class="metric-card reveal-card" style="--i: 4;">
+            <div class="metric-label"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 3h-13a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5z"/></svg></span> Sessões ativas</div>
+            <div class="metric-value" id="dashboard-metric-sessions">—</div>
+            <div class="metric-trend muted">Across all channels</div>
+          </div>
+          <div class="metric-card reveal-card" style="--i: 5;">
+            <div class="metric-label"><span class="icon-box" style="background: rgba(32, 232, 135, 0.18); color: var(--garra-success);"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.338 1.59a61.44 61.44 0 0 0-2.837.856.481.481 0 0 0-.328.487c.07.917.21 2.05.4 3.179.404 2.39 1.226 5.43 3.328 7.137a.78.78 0 0 0 .939 0c2.102-1.707 2.924-4.748 3.328-7.137a61.66 61.66 0 0 0 .4-3.178.481.481 0 0 0-.328-.487A60.16 60.16 0 0 0 5.338 1.59z"/></svg></span> Secrets expostos</div>
+            <div class="metric-value" style="color: var(--garra-success);">0</div>
+            <div class="metric-trend">Always zero — write-only</div>
+          </div>
+        </div>
+
+        <div class="dashboard-cards">
+          <div class="dashboard-card reveal-card" style="--i: 6;">
+            <h3><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Arquitetura</h3>
+            <ul class="dashboard-list">
+              <li><span>Web Console UI</span><span class="value">Garra Glass</span></li>
+              <li><span>Gateway HTTP/WS</span><span class="value">Axum 0.8</span></li>
+              <li><span>Settings Registry</span><span class="value">file + env</span></li>
+              <li><span>Providers</span><span class="value">multi</span></li>
+              <li><span>Channels</span><span class="value">multi</span></li>
+            </ul>
+          </div>
+          <div class="dashboard-card reveal-card" style="--i: 7;">
+            <h3><span class="icon-box" style="background: rgba(32, 232, 135, 0.18); color: var(--garra-success);"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2z"/></svg></span> Health</h3>
+            <ul class="dashboard-list">
+              <li><span>Server</span><span class="value" id="dashboard-health-server">checking…</span></li>
+              <li><span>Provider</span><span class="value" id="dashboard-health-provider">—</span></li>
+              <li><span>Model</span><span class="value" id="dashboard-health-model">—</span></li>
+              <li><span>Config dir</span><span class="value" id="dashboard-health-config">—</span></li>
+              <li><span>Secrets</span><span class="value" style="color: var(--garra-success);">masked</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLACEHOLDER pages (plans 0119-0122 — wire real data later) -->
+  <section class="page-view" data-page="providers" data-testid="garra-page-providers">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4z"/></svg></span> Providers &amp; Models</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Providers &amp; Models</h2>
+          <p>Configuração e teste de OpenAI, Anthropic, OpenRouter, Ollama e custom endpoints. Endpoints Rust em <code>plan 0119 / PR-6</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-view" data-page="channels" data-testid="garra-page-channels">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 9.511c.076.954.83 1.697 2.182 1.785V12h.6v-.709c1.4-.098 2.218-.846 2.218-1.932 0-.987-.626-1.496-1.745-1.76l-.473-.112V5.57c.6.068.982.396 1.074.85h1.052c-.076-.93-.848-1.642-2.126-1.726V4h-.6v.719c-1.195.117-2.01.836-2.01 1.853 0 .9.606 1.472 1.613 1.707l.397.098v2.034c-.615-.093-1.022-.43-1.114-.9H5.5z"/></svg></span> Channels</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Channels</h2>
+          <p>Gerenciamento de Web, Telegram, Discord, API e canais futuros. Endpoints Rust em <code>plan 0120 / PR-7</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-view" data-page="sessions" data-testid="garra-page-sessions">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 3h-13a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5z"/></svg></span> Sessions</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Sessions</h2>
+          <p>Histórico, exportação e auditoria de sessões. Endpoints Rust em <code>plan 0120 / PR-7</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-view" data-page="settings" data-testid="garra-page-settings">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34z"/></svg></span> Settings Registry</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Settings Registry</h2>
+          <p>Editor schema-driven com secret masking (write-only), backup e <code>requiresRestart</code>. Endpoints Rust em <code>plan 0121 / PR-8</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-view" data-page="diagnostics" data-testid="garra-page-diagnostics">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2z"/></svg></span> Diagnostics</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Diagnostics</h2>
+          <p>Health check visual, relatório copiável e detecção de placeholders. Endpoints Rust em <code>plan 0122 / PR-9</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-view" data-page="logs" data-testid="garra-page-logs">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title"><span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2z"/></svg></span> Logs</h3>
+        <span class="pill warning"><span class="status-dot warning"></span> Em breve</span>
+      </div>
+      <div class="page-body">
+        <div class="page-placeholder">
+          <div class="icon-circle"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/></svg></div>
+          <h2>Logs</h2>
+          <p>Filtro por nível, busca, auto-scroll, export — com secret masking server-side. Endpoints Rust em <code>plan 0122 / PR-9</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- THEMES & SKINS page (plan 0117) -->
+  <section class="page-view" data-page="skins" data-testid="garra-page-skins">
+    <div class="glass-panel page-card">
+      <div class="panel-header">
+        <h3 class="panel-title">
+          <span class="icon-box"><svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M15.825.12a.5.5 0 0 1 .132.584c-1.53 3.43-4.743 8.17-7.095 10.64a6.067 6.067 0 0 1-2.373 1.534c-.018.227-.06.538-.16.868-.201.659-.667 1.479-1.708 1.74a8.118 8.118 0 0 1-3.078.132z"/></svg></span>
+          Themes &amp; Skins
+        </h3>
+        <span class="pill"><span class="status-dot"></span> 4 skins</span>
+      </div>
+      <div class="page-body">
+        <p style="color: var(--garra-muted); margin-bottom: 18px;">Clique em uma skin para aplicar. A preferência é salva localmente (<code>localStorage</code>). Persistência server-side virá em <code>plan 0121</code>.</p>
+        <div class="skins-grid">
+          <div class="skin-card reveal-card" style="--i: 0;" data-skin="garra-blue" data-theme-mode="dark">
+            <div class="skin-preview"></div>
+            <div class="skin-name">Garra Blue</div>
+            <div class="skin-tag">gold + cyan — default</div>
+          </div>
+          <div class="skin-card reveal-card" style="--i: 1;" data-skin="aurora-admin" data-theme-mode="dark">
+            <div class="skin-preview"></div>
+            <div class="skin-name">Aurora Admin</div>
+            <div class="skin-tag">purple + cyan</div>
+          </div>
+          <div class="skin-card reveal-card" style="--i: 2;" data-skin="editorial" data-theme-mode="light">
+            <div class="skin-preview"></div>
+            <div class="skin-name">Editorial</div>
+            <div class="skin-tag">light pastel</div>
+          </div>
+          <div class="skin-card reveal-card" style="--i: 3;" data-skin="cyber-garra" data-theme-mode="dark">
+            <div class="skin-preview"></div>
+            <div class="skin-name">Cyber Garra</div>
+            <div class="skin-tag">neon green + gold</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- RIGHT PANEL -->
   <aside class="right-panel" id="right-panel" data-testid="garra-context-panel">
@@ -2367,6 +2897,101 @@ function applyTheme(theme) {
   document.querySelectorAll('.skin-preset-btn[data-theme]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.theme === theme);
   });
+}
+
+// ─── Multi-page Router (plan 0117) ───────────────────────────────────
+const PAGE_TITLES = {
+  chat: 'Chat',
+  dashboard: 'Dashboard',
+  providers: 'Providers & Models',
+  channels: 'Channels',
+  sessions: 'Sessions',
+  settings: 'Settings Registry',
+  diagnostics: 'Diagnostics',
+  logs: 'Logs',
+  skins: 'Themes & Skins',
+};
+function currentPageFromHash() {
+  const h = (location.hash || '').replace(/^#\/?/, '').trim();
+  return PAGE_TITLES[h] ? h : 'chat';
+}
+function setPage(name) {
+  if (!PAGE_TITLES[name]) name = 'chat';
+  document.querySelectorAll('.page-view').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === name);
+  });
+  document.querySelectorAll('.sidebar-page-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.page === name);
+  });
+  document.querySelectorAll('.app-header nav.header-nav button, .app-header nav.header-nav a').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === name);
+  });
+  // Plan 0117: header nav stub is hardcoded to "Chat"; keep it visually
+  // selected only when on chat page. The single existing button has
+  // data-page="chat" already.
+  const wanted = '#/' + name;
+  if (location.hash !== wanted) {
+    history.replaceState(null, '', wanted);
+  }
+  // Right-panel relevance: only the chat page genuinely needs the live
+  // status side-rail. Other pages can hide it (less visual noise) until
+  // plan 0117a wires per-page side rails.
+  const rp = document.getElementById('right-panel');
+  if (rp) {
+    if (name === 'chat') {
+      rp.classList.remove('hide-on-page');
+      rp.style.display = '';
+    } else {
+      rp.style.display = 'none';
+    }
+  }
+}
+function setupPageRouter() {
+  document.querySelectorAll('.sidebar-page-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setPage(btn.dataset.page);
+      closeSidebarMobile && closeSidebarMobile();
+    });
+  });
+  window.addEventListener('hashchange', () => setPage(currentPageFromHash()));
+  setPage(currentPageFromHash());
+}
+
+// ─── Skin cards (plan 0117) — distinct from skin-presets in modal ────
+function initSkinCards() {
+  const cards = document.querySelectorAll('.skin-card[data-skin]');
+  const saved = localStorage.getItem('garraia.ui.skin') || 'garra-blue';
+  cards.forEach(card => {
+    if (card.dataset.skin === saved) card.classList.add('active');
+    card.addEventListener('click', () => {
+      const skin = card.dataset.skin;
+      const mode = card.dataset.themeMode || 'dark';
+      localStorage.setItem('garraia.ui.skin', skin);
+      cards.forEach(c => c.classList.toggle('active', c === card));
+      // Apply the matching light/dark base — additional palette overrides
+      // for each skin will land in plan 0121 (server-side persistence).
+      applyTheme(mode);
+    });
+  });
+}
+
+// ─── Dashboard hydration (plan 0117 — wire to existing /api/status) ──
+async function hydrateDashboard() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) return;
+    const j = await r.json();
+    const set = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.textContent = String(v); };
+    set('dashboard-version', j.version ? ('GarraIA v' + j.version) : 'GarraIA');
+    set('dashboard-metric-port', (j.gateway && j.gateway.port) || (location.port || '—'));
+    set('dashboard-metric-providers', Array.isArray(j.providers) ? j.providers.length : (j.llm ? Object.keys(j.llm).length : '—'));
+    set('dashboard-metric-channels', Array.isArray(j.channels) ? j.channels.length : '—');
+    set('dashboard-metric-sessions', (j.sessions !== undefined ? j.sessions : (j.active_sessions !== undefined ? j.active_sessions : '—')));
+    set('dashboard-health-server', j.status || 'ok');
+    set('dashboard-health-provider', j.provider || '—');
+    set('dashboard-health-model', j.model || '—');
+    set('dashboard-health-config', j.config_dir || '—');
+  } catch (_e) { /* dashboard renders with placeholders */ }
 }
 
 // Initialize skin editor
@@ -3555,6 +4180,13 @@ async function boot() {
       applyTheme(State.currentTheme === 'light' ? 'dark' : 'light');
     });
   }
+
+  // Plan 0117: multi-page router. Hash-driven so URLs are bookmarkable.
+  // `#/dashboard`, `#/chat`, `#/providers`, etc. Default = `chat` (the
+  // chat surface remains the primary entry; Dashboard is one click away).
+  setupPageRouter();
+  initSkinCards();
+  hydrateDashboard();
 
   try {
     const r = await fetch('/api/auth-check');
