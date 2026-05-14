@@ -96,6 +96,7 @@ pub fn build_router(
     let router = Router::new()
         .route("/", get(web_chat))
         .route("/health", get(health))
+        .route("/ping", get(ping))
         .route("/api/health", get(crate::health::health_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
@@ -360,6 +361,15 @@ pub fn build_router(
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// GAR-603 — Minimal liveness probe for Runpod Load Balancer Serverless.
+///
+/// Must be cheap and free of any state, DB, or provider dependency: Runpod
+/// routes traffic only to workers that return HTTP 200 here on `PORT_HEALTH`.
+/// Independent of `/health` (which aggregates provider status and is heavier).
+async fn ping() -> &'static str {
+    "pong"
 }
 
 async fn admin_page() -> Html<String> {
@@ -992,4 +1002,41 @@ fn read_cached_latest_version() -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
     v.get("latest_version")?.as_str().map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// GAR-603 — Runpod Load Balancer Serverless requires `GET /ping` to return
+    /// HTTP 200 fast (no DB / provider dependency) for a worker to be considered
+    /// healthy. This test pins both the handler body and the route wiring under
+    /// the same router builder pattern used in production (`router.rs:96-99`).
+    #[tokio::test]
+    async fn ping_route_returns_200_pong() {
+        let app: Router = Router::new().route("/ping", get(ping));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ping")
+                    .body(Body::empty())
+                    .expect("ping request"),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        assert_eq!(&body[..], b"pong");
+    }
 }

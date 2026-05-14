@@ -1,18 +1,19 @@
-//! Integration tests for `/v1/groups/{group_id}/chats` (plan 0054, GAR-506).
+//! Integration tests for `/v1/groups/{group_id}/chats` (plan 0054 / GAR-506,
+//! extended by plan 0115 / GAR-604 for DM creation).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` function — same pattern
 //! as `rest_v1_groups.rs`/`rest_v1_invites.rs`. Splitting into multiple
 //! `#[tokio::test]`s historically triggered the sqlx runtime-teardown race
 //! documented in plan 0016 M3 commit `4f8be37`.
 //!
-//! Scenarios covered (10 total):
+//! Scenarios covered (16 total):
 //!
-//! POST scenarios (5):
+//! POST channel scenarios (5):
 //!   C1. POST 201 — happy path: owner creates a 'channel'; asserts
 //!       response shape, `chats` row, `chat_members[owner]`, and
 //!       `audit_events` row with action=`chat.created` + structural-only
 //!       metadata (no name/topic literal — invariant 7).
-//!   C2. POST 400 — type='dm' rejected with the slice-2 deferral message.
+//!   C2. POST 400 — type='dm' without partner_user_id → requires field.
 //!   C3. POST 400 — empty name (after trim).
 //!   C4. POST 401 — missing bearer.
 //!   C5. POST 400 — `X-Group-Id` missing.
@@ -24,6 +25,15 @@
 //!   G3. GET 400 — `X-Group-Id` mismatch.
 //!   G4. GET 401 — missing bearer.
 //!   G5. GET 200 — empty group returns `items: []`.
+//!
+//! DM scenarios (6) — GAR-604:
+//!   D1. POST 201 — DM happy path: caller + partner both in group → 201,
+//!       2 chat_members rows (caller=owner, partner=member), audit row.
+//!   D2. POST 200 — second identical POST → 200 + `dm_already_exists: true`.
+//!   D3. POST 400 — self-DM: partner_user_id = caller_user_id.
+//!   D4. POST 400 — DM without partner_user_id.
+//!   D5. POST 404 — partner not in group.
+//!   D6. POST 403 — cross-group authz: caller not a member of target group.
 
 mod common;
 
@@ -34,7 +44,10 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use common::Harness;
-use common::fixtures::{fetch_audit_events_for_group, seed_user_with_group};
+use common::fixtures::{
+    fetch_audit_events_for_group, seed_member_via_admin, seed_user_with_group,
+    seed_user_without_group,
+};
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp
@@ -171,7 +184,7 @@ async fn v1_chats_scenarios() {
         "C1 audit must NOT carry chat topic (PII invariant 7)"
     );
 
-    // ── C2. POST 400 type='dm' rejected ─────────────────────────────
+    // ── C2/D4. POST 400 DM without partner_user_id ──────────────────
     let resp = h
         .router
         .clone()
@@ -179,7 +192,7 @@ async fn v1_chats_scenarios() {
             Some(&owner_token),
             &group_id.to_string(),
             Some(&group_id.to_string()),
-            json!({"name": "dm-attempt", "type": "dm"}),
+            json!({"type": "dm"}),
         ))
         .await
         .expect("C2 oneshot");
@@ -187,8 +200,8 @@ async fn v1_chats_scenarios() {
     let v = body_json(resp).await;
     let detail = v["detail"].as_str().unwrap_or_default();
     assert!(
-        detail.contains("'dm' is not yet supported"),
-        "C2 detail message: {detail}"
+        detail.contains("requires 'partner_user_id'"),
+        "C2 detail must mention 'partner_user_id': {detail}"
     );
 
     // ── C3. POST 400 empty name ─────────────────────────────────────
@@ -334,5 +347,162 @@ async fn v1_chats_scenarios() {
         v["items"].as_array().expect("G5 items array").len(),
         0,
         "G5 fresh group returns empty list"
+    );
+
+    // ═══════════════════════════════════════════════════════════════
+    // DM scenarios (D1–D6) — GAR-604 / plan 0115
+    // ═══════════════════════════════════════════════════════════════
+
+    // Seed dedicated group + owner for DM tests (isolated from C/G tests).
+    let (dm_owner_id, dm_group_id, dm_owner_token) =
+        seed_user_with_group(&h, "dm-owner@chats-dm.test")
+            .await
+            .expect("D seed dm group");
+
+    // Seed partner inside dm_group.
+    let (dm_partner_id, _) =
+        seed_member_via_admin(&h, dm_group_id, "member", "dm-partner@chats-dm.test")
+            .await
+            .expect("D seed partner");
+
+    // Seed a second group whose owner is someone else (for D6 cross-group).
+    let (_, dm_group2_id, _) = seed_user_with_group(&h, "dm-owner2@chats-dm.test")
+        .await
+        .expect("D6 seed second group");
+
+    // ── D1. POST 201 DM happy path ──────────────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_chat(
+            Some(&dm_owner_token),
+            &dm_group_id.to_string(),
+            Some(&dm_group_id.to_string()),
+            json!({"type": "dm", "partner_user_id": dm_partner_id.to_string()}),
+        ))
+        .await
+        .expect("D1 oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED, "D1 status");
+    let v = body_json(resp).await;
+    assert_eq!(v["type"], "dm", "D1 type");
+    assert_eq!(v["group_id"], dm_group_id.to_string(), "D1 group_id");
+    assert_eq!(v["created_by"], dm_owner_id.to_string(), "D1 created_by");
+    assert!(
+        v.get("dm_already_exists").is_none() || !v["dm_already_exists"].as_bool().unwrap_or(true),
+        "D1 dm_already_exists absent or false"
+    );
+    let dm_chat_id_str = v["id"].as_str().unwrap().to_string();
+    let dm_chat_id: uuid::Uuid = dm_chat_id_str.parse().expect("D1 chat_id parses");
+
+    // D1 — 2 chat_members rows: caller=owner, partner=member.
+    let cm_rows: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT user_id, role FROM chat_members WHERE chat_id = $1 ORDER BY role")
+            .bind(dm_chat_id)
+            .fetch_all(&h.admin_pool)
+            .await
+            .expect("D1 chat_members");
+    assert_eq!(cm_rows.len(), 2, "D1 chat_members 2 rows");
+    assert!(
+        cm_rows
+            .iter()
+            .any(|(uid, role)| *uid == dm_partner_id && role == "member"),
+        "D1 partner has member role"
+    );
+    assert!(
+        cm_rows
+            .iter()
+            .any(|(uid, role)| *uid == dm_owner_id && role == "owner"),
+        "D1 caller has owner role"
+    );
+
+    // D1 — audit row present, no PII.
+    let dm_events = fetch_audit_events_for_group(&h, dm_group_id)
+        .await
+        .expect("D1 fetch audit");
+    let dm_audit = dm_events
+        .iter()
+        .find(|(action, _, _, id, _)| action == "chat.created" && *id == dm_chat_id_str)
+        .expect("D1 chat.created audit row");
+    assert_eq!(dm_audit.4["type"], "dm", "D1 audit type=dm");
+    assert!(
+        dm_audit.4.get("partner_id").is_none(),
+        "D1 audit must NOT carry partner_id (PII invariant 7)"
+    );
+
+    // ── D2. POST 200 idempotent DM ──────────────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_chat(
+            Some(&dm_owner_token),
+            &dm_group_id.to_string(),
+            Some(&dm_group_id.to_string()),
+            json!({"type": "dm", "partner_user_id": dm_partner_id.to_string()}),
+        ))
+        .await
+        .expect("D2 oneshot");
+    assert_eq!(resp.status(), StatusCode::OK, "D2 status");
+    let v = body_json(resp).await;
+    assert_eq!(v["id"], dm_chat_id_str, "D2 same chat id");
+    assert_eq!(v["dm_already_exists"], true, "D2 dm_already_exists=true");
+
+    // ── D3. POST 400 self-DM ────────────────────────────────────────
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_chat(
+            Some(&dm_owner_token),
+            &dm_group_id.to_string(),
+            Some(&dm_group_id.to_string()),
+            json!({"type": "dm", "partner_user_id": dm_owner_id.to_string()}),
+        ))
+        .await
+        .expect("D3 oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "D3 status");
+    let v = body_json(resp).await;
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("yourself"),
+        "D3 detail must mention 'yourself': {}",
+        v["detail"]
+    );
+
+    // ── D5. POST 404 partner not in group ───────────────────────────
+    let (outsider_id, _) = seed_user_without_group(&h, "outsider@chats-dm.test")
+        .await
+        .expect("D5 seed outsider");
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_chat(
+            Some(&dm_owner_token),
+            &dm_group_id.to_string(),
+            Some(&dm_group_id.to_string()),
+            json!({"type": "dm", "partner_user_id": outsider_id.to_string()}),
+        ))
+        .await
+        .expect("D5 oneshot");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "D5 status");
+
+    // ── D6. POST 403 cross-group authz ──────────────────────────────
+    // dm_owner is not a member of dm_group2; using dm_group2 as the
+    // X-Group-Id triggers the Principal extractor's 403.
+    let resp = h
+        .router
+        .clone()
+        .oneshot(post_chat(
+            Some(&dm_owner_token),
+            &dm_group2_id.to_string(),
+            Some(&dm_group2_id.to_string()),
+            json!({"type": "dm", "partner_user_id": dm_partner_id.to_string()}),
+        ))
+        .await
+        .expect("D6 oneshot");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "D6 cross-group must 403"
     );
 }

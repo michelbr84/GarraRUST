@@ -61,7 +61,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # ---------------------------------------------------------------------------
 # Stage 5: Runtime — minimal production image
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# Must match the builder's glibc. `rust:1.92-slim` (chef base, line 9) is
+# debian:trixie with glibc 2.39, so the `garra` binary is linked against
+# 2.39. Using bookworm here (glibc 2.36) made the binary fail at startup
+# with `GLIBC_2.39 not found` — discovered during the GAR-603 Runpod local
+# smoke test on 2026-05-13 (first runtime exercise of the image after the
+# rust:1.86 → 1.92 bump in PR #314, commit c1483e6). Same root cause as
+# the Runpod LB "timed out waiting for worker" symptom on endpoint
+# k3d2h9xumk2r4o: the worker container exited(1) before binding the port.
+#
+# Trixie's newer glibc is backward-compatible, so the Node 22 binary copied
+# from the bookworm-based node-installer stage continues to work here.
+FROM debian:trixie-slim AS runtime
 
 LABEL org.opencontainers.image.title="GarraIA Gateway" \
       org.opencontainers.image.description="Multi-channel, multi-provider LLM orchestration gateway" \
@@ -97,8 +108,16 @@ WORKDIR /home/garraia
 
 EXPOSE 3888
 
+# GAR-603 — Use `/ping` for the container-level healthcheck so it matches
+# what Runpod Load Balancer Serverless probes on `PORT_HEALTH`. `/ping` is
+# stateless and DB-free; `/health` is heavier and aggregates provider
+# status (still available as a richer probe for orchestrators that want it).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:3888/health || exit 1
+    CMD curl -sf http://localhost:3888/ping || exit 1
 
 ENTRYPOINT ["tini", "--", "garra"]
+# `garra start` honors `PORT` and `HOST` env vars (GAR-603) — Runpod /
+# container runtimes that set them get the right binding without
+# overriding CMD. Explicit `--host 0.0.0.0` here ensures the default
+# `docker run` (no env) still binds to all interfaces.
 CMD ["start", "--host", "0.0.0.0"]
