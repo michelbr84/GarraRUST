@@ -123,3 +123,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0114 | [GAR-483 — Q6.6.b Debug-Redaction Tests for SignupPool + AppPool](0114-gar-483-debug-redaction-signup-app-pools.md) | [GAR-483](https://linear.app/chatgpt25/issue/GAR-483) | ✅ Merged 2026-05-13 via PR #317 (`fc138f3`) |
 | 0115 | [GAR-604 — DM creation via POST /v1/groups/{id}/chats with type=dm](0115-gar-604-chats-dm-creation.md) | [GAR-604](https://linear.app/chatgpt25/issue/GAR-604) | ✅ Merged 2026-05-14 via PR #324 (`4ce9d75`) |
 | 0116 | [GAR-605 — add `actions` language to CodeQL matrix (close 15 stale Medium alerts)](0116-gar-605-codeql-actions-language.md) | [GAR-605](https://linear.app/chatgpt25/issue/GAR-605) | ✅ Merged 2026-05-14 via PR #323 (`f6698c7`) |
+| 0116a | [Web Console redesign "Garra Glass" — Chat slice (PR-A foundation)](0116a-web-console-redesign-garra-glass.md) | — | ⏳ In Progress (PR-A foundation = tokens + sidebar + ADR 0009) |
+| 0116b | [Web Console multi-page vision (Dashboard/Providers/Channels/Sessions/Settings/Diagnostics/Logs/Skins)](0116b-transformar-a-tela-atual-do-GarraIA.md) | — | ⏳ In Progress (executed in 10 sequential PRs PR-1..PR-10) |
