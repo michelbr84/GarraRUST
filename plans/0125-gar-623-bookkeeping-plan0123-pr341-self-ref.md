@@ -44,10 +44,10 @@ Administrative: close **GAR-486** in Linear (all sub-issues Done; umbrella stale
 - [x] T2 — Fix `CLAUDE.md`: replace `PR final (...)` with `#341 (...)`.
 - [x] T3 — Fix `ROADMAP.md`: add `0123` to plan range; add `#341` to PR list.
 - [x] T4 — Fix `plans/README.md`: add rows 0118–0123.
-- [ ] T5 — Commit, push, open PR.
-- [ ] T6 — CI green → squash-merge.
-- [ ] T7 — Close GAR-486 in Linear; mark GAR-623 Done.
-- [ ] T8 — Update `plans/README.md` with this plan's PR number + commit sha.
+- [x] T5 — Commit, push, open PR.
+- [x] T6 — CI green → squash-merge.
+- [x] T7 — Close GAR-486 in Linear; mark GAR-623 Done.
+- [x] T8 — Update `plans/README.md` with this plan's PR number + commit sha.
 
 ---
 
