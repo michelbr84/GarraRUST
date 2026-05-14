@@ -168,7 +168,22 @@ jobs:
   # Create release
   release:
     name: Create Release
-    needs: [build-linux-x86_64, build-linux-arm64, build-windows-x86_64, build-macos-x86_64, build-macos-arm64]
+    # Wait for every build to settle, but only require x86_64 platforms to have
+    # succeeded — ARM64 builds are best-effort while the openssl cross-compile
+    # story is being sorted out. Without this guard a single ARM64 failure would
+    # skip the release job entirely (which is what blocked v0.1.0-beta.1 and
+    # v0.1.0-beta from ever shipping a Linux binary).
+    needs:
+      - build-linux-x86_64
+      - build-linux-arm64
+      - build-windows-x86_64
+      - build-macos-x86_64
+      - build-macos-arm64
+    if: |
+      always() &&
+      needs.build-linux-x86_64.result == 'success' &&
+      needs.build-windows-x86_64.result == 'success' &&
+      needs.build-macos-x86_64.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -188,17 +203,28 @@ jobs:
 
       - name: Prepare binaries
         run: |
+          set -euo pipefail
           mkdir -p release
-          # Linux x86_64
+
+          # Required (x86_64) — release job's `if:` already gated on these.
           cp artifacts/garraia-linux-x86_64/garraia-linux-x86_64 release/
-          # Linux ARM64
-          cp artifacts/garraia-linux-arm64/garraia-linux-arm64 release/
-          # Windows x86_64
           cp artifacts/garraia-windows-x86_64/garraia-windows-x86_64.exe release/
-          # macOS x86_64
           cp artifacts/garraia-macos-x86_64/garraia-macos-x86_64 release/
-          # macOS ARM64
-          cp artifacts/garraia-macos-arm64/garraia-macos-arm64 release/
+
+          # Optional (ARM64) — included only if their build job succeeded and
+          # uploaded an artifact. softprops/action-gh-release defaults
+          # fail_on_unmatched_files to false, so missing entries in the `files:`
+          # list below are silently skipped.
+          if [ -f artifacts/garraia-linux-arm64/garraia-linux-arm64 ]; then
+            cp artifacts/garraia-linux-arm64/garraia-linux-arm64 release/
+          else
+            echo "::warning ::Linux ARM64 binary not built; release will ship without it."
+          fi
+          if [ -f artifacts/garraia-macos-arm64/garraia-macos-arm64 ]; then
+            cp artifacts/garraia-macos-arm64/garraia-macos-arm64 release/
+          else
+            echo "::warning ::macOS ARM64 binary not built; release will ship without it."
+          fi
 
       - name: Get version
         id: version
