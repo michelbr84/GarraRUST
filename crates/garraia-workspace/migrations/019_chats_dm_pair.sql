@@ -31,7 +31,9 @@
 -- ─── Idempotency ─────────────────────────────────────────────────────────
 --
 -- ADD COLUMN IF NOT EXISTS prevents duplicate-column errors on re-run.
--- ADD CONSTRAINT / CREATE INDEX use IF NOT EXISTS for the same reason.
+-- CREATE INDEX uses IF NOT EXISTS for the same reason.
+-- Note: ADD CONSTRAINT does NOT support IF NOT EXISTS in PostgreSQL;
+-- this migration is applied exactly once by sqlx so no guard is needed.
 
 ALTER TABLE chats
     ADD COLUMN IF NOT EXISTS dm_user_a uuid,
@@ -41,7 +43,7 @@ ALTER TABLE chats
 -- is enforced so the pair is canonical and the UNIQUE index fires correctly).
 -- For any other type both columns must be NULL.
 ALTER TABLE chats
-    ADD CONSTRAINT IF NOT EXISTS chats_dm_users_check CHECK (
+    ADD CONSTRAINT chats_dm_users_check CHECK (
         (type = 'dm'
             AND dm_user_a IS NOT NULL
             AND dm_user_b IS NOT NULL
