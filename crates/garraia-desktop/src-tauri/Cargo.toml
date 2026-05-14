@@ -1,6 +1,6 @@
 [package]
 name = "garraia-desktop"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Garra Desktop — Clippy-style AI assistant overlay"
 license = "MIT"

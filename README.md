@@ -91,7 +91,7 @@ cargo build --release -p garraia-desktop
 </details>
 
 <details>
-<summary>Instalar via script (Linux, macOS) — requer binários publicados no release</summary>
+<summary>Instalar via script (Linux, macOS) — usa binários publicados no release</summary>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
@@ -99,7 +99,25 @@ garraia init
 garraia start
 ```
 
-> **Nota:** o script de instalação requer que binários CLI pré-compilados estejam publicados nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Enquanto isso, compile a partir do código-fonte conforme acima.
+> A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica cada binário contra seu `<asset>.sha256` correspondente.
+> Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são best-effort enquanto o cross-compile de `openssl` para ARM64 estabiliza ([release.yml](.github/workflows/release.yml)).
+
+</details>
+
+<details>
+<summary>Atualizar uma instalação existente — <code>garraia update</code></summary>
+
+```bash
+# Verifica a release mais recente, baixa o binário da sua plataforma,
+# confere SHA-256 contra <asset>.sha256 e troca o executável atomicamente.
+garraia update          # interativo
+garraia update --yes    # não interativo (CI)
+
+# Volta para o binário anterior se algo der errado:
+garraia rollback
+```
+
+> `garraia update` falava com **404** em todas as versões anteriores a `v0.2.1` porque toda release publicada era marcada como prerelease (e o endpoint `releases/latest` ignora prereleases). Detalhamento em [`CHANGELOG.md`](CHANGELOG.md#021---2026-05-14).
 
 </details>
 
@@ -489,7 +507,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 - **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
 - **Daemonização** - `garra start --daemon` com gerenciamento de PID
-- **Auto-atualização** - `garra update` baixa a versão mais recente com verificação SHA-256, `garra rollback` para reverter
+- **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
 - **Reinicialização** - `garra restart` para graciosamente parar e iniciar o daemon
 - **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
 - **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
