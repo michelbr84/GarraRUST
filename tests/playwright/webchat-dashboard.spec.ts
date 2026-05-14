@@ -2,10 +2,10 @@
  * GAR-618 / plan 0117 (PR-4): Playwright E2E tests — Garra Glass Dashboard page
  *
  * Covers:
- *  1. Dashboard nav button is visible in sidebar
+ *  1. Dashboard nav button is visible in sidebar (data-testid="garra-dashboard-nav")
  *  2. Clicking Dashboard nav shows dashboard section and hides chat area
- *  3. All 4 MetricCards render with their data-testid anchors
- *  4. Chat nav returns to chat view
+ *  3. Dashboard section renders metric cards
+ *  4. Chat nav button returns to chat view
  *  5. GET /api/stats returns valid JSON shape
  */
 
@@ -35,34 +35,32 @@ test.describe('Garra Glass Dashboard (GAR-618 PR-4)', () => {
   // ── 2. Clicking Dashboard nav reveals dashboard section ──────────────────
   test('2. Clicking Dashboard nav shows dashboard section and hides chat area', async ({ page }) => {
     await page.getByTestId('garra-dashboard-nav').click();
-    await expect(page.getByTestId('garra-dashboard-section')).toBeVisible();
-    await expect(page.locator('.chat-area')).toBeHidden();
+    // main uses data-testid="garra-page-dashboard" for the section
+    await expect(page.getByTestId('garra-page-dashboard')).toBeVisible();
+    // chat-area is a page-view that becomes inactive
+    await expect(page.locator('.chat-area')).not.toHaveClass(/\bactive\b/);
   });
 
-  // ── 3. All 4 MetricCards present ─────────────────────────────────────────
-  test('3. All 4 MetricCards render with correct data-testid anchors', async ({ page }) => {
+  // ── 3. Dashboard section renders metric cards ─────────────────────────────
+  test('3. Dashboard section renders at least 4 metric cards', async ({ page }) => {
     await page.getByTestId('garra-dashboard-nav').click();
-    await expect(page.getByTestId('metric-card-status')).toBeVisible();
-    await expect(page.getByTestId('metric-card-uptime')).toBeVisible();
-    await expect(page.getByTestId('metric-card-version')).toBeVisible();
-    await expect(page.getByTestId('metric-card-sessions')).toBeVisible();
+    await expect(page.getByTestId('garra-page-dashboard')).toBeVisible();
+    // main renders 5 metric cards in the dashboard metrics-grid
+    const cards = page.locator('[data-testid="garra-page-dashboard"] .metric-card');
+    // wait for at least the first card to be in the DOM
+    await expect(cards.first()).toBeVisible();
+    expect(await cards.count()).toBeGreaterThanOrEqual(4);
   });
 
   // ── 4. Navigating back to chat restores chat area ────────────────────────
   test('4. Chat nav button returns to chat view', async ({ page }) => {
     await page.getByTestId('garra-dashboard-nav').click();
-    await expect(page.getByTestId('garra-dashboard-section')).toBeVisible();
+    await expect(page.getByTestId('garra-page-dashboard')).toBeVisible();
 
-    // Click a nav button that has data-section="chat" (or any that isn't dashboard)
-    const chatNavBtn = page.locator('[data-section="chat"]').first();
-    if (await chatNavBtn.count() > 0) {
-      await chatNavBtn.click();
-    } else {
-      // Fallback: click the logo / new-chat button which triggers showSection('chat')
-      await page.locator('.sidebar-logo, #new-chat-btn').first().click();
-    }
-    await expect(page.locator('.chat-area')).toBeVisible();
-    await expect(page.getByTestId('garra-dashboard-section')).toBeHidden();
+    // main has a sidebar-page-btn with data-page="chat"
+    await page.locator('[data-page="chat"]').first().click();
+    await expect(page.locator('.chat-area')).toHaveClass(/\bactive\b/);
+    await expect(page.getByTestId('garra-page-dashboard')).not.toHaveClass(/\bactive\b/);
   });
 });
 

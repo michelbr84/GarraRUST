@@ -95,8 +95,8 @@ cargo build --release -p garraia-desktop
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-garra init
-garra start
+garraia init
+garraia start
 ```
 
 > **Nota:** o script de instalação requer que binários CLI pré-compilados estejam publicados nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Enquanto isso, compile a partir do código-fonte conforme acima.
@@ -125,7 +125,7 @@ Instaladores para desktop (Windows `.msi`) e mobile (Android `.apk`) estão disp
 | | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
 | | **Recarregamento de config a quente** | Sim | Não | Não |
 | | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| | **Auto-atualização** | Sim (`garra update`) | npm | Compilar a partir do código-fonte |
+| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
 | | **Arquitetura 100% local** | ✅ Sim | Não | Não |
 | | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
 | | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
@@ -498,6 +498,32 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
 - **Ferramenta de migração** - `garra migrate openclaw` importa skills, canais e credenciais
 - **Configuração interativa** - `garra init` wizard para configuração de provedor e chave de API
+
+## Web Console "Garra Glass"
+
+Servido em `GET /` pelo binário `garraia start`, o Web Console é uma SPA sem build step (HTML + CSS custom properties + JS vanilla) com identidade visual "Garra Glass" — glassmorphism com `backdrop-filter: blur(18px)`, gradiente multi-radial ouro/cyan/roxo, acentos `#ffd400` (gold) para CTAs e `#16d9ff` (cyan) para foco. **Zero dependência CDN** — todos os ícones inline SVG, fontes via Google Fonts (cacheável offline). Dual `data-theme` + `data-bs-theme` (compatível com migrações futuras estilo AdminLTE).
+
+**9 páginas** roteadas por hash (`#/dashboard`, `#/chat`, ...), todas consumindo dados reais do gateway:
+
+| Página | Endpoint principal | Recursos |
+| --- | --- | --- |
+| **Dashboard** | `/api/health` + `/api/capabilities` | Hero card + MetricCards (port, providers, channels, sessions, secrets=0) + Health checklist |
+| **Chat** | `/ws` + `/api/sessions/*` | Conversa em tempo real — superfície original, redesign Garra Glass com avatares cyan/ouro e gold send button |
+| **Providers & Models** | `/api/providers` + `POST /api/providers/test` + `PATCH /api/providers/default` | Cards por provider com Test/Set-default, sem expor API keys |
+| **Channels** | `/api/channels` | 10 canais (web/api/telegram/discord/slack/whatsapp/imessage/openclaw/mcp/cli) com status pill |
+| **Sessions** | `/api/sessions` + `/api/sessions/{id}/history` | Tabela com Open/Export (blob)/Delete |
+| **Settings Registry** | `/api/settings/schema` + `/api/settings/effective` + `PATCH /api/settings` | Editor schema-driven, **secrets write-only** (`configured: true\|false`), dry-run |
+| **Diagnostics** | `/api/diagnostics` | 12 checks (gateway/port/config/.env/provider/canais/secrets/bind/TLS/sessions) + copy report |
+| **Logs** | `/api/logs` | Filtro por nível + search + auto-scroll + Export blob |
+| **Themes & Skins** | localStorage (server-side em plan 0121a) | 4 skins (Garra Blue / Aurora Admin / Editorial / Cyber Garra) |
+
+**Segurança invariantes:**
+
+- Nenhum secret (API key, JWT secret, refresh HMAC) **jamais** é retornado por qualquer endpoint `/api/*` — apenas `configured: true\|false`.
+- `PATCH /api/settings` valida cada campo contra o schema, rejeita ids desconhecidos, registra audit log estruturado sem o valor, e é **dry-run** até plan 0121a (zero risco de corromper `garraia.toml`).
+- Sidebar dark intencional (`linear-gradient(#031126 → #061b3d)`) em ambos os temas para reforçar a identidade.
+
+Decisões de design em [ADR 0009](docs/adr/0009-web-console-design-system.md). Plans `0116a`, `0116b`, `0117`-`0123` em [`plans/`](plans/).
 
 ## Memória e Auto-Aprendizado
 

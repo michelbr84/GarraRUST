@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::response::Html;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use tokio::sync::Mutex;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -99,6 +99,10 @@ pub fn build_router(
         .route("/health", get(health))
         .route("/ping", get(ping))
         .route("/api/health", get(crate::health::health_handler))
+        .route(
+            "/api/capabilities",
+            get(crate::health::capabilities_handler),
+        )
         .route("/ws", get(ws::ws_handler))
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
         // OpenAI-compatible endpoints
@@ -133,6 +137,25 @@ pub fn build_router(
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))
+        .route("/api/providers/test", post(test_provider))
+        .route("/api/providers/default", patch(set_default_provider))
+        .route("/api/channels", get(list_channels))
+        .route(
+            "/api/diagnostics",
+            get(crate::diagnostics_handler::diagnostics_handler),
+        )
+        .route(
+            "/api/settings/schema",
+            get(crate::settings_handler::schema_handler),
+        )
+        .route(
+            "/api/settings/effective",
+            get(crate::settings_handler::effective_handler),
+        )
+        .route(
+            "/api/settings",
+            patch(crate::settings_handler::patch_handler),
+        )
         .route("/api/mcp", get(list_mcp_servers))
         .route("/api/mcp/tools", get(list_mcp_runtime_tools))
         .route("/api/mcp/health", get(mcp_health))
@@ -887,6 +910,191 @@ fn persist_api_key(vault_key: &str, value: &str) {
     if let Some(vault_path) = crate::bootstrap::default_vault_path() {
         garraia_security::try_vault_set(&vault_path, vault_key, value);
     }
+}
+
+// ─── Provider test / default (plan 0119 / PR-6) ───────────────────────────
+
+/// POST /api/providers/test — exercise the registered provider by listing
+/// its models. The response is a small `{ok, latency_ms, error?}` payload
+/// that the Web Console renders next to each provider card. Never echoes
+/// the API key or any portion of the request.
+#[derive(serde::Deserialize)]
+struct ProviderTestRequest {
+    provider: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderTestResponse {
+    ok: bool,
+    provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn test_provider(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::Json(body): axum::Json<ProviderTestRequest>,
+) -> (axum::http::StatusCode, axum::Json<ProviderTestResponse>) {
+    let id = body.provider.trim();
+    if id.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: None,
+                model_count: None,
+                error: Some("provider id is required".into()),
+            }),
+        );
+    }
+    let Some(provider) = state.agents.get_provider(id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: None,
+                model_count: None,
+                error: Some("provider not registered".into()),
+            }),
+        );
+    };
+
+    let start = std::time::Instant::now();
+    match provider.available_models().await {
+        Ok(models) => (
+            axum::http::StatusCode::OK,
+            axum::Json(ProviderTestResponse {
+                ok: true,
+                provider: id.to_string(),
+                latency_ms: Some(start.elapsed().as_millis()),
+                model_count: Some(models.len()),
+                error: None,
+            }),
+        ),
+        Err(err) => (
+            axum::http::StatusCode::OK,
+            axum::Json(ProviderTestResponse {
+                ok: false,
+                provider: id.to_string(),
+                latency_ms: Some(start.elapsed().as_millis()),
+                model_count: None,
+                error: Some(format!("{err}")),
+            }),
+        ),
+    }
+}
+
+// ─── Channels (plan 0120 / PR-7) ───────────────────────────────────────────
+
+/// Known channels — display metadata mirrors `KNOWN_PROVIDERS`. The `id`
+/// column matches `ChannelRegistry` entries; `needs_secret` is purely
+/// informational (the Web Console renders an amber pill when true but the
+/// actual secret value never crosses the API boundary).
+const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
+    ("web", "Web Chat", false),
+    ("api", "REST API", false),
+    ("telegram", "Telegram", true),
+    ("discord", "Discord", true),
+    ("slack", "Slack", true),
+    ("whatsapp", "WhatsApp", true),
+    ("imessage", "iMessage", false),
+    ("openclaw", "OpenClaw", false),
+    ("mcp", "MCP", false),
+    ("cli", "CLI", false),
+];
+
+#[derive(serde::Serialize)]
+struct ChannelInfo {
+    id: &'static str,
+    display_name: &'static str,
+    /// `"active"` (registered + live), `"configured"` (known but not registered),
+    /// `"offline"` (not registered, secret needed), `"optional"` (no secret needed).
+    status: &'static str,
+    needs_secret: bool,
+    /// Server-side timestamp of process boot — `last_activity` is not tracked
+    /// per channel yet (plan 0122 follow-up). Present as a stable placeholder
+    /// so the Web Console column always has SOMETHING to render.
+    boot_time_secs: u64,
+}
+
+/// GET /api/channels — Web Console Channels page payload. Secret-free.
+async fn list_channels(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+) -> axum::Json<serde_json::Value> {
+    let live: Vec<String> = state
+        .channels
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut channels: Vec<ChannelInfo> = Vec::with_capacity(KNOWN_CHANNELS.len());
+    for (id, display, needs_secret) in KNOWN_CHANNELS {
+        let active = live.iter().any(|name| name == *id);
+        let status = if active {
+            "active"
+        } else if *needs_secret {
+            "offline"
+        } else {
+            "optional"
+        };
+        channels.push(ChannelInfo {
+            id,
+            display_name: display,
+            status,
+            needs_secret: *needs_secret,
+            boot_time_secs: state.boot_time.elapsed().as_secs(),
+        });
+    }
+
+    axum::Json(serde_json::json!({ "channels": channels }))
+}
+
+/// PATCH /api/providers/default — switch the default LLM provider.
+#[derive(serde::Deserialize)]
+struct SetDefaultProviderRequest {
+    provider: String,
+}
+
+async fn set_default_provider(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::Json(body): axum::Json<SetDefaultProviderRequest>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    let id = body.provider.trim();
+    if id.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": "provider is required",
+            })),
+        );
+    }
+    if !state.agents.provider_ids().iter().any(|p| p == id) {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": "provider not registered",
+            })),
+        );
+    }
+    state.agents.set_default_provider_id(id);
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "ok": true,
+            "default": id,
+        })),
+    )
 }
 
 /// GET /api/mcp — list connected MCP servers with tool counts and status.
