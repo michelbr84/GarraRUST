@@ -74,10 +74,10 @@ crates/garraia-auth/tests/
 - [x] T2: Write `signup_pool_debug_does_not_expose_credentials` test (red → green)
 - [x] T3: `cargo test -p garraia-auth --test debug_redaction_pools` green locally
 - [x] T4: `cargo clippy --workspace --tests --exclude garraia-desktop --no-deps -- -D warnings` green
-- [ ] T5: PR opened, CI green
-- [ ] T6: PR merged
-- [ ] T7: Linear GAR-483 marked Done
-- [ ] T8: plans/README.md row updated + plans/0114 checkboxes flipped
+- [x] T5: PR opened, CI green
+- [x] T6: PR merged
+- [x] T7: Linear GAR-483 marked Done
+- [x] T8: plans/README.md row updated + plans/0114 checkboxes flipped
 
 ## Risk register
 
