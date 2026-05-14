@@ -18,6 +18,7 @@ use crate::oauth;
 use crate::openai_api;
 use crate::parrot_ws;
 use crate::state::SharedState;
+use crate::stats_handler;
 use crate::totp;
 use crate::ws;
 
@@ -107,6 +108,7 @@ pub fn build_router(
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(openai_api::chat_completions))
         .route("/v1/models", get(openai_api::list_models))
+        .route("/api/stats", get(stats_handler::stats_handler))
         .route("/api/status", get(status))
         .route("/api/auth-check", get(auth_check))
         .route(

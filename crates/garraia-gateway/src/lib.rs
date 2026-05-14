@@ -41,6 +41,7 @@ pub mod skills_handler;
 pub mod skins_handler;
 pub mod slash_commands;
 pub mod state;
+pub mod stats_handler;
 pub mod totp;
 pub mod uploads_worker;
 pub mod uploads_worker_util;
