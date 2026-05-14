@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-14** (health routine — GAR-605: merged PR #321 (plan 0114 bookkeeping) + PR #323 (add `actions` language to CodeQL, closes 15 stale Medium alerts); metrics 0.24.5 yanked → 0.24.6 lockfile fix; all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked, expiry 2026-07-31).
+> Last updated: **2026-05-14** (health routine — GAR-620: bump `metrics 0.24.5` (yanked) → `0.24.6` via PR #336; 3 residual Dependabot alerts all upstream-blocked. Previous entry: GAR-605 CodeQL actions language fix via PR #323).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -85,6 +85,24 @@ Residuals (3 remaining, all expires 2026-07-31):
 | RUSTSEC-2023-0071 | rsa 0.9.10 | GAR-456 | Active — no upstream fix |
 | RUSTSEC-2024-0429 | glib 0.18.5 | GAR-513 | Active — Tauri gtk-rs blocker |
 | RUSTSEC-2026-0097 | rand 0.7.3 | GAR-513 | Active — build-time dep only |
+
+## Confirmed 2026-05-14 run 2 (health routine — GAR-620: metrics 0.24.5 yanked → 0.24.6)
+
+Health routine ran on 2026-05-14 (run 2, ~8:50 AM ET). Full security scan completed. Highest actionable issue: `metrics 0.24.5` (yanked from crates.io). PR #336 (`claude/focused-cray-9fubA`) implements the lockfile-only patch.
+
+| Change | Result |
+|---|---|
+| `metrics 0.24.5` (yanked) → `0.24.6` in `Cargo.lock` | ✅ merged — `adbe00af` |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #336 head |
+| Malware (cargo/npm) | ✅ none | |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit`) | ✅ pass | 21 warnings (↓1 from 22 once PR #336 merges) |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All green on PR #336 head |
+| CI on main (31fb678) | ✅ green | All checks pass |
+| plan 0124 | ✅ created | `plans/0124-gar-620-metrics-yanked-0246.md` + GAR-620 in Linear |
+
+Alert count: **3 Dependabot open** (unchanged). The `metrics 0.24.5` yanked issue reduces `cargo audit` warning count from 22 → 21 once PR #336 merges.
 
 ## Confirmed 2026-05-14 (health routine — GAR-605: CodeQL actions language fix + plan 0116)
 
