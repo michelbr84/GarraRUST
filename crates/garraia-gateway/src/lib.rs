@@ -35,6 +35,7 @@ pub mod router;
 pub mod runtime_handler;
 pub mod server;
 pub mod session_auth;
+pub mod settings_handler;
 pub mod skills_handler;
 pub mod skins_handler;
 pub mod slash_commands;
