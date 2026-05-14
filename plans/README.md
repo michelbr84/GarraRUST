@@ -134,3 +134,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0123 | GAR-617 — Web Console PR-10: E2E Playwright matrix + ROADMAP/README/CLAUDE finalization | [GAR-617](https://linear.app/chatgpt25/issue/GAR-617) | ✅ Merged 2026-05-14 via PR #341 (`e570631`) |
 | 0124 | [GAR-620 — bump `metrics 0.24.5` (yanked) → `0.24.6` (health routine 2026-05-14)](0124-gar-620-metrics-yanked-0246.md) | [GAR-620](https://linear.app/chatgpt25/issue/GAR-620) | ✅ Merged 2026-05-14 via PR #336 (`adbe00af`) |
 | 0125 | [GAR-623 — docs(bookkeeping): plan 0123 / PR #341 self-ref fix — CLAUDE.md + ROADMAP + plans/README](0125-gar-623-bookkeeping-plan0123-pr341-self-ref.md) | [GAR-623](https://linear.app/chatgpt25/issue/GAR-623) | ✅ Merged 2026-05-14 via PR #346 (`079b2c6`) |
+| 0126 | [`curl \| sh` auto-bootstrap PR-A: `garraia init` foundation](0126-curl-sh-auto-bootstrap-pra-wizard.md) | TBD | ⏳ Draft 2026-05-14 |
+| 0127 | [`curl \| sh` auto-bootstrap PR-B: `install.sh` wiring](0127-curl-sh-auto-bootstrap-prb-installer.md) | TBD | 🕐 Blocked on plan 0126 |
