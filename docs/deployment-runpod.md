@@ -107,6 +107,52 @@ endpoint is reachable but the worker has not become healthy yet. Common causes:
   secrets, register them with the redactor so they never reach
   stdout/stderr/logs.
 
+## Fresh RunPod GPU pod — one-shot bootstrap
+
+On a brand-new RunPod GPU pod (Ubuntu base image, no Garra installed), the
+fastest path is:
+
+```bash
+# Install the binary (once)
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+
+# Configure interactively
+garraia init
+
+# Run in the foreground (logs visible)
+garraia start
+```
+
+`garraia init` (plan 0126, PR-A) will:
+
+1. Detect the GPU via `nvidia-smi`. **It does not install NVIDIA drivers
+   or CUDA** — if `nvidia-smi` already works, the runtime is assumed
+   usable. Pods spun up with one of RunPod's official PyTorch / CUDA
+   images already satisfy this.
+2. Offer to install Ollama and pull
+   `hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M`. Both prompts default to
+   yes but require an explicit confirmation keystroke.
+3. Detect the lack of systemd inside RunPod containers and fall back to
+   a `nohup ollama serve >> ~/.garraia/ollama.log 2>&1 &` start, with
+   the PID stamped at `~/.garraia/ollama.pid`.
+4. Write `gateway.host: 0.0.0.0` and `port: 3888` (or the value of
+   `PORT` when set) into `~/.config/garraia/config.yml` so the gateway
+   binds to the pod's public interface from the first run.
+5. Skip TTS/STT auto-install but write the endpoint defaults
+   (`http://127.0.0.1:7860` for Chatterbox, `http://127.0.0.1:9090` for
+   faster-whisper) and print the matching `pip install` commands.
+
+PR-B (plan 0127, **planned, not yet shipped**) chains those two commands
+behind a single `curl … | sh` so the whole flow becomes one line. Until
+that lands, run them in sequence as above.
+
+Skip toggles (relevant once PR-B lands but also honored by `garraia
+init` today):
+
+- `GARRAIA_BOOTSTRAP_LOCAL=0` — skip GPU/local-stack prompts.
+- `GARRAIA_SKIP_INIT=1` / `GARRAIA_SKIP_START=1` — installer-only
+  (PR-B).
+
 ## Future work
 
 `PORT_HEALTH` currently must equal `PORT` because `/ping` is served from

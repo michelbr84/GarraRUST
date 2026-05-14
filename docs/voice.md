@@ -25,6 +25,31 @@ GarraIA supports end-to-end voice conversation with speech-to-text and text-to-s
 - TTS server (Chatterbox or Hibiki) for TTS
 - Optional: Whisper for local STT
 
+### Wizard integration (plan 0126)
+
+When `garraia init` runs on a machine with an NVIDIA GPU (`nvidia-smi`
+detected) and the user opts into voice mode, the wizard pre-fills the
+configuration block below and prints the install instructions for both
+servers — but it **does not** auto-install the Python TTS/STT stacks.
+Run those commands yourself once, then start the gateway with
+`garraia start` (no `--with-voice` flag needed when `voice.enabled` is
+already `true` in `config.yml`):
+
+```bash
+# TTS — Chatterbox Multilingual on :7860
+pip install chatterbox-tts
+chatterbox-tts serve --host 127.0.0.1 --port 7860
+
+# STT — faster-whisper-server on :9090
+pip install faster-whisper-server
+fwsh serve --host 127.0.0.1 --port 9090
+```
+
+The wizard writes `voice.tts_endpoint=http://127.0.0.1:7860`,
+`voice.stt_endpoint=http://127.0.0.1:9090`,
+`voice.tts_provider=chatterbox`, and `voice.language=pt` into the
+emitted `config.yml`. CPU-only machines skip the voice prompt entirely.
+
 ### Configuration
 
 ```yaml

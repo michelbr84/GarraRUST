@@ -70,10 +70,44 @@ cargo install --path crates/garraia-cli
 garraia init
 ```
 
-This wizard will:
-- Create config directory (`~/.garraia/`)
-- Ask for your LLM provider choice
-- Store API keys in encrypted vault
+This wizard will (plan 0126):
+
+- Detect the environment (OS, root, RunPod hints, systemd, NVIDIA GPU via
+  `nvidia-smi`, Ollama install/running state, and whether the well-known
+  ports `3888`, `8080`, `11434`, `7860`, `9090` are free) and print a
+  one-line summary.
+- **Preserve an existing `config.yml`**: if one is already present, the
+  wizard prompts you to **backup-and-overwrite** (renames the old file
+  to `config.yml.bak-YYYYMMDD-HHMMSS`), **merge/update** (keeps your
+  values and only adds missing keys), or cancel. Non-interactive runs
+  (e.g. `garraia init` in CI) print the legacy hint and exit 0 without
+  touching `config.yml`.
+- Offer a provider mode:
+  - **Local-first** (Ollama on this GPU + cloud fallback) — default
+    when an NVIDIA GPU is detected and `GARRAIA_BOOTSTRAP_LOCAL` is not
+    set to `0`.
+  - **Cloud-first** (OpenRouter primary + Ollama fallback).
+  - **Cloud-only** (OpenRouter — default for CPU/no-GPU machines).
+- On GPU machines (and only after explicit confirmation), install
+  Ollama via the official upstream script and pull
+  `hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M`. NVIDIA drivers and CUDA
+  are **never** installed by the wizard — if `nvidia-smi` works, the
+  wizard assumes the GPU runtime is already usable.
+- Offer to enable voice (Chatterbox TTS @ `:7860` + faster-whisper STT
+  @ `:9090`). Endpoints are written into `config.yml`; install
+  instructions for both servers are printed for copy-paste (auto-install
+  of those Python stacks is deferred — see [voice.md](voice.md)).
+- Configure the Telegram channel as before.
+- Store API keys and bot tokens in the encrypted vault.
+- Pick server-friendly defaults: `gateway.host: 0.0.0.0` when running
+  as root or inside a RunPod pod; `127.0.0.1` otherwise. `PORT` env
+  var (Runpod LB Serverless) is honored.
+
+Skip toggles:
+
+- `GARRAIA_BOOTSTRAP_LOCAL=0` — suppress the GPU/local-stack prompts
+  even when a GPU is present (useful when you want to use the GPU for
+  something else and run Garra in cloud-only mode).
 
 ### 2. Configure
 
