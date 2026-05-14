@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-13** (health routine — bookkeeping: plan 0113 marked Merged (PR #313 / GAR-601 aws-actions v4→v6); all 4 security surfaces green; 3 residual Dependabot alerts all upstream-blocked).
+> Last updated: **2026-05-14** (health routine — GAR-605: merged PR #321 (plan 0114 bookkeeping `c45fcff`) + PR #323 (add `actions` language to CodeQL matrix, closes 15 stale Medium `actions/missing-workflow-permissions` alerts); 3 residual Dependabot alerts all upstream-blocked).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -59,6 +59,24 @@ Residuals (3 remaining, all expires 2026-07-31):
 | RUSTSEC-2023-0071 | rsa 0.9.10 | GAR-456 | Active — no upstream fix |
 | RUSTSEC-2024-0429 | glib 0.18.5 | GAR-513 | Active — Tauri gtk-rs blocker |
 | RUSTSEC-2026-0097 | rand 0.7.3 | GAR-513 | Active — build-time dep only |
+
+## Confirmed 2026-05-14 (health routine — GAR-605: CodeQL actions language fix + plan 0116)
+
+Health routine ran on 2026-05-14. Two pending non-routine PRs merged; one active security fix (15 Medium CodeQL alerts) handled.
+
+| Change | Result |
+|---|---|
+| PR #321 merged (`c45fcff`) | ✅ Plan 0114 T8 bookkeeping — `plans/README.md` row 0114 updated to ✅ Merged |
+| PR #323 merged (GAR-605) | ✅ Add `language: actions, build-mode: none` to `codeql.yml` matrix — `Analyze (actions)` job now active |
+| 15 Medium `actions/missing-workflow-permissions` alerts | ⏳ PENDING auto-close — CodeQL re-scan on main expected within 24h; `Analyze (actions)` ran successfully on PR #323 with no new findings |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on main |
+| Malware (cargo/npm) | ✅ none | |
+| Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
+| cargo-deny | ✅ pass | SYNC NOTE audit.toml ↔ deny.toml intact (mandatory IDs: rsa, glib, rand) |
+| CI on main (post-merge) | ✅ green | All checks pass on `c45fcff` |
+
+Alert count: **3 Dependabot open** (unchanged). After next CodeQL run on main, **Medium CodeQL open count → 0** (all 15 `actions/missing-workflow-permissions` expected to auto-close as `fixed`).
 
 ## Confirmed 2026-05-13 (health routine — plan 0113 bookkeeping; all surfaces green)
 
