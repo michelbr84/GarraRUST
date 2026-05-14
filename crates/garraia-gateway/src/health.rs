@@ -373,10 +373,7 @@ fn extras_from_state(state: &SharedState) -> (Vec<String>, Option<String>, Optio
     // Channels — `state.channels.read()` is async, but we delegate to the
     // caller; this helper only computes provider/model. Channels handled
     // separately.
-    let provider = state
-        .agents
-        .default_provider_id()
-        .map(|s| s.to_string());
+    let provider = state.agents.default_provider_id().map(|s| s.to_string());
     let model = provider
         .as_deref()
         .and_then(|p| state.agents.get_provider(p))
@@ -492,9 +489,7 @@ pub struct CapabilitiesResponse {
 /// GET /api/capabilities — read-only snapshot of what the gateway can
 /// currently do. Renders the Dashboard "Arquitetura" card + drives the
 /// Skins page enumeration without hardcoded JS lists.
-pub async fn capabilities_handler(
-    State(state): State<SharedState>,
-) -> Json<CapabilitiesResponse> {
+pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<CapabilitiesResponse> {
     // Static feature flags driven by Cargo cfg + runtime state shape.
     let mut features: Vec<String> = Vec::new();
     features.push("chat".into());
