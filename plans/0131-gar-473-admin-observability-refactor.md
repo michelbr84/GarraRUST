@@ -84,14 +84,14 @@ crates/garraia-gateway/src/admin/
 
 ## M1 tasks
 
-- [ ] T1: Create `admin/observability.rs` with the extracted Phase 6 handlers
-- [ ] T2: Remove Phase 6 lines 1985–2213 from `handlers.rs` and add `pub use` re-exports
-- [ ] T3: Add `pub mod observability;` to `admin/mod.rs`
-- [ ] T4: `cargo check -p garraia-gateway` green
-- [ ] T5: `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean
-- [ ] T6: Commit `refactor(admin): Q9.e — extract admin/observability.rs (GAR-473)`
-- [ ] T7: Push + open PR + wait for CI green
-- [ ] T8: Merge + update ROADMAP + plans/README
+- [x] T1: Create `admin/observability.rs` with the extracted Phase 6 handlers
+- [x] T2: Remove Phase 6 lines 1985–2213 from `handlers.rs` and add `pub use` re-exports
+- [x] T3: Add `pub mod observability;` to `admin/mod.rs`
+- [x] T4: `cargo check -p garraia-gateway` green
+- [x] T5: `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean
+- [x] T6: Commit `refactor(admin): Q9.e — extract admin/observability.rs (GAR-473)`
+- [x] T7: Push + open PR + wait for CI green
+- [x] T8: Merge + update ROADMAP + plans/README — PR #360 merged `b862b72` 2026-05-15
 
 ## Risk register
 
