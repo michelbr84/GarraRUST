@@ -84,7 +84,11 @@ jobs:
     name: Deploy to ECS
     needs: docker
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Opt-in: only runs when `ENABLE_ECS_DEPLOY` variable is set to `true`
+    # AND the required AWS secrets/vars are configured. Skips by default so
+    # tag pushes don't create failing production deployments on repos that
+    # only ship via GitHub Releases (the canonical GarraIA distribution path).
+    if: vars.ENABLE_ECS_DEPLOY == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     environment: production
 
     steps:
