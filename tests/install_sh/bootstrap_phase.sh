@@ -98,21 +98,22 @@ echo "__bootstrap_phase_rc__=\$?" >>"${log_dir}/output.log"
 INNER
     chmod +x "${runner}"
 
-    # If /dev/tty is available in the parent we can run the inner
-    # script directly. If not (CI runner without a controlling tty),
-    # allocate a pty via util-linux `script` so the
-    # `[ -r /dev/tty ]` check inside bootstrap_phase passes and the
-    # subsequent `</dev/tty` redirect has a real fd to read from.
-    if [ -r /dev/tty ]; then
+    # GitHub-hosted runners present /dev/tty as a character device
+    # file (so `[ -r /dev/tty ]` returns true) but the actual `</dev/tty`
+    # redirect fails at exec time because no controlling terminal is
+    # attached. Probe via a real read-with-timeout instead of the
+    # superficial readability check.
+    if dd if=/dev/tty bs=0 count=0 status=none </dev/tty >/dev/null 2>&1; then
         bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
     elif command -v script >/dev/null 2>&1; then
         # `script -qec 'cmd' /dev/null`: -q suppresses the banner,
         # -e forwards the wrapped command's exit code, -c runs the
-        # command and exits.
+        # command and exits. Allocates a pty so /dev/tty is real
+        # inside the inner shell.
         script -qec "bash ${runner}" /dev/null \
             >"${log_dir}/output.log" 2>&1 || true
     else
-        echo "WARNING: no /dev/tty and no \`script\` command — cases (c)/(d)/(e) may fail" >&2
+        echo "WARNING: no working /dev/tty and no \`script\` command — cases (c)/(d)/(e) may fail" >&2
         bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
     fi
 }
