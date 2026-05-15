@@ -1,6 +1,6 @@
 # Plan 0127 — `curl | sh` auto-bootstrap **PR-B**: `install.sh` wiring
 
-> **Status:** ⏳ **Draft — in flight 2026-05-14 (Florida).** PR-A merged 2026-05-14 via PR #348 (`6a2279e`), unblocking this slice. §M1 below is now the authoritative implementation checklist.
+> **Status:** ✅ **Merged 2026-05-14 (Florida) via PR #350 (`bfddf78`).** PR-A merged earlier the same day via PR #348 (`6a2279e`), which unblocked this slice. §M1 below was the authoritative implementation checklist during execution.
 
 **Linear issue:** TBD — to be created when PR-A merges.
 

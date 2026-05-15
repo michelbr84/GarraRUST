@@ -4,7 +4,7 @@
 **Parent:** GAR-439 (Q9 Refactor admin/handlers.rs)
 **Issue:** [GAR-470](https://linear.app/chatgpt25/issue/GAR-470)
 **Branch:** `routine/202505150020-admin-providers-extract`
-**Status:** In Progress
+**Status:** ✅ Merged 2026-05-14 (Florida) via PR #349 (`eacbf9b`)
 
 ---
 
