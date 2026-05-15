@@ -11,6 +11,13 @@
 # Optional environment variables:
 #   GARRAIA_VERSION         Pin a specific release tag (e.g. v0.1.0-beta).
 #                           When set, the GitHub API is not queried.
+#                           Caveat: pins <= v0.2.0 will 404 on Apple Silicon
+#                           (macOS arm64). Pre-v0.2.1 releases published
+#                           `garraia-macos-arm64`; v0.2.1+ aligned with
+#                           `std::env::consts::ARCH` and emit
+#                           `garraia-macos-aarch64`. This installer only
+#                           constructs the `aarch64` asset name. Use
+#                           v0.2.1+ on M-series Macs.
 #   GARRAIA_INSTALL_DIR     Override install directory. Must NOT be a
 #                           system path (/bin, /sbin, /usr/bin, /usr/sbin, /etc).
 #
