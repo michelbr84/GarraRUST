@@ -250,9 +250,10 @@ error() {
 
 # Library mode (plan 0127 §M1.3): when sourced by the test runner with
 # GARRAIA_INSTALL_SH_LIBRARY=1, return before main() runs so each
-# function can be invoked in isolation.
+# function can be invoked in isolation. Misuse (setting the env var on
+# a non-sourced execution) errors out — the variable is test-only.
 if [ "${GARRAIA_INSTALL_SH_LIBRARY:-}" = "1" ]; then
-    return 0 2>/dev/null || true
+    return 0
 fi
 
 main
