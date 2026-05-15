@@ -3,6 +3,7 @@ pub mod handlers;
 pub mod mcp;
 pub mod mcp_templates;
 pub mod middleware;
+pub mod observability;
 pub mod providers;
 pub mod rbac;
 pub mod routes;
