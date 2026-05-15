@@ -46,6 +46,33 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check --all
 
+  # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
+  # `install.sh` is the public `curl | sh` entry point and has been
+  # historically linted by hand; promoting that to a blocking CI step
+  # closes the regression window. The bash test runner gets `bash -n`
+  # syntax-only checks (shellcheck of bash-flavored test scripts is too
+  # noisy — bash assertion DSL trips style rules that don't apply).
+  installer-shellcheck:
+    name: Install.sh shellcheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run shellcheck on install.sh
+        run: shellcheck install.sh
+
+      - name: Run shellcheck on installer fixtures
+        run: shellcheck tests/install_sh/fixtures/garraia-stub.sh
+
+      - name: Syntax-check the bash test runner
+        run: bash -n tests/install_sh/bootstrap_phase.sh
+
+      - name: Execute installer bootstrap_phase tests
+        run: bash tests/install_sh/bootstrap_phase.sh
+
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting

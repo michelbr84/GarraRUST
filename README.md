@@ -95,9 +95,19 @@ cargo build --release -p garraia-desktop
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-garraia init
-garraia start
 ```
+
+Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
+1. download + verificação SHA256 do binário `garraia`,
+2. `garraia init </dev/tty` (o wizard do plan 0126 — detecção de GPU/Ollama, prompts opcionais para instalar Qwen3-14B GGUF, geração de `config.yml` server-friendly),
+3. `garraia start </dev/tty` em foreground.
+
+**Toggles** (env vars, todos opt-out):
+- `GARRAIA_SKIP_INIT=1` — pula o wizard.
+- `GARRAIA_SKIP_START=1` — pula o `garraia start` final.
+- `GARRAIA_BOOTSTRAP_LOCAL=0` — suprime os prompts de GPU/Ollama dentro do wizard, mesmo com `nvidia-smi` disponível.
+
+Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next steps" legados e sai com código 0 — nunca trava aguardando input.
 
 > A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica cada binário contra seu `<asset>.sha256` correspondente.
 > Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são best-effort enquanto o cross-compile de `openssl` para ARM64 estabiliza ([release.yml](.github/workflows/release.yml)).

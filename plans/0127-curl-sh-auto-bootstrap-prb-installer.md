@@ -1,6 +1,6 @@
 # Plan 0127 — `curl | sh` auto-bootstrap **PR-B**: `install.sh` wiring
 
-> **Status:** 🕐 **Blocked on plan [0126](0126-curl-sh-auto-bootstrap-pra-wizard.md) (PR-A) merging.** Details below are a sketch — the precise §M1 will be finalized once PR-A is green so the installer can rely on `garraia init`'s new env-detection and config-preservation behavior.
+> **Status:** ⏳ **Draft — in flight 2026-05-14 (Florida).** PR-A merged 2026-05-14 via PR #348 (`6a2279e`), unblocking this slice. §M1 below is now the authoritative implementation checklist.
 
 **Linear issue:** TBD — to be created when PR-A merges.
 
@@ -13,29 +13,116 @@
 3. Local AI stack scope — wizard already gated in PR-A; installer just runs `garraia init`.
 4. Existing config — never silently overwrite; PR-A's wizard handles that.
 
-## Scope sketch (to be refined when PR-A merges)
+## Architecture
 
-- Preserve existing `install.sh` invariants: platform detect, release resolution, SHA256 verify, install dir safety, sudo handling.
-- After `install_binary` succeeds, branch on TTY availability:
-  - `/dev/tty` readable → run `garraia init </dev/tty >/dev/tty` (unless `GARRAIA_SKIP_INIT=1`), then `garraia start </dev/tty >/dev/tty` (unless `GARRAIA_SKIP_START=1`).
-  - No TTY (true CI / docker build) → print the current "Next steps" message verbatim and exit 0.
-- New env toggles:
-  - `GARRAIA_SKIP_INIT=1` — skip the wizard.
-  - `GARRAIA_SKIP_START=1` — skip the foreground `garraia start`.
-  - `GARRAIA_BOOTSTRAP_LOCAL=0` — propagates into the wizard (already implemented in PR-A).
-- Add `shellcheck` step to local validation; the GitHub Actions workflow already has shellcheck for `scripts/`, extend the matrix or add an inline `shellcheck install.sh` invocation.
-- Tests:
-  - `tests/installer/test_install_sh.bats` (NEW) with bats-core under `tests/`. Cases: TTY+skip envs, no-TTY, missing checksum, GARRAIA_VERSION pin.
-  - `tests/installer/fixtures/` with a mocked `garraia` script stub (echoes args) so the bats tests exercise the wiring without downloading a real release.
-- Docs: README install section gets the same "after install, the wizard runs automatically" paragraph; `docs/installation.md` aligned.
+`install.sh` keeps its existing 5 functions intact (`detect_platform`,
+`resolve_version`, `download_and_verify`, `install_binary`, `error`) and
+gains one new function:
 
-## Acceptance criteria (sketch)
+```
+bootstrap_phase
+    │
+    ├─ if both GARRAIA_SKIP_INIT=1 and GARRAIA_SKIP_START=1
+    │     → print_next_steps_legacy; return
+    │
+    ├─ if /dev/tty unreadable (true non-interactive: docker build / pure CI)
+    │     → print_non_interactive_hint; return
+    │
+    ├─ if GARRAIA_SKIP_INIT ≠ 1
+    │     → "${INSTALL_PATH}" init </dev/tty
+    │       (failure is non-fatal — fall through to next-steps)
+    │
+    └─ if GARRAIA_SKIP_START ≠ 1
+          → echo "Press Ctrl+C to stop. To run later in background: garraia start -d"
+          → exec "${INSTALL_PATH}" start </dev/tty
+          (exec replaces shell so Ctrl-C goes to garraia; stdout/stderr
+           already inherit the user's terminal — only stdin needs the
+           tty redirect)
+```
 
-- [ ] `curl -fsSL …/install.sh | sh` on a fresh RunPod GPU pod with a TTY: installs binary → wizard runs → `garraia start` foreground.
-- [ ] Same command in a `docker build` (no TTY) prints next-steps and exits 0; never hangs.
-- [ ] `GARRAIA_SKIP_INIT=1` skips wizard; `GARRAIA_SKIP_START=1` skips start; both keep current behavior backward compatible.
+Library mode for tests: at the very bottom, before `main`, the script
+honors `GARRAIA_INSTALL_SH_LIBRARY=1` and `return`s instead of calling
+`main`. The shell test sources `install.sh` with that flag set, then
+invokes `bootstrap_phase` directly with `INSTALL_PATH` pointing at a
+stub that echoes its args.
+
+### File layout
+
+```
+install.sh                                           [REWRITE — adds bootstrap_phase + library guard]
+tests/install_sh/
+  bootstrap_phase.sh                                 [NEW — bash test runner]
+  fixtures/
+    garraia-stub.sh                                  [NEW — echoes args to a log so the test asserts on it]
+.github/workflows/ci.yml                             [+1 step — shellcheck install.sh]
+README.md                                            [UPDATE — install section reflects auto-bootstrap]
+docs/installation.md                                 [UPDATE — env skips documented]
+```
+
+`bats-core` is **out of scope** — adding a new test framework just for
+`install.sh` is heavier than the value. A plain bash test runner suffices
+and aligns with the project's existing `tests/e2e_*.sh` style.
+
+## §M1 — Implementation checklist (subagent-executable tasks)
+
+1. **Bookkeep PR-A as merged** — `plans/README.md` row 0126 flips to
+   `✅ Merged 2026-05-14 via PR #348 (6a2279e)`; this plan's status flips
+   from `🕐 Blocked` → `⏳ Draft`. (Done as part of PR-B's first commit.)
+
+2. **Refactor `install.sh`** — add `bootstrap_phase`, `print_non_interactive_hint`
+   (renames the current "Next steps" echo block into a function), and a
+   library-mode guard. Preserve `set -eu`, the existing 5 functions
+   verbatim, and the SHA256 verification path. **Gate:** `shellcheck install.sh`
+   clean.
+
+3. **Add `tests/install_sh/`** — `bootstrap_phase.sh` test runner + a
+   `garraia-stub.sh` fixture. Cases:
+   - (a) no `/dev/tty` → prints non-interactive hint, exits 0.
+   - (b) `GARRAIA_SKIP_INIT=1 GARRAIA_SKIP_START=1` → prints next-steps,
+         neither command invoked.
+   - (c) `GARRAIA_SKIP_INIT=1` (only) → start invoked, init skipped.
+   - (d) `GARRAIA_SKIP_START=1` (only) → init invoked, start skipped.
+   - (e) default (with simulated `/dev/tty`) → init then start invoked
+         in that order.
+   The stub writes `init <args>` / `start <args>` lines to a log file
+   the test asserts against.
+
+4. **Wire `shellcheck`** — add a 5-line job step in `.github/workflows/ci.yml`
+   that runs `shellcheck install.sh` (and `bash -n tests/install_sh/*.sh`
+   for the new shell tests).
+
+5. **Docs**:
+   - `README.md` install section — describe the one-line auto-bootstrap
+     and the three skip env vars.
+   - `docs/installation.md` — same skip-env documentation in the existing
+     "Onboarding wizard" section that PR-A added.
+
+6. **Local validation gates** (matches PR-A's pattern):
+   ```
+   shellcheck install.sh
+   bash -n install.sh
+   bash tests/install_sh/bootstrap_phase.sh
+   cargo fmt --all -- --check                     # smoke (no Rust changes expected)
+   cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
+   cargo test -p garraia --test wizard_smoke      # still green
+   ```
+
+7. **Open PR** with title `feat(install.sh): plan 0127 — auto-bootstrap
+   wizard + foreground start (PR-B)` and body containing the §Decisions
+   block + §Architecture diagram + the validation log. **Wait for CI
+   green and explicit user approval before merging.**
+
+## Acceptance criteria
+
+- [ ] `curl -fsSL …/install.sh | sh` on a fresh RunPod GPU pod with a
+      TTY: installs binary → wizard runs → `garraia start` foreground.
+- [ ] Same command in a `docker build` (no TTY) prints next-steps and
+      exits 0; never hangs.
+- [ ] `GARRAIA_SKIP_INIT=1` skips wizard; `GARRAIA_SKIP_START=1` skips
+      start; both keep current behavior backward compatible.
 - [ ] `shellcheck install.sh` clean.
-- [ ] bats tests green in CI.
+- [ ] `tests/install_sh/bootstrap_phase.sh` covers all 5 cases above
+      and runs green in CI.
 - [ ] User-explicit approval before merge.
 
 ## Cross-references
