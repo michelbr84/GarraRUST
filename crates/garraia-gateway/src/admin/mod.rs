@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod handlers;
+pub mod mcp;
 pub mod middleware;
 pub mod providers;
 pub mod rbac;
