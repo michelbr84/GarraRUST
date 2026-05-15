@@ -213,6 +213,9 @@ case_c_skip_init_only() {
         assert_log_absent "case (c): init NOT invoked" "init" "${log_dir}/stub.log"
     else
         fail "case (c): stub log missing — bootstrap_phase did not invoke start"
+        echo "    --- output.log ---" >&2
+        sed 's/^/    /' "${log_dir}/output.log" >&2 || true
+        echo "    --- end output.log ---" >&2
     fi
 }
 
