@@ -138,4 +138,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0127 | [`curl \| sh` auto-bootstrap PR-B: `install.sh` wiring](0127-curl-sh-auto-bootstrap-prb-installer.md) | TBD | ✅ Merged 2026-05-15 via PR #350 (`bfddf78`) |
 | 0128 | [GAR-470 — Q9.b: extract admin/providers.rs from admin/handlers.rs (3240 → 2900 LOC)](0128-gar-470-admin-providers-refactor.md) | [GAR-470](https://linear.app/chatgpt25/issue/GAR-470) | ✅ Merged 2026-05-15 via PR #349 (`eacbf9b`) |
 | 0129 | [GAR-471 — Q9.c: extract admin/mcp.rs from admin/handlers.rs (2900 → 2550 LOC)](0129-gar-471-admin-mcp-refactor.md) | [GAR-471](https://linear.app/chatgpt25/issue/GAR-471) | ✅ Merged 2026-05-15 via PR #354 (`17f68d0`) |
-| 0130 | [GAR-472 — Q9.d: extract admin/mcp_templates.rs (2550 → 2326 LOC)](0130-gar-472-admin-mcp-templates-refactor.md) | [GAR-472](https://linear.app/chatgpt25/issue/GAR-472) | 🚧 In Progress |
+| 0130 | [GAR-472 — Q9.d: extract admin/mcp_templates.rs (2550 → 2326 LOC)](0130-gar-472-admin-mcp-templates-refactor.md) | [GAR-472](https://linear.app/chatgpt25/issue/GAR-472) | ✅ Merged 2026-05-15 via PR #358 (`1555b70`) |
+| 0131 | [GAR-473 — Q9.e: extract admin/observability.rs (2326 → 2103 LOC)](0131-gar-473-admin-observability-refactor.md) | [GAR-473](https://linear.app/chatgpt25/issue/GAR-473) | 🚧 In Progress |
