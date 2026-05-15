@@ -108,6 +108,13 @@ Skip toggles:
 - `GARRAIA_BOOTSTRAP_LOCAL=0` — suppress the GPU/local-stack prompts
   even when a GPU is present (useful when you want to use the GPU for
   something else and run Garra in cloud-only mode).
+- `GARRAIA_SKIP_INIT=1` — when running via the `curl | sh` installer
+  (plan 0127, PR-B), skip the auto-run of `garraia init` and leave
+  configuration for later. The installer falls back to printing
+  next-steps and exits 0.
+- `GARRAIA_SKIP_START=1` — same flow but skips the foreground
+  `garraia start` after `garraia init` completes. Both toggles set
+  together is equivalent to the pre-PR-B installer behavior.
 
 ### 2. Configure
 

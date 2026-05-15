@@ -3,11 +3,31 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 #
+# Plan 0127 (PR-B, 2026-05-14): after install_binary the installer
+# auto-runs `garraia init` and `garraia start` when a TTY is available.
+# In true non-interactive contexts (docker build, pure CI) it prints
+# the legacy "Next steps" message and exits 0 instead.
+#
 # Optional environment variables:
-#   GARRAIA_VERSION       Pin a specific release tag (e.g. v0.1.0-beta). When set,
-#                         the GitHub API is not queried.
-#   GARRAIA_INSTALL_DIR   Override install directory. Must NOT be a system path
-#                         (/bin, /sbin, /usr/bin, /usr/sbin, /etc).
+#   GARRAIA_VERSION         Pin a specific release tag (e.g. v0.1.0-beta).
+#                           When set, the GitHub API is not queried.
+#   GARRAIA_INSTALL_DIR     Override install directory. Must NOT be a
+#                           system path (/bin, /sbin, /usr/bin, /usr/sbin, /etc).
+#
+#   GARRAIA_SKIP_INIT=1     Skip the auto-run of `garraia init`.
+#   GARRAIA_SKIP_START=1    Skip the auto-run of `garraia start`.
+#                           Both set together → installer prints next-steps
+#                           and exits like the pre-PR-B behavior.
+#   GARRAIA_BOOTSTRAP_LOCAL=0
+#                           Forwarded to `garraia init` — suppresses the
+#                           GPU/Ollama/Qwen3 prompts even on a machine
+#                           with a working `nvidia-smi`. See plan 0126.
+#
+#   GARRAIA_INSTALL_SH_LIBRARY=1
+#                           Test-only. When set, the script returns
+#                           instead of calling main(), so its functions
+#                           can be sourced for unit testing. See
+#                           `tests/install_sh/bootstrap_phase.sh`.
 set -eu
 
 REPO="michelbr84/GarraRUST"
@@ -18,12 +38,7 @@ main() {
     resolve_version
     download_and_verify
     install_binary
-    echo ""
-    echo "GarraIA ${VERSION} installed to ${INSTALL_PATH}"
-    echo ""
-    echo "Next steps:"
-    echo "  garraia init    # interactive setup wizard"
-    echo "  garraia start   # start the gateway"
+    bootstrap_phase
 }
 
 detect_platform() {
@@ -166,11 +181,79 @@ install_binary() {
         cp "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}"
         chmod +x "${INSTALL_PATH}"
     fi
+
+    echo ""
+    echo "GarraIA ${VERSION} installed to ${INSTALL_PATH}"
+}
+
+# Plan 0127 — interactive bootstrap after install_binary.
+#
+# Decision logic:
+#   * both GARRAIA_SKIP_INIT=1 and GARRAIA_SKIP_START=1 → print legacy
+#     "Next steps" hint and return (preserves prior behavior).
+#   * /dev/tty not readable → true non-interactive context (docker build,
+#     pure CI, no controlling terminal). Print the same legacy hint and
+#     exit 0; never hang waiting for input.
+#   * otherwise → run `garraia init </dev/tty` unless GARRAIA_SKIP_INIT=1,
+#     then `exec garraia start </dev/tty` unless GARRAIA_SKIP_START=1.
+#     `exec` is intentional — it replaces the installer shell so Ctrl-C
+#     is delivered directly to `garraia start` (the user expects this
+#     because we explicitly tell them "Press Ctrl+C to stop").
+#
+# `INSTALL_PATH` is set by install_binary(); tests pre-populate it
+# before calling bootstrap_phase via the library guard.
+bootstrap_phase() {
+    if [ "${GARRAIA_SKIP_INIT:-}" = "1" ] && [ "${GARRAIA_SKIP_START:-}" = "1" ]; then
+        print_next_steps_legacy
+        return 0
+    fi
+
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        echo ""
+        echo "Non-interactive install (no /dev/tty available) — skipping wizard + start."
+        print_next_steps_legacy
+        return 0
+    fi
+
+    if [ "${GARRAIA_SKIP_INIT:-}" != "1" ]; then
+        echo ""
+        echo "Running interactive setup wizard..."
+        if ! "${INSTALL_PATH}" init </dev/tty; then
+            echo ""
+            echo "Wizard exited non-zero — your config may need manual edits."
+            print_next_steps_legacy
+            return 0
+        fi
+    fi
+
+    if [ "${GARRAIA_SKIP_START:-}" != "1" ]; then
+        echo ""
+        echo "Starting GarraIA in the foreground. Press Ctrl+C to stop."
+        echo "  To run later in background: garraia start -d"
+        exec "${INSTALL_PATH}" start </dev/tty
+    fi
+
+    print_next_steps_legacy
+}
+
+print_next_steps_legacy() {
+    echo ""
+    echo "Next steps:"
+    echo "  garraia init    # interactive setup wizard"
+    echo "  garraia start   # start the gateway"
 }
 
 error() {
     echo "error: $1" >&2
     exit 1
 }
+
+# Library mode (plan 0127 §M1.3): when sourced by the test runner with
+# GARRAIA_INSTALL_SH_LIBRARY=1, return before main() runs so each
+# function can be invoked in isolation. Misuse (setting the env var on
+# a non-sourced execution) errors out — the variable is test-only.
+if [ "${GARRAIA_INSTALL_SH_LIBRARY:-}" = "1" ]; then
+    return 0
+fi
 
 main
