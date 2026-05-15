@@ -13,8 +13,8 @@
 #     (rand / GAR-513). Closed: wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530). Drop
 #     atomically from BOTH files when an upstream fix lands.**
-#   * The 22 unmaintained-only IDs (7 directly named: daemonize,
-#     derivative, fxhash, instant, proc-macro-error, async-std,
+#   * The 21 unmaintained-only IDs (6 directly named: daemonize,
+#     derivative, fxhash, proc-macro-error, async-std,
 #     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
 #     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
 #     "allowed warnings" and does NOT require explicit ignore.
@@ -51,7 +51,6 @@ ignore = [
     "RUSTSEC-2025-0069", # daemonize (direct dep, no maintained alternative)
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
-    "RUSTSEC-2024-0384", # instant (transitive via notify)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
     "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
     # Added 2026-04-27 (PR #75 CI surfaced this — local cache was stale):
