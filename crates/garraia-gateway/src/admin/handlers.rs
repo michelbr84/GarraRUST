@@ -1988,7 +1988,6 @@ pub async fn admin_disconnect_session(
     (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
 
-
 // ── Glob config (GAR-264) ────────────────────────────────────────────────────
 
 /// GET /admin/api/config/glob — return current FsConfig (glob + ignore settings).
