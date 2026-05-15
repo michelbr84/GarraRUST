@@ -71,24 +71,50 @@ assert_log_absent() {
 # Source the script in library mode and run bootstrap_phase under a
 # controlled env. Output goes to ${log_dir}/output.log; the stub's
 # subcommand trace goes to ${log_dir}/stub.log.
+#
+# On a GitHub-hosted runner (or any environment with no controlling
+# tty) `[ -r /dev/tty ]` correctly fails — but that masks the
+# init/start branches we want to test. When that happens we wrap the
+# subshell with `script -qec` to allocate a pty so /dev/tty is
+# readable inside the inner shell, restoring coverage of cases (c),
+# (d), and (e). The wrap is skipped when the parent shell already has
+# /dev/tty (developer running tests in a terminal) so the run stays
+# fast.
 run_bootstrap_in_subshell() {
     local log_dir="$1"
-    shift
-    # Subshell so each invocation gets a fresh env and the parent's
-    # set -e doesn't trip on the inner test's expected non-zero rc.
-    (
-        set +e
-        export GARRAIA_INSTALL_SH_LIBRARY=1
-        export GARRAIA_STUB_LOG="${log_dir}/stub.log"
-        # shellcheck disable=SC1090
-        . "${install_sh}"
-        # Inject the test fixtures.
-        INSTALL_PATH="${stub}"
-        # The skip envs are honored from the surrounding shell — passed
-        # via the caller's `env VAR=value bash ...` wrappers.
-        bootstrap_phase
-        echo "__bootstrap_phase_rc__=$?" >>"${log_dir}/output.log"
-    ) >"${log_dir}/output.log" 2>&1 || true
+    # Materialize the inner script to a temp file — keeps quoting
+    # simple and works inside `script -qec "bash <path>"`.
+    local runner="${log_dir}/run-inner.sh"
+    cat >"${runner}" <<INNER
+#!/usr/bin/env bash
+set +e
+export GARRAIA_INSTALL_SH_LIBRARY=1
+export GARRAIA_STUB_LOG="${log_dir}/stub.log"
+# shellcheck disable=SC1090
+. "${install_sh}"
+INSTALL_PATH="${stub}"
+bootstrap_phase
+echo "__bootstrap_phase_rc__=\$?" >>"${log_dir}/output.log"
+INNER
+    chmod +x "${runner}"
+
+    # If /dev/tty is available in the parent we can run the inner
+    # script directly. If not (CI runner without a controlling tty),
+    # allocate a pty via util-linux `script` so the
+    # `[ -r /dev/tty ]` check inside bootstrap_phase passes and the
+    # subsequent `</dev/tty` redirect has a real fd to read from.
+    if [ -r /dev/tty ]; then
+        bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
+    elif command -v script >/dev/null 2>&1; then
+        # `script -qec 'cmd' /dev/null`: -q suppresses the banner,
+        # -e forwards the wrapped command's exit code, -c runs the
+        # command and exits.
+        script -qec "bash ${runner}" /dev/null \
+            >"${log_dir}/output.log" 2>&1 || true
+    else
+        echo "WARNING: no /dev/tty and no \`script\` command — cases (c)/(d)/(e) may fail" >&2
+        bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
+    fi
 }
 
 # ---- case (a): no /dev/tty → next-steps + exit 0 ----------------------------
