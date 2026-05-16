@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-14** (health routine — GAR-620: bump `metrics 0.24.5` (yanked) → `0.24.6` via PR #336; 3 residual Dependabot alerts all upstream-blocked. Previous entry: GAR-605 CodeQL actions language fix via PR #323).
+> Last updated: **2026-05-16** (health routine — GAR-634: unblock tokio 1.52.3 via nix 0.31.3 + process-wrap 9.1.0; 3 residual Dependabot alerts all upstream-blocked. Dep security sweep PR #366 merged (h2→0.4.14, rustls→0.23.40, zerocopy→0.8.48, aws-lc-rs→1.17.0, reqwest→0.13.3). Previous entry: GAR-620 metrics yanked fix 2026-05-14).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,44 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-16 (health routine — GAR-634: tokio 1.50.0→1.52.3 unblocked via nix 0.31.3)
+
+Health routine ran on 2026-05-16. **PR #366** (security dep sweep — h2/rustls/zerocopy/aws-lc-rs/reqwest) merged. **GAR-634** (plan 0134) resolved the tokio 1.52.3 upgrade blocker.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #366 head (`3c438ea`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings, no new advisories |
+| cargo-deny | ✅ pass | `advisories ok` |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | PR #366 Analyze jobs all green |
+| CI on main (latest: `02bd9de`) | ✅ green | PR #366 all 20 checks green |
+
+**Fix applied this run (GAR-634, plan 0134):**
+
+| Package | Before | After | Type |
+|---|---|---|---|
+| `nix` | 0.31.1 (`libc =0.2.180`) | **0.31.3** (`libc =0.2.186`) | Lockfile-only patch |
+| `process-wrap` | 9.0.3 | **9.1.0** | Lockfile-only patch |
+| `libc` | 0.2.180 | **0.2.186** | Transitive (via nix) |
+| `tokio` | 1.50.0 | **1.52.3** | Lockfile-only — unblocked by nix update |
+| `mio` | 1.1.1 | **1.2.0** | Transitive (via tokio) |
+| `socket2` | 0.6.2 | **0.6.3** | Transitive (via tokio) |
+| `tokio-macros` | 2.6.1 | **2.7.0** | Transitive (via tokio) |
+
+**Dep security sweep (PR #366, merged as `02bd9de`):**
+
+| Package | Before | After |
+|---|---|---|
+| `h2` | 0.4.13 | **0.4.14** |
+| `rustls` | 0.23.36 | **0.23.40** |
+| `zerocopy` / `zerocopy-derive` | 0.8.39 | **0.8.48** |
+| `aws-lc-rs` / `aws-lc-sys` | 1.16.2 / 0.39.1 | **1.17.0 / 0.41.0** |
+| `reqwest` | 0.13.2 | **0.13.3** |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry.
 
 ## Confirmed 2026-05-14 (health routine — metrics 0.24.5 yanked → 0.24.6 lockfile-only fix)
 
