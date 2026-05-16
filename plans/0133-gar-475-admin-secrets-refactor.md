@@ -1,6 +1,6 @@
 # Plan 0133 — Q9.f: extract admin/secrets.rs (GAR-475)
 
-**Status:** Done — Merged 2026-05-16 via PR #363 (`4ab6821`)
+**Status:** Done
 **Issue:** [GAR-475](https://linear.app/chatgpt25/issue/GAR-475)
 **Branch:** `routine/202605160020-q9f-secrets-rs`
 **Epic parent:** GAR-439 / GAR-430
