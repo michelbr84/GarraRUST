@@ -140,3 +140,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0129 | [GAR-471 — Q9.c: extract admin/mcp.rs from admin/handlers.rs (2900 → 2550 LOC)](0129-gar-471-admin-mcp-refactor.md) | [GAR-471](https://linear.app/chatgpt25/issue/GAR-471) | ✅ Merged 2026-05-15 via PR #354 (`17f68d0`) |
 | 0130 | [GAR-472 — Q9.d: extract admin/mcp_templates.rs (2550 → 2326 LOC)](0130-gar-472-admin-mcp-templates-refactor.md) | [GAR-472](https://linear.app/chatgpt25/issue/GAR-472) | ✅ Merged 2026-05-15 via PR #358 (`1555b70`) |
 | 0131 | [GAR-473 — Q9.e: extract admin/observability.rs (2326 → 2103 LOC)](0131-gar-473-admin-observability-refactor.md) | [GAR-473](https://linear.app/chatgpt25/issue/GAR-473) | ✅ Merged 2026-05-15 via PR #360 (`b862b72`) |
+| 0132 | [GAR-474 — Q9.g: extract admin/users.rs (2103 → 1738 LOC)](0132-gar-474-admin-users-refactor.md) | [GAR-474](https://linear.app/chatgpt25/issue/GAR-474) | 🚧 In Progress |
