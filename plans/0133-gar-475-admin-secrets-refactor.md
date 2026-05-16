@@ -1,6 +1,6 @@
 # Plan 0133 — Q9.f: extract admin/secrets.rs (GAR-475)
 
-**Status:** In Progress
+**Status:** Done
 **Issue:** [GAR-475](https://linear.app/chatgpt25/issue/GAR-475)
 **Branch:** `routine/202605160020-q9f-secrets-rs`
 **Epic parent:** GAR-439 / GAR-430
@@ -73,15 +73,15 @@ Follows the pattern established in slices 9.b–9.g:
 
 - [x] Create `plans/0133-gar-475-admin-secrets-refactor.md`
 - [x] Mark GAR-475 In Progress in Linear
-- [ ] Create `admin/secrets.rs` with all extracted code
-- [ ] Update `admin/handlers.rs` (remove extracted code, add re-exports + private import)
-- [ ] Update `admin/mod.rs` (add `pub mod secrets;`)
-- [ ] `cargo check -p garraia-gateway` green
-- [ ] `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean
-- [ ] Commit + push
-- [ ] Open PR + wait for CI green
-- [ ] Merge + mark GAR-475 Done
-- [ ] Update plans/README.md (0132 ✅ + 0133 ✅)
+- [x] Create `admin/secrets.rs` with all extracted code
+- [x] Update `admin/handlers.rs` (remove extracted code, add re-exports + private import)
+- [x] Update `admin/mod.rs` (add `pub mod secrets;`)
+- [x] `cargo check -p garraia-gateway` green
+- [x] `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean
+- [x] Commit + push
+- [x] Open PR + wait for CI green
+- [x] Merge + mark GAR-475 Done
+- [x] Update plans/README.md (0132 ✅ + 0133 ✅)
 
 ---
 
