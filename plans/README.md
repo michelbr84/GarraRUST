@@ -142,4 +142,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0131 | [GAR-473 — Q9.e: extract admin/observability.rs (2326 → 2103 LOC)](0131-gar-473-admin-observability-refactor.md) | [GAR-473](https://linear.app/chatgpt25/issue/GAR-473) | ✅ Merged 2026-05-15 via PR #360 (`b862b72`) |
 | 0132 | [GAR-474 — Q9.g: extract admin/users.rs (2103 → 1738 LOC)](0132-gar-474-admin-users-refactor.md) | [GAR-474](https://linear.app/chatgpt25/issue/GAR-474) | ✅ Merged 2026-05-16 via PR #362 (`4c97276`) |
 | 0133 | [GAR-475 — Q9.f: extract admin/secrets.rs (1738 → ~1270 LOC) — security-audit required](0133-gar-475-admin-secrets-refactor.md) | [GAR-475](https://linear.app/chatgpt25/issue/GAR-475) | ✅ Merged 2026-05-16 via PR #363 (`4ab6821`) |
-| 0134 | [GAR-634 — Unblock tokio 1.52.3 via nix 0.31.3 + process-wrap 9.1.0](0134-gar-634-tokio-unblock-nix-0313.md) | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) | 🚧 In Progress |
+| 0134 | [GAR-634 — Unblock tokio 1.52.3 via nix 0.31.3 + process-wrap 9.1.0](0134-gar-634-tokio-unblock-nix-0313.md) | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) | ✅ Merged 2026-05-16 via PR #367 (`40ee126`) |

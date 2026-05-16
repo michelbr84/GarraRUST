@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-16** (health routine — GAR-634: unblock tokio 1.52.3 via nix 0.31.3 + process-wrap 9.1.0; 3 residual Dependabot alerts all upstream-blocked. Dep security sweep PR #366 merged (h2→0.4.14, rustls→0.23.40, zerocopy→0.8.48, aws-lc-rs→1.17.0, reqwest→0.13.3). Previous entry: GAR-620 metrics yanked fix 2026-05-14).
+> Last updated: **2026-05-16 run 2** (health routine — all security surfaces green; no new actionable fix. Bookkeeping: plans/README.md row 0134 marked Done (PR #367 / `40ee126`), deny.toml comment inaccuracies fixed (rand 0.7.3 not 0.10.1; instant ×1 GAR-627 added to SYNC NOTE). Previous entry: GAR-634 tokio 1.52.3 unblock).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,38 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-16 run 2 (health routine — all surfaces green, bookkeeping + deny.toml comment fixes)
+
+Health routine ran on 2026-05-16 (run 2, ~12:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no new actionable fix found.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #368 head (`6427dae`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings, no new advisories |
+| cargo-deny | ✅ pass | `advisories ok` |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #368 all Analyze jobs green; 22 dismissed alerts, no new open findings |
+| CI on main (latest: `bec410c`) | ✅ green | PR #368 all 20 checks green |
+
+**Bookkeeping completed this run:**
+
+- `plans/README.md` row 0134: `🚧 In Progress` → `✅ Merged 2026-05-16 via PR #367 (40ee126)` (GAR-634 tokio unblock, T8 README update was pending)
+- PR #364 (bookkeeping for GAR-475 / plan 0133) merged as `bec410c` — fully green CI (20/20 checks)
+- `deny.toml` SYNC NOTE: added missing "instant ×1 (GAR-627 / health/202605150000)" to closed-advisories history (matching `audit.toml`)
+- `deny.toml` RUSTSEC-2026-0097 comment: corrected "rand 0.10.1" → "rand 0.7.3" (the 0.7.x line has no fix; 0.10.1+ is patched — the actual unpatched version in our lockfile is 0.7.3 via phf_generator 0.8)
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605161215-q11-tasks-slice1` | PR #368 open, all CI green | Skip — roadmap routine's work |
+| `routine/202605151325-q9d-mcp-templates` | Stale (already merged as PR #358) | Leave — roadmap routine cleanup |
+| `routine/202605160620-q9f-bookkeeping` | Stale (PR #364 merged as `bec410c`) | Leave — roadmap routine cleanup |
+| `claude/focused-cray-eDXzA` | Orphan — deny.toml comment fixes, no PR ever opened | Absorbed into this PR |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
 ## Confirmed 2026-05-16 (health routine — GAR-634: tokio 1.50.0→1.52.3 unblocked via nix 0.31.3)
 
