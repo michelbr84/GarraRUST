@@ -1287,7 +1287,7 @@ async fn async_main(
 
 #[cfg(unix)]
 fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
-    use nix::unistd::{fork, setsid, ForkResult};
+    use nix::unistd::{ForkResult, fork, setsid};
     use std::fs::File;
     use std::os::unix::io::AsRawFd;
 
@@ -1352,14 +1352,12 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
     // Plan 0024 (GAR-412): pass the Prometheus handle (if any) into
     // the server so it can spawn the auth'd dedicated listener.
     #[cfg(feature = "telemetry")]
-    let metrics_handle_for_daemon =
-        _telemetry_guard.as_ref().and_then(|g| g.metrics_handle());
+    let metrics_handle_for_daemon = _telemetry_guard.as_ref().and_then(|g| g.metrics_handle());
 
     // Build a fresh tokio runtime in the daemon child process.
     // This is safe because daemonization happened before any runtime
     // was created, so there are no stale kqueue/epoll FDs.
-    let rt = tokio::runtime::Runtime::new()
-        .context("failed to create tokio runtime in daemon")?;
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime in daemon")?;
     rt.block_on(async {
         let server = garraia_gateway::GatewayServer::new(config);
         #[cfg(feature = "telemetry")]
