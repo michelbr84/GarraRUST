@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-17 (local America/New_York) — sync `git log` real (211 commits / 50 plans desde 2026-05-01) + nova §1.4 Garra Learning Agent / Self-Improving Operations Manual (ADR 0010 Proposed)
+> **Última atualização:** 2026-05-17 (local America/New_York) — Q11 modularization COMPLETA (slices Q11.a-g, épico GAR-635 ✅ Done) + RUSTSEC-2025-0134 (axum-server 0.7→0.8) + RUSTSEC-2025-0069 (daemonize→nix, GAR-656) fechados na mesma sessão; mantém §1.4 Garra Learning Agent (ADR 0010 Proposed, plano 0138 mergeado em `a180926`)
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -168,17 +168,19 @@ Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desk
 | Q9.g | 0132 | [GAR-474](https://linear.app/chatgpt25/issue/GAR-474) | [#362](https://github.com/michelbr84/GarraRUST/pull/362) `4c97276` | `admin/users.rs` | 2103→1738 (−365) |
 | Q9.f | 0133 | [GAR-475](https://linear.app/chatgpt25/issue/GAR-475) | [#363](https://github.com/michelbr84/GarraRUST/pull/363) `4ab6821` | `admin/secrets.rs` | 1738→~1270 (−468), `@security-auditor` approval required |
 
-### Sprint **Q11 `rest_v1/tasks` modularização** (2026-05-17, 3 PRs hoje)
+### Sprint **Q11 `rest_v1/tasks` modularização** (2026-05-17, 7 PRs) ✅ COMPLETA
 
-Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.rs` (anteriormente monólito). Issue Linear: [GAR-635](https://linear.app/chatgpt25/issue/GAR-635).
+Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.rs` (anteriormente monólito de 4236 LOC). Issue Linear: [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) ✅ Done (2026-05-17T18:47Z). `tasks/mod.rs` final: ~1537 LOC (−63% vs baseline).
 
-| Slice | Plan | PR | Módulo extraído |
-|---|---|---|---|
-| Q11.a | 0135 | [#368](https://github.com/michelbr84/GarraRUST/pull/368) `c01bbd9` | `rest_v1/tasks/task_lists.rs` |
-| Q11.b | 0136 | [#370](https://github.com/michelbr84/GarraRUST/pull/370) `8872026` | `rest_v1/tasks/comments.rs` |
-| Q11.c | 0137 | [#371](https://github.com/michelbr84/GarraRUST/pull/371) `efb295c` | `rest_v1/tasks/assignees.rs` |
-
-Slices Q11.d+ (labels, subscriptions, activity, attachments, move/subtasks) seguem em sprints futuros.
+| Slice | Plan | Issue | PR | Módulo extraído |
+|---|---|---|---|---|
+| Q11.a | 0135 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#368](https://github.com/michelbr84/GarraRUST/pull/368) `c01bbd9` | `rest_v1/tasks/task_lists.rs` |
+| Q11.b | 0136 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#370](https://github.com/michelbr84/GarraRUST/pull/370) `8872026` | `rest_v1/tasks/comments.rs` |
+| Q11.c | 0137 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#371](https://github.com/michelbr84/GarraRUST/pull/371) `efb295c` | `rest_v1/tasks/assignees.rs` |
+| Q11.d | — | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#372](https://github.com/michelbr84/GarraRUST/pull/372) `62036a8` | `rest_v1/tasks/labels.rs` |
+| Q11.e | — | [GAR-653](https://linear.app/chatgpt25/issue/GAR-653) | [#376](https://github.com/michelbr84/GarraRUST/pull/376) `1be73cd` | `rest_v1/tasks/subscriptions.rs` |
+| Q11.f | — | [GAR-655](https://linear.app/chatgpt25/issue/GAR-655) | [#386](https://github.com/michelbr84/GarraRUST/pull/386) `a82ef2b` | `rest_v1/tasks/activity.rs` |
+| Q11.g | — | [GAR-658](https://linear.app/chatgpt25/issue/GAR-658) | [#388](https://github.com/michelbr84/GarraRUST/pull/388) `e04fc2c` | `rest_v1/tasks/attachments.rs` |
 
 ### Security & dependency sweeps Maio 2026
 
@@ -193,6 +195,8 @@ Slices Q11.d+ (labels, subscriptions, activity, attachments, move/subtasks) segu
 | h2/rustls/zerocopy/aws-lc-rs/reqwest security sweep | n/a | [#366](https://github.com/michelbr84/GarraRUST/pull/366) `02bd9de` | 2026-05-16 |
 | RUSTSEC-2024-0384 (instant) advisory ignore drop | n/a | [#356](https://github.com/michelbr84/GarraRUST/pull/356) `8051d97` | 2026-05-15 — stale ignore removed |
 | `tokio` 1.52.3 unblock via `nix` 0.31.3 + `process-wrap` 9.1.0 | 0134 | [#367](https://github.com/michelbr84/GarraRUST/pull/367) `40ee126` | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) |
+| `axum-server` 0.7→0.8 — closes RUSTSEC-2025-0134 | n/a | [#378](https://github.com/michelbr84/GarraRUST/pull/378) `1eb5c4b` | 2026-05-17 |
+| `daemonize` 0.5 → `nix` syscalls — closes RUSTSEC-2025-0069 | n/a | [#382](https://github.com/michelbr84/GarraRUST/pull/382) `a5daf34` | [GAR-656](https://linear.app/chatgpt25/issue/GAR-656) |
 | RLS FORCE em `groups` + `group_members` | 0106 | [#294](https://github.com/michelbr84/GarraRUST/pull/294) `36b2b72` | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) — fixes `get_group` SET LOCAL FIXME |
 | Messages PATCH/DELETE (RBAC sender-only + admin override) | 0107 | [#300](https://github.com/michelbr84/GarraRUST/pull/300) `3c843e4` | [GAR-592](https://linear.app/chatgpt25/issue/GAR-592) |
 
@@ -887,7 +891,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 5.1 Security & Vaults
 
-- [ ] **CredentialVault final (GAR-291)**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`.
+- [ ] **CredentialVault final ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410))**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`. Fecha [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (criptografia de tokens MCP, ✅ Done 2026-03-04) ampliando para todos os secrets do gateway.
 - [ ] **TLS 1.3 obrigatório** em todas as superfícies públicas via `rustls`.
 - [ ] **Argon2id** para senhas de usuários (mobile_users → users).
 - [ ] **Rate limiting** por IP + por user_id via `tower-governor`.
@@ -1183,21 +1187,19 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-17** após o batch Maio 2026 (Q9.b-Q9.g admin refactor + Q11.a-c tasks modularize + Web Console Garra Glass + onboarding `garraia init`/`curl|sh` + security sweeps). Green Security Baseline (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)) fechado em 2026-05-04. Ver §1.5 para detalhamento sprint-a-sprint.
+**Atualizado 2026-05-17** após o batch Maio 2026 (Q9.b-Q9.g admin refactor + Q11.a-g tasks modularize COMPLETO + Web Console Garra Glass + onboarding `garraia init`/`curl|sh` + security sweeps incluindo RUSTSEC-2025-0134 e RUSTSEC-2025-0069). Green Security Baseline (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)) fechado em 2026-05-04. Ver §1.5 para detalhamento sprint-a-sprint.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
 1. **Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642), 1/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — promover ADR 0010 de Proposed → Accepted via scaffold do crate `garraia-learning` + integração mínima com `AgentRuntime`. Habilita as 9 issues filhas seguintes. **Bloqueador estratégico**: sem essa fundação, todas as outras iniciativas (Fase 2.1 RAG, Fase 4 UX, Fase 5 Quality) acumulam débito operacional que o Learning Agent resolveria. Plano: [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md).
 
-2. **Q11 tasks modularização — slices Q11.d+ (GAR-635)** — continuar a extração de `rest_v1/tasks.rs` (labels, subscriptions, activity, attachments, move/subtasks). Slices Q11.a-c já mergeados (PRs #368, #370, #371 — 2026-05-17). Estimativa: 3-5 slices restantes, ~600 LOC.
+2. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
 
-3. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
+3. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
-4. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
+4. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
 
-5. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
-
-6. **Fase 5.1 — CredentialVault final** ([GAR-291](https://linear.app/chatgpt25/issue/GAR-291)) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4.
+5. **Fase 5.1 — CredentialVault final** ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410), Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (MCP tokens, ✅ Done).
 
 Trilhas paralelas disponíveis para um segundo dev/agente:
 - **Fase 1.3 — Config reativo** (ainda não materializado).
