@@ -147,3 +147,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0136 | [GAR-635 — Q11 slice 2: extract rest_v1/tasks/comments.rs](0136-gar-635-q11-tasks-modularize-slice2.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | ✅ Merged 2026-05-17 via PR #370 (`8872026`) |
 | 0137 | [GAR-635 — Q11 slice 3: extract rest_v1/tasks/assignees.rs](0137-gar-635-q11-tasks-modularize-slice3.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | ✅ Merged 2026-05-17 via PR #371 (`efb295c`) |
 | 0138 | [GAR-641 — Garra Learning Agent / Self-Improving Operations Manual (epic + ADR 0010)](0138-gar-learning-agent-epic.md) | [GAR-641](https://linear.app/chatgpt25/issue/GAR-641) (+10 sub: GAR-642..GAR-651) | 🚧 Proposed (ADR 0010 stub, 11 issues Linear criadas 2026-05-17) |
+| 0139 | [GAR-635 — Q11 slice 4: extract rest_v1/tasks/labels.rs](0139-gar-635-q11-tasks-modularize-slice4.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | 🚧 In Progress |
