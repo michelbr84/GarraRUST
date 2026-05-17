@@ -2155,15 +2155,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daemonize"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab8bfdaacb3c887a54d41bdf48d3af8873b3f5566469f8ba21b92057509f116e"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3303,7 +3294,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "daemonize",
  "dialoguer",
  "dirs 6.0.0",
  "dotenvy",
@@ -3319,6 +3309,7 @@ dependencies = [
  "garraia-security",
  "garraia-skills",
  "libc",
+ "nix",
  "regex",
  "reqwest 0.12.28",
  "ring",
