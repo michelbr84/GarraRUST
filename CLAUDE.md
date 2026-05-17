@@ -248,6 +248,20 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
+garraia-learning/    — Fase 1.4 (GAR-641, ADR 0010 Proposed) — Garra Learning Agent /
+                       Self-Improving Operations Manual. Sub-módulos: miner (detecta padrões
+                       em session logs), generator (LLM-assisted skill drafting), registry
+                       (~/.garra/skills/ global + .garra/skills/ por-projeto, reusa
+                       garraia-skills::SkillScanner/SkillInstaller), retriever (embedding
+                       match, reusa garraia-embeddings), evaluator (exit codes / tests / CI /
+                       diffs / logs), updater (diff + PR + branch, human-in-the-loop),
+                       versioning (git-backed, history em .garra/skills/_history/), safety
+                       (hard denylist + score threshold + path-protected critical files +
+                       integração com garraia-tools::safety_gate de GarraMaxPower). Separação
+                       rígida: memória (workspace.memory_items) ≠ skill (learning.skills) ≠
+                       log (telemetry.traces) ≠ manual distribuível (skills crate). Nunca
+                       copiar código do Hermes Agent — Hermes é referência conceitual de
+                       produto, arquitetura é própria.
 ```
 
 ### PoCs efêmeros
