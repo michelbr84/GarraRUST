@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-17** (health routine — all security surfaces green; no new actionable fix. Bookkeeping: plans/README.md row 0137 marked Done (PR #371 / `efb295c`). Previous entry: GAR-638 / 2026-05-16 run 2 — bookkeeping + deny.toml comment fixes).
+> Last updated: **2026-05-17 run 2** (health routine — RUSTSEC-2025-0134 closed via PR #378 (axum-server 0.7→0.8); PR #376 merged (Q11.e structural refactor); all security surfaces green; priority ladder exhausted at (i). Previous entry: 2026-05-17 run 1 — bookkeeping plan 0137 Done).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,42 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-17 run 2 (health routine — RUSTSEC-2025-0134 closed, axum-server 0.7→0.8)
+
+Health routine ran on 2026-05-17 (run 2, ~05:00 ET). Full security scan completed. Highest actionable issue found: RUSTSEC-2025-0134 (`rustls-pemfile` unmaintained), fixed by bumping `axum-server` 0.7→0.8 (which no longer depends on `rustls-pemfile`). Priority ladder exhausted at (i) after merging.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #378 head (`1eb5c4b`) and PR #376 head (`1be73cd`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | **20** allowlisted warnings (↓1 from 21 — RUSTSEC-2025-0134 removed by PR #378) |
+| cargo-deny | ✅ pass | `advisories ok`; RUSTSEC-2025-0134 entry removed from deny.toml |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #378 + PR #376 all Analyze jobs green; no new open findings |
+| CI on main (latest: `1be73cd`) | ✅ green | PR #376 all 20 checks green (squash-merged 2026-05-17 ~09:12 UTC) |
+
+**Fix applied this run (plan 0138 — axum-server RUSTSEC-2025-0134):**
+
+| Change | Before | After |
+|---|---|---|
+| `axum-server` in `crates/garraia-gateway/Cargo.toml` | `"0.7"` | `"0.8"` |
+| `rustls-pemfile` in `Cargo.lock` | ✅ present (via axum-server 0.7.3) | ✅ **REMOVED** (axum-server 0.8 uses rustls-pki-types) |
+| RUSTSEC-2025-0134 in `.cargo/audit.toml` | allowlisted | **REMOVED** — no longer in dependency graph |
+| RUSTSEC-2025-0134 in `deny.toml` | allowlisted | **REMOVED** atomically with audit.toml |
+| `cargo audit` warning count | 21 | **20** |
+
+**Structural work merged this run:**
+
+- PR #376 (`1be73cd`) — `refactor(gateway): Q11.e — extract rest_v1/tasks/subscriptions.rs (GAR-653)`: pure structural refactor, 3 handlers extracted from `tasks/mod.rs` into new `subscriptions.rs` (~279 LOC). Zero behavior change, no SQL/RLS/auth modifications. Closes GAR-653 (slice 5 of GAR-635 Q11).
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605170707-q11-tasks-slice5` | PR #372 family — roadmap routine | Skip — roadmap routine's work |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. `cargo audit` warning count: **20** (was 21 at last run, 22 at 2026-05-14).
 
 ## Confirmed 2026-05-17 (health routine — all surfaces green, bookkeeping plan 0137)
 
