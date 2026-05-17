@@ -151,4 +151,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0140 | [GAR-653 — Q11 slice 5: extract rest_v1/tasks/subscriptions.rs](0140-gar-653-q11-tasks-modularize-slice5.md) | [GAR-653](https://linear.app/chatgpt25/issue/GAR-653) | ✅ Merged 2026-05-17 via PR #376 (`1be73cd`) |
 | 0141 | [GAR-655 — Q11 slice 6: extract rest_v1/tasks/activity.rs](0141-gar-635-q11-tasks-modularize-slice6.md) | [GAR-655](https://linear.app/chatgpt25/issue/GAR-655) | ✅ Merged 2026-05-17 via PR #386 (`a82ef2b`) |
 | 0142 | [GAR-656 — replace daemonize 0.5 with nix syscalls (RUSTSEC-2025-0069)](0142-gar-656-replace-daemonize-nix.md) | [GAR-656](https://linear.app/chatgpt25/issue/GAR-656) | ✅ Merged 2026-05-17 via PR #382 (`a5daf344`) |
-| 0143 | [GAR-658 — Q11 slice 7: extract rest_v1/tasks/attachments.rs](0143-gar-658-q11-tasks-modularize-slice7.md) | [GAR-658](https://linear.app/chatgpt25/issue/GAR-658) | 🚧 In Progress |
+| 0143 | [GAR-658 — Q11 slice 7: extract rest_v1/tasks/attachments.rs](0143-gar-658-q11-tasks-modularize-slice7.md) | [GAR-658](https://linear.app/chatgpt25/issue/GAR-658) | ✅ Merged 2026-05-17 via PR #388 (`e04fc2c`) |
