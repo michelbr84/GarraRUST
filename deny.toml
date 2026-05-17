@@ -50,7 +50,10 @@ ignore = [
     # would otherwise deny. Listed here so `cargo deny check advisories`
     # passes. Owners deferred — these will be addressed when their
     # downstream consumers are upgraded.
-    "RUSTSEC-2025-0069", # daemonize (direct dep, no maintained alternative)
+    # NOTE: RUSTSEC-2025-0069 (daemonize unmaintained) CLOSED 2026-05-17.
+    # Resolution: replaced daemonize 0.5 with nix::unistd double-fork idiom
+    # (health/202605171245-replace-daemonize-nix, plan 0142 / GAR-656).
+    # nix 0.31.3 was already a transitive dep; libc was already a direct dep.
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)

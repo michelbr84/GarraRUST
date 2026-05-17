@@ -1287,74 +1287,91 @@ async fn async_main(
 
 #[cfg(unix)]
 fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
-    use daemonize::Daemonize;
+    use nix::unistd::{ForkResult, fork, setsid};
     use std::fs::File;
+    use std::os::unix::io::AsRawFd;
 
     let pid_path = pid_file_path();
     let log_path = log_file_path();
 
-    let stdout = File::create(&log_path)
+    let log_file = File::create(&log_path)
         .context(format!("failed to create log file: {}", log_path.display()))?;
-    let stderr = stdout
-        .try_clone()
-        .context("failed to clone log file handle")?;
+    let log_fd = log_file.as_raw_fd();
 
-    let daemonize = Daemonize::new()
-        .pid_file(&pid_path)
-        .stdout(stdout)
-        .stderr(stderr)
-        .working_directory(".");
-
-    match daemonize.start() {
-        Ok(()) => {
-            // We are now in the child (daemon) process.
-            // Re-init tracing to write to the log file.
-            let log_dir = garraia_dir();
-            let file_appender = rolling::never(&log_dir, "garraia.log");
-
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::new(
-                    config.log_level.as_deref().unwrap_or("info"),
-                ))
-                .with_writer(file_appender)
-                .with_ansi(false)
-                .init();
-
-            tracing::info!("daemon started (PID file: {})", pid_path.display());
-
-            // GAR-384: telemetry guard must outlive the server run.
-            #[cfg(feature = "telemetry")]
-            let (_telemetry_guard, telemetry_config_for_daemon) = init_telemetry_guard();
-            // Plan 0024 (GAR-412): pass the Prometheus handle (if any) into
-            // the server so it can spawn the auth'd dedicated listener.
-            #[cfg(feature = "telemetry")]
-            let metrics_handle_for_daemon =
-                _telemetry_guard.as_ref().and_then(|g| g.metrics_handle());
-
-            // Build a fresh tokio runtime in the daemon child process.
-            // This is safe because daemonization happened before any runtime
-            // was created, so there are no stale kqueue/epoll FDs.
-            let rt = tokio::runtime::Runtime::new()
-                .context("failed to create tokio runtime in daemon")?;
-            rt.block_on(async {
-                let server = garraia_gateway::GatewayServer::new(config);
-                #[cfg(feature = "telemetry")]
-                let server = server
-                    .with_metrics_handle(metrics_handle_for_daemon)
-                    .with_telemetry_config(Some(telemetry_config_for_daemon));
-                if let Err(e) = server.run().await {
-                    tracing::error!("gateway error: {e}");
-                }
-            });
-
-            // Clean up PID file on exit
-            let _ = std::fs::remove_file(&pid_path);
-            Ok(())
-        }
-        Err(e) => {
-            anyhow::bail!("failed to daemonize: {e}");
-        }
+    // First fork: parent exits, child becomes a background process.
+    // SAFETY: single-threaded at this point; no tokio runtime started yet,
+    // so there are no stale epoll/kqueue fds to inherit.
+    match unsafe { fork() }.context("fork(2) failed")? {
+        ForkResult::Parent { .. } => std::process::exit(0),
+        ForkResult::Child => {}
     }
+
+    // Become session leader, severing the controlling terminal association.
+    setsid().context("setsid(2) failed")?;
+
+    // Second fork: ensures the daemon cannot accidentally reacquire a
+    // controlling terminal (SysV/POSIX double-fork idiom).
+    match unsafe { fork() }.context("second fork(2) failed")? {
+        ForkResult::Parent { .. } => std::process::exit(0),
+        ForkResult::Child => {}
+    }
+
+    // Daemon grandchild: write PID file, redirect fds, then start the server.
+    std::fs::write(&pid_path, format!("{}\n", nix::unistd::getpid()))
+        .context("failed to write PID file")?;
+
+    // Redirect stdin → /dev/null; stdout + stderr → log file.
+    // SAFETY: all fds are valid; dup2 return values are checked.
+    let devnull = File::open("/dev/null").context("open /dev/null")?;
+    let r0 = unsafe { libc::dup2(devnull.as_raw_fd(), libc::STDIN_FILENO) };
+    let r1 = unsafe { libc::dup2(log_fd, libc::STDOUT_FILENO) };
+    let r2 = unsafe { libc::dup2(log_fd, libc::STDERR_FILENO) };
+    drop(log_file);
+    drop(devnull);
+    if r0 < 0 || r1 < 0 || r2 < 0 {
+        anyhow::bail!("dup2(2) failed redirecting daemon file descriptors");
+    }
+
+    // We are now in the daemon process. Re-init tracing to write to the log file.
+    let log_dir = garraia_dir();
+    let file_appender = rolling::never(&log_dir, "garraia.log");
+
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(
+            config.log_level.as_deref().unwrap_or("info"),
+        ))
+        .with_writer(file_appender)
+        .with_ansi(false)
+        .init();
+
+    tracing::info!("daemon started (PID file: {})", pid_path.display());
+
+    // GAR-384: telemetry guard must outlive the server run.
+    #[cfg(feature = "telemetry")]
+    let (_telemetry_guard, telemetry_config_for_daemon) = init_telemetry_guard();
+    // Plan 0024 (GAR-412): pass the Prometheus handle (if any) into
+    // the server so it can spawn the auth'd dedicated listener.
+    #[cfg(feature = "telemetry")]
+    let metrics_handle_for_daemon = _telemetry_guard.as_ref().and_then(|g| g.metrics_handle());
+
+    // Build a fresh tokio runtime in the daemon child process.
+    // This is safe because daemonization happened before any runtime
+    // was created, so there are no stale kqueue/epoll FDs.
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime in daemon")?;
+    rt.block_on(async {
+        let server = garraia_gateway::GatewayServer::new(config);
+        #[cfg(feature = "telemetry")]
+        let server = server
+            .with_metrics_handle(metrics_handle_for_daemon)
+            .with_telemetry_config(Some(telemetry_config_for_daemon));
+        if let Err(e) = server.run().await {
+            tracing::error!("gateway error: {e}");
+        }
+    });
+
+    // Clean up PID file on exit
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(())
 }
 
 #[cfg(windows)]
