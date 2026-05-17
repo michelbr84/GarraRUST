@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-17 run 2** (health routine — RUSTSEC-2025-0134 closed via PR #378 (axum-server 0.7→0.8); PR #376 merged (Q11.e structural refactor); all security surfaces green; priority ladder exhausted at (i). Previous entry: 2026-05-17 run 1 — bookkeeping plan 0137 Done).
+> Last updated: **2026-05-17 run 3** (health routine — RUSTSEC-2025-0069 closed via PR #382 (daemonize 0.5 → nix syscalls, GAR-656); all security surfaces green; priority ladder exhausted at (i) after merge. Previous entry: 2026-05-17 run 2 — RUSTSEC-2025-0134 closed (axum-server 0.7→0.8)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,43 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-17 run 3 (health routine — RUSTSEC-2025-0069 closed, daemonize → nix)
+
+Health routine ran on 2026-05-17 (run 3, ~12:45 ET). Full security scan completed. Pending health/ PR #382 found with all 20 CI checks green; squash-merged as `a5daf344`. Priority ladder exhausted at (i) after merge.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #382 head (`281dea9`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | **19** allowlisted warnings (↓1 from 20 — RUSTSEC-2025-0069 removed by PR #382) |
+| cargo-deny | ✅ pass | `advisories ok`; RUSTSEC-2025-0069 NOTE added to deny.toml closed history |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #382 all Analyze jobs green; no new open findings |
+| CI on main (latest: `a5daf344`) | ✅ green | PR #382 all 20 checks green (squash-merged 2026-05-17 ~16:45 UTC) |
+
+**Fix applied this run (plan 0142 — daemonize RUSTSEC-2025-0069, GAR-656):**
+
+| Change | Before | After |
+|---|---|---|
+| `daemonize` in `crates/garraia-cli/Cargo.toml` | `"0.5"` (unmaintained) | **removed** |
+| `nix` in `crates/garraia-cli/Cargo.toml` | transitive only | `{ version = "0.31", features = ["process"] }` (direct dep) |
+| `daemonize 0.5.0` in `Cargo.lock` | ✅ present | ✅ **REMOVED** |
+| `start_daemon()` implementation | `daemonize::Daemonize` | `nix::unistd::{fork, setsid}` + `libc::dup2` double-fork idiom |
+| RUSTSEC-2025-0069 in `deny.toml` | in ignore list | **REMOVED** — NOTE comment added for closed history |
+| `cargo audit` warning count | 20 | **19** |
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `health/202605171245-replace-daemonize-nix` | PR #382 — all 20 CI checks green | ✅ Merged as `a5daf344` |
+| `routine/202605171217-q11-tasks-slice6` | PR #381 — roadmap routine | Skip — roadmap routine's work |
+| `routine/202605171215-q11-tasks-slice6-activity` | PR #380 — roadmap routine | Skip — roadmap routine's work |
+| `merge/q11-slice6-and-health` | PR #383 — dirty (behind main after PR #382) | Leave — not health/ branch |
+| `release/msi-rebuild-v0.2.1` | PR #384 — release branch | Leave — not health/ branch |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. `cargo audit` warning count: **19** (was 20 at run 2, 21 at run 1, 22 at 2026-05-14).
 
 ## Confirmed 2026-05-17 run 2 (health routine — RUSTSEC-2025-0134 closed, axum-server 0.7→0.8)
 
