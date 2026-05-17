@@ -12,11 +12,12 @@
 #     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
 #     (rand / GAR-513). Closed: wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
-#     instant ×1 (GAR-627 / health/202605150000). Drop atomically from
-#     BOTH files when an upstream fix lands.**
-#   * The 21 unmaintained-only IDs (6 directly named: daemonize,
-#     derivative, fxhash, proc-macro-error, async-std,
-#     rustls-pemfile + 10× gtk-rs + 5× unic-*) are intentionally NOT
+#     instant ×1 (GAR-627 / health/202605150000),
+#     rustls-pemfile ×1 (health/20260517 axum-server 0.8). Drop atomically
+#     from BOTH files when an upstream fix lands.**
+#   * The 21 unmaintained-only IDs (5 directly named: daemonize,
+#     derivative, fxhash, proc-macro-error, async-std
+#     + 10× gtk-rs + 5× unic-*) are intentionally NOT
 #     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
 #     "allowed warnings" and does NOT require explicit ignore.
 #     Mirroring them here in `deny.toml` is required because `cargo
@@ -54,11 +55,11 @@ ignore = [
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
     "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
-    # Added 2026-04-27 (PR #75 CI surfaced this — local cache was stale):
-    # rustls-pemfile 2.2.0 archived 2025-08; upstream recommends migrating
-    # to `rustls-pki-types::PemObject`. Pulled via axum-server 0.7.3 →
-    # garraia-gateway. Owner: GAR-430 (Quality Gates 3.6).
-    "RUSTSEC-2025-0134", # rustls-pemfile
+    # NOTE: RUSTSEC-2025-0134 (rustls-pemfile unmaintained) CLOSED 2026-05-17.
+    # Resolution: axum-server 0.7.3 → 0.8.0 (health routine PR
+    # chore/sec-20260517-axum-server-0.8). axum-server 0.8 migrated to
+    # rustls-pki-types, removing rustls-pemfile entirely from the lockfile.
+    # Removed from BOTH deny.toml and audit.toml per SYNC NOTE invariant.
 
     # --- audit.toml mirrors that cargo-deny ALSO requires (vuln + unsound) ---
     # These IDs are in `.cargo/audit.toml` but cargo-deny categorizes them
