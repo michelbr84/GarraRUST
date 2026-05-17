@@ -23,8 +23,10 @@ Write-Host "==> [2/3] Copiando sidecar para binaries/..." -ForegroundColor Cyan
 $arch = "x86_64-pc-windows-msvc"
 $binDir = "crates\garraia-desktop\src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-Copy-Item "target\release\garraia.exe" "$binDir\garraia-$arch.exe" -Force
-Write-Host "    Copiado: $binDir\garraia-$arch.exe"
+# Tauri externalBin = "binaries/garra" expects "binaries/garra-<triple>.exe".
+# Binary name set by `name = "garra"` in crates/garraia-cli/Cargo.toml (rename a1c56e8).
+Copy-Item "target\release\garra.exe" "$binDir\garra-$arch.exe" -Force
+Write-Host "    Copiado: $binDir\garra-$arch.exe"
 
 Write-Host "==> [3/3] Gerando MSI com cargo tauri build..." -ForegroundColor Cyan
 Push-Location "crates\garraia-desktop\src-tauri"
