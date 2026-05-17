@@ -92,7 +92,7 @@ bytes = { workspace = true }
 aws-credential-types = { version = "1", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate"], default-features = false }
 filetime = "0.2"
-axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 
 [features]
 default = ["telemetry"]
