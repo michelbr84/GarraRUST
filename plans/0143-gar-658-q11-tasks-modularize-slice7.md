@@ -50,16 +50,16 @@ but were never added to the `paths!(...)` macro in `openapi.rs`).
 ## M1 Tasks
 
 - [x] T1: Read and understand the full attachments section (lines 1533–1919)
-- [ ] T2: Create `rest_v1/tasks/attachments.rs` with appropriate use imports + all items
-- [ ] T3: Update `tasks/mod.rs` — remove section, add `pub mod attachments; pub use attachments::{...}`
-- [ ] T4: `cargo check -p garraia-gateway` + `cargo fmt --check`
-- [ ] T5: Commit on branch `routine/202605171823-q11-tasks-slice7`
-- [ ] T6: Push + open PR
-- [ ] T7: CI green (20/20)
-- [ ] T8: Squash-merge, mark GAR-658 Done, update plans/README.md
+- [x] T2: Create `rest_v1/tasks/attachments.rs` with appropriate use imports + all items
+- [x] T3: Update `tasks/mod.rs` — remove section, add `pub mod attachments; pub use attachments::{...}`
+- [x] T4: `cargo check -p garraia-gateway` + `cargo fmt --check`
+- [x] T5: Commit on branch `routine/202605171823-q11-tasks-slice7`
+- [x] T6: Push + open PR (#388)
+- [x] T7: CI green (20/20)
+- [x] T8: Squash-merge (`e04fc2c`), mark GAR-658 Done, update plans/README.md
 
 ## Cross-references
 
 - Parent: [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) (Q11 modularize tasks)
-- Slice 6 predecessor: plan 0141 / GAR-655 / PR #381
+- Slice 6 predecessor: plan 0141 / GAR-655 / PR #386 (`a82ef2b`)
 - Original implementation: plan 0096 / GAR-572 / PR implementing task_attachments
