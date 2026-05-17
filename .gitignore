@@ -42,6 +42,9 @@ Thumbs.db
 # (superpowers `using-git-worktrees` skill). Never commit worktree contents.
 .worktrees/
 
+# superpowers:brainstorming runtime artifacts (worktree-local per spec convention)
+.superpowers/
+
 # GarraIA SuperPowers — estado e outputs de automação
 .garra-estado.md
 .dream-state.json
