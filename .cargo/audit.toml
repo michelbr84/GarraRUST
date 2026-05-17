@@ -32,8 +32,9 @@
 #     (rand / GAR-513). Drop any of these atomically from BOTH files when
 #     the upstream fix lands. Closed history: wasmtime ×15 (GAR-454),
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
-#     instant ×1 (GAR-627 / health/202605150000).**
-#   * The 21 unmaintained-only IDs in `deny.toml` (6 directly named +
+#     instant ×1 (GAR-627 / health/202605150000),
+#     rustls-pemfile ×1 (health/20260517 — deny.toml-only, axum-server 0.8).**
+#   * The 21 unmaintained-only IDs in `deny.toml` (5 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
 #     behavior of `cargo audit`.
