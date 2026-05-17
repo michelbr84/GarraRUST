@@ -145,4 +145,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0134 | [GAR-634 — Unblock tokio 1.52.3 via nix 0.31.3 + process-wrap 9.1.0](0134-gar-634-tokio-unblock-nix-0313.md) | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) | ✅ Merged 2026-05-16 via PR #367 (`40ee126`) |
 | 0135 | [GAR-635 — Q11 slice 1: extract rest_v1/tasks/task_lists.rs](0135-gar-635-q11-tasks-modularize-slice1.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | ✅ Merged 2026-05-17 via PR #368 (`c01bbd9`) |
 | 0136 | [GAR-635 — Q11 slice 2: extract rest_v1/tasks/comments.rs](0136-gar-635-q11-tasks-modularize-slice2.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | ✅ Merged 2026-05-17 via PR #370 (`8872026`) |
-| 0137 | [GAR-635 — Q11 slice 3: extract rest_v1/tasks/assignees.rs](0137-gar-635-q11-tasks-modularize-slice3.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | 🚧 In Progress |
+| 0137 | [GAR-635 — Q11 slice 3: extract rest_v1/tasks/assignees.rs](0137-gar-635-q11-tasks-modularize-slice3.md) | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | ✅ Merged 2026-05-17 via PR #371 (`efb295c`) |

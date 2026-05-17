@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-16 run 2** (health routine — all security surfaces green; no new actionable fix. Bookkeeping: plans/README.md row 0134 marked Done (PR #367 / `40ee126`), deny.toml comment inaccuracies fixed (rand 0.7.3 not 0.10.1; instant ×1 GAR-627 added to SYNC NOTE). Previous entry: GAR-634 tokio 1.52.3 unblock).
+> Last updated: **2026-05-17** (health routine — all security surfaces green; no new actionable fix. Bookkeeping: plans/README.md row 0137 marked Done (PR #371 / `efb295c`). Previous entry: GAR-638 / 2026-05-16 run 2 — bookkeeping + deny.toml comment fixes).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,32 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-17 (health routine — all surfaces green, bookkeeping plan 0137)
+
+Health routine ran on 2026-05-17 (~04:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no new actionable fix found.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #371 head (`efb295c`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings, no new advisories |
+| cargo-deny | ✅ pass | `advisories ok` |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #371 all Analyze jobs green; 22 dismissed alerts, no new open findings |
+| CI on main (latest: `efb295c`) | ✅ green | PR #371 all 20 checks green |
+
+**Bookkeeping completed this run:**
+
+- `plans/README.md` row 0137: `🚧 In Progress` → `✅ Merged 2026-05-17 via PR #371 (efb295c)` (GAR-635 slice 3 — extract `rest_v1/tasks/assignees.rs`, T8 README update was pending)
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605170404-q11-tasks-slice4` | PR #372 open, CI in-flight | Skip — roadmap routine's work |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
 ## Confirmed 2026-05-16 run 2 (health routine — all surfaces green, bookkeeping + deny.toml comment fixes)
 
