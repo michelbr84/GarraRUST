@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-01 (local America/New_York)
+> **Última atualização:** 2026-05-17 (local America/New_York) — sync `git log` real (211 commits / 50 plans desde 2026-05-01) + nova §1.4 Garra Learning Agent / Self-Improving Operations Manual (ADR 0010 Proposed)
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -64,11 +64,15 @@ Esse baseline define o que as fases seguintes precisam mover.
 
 ---
 
-## 1.5. Atualização 2026-05-01 — Green Security Baseline e progresso Q6
+## 1.5. Atualização 2026-05-17 — Sprint roll-up Maio 2026 (Q9 admin refactor, Q11 tasks modularize, Web Console, onboarding zero-friction, security sweeps)
 
 > Esta seção é um snapshot incremental sobre o §1 acima: NÃO substitui o
-> baseline original, apenas reporta o que mudou desde 2026-04-13. Próxima
-> revisão estrutural do §1 fica para depois de GAR-491/GAR-490 mergearem.
+> baseline original, apenas reporta o que mudou. Cobre os sprints **2026-04-30**
+> (Green Security Baseline original) até **2026-05-17** (entrega contínua).
+>
+> **Anterior:** §1.5 (2026-05-01) cobria GAR-486 + GAR-491 + GAR-490. Esses
+> três fecharam em 2026-05-04 (GAR-490 via PR #112, GAR-491 via PR #109,
+> umbrella GAR-486 closed) — Green Security Baseline ✅ Done.
 
 ### Sprint **Green Security Baseline 2026-04-30** (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486))
 
@@ -141,6 +145,67 @@ foram corrigidos no mesmo PR:
 | 3 | Só `SHA256SUMS` agregado | Falhava no `release is missing checksum file` | `SHA256SUMS` **mais** `<asset>.sha256` per-asset (loop sha256sum + glob `release/*.sha256` no `files:` da action) |
 
 Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desktop/src-tauri/Cargo.toml` e `tauri.conf.json` para fechar o gap de versão sem reuso de tag. Linear: [GAR-619](https://linear.app/chatgpt25/issue/GAR-619) (criada nesta sessão).
+
+### Sprint **Web Console Garra Glass** (2026-05-14) — `web_chat.html` redesenhado de ponta-a-ponta
+
+10 PRs sequenciais (#330–#341) entregando o Web Console multi-page completo com design system "Garra Glass" (ADR 0009, plan 0116). Stack: HTML + CSS custom properties `--garra-*` + JS vanilla, zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline. Páginas: Dashboard, Chat, Providers & Models, Channels, Sessions, Settings Registry (schema-driven dry-run), Diagnostics (12 checks), Logs (filter/search/export), Themes & Skins (4 presets). Novos endpoints REST (todos `/api/*`, auth-free, secret-free via `configured: bool` em vez de `value`): `/api/health` (Dashboard schema com `version`, `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`, `warnings`, back-compat `checks`), `/api/capabilities`, `/api/channels`, `POST /api/providers/test`, `PATCH /api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings` (validate + audit + dry-run; persistência TOML em plan 0121a), `/api/diagnostics`. Plans: 0116a, 0116b, 0117–0123. Issues Linear: [GAR-607](https://linear.app/chatgpt25/issue/GAR-607), [GAR-612](https://linear.app/chatgpt25/issue/GAR-612)…[GAR-618](https://linear.app/chatgpt25/issue/GAR-618), [GAR-623](https://linear.app/chatgpt25/issue/GAR-623).
+
+### Sprint **Onboarding zero-friction** (2026-05-14..15)
+
+- **PR-A — `garraia init` env-aware bootstrap** (plan 0126, PR #348 `6a2279e`, 2026-05-14): subcomando `garraia init` que detecta config existente, oferece wizard interativo + flags `--yes`/`--non-interactive` para CI, materializa `.garraia/config.toml` + `.env` placeholder. Issue Linear: TBD.
+- **PR-B — `curl \| sh` installer wizard** (plan 0127, PR #350 `bfddf78`, 2026-05-15): `install.sh` ganhou bootstrap wizard de uma linha (`curl -fsSL https://garraia.org/install.sh | sh`) que detecta plataforma, baixa binário correto, roda `garraia init --yes`, sobe `garraia start` em foreground. Cobre Linux/macOS x86_64 + aarch64. Issue Linear: TBD.
+
+### Sprint **Q9 admin/handlers.rs modularização** (2026-05-15..16, 6 PRs)
+
+`crates/garraia-gateway/src/admin/handlers.rs` foi de **3300 → ~1270 LOC** via extração em 6 módulos focados, zero behavior change:
+
+| Slice | Plan | Issue | PR | Módulo extraído | LOC |
+|---|---|---|---|---|---|
+| Q9.b | 0128 | [GAR-470](https://linear.app/chatgpt25/issue/GAR-470) | [#349](https://github.com/michelbr84/GarraRUST/pull/349) `eacbf9b` | `admin/providers.rs` | 3240→2900 (−340) |
+| Q9.c | 0129 | [GAR-471](https://linear.app/chatgpt25/issue/GAR-471) | [#354](https://github.com/michelbr84/GarraRUST/pull/354) `17f68d0` | `admin/mcp.rs` | 2900→2550 (−350) |
+| Q9.d | 0130 | [GAR-472](https://linear.app/chatgpt25/issue/GAR-472) | [#358](https://github.com/michelbr84/GarraRUST/pull/358) `1555b70` | `admin/mcp_templates.rs` | 2550→2326 (−224) |
+| Q9.e | 0131 | [GAR-473](https://linear.app/chatgpt25/issue/GAR-473) | [#360](https://github.com/michelbr84/GarraRUST/pull/360) `b862b72` | `admin/observability.rs` | 2326→2103 (−223) |
+| Q9.g | 0132 | [GAR-474](https://linear.app/chatgpt25/issue/GAR-474) | [#362](https://github.com/michelbr84/GarraRUST/pull/362) `4c97276` | `admin/users.rs` | 2103→1738 (−365) |
+| Q9.f | 0133 | [GAR-475](https://linear.app/chatgpt25/issue/GAR-475) | [#363](https://github.com/michelbr84/GarraRUST/pull/363) `4ab6821` | `admin/secrets.rs` | 1738→~1270 (−468), `@security-auditor` approval required |
+
+### Sprint **Q11 `rest_v1/tasks` modularização** (2026-05-17, 3 PRs hoje)
+
+Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.rs` (anteriormente monólito). Issue Linear: [GAR-635](https://linear.app/chatgpt25/issue/GAR-635).
+
+| Slice | Plan | PR | Módulo extraído |
+|---|---|---|---|
+| Q11.a | 0135 | [#368](https://github.com/michelbr84/GarraRUST/pull/368) `c01bbd9` | `rest_v1/tasks/task_lists.rs` |
+| Q11.b | 0136 | [#370](https://github.com/michelbr84/GarraRUST/pull/370) `8872026` | `rest_v1/tasks/comments.rs` |
+| Q11.c | 0137 | [#371](https://github.com/michelbr84/GarraRUST/pull/371) `efb295c` | `rest_v1/tasks/assignees.rs` |
+
+Slices Q11.d+ (labels, subscriptions, activity, attachments, move/subtasks) seguem em sprints futuros.
+
+### Security & dependency sweeps Maio 2026
+
+| Sweep | Plan | PR | Conteúdo |
+|---|---|---|---|
+| Q6.3 sessions TTL boundary mutants | 0112 | [#312](https://github.com/michelbr84/GarraRUST/pull/312) `5197581` | [GAR-465](https://linear.app/chatgpt25/issue/GAR-465) — kill 6 missed mutants em `session_store.rs` |
+| Q6.6.b Debug-redaction mutants | 0114 | [#317](https://github.com/michelbr84/GarraRUST/pull/317) `fc138f3` | [GAR-483](https://linear.app/chatgpt25/issue/GAR-483) — Debug redaction tests em `SignupPool` + `AppPool` |
+| aws-actions/configure-aws-credentials v4→v6 | 0113 | [#313](https://github.com/michelbr84/GarraRUST/pull/313) `4374623` | [GAR-601](https://linear.app/chatgpt25/issue/GAR-601) — Node 20 deprecation pre-empt |
+| `metrics` 0.24.5 (yanked) → 0.24.6 | 0124 | [#336](https://github.com/michelbr84/GarraRUST/pull/336) `adbe00a` | [GAR-620](https://linear.app/chatgpt25/issue/GAR-620) |
+| Patch-and-minor batch May 13 | 0111 | [#309](https://github.com/michelbr84/GarraRUST/pull/309) `c9196ac` | [GAR-600](https://linear.app/chatgpt25/issue/GAR-600) — 17 deps (tokio, axum, hyper, tower-http, jsonwebtoken, uuid) |
+| `lru` advisory cleanup | 0108 | [#299](https://github.com/michelbr84/GarraRUST/pull/299) `7996dc4` | [GAR-593](https://linear.app/chatgpt25/issue/GAR-593) — drop stale RUSTSEC-2026-0002 |
+| h2/rustls/zerocopy/aws-lc-rs/reqwest security sweep | n/a | [#366](https://github.com/michelbr84/GarraRUST/pull/366) `02bd9de` | 2026-05-16 |
+| RUSTSEC-2024-0384 (instant) advisory ignore drop | n/a | [#356](https://github.com/michelbr84/GarraRUST/pull/356) `8051d97` | 2026-05-15 — stale ignore removed |
+| `tokio` 1.52.3 unblock via `nix` 0.31.3 + `process-wrap` 9.1.0 | 0134 | [#367](https://github.com/michelbr84/GarraRUST/pull/367) `40ee126` | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) |
+| RLS FORCE em `groups` + `group_members` | 0106 | [#294](https://github.com/michelbr84/GarraRUST/pull/294) `36b2b72` | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) — fixes `get_group` SET LOCAL FIXME |
+| Messages PATCH/DELETE (RBAC sender-only + admin override) | 0107 | [#300](https://github.com/michelbr84/GarraRUST/pull/300) `3c843e4` | [GAR-592](https://linear.app/chatgpt25/issue/GAR-592) |
+
+### Sprint **Garra Learning Agent — épico criado** (2026-05-17, esta sessão)
+
+Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura.
+
+### `garraia update` / CLI helpers / Runpod compatibility
+
+- **GAR-603 Runpod Load Balancer Serverless compat** ✅ — PR [#327](https://github.com/michelbr84/GarraRUST/pull/327) `cdebe9a`, 2026-05-13. Container HTTP server mode + `GET /ping` health + `PORT`/`PORT_HEALTH` env honor. Ver §6.1.1.
+- **GAR-604 DM creation via `POST /v1/groups/{id}/chats`** ✅ — PR [#324](https://github.com/michelbr84/GarraRUST/pull/324) `4ce9d75`, 2026-05-14.
+- **GAR-605 CodeQL `actions` language matrix re-add** ✅ — PR [#323](https://github.com/michelbr84/GarraRUST/pull/323) `f6698c7`, 2026-05-14. Fecha 17 alertas Medium stale.
+- **CI concurrency cancel-superseded** ✅ — PR [#311](https://github.com/michelbr84/GarraRUST/pull/311) `10f637b` + PR [#316](https://github.com/michelbr84/GarraRUST/pull/316) `f57af85`. Canonical `group: workflow-prNum||ref` + `cancel-in-progress`.
 
 ---
 
@@ -272,8 +337,92 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 - Teste de integração altera `models.default` via PATCH admin e verifica que a próxima chamada de chat usa o novo modelo sem reiniciar processo.
 
-**Estimativa fase 1:** 6 / 8 / 12 semanas.
-**Épicos Linear sugeridos:** `GAR-TURBO-1`, `GAR-SUPERPOWERS-1`, `GAR-CONFIG-1`.
+### 1.4 Garra Learning Agent / Self-Improving Operations Manual
+
+> **Auto-aprendizado operacional (não treina pesos do modelo).** O Garra observa
+> execuções reais, captura padrões bem-sucedidos como skills versionadas, propõe
+> atualizações quando encontra melhorias/falhas, valida via CI antes de promover,
+> e permite rollback. Equivalente conceitual ao **Hermes Agent** mas com
+> arquitetura própria focada em segurança, auditabilidade, CI-first e controle
+> humano. Constrói **sobre** o crate `garraia-skills` existente (parser/scanner/
+> installer já estabelecidos), adicionando os 4 loops novos (Mine, Use+Evaluate,
+> Auto-Update, Promote-to-Manual).
+>
+> **Decisão arquitetural completa:** [`docs/adr/0010-garra-learning-agent.md`](docs/adr/0010-garra-learning-agent.md) (Proposed em 2026-05-17).
+
+**Objetivo:**
+
+Transformar o Garra de "ferramenta que executa" em "ferramenta que aprende a
+executar melhor" — sem nunca regredir, sem nunca rodar comando perigoso
+aprendido, sem nunca promover skill não-validada.
+
+**Fronteira semântica rígida** (CLAUDE.md + ADR 0010):
+
+| Tipo | Crate | Persistência |
+|---|---|---|
+| **Memória** (facts sobre usuário/grupo) | `garraia-workspace::memory_items` | Postgres, RLS-scoped |
+| **Skill** (procedimento operacional) | `garraia-learning::registry` (sobre `garraia-skills`) | Markdown+YAML em disco, git-tracked |
+| **Log de execução** (o que aconteceu) | `garraia-telemetry::traces` | Spans OTLP + Prometheus |
+| **Manual distribuível** (skill pública instalável) | `garraia-skills::installer` | Tarball assinado |
+
+**Sub-componentes (10):**
+
+1. **Skill Miner** (`garraia-learning::miner`) — lê session logs (`.garra-estado.md` + opt-in `~/.garra/sessions/`), detecta padrões repetíveis (≥3 ocorrências em contextos similares), emite candidates em `~/.garra/skills/_candidates/`.
+2. **Skill Generator** (`garraia-learning::generator`) — LLM-assisted skill drafting com prompt provider-agnóstico (default `openrouter/free`); gera Markdown + YAML frontmatter compatível com `SkillFrontmatter` do crate `garraia-skills`.
+3. **Skill Registry** (`garraia-learning::registry`) — wrapper sobre `garraia-skills`, dual-scope: global (`~/.garra/skills/`, compartilhado entre projetos) + por-projeto (`.garra/skills/`, versionado no repo). Lock-file em `_locks/` para concorrência.
+4. **Skill Retriever** (`garraia-learning::retriever`) — embedding match via `garraia-embeddings` (Fase 2.1 prereq) + filtro por escopo + score mínimo. Skill encontrada vira contexto adicional no prompt do `AgentRuntime`. MVP roda sem Retriever (match por tag/scope) até embeddings estarem prontos.
+5. **Skill Evaluator** (`garraia-learning::evaluator`) — mede sucesso via sinais objetivos: exit codes, `cargo test` pass count, `gh pr checks` após skill aplicada, diffs (linhas/arquivos tocados), logs (presença de `ERROR`/`panic`), latência. Atualiza score (EMA exponencial). Skills com score < 0.3 marcadas `deprecated` (não removidas — preserva histórico).
+6. **Skill Auto-Updater** (`garraia-learning::updater`) — quando Evaluator detecta falha ou melhoria, gera diff (skill v2), cria branch `learning/skill-X-vN-vN+1`, submete PR via `gh`. Nunca auto-merge; promoção só via Safety Gate + Human Override.
+7. **Git-backed Versioning** (`garraia-learning::versioning`) — cada skill é arquivo git-tracked em `.garra/skills/`; histórico = `git log` do arquivo; diff = `git diff`; rollback = `git revert`. Score histórico em `.garra/skills/_history/<skill-name>.json` (append-only).
+8. **Safety Gate** (`garraia-learning::safety`) — reusa `garraia-tools::safety_gate` do GarraMaxPower (§1.2.1) + extensões: (a) denylist hard-coded de comandos destrutivos aprendidos (`rm -rf /`, `git push --force`, `DROP TABLE`); (b) paths críticos (`garraia-auth/`, `garraia-security/`, `.github/workflows/`, `deny.toml`) exigem `@security-auditor` + `@code-reviewer` approval; (c) score < threshold não promove; (d) anti-flap (3 falhas consecutivas → deprecated); (e) PII redaction antes do LLM (regex email/path/token via `garraia-telemetry::redact`).
+9. **Human Override** (`garraia-learning::override`) — CLI `garra skills {list,show,lock,unlock,approve,reject,delete,rollback}` + Web UI. Estados: `candidate → proposed → approved → promoted → deprecated → locked`. Editar manualmente vira skill `authored` (protege contra auto-update).
+10. **Web UI for Skills and Learning Logs** (`garraia-gateway::web_console::skills`) — aba "Skills" no Web Console Garra Glass (ADR 0009): lista global + por-projeto, score, last_used, promoted_at; detalhe com markdown render + history git + diffs entre versões + score timeline (chart) + logs de execução + botões Rollback/Lock/Delete. Aba "Learning Logs" mostra sessões observadas + candidates pendentes + scores recentes.
+
+**Critérios de aceite:**
+
+- [ ] Crate `garraia-learning` compila com `cargo check -p garraia-learning`.
+- [ ] `garra skills mine --from session-log.json` cria candidate em `~/.garra/skills/_candidates/` sem intervenção manual.
+- [ ] `garra skills list` recupera skill relevante (top-1 por embedding + scope-match) e injeta como contexto no prompt do `AgentRuntime`.
+- [ ] Evaluator propõe atualização quando vê falha ou caminho melhor — abre PR via `gh`, nunca auto-merge.
+- [ ] Tentativa de promover skill contendo `rm -rf /` (test fixture) é bloqueada com `SafetyDenial::DangerousCommand`.
+- [ ] Tentativa de promover skill que altera `crates/garraia-auth/src/lib.rs` (test fixture) exige label `security-audit-passed`, senão `SafetyDenial::CriticalPath`.
+- [ ] Toda mudança de skill tem diff (`git diff`), versão (semver no frontmatter), motivo (PR body), evidência (test/CI link) e rollback (`git revert`) acessíveis via CLI e Web UI.
+- [ ] Separação clara entre memória/skill/log/manual (tabela acima) documentada em CLAUDE.md + README do crate + ADR 0010.
+- [ ] Hermes Agent mencionado **apenas** como referência conceitual; busca por importações de código do Hermes em `Cargo.lock` retorna zero.
+- [ ] Sistema seguro contra: aprendizado errado (Safety Gate denylist + Evaluator threshold), comandos perigosos (hard denylist), acúmulo de lixo (TTL 90d para candidates não-promovidos).
+
+**Não-fazer (escopo explícito):**
+
+- Não treinar pesos do modelo. Skills são prompts/scripts versionados.
+- Não copiar código do Hermes Agent. Hermes = referência conceitual.
+- Não bypass do Safety Gate por flag de "modo dev". Hard wall.
+- Não promover skill sem human-in-the-loop em paths sensíveis.
+- Não substituir `garraia-skills` nem `garraia-workspace memory` — Learning Agent **integra**; não duplica.
+
+**Issues Linear filhas do épico [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641)** (criadas 2026-05-17, label `epic:learning-agent`, todas Backlog):
+
+- [`GAR-642`](https://linear.app/chatgpt25/issue/GAR-642) **Learning Agent Architecture** (High, label `adr-needed`) — ADR 0010 → Accepted + scaffold + integração com `AgentRuntime`.
+- [`GAR-643`](https://linear.app/chatgpt25/issue/GAR-643) **Skill Miner** (Medium)
+- [`GAR-644`](https://linear.app/chatgpt25/issue/GAR-644) **Skill Generator** (Medium)
+- [`GAR-645`](https://linear.app/chatgpt25/issue/GAR-645) **Skill Registry** (High)
+- [`GAR-646`](https://linear.app/chatgpt25/issue/GAR-646) **Skill Retriever** (Medium, depende de Fase 2.1)
+- [`GAR-647`](https://linear.app/chatgpt25/issue/GAR-647) **Skill Evaluator** (High)
+- [`GAR-648`](https://linear.app/chatgpt25/issue/GAR-648) **Skill Auto-Updater** (Medium)
+- [`GAR-649`](https://linear.app/chatgpt25/issue/GAR-649) **Skill Safety Gates** (Urgent — hard wall)
+- [`GAR-650`](https://linear.app/chatgpt25/issue/GAR-650) **Skill Versioning/Rollback** (Medium)
+- [`GAR-651`](https://linear.app/chatgpt25/issue/GAR-651) **Web UI for Skills and Learning Logs** (Medium, depende de ADR 0009)
+
+**Plan-mãe:** [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md)
+
+**Estimativa:**
+
+- MVP (Miner + Generator + Registry + Safety Gate básico): 3 / 5 / 7 semanas.
+- Completo (10 componentes): 4 / 7 / 12 semanas (depende de `garraia-embeddings` Fase 2.1 + Web Console pronto).
+
+**Riscos:** Sobreposição com `garraia-skills` (mitigação: ADR 0010 §"Topologia"); skill perigosa aprendida (Safety Gate hard wall + paths críticos exigem aprovação humana); custo LLM (default `openrouter/free`, batch); PII em skills aprendidas (redaction antes do LLM); concorrência entre sessões (lock-file).
+
+**Estimativa fase 1:** 6 / 8 / 12 semanas (TurboQuant+ / Superpowers / GarraMaxPower / Config) + 4 / 7 / 12 semanas (Learning Agent, paralelo).
+**Épicos Linear sugeridos:** `GAR-TURBO-1`, `GAR-SUPERPOWERS-1`, `GAR-CONFIG-1`, [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641).
 
 ---
 
@@ -965,6 +1114,7 @@ Foram materializadas ~40 issues críticas (`GAR-371` a `GAR-410`) cobrindo: 8 AD
 | `GAR-INFRA-GA` | 6.1 | Helm + Terraform + Docker |
 | `GAR-OBS-GA` | 6.2 | SLOs + runbooks + DR |
 | `GAR-RELEASE-GA` | 6.3 | Beta → GA + docs |
+| [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) |
 
 ---
 
@@ -1033,17 +1183,26 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-01** após o sprint **Green Security Baseline 2026-04-30** (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486), 5 PRs `#104..#108`, Dependabot 20 → 7, CodeQL advanced setup ✅, secret-scanning alerts → 0). Ver §1.5 acima para o detalhamento por sub-issue.
+**Atualizado 2026-05-17** após o batch Maio 2026 (Q9.b-Q9.g admin refactor + Q11.a-c tasks modularize + Web Console Garra Glass + onboarding `garraia init`/`curl|sh` + security sweeps). Green Security Baseline (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)) fechado em 2026-05-04. Ver §1.5 para detalhamento sprint-a-sprint.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
-1. **Fechar GAR-491 → GAR-490 → GAR-486** — sub-issues abertas do umbrella de segurança. GAR-491 (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft) entrega a convenção de suppression para Rust CodeQL e está em **empirical-proof** sobre alerta #43; só fecha quando o batch dos 5 dismissals adicionais aplicar limpo. GAR-490 entra na sequência (path-injection real-fix em `skills_handler.rs`/`skins_handler.rs` + experimento `SELECT set_config(..., $1, true)` substituindo `SET LOCAL ... format!()` em `rest_v1/groups.rs`/`invites.rs`).
-2. **Fase 3.4 — API REST `/v1` OpenAPI** — materializa os handlers de produto (`/v1/chats`, `/v1/messages`, `/v1/memory`, `/v1/tasks`, `/v1/groups` completo, `/v1/me` rico). Plan 0016 M5 pendente com sweep de review follow-ups (admin_url accessor, `exec_with_tenant` closure API, URL parsing, test-support rename, fail-soft `/docs/{*path}`, `get_group` transactional wrap, scenario 8 coverage gap). Próximo slice a decidir entre M5 ou um novo plan 0017 para o próximo endpoint-de-recurso.
-3. **Q6 follow-ups (mutation testing)** — sub-issues `Q6.1..Q6.7` registradas em memória local (`project_next_session_q6_queue`). PR #94 levou `garraia-auth` a **90.78% killed**; estender para outros crates (`garraia-security`, `garraia-workspace`) é trabalho remanescente.
-4. **ADR 0004 — Object storage** ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374)) e Fase 3.5 já entregues parcialmente (GAR-394/395, plans 0037/0038/0041/0044/0047). Resta validar o S3-compatible path em produção quando feature `storage-s3` ligar.
-5. **Fase 5.1 — CredentialVault final (GAR-291)** — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3.
+1. **Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642), 1/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — promover ADR 0010 de Proposed → Accepted via scaffold do crate `garraia-learning` + integração mínima com `AgentRuntime`. Habilita as 9 issues filhas seguintes. **Bloqueador estratégico**: sem essa fundação, todas as outras iniciativas (Fase 2.1 RAG, Fase 4 UX, Fase 5 Quality) acumulam débito operacional que o Learning Agent resolveria. Plano: [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md).
 
-Trilha paralela disponível para um segundo dev/agente: **Fase 1.3 — Config reativo**, ainda não materializado.
+2. **Q11 tasks modularização — slices Q11.d+ (GAR-635)** — continuar a extração de `rest_v1/tasks.rs` (labels, subscriptions, activity, attachments, move/subtasks). Slices Q11.a-c já mergeados (PRs #368, #370, #371 — 2026-05-17). Estimativa: 3-5 slices restantes, ~600 LOC.
+
+3. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
+
+4. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
+
+5. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
+
+6. **Fase 5.1 — CredentialVault final** ([GAR-291](https://linear.app/chatgpt25/issue/GAR-291)) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4.
+
+Trilhas paralelas disponíveis para um segundo dev/agente:
+- **Fase 1.3 — Config reativo** (ainda não materializado).
+- **Fase 4.2 — Mobile build Android update** (gradle 8.x / AGP 8.x / Java 17).
+- **Fase 3.4 — Endpoints restantes da API REST `/v1`**: WebSocket `/v1/chats/{id}/stream`, `tus` resumable upload, embeds de tasks/files/chats.
 
 ---
 
