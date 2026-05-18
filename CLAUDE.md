@@ -245,6 +245,20 @@ crates/
                         testids são contrato de teste. Remove `continue-on-error: true`
                         do step `Run Playwright tests` (`ci.yml:425`); CoE count
                         cai 2→1 (só RUSTSEC remanescente).
+  garraia-embeddings/ — Fase 2.1 (GAR-372, ADR 0002 Accepted 2026-04-21, plan
+                        0145 scaffold branch `feat/garraia-embeddings-scaffold`).
+                        Public surface only: traits `EmbeddingProvider` (async,
+                        `embed`/`embed_batch`/`model_id`) + `VectorStore`
+                        (async, `insert`/`search`/`delete`, scoped by `Scope` +
+                        `Option<Uuid> group_id`); strong types
+                        `Scope`/`EmbeddingVector(768)`/`Document`/`Chunk`/
+                        `SearchHit`; `HybridQuery` typed builder (rejects
+                        cross-tenant via build-time scope ↔ group_id check);
+                        `DeterministicProvider` (sha2-backed, default-on via
+                        feature `testing-provider`) para unit tests downstream.
+                        Sem `PgVectorStore` real, sem `MxbaiProvider`, sem
+                        wiring em learning/agents — esses são slices futuros.
+                        23 unit tests verdes.
   garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
                         trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
                         adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
@@ -263,9 +277,13 @@ apps/
 ### Crates planejados (ROADMAP AAA Fases 2-3)
 
 ```text
-garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
+(nenhum no momento — garraia-embeddings foi promovido em 2026-05-18 via plan 0145)
 ```
 
+> `garraia-embeddings/` promovido de "planejado" para "ativo" em 2026-05-18 (scaffold per
+> ADR 0002 + plan 0145; `PgVectorStore` real + `MxbaiProvider` ainda Backlog em
+> GAR-372 sub-issues a criar).
+>
 > `garraia-learning/` promovido para "Crates ativos" em 2026-05-17 (ADR 0010 → Accepted,
 > via PR #393 + plan 0144). Sub-componentes restantes (GAR-643..GAR-651) materializam
 > miner / generator / registry full / retriever / evaluator / auto-updater / versioning /

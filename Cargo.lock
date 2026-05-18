@@ -3480,6 +3480,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "garraia-embeddings"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "garraia-gateway"
 version = "0.2.1"
 dependencies = [
