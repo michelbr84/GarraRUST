@@ -15,6 +15,7 @@ members = [
     "crates/garraia-telemetry",
     "crates/garraia-common",
     "crates/garraia-skills",
+    "crates/garraia-learning",
     "crates/garraia-tools",
     "crates/garraia-runtime",
     "crates/garraia-voice",
@@ -130,6 +131,7 @@ garraia-plugins = { path = "crates/garraia-plugins" }
 garraia-media = { path = "crates/garraia-media" }
 garraia-security = { path = "crates/garraia-security" }
 garraia-skills = { path = "crates/garraia-skills" }
+garraia-learning = { path = "crates/garraia-learning" }
 garraia-tools = { path = "crates/garraia-tools" }
 garraia-runtime = { path = "crates/garraia-runtime" }
 garraia-voice = { path = "crates/garraia-voice" }
