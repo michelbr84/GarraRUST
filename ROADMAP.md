@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-18** — GAR-645 (Skill Registry) ✅ Done. `registry.rs` implementado com `RegistryOptions`, `LockGuard` (lock-file atômico), `list_skills`, `get_skill`, `promote`, `deprecate`, `list_candidates`. `deprecated: bool` adicionado ao `LearningSkillFrontmatter`. 18 unit tests; 90.91% line coverage. PR #404 (`b67d030`). Anterior: GAR-644 ✅ Done (PR #402). GAR-643 ✅ Done (PR #400). GAR-642 ✅ Done.
+**Atualizado 2026-05-18** — GAR-647 (Skill Evaluator) ✅ Done. `evaluator.rs` implementado com `EvalSignals`, `EvalOutcome`, `EvalResult`, `EmaConfig`, `evaluate()`. Scoring rubric EMA (alpha=0.3), anti-flap deprecation (3 consecutive failures), score threshold (< 0.3). 17 unit tests; 98.08% region / 100% function / 99.61% line coverage. PR #406 (`a79321b`). Anterior: GAR-645 ✅ Done (PR #404). GAR-646 bloqueado (Fase 2.1 embeddings). GAR-644 ✅ Done (PR #402). GAR-643 ✅ Done (PR #400). GAR-642 ✅ Done.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1241,7 +1241,9 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 1. ~~**Garra Learning Agent — Skill Registry ([GAR-645](https://linear.app/chatgpt25/issue/GAR-645), 4/10)**~~ ✅ **Done** (2026-05-18, plan 0148, PR #404 `b67d030`). `RegistryOptions` + lock-file + `list_skills/get_skill/promote/deprecate/list_candidates` + 18 unit tests.
 
-1. **Garra Learning Agent — Skill Evaluator ([GAR-647](https://linear.app/chatgpt25/issue/GAR-647), 5/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — mede sucesso via sinais objetivos (exit codes, test counts, diffs). Atualiza score EMA. Skills com score < 0.3 marcadas `deprecated`. _(GAR-646 Skill Retriever bloqueado por Fase 2.1 embeddings — skip para depois.)_
+1. ~~**Garra Learning Agent — Skill Evaluator ([GAR-647](https://linear.app/chatgpt25/issue/GAR-647), 5/10)**~~ ✅ **Done** (2026-05-18, plan 0149, PR #406 `a79321b`). `EvalSignals` + `EmaConfig` + `evaluate()` + anti-flap deprecation + 17 unit tests.
+
+1. **Garra Learning Agent — Skill Auto-Updater ([GAR-648](https://linear.app/chatgpt25/issue/GAR-648), 6/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — monitora CI de PRs gerados pelo Learning Agent, coleta sinais objetivos (exit code, test results, diff stats), invoca o `evaluator` para atualizar o score EMA, e dispara deprecação automática quando necessário. _(GAR-646 Skill Retriever bloqueado por Fase 2.1 embeddings — skip para depois.)_
 
 2. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
 
