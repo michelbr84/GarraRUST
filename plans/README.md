@@ -157,3 +157,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0146 | [GAR-643 — Skill Miner: detect repeatable patterns in session logs](0146-gar-643-skill-miner.md) | [GAR-643](https://linear.app/chatgpt25/issue/GAR-643) | ✅ Merged 2026-05-18 via PR #400 (`3bb473a`) |
 | 0147 | [GAR-644 — Skill Generator: LLM-assisted skill drafting](0147-gar-644-skill-generator.md) | [GAR-644](https://linear.app/chatgpt25/issue/GAR-644) | ✅ Merged 2026-05-18 via PR #402 (`da65c63`) |
 | 0148 | [GAR-645 — Skill Registry: dual-scope persist, list, promote, deprecate](0148-gar-645-skill-registry.md) | [GAR-645](https://linear.app/chatgpt25/issue/GAR-645) | ✅ Merged 2026-05-18 via PR #404 (`b67d030`) |
+| 0149 | [GAR-647 — Skill Evaluator: objective metrics + EMA score update](0149-gar-647-skill-evaluator.md) | [GAR-647](https://linear.app/chatgpt25/issue/GAR-647) | 🚧 In Progress (2026-05-18) |
