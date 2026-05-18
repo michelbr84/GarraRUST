@@ -21,6 +21,7 @@ members = [
     "crates/garraia-workspace",
     "crates/garraia-glob",
     "crates/garraia-storage",
+    "crates/garraia-learning",
 ]
 
 [workspace.package]

@@ -1,0 +1,23 @@
+[package]
+name = "garraia-learning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Garra Learning Agent / Self-Improving Operations Manual (scaffold, GAR-642)"
+
+# Scaffold-only deps. Sub-issues GAR-643..GAR-651 add what they need:
+#   - GAR-643 Miner       → garraia-telemetry, serde_json
+#   - GAR-644 Generator   → garraia-agents, tokio (LLM call)
+#   - GAR-645 Registry    → garraia-skills, garraia-common
+#   - GAR-646 Retriever   → garraia-embeddings (Fase 2.1 prereq)
+#   - GAR-647 Evaluator   → garraia-telemetry
+#   - GAR-648 Updater     → process spawn for `gh`/`git`
+#   - GAR-649 Safety      → garraia-tools (safety_gate), regex
+#   - GAR-650 Versioning  → process spawn for `git`
+#   - GAR-651 Web UI      → consumed by garraia-gateway, no dep here
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
