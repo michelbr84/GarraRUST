@@ -268,8 +268,7 @@ mod tests {
     #[test]
     fn critical_path_workflow_blocked() {
         let mut skill = make_skill("Edits CI");
-        skill.frontmatter.critical_paths_touched =
-            vec![".github/workflows/ci.yml".to_string()];
+        skill.frontmatter.critical_paths_touched = vec![".github/workflows/ci.yml".to_string()];
         let err = gate(&skill).unwrap_err();
         assert!(matches!(err, SafetyDenial::CriticalPath(_)));
     }
