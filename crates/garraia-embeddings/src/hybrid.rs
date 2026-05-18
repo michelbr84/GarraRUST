@@ -104,7 +104,9 @@ impl HybridQueryBuilder {
 
     /// Validate the builder and produce a [`HybridQuery`] value.
     pub fn build(self) -> Result<HybridQuery, EmbeddingError> {
-        let scope = self.scope.ok_or(EmbeddingError::MissingField { field: "scope" })?;
+        let scope = self
+            .scope
+            .ok_or(EmbeddingError::MissingField { field: "scope" })?;
         let model_id = self
             .model_id
             .ok_or(EmbeddingError::MissingField { field: "model_id" })?;

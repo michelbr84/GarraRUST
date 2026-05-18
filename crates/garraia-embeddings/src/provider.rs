@@ -181,7 +181,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn vectors_are_approximately_unit_norm() {
         let p = DeterministicProvider::new();
-        let v = p.embed("a longer string that pushes more entropy through").await.unwrap();
+        let v = p
+            .embed("a longer string that pushes more entropy through")
+            .await
+            .unwrap();
         let norm: f64 = v
             .as_slice()
             .iter()
@@ -189,9 +192,6 @@ mod tests {
             .sum::<f64>()
             .sqrt();
         // f32 round-trip + multi-round hashing — give it a 1e-3 tolerance.
-        assert!(
-            (norm - 1.0).abs() < 1e-3,
-            "expected unit norm, got {norm}"
-        );
+        assert!((norm - 1.0).abs() < 1e-3, "expected unit norm, got {norm}");
     }
 }

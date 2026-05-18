@@ -39,7 +39,7 @@ pub use error::EmbeddingError;
 pub use hybrid::HybridQuery;
 pub use provider::EmbeddingProvider;
 pub use store::{SearchOptions, VectorStore};
-pub use types::{Chunk, Document, EmbeddingVector, Scope, SearchHit, EMBEDDING_DIM};
+pub use types::{Chunk, Document, EMBEDDING_DIM, EmbeddingVector, Scope, SearchHit};
 
 #[cfg(feature = "testing-provider")]
 pub use provider::DeterministicProvider;
