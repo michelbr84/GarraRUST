@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-18 run 1** (health routine — all surfaces clean, no actionable work (i), GAR-661; PR #396 garraia-embeddings merged (`cfda7ad5`). Previous entry: 2026-05-17 run 3 — RUSTSEC-2025-0069 closed (daemonize → nix, PR #382/GAR-656)).
+> Last updated: **2026-05-18 run 5** (health routine — all surfaces clean, RUSTSEC-2026-0112 confirmed resolved (astral-tokio-tar 0.6.1 already patched), GAR-664. Previous: run 1 GAR-661; run 2 lockfile bump PR #401; run 3 GAR-662; run 4 GAR-663).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,26 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-18 run 5 (health routine — RUSTSEC-2026-0112 confirmed resolved, all surfaces clean)
+
+Health routine ran on 2026-05-18 (run 5, ~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 4: PRs #402 (GAR-644), #403 (bookkeeping), #404 (GAR-645 Skill Registry) — main now at `b67d030`.
+
+**Key finding this run**: Checked new RUSTSEC advisories above RUSTSEC-2026-0097. Found RUSTSEC-2026-0112 (astral-tokio-tar PAX Header Desynchronization, High severity). Confirmed our lockfile carries `astral-tokio-tar 0.6.1` — the patched version. No action required.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #406 head (`495618f`) |
+| Malware (cargo/npm) | ✅ none | RUSTSEC-2026-0107 (cratesio malicious) not in Cargo.lock |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI pass on PR #406 |
+| cargo-deny | ✅ pass | `advisories ok` — RUSTSEC-2026-0112 not triggered (0.6.1 is patched) |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All Analyze jobs green on PR #406 |
+| CI on main (latest: `b67d030`) | ✅ green | 19/20 checks green (Test windows still running) |
+
+**No fix applied this run.** Linear issue: GAR-664 (Done). Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31.
+
+---
 
 ## Confirmed 2026-05-18 run 1 (health routine — all surfaces clean, no actionable work)
 
