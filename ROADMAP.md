@@ -46,7 +46,9 @@
 - Mobile (Flutter): auth JWT + chat + mascote — roda no emulator Android.
 - Desktop (Tauri v2): scaffold + sidecar Windows MSI.
 
-**O que ainda é stub, frágil ou ausente:**
+**O que ainda é stub, frágil ou ausente (snapshot 2026-04-13 — mantido como
+registro histórico; a verificação empírica de 2026-05-18 abaixo classifica
+cada item ao seu estado atual):**
 
 - Sem Postgres (toda persistência é SQLite single-file — bloqueia multi-tenant real).
 - Sem object storage (arquivos grandes, anexos, versionamento).
@@ -60,7 +62,37 @@
 - Sem wizard de onboarding; `.env.example` ainda é o caminho oficial.
 - Cobertura de testes: baixa nos crates de domínio; quase zero em integração.
 
-Esse baseline define o que as fases seguintes precisam mover.
+Esse baseline definiu o que as fases seguintes precisavam mover.
+
+### 1.1. Verificação empírica do baseline §1 (2026-05-18)
+
+Auditoria item-a-item contra `main@cfda7ad`. Cada linha do baseline §1 acima
+mapeada ao seu estado atual com pointer de evidência. Quando o status é
+**✅ Done**, a linha §1 correspondente é **histórica**, não um TODO ativo.
+
+| # | Reivindicação §1 | Status hoje | Evidência |
+|---|---|---|---|
+| 1 | Sem Postgres (só SQLite) | ✅ **Done** | `crates/garraia-workspace/migrations/` tem 19 migrations, 29 tabelas, RLS FORCE, BYPASSRLS roles dedicados (`garraia_login` / `garraia_signup` / `garraia_app`). ADR 0003 Accepted 2026-04-13. |
+| 2 | Sem object storage | ✅ **Done** | `crates/garraia-storage/{local_fs,s3_compat}.rs` (GAR-394) + tus 1.0 ledger em `tus_uploads` (migration 014, GAR-395 mergeado em `96f5c03`). ADR 0004 Accepted. |
+| 3 | Sem grupos/membros/RBAC | ✅ **Done** | Migrations 001 (users/groups), 002 (63 role_permissions + RBAC table-driven), 011-013, 018 (RLS FORCE em groups+members). Matriz de 81 cenários cross-tenant (GAR-392). |
+| 4 | Sem embeddings locais nem busca vetorial | ⚠️ **Parcial → scaffold em 2026-05-18** | Trait surface + types entregues hoje via PR #396 (GAR-372, plan 0145). `PgVectorStore` real sobre `sqlx` contra `memory_embeddings` (migration 005 já tem `vector(768)` + HNSW cosine) é o próximo slice. Modelo real (mxbai) também é slice futuro. |
+| 5 | Sem OpenTelemetry, sem métricas | ✅ **Done (baseline)** | `crates/garraia-telemetry/src/{config,layers,metrics,tracer,redact}.rs` — GAR-384, feature-gated, PII-safe via `redact.rs`. |
+| 6 | CredentialVault não é fonte única | ✅ **Done** | GAR-410 mergeado em 2026-05-17. Secrets agora lidos via `garraia-config::auth` + `garraia-telemetry::config` dedicados; grep verifica que `std::env::var("GARRAIA_JWT_SECRET")` e `GarraIA_VAULT_PASSPHRASE` aparecem só nesses módulos. |
+| 7 | Mobile Android com Gradle/SDK desatualizados | ⚠️ **Parcial** | `app/build.gradle.kts` usa `flutter.compileSdkVersion`/`minSdkVersion` (delegado ao Flutter SDK); JDK 23; AndroidX habilitado. Único débito visível: `applicationId = "com.example.garraia_mobile"` ainda é o template default do Flutter scaffold — decisão de bundle id canônica pendente. |
+| 8 | Desktop UI apenas WebView básico | ⚠️ **Parcial** | Web Console "Garra Glass" (ADR 0009, 10 PRs #330-341, 2026-05-14) entregue como `webchat.html` servido pelo gateway — Dashboard, Chat, Providers, Channels, Sessions, Settings (schema-driven dry-run), Diagnostics (12 checks), Logs, Themes/Skins. O **shell desktop Tauri** (`crates/garraia-desktop/src-tauri/`) continua um wrapper WebView que carrega esse mesmo HTML; UI nativa rich (notifications, file picker hooks, system tray menu items) ainda backlog. |
+| 9 | MCP em sandbox WASM | ✅ **Done (baseline)** | `crates/garraia-plugins/src/{loader,manifest,runtime,sdk,traits}.rs` em `wasmtime 44.0.1` (RUSTSEC closed PR #108). Features avançadas (capability tokens, resource limits per-plugin) na Fase 2.2. |
+| 10 | Sem wizard, `.env.example` é caminho oficial | ✅ **Done** | `crates/garraia-cli/src/wizard/` + subcomando `garraia init` (PR #348, plan 0126) + `curl \| sh` installer wizard (PR #350, plan 0127). Cobre Linux/macOS x86_64+aarch64 + Windows MSI. |
+| 11 | Cobertura de testes baixa | 🔁 **Em curso** | Mutation testing 90.78% killed em `garraia-auth` (GAR-436 + PR #94). AI Quality Ratchet PR-1 em report-only (plan 0064, `scripts/quality/`). Coverage job em CI (`Coverage (cargo-llvm-cov)`) ativo. Sub-issues Q6.1-Q6.9 + GAR-505 ainda fechando mutation gaps. |
+
+**Sumário:** dos 11 itens listados em §1 como "stub, frágil ou ausente" em
+2026-04-13, **7 estão ✅ Done** em `main`, **3 estão ⚠️ Parciais** (embeddings com
+scaffold real entregue 2026-05-18, falta `PgVectorStore` + modelo real; Android
+applicationId; Desktop Tauri native UI), e **1 está 🔁 em curso** (cobertura de
+testes, sem fim explícito — Quality Ratchet é o sistema permanente).
+
+A lista original em §1 acima é mantida como registro histórico do estado em
+2026-04-13. Para o que ainda precisa mover, ver §1.5 (sprint roll-up) e as
+seções de fase ao longo deste documento.
 
 ---
 
