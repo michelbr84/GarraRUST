@@ -202,6 +202,7 @@ fn parse_llm_response(raw: &str, fallback_slug: &str) -> Result<Skill> {
                 locked: false,
                 critical_paths_touched: vec![],
                 fail_count: 0,
+                deprecated: false,
             };
 
             // Embed description in body if not already present.
@@ -235,6 +236,7 @@ fn make_fallback_skill(slug: &str, raw_body: &str) -> Skill {
             locked: false,
             critical_paths_touched: vec![],
             fail_count: 0,
+            deprecated: false,
         },
         body: raw_body.trim().to_string(),
         source_path: None,
@@ -500,6 +502,7 @@ mod tests {
                 locked: false,
                 critical_paths_touched: vec![],
                 fail_count: 0,
+                deprecated: false,
             },
             body: "Contact developer@example.com for help.".to_string(),
             source_path: None,

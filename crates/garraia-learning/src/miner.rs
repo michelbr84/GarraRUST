@@ -371,6 +371,7 @@ fn render_candidate(pattern: &MinedPattern) -> String {
         locked: false,
         critical_paths_touched: vec![],
         fail_count: 0,
+        deprecated: false,
     };
 
     let fm_yaml = serde_yaml::to_string(&fm).unwrap_or_else(|_| "{}".to_string());

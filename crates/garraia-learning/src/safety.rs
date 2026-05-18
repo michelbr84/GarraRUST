@@ -198,6 +198,7 @@ mod tests {
                 locked: false,
                 critical_paths_touched: vec![],
                 fail_count: 0,
+                deprecated: false,
             },
             body: body.to_string(),
             source_path: None,
