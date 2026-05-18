@@ -1,4 +1,5 @@
 use crate::Skill;
+use crate::safety::{self, SafetyIntent};
 use garraia_common::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -316,6 +317,26 @@ pub fn propose_update_with_runner(
             skill.frontmatter.name
         )));
     }
+
+    // GAR-649 hard wall: run Safety Gate against the *proposed* skill body
+    // BEFORE any git/gh side-effect. A denial must short-circuit with no
+    // branch, no commit, no PR — proving auto-update cannot smuggle in a
+    // dangerous command, critical-path edit, or PII leak.
+    let proposed = Skill {
+        body: evidence.new_body.clone(),
+        ..skill.clone()
+    };
+    safety::gate_with_intent(&proposed, &SafetyIntent::default()).map_err(|denial| {
+        tracing::warn!(
+            skill = %skill.frontmatter.name,
+            denial = %denial,
+            "skill.safety_denial during propose_update"
+        );
+        Error::Other(format!(
+            "safety denial for skill '{}': {denial}",
+            skill.frontmatter.name
+        ))
+    })?;
 
     let source_path = skill.source_path.as_ref().ok_or_else(|| {
         Error::Other("skill has no source_path: cannot commit update to disk".into())
@@ -754,6 +775,37 @@ mod tests {
         let updated = std::fs::read_to_string(&skill_path).unwrap();
         assert!(updated.contains("version: 1.1.0"));
         assert!(updated.contains("Updated body"));
+    }
+
+    // ── GAR-649 RED test: updater MUST call safety::gate first ──────────
+
+    #[test]
+    fn test_propose_update_denied_when_new_body_has_dangerous_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_path_buf();
+        std::fs::create_dir(tmp_path.join(".git")).unwrap();
+
+        let skill_path = tmp_path.join("skill.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: my-skill\nversion: 1.0.0\n---\n\n## Old body",
+        )
+        .unwrap();
+
+        let skill = make_skill("my-skill", "1.0.0", false, Some(skill_path));
+
+        // new_body contains a dangerous command — must be rejected by safety gate
+        let mut evidence = make_evidence("restructure steps");
+        evidence.new_body = "## Updated\nrm -rf /\n".to_string();
+
+        let runner = MockShellRunner::new(vec![], vec![]);
+        let err = propose_update_with_runner(&skill, evidence, &runner).unwrap_err();
+        assert!(
+            err.to_string().contains("safety"),
+            "expected safety denial, got: {err}"
+        );
+        // And no git/gh side-effects must have run.
+        assert_eq!(runner.git_call_count(), 0);
     }
 
     #[test]

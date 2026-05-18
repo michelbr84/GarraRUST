@@ -1245,6 +1245,8 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 1. ~~**Garra Learning Agent — Skill Auto-Updater ([GAR-648](https://linear.app/chatgpt25/issue/GAR-648), 7/10)**~~ ✅ **Done** (2026-05-18, plan 0150, PR #409 `0000c883`). `ShellRunner` trait + `propose_update_with_runner` + `auto_merge_guard()` + idempotência + 24 unit tests. _(GAR-646 Skill Retriever bloqueado por Fase 2.1 embeddings — skip para depois.)_
 
+1. ~~**Garra Learning Agent — Skill Safety Gates ([GAR-649](https://linear.app/chatgpt25/issue/GAR-649), 8/10)**~~ ✅ **Done** (2026-05-18). `SafetyIntent` + `gate_with_intent` (hard wall, ADR 0010 §"no dev-mode bypass") wirado em `registry::promote_with_intent` e `updater::propose_update_with_runner` ANTES de qualquer side-effect git/gh; denylist amplia para `DELETE..WHERE 1=1` / `chmod -R 777` / `sudo` / `.github/codeql-config.yml`; label `security-audit-passed` waiver ÚNICA para `CriticalPath` (não waive dangerous-command/score/PII/anti-flap); 132 unit tests verdes (11 novos cobrindo waiver semantics + call-sites).
+
 2. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
 
 3. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
