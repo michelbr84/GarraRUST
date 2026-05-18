@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-17 (local America/New_York) — Q11 modularization COMPLETA (slices Q11.a-g, épico GAR-635 ✅ Done) + RUSTSEC-2025-0134 (axum-server 0.7→0.8) + RUSTSEC-2025-0069 (daemonize→nix, GAR-656) fechados na mesma sessão; mantém §1.4 Garra Learning Agent (ADR 0010 Proposed, plano 0138 mergeado em `a180926`)
+> **Última atualização:** 2026-05-18 (local America/New_York) — ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. Anterior (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -203,6 +203,16 @@ Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.r
 ### Sprint **Garra Learning Agent — épico criado** (2026-05-17, esta sessão)
 
 Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura.
+
+### Sprint **Garra Learning Agent — scaffold GAR-642** (2026-05-18)
+
+Primeira implementação real do Learning Agent epic. Plan [0144](plans/0144-gar-642-learning-agent-scaffold.md):
+
+- ADR 0010 promovido **Proposed → Accepted**.
+- Novo crate `crates/garraia-learning/` adicionado ao workspace (19 → 20 crates ativos).
+- `safety.rs` **funcional**: 5 SafetyDenial variants + 17 unit tests verdes (DangerousCommand, CriticalPath, ScoreTooLow, AntiFlapDeprecated, PiiDetected).
+- 8 módulos stub: miner, generator, registry, retriever, evaluator, updater, versioning, skill_override — todos retornam `Err(Error::Other("... não implementado"))`.
+- Issue: [GAR-642](https://linear.app/chatgpt25/issue/GAR-642) ✅ Done.
 
 ### `garraia update` / CLI helpers / Runpod compatibility
 
@@ -1187,11 +1197,13 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-17** após o batch Maio 2026 (Q9.b-Q9.g admin refactor + Q11.a-g tasks modularize COMPLETO + Web Console Garra Glass + onboarding `garraia init`/`curl|sh` + security sweeps incluindo RUSTSEC-2025-0134 e RUSTSEC-2025-0069). Green Security Baseline (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)) fechado em 2026-05-04. Ver §1.5 para detalhamento sprint-a-sprint.
+**Atualizado 2026-05-18** — GAR-642 (Learning Agent scaffold) ✅ Done. ADR 0010 Accepted. `garraia-learning` crate no workspace com Safety Gate funcional (17 testes verdes). Ver §1.5 e sprint "Garra Learning Agent — scaffold GAR-642" para detalhes.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
-1. **Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642), 1/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — promover ADR 0010 de Proposed → Accepted via scaffold do crate `garraia-learning` + integração mínima com `AgentRuntime`. Habilita as 9 issues filhas seguintes. **Bloqueador estratégico**: sem essa fundação, todas as outras iniciativas (Fase 2.1 RAG, Fase 4 UX, Fase 5 Quality) acumulam débito operacional que o Learning Agent resolveria. Plano: [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md).
+1. ~~**Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642))**~~ ✅ **Done** (2026-05-18, plan 0144, ADR 0010 Accepted, safety.rs funcional).
+
+1. **Garra Learning Agent — Skill Miner ([GAR-643](https://linear.app/chatgpt25/issue/GAR-643), 2/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — implementar análise de session logs para detectar padrões repetíveis (≥3 ocorrências). Consome `garraia-skills::SkillScanner`; produz candidates em `~/.garra/skills/_candidates/`. Habilita o loop Mine→Generate→Validate→Promote.
 
 2. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
 

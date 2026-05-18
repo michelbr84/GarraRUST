@@ -3565,6 +3565,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "garraia-learning"
+version = "0.2.1"
+dependencies = [
+ "garraia-common",
+ "garraia-skills",
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "garraia-media"
 version = "0.2.1"
 dependencies = [
