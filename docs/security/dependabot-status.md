@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-18 run 5** (health routine — all surfaces clean, RUSTSEC-2026-0112 confirmed resolved (astral-tokio-tar 0.6.1 already patched), GAR-664. Previous: run 1 GAR-661; run 2 lockfile bump PR #401; run 3 GAR-662; run 4 GAR-663).
+> Last updated: **2026-05-18 run 6** (health routine — all surfaces clean, PRs #409+#410 (GAR-648 Skill Auto-Updater) verified, no actionable security work, GAR-665. Previous: run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,24 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-18 run 6 (health routine — all surfaces clean, PRs #409+#410 verified, no actionable security work)
+
+Health routine ran on 2026-05-18 (run 6, ~16:45 ET / 20:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 5: PR #409 (GAR-648 Skill Auto-Updater, 18:58Z) + PR #410 (bookkeeping, 19:29Z) — main now at `ea026e6`. Neither PR touched `Cargo.lock`, `deny.toml`, `.cargo/audit.toml`, or any security-sensitive file.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #409 (job 76592503754, completed success) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #409 |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #409 (job 76592503841, completed 18:32Z) |
+| cargo-deny | ✅ pass | `advisories ok` — job 76592503817 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #409 |
+| CI on main (latest: `ea026e6`) | ✅ green | 20/20 checks green on PR #409 |
+
+**No fix applied this run.** Linear issue: GAR-665 (Done). Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31.
+
+---
 
 ## Confirmed 2026-05-18 run 5 (health routine — RUSTSEC-2026-0112 confirmed resolved, all surfaces clean)
 
