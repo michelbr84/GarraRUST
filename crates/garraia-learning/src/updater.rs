@@ -144,7 +144,13 @@ pub fn bump_version(version: &str, kind: &BumpKind) -> String {
 pub fn branch_name(skill_name: &str, old_version: &str, new_version: &str) -> String {
     let safe: String = skill_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("learning/skill-{safe}-v{old_version}-v{new_version}")
 }
@@ -259,16 +265,7 @@ fn git_root(start: &Path) -> Result<PathBuf> {
 fn find_existing_pr(branch: &str, cwd: &Path, runner: &dyn ShellRunner) -> Option<String> {
     let result = runner.run_gh(
         &[
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "open",
-            "--json",
-            "url",
-            "--jq",
-            ".[0].url",
+            "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url",
         ],
         cwd,
     );
@@ -288,8 +285,7 @@ fn find_existing_pr(branch: &str, cwd: &Path, runner: &dyn ShellRunner) -> Optio
 /// it provides a compile-time + runtime proof that auto-merge cannot happen.
 pub fn auto_merge_guard() -> Error {
     Error::Other(
-        "auto-merge is prohibited: approve via GitHub UI or 'garra skills approve <name>'"
-            .into(),
+        "auto-merge is prohibited: approve via GitHub UI or 'garra skills approve <name>'".into(),
     )
 }
 
@@ -340,7 +336,12 @@ pub fn propose_update_with_runner(
 
     let branch = branch_name(&skill.frontmatter.name, &old_version, &new_version);
     let title = pr_title(&skill.frontmatter.name, &old_version, &new_version);
-    let body = pr_body(&skill.frontmatter.name, &old_version, &new_version, &evidence);
+    let body = pr_body(
+        &skill.frontmatter.name,
+        &old_version,
+        &new_version,
+        &evidence,
+    );
 
     // ── Idempotency: return early if a PR for this branch already exists ───
     if let Some(url) = find_existing_pr(&branch, &git_root, runner) {
@@ -392,16 +393,7 @@ pub fn propose_update_with_runner(
     // ── Open PR ────────────────────────────────────────────────────────────
     let pr_url = runner.run_gh(
         &[
-            "pr",
-            "create",
-            "--title",
-            &title,
-            "--body",
-            &body,
-            "--base",
-            "main",
-            "--head",
-            &branch,
+            "pr", "create", "--title", &title, "--body", &body, "--base", "main", "--head", &branch,
         ],
         &git_root,
     )?;
@@ -531,7 +523,10 @@ mod tests {
 
     #[test]
     fn test_detect_bump_kind_patch_typo() {
-        assert_eq!(detect_bump_kind("correct typo in description"), BumpKind::Patch);
+        assert_eq!(
+            detect_bump_kind("correct typo in description"),
+            BumpKind::Patch
+        );
     }
 
     #[test]
@@ -653,7 +648,12 @@ mod tests {
 
     #[test]
     fn test_propose_update_locked_returns_error() {
-        let skill = make_skill("locked-skill", "1.0.0", true, Some(PathBuf::from("/tmp/skill.md")));
+        let skill = make_skill(
+            "locked-skill",
+            "1.0.0",
+            true,
+            Some(PathBuf::from("/tmp/skill.md")),
+        );
         let evidence = make_evidence("restructure steps");
         let runner = MockShellRunner::new(vec![], vec![]);
 
@@ -681,11 +681,7 @@ mod tests {
         std::fs::create_dir(tmp_path.join(".git")).unwrap();
 
         let skill_path = tmp_path.join("skill.md");
-        std::fs::write(
-            &skill_path,
-            "---\nname: s\nversion: 1.0.0\n---\n\n## Body",
-        )
-        .unwrap();
+        std::fs::write(&skill_path, "---\nname: s\nversion: 1.0.0\n---\n\n## Body").unwrap();
 
         let skill = make_skill("s", "1.0.0", false, Some(skill_path));
         let evidence = make_evidence("restructure steps");
@@ -779,7 +775,10 @@ mod tests {
             ci_url: None,
         };
 
-        let gh_responses = vec![Ok(String::new()), Ok("https://gh.example/pull/2".to_string())];
+        let gh_responses = vec![
+            Ok(String::new()),
+            Ok("https://gh.example/pull/2".to_string()),
+        ];
         let git_responses = vec![
             Ok("main".to_string()),
             Ok(String::new()),
