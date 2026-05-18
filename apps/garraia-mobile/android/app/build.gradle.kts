@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.garraia_mobile"
+    namespace = "org.garraia.mobile"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -21,10 +21,13 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.garraia_mobile"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // Canonical application id — `org.garraia.*` reverse-DNS of garraia.org
+        // matches the install.sh bootstrap domain and the `garraia` CLI binary
+        // name. Replaces the Flutter scaffold default `com.example.garraia_mobile`
+        // (was: ROADMAP §1.1 item 7 débito).
+        applicationId = "org.garraia.mobile"
+        // For more information on the values below, see:
+        //   https://flutter.dev/to/review-gradle-config
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

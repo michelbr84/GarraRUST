@@ -1,4 +1,4 @@
-package com.example.garraia_mobile
+package org.garraia.mobile
 
 import io.flutter.embedding.android.FlutterActivity
 
