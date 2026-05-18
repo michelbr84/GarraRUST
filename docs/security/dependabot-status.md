@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-18 run 1** (health routine — all surfaces clean, no actionable work (i), GAR-661; PR #396 garraia-embeddings pending Windows CI. Previous entry: 2026-05-17 run 3 — RUSTSEC-2025-0069 closed (daemonize → nix, PR #382/GAR-656)).
+> Last updated: **2026-05-18 run 1** (health routine — all surfaces clean, no actionable work (i), GAR-661; PR #396 garraia-embeddings merged (`cfda7ad5`). Previous entry: 2026-05-17 run 3 — RUSTSEC-2025-0069 closed (daemonize → nix, PR #382/GAR-656)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -18,7 +18,7 @@
 
 ## Confirmed 2026-05-18 run 1 (health routine — all surfaces clean, no actionable work)
 
-Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. PR #396 (garraia-embeddings scaffold, GAR-372) open — squash-merge pending Windows CI completion.
+Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. PR #396 (garraia-embeddings scaffold, GAR-372) merged as `cfda7ad5` by michelbr84.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -28,7 +28,7 @@ Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan complete
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | **19** allowlisted warnings (unchanged from run 3 2026-05-17) |
 | cargo-deny | ✅ pass | `advisories ok` |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All Analyze jobs green on PR #396 |
-| CI on main (latest: `50ff80b`) | ✅ green | 19/20 checks green on PR #396; Windows pending |
+| CI on main (latest: `cfda7ad5`) | ✅ green | PR #396 merged (all 20 checks green) |
 
 **No fix applied this run.** All 3 open Dependabot alerts remain upstream-blocked (expiry 2026-07-31). Linear issue: GAR-661 (Done).
 
@@ -36,7 +36,7 @@ Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan complete
 
 | Branch | Status | Action |
 |---|---|---|
-| `feat/garraia-embeddings-scaffold` | PR #396 — 19/20 CI checks green (Windows in_progress) | Squash-merge pending Windows completion |
+| `feat/garraia-embeddings-scaffold` | PR #396 — merged as `cfda7ad5` by michelbr84 | ✅ Merged |
 
 ---
 
