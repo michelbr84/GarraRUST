@@ -1,7 +1,8 @@
 # ADR 0010 — Garra Learning Agent / Self-Improving Operations Manual
 
-**Status:** Proposed
-**Date:** 2026-05-17 (local America/New_York)
+**Status:** Accepted
+**Date:** 2026-05-17 (local America/New_York) — promoted Proposed → Accepted via plan 0144 / GAR-642 (scaffold)
+**Promotion PR:** *(filled in by routine before merge)*
 **Owner:** @michelbr84
 **Linear epic:** [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) (criado 2026-05-17 com 10 sub-issues GAR-642..GAR-651)
 **Related ADRs:** [0002 Vector Store](0002-vector-store.md) (Skill Retriever), [0009 Web Console Design System](0009-web-console-design-system.md) (Skills/Logs UI)
