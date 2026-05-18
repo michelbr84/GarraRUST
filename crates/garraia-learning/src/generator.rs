@@ -190,18 +190,12 @@ fn parse_llm_response(raw: &str, fallback_slug: &str) -> Result<Skill> {
 
     match serde_yaml::from_str::<serde_yaml::Value>(fm_str) {
         Ok(yaml) => {
-            let name_raw = yaml["name"]
-                .as_str()
-                .unwrap_or(fallback_slug)
-                .to_string();
+            let name_raw = yaml["name"].as_str().unwrap_or(fallback_slug).to_string();
             let description = yaml["description"].as_str().unwrap_or("").to_string();
 
             let fm = LearningSkillFrontmatter {
                 name: to_kebab(&name_raw),
-                version: yaml["version"]
-                    .as_str()
-                    .unwrap_or("0.1.0")
-                    .to_string(),
+                version: yaml["version"].as_str().unwrap_or("0.1.0").to_string(),
                 source: SkillSource::Mined,
                 scope: SkillScope::Project,
                 score: yaml["score"].as_f64().unwrap_or(0.5) as f32,
@@ -377,7 +371,10 @@ mod tests {
 
     #[test]
     fn kebab_lowercases_and_replaces_spaces() {
-        assert_eq!(to_kebab("Cleanup Merged Branches"), "cleanup-merged-branches");
+        assert_eq!(
+            to_kebab("Cleanup Merged Branches"),
+            "cleanup-merged-branches"
+        );
     }
 
     #[test]
