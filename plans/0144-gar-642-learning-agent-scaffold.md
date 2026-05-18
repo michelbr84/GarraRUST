@@ -1,6 +1,6 @@
 # Plan 0144 — GAR-642: Learning Agent Architecture — Scaffold `garraia-learning` + ADR 0010 Accepted
 
-**Status:** ✅ Done (merged 2026-05-18, PR #392)
+**Status:** ✅ Done (merged 2026-05-18, PR #393)
 **Issue:** [GAR-642](https://linear.app/chatgpt25/issue/GAR-642) (sub-issue 1/10 of [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))
 **Branch:** `routine/202605180030-gar-642-learning-scaffold`
 **Epic parent:** Fase 1.4 — Garra Learning Agent (`epic:learning-agent`)
