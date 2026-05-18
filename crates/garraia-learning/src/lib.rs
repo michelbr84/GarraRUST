@@ -59,6 +59,9 @@ pub struct LearningSkillFrontmatter {
     /// Consecutive failure count tracked by the Evaluator.
     #[serde(default)]
     pub fail_count: u32,
+    /// Set by the Registry when a skill is retired; preserved for history.
+    #[serde(default)]
+    pub deprecated: bool,
 }
 
 fn default_source() -> SkillSource {
