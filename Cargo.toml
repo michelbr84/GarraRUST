@@ -22,6 +22,7 @@ members = [
     "crates/garraia-workspace",
     "crates/garraia-glob",
     "crates/garraia-storage",
+    "crates/garraia-embeddings",
 ]
 
 [workspace.package]
@@ -136,6 +137,7 @@ garraia-tools = { path = "crates/garraia-tools" }
 garraia-runtime = { path = "crates/garraia-runtime" }
 garraia-voice = { path = "crates/garraia-voice" }
 garraia-glob = { path = "crates/garraia-glob" }
+garraia-embeddings = { path = "crates/garraia-embeddings" }
 
 [profile.release]
 lto = true
