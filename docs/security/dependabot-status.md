@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-17 run 3** (health routine — RUSTSEC-2025-0069 closed via PR #382 (daemonize 0.5 → nix syscalls, GAR-656); all security surfaces green; priority ladder exhausted at (i) after merge. Previous entry: 2026-05-17 run 2 — RUSTSEC-2025-0134 closed (axum-server 0.7→0.8)).
+> Last updated: **2026-05-18 run 1** (health routine — all surfaces clean, no actionable work (i), GAR-661; PR #396 garraia-embeddings merged (`cfda7ad5`). Previous entry: 2026-05-17 run 3 — RUSTSEC-2025-0069 closed (daemonize → nix, PR #382/GAR-656)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,30 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-18 run 1 (health routine — all surfaces clean, no actionable work)
+
+Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. PR #396 (garraia-embeddings scaffold, GAR-372) merged as `cfda7ad5` by michelbr84.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #396 head (`40016830`) |
+| Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
+| Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | **19** allowlisted warnings (unchanged from run 3 2026-05-17) |
+| cargo-deny | ✅ pass | `advisories ok` |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All Analyze jobs green on PR #396 |
+| CI on main (latest: `cfda7ad5`) | ✅ green | PR #396 merged (all 20 checks green) |
+
+**No fix applied this run.** All 3 open Dependabot alerts remain upstream-blocked (expiry 2026-07-31). Linear issue: GAR-661 (Done).
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `feat/garraia-embeddings-scaffold` | PR #396 — merged as `cfda7ad5` by michelbr84 | ✅ Merged |
+
+---
 
 ## Confirmed 2026-05-17 run 3 (health routine — RUSTSEC-2025-0069 closed, daemonize → nix)
 
