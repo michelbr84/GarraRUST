@@ -1229,13 +1229,17 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-18** — GAR-642 (Learning Agent scaffold) ✅ Done. ADR 0010 Accepted. `garraia-learning` crate no workspace com Safety Gate funcional (17 testes verdes). Ver §1.5 e sprint "Garra Learning Agent — scaffold GAR-642" para detalhes.
+**Atualizado 2026-05-18** — GAR-644 (Skill Generator) ✅ Done. `generator.rs` implementado com `SkillDraftProvider` trait, `Candidate`, `GenerateOptions`, `generate()`, `load_candidate_file()`, prompt template const, `to_kebab()`, `make_unique_name()`, PII redaction. 21 unit tests; 94.10% line coverage. PR #402 (`da65c63`). Anterior: GAR-643 (Skill Miner) ✅ Done (PR #400). GAR-642 ✅ Done.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
 1. ~~**Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642))**~~ ✅ **Done** (2026-05-18, plan 0144, ADR 0010 Accepted, safety.rs funcional).
 
-1. **Garra Learning Agent — Skill Miner ([GAR-643](https://linear.app/chatgpt25/issue/GAR-643), 2/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — implementar análise de session logs para detectar padrões repetíveis (≥3 ocorrências). Consome `garraia-skills::SkillScanner`; produz candidates em `~/.garra/skills/_candidates/`. Habilita o loop Mine→Generate→Validate→Promote.
+1. ~~**Garra Learning Agent — Skill Miner ([GAR-643](https://linear.app/chatgpt25/issue/GAR-643), 2/10)**~~ ✅ **Done** (2026-05-18, plan 0146, PR #400 `3bb473a`).
+
+1. ~~**Garra Learning Agent — Skill Generator ([GAR-644](https://linear.app/chatgpt25/issue/GAR-644), 3/10)**~~ ✅ **Done** (2026-05-18, plan 0147, PR #402 `da65c63`). `SkillDraftProvider` trait + `generate()` + 21 unit tests.
+
+1. **Garra Learning Agent — Skill Registry ([GAR-645](https://linear.app/chatgpt25/issue/GAR-645), 4/10 do épico [GAR-641](https://linear.app/chatgpt25/issue/GAR-641))** — registry de skills geradas: list, get, promote, deprecate. Persiste em `~/.garra/skills/`. Conecta Miner + Generator ao loop Mine→Generate→**Registry**→Promote.
 
 2. **Fase 1.2.1 GarraMaxPower — sub-issues abertas (`GAR-494..GAR-501`)** — 8 sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog. Cresce em paralelo ao Learning Agent porque **compartilham o Safety Gate** (`garraia-tools::safety_gate`) e o crate `garraia-learning` reusa primitivas estabelecidas pelo GarraMaxPower (capability prompt, agent team, `.garra-estado.md`).
 
