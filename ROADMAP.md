@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-18 (local America/New_York) — ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. Anterior (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
+> **Última atualização:** 2026-05-18 (local America/New_York) — Crate `garraia-embeddings` scaffoldado per ADR 0002 (GAR-372, plan 0145, branch `feat/garraia-embeddings-scaffold`): traits `EmbeddingProvider` + `VectorStore`, strong types (`Scope`/`EmbeddingVector`/`Document`/`Chunk`/`SearchHit`), `HybridQuery` typed builder, `DeterministicProvider` para testes downstream. 23 unit tests verdes; sem wiring DB/learning ainda — `PgVectorStore` real é o próximo slice. Anterior (2026-05-18): ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
