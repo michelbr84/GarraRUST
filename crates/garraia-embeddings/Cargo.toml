@@ -1,0 +1,28 @@
+[package]
+name = "garraia-embeddings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embeddings and vector search — traits, strong types, deterministic test provider. ADR 0002."
+
+[features]
+# Enables the DeterministicProvider (sha2-backed pseudo-embedding generator)
+# for unit tests and dev fixtures. Default-on because the crate's test surface
+# depends on it and the workspace CI runs `cargo test --workspace` without
+# `--all-features`. Production builds that explicitly opt out via
+# `default-features = false` still get the trait surface — they just lose the
+# test-only DeterministicProvider implementation.
+testing-provider = ["dep:sha2"]
+default = ["testing-provider"]
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
