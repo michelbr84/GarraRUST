@@ -163,6 +163,25 @@ crates/
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
   garraia-media/      — processamento de PDF, imagens, mídia
   garraia-skills/     — registry de skills para o agente
+  garraia-learning/   — Fase 1.4 (GAR-641, ADR 0010 Accepted 2026-05-17 via plan 0144/GAR-642) —
+                        Garra Learning Agent / Self-Improving Operations Manual. Scaffold
+                        atual (10 módulos placeholder + tipos base `Skill`/`SkillScope`/
+                        `SkillSource`/`SkillScore`/`SafetyDenial` + trait `BeforeAction`
+                        shape-only, `NoopBeforeAction` default até GAR-646 wirear o
+                        Retriever no `AgentRuntime`). Sub-componentes em GAR-643..GAR-651:
+                        miner (detecta padrões em session logs), generator (LLM-assisted
+                        skill drafting), registry (~/.garra/skills/ global + .garra/skills/
+                        por-projeto, reusa garraia-skills::SkillScanner/SkillInstaller),
+                        retriever (embedding match, reusa garraia-embeddings), evaluator
+                        (exit codes / tests / CI / diffs / logs), updater (diff + PR + branch,
+                        human-in-the-loop), versioning (git-backed, history em
+                        .garra/skills/_history/), safety (hard denylist + score threshold +
+                        path-protected critical files + integração com
+                        garraia-tools::safety_gate de GarraMaxPower). Separação rígida:
+                        memória (workspace.memory_items) ≠ skill (learning.skills) ≠ log
+                        (telemetry.traces) ≠ manual distribuível (skills crate). Nunca copiar
+                        código do Hermes Agent — Hermes é referência conceitual de produto,
+                        arquitetura é própria.
   garraia-tools/      — tools compartilhadas (file ops, search, web)
   garraia-runtime/    — runtime helpers
   garraia-common/     — tipos + erros compartilhados
@@ -248,21 +267,10 @@ apps/
 
 ```text
 garraia-embeddings/  — Fase 2.1 (GAR-372) — embeddings locais mxbai + vector store lancedb
-garraia-learning/    — Fase 1.4 (GAR-641, ADR 0010 Proposed) — Garra Learning Agent /
-                       Self-Improving Operations Manual. Sub-módulos: miner (detecta padrões
-                       em session logs), generator (LLM-assisted skill drafting), registry
-                       (~/.garra/skills/ global + .garra/skills/ por-projeto, reusa
-                       garraia-skills::SkillScanner/SkillInstaller), retriever (embedding
-                       match, reusa garraia-embeddings), evaluator (exit codes / tests / CI /
-                       diffs / logs), updater (diff + PR + branch, human-in-the-loop),
-                       versioning (git-backed, history em .garra/skills/_history/), safety
-                       (hard denylist + score threshold + path-protected critical files +
-                       integração com garraia-tools::safety_gate de GarraMaxPower). Separação
-                       rígida: memória (workspace.memory_items) ≠ skill (learning.skills) ≠
-                       log (telemetry.traces) ≠ manual distribuível (skills crate). Nunca
-                       copiar código do Hermes Agent — Hermes é referência conceitual de
-                       produto, arquitetura é própria.
 ```
+
+> `garraia-learning/` promovido para "Crates ativos" em 2026-05-17 via plan 0144 / GAR-642
+> (ADR 0010 → Accepted). Comportamento real entra com GAR-643..GAR-651.
 
 ### PoCs efêmeros
 
