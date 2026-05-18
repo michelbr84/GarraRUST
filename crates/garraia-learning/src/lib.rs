@@ -205,7 +205,11 @@ mod tests {
         ];
         let messages: Vec<String> = variants.iter().map(ToString::to_string).collect();
         let unique: std::collections::HashSet<&String> = messages.iter().collect();
-        assert_eq!(unique.len(), messages.len(), "denial messages must be distinct");
+        assert_eq!(
+            unique.len(),
+            messages.len(),
+            "denial messages must be distinct"
+        );
     }
 
     #[test]
@@ -219,7 +223,11 @@ mod tests {
 
     #[test]
     fn skill_source_round_trips_serde() {
-        for source in [SkillSource::Mined, SkillSource::Authored, SkillSource::Imported] {
+        for source in [
+            SkillSource::Mined,
+            SkillSource::Authored,
+            SkillSource::Imported,
+        ] {
             let json = serde_json::to_string(&source).unwrap();
             let back: SkillSource = serde_json::from_str(&json).unwrap();
             assert_eq!(source, back);
