@@ -1,6 +1,6 @@
 # ADR 0010 — Garra Learning Agent / Self-Improving Operations Manual
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-17 (local America/New_York)
 **Owner:** @michelbr84
 **Linear epic:** [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) (criado 2026-05-17 com 10 sub-issues GAR-642..GAR-651)
