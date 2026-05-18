@@ -23,6 +23,7 @@ pub enum SafetyDenial {
 /// Patterns that are never allowed in a skill body, regardless of context.
 ///
 /// Checked case-insensitively against the full body text.
+/// Hard wall: no `SafetyIntent` label can waive these.
 const DANGEROUS_PATTERNS: &[&str] = &[
     "rm -rf /",
     "rm -rf ~",
@@ -33,6 +34,7 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "truncate table",
     "drop table",
     "drop database",
+    "where 1=1",
     "git push --force origin main",
     "git push --force-with-lease origin main",
     "git push -f origin main",
@@ -41,8 +43,9 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "mkfs.",
     "dd if=/dev/zero",
     "dd if=/dev/urandom",
-    "chmod -r 777 /",
-    "chmod 777 /",
+    "chmod 777 ",
+    "chmod -r 777 ",
+    "sudo ",
 ];
 
 /// Paths that require explicit `security-audit-passed` label before promotion.
@@ -54,10 +57,39 @@ const CRITICAL_PATHS: &[&str] = &[
     "crates/garraia-security/",
     "crates/garraia-workspace/migrations/",
     ".github/workflows/",
+    ".github/codeql-config.yml",
     "deny.toml",
     ".gitleaksignore",
     "Cargo.lock",
 ];
+
+/// Caller-provided context for a safety-gate evaluation.
+///
+/// Labels represent explicit human approval signals (e.g. PR labels). The
+/// `security-audit-passed` label is the **only** mechanism that may waive a
+/// `CriticalPath` denial; it does NOT waive `DangerousCommand`, `ScoreTooLow`,
+/// `AntiFlapDeprecated`, or `PiiDetected` — those remain hard walls.
+#[derive(Debug, Default, Clone)]
+pub struct SafetyIntent {
+    pub labels: Vec<String>,
+}
+
+impl SafetyIntent {
+    /// Label that signals an explicit @security-auditor review passed.
+    pub const SECURITY_AUDIT_PASSED: &'static str = "security-audit-passed";
+
+    pub fn has_security_audit_passed(&self) -> bool {
+        self.labels.iter().any(|l| l == Self::SECURITY_AUDIT_PASSED)
+    }
+}
+
+/// Hard-wall Safety Gate (default intent — no label waivers).
+///
+/// Equivalent to [`gate_with_intent`] called with `SafetyIntent::default()`.
+/// Use when no caller-side approval labels apply (e.g. miner self-test).
+pub fn gate(skill: &Skill) -> Result<(), SafetyDenial> {
+    gate_with_intent(skill, &SafetyIntent::default())
+}
 
 /// Hard-wall Safety Gate.
 ///
@@ -65,15 +97,21 @@ const CRITICAL_PATHS: &[&str] = &[
 /// when all checks pass. The first failing check short-circuits — callers must
 /// fix all issues to eventually promote.
 ///
+/// `intent.labels` may contain `security-audit-passed` to waive the
+/// `CriticalPath` check (and only that one). All other checks remain hard
+/// walls regardless of labels (ADR 0010 §"no dev-mode bypass").
+///
 /// Checks (in order):
 /// 1. Dangerous commands in body text.
-/// 2. Critical paths in `critical_paths_touched`.
+/// 2. Critical paths in `critical_paths_touched` (waivable by audit label).
 /// 3. Score below minimum threshold.
 /// 4. Anti-flap: consecutive failure count.
 /// 5. PII patterns in body text.
-pub fn gate(skill: &Skill) -> Result<(), SafetyDenial> {
+pub fn gate_with_intent(skill: &Skill, intent: &SafetyIntent) -> Result<(), SafetyDenial> {
     check_dangerous_commands(skill)?;
-    check_critical_paths(skill)?;
+    if !intent.has_security_audit_passed() {
+        check_critical_paths(skill)?;
+    }
     check_score(skill)?;
     check_anti_flap(skill)?;
     check_pii(skill)?;
@@ -337,5 +375,119 @@ mod tests {
         let err = gate(&skill).unwrap_err();
         // DangerousCommand should fire first
         assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    // ── GAR-649 RED tests: new denylist patterns ─────────────────────────
+
+    #[test]
+    fn delete_from_where_1_eq_1_blocked() {
+        let skill = make_skill("DELETE FROM users WHERE 1=1;");
+        let err = gate(&skill).unwrap_err();
+        assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    #[test]
+    fn chmod_dash_r_777_any_path_blocked() {
+        let skill = make_skill("chmod -R 777 /var/data");
+        let err = gate(&skill).unwrap_err();
+        assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    #[test]
+    fn chmod_777_any_path_blocked() {
+        let skill = make_skill("chmod 777 ~/.ssh");
+        let err = gate(&skill).unwrap_err();
+        assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    #[test]
+    fn sudo_blocked() {
+        let skill = make_skill("Run: sudo rm package.deb");
+        let err = gate(&skill).unwrap_err();
+        assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    #[test]
+    fn codeql_config_critical_path_blocked() {
+        let mut skill = make_skill("Tweaks CodeQL");
+        skill.frontmatter.critical_paths_touched = vec![".github/codeql-config.yml".to_string()];
+        let err = gate(&skill).unwrap_err();
+        assert!(matches!(err, SafetyDenial::CriticalPath(_)));
+    }
+
+    // ── GAR-649 RED tests: SafetyIntent waiver semantics ─────────────────
+
+    #[test]
+    fn intent_default_blocks_critical_path() {
+        let mut skill = make_skill("Modifies auth");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        let intent = SafetyIntent::default();
+        let err = gate_with_intent(&skill, &intent).unwrap_err();
+        assert!(matches!(err, SafetyDenial::CriticalPath(_)));
+    }
+
+    #[test]
+    fn intent_security_audit_label_waives_critical_path() {
+        let mut skill = make_skill("Modifies auth, reviewed by @security-auditor");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        let intent = SafetyIntent {
+            labels: vec!["security-audit-passed".to_string()],
+        };
+        // Label waives ONLY CriticalPath — rest of gate still runs
+        assert!(gate_with_intent(&skill, &intent).is_ok());
+    }
+
+    #[test]
+    fn intent_label_does_not_waive_dangerous_command() {
+        let mut skill = make_skill("rm -rf /");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        let intent = SafetyIntent {
+            labels: vec!["security-audit-passed".to_string()],
+        };
+        let err = gate_with_intent(&skill, &intent).unwrap_err();
+        // Hard wall: dangerous command short-circuits before critical-path check.
+        assert!(matches!(err, SafetyDenial::DangerousCommand(_)));
+    }
+
+    #[test]
+    fn intent_label_does_not_waive_score_threshold() {
+        let mut skill = make_skill("Good content reviewed by security.");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        skill.frontmatter.score = 0.3;
+        let intent = SafetyIntent {
+            labels: vec!["security-audit-passed".to_string()],
+        };
+        let err = gate_with_intent(&skill, &intent).unwrap_err();
+        assert!(matches!(err, SafetyDenial::ScoreTooLow { .. }));
+    }
+
+    #[test]
+    fn intent_label_does_not_waive_pii() {
+        let mut skill = make_skill("Contact user@example.com (reviewed by security).");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        let intent = SafetyIntent {
+            labels: vec!["security-audit-passed".to_string()],
+        };
+        let err = gate_with_intent(&skill, &intent).unwrap_err();
+        assert!(matches!(err, SafetyDenial::PiiDetected(_)));
+    }
+
+    #[test]
+    fn intent_dev_mode_label_does_not_waive_critical_path() {
+        // Per ADR 0010: no "dev mode" bypass. Only the explicit
+        // security-audit-passed label waives CriticalPath.
+        let mut skill = make_skill("Modifies auth");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        let intent = SafetyIntent {
+            labels: vec!["dev-mode".to_string(), "skip-safety".to_string()],
+        };
+        let err = gate_with_intent(&skill, &intent).unwrap_err();
+        assert!(matches!(err, SafetyDenial::CriticalPath(_)));
     }
 }

@@ -1,3 +1,4 @@
+use crate::safety::{self, SafetyIntent};
 use crate::{LearningSkillFrontmatter, Skill, SkillScope, SkillSource};
 use garraia_common::{Error, Result};
 use std::fs;
@@ -212,11 +213,41 @@ pub fn get_skill(
     Ok(skills.into_iter().find(|s| s.frontmatter.name == name))
 }
 
-/// Writes a skill to the appropriate scope directory, acquiring a lock-file
-/// first to prevent concurrent corruption.
+/// Writes a skill to the appropriate scope directory after passing the
+/// hard-wall Safety Gate. Acquires a lock-file first to prevent concurrent
+/// corruption.
+///
+/// GAR-649: every promotion path must traverse `safety::gate_with_intent`.
+/// Use [`promote_with_intent`] to provide approval labels (e.g.
+/// `security-audit-passed`); this entrypoint applies the default intent.
 ///
 /// Returns the path where the skill was written.
 pub fn promote(skill: &Skill, opts: &RegistryOptions) -> Result<PathBuf> {
+    promote_with_intent(skill, opts, &SafetyIntent::default())
+}
+
+/// Like [`promote`] but lets callers attach `SafetyIntent::labels` — in
+/// particular `security-audit-passed` to waive the `CriticalPath` denial.
+///
+/// All other Safety Gate categories (dangerous commands, score threshold,
+/// anti-flap, PII) remain hard walls regardless of labels.
+pub fn promote_with_intent(
+    skill: &Skill,
+    opts: &RegistryOptions,
+    intent: &SafetyIntent,
+) -> Result<PathBuf> {
+    safety::gate_with_intent(skill, intent).map_err(|denial| {
+        tracing::warn!(
+            skill = %skill.frontmatter.name,
+            denial = %denial,
+            "skill.safety_denial during promote"
+        );
+        Error::Other(format!(
+            "safety denial for skill '{}': {denial}",
+            skill.frontmatter.name
+        ))
+    })?;
+
     let dir = scope_dir(opts, &skill.frontmatter.scope);
     let locks_dir = dir.join("_locks");
     let _lock = acquire_lock(&locks_dir, &skill.frontmatter.name)?;
@@ -302,7 +333,9 @@ mod tests {
                 version: "0.1.0".to_string(),
                 source: SkillSource::Mined,
                 scope,
-                score: 0.0,
+                // Above MIN_PROMOTE_SCORE so the post-GAR-649 safety gate
+                // does not refuse fixture-based promotions.
+                score: 0.8,
                 locked: false,
                 critical_paths_touched: vec![],
                 fail_count: 0,
@@ -334,7 +367,7 @@ mod tests {
 
         assert_eq!(loaded.frontmatter.name, "test-skill");
         assert_eq!(loaded.frontmatter.version, "0.1.0");
-        assert_eq!(loaded.frontmatter.score, 0.0);
+        assert_eq!(loaded.frontmatter.score, 0.8);
         assert!(!loaded.frontmatter.deprecated);
         assert!(loaded.body.contains("Do the thing."));
     }
@@ -555,5 +588,53 @@ mod tests {
 
         let result = list_candidates(tmp.path()).unwrap();
         assert!(result.is_empty());
+    }
+
+    // ── GAR-649 RED tests: promote MUST call safety::gate first ──────────
+
+    #[test]
+    fn promote_denied_when_skill_body_has_dangerous_command() {
+        let tmp = TempDir::new().unwrap();
+        let opts = opts_in(&tmp);
+
+        let skill = make_skill("evil-skill", SkillScope::Project, "## Cleanup\nrm -rf /\n");
+        let err = promote(&skill, &opts).unwrap_err();
+        assert!(
+            err.to_string().contains("safety"),
+            "promote should refuse and mention safety; got: {err}"
+        );
+        // And nothing must have been written.
+        assert!(!opts.project_dir.join("evil-skill.md").exists());
+    }
+
+    #[test]
+    fn promote_denied_when_skill_touches_critical_path_without_label() {
+        let tmp = TempDir::new().unwrap();
+        let opts = opts_in(&tmp);
+
+        let mut skill = make_skill("auth-skill", SkillScope::Project, "Innocent body");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        skill.frontmatter.score = 0.9;
+        let err = promote(&skill, &opts).unwrap_err();
+        assert!(err.to_string().contains("safety"));
+        assert!(!opts.project_dir.join("auth-skill.md").exists());
+    }
+
+    #[test]
+    fn promote_with_intent_allows_critical_path_when_audit_label_present() {
+        let tmp = TempDir::new().unwrap();
+        let opts = opts_in(&tmp);
+
+        let mut skill = make_skill("audited-skill", SkillScope::Project, "Reviewed");
+        skill.frontmatter.critical_paths_touched =
+            vec!["crates/garraia-auth/src/lib.rs".to_string()];
+        skill.frontmatter.score = 0.9;
+
+        let intent = crate::safety::SafetyIntent {
+            labels: vec!["security-audit-passed".to_string()],
+        };
+        let path = promote_with_intent(&skill, &opts, &intent).unwrap();
+        assert!(path.exists());
     }
 }
