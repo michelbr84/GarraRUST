@@ -153,3 +153,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0142 | [GAR-656 — replace daemonize 0.5 with nix syscalls (RUSTSEC-2025-0069)](0142-gar-656-replace-daemonize-nix.md) | [GAR-656](https://linear.app/chatgpt25/issue/GAR-656) | ✅ Merged 2026-05-17 via PR #382 (`a5daf344`) |
 | 0143 | [GAR-658 — Q11 slice 7: extract rest_v1/tasks/attachments.rs](0143-gar-658-q11-tasks-modularize-slice7.md) | [GAR-658](https://linear.app/chatgpt25/issue/GAR-658) | ✅ Merged 2026-05-17 via PR #388 (`e04fc2c`) |
 | 0144 | [GAR-642 — Learning Agent Architecture: scaffold crate garraia-learning + ADR 0010 Accepted](0144-gar-642-learning-agent-scaffold.md) | [GAR-642](https://linear.app/chatgpt25/issue/GAR-642) | ✅ Merged 2026-05-18 via PR #393 (`9526368`) |
+| 0145 | [GAR-372 — Embeddings & Vector Search: scaffold garraia-embeddings](0145-gar-372-embeddings-scaffold.md) | [GAR-372](https://linear.app/chatgpt25/issue/GAR-372) | ✅ Merged 2026-05-18 via PR #396 (`cfda7ad`) |
+| 0146 | [GAR-643 — Skill Miner: detect repeatable patterns in session logs](0146-gar-643-skill-miner.md) | [GAR-643](https://linear.app/chatgpt25/issue/GAR-643) | 🚧 In Progress |
