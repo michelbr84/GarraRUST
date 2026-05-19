@@ -3366,7 +3366,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "garraia-workspace",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "hmac 0.12.1",
  "jsonwebtoken",
  "password-hash",

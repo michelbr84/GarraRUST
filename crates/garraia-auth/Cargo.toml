@@ -62,7 +62,7 @@ jsonwebtoken = { workspace = true }
 # directly to decouple this crate from the rand 0.9 -> 0.10 transitive
 # churn that broke Dependabot PR #103. See plan
 # personal-api-key-revogada-vectorized-matsumoto §Decisões §3.
-getrandom = "0.3"
+getrandom = "0.4"
 # Base64 URL-safe encoding for refresh tokens.
 base64 = { workspace = true }
 # Axum extractor support (GAR-391c).
