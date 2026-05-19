@@ -368,7 +368,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - `Skills MVP` ([GAR-498](https://linear.app/chatgpt25/issue/GAR-498)) — 3-5 skills nativas via registry `garraia-skills`.
 - `Agent team MVP` ([GAR-499](https://linear.app/chatgpt25/issue/GAR-499)) — orquestrador + 2 sub-agentes, dogfooded em um bug real.
 - `Auto Dream / handoff` ([GAR-500](https://linear.app/chatgpt25/issue/GAR-500)) — schema `.garra-estado.md` + reader/writer + redaction.
-- `garra verify` ([GAR-501](https://linear.app/chatgpt25/issue/GAR-501)) — pipeline local idempotente, exit-codes sysexits, relatório markdown.
+- ~~`garra verify` ([GAR-501](https://linear.app/chatgpt25/issue/GAR-501)) — pipeline local idempotente, exit-codes sysexits, relatório markdown.~~ ✅ Done (PR #441 `ca9f1fa2`)
 
 **Estimativa:** 3 / 5 / 8 semanas, em paralelo a 1.2 e 1.3.
 
@@ -1251,11 +1251,13 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 3. ~~**Fase 1.2.1 GarraMaxPower — [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
 
-4. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
+4. ~~**Fase 1.2.1 GarraMaxPower — [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) `garra verify`**~~ ✅ **Done** (2026-05-19). Pipeline local idempotente com 5 steps: `cargo fmt --check`, `cargo clippy`, `cargo test`, `flutter analyze` (skip se ausente), `gitleaks detect` (skip se ausente). Saída `--json` com schema estável em `docs/maxpower/verify-schema.json`. Exit codes: 0 ok / 2 step-failed. 9 unit tests. Plan: `plans/0155-gar-501-garra-verify.md`. Merged via PR #441 (`ca9f1fa2`).
 
-5. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
+6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
-6. **Fase 5.1 — CredentialVault final** ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410), Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (MCP tokens, ✅ Done).
+7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
+
+8. **Fase 5.1 — CredentialVault final** ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410), Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (MCP tokens, ✅ Done).
 
 Trilhas paralelas disponíveis para um segundo dev/agente:
 - **Fase 1.3 — Config reativo** (ainda não materializado).

@@ -163,4 +163,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0152 | [GAR-668 — Health Run 2 (2026-05-19): RUSTSEC-2026-0145 merged + tokio-tungstenite 0.29 upgrade](0152-health-run2-20260519-tokio-tungstenite-0.29.md) | [GAR-668](https://linear.app/chatgpt25/issue/GAR-668) | ✅ Merged 2026-05-19 via PR #433 (`51382a9c`) |
 | 0153 | [GAR-494 — `garra max-power` skeleton CLI subcommand](0153-gar-494-max-power-skeleton.md) | [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) | ✅ Merged 2026-05-19 via PR #431 (`8a9a915`) |
 | 0154 | [GAR-497 — Bash Safety Gate: centralize denylist in garraia-common](0154-gar-497-bash-safety-gate.md) | [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) | ✅ Merged 2026-05-19 via PR #437 (`f2ab1d9`) |
-| 0155 | [GAR-501 — `garra verify` — local idempotent validation pipeline](0155-gar-501-garra-verify.md) | [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) | 🔁 In progress |
+| 0155 | [GAR-501 — `garra verify` — local idempotent validation pipeline](0155-gar-501-garra-verify.md) | [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) | ✅ Merged 2026-05-19 via PR #441 (`ca9f1fa2`) |
