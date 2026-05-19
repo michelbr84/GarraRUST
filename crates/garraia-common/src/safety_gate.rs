@@ -231,7 +231,10 @@ mod tests {
         let cmd = "rm -rf / --secret-token=abc123";
         let err = safety_gate(cmd).unwrap_err();
         let msg = err.to_string();
-        assert!(!msg.contains(cmd), "error message must not echo raw command");
+        assert!(
+            !msg.contains(cmd),
+            "error message must not echo raw command"
+        );
         assert!(!msg.contains("abc123"), "error message must not leak token");
     }
 
