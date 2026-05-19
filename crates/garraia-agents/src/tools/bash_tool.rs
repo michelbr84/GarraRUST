@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use garraia_common::{Error, Result};
+use garraia_common::{Error, Result, safety_gate};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -7,78 +7,6 @@ use super::{Tool, ToolContext, ToolOutput};
 
 const TIMEOUT_PADRAO_SEGS: u64 = 30;
 const MAX_BYTES_SAIDA: usize = 32 * 1024;
-
-/// Deny list of dangerous commands - GAR-236
-///
-/// Rules:
-/// - Patterns use `.contains()` on the lowercased command string.
-/// - Keep patterns specific enough to avoid false positives on common flags.
-///   Example: use "format c:" not "format" (would block PowerShell -Format flag).
-const DENY_LIST: &[&str] = &[
-    "rm -rf",
-    "rm -r /",
-    "rm -f /",
-    // Windows disk formatting — use explicit drive letters, not bare "format"
-    // which would false-positive on PowerShell's -Format parameter.
-    "format c:",
-    "format d:",
-    "format e:",
-    "format f:",
-    "diskpart", // Windows disk management tool — genuinely dangerous
-    "fdisk",
-    "mkfs",
-    "dd if=",
-    "> /dev/sd",
-    "chmod 777 /",
-    "chown -R",
-    ":wq!",
-    "exit!",
-    "curl | sh",
-    "wget | sh",
-    "sh -c",
-    "bash -c",
-    "python -m http",
-    "nc -",
-    "netcat",
-    "nmap",
-    "ssh root@",
-    "sudo su",
-    "kill -9 -1",
-    "pkill -9",
-    "reboot",
-    "shutdown",
-    "init 0",
-    "init 6",
-    "halt",
-    "poweroff",
-];
-
-/// GAR-187: Confirmation list — risky but not catastrophic commands that require
-/// explicit user approval before execution. Unlike DENY_LIST (hard block), these
-/// are paused and a confirmation prompt is returned to the user.
-///
-/// Patterns use `.contains()` on the lowercased command string.
-const CONFIRM_LIST: &[&str] = &[
-    "rm -r",  // recursive delete (not caught by DENY_LIST which only blocks rm -rf / rm -r /)
-    "del /s", // Windows recursive delete
-    "del /f", // Windows force delete
-    "rd /s",  // Windows remove directory recursively
-    "git reset --hard",
-    "git push --force",
-    "git push -f",
-    "git clean -f",
-    "drop table", // SQL destructive operations
-    "drop database",
-    "drop schema",
-    "truncate table",
-    "truncate ",
-    "delete from", // unqualified DELETE (no WHERE)
-    "kill ",       // process kill
-    "taskkill",
-    "stop-process",
-    "remove-item -recurse",
-    "remove-item -r",
-];
 
 /// Allow list of safe commands for read-only mode - GAR-236
 const ALLOW_LIST_READONLY: &[&str] = &[
@@ -139,24 +67,17 @@ impl BashTool {
         }
     }
 
-    /// Check if command is in deny list
+    /// Check if command matches the hard-block denylist (GAR-236, GAR-497).
     fn is_dangerous(&self, command: &str) -> bool {
-        let cmd_lower = command.to_lowercase();
-        for pattern in DENY_LIST {
-            if cmd_lower.contains(&pattern.to_lowercase()) {
-                tracing::warn!("Blocked dangerous command pattern: {}", pattern);
-                return true;
-            }
-        }
-        false
+        matches!(
+            safety_gate::safety_gate(command),
+            Err(garraia_common::SafetyDenied::DangerousCommand { .. })
+        )
     }
 
-    /// GAR-187: Check if command matches the risky confirmation tier.
+    /// GAR-187: Check if command matches the risky confirmation tier (GAR-497).
     fn is_risky(&self, command: &str) -> bool {
-        let cmd_lower = command.to_lowercase();
-        CONFIRM_LIST
-            .iter()
-            .any(|p| cmd_lower.contains(&p.to_lowercase()))
+        safety_gate::is_risky(command).is_err()
     }
 
     /// Check if command is in allow list (for read-only mode)
