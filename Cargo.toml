@@ -100,7 +100,7 @@ poise = { version = "0.6", default-features = false, features = ["cache", "chron
 # Telegram
 teloxide = { version = "0.17", default-features = false, features = ["rustls", "macros"] }
 # Slack (Socket Mode)
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 # MCP (Model Context Protocol)
 rmcp = { version = "1.7" }
