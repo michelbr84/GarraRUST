@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-18** — GAR-648 (Skill Auto-Updater) ✅ Done. `updater.rs` implementado com `UpdateEvidence`, `BumpKind`, `PullRequestProposal`, `ShellRunner` trait (mockável) + `ProcessShellRunner`, `propose_update_with_runner` (branch→write→commit→push→gh pr create), `auto_merge_guard()`, 24 unit tests; 90.57% region coverage. PR #409 (`0000c883`). Anterior: GAR-647 ✅ Done (PR #406 `a79321b`). GAR-646 bloqueado (Fase 2.1 embeddings). GAR-645 ✅ Done (PR #404). GAR-644 ✅ Done (PR #402). GAR-643 ✅ Done (PR #400). GAR-642 ✅ Done.
+**Atualizado 2026-05-19** — GAR-649 (Skill Safety Gates) ✅ Done (PR #413, `c80b7c8`). `gate_with_intent` hard wall + 132 unit tests. Anterior: GAR-648 ✅ Done (PR #409 `0000c883`). GAR-647 ✅ Done (PR #406 `a79321b`). GAR-646 bloqueado (Fase 2.1 embeddings). GAR-645 ✅ Done (PR #404). GAR-644 ✅ Done (PR #402). GAR-643 ✅ Done (PR #400). GAR-642 ✅ Done. **GAR-650 (Skill Versioning/Rollback, 9/10) 🚧 In Progress** — plan 0151, branch `routine/202605190015-gar-650-skill-versioning`; 15 unit tests verdes, clippy clean.
 
 Quando retomar execução, priorizar **nesta ordem**:
 
