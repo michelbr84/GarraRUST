@@ -9,13 +9,27 @@ const ROUTES: &[(&str, &[&str])] = &[
     (
         "systematic-debugging",
         &[
-            "bug", "fix", "crash", "error", "broken", "panic", "regression", "issue",
+            "bug",
+            "fix",
+            "crash",
+            "error",
+            "broken",
+            "panic",
+            "regression",
+            "issue",
         ],
     ),
     (
         "brainstorm",
         &[
-            "feature", "add", "implement", "build", "create", "new", "idea", "design",
+            "feature",
+            "add",
+            "implement",
+            "build",
+            "create",
+            "new",
+            "idea",
+            "design",
         ],
     ),
     (
@@ -57,13 +71,7 @@ const ROUTES: &[(&str, &[&str])] = &[
     (
         "code-review",
         &[
-            "review",
-            "audit",
-            "check",
-            "inspect",
-            "analyse",
-            "analyze",
-            "security",
+            "review", "audit", "check", "inspect", "analyse", "analyze", "security",
         ],
     ),
 ];
@@ -139,10 +147,22 @@ mod tests {
 
     #[test]
     fn routes_bug_keywords() {
-        assert_eq!(detect_route("fix the login crash").0, "systematic-debugging");
-        assert_eq!(detect_route("there is a bug in auth").0, "systematic-debugging");
-        assert_eq!(detect_route("panic in thread main").0, "systematic-debugging");
-        assert_eq!(detect_route("regression on upload").0, "systematic-debugging");
+        assert_eq!(
+            detect_route("fix the login crash").0,
+            "systematic-debugging"
+        );
+        assert_eq!(
+            detect_route("there is a bug in auth").0,
+            "systematic-debugging"
+        );
+        assert_eq!(
+            detect_route("panic in thread main").0,
+            "systematic-debugging"
+        );
+        assert_eq!(
+            detect_route("regression on upload").0,
+            "systematic-debugging"
+        );
     }
 
     #[test]
@@ -155,17 +175,32 @@ mod tests {
 
     #[test]
     fn routes_refactor_keywords() {
-        assert_eq!(detect_route("refactor the auth module").0, "refactor-module");
-        assert_eq!(detect_route("clean up the config code").0, "refactor-module");
-        assert_eq!(detect_route("extract a helper function").0, "refactor-module");
+        assert_eq!(
+            detect_route("refactor the auth module").0,
+            "refactor-module"
+        );
+        assert_eq!(
+            detect_route("clean up the config code").0,
+            "refactor-module"
+        );
+        assert_eq!(
+            detect_route("extract a helper function").0,
+            "refactor-module"
+        );
         // "simplify the error types" would hit "error" → systematic-debugging first,
         // so we use a goal without that collision.
-        assert_eq!(detect_route("simplify the config logic").0, "refactor-module");
+        assert_eq!(
+            detect_route("simplify the config logic").0,
+            "refactor-module"
+        );
     }
 
     #[test]
     fn routes_test_keywords() {
-        assert_eq!(detect_route("write tests for the signup flow").0, "tdd-loop");
+        assert_eq!(
+            detect_route("write tests for the signup flow").0,
+            "tdd-loop"
+        );
         // "improve test coverage" would hit "improve" → refactor-module first.
         assert_eq!(detect_route("increase test coverage").0, "tdd-loop");
         // "add integration spec" would hit "add" → brainstorm first.
@@ -182,7 +217,10 @@ mod tests {
     #[test]
     fn routes_review_keywords() {
         assert_eq!(detect_route("review the auth module").0, "code-review");
-        assert_eq!(detect_route("security audit of the gateway").0, "code-review");
+        assert_eq!(
+            detect_route("security audit of the gateway").0,
+            "code-review"
+        );
         // "inspect the upload handler" would hit "spec" (substring of "inspect") →
         // tdd-loop first, so we use an unambiguous goal.
         assert_eq!(detect_route("run a security check").0, "code-review");
