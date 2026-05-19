@@ -170,23 +170,23 @@ Rollback = revert the 3-4 commits of this plan. No migration, no schema change.
 ## Task list (M1)
 
 - [x] **T1** — Create `plans/0154-gar-497-bash-safety-gate.md` (this file)
-- [ ] **T2** — Implement `crates/garraia-common/src/safety_gate.rs`:
+- [x] **T2** — Implement `crates/garraia-common/src/safety_gate.rs`:
   - `SafetyDenied` enum (`DangerousCommand` + `RequiresConfirmation`)
   - `DENY_LIST` and `CONFIRM_LIST` constants (extracted + expanded from bash_tool.rs)
   - `pub fn safety_gate(cmd: &str) -> Result<(), SafetyDenied>`
   - `pub fn is_risky(cmd: &str) -> Result<(), SafetyDenied>`
   - `#[cfg(test)] mod tests { ... }` with ≥ 30 table-driven cases
   - `pub use safety_gate::{SafetyDenied, safety_gate, is_risky};` in lib.rs
-- [ ] **T3** — Refactor `crates/garraia-agents/src/tools/bash_tool.rs`:
+- [x] **T3** — Refactor `crates/garraia-agents/src/tools/bash_tool.rs`:
   - Replace inline `DENY_LIST` + `CONFIRM_LIST` with delegation to `garraia_common::safety_gate`
   - `is_dangerous()` → calls `safety_gate::safety_gate(cmd).is_err()`
   - `is_risky()` → calls `safety_gate::is_risky(cmd).is_err()`
   - Keep all existing tests passing (zero behavior change)
   - Add 2 tests: one for `DangerousCommand` error variant, one for `RequiresConfirmation` variant
-- [ ] **T4** — Update `plans/README.md` with plan 0154 row
-- [ ] **T5** — `cargo check -p garraia-common && cargo check -p garraia-agents`
-- [ ] **T6** — `cargo test -p garraia-common && cargo test -p garraia-agents`
-- [ ] **T7** — `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings`
+- [x] **T4** — Update `plans/README.md` with plan 0154 row
+- [x] **T5** — `cargo check -p garraia-common && cargo check -p garraia-agents`
+- [x] **T6** — `cargo test -p garraia-common && cargo test -p garraia-agents`
+- [x] **T7** — `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings`
 
 ## Risk register
 
