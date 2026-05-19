@@ -67,7 +67,7 @@ thiserror = { workspace = true }
 # same version.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "macros", "derive"] }
 dirs = "6"
-governor = "0.8"
+governor = "0.10"
 tower_governor = "0.8"
 # Plan 0022 T2 (GAR-426): CIDR parsing for GARRAIA_TRUSTED_PROXIES env var.
 # Used by `real_client_ip` helper to decide whether to honor `X-Forwarded-For`.
