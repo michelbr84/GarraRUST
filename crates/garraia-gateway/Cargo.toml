@@ -399,7 +399,7 @@ required-features = ["test-helpers"]
 # (via `PrometheusBuilder::build_recorder`) to obtain a handle without
 # installing the global recorder. Kept in sync with the version pin in
 # `garraia-telemetry`.
-metrics-exporter-prometheus = "0.15"
+metrics-exporter-prometheus = "0.18"
 tempfile = "3"
 serial_test = { workspace = true }
 wiremock = "0.6"
