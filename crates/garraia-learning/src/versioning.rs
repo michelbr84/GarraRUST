@@ -1,7 +1,7 @@
 use crate::updater::ShellRunner;
 use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ─────────────────────────────────────────────────────────
 // Public types
@@ -273,6 +273,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::path::Path;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
