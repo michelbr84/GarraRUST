@@ -25,7 +25,7 @@ opentelemetry-semantic-conventions = "0.26"
 
 # Metrics
 metrics = "0.24"
-metrics-exporter-prometheus = "0.15"
+metrics-exporter-prometheus = "0.18"
 
 # HTTP layers
 tower = { version = "0.5" }
