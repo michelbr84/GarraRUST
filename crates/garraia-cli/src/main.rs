@@ -8,6 +8,7 @@ mod mcp_server;
 mod migrate;
 mod migrate_workspace;
 mod update;
+mod verify;
 mod wizard;
 
 use std::path::PathBuf;
@@ -233,6 +234,32 @@ enum Commands {
         /// checkpoint), `auto` (detect from project state).
         #[arg(long, short = 'm', default_value = "auto", value_parser = ["new", "existing", "auto"])]
         mode: String,
+    },
+
+    /// Run the local validation pipeline: fmt check, clippy, test, flutter
+    /// analyze, gitleaks detect (GAR-501).
+    ///
+    /// Exit codes (sysexits): 0 all pass, 2 step failed.
+    /// Steps `flutter` and `gitleaks` are auto-skipped when the tool is absent.
+    Verify {
+        /// Emit JSON report instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+
+        /// Skip named step(s). Repeatable: --skip fmt --skip test.
+        /// Valid names: fmt, clippy, test, flutter, gitleaks.
+        #[arg(long, value_name = "STEP")]
+        skip: Vec<String>,
+
+        /// Treat any step failure as a hard error (reserved; currently a no-op
+        /// since all failures already return exit 2).
+        #[arg(long)]
+        strict: bool,
+
+        /// Workspace root to run steps from.
+        /// Defaults to the current working directory.
+        #[arg(long, value_name = "DIR")]
+        workspace: Option<std::path::PathBuf>,
     },
 }
 
@@ -638,6 +665,25 @@ fn main() -> Result<()> {
     } = cli.command
     {
         let code = config_cmd::run_config_check(json, strict)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // GAR-501 / plan 0155 — `garra verify` does not need the gateway config;
+    // intercept early so the pipeline can run even without a `.garraia/` dir.
+    if let Commands::Verify {
+        json,
+        skip,
+        workspace,
+        ..
+    } = cli.command
+    {
+        let root = workspace.unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        let code = verify::run(json, &skip, &root);
         if code != 0 {
             std::process::exit(code);
         }
@@ -1303,6 +1349,10 @@ async fn async_main(
         }
         Commands::MaxPower { goal, mode } => {
             max_power::run(goal, mode);
+        }
+        Commands::Verify { .. } => {
+            // Handled in main() before the async runtime starts.
+            unreachable!("Commands::Verify is intercepted in main() before async_main");
         }
     }
 
