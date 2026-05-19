@@ -423,7 +423,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Rust 1.92
-        uses: dtolnay/rust-toolchain@1.100
+        uses: dtolnay/rust-toolchain@1.92
 
       - name: cargo +1.92 check
         run: cargo +1.92 check --workspace --exclude garraia-desktop --locked
