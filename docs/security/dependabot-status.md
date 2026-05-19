@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-18 run 6** (health routine — all surfaces clean, PRs #409+#410 (GAR-648 Skill Auto-Updater) verified, no actionable security work, GAR-665. Previous: run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-19 run 2** (health routine — RUSTSEC-2026-0145 merged (#432, `287edc1c`) + tokio-tungstenite 0.26→0.29 (#433, `51382a9c`) — GAR-668. Previous: run 1 GAR-667 (2026-05-19 all-clean); run 6 GAR-665 (2026-05-18 all-clean); run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,24 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-19 run 2 (health routine — RUSTSEC-2026-0145 merged + tokio-tungstenite 0.26→0.29)
+
+Health routine ran on 2026-05-19 (run 2, ~08:45 ET / 12:45 UTC). Two fixes delivered:
+
+1. **RUSTSEC-2026-0145** (PAX Header Desynchronization in `astral-tokio-tar`) — PR #432 (`fix/rustsec-2026-0145-astral-tokio-tar`, all 20 CI checks green) was lingering from a prior session; squash-merged as `287edc1c`. Dev-dep only (testcontainers chain).
+2. **tokio-tungstenite 0.26→0.29** — Dependabot PR #429 had Cargo.lock conflict with the RUSTSEC fix. Created clean `health/202605190850-tokio-tungstenite-0.29` branch, applied upgrade, merged as `51382a9c` (PR #433). 20/20 CI checks green. cargo audit: 0 vulnerabilities post-merge.
+
+Main now at `51382a9c`. GAR-668 / plan 0152.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #433 |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #433 |
+| Dependabot alerts | ⚠️ 5 open, major-version breaks | password-hash 0.5→0.6, governor 0.8→0.10, rand 0.8→0.10, rand_chacha 0.3→0.9, windows-sys 0.52→0.61 — all deferred (code changes required) |
+| Security Audit (`cargo audit`) | ✅ 0 vulnerabilities | 19 allowed unmaintained warnings (pre-existing) |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #433 |
 
 ## Confirmed 2026-05-18 run 6 (health routine — all surfaces clean, PRs #409+#410 verified, no actionable security work)
 
