@@ -3,6 +3,7 @@ mod banner;
 mod chat;
 mod config_cmd;
 mod glob_cmd;
+mod max_power;
 mod mcp_server;
 mod migrate;
 mod migrate_workspace;
@@ -213,6 +214,26 @@ enum Commands {
     /// Claude Code integration. Stdout is reserved for the JSON-RPC
     /// channel; logs go to stderr.
     McpServer,
+
+    /// Activate GarraMaxPower agent-pipeline mode (GAR-494 / GAR-492 epic).
+    ///
+    /// Without --goal: prints banner + numbered pipeline menu.
+    /// With --goal: detects the best entry point by keyword matching and
+    /// prints the selected route + rationale.
+    ///
+    /// Full state-machine execution (brainstorm → spec → plan → execute →
+    /// review → merge) lands in GAR-495..GAR-501.
+    MaxPower {
+        /// Goal or task description for automatic pipeline routing.
+        /// Omit to see the interactive menu.
+        #[arg(long, short = 'g')]
+        goal: Option<String>,
+
+        /// Pipeline mode: `new` (start fresh), `existing` (resume from last
+        /// checkpoint), `auto` (detect from project state).
+        #[arg(long, short = 'm', default_value = "auto", value_parser = ["new", "existing", "auto"])]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1279,6 +1300,9 @@ async fn async_main(
             // stdout reserved for the JSON-RPC channel (rmcp's job).
             init_tracing(&effective_level);
             mcp_server::run_mcp_server(config).await?;
+        }
+        Commands::MaxPower { goal, mode } => {
+            max_power::run(goal, mode);
         }
     }
 
