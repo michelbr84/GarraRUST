@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "garra verify JSON report (v1)",
+  "description": "Output of `garra verify --json`. Schema is stable; additive changes only.",
+  "type": "object",
+  "required": ["ok", "exit_code", "steps"],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "true when exit_code == 0 (all non-skipped steps passed)."
+    },
+    "exit_code": {
+      "type": "integer",
+      "description": "Sysexits-compatible aggregate: 0 ok, 2 step-failed."
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "outcome", "duration_ms"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["fmt", "clippy", "test", "flutter", "gitleaks"]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "Wall-clock milliseconds. 0 for skipped steps."
+          },
+          "output": {
+            "type": "string",
+            "description": "Combined stdout+stderr (only present in --json mode)."
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["kind"],
+                "properties": { "kind": { "const": "pass" } }
+              },
+              {
+                "type": "object",
+                "required": ["kind", "exit_code"],
+                "properties": {
+                  "kind": { "const": "fail" },
+                  "exit_code": { "type": "integer" }
+                }
+              },
+              {
+                "type": "object",
+                "required": ["kind", "reason"],
+                "properties": {
+                  "kind": { "const": "skipped" },
+                  "reason": { "type": "string" }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
