@@ -125,12 +125,7 @@ pub fn diff<R: ShellRunner>(
 ) -> Result<String> {
     let rel_path = relative_skill_path(name, opts)?;
     runner.run_git(
-        &[
-            "diff",
-            &format!("{from_sha}..{to_sha}"),
-            "--",
-            &rel_path,
-        ],
+        &["diff", &format!("{from_sha}..{to_sha}"), "--", &rel_path],
         &opts.repo_root,
     )
 }
@@ -156,11 +151,7 @@ pub fn score_history(name: &str, opts: &VersioningOptions) -> Result<Vec<ScoreEn
 ///
 /// Creates the `_history/` directory if it does not exist.
 /// This function is the **only** correct way to write to the ledger.
-pub fn append_score_entry(
-    name: &str,
-    entry: ScoreEntry,
-    opts: &VersioningOptions,
-) -> Result<()> {
+pub fn append_score_entry(name: &str, entry: ScoreEntry, opts: &VersioningOptions) -> Result<()> {
     let dir = history_dir(opts);
     std::fs::create_dir_all(&dir)?;
     let path = score_ledger_path(name, opts);
@@ -258,7 +249,11 @@ fn epoch_secs_to_iso8601(secs: u64) -> String {
 /// Reference: <https://howardhinnant.github.io/date_algorithms.html>
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let z = days as i64 + 719_468;
-    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
     let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe as i64 + era * 400;
@@ -344,7 +339,10 @@ mod tests {
         let opts = make_opts(&tmp);
         let runner = MockShellRunner::new();
         let mock_output = format!("{}\n{}", log_line(SHA1, SHORT1), log_line(SHA2, "bbbbbbbb"));
-        runner.expect_git("log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md", Ok(mock_output));
+        runner.expect_git(
+            "log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md",
+            Ok(mock_output),
+        );
 
         let versions = history("foo", &opts, &runner).unwrap();
         assert_eq!(versions.len(), 2);
@@ -358,7 +356,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let opts = make_opts(&tmp);
         let runner = MockShellRunner::new();
-        runner.expect_git("log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md", Ok(String::new()));
+        runner.expect_git(
+            "log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md",
+            Ok(String::new()),
+        );
 
         let versions = history("foo", &opts, &runner).unwrap();
         assert!(versions.is_empty());
@@ -369,7 +370,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let opts = make_opts(&tmp);
         let runner = MockShellRunner::new();
-        runner.expect_git("log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md", Ok("bad".to_string()));
+        runner.expect_git(
+            "log --format=%H|%h|%ai|%an|%s -- .garra/skills/foo.md",
+            Ok("bad".to_string()),
+        );
 
         assert!(history("foo", &opts, &runner).is_err());
     }
@@ -457,9 +461,8 @@ mod tests {
 
         // Simulate attempt to mutate: read → modify first entry → write back
         let path = score_ledger_path("foo", &opts);
-        let mut entries: Vec<ScoreEntry> = serde_json::from_str(
-            &std::fs::read_to_string(&path).unwrap()
-        ).unwrap();
+        let mut entries: Vec<ScoreEntry> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // A mutation attempt: change score of existing entry
         entries[0].score = 0.0;
         // Rewrite the ledger (simulating a bug / malicious write)
@@ -470,7 +473,10 @@ mod tests {
         // overwriting entries it reads). We verify the invariant via the previous test
         // (append_score_entry_is_truly_append_only). This test documents the threat model.
         let after = score_history("foo", &opts).unwrap();
-        assert_eq!(after[0].score, 0.0, "ledger was externally mutated (threat model test)");
+        assert_eq!(
+            after[0].score, 0.0,
+            "ledger was externally mutated (threat model test)"
+        );
     }
 
     // ── rollback() ────────────────────────────────────────
@@ -505,7 +511,10 @@ mod tests {
 
         let entries = score_history("foo", &opts).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries[1].sha.starts_with("rollback-"), "audit entry present");
+        assert!(
+            entries[1].sha.starts_with("rollback-"),
+            "audit entry present"
+        );
         assert_eq!(entries[1].score, 0.75, "score reset to historical value");
     }
 
