@@ -410,7 +410,7 @@ wiremock = "0.6"
 # because production code imports sqlx directly (via `groups.rs`
 # handlers). The prod entry above carries the canonical feature set;
 # tests inherit it transitively. Removed the dev-dependencies line.
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
