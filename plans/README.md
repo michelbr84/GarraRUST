@@ -159,4 +159,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0148 | [GAR-645 — Skill Registry: dual-scope persist, list, promote, deprecate](0148-gar-645-skill-registry.md) | [GAR-645](https://linear.app/chatgpt25/issue/GAR-645) | ✅ Merged 2026-05-18 via PR #404 (`b67d030`) |
 | 0149 | [GAR-647 — Skill Evaluator: objective metrics + EMA score update](0149-gar-647-skill-evaluator.md) | [GAR-647](https://linear.app/chatgpt25/issue/GAR-647) | ✅ Merged 2026-05-18 via PR #406 (`a79321b`) |
 | 0150 | [GAR-648 — Skill Auto-Updater: diff + branch + PR via gh, never auto-merge](0150-gar-648-skill-auto-updater.md) | [GAR-648](https://linear.app/chatgpt25/issue/GAR-648) | ✅ Merged 2026-05-18 via PR #409 (`0000c883`) |
-| 0151 | [GAR-650 — Skill Versioning/Rollback: git-tracked history + git revert](0151-gar-650-skill-versioning-rollback.md) | [GAR-650](https://linear.app/chatgpt25/issue/GAR-650) | 🚧 In Progress |
+| 0151 | [GAR-650 — Skill Versioning/Rollback: git-tracked history + git revert](0151-gar-650-skill-versioning-rollback.md) | [GAR-650](https://linear.app/chatgpt25/issue/GAR-650) | ✅ Merged 2026-05-19 via PR #414 (`896b2fe`) |
