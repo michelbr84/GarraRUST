@@ -489,7 +489,7 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         use rand::{Rng, SeedableRng};
         use rand_chacha::ChaCha8Rng;
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut v: Vec<f32> = (0..768).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let mut v: Vec<f32> = (0..768).map(|_| rng.random_range(-1.0..1.0)).collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for x in v.iter_mut() {
