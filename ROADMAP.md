@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-19** — GAR-649 (Skill Safety Gates) ✅ Done (PR #413, `c80b7c8`). `gate_with_intent` hard wall + 132 unit tests. Anterior: GAR-648 ✅ Done (PR #409 `0000c883`). GAR-647 ✅ Done (PR #406 `a79321b`). GAR-646 bloqueado (Fase 2.1 embeddings). GAR-645 ✅ Done (PR #404). GAR-644 ✅ Done (PR #402). GAR-643 ✅ Done (PR #400). GAR-642 ✅ Done. ~~**GAR-650 (Skill Versioning/Rollback, 9/10)**~~ ✅ **Done** (2026-05-19, plan 0151, PR #414 `896b2fe`). `VersioningOptions` + `SkillVersion` + `ScoreEntry` + `history/diff/rollback/score_history/append_score_entry` via `ShellRunner` trait; 15 unit tests; 95.59% region coverage; no new deps.
+**Atualizado 2026-05-20** — GAR-651 (Learning Agent Web UI, 10/10) ✅ Done (PR #443, `21a13f1`). `GET /learning` Garra Glass page + 10 REST endpoints under `/api/learning/*`; 11 unit tests. Epic GAR-641 **COMPLETO** (todos 10/10 sub-issues done). Anterior: GAR-649 ✅ Done (PR #413, `c80b7c8`). ~~**GAR-650 (Skill Versioning/Rollback, 9/10)**~~ ✅ **Done** (2026-05-19, plan 0151, PR #414 `896b2fe`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1252,6 +1252,10 @@ Quando retomar execução, priorizar **nesta ordem**:
 3. ~~**Fase 1.2.1 GarraMaxPower — [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
 
 4. ~~**Fase 1.2.1 GarraMaxPower — [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) `garra verify`**~~ ✅ **Done** (2026-05-19). Pipeline local idempotente com 5 steps: `cargo fmt --check`, `cargo clippy`, `cargo test`, `flutter analyze` (skip se ausente), `gitleaks detect` (skip se ausente). Saída `--json` com schema estável em `docs/maxpower/verify-schema.json`. Exit codes: 0 ok / 2 step-failed. 9 unit tests. Plan: `plans/0155-gar-501-garra-verify.md`. Merged via PR #441 (`ca9f1fa2`).
+
+5. ~~**Garra Learning Agent — Web UI ([GAR-651](https://linear.app/chatgpt25/issue/GAR-651), 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **[GAR-641](https://linear.app/chatgpt25/issue/GAR-641) completo** (10/10).
+
+5. **Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff** — schema `.garra-estado.md` + reader/writer `HandoffState` em `garraia-common` + allow-list de campos (sem message bodies) + redaction helper + adicionar ao `.gitignore`. Plan: `plans/0157-gar-500-auto-dream-handoff.md`. **Em execução.**
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
