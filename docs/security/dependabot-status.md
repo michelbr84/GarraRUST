@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-19 run 4** (health routine — all surfaces clean, priority (i), GAR-671. Previous: run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-20 run 7** (health routine — rand_chacha 0.9 + rand 0.9 co-bump PR #446, GAR-669 Slice 1 Done, GAR-674. Previous: run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,24 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-20 run 7 (health routine — GAR-669 Slice 1: rand_chacha 0.9 + rand 0.9 co-bump)
+
+Health routine ran on 2026-05-20 (run 7, ~08:45 ET / 12:45 UTC). Full security scan completed. Fix applied: co-bumped `rand_chacha` 0.3→0.9 and `rand` 0.8→0.9 in `garraia-workspace` dev-deps, renamed `gen_range` → `random_range` in `migration_smoke.rs`. Root cause: rand_chacha 0.9 requires rand_core 0.9 while rand 0.8 uses rand_core 0.6 — type mismatch on `SeedableRng`. Supersedes Dependabot PR #423.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #446 (20/20 checks green) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #446 |
+| Dependabot alerts | ⚠️ 3 open, major-version breaks | password-hash 0.5→0.6 (#430 — auth-critical, GAR-669 Slice 3), rand 0.8→0.10 (#424 — Rng→RngExt breaking, GAR-669 Slice 4), windows-sys 0.52→0.61 (#422 — windows-only, GAR-669 Slice 2) |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #446 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #446 |
+| CI on main (`d9f811ac`) | ✅ green | PR #446 (20/20 checks green) |
+
+**Fix applied:** PR #446 squash-merged as `d9f811ac` 2026-05-20T13:46Z. Dependabot PR #423 (rand_chacha 0.3.1→0.9.0) superseded — comment added. Linear: GAR-669 Done, GAR-674 Done. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 2–4 remain open.
+
+---
 
 ## Confirmed 2026-05-19 run 4 (health routine — all surfaces clean, no actionable work)
 

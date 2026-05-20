@@ -1,6 +1,6 @@
 # Plan 0158 — GAR-669 Slice 1: rand_chacha 0.9 + rand 0.9 co-bump (garraia-workspace dev-deps)
 
-**Status:** In Progress  
+**Status:** ✅ Done — merged PR #446 (`d9f811ac`) 2026-05-20  
 **Branch:** `health/202005200845-rand-chacha-0.9`  
 **Linear:** [GAR-669](https://linear.app/chatgpt25/issue/GAR-669)  
 **Health routine run:** 7 (2026-05-20 ~08:45 ET)
@@ -92,9 +92,9 @@ plans/README.md
 - [x] T5: `cargo check -p garraia-workspace --tests` → Finished with 0 errors
 - [x] T6: `cargo clippy -p garraia-workspace --tests --no-deps -- -D warnings` → clean
 - [x] T7: Cargo.lock updated (rand 0.8.6 → 0.9.3, rand_chacha 0.3.1 → 0.9.0 for garraia-workspace)
-- [ ] T8: Plan + README committed on health branch
-- [ ] T9: PR opened, CI polled until green
-- [ ] T10: Squash-merge, Linear GAR-669 updated
+- [x] T8: Plan + README committed on health branch
+- [x] T9: PR opened, CI polled until green (20/20 checks green)
+- [x] T10: Squash-merge (`d9f811ac`), Linear GAR-669 updated (Done)
 
 ## Risk Register
 
