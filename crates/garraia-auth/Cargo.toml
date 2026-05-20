@@ -48,7 +48,7 @@ argon2 = "0.5"
 # stored as PHC strings produced by garraia-security and the GAR-413 migration tool.
 pbkdf2 = { version = "0.12", features = ["password-hash", "simple"] }
 # Shared PHC string parser — required by both argon2 and pbkdf2.
-password-hash = "0.5"
+password-hash = "0.6"
 # Constant-time refresh-token comparison.
 subtle = "2.6"
 # HMAC-SHA256 for refresh-token hash + sha2 for the digest primitive.
@@ -80,7 +80,7 @@ axum = { workspace = true }
 # workspace 0.9 rand used at runtime by jwt.rs / sessions.rs / hashing.rs.
 argon2 = "0.5"
 rand = "0.8"
-password-hash = { version = "0.5", features = ["getrandom"] }
+password-hash = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 # Compile-time `LoginPool: !Clone` denial — see GAR-391a security review H-1.
