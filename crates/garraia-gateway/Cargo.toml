@@ -16,6 +16,8 @@ garraia-db = { workspace = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }
 garraia-voice = { workspace = true }
+# Plan 0156 (GAR-651): Learning Agent Web UI — skills + logs endpoints.
+garraia-learning = { workspace = true }
 garraia-telemetry = { path = "../garraia-telemetry", optional = true }
 # garraia-auth — wired into the gateway as default since GAR-391c.
 # The auth router lives at `/v1/auth/*` and is mounted unconditionally.

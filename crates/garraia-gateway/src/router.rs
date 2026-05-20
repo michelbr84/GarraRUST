@@ -134,6 +134,45 @@ pub fn build_router(
             get(crate::memory_handler::search_memory),
         )
         .route("/api/logs", get(crate::logs_handler::get_logs))
+        // Plan 0156 (GAR-651): Learning Agent Web UI
+        .route("/learning", get(crate::learning_handler::learning_ui))
+        .route(
+            "/api/learning/skills",
+            get(crate::learning_handler::list_learning_skills),
+        )
+        .route(
+            "/api/learning/skills/{name}",
+            get(crate::learning_handler::get_learning_skill)
+                .delete(crate::learning_handler::delete_learning_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/approve",
+            post(crate::learning_handler::approve_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/reject",
+            post(crate::learning_handler::reject_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/lock",
+            post(crate::learning_handler::lock_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/rollback",
+            post(crate::learning_handler::rollback_skill),
+        )
+        .route(
+            "/api/learning/logs/sessions",
+            get(crate::learning_handler::get_log_sessions),
+        )
+        .route(
+            "/api/learning/logs/candidates",
+            get(crate::learning_handler::get_log_candidates),
+        )
+        .route(
+            "/api/learning/logs/scores",
+            get(crate::learning_handler::get_log_scores),
+        )
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))

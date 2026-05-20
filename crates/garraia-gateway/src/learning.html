@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GarraIA — Learning Agent</title>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+/* ── Garra Glass tokens (ADR 0009) ─────────────────────────────────────────── */
+:root {
+  --garra-bg: #041531;
+  --garra-bg-2: #071f4c;
+  --garra-panel: rgba(255,255,255,0.075);
+  --garra-panel-2: rgba(255,255,255,0.11);
+  --garra-border: rgba(255,255,255,0.13);
+  --garra-border-strong: rgba(255,255,255,0.22);
+  --garra-text: #f7fbff;
+  --garra-muted: #9fb2d4;
+  --garra-muted-2: #7186ae;
+  --garra-primary: #ffd400;
+  --garra-accent: #16d9ff;
+  --garra-success: #20e887;
+  --garra-warning: #ffb020;
+  --garra-danger: #ff5c7a;
+  --garra-radius: 22px;
+  --garra-radius-sm: 14px;
+  --garra-shadow: 0 28px 90px rgba(0,0,0,0.38);
+  --garra-font: "Inter", system-ui, sans-serif;
+  --garra-mono: "JetBrains Mono", Consolas, monospace;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--garra-font);
+  background: var(--garra-bg);
+  color: var(--garra-text);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+.app-header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(4,21,49,0.88);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--garra-border);
+  padding: 0 28px;
+  display: flex; align-items: center; gap: 24px; height: 56px;
+}
+.header-brand {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 800; font-size: 17px; letter-spacing: -0.02em;
+  color: var(--garra-text); text-decoration: none;
+}
+.brand-dot { color: var(--garra-primary); }
+.header-nav { display: flex; gap: 4px; flex: 1; }
+.nav-link {
+  padding: 6px 16px; border-radius: var(--garra-radius-sm);
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  border: none; background: transparent; color: var(--garra-muted);
+  transition: color 0.15s, background 0.15s;
+}
+.nav-link:hover { color: var(--garra-text); background: var(--garra-panel); }
+.nav-link.active { color: var(--garra-accent); background: rgba(22,217,255,0.1); }
+
+.container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+/* ── Cards ──────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--garra-panel);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--garra-border);
+  border-radius: var(--garra-radius);
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card-title {
+  font-size: 15px; font-weight: 700; color: var(--garra-accent);
+  text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 16px;
+}
+
+/* ── Table ──────────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+thead th {
+  text-align: left; padding: 10px 14px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--garra-muted-2);
+  border-bottom: 1px solid var(--garra-border);
+}
+tbody tr { border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.1s; }
+tbody tr:hover { background: var(--garra-panel-2); }
+tbody td { padding: 10px 14px; vertical-align: middle; }
+
+/* ── Badges ─────────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600;
+}
+.badge-success { background: rgba(32,232,135,0.15); color: var(--garra-success); }
+.badge-warning { background: rgba(255,176,32,0.15); color: var(--garra-warning); }
+.badge-danger  { background: rgba(255,92,122,0.15);  color: var(--garra-danger); }
+.badge-muted   { background: rgba(159,178,212,0.12); color: var(--garra-muted); }
+.badge-accent  { background: rgba(22,217,255,0.1);   color: var(--garra-accent); }
+
+/* ── Score bar ───────────────────────────────────────────────────────────────── */
+.score-bar { display: flex; align-items: center; gap: 8px; min-width: 100px; }
+.score-track {
+  flex: 1; height: 5px; border-radius: 99px;
+  background: rgba(255,255,255,0.1);
+}
+.score-fill { height: 100%; border-radius: 99px; background: var(--garra-success); }
+.score-fill.low  { background: var(--garra-danger); }
+.score-fill.mid  { background: var(--garra-warning); }
+.score-val { font-size: 11px; font-family: var(--garra-mono); color: var(--garra-muted); min-width: 28px; }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: var(--garra-radius-sm);
+  font-family: var(--garra-font); font-size: 12.5px; font-weight: 600;
+  border: none; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+  text-decoration: none;
+}
+.btn:hover { opacity: 0.88; transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn-primary { background: var(--garra-primary); color: #08172e; }
+.btn-accent  { background: rgba(22,217,255,0.15); color: var(--garra-accent); border: 1px solid rgba(22,217,255,0.25); }
+.btn-danger  { background: rgba(255,92,122,0.15);  color: var(--garra-danger);  border: 1px solid rgba(255,92,122,0.3); }
+.btn-muted   { background: var(--garra-panel-2); color: var(--garra-muted); border: 1px solid var(--garra-border); }
+.btn-sm { padding: 4px 10px; font-size: 11.5px; }
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────────── */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Empty state ─────────────────────────────────────────────────────────────── */
+.empty-state {
+  text-align: center; padding: 56px 24px;
+  color: var(--garra-muted-2); font-size: 14px;
+}
+.empty-state-icon { font-size: 40px; margin-bottom: 12px; }
+
+/* ── Modal ───────────────────────────────────────────────────────────────────── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6); z-index: 200;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: #071f4c;
+  border: 1px solid var(--garra-border-strong);
+  border-radius: var(--garra-radius);
+  padding: 28px; width: 640px; max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 80px); overflow-y: auto;
+  box-shadow: var(--garra-shadow);
+}
+.modal-title {
+  font-size: 16px; font-weight: 700; margin-bottom: 20px;
+  display: flex; align-items: center; gap: 10px;
+}
+.modal-actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+.modal-body { font-size: 13px; color: var(--garra-muted); line-height: 1.7; }
+.modal-body pre {
+  background: rgba(0,0,0,0.3); border-radius: 10px;
+  padding: 14px; overflow-x: auto; font-family: var(--garra-mono); font-size: 12px;
+  margin-top: 12px; white-space: pre-wrap; word-break: break-word;
+}
+.modal-body h4 { color: var(--garra-muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin: 16px 0 6px; }
+
+/* ── Confirm modal ───────────────────────────────────────────────────────────── */
+#confirm-modal .modal { width: 420px; }
+#confirm-msg { color: var(--garra-text); font-size: 14px; margin-bottom: 8px; }
+
+/* ── Toast ───────────────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed; bottom: 28px; right: 28px;
+  background: rgba(7,31,76,0.97); border: 1px solid var(--garra-border-strong);
+  border-radius: var(--garra-radius-sm); padding: 12px 20px; font-size: 13px;
+  box-shadow: var(--garra-shadow); z-index: 300;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none; max-width: 360px;
+}
+#toast.show { opacity: 1; }
+
+/* ── Spinner ─────────────────────────────────────────────────────────────────── */
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--garra-border); border-top-color: var(--garra-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── History list ─────────────────────────────────────────────────────────────── */
+.history-list { list-style: none; font-size: 12px; font-family: var(--garra-mono); }
+.history-list li {
+  display: flex; gap: 10px; padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05); color: var(--garra-muted);
+}
+.history-list li .sha { color: var(--garra-accent); min-width: 64px; }
+.history-list li .msg { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="app-header">
+  <a href="/" class="header-brand">Garra<span class="brand-dot">IA</span></a>
+  <nav class="header-nav">
+    <button class="nav-link" onclick="location.href='/'">Chat</button>
+    <button class="nav-link" onclick="location.href='/admin'">Admin</button>
+    <button class="nav-link active" data-tab="skills" onclick="switchTab('skills')">Skills</button>
+    <button class="nav-link" data-tab="logs" onclick="switchTab('logs')">Learning Logs</button>
+  </nav>
+</header>
+
+<!-- Main -->
+<main class="container">
+
+  <!-- Skills tab -->
+  <div id="tab-skills" class="tab-panel active">
+    <div class="card">
+      <div class="card-title">Managed Skills</div>
+      <div id="skills-loading" class="empty-state"><div class="spinner"></div></div>
+      <div id="skills-empty" class="empty-state" style="display:none">
+        <div class="empty-state-icon">🤖</div>
+        No skills in the registry yet. Skills appear here after the Skill Miner detects patterns.
+      </div>
+      <div class="table-wrap" id="skills-table-wrap" style="display:none">
+        <table id="skills-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Scope</th>
+              <th>Score</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="skills-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Learning Logs tab -->
+  <div id="tab-logs" class="tab-panel">
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Session Observations</div>
+      <div id="sessions-list">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Pending Candidates</div>
+      <div id="candidates-list">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Skill detail modal -->
+<div id="detail-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('detail-modal')">
+  <div class="modal">
+    <div class="modal-title" id="detail-title">Skill Detail</div>
+    <div class="modal-body" id="detail-body"></div>
+    <div class="modal-actions" id="detail-actions"></div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div id="confirm-modal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title">Confirm Action</div>
+    <p id="confirm-msg"></p>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+      <button class="btn btn-muted" onclick="closeModal('confirm-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-link[data-tab]').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelector('.nav-link[data-tab="' + name + '"]').classList.add('active');
+  if (name === 'logs') loadLogs();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = isError ? 'rgba(255,92,122,0.5)' : 'rgba(32,232,135,0.4)';
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function confirm(msg, onOk) {
+  document.getElementById('confirm-msg').textContent = msg;
+  const btn = document.getElementById('confirm-ok');
+  btn.onclick = () => { closeModal('confirm-modal'); onOk(); };
+  openModal('confirm-modal');
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+}
+
+// ── Score bar ─────────────────────────────────────────────────────────────────
+function scoreBar(score) {
+  const pct = Math.round(score * 100);
+  const cls = pct < 40 ? 'low' : pct < 70 ? 'mid' : '';
+  return `<div class="score-bar">
+    <div class="score-track"><div class="score-fill ${cls}" style="width:${pct}%"></div></div>
+    <span class="score-val">${pct}%</span>
+  </div>`;
+}
+
+// ── Load skills ───────────────────────────────────────────────────────────────
+async function loadSkills() {
+  const { ok, data } = await api('GET', '/api/learning/skills');
+  document.getElementById('skills-loading').style.display = 'none';
+  if (!ok || !data.skills || !data.skills.length) {
+    document.getElementById('skills-empty').style.display = '';
+    return;
+  }
+  document.getElementById('skills-table-wrap').style.display = '';
+  const tbody = document.getElementById('skills-tbody');
+  tbody.innerHTML = data.skills.map(s => {
+    const locked = s.locked ? '<span class="badge badge-warning">🔒 Locked</span>' : '';
+    const depr = s.deprecated ? '<span class="badge badge-muted">Deprecated</span>' : '';
+    const status = locked || depr || '<span class="badge badge-success">Active</span>';
+    const scope = `<span class="badge badge-accent">${s.scope}</span>`;
+    return `<tr>
+      <td><button class="btn btn-accent btn-sm" onclick="showDetail('${esc(s.name)}')">${esc(s.name)}</button></td>
+      <td>${scope}</td>
+      <td>${scoreBar(s.score)}</td>
+      <td>${status}</td>
+      <td>
+        <button class="btn btn-primary btn-sm" onclick="doApprove('${esc(s.name)}')">Approve</button>
+        <button class="btn btn-muted btn-sm" onclick="doLock('${esc(s.name)}')">Lock</button>
+        <button class="btn btn-danger btn-sm" onclick="doReject('${esc(s.name)}')">Reject</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Skill detail modal ────────────────────────────────────────────────────────
+async function showDetail(name) {
+  document.getElementById('detail-title').textContent = name;
+  document.getElementById('detail-body').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('detail-actions').innerHTML = '';
+  openModal('detail-modal');
+  const { ok, data } = await api('GET', '/api/learning/skills/' + encodeURIComponent(name));
+  if (!ok) {
+    document.getElementById('detail-body').innerHTML = '<p style="color:var(--garra-danger)">Failed to load skill detail.</p>';
+    return;
+  }
+  const fm = data;
+  const historyHtml = (data.history || []).map(v =>
+    `<li><span class="sha">${esc(v.short_sha)}</span><span class="msg">${esc(v.message)}</span><span>${esc(v.date.slice(0,10))}</span></li>`
+  ).join('') || '<li style="color:var(--garra-muted-2)">No git history found.</li>';
+
+  document.getElementById('detail-body').innerHTML = `
+    <h4>Body</h4>
+    <pre>${esc(data.body || '(empty)')}</pre>
+    <h4>Git History</h4>
+    <ul class="history-list">${historyHtml}</ul>
+  `;
+
+  const rollbackSha = (data.history || [])[0]?.sha || '';
+  document.getElementById('detail-actions').innerHTML = `
+    <button class="btn btn-primary" onclick="doApprove('${esc(name)}')">Approve</button>
+    <button class="btn btn-muted" onclick="doLock('${esc(name)}')">Lock</button>
+    <button class="btn btn-danger" onclick="doRollback('${esc(name)}','${esc(rollbackSha)}')">Rollback</button>
+    <button class="btn btn-muted" onclick="closeModal('detail-modal')">Close</button>
+  `;
+}
+
+// ── Skill actions ─────────────────────────────────────────────────────────────
+async function doApprove(name) {
+  confirm(`Approve skill "${name}" through the Safety Gate?`, async () => {
+    const { ok, data } = await api('POST', '/api/learning/skills/' + encodeURIComponent(name) + '/approve');
+    if (ok) { showToast(`✓ Skill "${name}" approved`); loadSkills(); }
+    else showToast(`✗ ${data.error || 'Approval failed'}`, true);
+  });
+}
+
+async function doReject(name) {
+  confirm(`Reject and deprecate skill "${name}"?`, async () => {
+    const { ok, data } = await api('POST', '/api/learning/skills/' + encodeURIComponent(name) + '/reject', { reason: 'web-console rejection' });
+    if (ok) { showToast(`Skill "${name}" rejected`); loadSkills(); }
+    else showToast(`✗ ${data.error || 'Rejection failed'}`, true);
+  });
+}
+
+async function doLock(name) {
+  confirm(`Lock skill "${name}" to prevent auto-update?`, async () => {
+    const { ok, data } = await api('POST', '/api/learning/skills/' + encodeURIComponent(name) + '/lock');
+    if (ok) { showToast(`🔒 Skill "${name}" locked`); loadSkills(); }
+    else showToast(`✗ ${data.error || 'Lock failed'}`, true);
+  });
+}
+
+async function doRollback(name, sha) {
+  if (!sha) { showToast('No SHA available for rollback', true); return; }
+  confirm(`Roll back "${name}" to SHA ${sha.slice(0,8)}?`, async () => {
+    const { ok, data } = await api('POST', '/api/learning/skills/' + encodeURIComponent(name) + '/rollback', { sha, reason: 'web-console rollback' });
+    if (ok) { showToast(`↩ Skill "${name}" rolled back`); closeModal('detail-modal'); loadSkills(); }
+    else showToast(`✗ ${data.error || 'Rollback failed'}`, true);
+  });
+}
+
+// ── Load logs ─────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  // Sessions
+  const { data: sData } = await api('GET', '/api/learning/logs/sessions');
+  const sessions = sData.sessions || [];
+  document.getElementById('sessions-list').innerHTML = sessions.length
+    ? `<ul class="history-list">${sessions.map(s => `<li><span class="msg">${esc(s)}</span></li>`).join('')}</ul>`
+    : `<div class="empty-state"><div class="empty-state-icon">📋</div>No sessions observed yet.</div>`;
+
+  // Candidates
+  const { data: cData } = await api('GET', '/api/learning/logs/candidates');
+  const candidates = cData.candidates || [];
+  document.getElementById('candidates-list').innerHTML = candidates.length
+    ? `<ul class="history-list">${candidates.map(c =>
+        `<li><span class="sha">${esc(c.slug)}</span><span class="msg">${esc(c.normalized_commands.join(' → '))}</span><span class="badge badge-muted">${c.occurrence_count}×</span></li>`
+      ).join('')}</ul>`
+    : `<div class="empty-state"><div class="empty-state-icon">🔍</div>No candidates pending. Run the Skill Miner to detect patterns.</div>`;
+}
+
+// ── Escape HTML ───────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadSkills();
+</script>
+</body>
+</html>
