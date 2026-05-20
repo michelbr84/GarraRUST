@@ -79,7 +79,7 @@ axum = { workspace = true }
 # are isolated from runtime-deps in cargo, so this pin does not affect the
 # workspace 0.9 rand used at runtime by jwt.rs / sessions.rs / hashing.rs.
 argon2 = "0.5"
-rand = "0.8"
+rand = "0.10"
 password-hash = { version = "0.5", features = ["getrandom"] }
 
 [dev-dependencies]
