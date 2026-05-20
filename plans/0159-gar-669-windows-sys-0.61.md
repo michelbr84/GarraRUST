@@ -1,6 +1,6 @@
 # Plan 0159 — GAR-669 Slice 2: windows-sys 0.52 → 0.61 (garraia-cli)
 
-**Status:** In Progress
+**Status:** Done — Merged 2026-05-20 via PR #451 (`1e7ce50`)
 **Branch:** `routine/202005201220-gar-669-windows-sys-0.61-fix`
 **Linear:** [GAR-669](https://linear.app/chatgpt25/issue/GAR-669)
 **Parent plan:** GAR-669 (Cargo deps breaking API changes)
@@ -83,17 +83,17 @@ Run `cargo update -p windows-sys --precise 0.52.0`.
 - [x] T2: Fix `handle == 0` → `handle.is_null()` in `is_process_running`
 - [x] T3: Verify `cargo check -p garraia` clean (Linux)
 - [x] T4: Commit + push
-- [ ] T5: Open PR, wait for CI green (especially `Test (windows-latest)`)
-- [ ] T6: Merge + mark GAR-669 Slice 2 done
-- [ ] T7: Update plans/README.md + ROADMAP.md
+- [x] T5: Open PR, wait for CI green (especially `Test (windows-latest)`)
+- [x] T6: Merge + mark GAR-669 Slice 2 done
+- [x] T7: Update plans/README.md + ROADMAP.md
 
 ---
 
 ## Acceptance criteria
 
-- [ ] All CI checks green including `Test (windows-latest)` (compilation-only via `--no-run`)
-- [ ] Dependabot PR #422 can be closed (superseded)
-- [ ] `cargo audit` clean
+- [x] All CI checks green including `Test (windows-latest)` (compilation-only via `--no-run`)
+- [x] Dependabot PR #422 superseded by PR #451
+- [x] `cargo audit` clean (Security Audit check passed)
 
 ---
 

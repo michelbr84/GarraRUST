@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-20** — GAR-500 (Auto Dream / handoff) ✅ Done (PR #445, `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura. Anterior: GAR-651 ✅ Done (PR #443, `21a13f1`). Epic GAR-641 **COMPLETO** (10/10).
+**Atualizado 2026-05-20** — GAR-669 Slice 2 (windows-sys 0.52→0.61 + `HANDLE.is_null()` fix em garraia-cli) ✅ Done (PR #451, `1e7ce50`). Anterior: GAR-669 Slice 1 (rand_chacha 0.9) ✅ Done (PR #446, `d9f811a`). GAR-500 ✅ Done (PR #445, `f1fb596`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
