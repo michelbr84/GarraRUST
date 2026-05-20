@@ -3529,6 +3529,7 @@ dependencies = [
  "garraia-config",
  "garraia-db",
  "garraia-glob",
+ "garraia-learning",
  "garraia-runtime",
  "garraia-security",
  "garraia-skills",
