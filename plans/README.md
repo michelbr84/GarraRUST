@@ -165,6 +165,6 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0154 | [GAR-497 — Bash Safety Gate: centralize denylist in garraia-common](0154-gar-497-bash-safety-gate.md) | [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) | ✅ Merged 2026-05-19 via PR #437 (`f2ab1d9`) |
 | 0155 | [GAR-501 — `garra verify` — local idempotent validation pipeline](0155-gar-501-garra-verify.md) | [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) | ✅ Merged 2026-05-19 via PR #441 (`ca9f1fa2`) |
 | 0156 | [GAR-651 — Learning Agent Web UI: skills + learning-logs pages in Garra Glass](0156-gar-651-learning-web-ui.md) | [GAR-651](https://linear.app/chatgpt25/issue/GAR-651) | ✅ Merged 2026-05-20 via PR #443 (`21a13f1`) |
-| 0157 | [GAR-500 — Auto Dream / handoff via .garra-estado.md](0157-gar-500-auto-dream-handoff.md) | [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) | 🔄 In Progress (PR #445) |
-| 0158 | [GAR-669 Slice 1 — rand_chacha 0.9 + rand 0.9 co-bump (garraia-workspace dev-deps)](0158-gar-669-rand-chacha-0.9-dev-dep-co-bump.md) | [GAR-669](https://linear.app/chatgpt25/issue/GAR-669) | 🔄 In Progress (PR #446) |
+| 0157 | [GAR-500 — Auto Dream / handoff via .garra-estado.md](0157-gar-500-auto-dream-handoff.md) | [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) | ✅ Merged 2026-05-20 via PR #445 (`f1fb596`) |
+| 0158 | [GAR-669 Slice 1 — rand_chacha 0.9 + rand 0.9 co-bump (garraia-workspace dev-deps)](0158-gar-669-rand-chacha-0.9-dev-dep-co-bump.md) | [GAR-669](https://linear.app/chatgpt25/issue/GAR-669) | ✅ Merged 2026-05-20 via PR #446 (`d9f811a`) |
 | 0159 | [GAR-669 Slice 2 — windows-sys 0.52 → 0.61 (garraia-cli)](0159-gar-669-windows-sys-0.61.md) | [GAR-669](https://linear.app/chatgpt25/issue/GAR-669) | 🔄 In Progress |
