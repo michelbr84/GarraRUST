@@ -445,7 +445,7 @@ aprendido, sem nunca promover skill não-validada.
 - Não promover skill sem human-in-the-loop em paths sensíveis.
 - Não substituir `garraia-skills` nem `garraia-workspace memory` — Learning Agent **integra**; não duplica.
 
-**Issues Linear filhas do épico [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641)** (criadas 2026-05-17, label `epic:learning-agent`, todas Backlog):
+**Issues Linear filhas do épico [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641)** (criadas 2026-05-17, label `epic:learning-agent`) — **10/10 Done ✅ 2026-05-20**:
 
 - [`GAR-642`](https://linear.app/chatgpt25/issue/GAR-642) **Learning Agent Architecture** (High, label `adr-needed`) — ADR 0010 → Accepted + scaffold + integração com `AgentRuntime`.
 - [`GAR-643`](https://linear.app/chatgpt25/issue/GAR-643) **Skill Miner** (Medium)
@@ -456,7 +456,7 @@ aprendido, sem nunca promover skill não-validada.
 - [`GAR-648`](https://linear.app/chatgpt25/issue/GAR-648) **Skill Auto-Updater** (Medium)
 - [`GAR-649`](https://linear.app/chatgpt25/issue/GAR-649) **Skill Safety Gates** (Urgent — hard wall)
 - [`GAR-650`](https://linear.app/chatgpt25/issue/GAR-650) **Skill Versioning/Rollback** (Medium)
-- [`GAR-651`](https://linear.app/chatgpt25/issue/GAR-651) **Web UI for Skills and Learning Logs** (Medium, depende de ADR 0009)
+- [`GAR-651`](https://linear.app/chatgpt25/issue/GAR-651) **Web UI for Skills and Learning Logs** (Medium, depende de ADR 0009) ✅ Done — PR #443 (`21a13f1`) 2026-05-20
 
 **Plan-mãe:** [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md)
 
@@ -1160,7 +1160,7 @@ Foram materializadas ~40 issues críticas (`GAR-371` a `GAR-410`) cobrindo: 8 AD
 | `GAR-INFRA-GA` | 6.1 | Helm + Terraform + Docker |
 | `GAR-OBS-GA` | 6.2 | SLOs + runbooks + DR |
 | `GAR-RELEASE-GA` | 6.3 | Beta → GA + docs |
-| [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) |
+| [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) — **✅ 10/10 Done 2026-05-20** |
 
 ---
 
