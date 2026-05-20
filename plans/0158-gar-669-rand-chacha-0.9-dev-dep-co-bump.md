@@ -1,6 +1,6 @@
 # Plan 0158 — GAR-669 Slice 1: rand_chacha 0.9 + rand 0.9 co-bump (garraia-workspace dev-deps)
 
-**Status:** In Progress  
+**Status:** ✅ Done — merged PR #446 (`d9f811a`) 2026-05-20  
 **Branch:** `health/202005200845-rand-chacha-0.9`  
 **Linear:** [GAR-669](https://linear.app/chatgpt25/issue/GAR-669)  
 **Health routine run:** 7 (2026-05-20 ~08:45 ET)
