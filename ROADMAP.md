@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-20** — GAR-651 (Learning Agent Web UI, 10/10) ✅ Done (PR #443, `21a13f1`). `GET /learning` Garra Glass page + 10 REST endpoints under `/api/learning/*`; 11 unit tests. Epic GAR-641 **COMPLETO** (todos 10/10 sub-issues done). Anterior: GAR-649 ✅ Done (PR #413, `c80b7c8`). ~~**GAR-650 (Skill Versioning/Rollback, 9/10)**~~ ✅ **Done** (2026-05-19, plan 0151, PR #414 `896b2fe`).
+**Atualizado 2026-05-20** — GAR-500 (Auto Dream / handoff) ✅ Done (PR #445, `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura. Anterior: GAR-651 ✅ Done (PR #443, `21a13f1`). Epic GAR-641 **COMPLETO** (10/10).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1255,7 +1255,9 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Garra Learning Agent — Web UI ([GAR-651](https://linear.app/chatgpt25/issue/GAR-651), 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **[GAR-641](https://linear.app/chatgpt25/issue/GAR-641) completo** (10/10).
 
-5. **Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff** — schema `.garra-estado.md` + reader/writer `HandoffState` em `garraia-common` + allow-list de campos (sem message bodies) + redaction helper + adicionar ao `.gitignore`. Plan: `plans/0157-gar-500-auto-dream-handoff.md`. **Em execução.**
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
+
+5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-495 (Capability prompt nativo), GAR-496 (Repo workflow seguro), GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Todos Backlog.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
