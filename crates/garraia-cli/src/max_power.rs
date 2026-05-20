@@ -3,6 +3,15 @@
 //! Routes a goal description to the correct workflow by keyword matching.
 //! The full state-machine execution (brainstorm → spec → plan → execute) is
 //! implemented in GAR-495..GAR-501; this module is the entry-point skeleton.
+//!
+//! At startup the module loads `.garra-estado.md` (GAR-500) and prints a
+//! one-line handoff summary so the operator knows where the previous session
+//! left off.
+
+use garraia_common::handoff;
+
+/// Default path for the handoff state file (relative to CWD).
+const HANDOFF_FILE: &str = ".garra-estado.md";
 
 /// Name-to-keyword mapping for route detection.
 const ROUTES: &[(&str, &[&str])] = &[
@@ -92,9 +101,24 @@ pub fn detect_route(goal: &str) -> (&'static str, Option<&'static str>) {
 
 /// Entry point for `garra max-power`.
 pub fn run(goal: Option<String>, mode: String) {
+    print_handoff_summary();
     match goal {
         None => print_menu(),
         Some(g) => route_goal(&g, &mode),
+    }
+}
+
+/// Load `.garra-estado.md` and print a one-line handoff summary if the file
+/// exists and contains a previous action.  Silently skips on missing file or
+/// parse error (fail-closed per design invariant).
+fn print_handoff_summary() {
+    let path = std::path::Path::new(HANDOFF_FILE);
+    match handoff::load(path) {
+        Ok(state) if state.last_action.is_some() || state.next_action.is_some() => {
+            println!("  [handoff] {}", state.summary());
+            println!();
+        }
+        _ => {}
     }
 }
 
