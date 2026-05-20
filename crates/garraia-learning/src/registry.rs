@@ -276,6 +276,30 @@ pub fn deprecate(opts: &RegistryOptions, name: &str, scope: SkillScope) -> Resul
     Ok(true)
 }
 
+/// Toggles the `locked` flag on a skill file in-place.
+///
+/// `locked = true` prevents auto-update via the Updater; `false` re-enables it.
+/// Returns `true` if the skill was found and updated, `false` if not found.
+pub fn set_locked(opts: &RegistryOptions, name: &str, locked: bool) -> Result<bool> {
+    for scope in [SkillScope::Project, SkillScope::Global] {
+        let dir = scope_dir(opts, &scope);
+        let path = skill_path(dir, name);
+        if !path.exists() {
+            continue;
+        }
+        let mut skill = read_skill_file(&path)?;
+        if skill.frontmatter.locked == locked {
+            return Ok(true);
+        }
+        skill.frontmatter.locked = locked;
+        let locks_dir = dir.join("_locks");
+        let _lock = acquire_lock(&locks_dir, name)?;
+        write_skill_file(&skill, &path)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Lists all candidate skill files in `candidates_dir` (files matching `mined-*.md`).
 ///
 /// Files that fail to parse are skipped with a warning.

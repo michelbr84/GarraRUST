@@ -13,6 +13,7 @@ pub mod context_summarizer;
 pub mod diagnostics_handler;
 pub mod externalization;
 pub mod health;
+pub mod learning_handler;
 pub mod logs_handler;
 pub mod mcp;
 pub mod mcp_commands;

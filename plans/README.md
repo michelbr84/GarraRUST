@@ -164,3 +164,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0153 | [GAR-494 — `garra max-power` skeleton CLI subcommand](0153-gar-494-max-power-skeleton.md) | [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) | ✅ Merged 2026-05-19 via PR #431 (`8a9a915`) |
 | 0154 | [GAR-497 — Bash Safety Gate: centralize denylist in garraia-common](0154-gar-497-bash-safety-gate.md) | [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) | ✅ Merged 2026-05-19 via PR #437 (`f2ab1d9`) |
 | 0155 | [GAR-501 — `garra verify` — local idempotent validation pipeline](0155-gar-501-garra-verify.md) | [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) | ✅ Merged 2026-05-19 via PR #441 (`ca9f1fa2`) |
+| 0156 | [GAR-651 — Learning Agent Web UI: skills + learning-logs pages in Garra Glass](0156-gar-651-learning-web-ui.md) | [GAR-651](https://linear.app/chatgpt25/issue/GAR-651) | 🔄 In Progress |
