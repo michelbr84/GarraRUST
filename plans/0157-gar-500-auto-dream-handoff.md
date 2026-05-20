@@ -4,6 +4,7 @@
 **Epic:** [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) — GarraMaxPower
 **Branch:** `routine/202005200619-gar-500-auto-dream-handoff`
 **Date (Florida):** 2026-05-20
+**Status:** ✅ Done — merged PR #445 (`f1fb596`) 2026-05-20
 
 ---
 
