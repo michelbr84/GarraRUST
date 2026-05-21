@@ -1,8 +1,31 @@
-# Plan 0162 — GAR-670: REST /v1/chats SSE stream
+# Plan 0162 — GAR-678: REST /v1/chats SSE stream
 
-**Linear issue:** [GAR-670](https://linear.app/chatgpt25/issue/GAR-670) — "GET /v1/chats/{id}/stream — SSE streaming" (Backlog → In Progress). Labels: `epic:ws-api`. Project: Fase 3 — Group Workspace.
+**Linear issue:** [GAR-678](https://linear.app/chatgpt25/issue/GAR-678) — "REST /v1 chats slice 3: GET /v1/chats/{chat_id}/stream (SSE) — real-time message events" (Backlog → In Progress → **Done** 2026-05-21). Labels: `epic:ws-chat`, `epic:ws-api`. Project: Fase 3 — Group Workspace.
 
-**Status:** 🔄 In Progress (2026-05-21)
+> **Linear ID correction (2026-05-21):** the original PR #459 body and this plan
+> file initially referenced GAR-670, which is in fact "Health Routine run 3"
+> bookkeeping. The autonomous routine misattributed the ID during PR
+> creation. [GAR-678](https://linear.app/chatgpt25/issue/GAR-678) was created
+> specifically to track this work with full context; the plan file was renamed
+> from `0162-gar-670-chats-sse-stream.md` → `0162-gar-678-chats-sse-stream.md`
+> in this bookkeeping pass.
+
+**Status:** ✅ Merged 2026-05-21 via PR [#459](https://github.com/michelbr84/GarraRUST/pull/459) (`d25b64c`).
+
+## Post-merge addendum (audit fixes)
+
+Three audit findings closed on the same branch before merge:
+
+| Finding | Severity | Fix commit | Note |
+|---|---|---|---|
+| F-1 | ALTO | `aaae3c5` | `RestV1FullState::cleanup_chat_subscription` + `ChatStreamGuard` RAII — DashMap entry GC'd when last receiver disconnects. Closes the leak originally documented in §"Broadcast table" below. |
+| F-2 | MÉDIO | `20216e0` | New `tests/rest_v1_chats_sse.rs` — 4 scenarios (cross-tenant 404, happy-path 200, missing X-Group-Id 400, archived chat 404). CLAUDE.md regra #10. |
+| RLS-tx bug (exposed by F-2) | ALTO | `19ec966` | `stream_chat` was calling `SELECT set_config(_,_,true)` outside a tx → setting reverted in auto-commit → FORCE RLS rejected all rows. Fix: wrap in `pool.begin()` matching `messages.rs`. |
+
+Open follow-ups (post-merge):
+
+- [GAR-679](https://linear.app/chatgpt25/issue/GAR-679) — F-3: SSE rate-limit per user/group (Medium).
+- [GAR-680](https://linear.app/chatgpt25/issue/GAR-680) — F-4: audit-log of SSE subscriptions (Low).
 
 ## Goal
 
