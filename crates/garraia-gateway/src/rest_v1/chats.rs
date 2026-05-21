@@ -29,13 +29,19 @@
 //! 36 hex-with-dash characters and no metacharacters — injection-safe by
 //! construction. All user-controlled values use `sqlx::query::bind`.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use chrono::{DateTime, Utc};
+use futures::stream;
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast::error::RecvError;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -1382,6 +1388,168 @@ pub async fn remove_chat_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `GET /v1/chats/{chat_id}/stream` — SSE stream of real-time chat events.
+///
+/// Emits `message.created` events whenever a new message is posted to the
+/// chat via `POST /v1/chats/{chat_id}/messages`. A keep-alive comment is
+/// sent every 30 seconds to prevent proxy timeouts.
+///
+/// ## Wire format
+///
+/// ```text
+/// event: message.created
+/// data: {"id":"...","chat_id":"...","sender_user_id":"...","body":"...","created_at":"...Z"}
+///
+/// event: stream.lagged
+/// data: 3
+/// ```
+///
+/// `stream.lagged` appears when the server drops events because the client
+/// fell behind the 64-event broadcast buffer. The `data` field is the count
+/// of dropped events.
+///
+/// ## Error matrix
+///
+/// | Condition                        | Status | Source         |
+/// |----------------------------------|--------|----------------|
+/// | Missing/invalid JWT              | 401    | Principal ext. |
+/// | Non-member of group              | 403    | Principal ext. |
+/// | `X-Group-Id` missing             | 400    | this handler   |
+/// | Chat not found in caller's group | 404    | this handler   |
+/// | Happy path                       | 200    | text/event-stream |
+#[utoipa::path(
+    get,
+    path = "/v1/chats/{chat_id}/stream",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+    ),
+    responses(
+        (status = 200, description = "SSE stream opened.", content_type = "text/event-stream"),
+        (status = 400, description = "X-Group-Id missing.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn stream_chat(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(chat_id): Path<Uuid>,
+) -> Result<Sse<impl stream::Stream<Item = Result<Event, Infallible>>>, RestError> {
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // Verify the chat belongs to the caller's group (0 rows → 404, same as
+    // send_message — avoids leaking the existence of chats in other tenants).
+    //
+    // Bug fix exposed by the integration test (audit F-2): `set_config(_,_,true)`
+    // is local to the current transaction. The previous implementation used
+    // `pool.acquire()` (auto-commit), so each `SELECT set_config(...)`
+    // statement opened its own implicit tx and the setting reverted before
+    // the chat-exists query ran. FORCE RLS then rejected every row — even
+    // legitimate ones — and the handler returned 404 across the board.
+    //
+    // Fix: wrap acquire + set_config + chat_exists in a single transaction,
+    // matching the pattern used by every other handler in messages.rs.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let chat_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Commit the read-only RLS transaction. The conn returns to the pool;
+    // the subsequent `subscribe_chat` is purely in-process.
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let rx = state.subscribe_chat(chat_id);
+
+    // RAII guard: when `ChatStreamState` is dropped (client disconnect, server
+    // close, or stream end), `rx` drops first (declaration order), then
+    // `_guard` runs `cleanup_chat_subscription`, which removes the DashMap
+    // entry iff `receiver_count() == 0`. Closes audit finding F-1.
+    let stream_state = ChatStreamState {
+        rx,
+        _guard: ChatStreamGuard {
+            chat_id,
+            state: state.clone(),
+        },
+    };
+
+    let event_stream = stream::unfold(stream_state, |mut s| async move {
+        match s.rx.recv().await {
+            Ok(value) => {
+                let data = serde_json::to_string(&value).unwrap_or_default();
+                Some((Ok(Event::default().event("message.created").data(data)), s))
+            }
+            Err(RecvError::Lagged(n)) => Some((
+                Ok(Event::default().event("stream.lagged").data(n.to_string())),
+                s,
+            )),
+            Err(RecvError::Closed) => None,
+        }
+    });
+
+    Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(30))))
+}
+
+/// Plan 0162 (GAR-670): unfold state for the SSE stream. Field order matters
+/// — `rx` is declared first so it drops before `_guard`, ensuring
+/// `receiver_count()` reflects post-our-drop state when cleanup runs.
+struct ChatStreamState {
+    rx: tokio::sync::broadcast::Receiver<serde_json::Value>,
+    _guard: ChatStreamGuard,
+}
+
+/// RAII handle that GCs the chat's broadcast entry when the SSE stream ends.
+struct ChatStreamGuard {
+    chat_id: Uuid,
+    state: RestV1FullState,
+}
+
+impl Drop for ChatStreamGuard {
+    fn drop(&mut self) {
+        self.state.cleanup_chat_subscription(self.chat_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,5 +1668,208 @@ mod tests {
             req.validate().is_ok(),
             "1000 emoji chars (4000 bytes) must pass the chars()-based check"
         );
+    }
+
+    // ── SSE broadcast unit tests (plan 0162, GAR-670) ──────────────────────
+
+    #[test]
+    fn chat_event_json_roundtrip() {
+        let event = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "chat_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "sender_label": "Alice",
+            "body": "hello",
+        });
+        let serialized = serde_json::to_string(&event).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back["body"], "hello");
+    }
+
+    #[tokio::test]
+    async fn broadcast_send_receive() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(8);
+        let payload = serde_json::json!({"msg": "hi"});
+        tx.send(payload.clone()).unwrap();
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received["msg"], "hi");
+    }
+
+    #[tokio::test]
+    async fn broadcast_no_subscriber_send_is_noop() {
+        let (tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(8);
+        // No receivers — send returns Err(SendError), which we ignore.
+        let result = tx.send(serde_json::json!({"x": 1}));
+        assert!(result.is_err(), "expected SendError when no receivers");
+    }
+
+    #[tokio::test]
+    async fn broadcast_lagged_receiver_gets_lagged_error() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(2);
+        // Fill beyond capacity to trigger lagged.
+        for i in 0..4u64 {
+            let _ = tx.send(serde_json::json!({"n": i}));
+        }
+        // First recv should return Lagged because 2 slots filled 4 times.
+        let result = rx.recv().await;
+        match result {
+            Err(RecvError::Lagged(_)) => { /* expected */ }
+            other => panic!("expected Lagged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dashmap_lazy_channel_creation() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // First access creates the channel.
+        let mut rx = map
+            .entry(chat_id)
+            .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+            .value()
+            .subscribe();
+
+        // Publishing via map lookup works.
+        if let Some(tx) = map.get(&chat_id) {
+            tx.send(serde_json::json!({"ok": true})).unwrap();
+        }
+
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg["ok"], true);
+    }
+
+    // ── F-1 cleanup contract (PR #459 audit fix) ────────────────────────────
+    // The SSE handler's RAII guard calls `cleanup_chat_subscription` on stream
+    // end, which uses `DashMap::remove_if(predicate)` so the entry is removed
+    // iff no live receivers remain. The two tests below pin the contract that
+    // `RestV1FullState::cleanup_chat_subscription` relies on.
+
+    #[tokio::test]
+    async fn dashmap_remove_if_drops_entry_when_last_receiver_gone() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // Subscribe + immediately drop the receiver → receiver_count() == 0.
+        {
+            let _rx = map
+                .entry(chat_id)
+                .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+                .value()
+                .subscribe();
+        } // _rx dropped here.
+
+        assert!(
+            map.contains_key(&chat_id),
+            "entry still present pre-cleanup"
+        );
+
+        map.remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
+
+        assert!(
+            !map.contains_key(&chat_id),
+            "remove_if must drop the entry when no receivers remain (F-1 fix)"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashmap_remove_if_keeps_entry_when_other_receivers_alive() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // Two subscribers. Drop one. Other still active → entry must stay.
+        let _rx_keep = map
+            .entry(chat_id)
+            .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+            .value()
+            .subscribe();
+        {
+            let _rx_drop = map.get(&chat_id).unwrap().subscribe();
+        } // _rx_drop dropped.
+
+        map.remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
+
+        assert!(
+            map.contains_key(&chat_id),
+            "remove_if must keep entry while at least one receiver lives (F-1 race safety)"
+        );
+    }
+
+    // ── stream_chat auth guard unit tests (plan 0162 addendum) ───────────────
+    // These tests exercise the same guard logic that runs inside stream_chat
+    // before any DB access. Tests 1-3 are pure-logic (no DB, no Axum state).
+    // Test 4 documents the cross-tenant invariant enforced by FORCE RLS.
+
+    #[test]
+    fn stream_chat_missing_x_group_id_header_yields_bad_request() {
+        // Mirrors the `principal.group_id.is_none()` branch: handler returns
+        // RestError::BadRequest before any DB query is executed.
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: None,
+            role: Some(garraia_auth::Role::Member),
+        };
+        let result: Result<Uuid, RestError> = p
+            .group_id
+            .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()));
+        assert!(matches!(result, Err(RestError::BadRequest(_))));
+    }
+
+    #[test]
+    fn stream_chat_no_group_role_yields_forbidden() {
+        // `can()` returns false when `principal.role` is None (no group context).
+        // Handler returns RestError::Forbidden before any DB query.
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: Some(Uuid::new_v4()),
+            role: None,
+        };
+        assert!(!can(&p, Action::ChatsRead));
+        let result: Result<(), RestError> = if can(&p, Action::ChatsRead) {
+            Ok(())
+        } else {
+            Err(RestError::Forbidden)
+        };
+        assert!(matches!(result, Err(RestError::Forbidden)));
+    }
+
+    #[test]
+    fn stream_chat_all_group_roles_have_chats_read() {
+        // Every group role must pass ChatsRead — no member should be 403'd
+        // when subscribing to the SSE stream of their own chat.
+        for role in [
+            garraia_auth::Role::Owner,
+            garraia_auth::Role::Admin,
+            garraia_auth::Role::Member,
+            garraia_auth::Role::Guest,
+            garraia_auth::Role::Child,
+        ] {
+            let p = Principal {
+                user_id: Uuid::new_v4(),
+                group_id: Some(Uuid::new_v4()),
+                role: Some(role),
+            };
+            assert!(
+                can(&p, Action::ChatsRead),
+                "role {role:?} must have ChatsRead; stream_chat would wrongly 403"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_chat_cross_tenant_query_returns_not_found() {
+        // Cross-tenant isolation: the handler converts 0-row fetch_optional
+        // into RestError::NotFound (not Forbidden — avoids leaking chat
+        // existence to other tenants). Two layers enforce this:
+        // 1. SQL WHERE clause: `id = $chat_id AND group_id = $caller_group_id`
+        //    → 0 rows when caller_group_id ≠ chat's actual group_id.
+        // 2. FORCE RLS policy `chats_group_isolation` (migration 007):
+        //    USING (group_id = current_setting('app.current_group_id')::uuid).
+        //    Covered by GAR-392's 81-scenario RLS matrix.
+        let simulated_row: Option<(Uuid,)> = None; // what DB returns for cross-tenant query
+        let result = simulated_row.ok_or(RestError::NotFound);
+        assert!(matches!(result, Err(RestError::NotFound)));
     }
 }

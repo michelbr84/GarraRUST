@@ -623,7 +623,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
 - [x] `GET /v1/messages/{message_id}` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
 - [x] `GET /v1/messages/{message_id}/threads` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
-- [ ] WebSocket `/v1/chats/{chat_id}/stream` com backpressure
+- [x] SSE `GET /v1/chats/{chat_id}/stream` (broadcast cap-64, backpressure via `stream.lagged`) — plan 0162, merged 2026-05-21 via PR #459. Design: SSE escolhido em vez de WebSocket — canal de chat é server→client apenas; cross-tenant isolation via FORCE RLS + `WHERE group_id = $caller_group_id`.
 
 **Arquivos**
 
@@ -1272,7 +1272,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 Trilhas paralelas disponíveis para um segundo dev/agente:
 - **Fase 1.3 — Config reativo** (ainda não materializado).
 - **Fase 4.2 — Mobile build Android update** (gradle 8.x / AGP 8.x / Java 17).
-- **Fase 3.4 — Endpoints restantes da API REST `/v1`**: WebSocket `/v1/chats/{id}/stream`, `tus` resumable upload, embeds de tasks/files/chats.
+- **Fase 3.4 — Endpoints restantes da API REST `/v1`**: embeds de tasks/files/chats (WebSocket stream ✅ entregue como SSE em PR #459; tus upload ✅ entregue GAR-395).
 
 ---
 

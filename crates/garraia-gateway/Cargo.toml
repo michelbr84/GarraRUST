@@ -171,6 +171,14 @@ name = "rest_v1_chats"
 path = "tests/rest_v1_chats.rs"
 required-features = ["test-helpers"]
 
+# Plan 0162 — GAR-670: SSE stream cross-tenant isolation (security audit F-2).
+# 4 scenarios: cross-tenant 404, happy-path 200, missing X-Group-Id 400,
+# archived chat 404. Same feature gating as the other integration suites.
+[[test]]
+name = "rest_v1_chats_sse"
+path = "tests/rest_v1_chats_sse.rs"
+required-features = ["test-helpers"]
+
 # Plan 0055 — GAR-507: REST /v1 messages slice 2 (POST + GET on
 # /v1/chats/{chat_id}/messages). 10 scenarios in one bundled
 # `#[tokio::test]`. Same feature gating as the other integration

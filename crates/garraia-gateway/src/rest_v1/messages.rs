@@ -269,6 +269,22 @@ pub async fn send_message(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Notify SSE subscribers (plan 0162, GAR-670). Fire-and-forget — no
+    // active subscribers means publish_chat_event is a no-op.
+    state.publish_chat_event(
+        chat_id,
+        serde_json::json!({
+            "id": msg_id,
+            "chat_id": chat_id,
+            "group_id": group_id,
+            "sender_user_id": principal.user_id,
+            "sender_label": sender_label,
+            "body": trimmed_body,
+            "reply_to_id": body.reply_to_id,
+            "created_at": created_at,
+        }),
+    );
+
     Ok((
         StatusCode::CREATED,
         Json(MessageResponse {

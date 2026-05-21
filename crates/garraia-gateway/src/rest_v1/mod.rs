@@ -48,9 +48,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::{delete, get, head, post};
+use dashmap::DashMap;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+use uuid::Uuid;
 
 use crate::rate_limiter::{
     RateLimitLayerState, RateLimiter, parse_trusted_proxies, rate_limit_layer_authenticated,
@@ -123,6 +125,8 @@ pub struct RestV1FullState {
     /// Plan 0044: storage wiring for tus upload commit. Always
     /// present (carries `None` fields in fail-soft mode).
     pub storage: RestV1StorageState,
+    /// Plan 0162 (GAR-670): per-chat SSE broadcast table shared with AppState.
+    pub chat_events: Arc<DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>>>,
 }
 
 impl RestV1FullState {
@@ -134,7 +138,47 @@ impl RestV1FullState {
             auth: RestV1AuthState::from_app_state(app)?,
             app_pool: app.app_pool.clone()?,
             storage: RestV1StorageState::from_app_state(app),
+            chat_events: app.chat_events.clone(),
         })
+    }
+
+    /// Plan 0162 (GAR-670): subscribe to per-chat SSE events.
+    ///
+    /// Lazily creates the broadcast channel for `chat_id` on first call.
+    pub(crate) fn subscribe_chat(
+        &self,
+        chat_id: Uuid,
+    ) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.chat_events
+            .entry(chat_id)
+            .or_insert_with(|| tokio::sync::broadcast::channel(64).0)
+            .value()
+            .subscribe()
+    }
+
+    /// Plan 0162 (GAR-670): publish a chat event to SSE subscribers.
+    ///
+    /// No-op if no subscription channel exists for `chat_id`.
+    pub(crate) fn publish_chat_event(&self, chat_id: Uuid, event: serde_json::Value) {
+        if let Some(tx) = self.chat_events.get(&chat_id) {
+            let _ = tx.send(event);
+        }
+    }
+
+    /// Plan 0162 (GAR-670): GC the broadcast entry for `chat_id` when its
+    /// last receiver disconnects. Called by the SSE handler's RAII guard
+    /// when its `stream::unfold` state is dropped (client closed the
+    /// connection, server closed the channel, or the stream ended).
+    ///
+    /// Race-safe: `DashMap::remove_if` holds the entry lock while
+    /// evaluating the predicate, so a concurrent `subscribe_chat` cannot
+    /// observe an empty entry that we are about to delete. Idempotent.
+    ///
+    /// Without this, the global `chat_events` map grows unboundedly
+    /// (security audit finding F-1 on PR #459).
+    pub(crate) fn cleanup_chat_subscription(&self, chat_id: Uuid) {
+        self.chat_events
+            .remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
     }
 }
 
@@ -304,6 +348,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/chats/{chat_id}/messages",
                     post(messages::send_message).get(messages::list_messages),
                 )
+                // Plan 0162 (GAR-670) — SSE stream slice.
+                .route("/v1/chats/{chat_id}/stream", get(chats::stream_chat))
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
                 .route(
@@ -522,6 +568,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
+                // Plan 0162 (GAR-670) — SSE stream, fail-soft 503.
+                .route("/v1/chats/{chat_id}/stream", get(unconfigured_handler))
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
                 // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
@@ -717,6 +765,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/chats/{chat_id}/messages",
                     post(unconfigured_handler).get(unconfigured_handler),
                 )
+                // Plan 0162 (GAR-670) — SSE stream, no-auth stub.
+                .route("/v1/chats/{chat_id}/stream", get(unconfigured_handler))
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.
                 .route(
