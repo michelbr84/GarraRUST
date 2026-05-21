@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-21** — GAR-495 Capability prompt nativo ✅ Done (PR #453, `e5a2a08`). GAR-496 Repo workflow seguro 🔄 In Progress (plan 0161). Anterior (2026-05-20): GAR-669 Slice 2 ✅ Done (PR #451, `1e7ce50`). GAR-500 ✅ Done (PR #445, `f1fb596`).
+**Atualizado 2026-05-21** — GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`). GAR-495 ✅ Done (PR #453, `e5a2a08`). Anterior (2026-05-20): GAR-669 Slice 2 ✅ Done (PR #451, `1e7ce50`). GAR-500 ✅ Done (PR #445, `f1fb596`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1259,7 +1259,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) Capability prompt nativo**~~ ✅ **Done** (2026-05-21). Provider-agnostic runtime capability snapshot para `garra max-power`. `build_snapshot(config)` + `render_prompt` + `render_summary`. 7 unit tests. Plan: `plans/0160-gar-495-capability-prompt.md`. Merged via PR #453 (`e5a2a08`). Sub-issue 2/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
 
-5. **Fase 1.2.1 GarraMaxPower — [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) Repo workflow seguro** — Safe git/gh wrappers com guards: `is_protected_branch` + `is_clean`; recusa push a `main`/`master`/`release/*`; exige tree limpa antes de `create_branch`. `GitRunner` trait + `MockRunner`; 12 unit tests. `garra max-power --goal` agora imprime preflight git summary. Plan: `plans/0161-gar-496-repo-workflow.md`. 🔄 In Progress.
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) Repo workflow seguro**~~ ✅ **Done** (2026-05-21). `GitRunner` trait + `ProcessRunner` + `RepoWorkflow<R>`: `current_branch`, `is_clean`, `create_branch`, `push_branch`, `open_pr`. `is_protected_branch` guards main/master/release/*. `preflight_summary()` wired into `garra max-power --goal`. `MockRunner` + 12 unit tests. Plan: `plans/0161-gar-496-repo-workflow.md`. Merged via PR #455 (`1b7f04c`). Sub-issue 3/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
 
 5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Backlog.
 

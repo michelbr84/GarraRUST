@@ -2,7 +2,7 @@
 
 **Linear issue:** [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) — "Repo workflow seguro" (Backlog → In Progress). Labels: `epic:maxpower`. Project: epic [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
 
-**Status:** ⏳ In Progress — 2026-05-21 (Florida).
+**Status:** ✅ Merged 2026-05-21 via PR #455 (`1b7f04c`) — Done.
 
 ## Goal
 
