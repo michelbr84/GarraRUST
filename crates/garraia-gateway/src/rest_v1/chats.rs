@@ -1452,21 +1452,31 @@ pub async fn stream_chat(
 
     // Verify the chat belongs to the caller's group (0 rows → 404, same as
     // send_message — avoids leaking the existence of chats in other tenants).
+    //
+    // Bug fix exposed by the integration test (audit F-2): `set_config(_,_,true)`
+    // is local to the current transaction. The previous implementation used
+    // `pool.acquire()` (auto-commit), so each `SELECT set_config(...)`
+    // statement opened its own implicit tx and the setting reverted before
+    // the chat-exists query ran. FORCE RLS then rejected every row — even
+    // legitimate ones — and the handler returned 404 across the board.
+    //
+    // Fix: wrap acquire + set_config + chat_exists in a single transaction,
+    // matching the pattern used by every other handler in messages.rs.
     let pool = state.app_pool.pool_for_handlers();
-    let mut conn = pool
-        .acquire()
+    let mut tx = pool
+        .begin()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
     sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
         .bind(principal.user_id.to_string())
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
     sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
         .bind(group_id.to_string())
-        .execute(&mut *conn)
+        .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
@@ -1475,7 +1485,7 @@ pub async fn stream_chat(
     )
     .bind(chat_id)
     .bind(group_id)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
@@ -1483,8 +1493,12 @@ pub async fn stream_chat(
         return Err(RestError::NotFound);
     }
 
-    // Subscribe before releasing conn so there is no window where a message
-    // could be published between the chat-exists check and the subscribe call.
+    // Commit the read-only RLS transaction. The conn returns to the pool;
+    // the subsequent `subscribe_chat` is purely in-process.
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
     let rx = state.subscribe_chat(chat_id);
 
     // RAII guard: when `ChatStreamState` is dropped (client disconnect, server
