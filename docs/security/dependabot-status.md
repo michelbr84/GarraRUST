@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-20 run 7** (health routine — rand_chacha 0.9 + rand 0.9 co-bump PR #446, GAR-669 Slice 1 Done, GAR-674. Previous: run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-21 run 8** (health routine — password-hash 0.5→0.6 + rand 0.8→0.10 confirmed upstream-blocked; no actionable fix. Previous: run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,26 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-21 run 8 (health routine — password-hash + rand build-dep upstream-blocked, no actionable fix)
+
+Health routine ran on 2026-05-21 (~04:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+
+**Key finding:** `password-hash 0.5→0.6` (Dependabot alert #430, GAR-669 Slice 3) is **upstream-blocked**. Registry scan confirmed that `argon2 0.5.3` is the latest argon2 release and only supports `password-hash ^0.5`. No argon2 version compatible with password-hash 0.6 has been published on crates.io as of 2026-05-21. The `rand = "0.8"` pin in `crates/garraia-auth` `[build-dependencies]` is a direct consequence of the same constraint (`build.rs` uses `password_hash::rand_core::OsRng` from rand_core 0.6; upgrading rand in build-deps requires upgrading password-hash first). Both GAR-669 Slice 3 and Slice 4 remain deferred until argon2 publishes a release supporting `password-hash ^0.6`.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #453 head (20/20 checks green, based on main `a3c61ce`) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #453 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 crate not yet supporting password-hash 0.6 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #453 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #453 |
+| CI on main (`a3c61ce`) | ✅ green | 20/20 checks green |
+
+**No fix applied this run.** Linear: status note filed (health-routine label). Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships.
+
+---
 
 ## Confirmed 2026-05-20 run 7 (health routine — GAR-669 Slice 1: rand_chacha 0.9 + rand 0.9 co-bump)
 
