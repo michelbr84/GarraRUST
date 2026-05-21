@@ -47,7 +47,12 @@ pub struct AppState {
     /// Broadcast channel for tailing logs to WebSocket clients.
     pub log_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// Per-chat SSE broadcast table (plan 0162, GAR-670).
-    /// Entry is created lazily on first subscription; never garbage-collected.
+    ///
+    /// Entry is created lazily on first subscription. Entries are
+    /// garbage-collected when their last receiver disconnects — see
+    /// [`crate::rest_v1::RestV1FullState::cleanup_chat_subscription`],
+    /// which is invoked by the SSE handler's RAII guard on stream end.
+    /// Closes audit finding F-1 of PR #459.
     pub chat_events: Arc<DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>>>,
     /// OpenClaw bridge client (available when OPENCLAW_ENABLED=true).
     pub openclaw_client: Option<Arc<garraia_channels::OpenClawClient>>,

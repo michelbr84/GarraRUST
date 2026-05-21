@@ -1487,21 +1487,53 @@ pub async fn stream_chat(
     // could be published between the chat-exists check and the subscribe call.
     let rx = state.subscribe_chat(chat_id);
 
-    let event_stream = stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
+    // RAII guard: when `ChatStreamState` is dropped (client disconnect, server
+    // close, or stream end), `rx` drops first (declaration order), then
+    // `_guard` runs `cleanup_chat_subscription`, which removes the DashMap
+    // entry iff `receiver_count() == 0`. Closes audit finding F-1.
+    let stream_state = ChatStreamState {
+        rx,
+        _guard: ChatStreamGuard {
+            chat_id,
+            state: state.clone(),
+        },
+    };
+
+    let event_stream = stream::unfold(stream_state, |mut s| async move {
+        match s.rx.recv().await {
             Ok(value) => {
                 let data = serde_json::to_string(&value).unwrap_or_default();
-                Some((Ok(Event::default().event("message.created").data(data)), rx))
+                Some((Ok(Event::default().event("message.created").data(data)), s))
             }
             Err(RecvError::Lagged(n)) => Some((
                 Ok(Event::default().event("stream.lagged").data(n.to_string())),
-                rx,
+                s,
             )),
             Err(RecvError::Closed) => None,
         }
     });
 
     Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(30))))
+}
+
+/// Plan 0162 (GAR-670): unfold state for the SSE stream. Field order matters
+/// — `rx` is declared first so it drops before `_guard`, ensuring
+/// `receiver_count()` reflects post-our-drop state when cleanup runs.
+struct ChatStreamState {
+    rx: tokio::sync::broadcast::Receiver<serde_json::Value>,
+    _guard: ChatStreamGuard,
+}
+
+/// RAII handle that GCs the chat's broadcast entry when the SSE stream ends.
+struct ChatStreamGuard {
+    chat_id: Uuid,
+    state: RestV1FullState,
+}
+
+impl Drop for ChatStreamGuard {
+    fn drop(&mut self) {
+        self.state.cleanup_chat_subscription(self.chat_id);
+    }
 }
 
 #[cfg(test)]
@@ -1691,6 +1723,64 @@ mod tests {
 
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg["ok"], true);
+    }
+
+    // ── F-1 cleanup contract (PR #459 audit fix) ────────────────────────────
+    // The SSE handler's RAII guard calls `cleanup_chat_subscription` on stream
+    // end, which uses `DashMap::remove_if(predicate)` so the entry is removed
+    // iff no live receivers remain. The two tests below pin the contract that
+    // `RestV1FullState::cleanup_chat_subscription` relies on.
+
+    #[tokio::test]
+    async fn dashmap_remove_if_drops_entry_when_last_receiver_gone() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // Subscribe + immediately drop the receiver → receiver_count() == 0.
+        {
+            let _rx = map
+                .entry(chat_id)
+                .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+                .value()
+                .subscribe();
+        } // _rx dropped here.
+
+        assert!(
+            map.contains_key(&chat_id),
+            "entry still present pre-cleanup"
+        );
+
+        map.remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
+
+        assert!(
+            !map.contains_key(&chat_id),
+            "remove_if must drop the entry when no receivers remain (F-1 fix)"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashmap_remove_if_keeps_entry_when_other_receivers_alive() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // Two subscribers. Drop one. Other still active → entry must stay.
+        let _rx_keep = map
+            .entry(chat_id)
+            .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+            .value()
+            .subscribe();
+        {
+            let _rx_drop = map.get(&chat_id).unwrap().subscribe();
+        } // _rx_drop dropped.
+
+        map.remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
+
+        assert!(
+            map.contains_key(&chat_id),
+            "remove_if must keep entry while at least one receiver lives (F-1 race safety)"
+        );
     }
 
     // ── stream_chat auth guard unit tests (plan 0162 addendum) ───────────────

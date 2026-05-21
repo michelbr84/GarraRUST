@@ -164,6 +164,22 @@ impl RestV1FullState {
             let _ = tx.send(event);
         }
     }
+
+    /// Plan 0162 (GAR-670): GC the broadcast entry for `chat_id` when its
+    /// last receiver disconnects. Called by the SSE handler's RAII guard
+    /// when its `stream::unfold` state is dropped (client closed the
+    /// connection, server closed the channel, or the stream ended).
+    ///
+    /// Race-safe: `DashMap::remove_if` holds the entry lock while
+    /// evaluating the predicate, so a concurrent `subscribe_chat` cannot
+    /// observe an empty entry that we are about to delete. Idempotent.
+    ///
+    /// Without this, the global `chat_events` map grows unboundedly
+    /// (security audit finding F-1 on PR #459).
+    pub(crate) fn cleanup_chat_subscription(&self, chat_id: Uuid) {
+        self.chat_events
+            .remove_if(&chat_id, |_, tx| tx.receiver_count() == 0);
+    }
 }
 
 impl FromRef<RestV1FullState> for Arc<JwtIssuer> {
