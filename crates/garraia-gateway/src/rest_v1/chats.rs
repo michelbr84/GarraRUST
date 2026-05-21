@@ -1610,9 +1610,14 @@ impl Drop for ChatStreamGuard {
             let actor_user_id = self.actor_user_id;
             let group_id = self.group_id;
             handle.spawn(async move {
-                if let Err(err) =
-                    emit_chat_unsubscribed(&pool, chat_id, actor_user_id, group_id, remaining_subscribers)
-                        .await
+                if let Err(err) = emit_chat_unsubscribed(
+                    &pool,
+                    chat_id,
+                    actor_user_id,
+                    group_id,
+                    remaining_subscribers,
+                )
+                .await
                 {
                     tracing::warn!(
                         target: "chats.sse.audit",
