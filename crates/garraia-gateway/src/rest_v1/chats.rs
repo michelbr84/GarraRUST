@@ -29,13 +29,19 @@
 //! 36 hex-with-dash characters and no metacharacters — injection-safe by
 //! construction. All user-controlled values use `sqlx::query::bind`.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use chrono::{DateTime, Utc};
+use futures::stream;
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast::error::RecvError;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -1382,6 +1388,122 @@ pub async fn remove_chat_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `GET /v1/chats/{chat_id}/stream` — SSE stream of real-time chat events.
+///
+/// Emits `message.created` events whenever a new message is posted to the
+/// chat via `POST /v1/chats/{chat_id}/messages`. A keep-alive comment is
+/// sent every 30 seconds to prevent proxy timeouts.
+///
+/// ## Wire format
+///
+/// ```text
+/// event: message.created
+/// data: {"id":"...","chat_id":"...","sender_user_id":"...","body":"...","created_at":"...Z"}
+///
+/// event: stream.lagged
+/// data: 3
+/// ```
+///
+/// `stream.lagged` appears when the server drops events because the client
+/// fell behind the 64-event broadcast buffer. The `data` field is the count
+/// of dropped events.
+///
+/// ## Error matrix
+///
+/// | Condition                        | Status | Source         |
+/// |----------------------------------|--------|----------------|
+/// | Missing/invalid JWT              | 401    | Principal ext. |
+/// | Non-member of group              | 403    | Principal ext. |
+/// | `X-Group-Id` missing             | 400    | this handler   |
+/// | Chat not found in caller's group | 404    | this handler   |
+/// | Happy path                       | 200    | text/event-stream |
+#[utoipa::path(
+    get,
+    path = "/v1/chats/{chat_id}/stream",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+    ),
+    responses(
+        (status = 200, description = "SSE stream opened.", content_type = "text/event-stream"),
+        (status = 400, description = "X-Group-Id missing.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn stream_chat(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(chat_id): Path<Uuid>,
+) -> Result<Sse<impl stream::Stream<Item = Result<Event, Infallible>>>, RestError> {
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // Verify the chat belongs to the caller's group (0 rows → 404, same as
+    // send_message — avoids leaking the existence of chats in other tenants).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let chat_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Subscribe before releasing conn so there is no window where a message
+    // could be published between the chat-exists check and the subscribe call.
+    let rx = state.subscribe_chat(chat_id);
+
+    let event_stream = stream::unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Ok(value) => {
+                let data = serde_json::to_string(&value).unwrap_or_default();
+                Some((Ok(Event::default().event("message.created").data(data)), rx))
+            }
+            Err(RecvError::Lagged(n)) => Some((
+                Ok(Event::default().event("stream.lagged").data(n.to_string())),
+                rx,
+            )),
+            Err(RecvError::Closed) => None,
+        }
+    });
+
+    Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(30))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,5 +1622,74 @@ mod tests {
             req.validate().is_ok(),
             "1000 emoji chars (4000 bytes) must pass the chars()-based check"
         );
+    }
+
+    // ── SSE broadcast unit tests (plan 0162, GAR-670) ──────────────────────
+
+    #[test]
+    fn chat_event_json_roundtrip() {
+        let event = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "chat_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "sender_label": "Alice",
+            "body": "hello",
+        });
+        let serialized = serde_json::to_string(&event).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back["body"], "hello");
+    }
+
+    #[tokio::test]
+    async fn broadcast_send_receive() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(8);
+        let payload = serde_json::json!({"msg": "hi"});
+        tx.send(payload.clone()).unwrap();
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received["msg"], "hi");
+    }
+
+    #[tokio::test]
+    async fn broadcast_no_subscriber_send_is_noop() {
+        let (tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(8);
+        // No receivers — send returns Err(SendError), which we ignore.
+        let result = tx.send(serde_json::json!({"x": 1}));
+        assert!(result.is_err(), "expected SendError when no receivers");
+    }
+
+    #[tokio::test]
+    async fn broadcast_lagged_receiver_gets_lagged_error() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(2);
+        // Fill beyond capacity to trigger lagged.
+        for i in 0..4u64 {
+            let _ = tx.send(serde_json::json!({"n": i}));
+        }
+        // First recv should return Lagged because 2 slots filled 4 times.
+        let result = rx.recv().await;
+        match result {
+            Err(RecvError::Lagged(_)) => { /* expected */ }
+            other => panic!("expected Lagged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dashmap_lazy_channel_creation() {
+        use dashmap::DashMap;
+        let map: DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>> = DashMap::new();
+        let chat_id = Uuid::new_v4();
+
+        // First access creates the channel.
+        let mut rx = map
+            .entry(chat_id)
+            .or_insert_with(|| tokio::sync::broadcast::channel(8).0)
+            .value()
+            .subscribe();
+
+        // Publishing via map lookup works.
+        if let Some(tx) = map.get(&chat_id) {
+            tx.send(serde_json::json!({"ok": true})).unwrap();
+        }
+
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg["ok"], true);
     }
 }
