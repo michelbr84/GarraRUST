@@ -1,12 +1,37 @@
 #!/usr/bin/env bash
 # GarraRUST — post-tool-use hook
-# Roda cargo test ou flutter test após edições
+# Roda cargo check ou flutter analyze após edições em arquivos fonte.
+#
+# Claude Code passa a chamada de tool via JSON em STDIN, no formato:
+#   { "tool_name": "Edit"|"Write", "tool_input": { "file_path": "...", ... }, ... }
+# (anteriormente: CLAUDE_TOOL_INPUT_FILE_PATH env var — abandonado pelo upstream).
+# Mantemos fallback ao env var legacy para compat retroativa.
+
+set -euo pipefail
 
 # Resolve project root so Cargo / flutter lookups work regardless of CWD
 # (GAR-445).
 cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
+# Force non-interactive pagers — avoid subprocess hangs on minimal envs.
+export GIT_PAGER="${GIT_PAGER:-cat}"
+export PAGER="${PAGER:-cat}"
+export LESS="${LESS:-}"
+
+# ── Resolve file_path from stdin JSON (canonical) or legacy env var ───────
 FILE="${CLAUDE_TOOL_INPUT_FILE_PATH:-}"
+
+if [ -t 0 ]; then
+  STDIN_PAYLOAD=""
+else
+  STDIN_PAYLOAD="$(cat 2>/dev/null || true)"
+fi
+
+if [ -n "$STDIN_PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
+  PARSED=$(echo "$STDIN_PAYLOAD" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
+  [ -n "$PARSED" ] && FILE="$PARSED"
+fi
+
 [ -z "$FILE" ] && exit 0
 
 GREEN='\033[0;32m'
@@ -15,7 +40,6 @@ NC='\033[0m'
 
 # Arquivo Rust (.rs) → cargo check no crate correspondente
 if echo "$FILE" | grep -q '\.rs$'; then
-  # Descobre o crate pelo Cargo.toml mais próximo
   DIR="$FILE"
   while [ "$DIR" != "/" ] && [ "$DIR" != "." ]; do
     DIR=$(dirname "$DIR")
@@ -45,7 +69,6 @@ if echo "$FILE" | grep -q '\.dart$'; then
   done
 
   if [ -n "$FLUTTER_DIR" ]; then
-    # Detectar flutter cross-platform (não hardcodar path)
     FLUTTER_CMD=$(command -v flutter 2>/dev/null || echo "")
     if [ -z "$FLUTTER_CMD" ] && [ -f "G:/Projetos/flutter/bin/flutter.bat" ]; then
       FLUTTER_CMD="G:/Projetos/flutter/bin/flutter.bat"
