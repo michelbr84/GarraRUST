@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-21 run 9** (health routine — same upstream-blocked state as run 8; windows-sys #422 closed post PR #451; 2 alerts remain. Previous: run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-21 run 10** (health routine — upstream-blocked state unchanged; GAR-496 repo-workflow merged (PR #455 / 671f760); repo_workflow.rs security review clean; 2 alerts remain. Previous: run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,32 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-21 run 10 (health routine — upstream-blocked state unchanged; repo_workflow.rs reviewed clean)
+
+Health routine ran on 2026-05-21 (~12:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+
+**New merge since run 9:** PR #455 (`1b7f04c`, GAR-496 — repo workflow seguro para garra max-power) squash-merged to main as `671f760` at 12:11 ET — pure CLI feature addition, no new crate dependencies, no Cargo.lock security impact.
+
+**Security review — repo_workflow.rs:** New module reviewed for command injection. `ProcessRunner` uses `std::process::Command::new(program).args(rest)` with separate `&[&str]` arguments — no shell involved, no string concatenation into a shell command. Protected-branch guard (`is_protected_branch`) correctly refuses direct pushes to `main`, `master`, `release/*`. All `unwrap()` calls confined to `#[cfg(test)]` blocks per CLAUDE.md rules. No security issues found.
+
+**Open PRs (not health/):** PR #458 (`chore/ignore-claude-skills-local`) — 19/20 CI checks green (Windows test still in progress); PR #459 (`routine/202605211215-chats-sse-stream`) — skipped per rules (routine/ prefix).
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved. No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-21 12:45 ET.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PRs #455 + #458 (19+/20 checks green, base main `671f760`) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PRs #455 + #458 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PRs #455 + #458 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #458 |
+| CI on main (`671f760`) | ✅ green | PR #458 check-runs: 19/20 success (Windows in progress, all other checks green) |
+
+**No fix applied this run.** Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships.
+
+---
 
 ## Confirmed 2026-05-21 run 9 (health routine — upstream-blocked state unchanged; windows-sys #422 closed)
 
