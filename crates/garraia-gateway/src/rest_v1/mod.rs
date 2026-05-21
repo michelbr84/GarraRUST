@@ -43,8 +43,8 @@ pub mod search;
 pub mod tasks;
 pub mod uploads;
 
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::extract::FromRef;

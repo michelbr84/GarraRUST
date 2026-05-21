@@ -76,10 +76,9 @@ async fn v1_chats_sse_rate_limit() {
     let h = Harness::get().await;
 
     // Seed user_a and user_b in the same group.
-    let (user_a_id, group_id, token_a) =
-        seed_user_with_group(&h, "owner@sse-rate-limit-a.test")
-            .await
-            .expect("seed user_a");
+    let (user_a_id, group_id, token_a) = seed_user_with_group(&h, "owner@sse-rate-limit-a.test")
+        .await
+        .expect("seed user_a");
 
     let (user_b_id, _group_b_id, token_b) =
         seed_user_with_group(&h, "member@sse-rate-limit-b.test")

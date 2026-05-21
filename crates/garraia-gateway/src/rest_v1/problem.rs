@@ -150,10 +150,13 @@ impl IntoResponse for RestError {
             tracing::warn!(error = %e, "problem.rs: fallback empty JSON body used");
             b"{}".to_vec()
         });
-        let mut resp = (status, [("content-type", "application/problem+json")], json).into_response();
+        let mut resp =
+            (status, [("content-type", "application/problem+json")], json).into_response();
         if is_rate_limited {
-            resp.headers_mut()
-                .insert(header::RETRY_AFTER, axum::http::HeaderValue::from_static("60"));
+            resp.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
         }
         resp
     }
