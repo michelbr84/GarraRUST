@@ -36,6 +36,11 @@ Thumbs.db
 # Runtime artifacts from scheduled tasks / loops / cron (auto-regenerated)
 .claude/*.lock
 .claude/scheduled_tasks/
+# Skill-tool discoverable layout (.claude/skills/<name>/SKILL.md). Generated
+# locally by /max-power tooling; bodies drift from the canonical tracked
+# skills/*.md flat layout. Promotion to canonical layout pending a per-skill
+# diff review (rastreado em Linear, vide CLAUDE.md §Skills disponíveis).
+.claude/skills/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
 # Git worktrees — isolated workspaces used by parallel agent execution
