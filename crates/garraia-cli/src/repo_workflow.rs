@@ -119,6 +119,11 @@ impl RepoWorkflow<ProcessRunner> {
     }
 }
 
+// Methods below are the forward-facing API wired by GAR-498/499 (Skills MVP /
+// Agent team MVP). They are intentionally unused from production code today;
+// `#[allow(dead_code)]` prevents -D warnings from treating them as dead while
+// they are only exercised via `MockRunner` in the test suite.
+#[allow(dead_code)]
 impl<R: GitRunner> RepoWorkflow<R> {
     /// Create a workflow with an injected runner (for testing).
     pub fn with_runner(root: PathBuf, runner: R) -> Self {
