@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-18 (local America/New_York) — Crate `garraia-embeddings` scaffoldado per ADR 0002 (GAR-372, plan 0145, branch `feat/garraia-embeddings-scaffold`): traits `EmbeddingProvider` + `VectorStore`, strong types (`Scope`/`EmbeddingVector`/`Document`/`Chunk`/`SearchHit`), `HybridQuery` typed builder, `DeterministicProvider` para testes downstream. 23 unit tests verdes; sem wiring DB/learning ainda — `PgVectorStore` real é o próximo slice. Anterior (2026-05-18): ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
+> **Última atualização:** 2026-05-21 (local America/New_York) — GAR-496 Repo workflow seguro 🔄 In Progress (plan 0161, PR em CI). GAR-495 ✅ Done (PR #453 `e5a2a08`, capability prompt nativo). Anterior (2026-05-20): GAR-669 Slice 2 (windows-sys 0.52→0.61) + GAR-500 Auto Dream ✅. (2026-05-18): `garraia-embeddings` scaffoldado per ADR 0002 (GAR-372, plan 0145): traits `EmbeddingProvider` + `VectorStore`, strong types, `HybridQuery`, `DeterministicProvider`. 23 unit tests verdes. ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -1229,7 +1229,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-20** — GAR-669 Slice 2 (windows-sys 0.52→0.61 + `HANDLE.is_null()` fix em garraia-cli) ✅ Done (PR #451, `1e7ce50`). Anterior: GAR-669 Slice 1 (rand_chacha 0.9) ✅ Done (PR #446, `d9f811a`). GAR-500 ✅ Done (PR #445, `f1fb596`).
+**Atualizado 2026-05-21** — GAR-495 Capability prompt nativo ✅ Done (PR #453, `e5a2a08`). GAR-496 Repo workflow seguro 🔄 In Progress (plan 0161). Anterior (2026-05-20): GAR-669 Slice 2 ✅ Done (PR #451, `1e7ce50`). GAR-500 ✅ Done (PR #445, `f1fb596`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1257,7 +1257,11 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
 
-5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-495 (Capability prompt nativo), GAR-496 (Repo workflow seguro), GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Todos Backlog.
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) Capability prompt nativo**~~ ✅ **Done** (2026-05-21). Provider-agnostic runtime capability snapshot para `garra max-power`. `build_snapshot(config)` + `render_prompt` + `render_summary`. 7 unit tests. Plan: `plans/0160-gar-495-capability-prompt.md`. Merged via PR #453 (`e5a2a08`). Sub-issue 2/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
+
+5. **Fase 1.2.1 GarraMaxPower — [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) Repo workflow seguro** — Safe git/gh wrappers com guards: `is_protected_branch` + `is_clean`; recusa push a `main`/`master`/`release/*`; exige tree limpa antes de `create_branch`. `GitRunner` trait + `MockRunner`; 12 unit tests. `garra max-power --goal` agora imprime preflight git summary. Plan: `plans/0161-gar-496-repo-workflow.md`. 🔄 In Progress.
+
+5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Backlog.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
