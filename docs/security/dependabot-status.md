@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-21 run 8** (health routine — password-hash 0.5→0.6 + rand 0.8→0.10 confirmed upstream-blocked; no actionable fix. Previous: run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-21 run 9** (health routine — same upstream-blocked state as run 8; windows-sys #422 closed post PR #451; 2 alerts remain. Previous: run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,30 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-21 run 9 (health routine — upstream-blocked state unchanged; windows-sys #422 closed)
+
+Health routine ran on 2026-05-21 (~08:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+
+**New merge since run 8:** PR #453 (`e5a2a08`, GAR-495 — capability prompt nativo para garra max-power) — pure CLI feature addition, no new crate dependencies, no Cargo.lock security impact.
+
+**windows-sys #422 status:** Confirmed closed — `garraia-cli/Cargo.toml` now pins `windows-sys = "0.61"` (Cargo.lock carries 0.61.2). Dependabot auto-closes on next rescan after PR #451 merged as `1e7ce50`.
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved (same finding as run 8). No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-21 09:00 ET.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass (20/20 checks green on PRs #454 + #455, base main `e5a2a08`) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PRs #454 + #455 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 19 allowlisted warnings, CI green on PRs #454 + #455 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PRs #454 + #455 |
+| CI on main (`e5a2a08`) | ✅ green | 20/20 checks green (verified via PR #454 + #455 check-runs) |
+
+**No fix applied this run.** Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships.
+
+---
 
 ## Confirmed 2026-05-21 run 8 (health routine — password-hash + rand build-dep upstream-blocked, no actionable fix)
 
