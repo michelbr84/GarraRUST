@@ -26,7 +26,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use common::Harness;
-use common::fixtures::seed_user_with_group;
+use common::fixtures::{fetch_audit_events_for_group, seed_user_with_group};
 
 fn connect_info() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
     axum::extract::ConnectInfo("127.0.0.1:1".parse().unwrap())
@@ -185,5 +185,99 @@ async fn v1_chats_sse_cross_tenant_isolation() {
         resp.status(),
         StatusCode::NOT_FOUND,
         "S4: archived chat SSE subscription must return 404"
+    );
+
+    // Force the S4 response to drop now so any audit emission triggered by
+    // RAII guard cleanup from earlier scenarios is well-defined before S5.
+    // (S2 was the only scenario that actually built a guard.)
+    drop(resp);
+
+    // ── S5. Audit-log emission (F-4 / GAR-680) ───────────────────────────
+    //
+    // S2 was the only scenario that crossed both the existence check and
+    // the broadcast subscribe. It must produce exactly one
+    // `chat.subscribed` row when the handler runs and one
+    // `chat.unsubscribed` row when the response body drops at end of scope.
+    // Cross-tenant 404 (S1), missing-header 400 (S3), and archived 404 (S4)
+    // must NOT emit anything to group_a's audit_events.
+    //
+    // The `chat.unsubscribed` row is emitted via `tokio::spawn` from
+    // `ChatStreamGuard::drop`, so we briefly poll for it instead of asserting
+    // synchronously — Drop happens immediately when the prior `resp` is
+    // shadowed, but the spawned task runs asynchronously on the runtime.
+    let mut subscribed_seen = false;
+    let mut unsubscribed_seen = false;
+    for _ in 0..30 {
+        let rows = fetch_audit_events_for_group(&h, group_a_id)
+            .await
+            .expect("S5: fetch audit_events for group_a");
+        subscribed_seen = false;
+        unsubscribed_seen = false;
+        let mut chat_a_resource_id_count = 0usize;
+        for (action, actor, resource_type, resource_id, metadata) in &rows {
+            if resource_id != &chat_a_id.to_string() {
+                continue;
+            }
+            chat_a_resource_id_count += 1;
+            assert_eq!(
+                actor,
+                &Some(user_a_id),
+                "S5: actor_user_id must be the subscribing caller"
+            );
+            assert_eq!(
+                resource_type, "chats",
+                "S5: SSE audit rows must point to the `chats` resource"
+            );
+            // PII safety — metadata is structural only.
+            let count = metadata
+                .get("subscriber_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| {
+                    panic!("S5: missing/non-integer subscriber_count in metadata: {metadata:?}")
+                });
+            match action.as_str() {
+                "chat.subscribed" => {
+                    subscribed_seen = true;
+                    assert_eq!(
+                        count, 1,
+                        "S5: first subscriber sees projected subscriber_count = 1"
+                    );
+                }
+                "chat.unsubscribed" => {
+                    unsubscribed_seen = true;
+                    assert_eq!(
+                        count, 0,
+                        "S5: last subscriber leaving sees remaining_subscribers = 0"
+                    );
+                }
+                other => panic!(
+                    "S5: unexpected audit action on chat_a SSE flow: {other} (metadata={metadata:?})"
+                ),
+            }
+            // Defensive — make sure no PII keys leaked into metadata.
+            for forbidden in ["body", "name", "topic", "message"] {
+                assert!(
+                    metadata.get(forbidden).is_none(),
+                    "S5: metadata must not carry `{forbidden}` (got {metadata:?})"
+                );
+            }
+        }
+        if subscribed_seen && unsubscribed_seen {
+            // Cross-tenant + 400 + 404 paths must not pollute group_a's audit.
+            assert_eq!(
+                chat_a_resource_id_count, 2,
+                "S5: only subscribed+unsubscribed rows expected for chat_a (got {chat_a_resource_id_count} rows)"
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        subscribed_seen,
+        "S5: chat.subscribed audit row must be emitted on happy-path SSE"
+    );
+    assert!(
+        unsubscribed_seen,
+        "S5: chat.unsubscribed audit row must be emitted when the response is dropped"
     );
 }
