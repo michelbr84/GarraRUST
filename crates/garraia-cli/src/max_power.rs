@@ -12,6 +12,7 @@
 use garraia_common::handoff;
 
 use crate::capability_prompt;
+use crate::repo_workflow;
 
 /// Default path for the handoff state file (relative to CWD).
 const HANDOFF_FILE: &str = ".garra-estado.md";
@@ -178,8 +179,20 @@ fn route_goal(goal: &str, mode: &str) {
     println!("mode: {mode}");
     println!("goal: {goal}");
     println!();
-    println!("  [GAR-496..GAR-501] Full pipeline execution not yet implemented.");
+    print_repo_preflight();
+    println!("  [GAR-498..GAR-501] Full pipeline execution not yet implemented.");
     println!("  Run `/garra-routine` to track progress on the state machine.");
+}
+
+/// Print a git preflight summary (current branch + tree status).
+///
+/// Silently no-ops when the current directory is not inside a git repository
+/// or when `git` is not in `PATH`.
+fn print_repo_preflight() {
+    if let Some(summary) = repo_workflow::preflight_summary() {
+        println!("  [repo] {}", summary.display());
+        println!();
+    }
 }
 
 #[cfg(test)]
