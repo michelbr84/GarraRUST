@@ -8,6 +8,7 @@ mod max_power;
 mod mcp_server;
 mod migrate;
 mod migrate_workspace;
+mod repo_workflow;
 mod update;
 mod verify;
 mod wizard;

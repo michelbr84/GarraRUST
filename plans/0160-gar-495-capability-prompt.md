@@ -2,7 +2,7 @@
 
 **Linear issue:** [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) — "Capability prompt nativo" (Backlog → In Progress). Labels: `epic:maxpower`. Project: epic [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
 
-**Status:** ⏳ In Progress — 2026-05-21 (Florida).
+**Status:** ✅ Merged 2026-05-21 via PR #453 (`e5a2a08`) — Done.
 
 ## Goal
 
