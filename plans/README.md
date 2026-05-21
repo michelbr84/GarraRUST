@@ -168,3 +168,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0157 | [GAR-500 — Auto Dream / handoff via .garra-estado.md](0157-gar-500-auto-dream-handoff.md) | [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) | ✅ Merged 2026-05-20 via PR #445 (`f1fb596`) |
 | 0158 | [GAR-669 Slice 1 — rand_chacha 0.9 + rand 0.9 co-bump (garraia-workspace dev-deps)](0158-gar-669-rand-chacha-0.9-dev-dep-co-bump.md) | [GAR-669](https://linear.app/chatgpt25/issue/GAR-669) | ✅ Merged 2026-05-20 via PR #446 (`d9f811ac`) |
 | 0159 | [GAR-669 Slice 2 — windows-sys 0.52 → 0.61 (garraia-cli + HANDLE type fix)](0159-gar-669-windows-sys-0.61.md) | [GAR-669](https://linear.app/chatgpt25/issue/GAR-669) | ✅ Merged 2026-05-20 via PR #451 (`1e7ce50`) |
+| 0160 | [GAR-495 — Capability prompt nativo: provider-agnostic runtime description for garra max-power](0160-gar-495-capability-prompt.md) | [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) | 🔄 In Progress |
