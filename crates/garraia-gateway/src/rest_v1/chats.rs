@@ -1493,6 +1493,38 @@ pub async fn stream_chat(
         return Err(RestError::NotFound);
     }
 
+    // Audit follow-up F-4 (GAR-680): emit `chat.subscribed` BEFORE the
+    // broadcast receiver is created, but AFTER the chat-exists / RLS check
+    // passes. This guarantees:
+    //
+    // 1. A 404 (cross-tenant or archived chat) never produces an audit row.
+    // 2. The audit row is rolled back together with the RLS context if
+    //    `tx.commit()` fails — no orphan row with no paired `chat.unsubscribed`.
+    // 3. The paired `chat.unsubscribed` is only spawned by the RAII guard,
+    //    which is built BELOW after the commit succeeds — so we never emit
+    //    `chat.unsubscribed` without a prior `chat.subscribed`.
+    //
+    // `subscriber_count` carries the count of subscribers that will exist
+    // after this client joins (pre-subscribe count + 1). PII-safe: no message
+    // body or chat name reaches the metadata.
+    let pre_subscribe_count = state
+        .chat_events
+        .get(&chat_id)
+        .map(|entry| entry.receiver_count())
+        .unwrap_or(0);
+    let projected_subscriber_count = pre_subscribe_count.saturating_add(1);
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ChatSubscribed,
+        principal.user_id,
+        group_id,
+        "chats",
+        chat_id.to_string(),
+        json!({ "subscriber_count": projected_subscriber_count }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
     // Commit the read-only RLS transaction. The conn returns to the pool;
     // the subsequent `subscribe_chat` is purely in-process.
     tx.commit()
@@ -1503,12 +1535,15 @@ pub async fn stream_chat(
 
     // RAII guard: when `ChatStreamState` is dropped (client disconnect, server
     // close, or stream end), `rx` drops first (declaration order), then
-    // `_guard` runs `cleanup_chat_subscription`, which removes the DashMap
-    // entry iff `receiver_count() == 0`. Closes audit finding F-1.
+    // `_guard` spawns the paired `chat.unsubscribed` audit row and runs
+    // `cleanup_chat_subscription`, which removes the DashMap entry iff
+    // `receiver_count() == 0`. Closes audit findings F-1 and F-4.
     let stream_state = ChatStreamState {
         rx,
         _guard: ChatStreamGuard {
             chat_id,
+            actor_user_id: principal.user_id,
+            group_id,
             state: state.clone(),
         },
     };
@@ -1538,16 +1573,105 @@ struct ChatStreamState {
     _guard: ChatStreamGuard,
 }
 
-/// RAII handle that GCs the chat's broadcast entry when the SSE stream ends.
+/// RAII handle that GCs the chat's broadcast entry AND emits the paired
+/// `chat.unsubscribed` audit row when the SSE stream ends (plan 0162
+/// findings F-1 and F-4 — GAR-680).
+///
+/// `actor_user_id` and `group_id` are captured at handler entry so the
+/// audit emission can happen entirely from `Drop`, where the `Principal`
+/// extractor is long gone.
 struct ChatStreamGuard {
     chat_id: Uuid,
+    actor_user_id: Uuid,
+    group_id: Uuid,
     state: RestV1FullState,
 }
 
 impl Drop for ChatStreamGuard {
     fn drop(&mut self) {
+        // Field declaration order in `ChatStreamState` guarantees `rx`
+        // dropped before this guard runs, so `receiver_count()` reflects
+        // post-leave state (may be 0 if we were the last subscriber).
+        let remaining_subscribers = self
+            .state
+            .chat_events
+            .get(&self.chat_id)
+            .map(|entry| entry.receiver_count())
+            .unwrap_or(0);
+
+        // Fire-and-forget audit emission. `Drop` is synchronous; audit needs
+        // async DB access. We only spawn if there is an active Tokio runtime
+        // — Drop can run in any context (e.g. test teardown outside a runtime),
+        // and calling `tokio::spawn` outside a runtime panics. The
+        // `try_current` probe converts that into a silent no-op.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let pool = self.state.app_pool.pool_for_handlers().clone();
+            let chat_id = self.chat_id;
+            let actor_user_id = self.actor_user_id;
+            let group_id = self.group_id;
+            handle.spawn(async move {
+                if let Err(err) = emit_chat_unsubscribed(
+                    &pool,
+                    chat_id,
+                    actor_user_id,
+                    group_id,
+                    remaining_subscribers,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        target: "chats.sse.audit",
+                        %chat_id,
+                        error = %err,
+                        "failed to emit chat.unsubscribed audit event"
+                    );
+                }
+            });
+        }
+
+        // GC the DashMap entry iff no subscribers remain (F-1). Idempotent
+        // and runs synchronously so the audit spawn cannot race with a
+        // re-subscribe that would re-create the broadcast channel.
         self.state.cleanup_chat_subscription(self.chat_id);
     }
+}
+
+/// Emit one `chat.unsubscribed` audit row from a fresh transaction. Called
+/// only from `ChatStreamGuard::drop` (plan 0162 audit follow-up F-4 —
+/// GAR-680).
+///
+/// Builds its own short transaction because the original request transaction
+/// committed long before Drop runs. The two `SELECT set_config(...)` calls
+/// re-establish the tenant context that `audit_events_group_or_self` RLS
+/// policy requires (migration 007:161-168).
+async fn emit_chat_unsubscribed(
+    pool: &sqlx::PgPool,
+    chat_id: Uuid,
+    actor_user_id: Uuid,
+    group_id: Uuid,
+    remaining_subscribers: usize,
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(actor_user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ChatUnsubscribed,
+        actor_user_id,
+        group_id,
+        "chats",
+        chat_id.to_string(),
+        json!({ "subscriber_count": remaining_subscribers }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -297,6 +297,29 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ role }`.
     ChatMemberRemoved,
 
+    /// A subscriber connected to a chat's SSE stream via
+    /// `GET /v1/chats/{chat_id}/stream` (plan 0162 / GAR-678, audit follow-up
+    /// GAR-680). Emitted inside the request transaction, after the chat
+    /// existence + RLS check passes and BEFORE the broadcast receiver is
+    /// created, so a 4xx never produces a `chat.subscribed` row.
+    ///
+    /// `resource_type = "chats"`, `resource_id = "{chat_id}"`.
+    /// Metadata: `{ subscriber_count }` — the count of subscribers that
+    /// will be present after this client joins (pre-subscribe count + 1).
+    /// PII-safe: never carries message bodies or chat names.
+    ChatSubscribed,
+
+    /// A subscriber disconnected from a chat's SSE stream — emitted by the
+    /// RAII `ChatStreamGuard::drop` via `tokio::spawn` (plan 0162 / GAR-678,
+    /// audit follow-up GAR-680). The spawn is fire-and-forget because `Drop`
+    /// is synchronous in Rust; an audit emission failure is logged via
+    /// `tracing::warn` and does not propagate to the client.
+    ///
+    /// `resource_type = "chats"`, `resource_id = "{chat_id}"`.
+    /// Metadata: `{ subscriber_count }` — the count of subscribers that
+    /// remain after this client leaves (post-drop count). PII-safe.
+    ChatUnsubscribed,
+
     /// A user was assigned to a task via
     /// `POST /v1/groups/{group_id}/tasks/{task_id}/assignees`
     /// (plan 0077 / GAR-533, epic GAR-WS-TASKS slice 4).
@@ -515,6 +538,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ChatArchived => "chat.archived",
             WorkspaceAuditAction::ChatMemberAdded => "chat.member.added",
             WorkspaceAuditAction::ChatMemberRemoved => "chat.member.removed",
+            WorkspaceAuditAction::ChatSubscribed => "chat.subscribed",
+            WorkspaceAuditAction::ChatUnsubscribed => "chat.unsubscribed",
             WorkspaceAuditAction::TaskAssigneeAdded => "task.assignee.added",
             WorkspaceAuditAction::TaskAssigneeRemoved => "task.assignee.removed",
             WorkspaceAuditAction::TaskLabelCreated => "task_label.created",
@@ -685,6 +710,14 @@ mod tests {
             "chat.member.removed"
         );
         assert_eq!(
+            WorkspaceAuditAction::ChatSubscribed.as_str(),
+            "chat.subscribed"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::ChatUnsubscribed.as_str(),
+            "chat.unsubscribed"
+        );
+        assert_eq!(
             WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
             "task.assignee.added"
         );
@@ -780,6 +813,8 @@ mod tests {
             WorkspaceAuditAction::ChatArchived.as_str(),
             WorkspaceAuditAction::ChatMemberAdded.as_str(),
             WorkspaceAuditAction::ChatMemberRemoved.as_str(),
+            WorkspaceAuditAction::ChatSubscribed.as_str(),
+            WorkspaceAuditAction::ChatUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
             WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
             WorkspaceAuditAction::TaskLabelCreated.as_str(),
