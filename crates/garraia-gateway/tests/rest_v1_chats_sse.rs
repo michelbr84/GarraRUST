@@ -134,7 +134,11 @@ async fn v1_chats_sse_cross_tenant_isolation() {
         .oneshot(stream_req(chat_a_id, &token_a, Some(group_a_id)))
         .await
         .expect("S2 oneshot");
-    assert_eq!(resp.status(), StatusCode::OK, "S2: own-group SSE must return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "S2: own-group SSE must return 200"
+    );
     let ct = resp
         .headers()
         .get("content-type")
