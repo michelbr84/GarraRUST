@@ -1,3 +1,6 @@
+// Gated so `cargo clippy --all-targets` without `test-helpers` skips this
+#![cfg(feature = "test-helpers")]
+
 //! Integration tests for SSE per-user rate limit on
 //! `GET /v1/chats/{chat_id}/stream` (plan 0163, GAR-679).
 //!
