@@ -6,9 +6,12 @@
 //!
 //! At startup the module loads `.garra-estado.md` (GAR-500) and prints a
 //! one-line handoff summary so the operator knows where the previous session
-//! left off.
+//! left off. GAR-495 adds a capability summary showing available providers,
+//! tools, channels, and MCP servers.
 
 use garraia_common::handoff;
+
+use crate::capability_prompt;
 
 /// Default path for the handoff state file (relative to CWD).
 const HANDOFF_FILE: &str = ".garra-estado.md";
@@ -100,11 +103,14 @@ pub fn detect_route(goal: &str) -> (&'static str, Option<&'static str>) {
 }
 
 /// Entry point for `garra max-power`.
-pub fn run(goal: Option<String>, mode: String) {
+pub fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfig) {
     print_handoff_summary();
     match goal {
-        None => print_menu(),
-        Some(g) => route_goal(&g, &mode),
+        None => print_menu_with_capabilities(config),
+        Some(g) => {
+            print_capability_summary(config);
+            route_goal(&g, &mode);
+        }
     }
 }
 
@@ -122,13 +128,24 @@ fn print_handoff_summary() {
     }
 }
 
-fn print_menu() {
+fn print_capability_summary(config: &garraia_config::AppConfig) {
+    let snap = capability_prompt::build_snapshot(config);
+    println!(
+        "  [capabilities] {}",
+        capability_prompt::render_summary(&snap)
+    );
+    println!();
+}
+
+fn print_menu_with_capabilities(config: &garraia_config::AppConfig) {
+    let snap = capability_prompt::build_snapshot(config);
     println!();
     println!("  ╔══════════════════════════════════════════╗");
     println!("  ║          G A R R A  M A X  P O W E R    ║");
     println!("  ║     Autonomous AI Development Pipeline   ║");
     println!("  ╚══════════════════════════════════════════╝");
     println!();
+    print!("{}", capability_prompt::render_prompt(&snap));
     println!("  Pipeline stages:");
     println!("    1. Brainstorm  — explore possibilities, generate ideas");
     println!("    2. Spec        — define acceptance criteria");
@@ -161,7 +178,7 @@ fn route_goal(goal: &str, mode: &str) {
     println!("mode: {mode}");
     println!("goal: {goal}");
     println!();
-    println!("  [GAR-495..GAR-501] Full pipeline execution not yet implemented.");
+    println!("  [GAR-496..GAR-501] Full pipeline execution not yet implemented.");
     println!("  Run `/garra-routine` to track progress on the state machine.");
 }
 
