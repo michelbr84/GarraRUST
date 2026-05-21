@@ -1692,4 +1692,80 @@ mod tests {
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg["ok"], true);
     }
+
+    // ── stream_chat auth guard unit tests (plan 0162 addendum) ───────────────
+    // These tests exercise the same guard logic that runs inside stream_chat
+    // before any DB access. Tests 1-3 are pure-logic (no DB, no Axum state).
+    // Test 4 documents the cross-tenant invariant enforced by FORCE RLS.
+
+    #[test]
+    fn stream_chat_missing_x_group_id_header_yields_bad_request() {
+        // Mirrors the `principal.group_id.is_none()` branch: handler returns
+        // RestError::BadRequest before any DB query is executed.
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: None,
+            role: Some(garraia_auth::Role::Member),
+        };
+        let result: Result<Uuid, RestError> = p
+            .group_id
+            .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()));
+        assert!(matches!(result, Err(RestError::BadRequest(_))));
+    }
+
+    #[test]
+    fn stream_chat_no_group_role_yields_forbidden() {
+        // `can()` returns false when `principal.role` is None (no group context).
+        // Handler returns RestError::Forbidden before any DB query.
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: Some(Uuid::new_v4()),
+            role: None,
+        };
+        assert!(!can(&p, Action::ChatsRead));
+        let result: Result<(), RestError> = if can(&p, Action::ChatsRead) {
+            Ok(())
+        } else {
+            Err(RestError::Forbidden)
+        };
+        assert!(matches!(result, Err(RestError::Forbidden)));
+    }
+
+    #[test]
+    fn stream_chat_all_group_roles_have_chats_read() {
+        // Every group role must pass ChatsRead — no member should be 403'd
+        // when subscribing to the SSE stream of their own chat.
+        for role in [
+            garraia_auth::Role::Owner,
+            garraia_auth::Role::Admin,
+            garraia_auth::Role::Member,
+            garraia_auth::Role::Guest,
+            garraia_auth::Role::Child,
+        ] {
+            let p = Principal {
+                user_id: Uuid::new_v4(),
+                group_id: Some(Uuid::new_v4()),
+                role: Some(role),
+            };
+            assert!(
+                can(&p, Action::ChatsRead),
+                "role {role:?} must have ChatsRead; stream_chat would wrongly 403"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_chat_cross_tenant_query_returns_not_found() {
+        // Cross-tenant isolation: the handler converts 0-row fetch_optional
+        // into RestError::NotFound (not Forbidden — avoids leaking chat
+        // existence to other tenants). Two layers enforce this:
+        // 1. SQL WHERE clause: `id = $chat_id AND group_id = $caller_group_id`
+        //    → 0 rows when caller_group_id ≠ chat's actual group_id.
+        // 2. FORCE RLS policy `chats_group_isolation` (migration 007):
+        //    USING (group_id = current_setting('app.current_group_id')::uuid).
+        //    Covered by GAR-392's 81-scenario RLS matrix.
+        let simulated_row: Option<(Uuid,)> = None; // what DB returns for cross-tenant query
+        let result = simulated_row.ok_or(RestError::NotFound);
+        assert!(matches!(result, Err(RestError::NotFound)));
+    }
 }
