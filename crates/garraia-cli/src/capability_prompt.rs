@@ -10,16 +10,28 @@ use garraia_config::AppConfig;
 /// Static built-in tool registry: (name, one-line description).
 /// Mirrors the tool modules in `garraia-agents/src/tools/`.
 const BUILTIN_TOOLS: &[(&str, &str)] = &[
-    ("bash", "Execute shell commands with safety-gate enforcement"),
+    (
+        "bash",
+        "Execute shell commands with safety-gate enforcement",
+    ),
     ("file_read", "Read files from the local filesystem"),
     ("file_write", "Write or overwrite files in the workspace"),
     ("git_diff", "Show git diff for staged/unstaged changes"),
-    ("list_dir", "List directory contents with optional glob filter"),
+    (
+        "list_dir",
+        "List directory contents with optional glob filter",
+    ),
     ("repo_search", "Full-text search across the repository"),
-    ("run_tests", "Run `cargo test` (or `flutter test`) and return output"),
+    (
+        "run_tests",
+        "Run `cargo test` (or `flutter test`) and return output",
+    ),
     ("web_fetch", "Fetch a URL and return its text content"),
     ("web_search", "Web search via configured search provider"),
-    ("code_review", "Automated code review with style/correctness checks"),
+    (
+        "code_review",
+        "Automated code review with style/correctness checks",
+    ),
 ];
 
 /// LLM provider entry derived from `AppConfig.llm`.
@@ -169,9 +181,10 @@ mod tests {
     #[test]
     fn anthropic_only_config() {
         let mut config = AppConfig::default();
-        config
-            .llm
-            .insert("anthropic".to_string(), provider("anthropic", Some("claude-sonnet-4-6")));
+        config.llm.insert(
+            "anthropic".to_string(),
+            provider("anthropic", Some("claude-sonnet-4-6")),
+        );
 
         let snap = build_snapshot(&config);
         assert_eq!(snap.providers.len(), 1);

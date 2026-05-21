@@ -130,7 +130,10 @@ fn print_handoff_summary() {
 
 fn print_capability_summary(config: &garraia_config::AppConfig) {
     let snap = capability_prompt::build_snapshot(config);
-    println!("  [capabilities] {}", capability_prompt::render_summary(&snap));
+    println!(
+        "  [capabilities] {}",
+        capability_prompt::render_summary(&snap)
+    );
     println!();
 }
 
