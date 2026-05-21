@@ -1247,7 +1247,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 1. ~~**Garra Learning Agent — Skill Safety Gates ([GAR-649](https://linear.app/chatgpt25/issue/GAR-649), 8/10)**~~ ✅ **Done** (2026-05-18). `SafetyIntent` + `gate_with_intent` (hard wall, ADR 0010 §"no dev-mode bypass") wirado em `registry::promote_with_intent` e `updater::propose_update_with_runner` ANTES de qualquer side-effect git/gh; denylist amplia para `DELETE..WHERE 1=1` / `chmod -R 777` / `sudo` / `.github/codeql-config.yml`; label `security-audit-passed` waiver ÚNICA para `CriticalPath` (não waive dangerous-command/score/PII/anti-flap); 132 unit tests verdes (11 novos cobrindo waiver semantics + call-sites).
 
-2. ~~**Fase 1.2.1 GarraMaxPower — [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). **Próximo: GAR-495..GAR-501** — state machine brainstorm→spec→plan→execute + Safety Gate wiring para `garraia-tools::safety_gate`. Sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog.
+2. ~~**Fase 1.2.1 GarraMaxPower — [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). **Próximo: GAR-496..GAR-501** — state machine brainstorm→spec→plan→execute + Safety Gate wiring para `garraia-tools::safety_gate`. Sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog.
 
 3. ~~**Fase 1.2.1 GarraMaxPower — [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
 
@@ -1257,7 +1257,9 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
 
-5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-495 (Capability prompt nativo), GAR-496 (Repo workflow seguro), GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Todos Backlog.
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) Capability prompt nativo**~~ ✅ **Done** (2026-05-21, plan 0160, PR #453 `e5a2a08`). `CapabilitySnapshot` + `build_snapshot` + `render_prompt` + `render_summary` em `garraia-cli::capability_prompt`; 7 unit tests, 100% cobertura; imprime banner de providers/tools/channels/MCP antes de rotear `garra max-power`.
+
+5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-496 (Repo workflow seguro), GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Todos Backlog.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
