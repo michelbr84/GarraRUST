@@ -71,3 +71,10 @@ bootstrap/
 ## Estimativa
 
 ~164 LOC moved, ~10 LOC bookkeeping. Risk: LOW (pure extract, no logic change).
+
+## Result
+
+Merged 2026-05-22 via PR #474 (commit `4a51841`). CI fix included: gated 8
+testcontainer-dependent auth tests behind `required-features = ["test-support"]`
+in `crates/garraia-auth/Cargo.toml` to prevent Docker Hub rate-limit failures
+in plain `cargo test --workspace`.
