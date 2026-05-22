@@ -175,3 +175,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0164 | GAR-456 partial fix — jsonwebtoken rust_crypto → aws_lc_rs (removes rsa 0.9.10 from compiled tree) | [GAR-456](https://linear.app/chatgpt25/issue/GAR-456) | ✅ Merged 2026-05-22 via PR #469 (partial; root blocker deferred to sqlx 0.9+) |
 | 0164b | GAR-476 — Q10.b: extract `bootstrap/channels.rs` (44 LOC, zero behaviour change) | [GAR-476](https://linear.app/chatgpt25/issue/GAR-476) | ✅ Merged 2026-05-22 via PR #470 (`f337cb9`) |
 | 0165 | [GAR-477 — Q10.c: extract `bootstrap/discord.rs` (270 LOC, zero behaviour change)](0165-gar-477-q10c-bootstrap-discord.md) | [GAR-477](https://linear.app/chatgpt25/issue/GAR-477) | ✅ Merged 2026-05-22 via PR #471 (`b594ace`) |
+| 0166 | [GAR-478 — Q10.d: extract `bootstrap/slack.rs` (166 LOC, zero behaviour change)](0166-gar-478-q10d-bootstrap-slack.md) | [GAR-478](https://linear.app/chatgpt25/issue/GAR-478) | In Progress |
