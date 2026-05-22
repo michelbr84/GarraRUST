@@ -34,7 +34,8 @@
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 — deny.toml-only, axum-server 0.8),
-#     daemonize ×1 (health/202605171245 — deny.toml-only, PR #382 / GAR-656).**
+#     daemonize ×1 (health/202605171245 — deny.toml-only, PR #382 / GAR-656),
+#     wasmtime-wasi ×1 (GAR-685 / health run 14, PR #472 — lockfile 44.0.2).**
 #   * The 21 unmaintained-only IDs in `deny.toml` (5 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
@@ -146,4 +147,5 @@ ignore = [
     # closed by plan 0053 PR-5 (GAR-451). Resolution: AVIF feature-gated
     # OFF in `crates/garraia-media/Cargo.toml`. Ignore removed.
     #
+
 ]

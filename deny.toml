@@ -10,7 +10,8 @@
 #     `command: check` (since GAR-458 enabled the advisories category).
 #   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
 #     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
-#     (rand / GAR-513). Closed: wasmtime ×15 (GAR-454), webpki ×4
+#     (rand / GAR-513). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
+#     wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 axum-server 0.8). Drop atomically
