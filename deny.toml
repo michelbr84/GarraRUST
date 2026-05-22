@@ -10,8 +10,8 @@
 #     `command: check` (since GAR-458 enabled the advisories category).
 #   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
 #     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
-#     (rand / GAR-513), RUSTSEC-2026-0149 (wasmtime-wasi / GAR-684).
-#     Closed: wasmtime ×15 (GAR-454), webpki ×4
+#     (rand / GAR-513). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
+#     wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 axum-server 0.8). Drop atomically
@@ -96,13 +96,6 @@ ignore = [
     # unpatched: phf_generator 0.8 → selectors → tauri-utils → garraia-desktop
     # (build-time dep only). Expires 2026-07-31.
     "RUSTSEC-2026-0097",
-
-    # wasmtime-wasi 44.0.1 — WASI access control bypass (GHSA-2r75-cxrj-cmph).
-    # Advisory published 2026-05-22. When combining DirPerms::MUTATE with
-    # FilePerms::READ a WASM guest can bypass write restrictions via TRUNCATE
-    # flag. Patched in 44.0.2 / 45.0.0 — not yet on crates.io as of 2026-05-22.
-    # Mirror of audit.toml under GAR-684. Expires: 2026-07-31.
-    "RUSTSEC-2026-0149",
 
     # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-07-31) ---
     # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
