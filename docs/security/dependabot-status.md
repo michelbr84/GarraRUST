@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-21 run 11** (health routine — upstream-blocked state unchanged; GAR-678 SSE stream + GAR-680 audit-log merged (PR #459 / d25b64c + PR #463 / a972947); SSE handler + ChatStreamGuard reviewed clean; 2 alerts remain. Previous: run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-22 run 13** (health routine — upstream-blocked state unchanged; GAR-679 SSE rate-limit PR #466 + hooks fix PR #467 reviewed clean; 2 alerts remain. Previous: run 12 upstream-blocked state unchanged (no PR); run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,40 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-22 run 13 (health routine — upstream-blocked state unchanged; SSE rate-limit + hooks fix reviewed clean)
+
+Health routine ran on 2026-05-22 (~00:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+
+**New merges since run 12:** PR #466 (`0513149`, GAR-679 — SSE rate-limit per user on `/v1/chats/{id}/stream`, `MAX_SSE_PER_USER=5`), PR #467 (`4bcd147`, fix(claude) — restore pre/post-tool-use hook safety net via stdin JSON).
+
+**Security review — PR #466 (SSE rate-limit):**
+- `SseSlotGuard` RAII enforces `MAX_SSE_PER_USER=5` cap via DashMap atomic counter. Counter decremented on `Drop` (client disconnect). `remove_if` GC prevents unbounded DashMap growth. 429 + `Retry-After: 60` on exceed.
+- No PII in rate-limit metadata. No new external dependencies. No Cargo.lock security impact.
+
+**Security review — PR #467 (hooks fix):**
+- `pre-tool-use.sh` + `post-tool-use.sh` now read stdin JSON via `jq -r` — modern Claude Code protocol (legacy env var fallback preserved for backwards-compat).
+- Blocked-pattern list expanded: cwd-glob variants, `--no-preserve-root` flag. Secret list extended: `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`.
+- `scripts/test-hooks.sh` added: 6 regression cases (dangerous blocks + safe pass-through + no-op edges). `audit.log` grew 0→174 entries after fix — hooks were silent no-ops before.
+- No Rust code changes, no Cargo.lock security impact.
+
+**Open PRs (not health/):** None. **Open branches (non-routine, non-health):** `claude/serene-fermat-ifqFi`, `claude/vigilant-cannon-rxphz` — neither has an open PR.
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved. No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-22 00:45 ET.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #467 (4bcd147) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #467 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 |
+| Security Audit (`cargo audit`) | ✅ pass | CI green on PR #467 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #467 |
+| CI on main (`4bcd147`) | ✅ green | 20/20 checks success |
+
+**No fix applied this run.** Next security backlog: GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships. GAR-456/GAR-513 suppression re-triage due 2026-07-31.
+
+---
 
 ## Confirmed 2026-05-21 run 11 (health routine — upstream-blocked state unchanged; SSE stream + audit-log reviewed clean)
 
