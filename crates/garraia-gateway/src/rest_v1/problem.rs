@@ -76,6 +76,11 @@ pub enum RestError {
     BadGateway(String),
     #[error("authentication is not configured on this gateway")]
     AuthUnconfigured,
+    /// Plan 0163 (GAR-679): too many concurrent SSE connections for this user.
+    /// Response includes `Retry-After: 60` so clients know when to retry.
+    /// No payload — `{0}` detail is emitted but MUST NOT embed user PII.
+    #[error("{0}")]
+    TooManyRequests(String),
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
     /// user-identifying data (email, user_id, hashes)** before converting
     /// to `RestError::Internal`: the `Display` impl of `anyhow::Error` will
@@ -99,6 +104,7 @@ impl RestError {
             RestError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             RestError::BadGateway(_) => StatusCode::BAD_GATEWAY,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
+            RestError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -116,6 +122,7 @@ impl RestError {
             RestError::UnsupportedMediaType(_) => "Unsupported Media Type",
             RestError::BadGateway(_) => "Bad Gateway",
             RestError::AuthUnconfigured => "Service Unavailable",
+            RestError::TooManyRequests(_) => "Too Many Requests",
             RestError::Internal(_) => "Internal Server Error",
         }
     }
@@ -123,6 +130,7 @@ impl RestError {
 
 impl IntoResponse for RestError {
     fn into_response(self) -> Response {
+        use axum::http::header;
         let status = self.status();
         let detail = self.to_string();
         // Log internal errors before dropping the source. PII-safe:
@@ -131,6 +139,7 @@ impl IntoResponse for RestError {
         if let RestError::Internal(ref e) = self {
             tracing::error!(error = %e, "rest_v1 internal error");
         }
+        let is_rate_limited = matches!(self, RestError::TooManyRequests(_));
         let body = ProblemDetails {
             type_uri: "about:blank",
             title: self.title(),
@@ -141,7 +150,15 @@ impl IntoResponse for RestError {
             tracing::warn!(error = %e, "problem.rs: fallback empty JSON body used");
             b"{}".to_vec()
         });
-        (status, [("content-type", "application/problem+json")], json).into_response()
+        let mut resp =
+            (status, [("content-type", "application/problem+json")], json).into_response();
+        if is_rate_limited {
+            resp.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
+        }
+        resp
     }
 }
 

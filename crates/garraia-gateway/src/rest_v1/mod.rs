@@ -44,6 +44,7 @@ pub mod tasks;
 pub mod uploads;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::extract::FromRef;
@@ -127,6 +128,8 @@ pub struct RestV1FullState {
     pub storage: RestV1StorageState,
     /// Plan 0162 (GAR-670): per-chat SSE broadcast table shared with AppState.
     pub chat_events: Arc<DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>>>,
+    /// Plan 0163 (GAR-679): per-user concurrent SSE connection counter shared with AppState.
+    pub sse_connections: Arc<DashMap<Uuid, Arc<AtomicUsize>>>,
 }
 
 impl RestV1FullState {
@@ -139,6 +142,7 @@ impl RestV1FullState {
             app_pool: app.app_pool.clone()?,
             storage: RestV1StorageState::from_app_state(app),
             chat_events: app.chat_events.clone(),
+            sse_connections: app.sse_connections.clone(),
         })
     }
 
