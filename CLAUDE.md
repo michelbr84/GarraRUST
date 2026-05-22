@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-Atualizado após GAR-391a (2026-04-13). **19 crates ativos** no workspace + 1 PoC efêmero em `benches/`.
+Atualizado após plan 0145 / PR #396 (2026-05-18). **22 crates ativos** no workspace + 1 PoC efêmero em `benches/`. Contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`.
 
 ```text
 crates/

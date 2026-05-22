@@ -44,11 +44,38 @@ elif grep -q 'CHANGE_ME\|<your_\|TODO\|PLACEHOLDER' ".env" 2>/dev/null; then
   echo -e "${YELLOW}AVISO: .env contém valores placeholder — configure antes de usar${NC}"
 fi
 
-# Listar skills disponíveis
-if [ -d "skills" ]; then
-  SKILL_COUNT=$(find skills -name "*.md" 2>/dev/null | wc -l)
-  echo -e "${GREEN}Skills disponíveis:${NC} $SKILL_COUNT"
-  for skill in skills/*.md; do
+# Sincronizar skills/*.md → .claude/skills/<name>/SKILL.md
+# `skills/*.md` é a fonte versionada; `.claude/skills/<name>/SKILL.md` é o
+# layout que o tool Skill carrega (descoberto via plugin discovery do Claude
+# Code). Mantemos .claude/skills/ gitignorado e gerado on-demand para evitar
+# drift entre as duas árvores. Ver memory reference_skill_discovery_layout.md.
+SKILLS_SRC="skills"
+SKILLS_DST=".claude/skills"
+SKILLS_SYNCED=0
+if [ -d "$SKILLS_SRC" ]; then
+  for src in "$SKILLS_SRC"/*.md; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src" .md)
+    dst_dir="$SKILLS_DST/$name"
+    dst="$dst_dir/SKILL.md"
+    mkdir -p "$dst_dir"
+    # Só reescreve se mudou (preserva mtime para skills inalteradas)
+    if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
+      cp "$src" "$dst"
+      SKILLS_SYNCED=$((SKILLS_SYNCED + 1))
+    fi
+  done
+fi
+
+# Listar skills disponíveis (fonte versionada)
+if [ -d "$SKILLS_SRC" ]; then
+  SKILL_COUNT=$(find "$SKILLS_SRC" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l)
+  if [ "$SKILLS_SYNCED" -gt 0 ]; then
+    echo -e "${GREEN}Skills disponíveis:${NC} $SKILL_COUNT  ${YELLOW}(sync: $SKILLS_SYNCED atualizadas)${NC}"
+  else
+    echo -e "${GREEN}Skills disponíveis:${NC} $SKILL_COUNT"
+  fi
+  for skill in "$SKILLS_SRC"/*.md; do
     [ -f "$skill" ] && echo "  /$(basename "$skill" .md)"
   done
 fi
