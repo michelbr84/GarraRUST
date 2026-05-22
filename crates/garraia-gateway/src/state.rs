@@ -1,5 +1,6 @@
 use crate::mcp_commands;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -54,6 +55,12 @@ pub struct AppState {
     /// which is invoked by the SSE handler's RAII guard on stream end.
     /// Closes audit finding F-1 of PR #459.
     pub chat_events: Arc<DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>>>,
+    /// Per-user concurrent SSE connection counter (plan 0163, GAR-679).
+    ///
+    /// Tracks the number of live SSE streams held by each `user_id`.
+    /// Entries are GC'd by the RAII guard when the count drops to zero.
+    /// Bounded by `MAX_SSE_PER_USER` (5) per user; 6th connection gets 429.
+    pub sse_connections: Arc<DashMap<Uuid, Arc<AtomicUsize>>>,
     /// OpenClaw bridge client (available when OPENCLAW_ENABLED=true).
     pub openclaw_client: Option<Arc<garraia_channels::OpenClawClient>>,
     /// OpenClaw configuration.
@@ -221,6 +228,7 @@ impl AppState {
             config_rx: None,
             log_tx: tokio::sync::broadcast::channel(100).0,
             chat_events: Arc::new(DashMap::new()),
+            sse_connections: Arc::new(DashMap::new()),
             openclaw_client: None,
             openclaw_config: None,
             voice_client: None,

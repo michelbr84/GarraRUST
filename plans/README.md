@@ -171,3 +171,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0160 | [GAR-495 — Capability prompt nativo: provider-agnostic runtime description for garra max-power](0160-gar-495-capability-prompt.md) | [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) | ✅ Merged 2026-05-21 via PR #453 (`e5a2a08`) |
 | 0161 | [GAR-496 — Repo workflow seguro: safe git/gh wrappers with protected-branch + clean-tree guards](0161-gar-496-repo-workflow.md) | [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) | ✅ Merged 2026-05-21 via PR #455 (`1b7f04c`) |
 | 0162 | [GAR-678 — REST /v1/chats SSE stream — GET /v1/chats/{id}/stream](0162-gar-678-chats-sse-stream.md) | [GAR-678](https://linear.app/chatgpt25/issue/GAR-678) | ✅ Merged 2026-05-21 via PR #459 (`d25b64c`) |
+| 0163 | [GAR-679 — SSE rate-limit per user on /v1/chats/{id}/stream (DoS hardening)](0163-gar-679-sse-rate-limit.md) | [GAR-679](https://linear.app/chatgpt25/issue/GAR-679) | In Progress |

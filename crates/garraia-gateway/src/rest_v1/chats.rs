@@ -30,6 +30,8 @@
 //! construction. All user-controlled values use `sqlx::query::bind`.
 
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Json;
@@ -51,6 +53,10 @@ use super::problem::RestError;
 /// Maximum topic length, kept in step with what UIs render comfortably.
 /// `chats.topic` has no DB CHECK, so this lives at the API edge only.
 const MAX_TOPIC_CHARS: usize = 4_000;
+
+/// Plan 0163 (GAR-679): maximum concurrent SSE connections per user.
+/// Above this, the handler returns 429 Too Many Requests.
+const MAX_SSE_PER_USER: usize = 5;
 
 /// Request body for `POST /v1/groups/{group_id}/chats`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1450,6 +1456,32 @@ pub async fn stream_chat(
         return Err(RestError::Forbidden);
     }
 
+    // Plan 0163 (GAR-679): per-user concurrent SSE connection cap.
+    //
+    // Acquire a slot atomically BEFORE the RLS transaction. A `SseSlotGuard`
+    // holds the decrement-on-drop responsibility until `ChatStreamGuard` is
+    // built. If any step below fails, `SseSlotGuard::drop` releases the slot
+    // automatically. Once `ChatStreamGuard` is built, `slot_guard.disarm()`
+    // transfers release ownership to `ChatStreamGuard::drop`.
+    let sse_counter: Arc<AtomicUsize> = {
+        let entry = state
+            .sse_connections
+            .entry(principal.user_id)
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
+        Arc::clone(&*entry)
+    };
+    let prev = sse_counter.fetch_add(1, Ordering::Relaxed);
+    if prev >= MAX_SSE_PER_USER {
+        sse_counter.fetch_sub(1, Ordering::Relaxed);
+        return Err(RestError::TooManyRequests(
+            "too many concurrent SSE connections for this user; retry after 60 seconds".into(),
+        ));
+    }
+    let mut slot_guard = SseSlotGuard {
+        counter: Arc::clone(&sse_counter),
+        armed: true,
+    };
+
     // Verify the chat belongs to the caller's group (0 rows → 404, same as
     // send_message — avoids leaking the existence of chats in other tenants).
     //
@@ -1535,9 +1567,13 @@ pub async fn stream_chat(
 
     // RAII guard: when `ChatStreamState` is dropped (client disconnect, server
     // close, or stream end), `rx` drops first (declaration order), then
-    // `_guard` spawns the paired `chat.unsubscribed` audit row and runs
-    // `cleanup_chat_subscription`, which removes the DashMap entry iff
-    // `receiver_count() == 0`. Closes audit findings F-1 and F-4.
+    // `_guard` spawns the paired `chat.unsubscribed` audit row, runs
+    // `cleanup_chat_subscription`, and releases the per-user SSE slot
+    // (plan 0163, GAR-679). Closes audit findings F-1 and F-4.
+    //
+    // Transfer SSE slot ownership from `slot_guard` to `ChatStreamGuard` here.
+    // `slot_guard.disarm()` prevents double-decrement.
+    slot_guard.disarm();
     let stream_state = ChatStreamState {
         rx,
         _guard: ChatStreamGuard {
@@ -1545,6 +1581,8 @@ pub async fn stream_chat(
             actor_user_id: principal.user_id,
             group_id,
             state: state.clone(),
+            sse_counter,
+            sse_user_id: principal.user_id,
         },
     };
 
@@ -1573,9 +1611,9 @@ struct ChatStreamState {
     _guard: ChatStreamGuard,
 }
 
-/// RAII handle that GCs the chat's broadcast entry AND emits the paired
-/// `chat.unsubscribed` audit row when the SSE stream ends (plan 0162
-/// findings F-1 and F-4 — GAR-680).
+/// RAII handle that GCs the chat's broadcast entry, emits the paired
+/// `chat.unsubscribed` audit row, and releases the per-user SSE slot when
+/// the SSE stream ends (plan 0162 findings F-1/F-4; plan 0163 GAR-679).
 ///
 /// `actor_user_id` and `group_id` are captured at handler entry so the
 /// audit emission can happen entirely from `Drop`, where the `Principal`
@@ -1585,6 +1623,10 @@ struct ChatStreamGuard {
     actor_user_id: Uuid,
     group_id: Uuid,
     state: RestV1FullState,
+    /// Plan 0163 (GAR-679): per-user slot counter decremented on drop.
+    sse_counter: Arc<AtomicUsize>,
+    /// Plan 0163: user whose slot must be released.
+    sse_user_id: Uuid,
 }
 
 impl Drop for ChatStreamGuard {
@@ -1633,6 +1675,41 @@ impl Drop for ChatStreamGuard {
         // and runs synchronously so the audit spawn cannot race with a
         // re-subscribe that would re-create the broadcast channel.
         self.state.cleanup_chat_subscription(self.chat_id);
+
+        // Plan 0163 (GAR-679): release the per-user SSE slot. GC the DashMap
+        // entry when the counter reaches zero (Relaxed ordering is correct —
+        // the counter is a pure counter with no associated memory).
+        let remaining = self.sse_counter.fetch_sub(1, Ordering::Relaxed);
+        if remaining == 1 {
+            // We just decremented from 1 → 0; try to GC the map entry.
+            self.state
+                .sse_connections
+                .remove_if(&self.sse_user_id, |_, c| c.load(Ordering::Relaxed) == 0);
+        }
+    }
+}
+
+/// Plan 0163 (GAR-679): RAII guard that holds the SSE slot decrement
+/// responsibility until `ChatStreamGuard` is built. If any step in
+/// `stream_chat` fails before the guard is built, this guard's `Drop`
+/// releases the slot atomically. Call `disarm()` to transfer ownership
+/// to `ChatStreamGuard` and prevent a double-decrement.
+struct SseSlotGuard {
+    counter: Arc<AtomicUsize>,
+    armed: bool,
+}
+
+impl SseSlotGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SseSlotGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.counter.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
