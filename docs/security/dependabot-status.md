@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-21 run 11** (health routine — upstream-blocked state unchanged; GAR-678 SSE stream + GAR-680 audit-log merged (PR #459 / d25b64c + PR #463 / a972947); SSE handler + ChatStreamGuard reviewed clean; 2 alerts remain. Previous: run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-22 run 14** (health routine — upstream-blocked state unchanged; Q10.b channels refactor reviewed clean; 2 alerts remain. Previous: run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,32 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-22 run 14 (health routine — upstream-blocked state unchanged; Q10.b channels refactor reviewed clean)
+
+Health routine ran on 2026-05-22 (~08:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+
+**New merges since run 13 (GAR-682):** PR #470 (`f337cb9`, GAR-476 — Q10.b extract `build_channels` to `bootstrap/channels.rs`, pure refactor).
+
+**Security review — bootstrap/channels.rs:** Pure extraction of `build_channels` registry orchestrator from `bootstrap/mod.rs`. No behavior change, no new external dependencies, no Cargo.lock security impact. No command injection, no PII exposure, no unsafe blocks introduced.
+
+**Open PRs (not health/):** PR #471 (`routine/202605220630-q10c-discord`) — 20/20 CI checks success (all complete). Skipped per rules (routine/ prefix).
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 stable from upstream. Latest on crates.io: `argon2 = "0.6.0-rc.8"` (RC, not stable). No unblock path until stable release.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #471 (gitleaks: success) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #471 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 stable |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #471 |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #471 |
+| CI on main (`f337cb9`) | ✅ green | PR #471 base: 20/20 checks success |
+
+**No fix applied this run.** GAR-683 filed. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 stable ships.
+
+---
 
 ## Confirmed 2026-05-21 run 11 (health routine — upstream-blocked state unchanged; SSE stream + audit-log reviewed clean)
 
