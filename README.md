@@ -788,7 +788,7 @@ credentials/
 
 ## Arquitetura
 
-GarraIA é um workspace Rust com **19 crates** de alta qualidade, cada um com responsabilidade única:
+GarraIA é um workspace Rust com **22 crates** de alta qualidade, cada um com responsabilidade única:
 
 ```text
 crates/
