@@ -168,8 +168,7 @@ pub fn build_slack_channels(
             },
         );
 
-        let channel =
-            garraia_channels::SlackChannel::new(bot_token, app_token, on_message);
+        let channel = garraia_channels::SlackChannel::new(bot_token, app_token, on_message);
         channels.push(Box::new(channel) as Box<dyn garraia_channels::Channel>);
         info!("configured slack channel: {name}");
     }
