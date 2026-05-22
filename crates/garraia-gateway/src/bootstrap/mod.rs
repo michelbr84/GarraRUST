@@ -21,6 +21,7 @@ use tracing::{error, info, warn};
 
 use crate::state::SharedState;
 
+mod channels;
 mod config;
 
 // Slice 10.a (GAR-440): path resolvers and API-key precedence chain extracted
@@ -29,6 +30,9 @@ mod config;
 // stay valid (consumed by `admin::handlers`, `router`, `state`).
 use config::default_allowlist_path;
 pub(crate) use config::{default_vault_path, resolve_api_key};
+
+// Slice 10.b (GAR-476): channel registry orchestrator extracted to `bootstrap::channels`.
+pub use channels::build_channels;
 
 /// Build a fully-configured `AgentRuntime` from the application config.
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
@@ -1097,52 +1101,6 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
     }
 
     (manager, all_tools)
-}
-
-/// Build configured channels that can be initialized before state is wrapped in Arc.
-pub async fn build_channels(config: &AppConfig) -> garraia_channels::ChannelRegistry {
-    // Load .env file if present (idempotent, will not overwrite existing env vars)
-    if let Err(e) = dotenvy::dotenv() {
-        tracing::debug!("no .env file loaded: {e}");
-    }
-
-    let registry = garraia_channels::ChannelRegistry::new();
-
-    for (name, channel_config) in &config.channels {
-        let enabled = channel_config.enabled.unwrap_or(true);
-        if !enabled {
-            info!("channel {name} is disabled, skipping");
-            continue;
-        }
-
-        match channel_config.channel_type.as_str() {
-            "discord" => {
-                // Discord channels need SharedState for callbacks, so they are started later.
-                info!("discord channel {name} will be started after state initialization");
-            }
-            "telegram" => {
-                // Telegram channels need SharedState for callbacks, so they are started later.
-                info!("telegram channel {name} will be started after state initialization");
-            }
-            "slack" => {
-                // Slack channels need SharedState for callbacks, so they are started later.
-                info!("slack channel {name} will be started after state initialization");
-            }
-            "whatsapp" => {
-                // WhatsApp channels need SharedState for callbacks, so they are started later.
-                info!("whatsapp channel {name} will be started after state initialization");
-            }
-            "imessage" => {
-                // iMessage channels need SharedState for callbacks, so they are started later.
-                info!("imessage channel {name} will be started after state initialization");
-            }
-            other => {
-                warn!("unknown channel type: {other} for channel {name}, skipping");
-            }
-        }
-    }
-
-    registry
 }
 
 /// Build Discord channels from config. Must be called after state is
