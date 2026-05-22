@@ -95,3 +95,48 @@ anyhow = "1"
 # Used by the smoke test to apply migrations 001..008 before exercising the
 # LoginPool constructor.
 garraia-workspace = { path = "../garraia-workspace" }
+
+# Gate all testcontainer-dependent integration tests behind the `test-support`
+# feature so plain `cargo test -p garraia-auth` (and the workspace CI sweep)
+# do not trigger Docker Hub image pulls. These tests are still exercised in
+# the gateway coverage job via the transitive `test-helpers` -> `test-support`
+# chain when the dedicated Docker-enabled Postgres service is provisioned.
+[[test]]
+name = "skeleton"
+path = "tests/skeleton.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "verify_internal"
+path = "tests/verify_internal.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "concurrent_upgrade"
+path = "tests/concurrent_upgrade.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "debug_redaction_pools"
+path = "tests/debug_redaction_pools.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "sessions_lifecycle"
+path = "tests/sessions_lifecycle.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "signup_flow"
+path = "tests/signup_flow.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "app_pool_role_guard"
+path = "tests/app_pool_role_guard.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "extractor"
+path = "tests/extractor.rs"
+required-features = ["test-support"]
