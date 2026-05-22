@@ -75,8 +75,10 @@ ignore = [
     # to cover the empirical CI behavior.
     #
     # rsa 0.9.10 — Marvin Attack timing sidechannel. Mirror of audit.toml
-    # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
-    # in PR-4 prevented runtime use). Expires 2026-07-31.
+    # under GAR-456. Lockfile ghost only: sqlx-macros-core declares
+    # sqlx-mysql as optional dep → Cargo locks it → sqlx-mysql→rsa.
+    # jsonwebtoken path closed in plan 0164 (2026-05-22, switched to
+    # aws_lc_rs). rsa is NEVER compiled. Expires 2026-07-31.
     "RUSTSEC-2023-0071",
     # glib 0.18.5 — VariantStrIter unsound iterator impls. Mirror of
     # audit.toml under GAR-437 carve-out. Desktop-only via Tauri surface.

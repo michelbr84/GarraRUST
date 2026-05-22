@@ -1,6 +1,6 @@
 # cargo-audit configuration.
 #
-# Last cleanup: 2026-05-17 (health routine run 3 / GAR-657 — daemonize removed).
+# Last cleanup: 2026-05-22 (GAR-456 plan 0164 — jsonwebtoken rust_crypto → aws_lc_rs).
 # Originally drafted: 2026-04-22 (plan 0043).
 #
 # Every entry in `ignore` is a REAL advisory against a dep in our
@@ -43,32 +43,37 @@
 [advisories]
 ignore = [
     # =========================================================================
-    # GAR-456 — sqlx-mysql lockfile leak (rsa Marvin Attack timing sidechannel)
+    # GAR-456 — sqlx-mysql lockfile ghost (rsa Marvin Attack timing sidechannel)
     # =========================================================================
     # rsa 0.9.10 — Marvin Attack (timing sidechannel on RSA decrypt).
-    # Status: ignore RETIDO honestamente. Defense-in-depth aplicado em
-    # plan 0053 PR-4 (GAR-450, 2026-04-25): `default-features = false` em
-    # todas as 5 declarações de sqlx, removendo `mysql` feature do active
-    # tree. Mas o meta-crate upstream `sqlx 0.8.6` declara `sqlx-mysql`
-    # como `optional = true` na sua dep section, então `cargo audit` walks
-    # `Cargo.lock` e continua vendo `rsa 0.9.10` (transitivo).
+    # Status: ignore RETIDO honestamente. Histórico de closures parciais:
     #
-    # AMENDMENT 2026-04-30 (plan personal-api-key-revogada-vectorized-
-    # matsumoto §Step 3): `jsonwebtoken 10 + rust_crypto` foi adotado para
-    # destravar Dependabot PR #103. O backend `rust_crypto` traz `rsa
-    # 0.9.10` para a árvore de produção do `garraia-auth` (segundo path de
-    # entrada além do sqlx). A invariante de segurança permanece: o
-    # GarraRUST emite e verifica APENAS HS256 (`Algorithm::HS256` em
-    # crates/garraia-auth/src/jwt.rs), que usa hmac+sha2 do RustCrypto e
-    # NÃO chama nenhum código RSA — o Marvin code path continua
-    # não-reachable. Antes era "HS256 via ring"; agora é "HS256 via
-    # hmac+sha2 RustCrypto". Mesma invariante, novo backend.
+    # Plan 0053 PR-4 (GAR-450, 2026-04-25): `default-features = false` em
+    # todas as 5 declarações de sqlx → removeu `mysql` feature do active tree.
     #
-    # Fix estrutural (em ordem de preferência):
-    #   1. `jsonwebtoken` upstream isolar `rsa` atrás de uma feature
-    #      "asymmetric" (não-default) — emitir issue lá quando relevante.
-    #   2. Refactor para `sqlx-postgres` direto OU sqlx 0.9 (fecha o path
-    #      sqlx-mysql).
+    # Plan 0164 (GAR-456, 2026-05-22, PR #468): mudou `jsonwebtoken` de
+    # `rust_crypto` → `aws_lc_rs`. Removed `rsa 0.9.10` from the COMPILED
+    # dep tree entirely (along with 14 other packages: ed25519-dalek,
+    # p256, p384, ecdsa, elliptic-curve, curve25519-dalek, …). The
+    # `aws-lc-rs` backend was already compiled via rustls/axum-server —
+    # zero additional build cost.
+    #
+    # ROOT BLOCKER (still open): `sqlx-macros-core 0.8.6` declares
+    # `sqlx-mysql` as `optional = true` in its [dependencies] section.
+    # Per Cargo semantics, optional deps of workspace packages are
+    # included in Cargo.lock for reproducibility even when no active
+    # feature enables them. `sqlx-mysql` depends on `rsa 0.9.10`.
+    # Therefore `rsa` lives in Cargo.lock as a pure lockfile ghost —
+    # the crate is NEVER compiled or linked into any GarraRUST binary.
+    # `cargo audit` walks the full Cargo.lock and flags it regardless.
+    #
+    # INVARIANT: Only HS256 is issued/verified (`Algorithm::HS256` in
+    # garraia-auth/src/jwt.rs + garraia-gateway/src/mobile_auth.rs).
+    # `aws_lc_rs` backend implements HS256 via AWS-LC HMAC-SHA256.
+    # No RSA decrypt path is reachable at runtime — Marvin non-reachable.
+    #
+    # Fix estrutural restante: sqlx 0.9+ (se reestruturar sqlx-macros-core
+    # para não declarar sqlx-mysql como dep opcional) fecha este ignore.
     # Tracked by: GAR-456. Expires: 2026-07-31.
     "RUSTSEC-2023-0071",
 

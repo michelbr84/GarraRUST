@@ -75,12 +75,16 @@ ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
-# Plan personal-api-key-revogada-vectorized-matsumoto §Step 3 / Decisões §2:
-# `jsonwebtoken 10` requires explicit backend selection. We pick `rust_crypto`
-# because the workspace already depends on `password-hash`/`argon2`/`pbkdf2`/
-# `hmac`/`sha2` (RustCrypto stack); no FIPS requirement justifies the
-# operational cost of the alternative `aws_lc_rs` (cmake + C toolchain).
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+# GAR-456 (plan 0164): switch jsonwebtoken backend from `rust_crypto` to
+# `aws_lc_rs`. The workspace already compiles `aws-lc-rs` via `rustls`
+# (axum-server + aws-sdk-s3), so the cmake+C toolchain cost is already paid.
+# Benefit: removes `rsa 0.9.10` (RUSTSEC-2023-0071 Marvin Attack) from the
+# COMPILED dep tree. The lockfile still carries rsa as an optional transitive
+# dep of sqlx-macros-core → sqlx-mysql (see audit.toml §GAR-456), so the
+# audit.toml/deny.toml allow entry remains until sqlx 0.9+ restructures
+# the macros-core optional-dep graph. Only HS256 is used (garraia-auth +
+# garraia-gateway); aws_lc_rs supports HS256 via AWS-LC HMAC-SHA256.
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 
 # Plugin system — bumped from 28 → 44 in GAR-454 (sessão `purrfect-lantern`),
 # closing 15 RUSTSEC IDs incluindo 2 CRITICAL (RUSTSEC-2026-0095 / 0096).
