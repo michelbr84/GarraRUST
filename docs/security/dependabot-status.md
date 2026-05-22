@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-21 run 11** (health routine — upstream-blocked state unchanged; GAR-678 SSE stream + GAR-680 audit-log merged (PR #459 / d25b64c + PR #463 / a972947); SSE handler + ChatStreamGuard reviewed clean; 2 alerts remain. Previous: run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-22 run 15** (health routine — CI retrigger for ubuntu-latest transient failure (run 14 PR #472); RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685) + upstream-blocked unchanged; Q10.b+Q10.c refactors reviewed clean; 2 alerts remain. Previous: run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,37 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-22 run 14 (health routine — RUSTSEC-2026-0149 wasmtime-wasi fixed; upstream-blocked unchanged)
+
+Health routine ran on 2026-05-22 (~08:45 ET initial scan; ~12:30 ET fix applied). New RUSTSEC advisory RUSTSEC-2026-0149 detected mid-run when CI failed on PR #472 (cargo-deny + Security Audit). Fixed immediately by lockfile upgrade wasmtime-wasi 44.0.1 → 44.0.2. Linear: GAR-685.
+
+**New merges since run 13 (GAR-682):** PR #470 (`f337cb9`, GAR-476 — Q10.b extract `build_channels` to `bootstrap/channels.rs`, pure refactor) + PR #471 (`b594ace`, GAR-477 — Q10.c extract `build_discord_channels` + `handle_discord_command` to `bootstrap/discord.rs`, pure refactor).
+
+**Security review — bootstrap/channels.rs + bootstrap/discord.rs:** Pure extractions from `bootstrap/mod.rs`. No behavior change, no new external dependencies, no new attack surface. No command injection, no PII exposure, no unsafe blocks introduced.
+
+**RUSTSEC-2026-0149 (wasmtime-wasi 44.0.1) — FIXED:**
+- Advisory: WASI path_open(TRUNCATE) bypasses `FilePerms::WRITE` host restriction (GHSA-2r75-cxrj-cmph)
+- Vector: WASI guest could open files with O_TRUNC even with host `FilePerms::WRITE` restriction set
+- Impact: `garraia-plugins` (WASM sandbox) via `wasmtime-wasi 44.0.1`
+- Fix: `cargo update -p wasmtime-wasi --precise 44.0.2` — bumps wasmtime-wasi + wasmtime + cranelift-* ecosystem 44.0.1 → 44.0.2
+- GAR-685 → Done, included in PR #472
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 stable from upstream. Latest on crates.io: `argon2 = "0.6.0-rc.8"` (RC, not stable). No unblock path until stable release.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #472 |
+| Malware (cargo/npm) | ✅ none | cargo-deny green (post-fix) |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 stable |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass (post-fix) | wasmtime-wasi 44.0.1→44.0.2 clears RUSTSEC-2026-0149 |
+| cargo-deny | ✅ pass (post-fix) | RUSTSEC-2026-0149 resolved by upgrade, advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #472 |
+| CI on main (`b594ace`) | ✅ green | base PR #472 after routine/ Q10.c merge |
+
+**Fix applied: RUSTSEC-2026-0149 (GAR-685).** wasmtime-wasi 44.0.1 → 44.0.2 lockfile upgrade. GAR-683 filed. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 stable ships.
+
+---
 
 ## Confirmed 2026-05-21 run 11 (health routine — upstream-blocked state unchanged; SSE stream + audit-log reviewed clean)
 
