@@ -215,10 +215,7 @@ impl NativeSkill for PreCommitSkill {
     fn run(&self, request: &SkillRunRequest) -> Result<SkillRunOutput> {
         let commands = safe_commands([
             ("format check", "cargo fmt --check"),
-            (
-                "strict clippy",
-                "cargo clippy --workspace -- -D warnings",
-            ),
+            ("strict clippy", "cargo clippy --workspace -- -D warnings"),
             ("workspace tests", "cargo test --workspace"),
             ("secret scan when installed", "gitleaks detect --no-git"),
         ])?;
