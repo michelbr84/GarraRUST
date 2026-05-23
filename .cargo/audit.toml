@@ -28,14 +28,17 @@
 #     auto-classifies as "allowed warnings" and does NOT require
 #     explicit ignore here.
 #   * **Mandatory sync (remaining mirrored IDs): RUSTSEC-2023-0071 (rsa /
-#     GAR-456), RUSTSEC-2024-0429 (glib / GAR-513), RUSTSEC-2026-0097
-#     (rand / GAR-513). Drop any of these atomically from BOTH files when
-#     the upstream fix lands. Closed history: wasmtime ×15 (GAR-454),
+#     GAR-456). Drop atomically from BOTH files when the upstream fix lands.
+#     Closed history: wasmtime ×15 (GAR-454),
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 — deny.toml-only, axum-server 0.8),
 #     daemonize ×1 (health/202605171245 — deny.toml-only, PR #382 / GAR-656),
 #     wasmtime-wasi ×1 (GAR-685 / health run 14, PR #472 — lockfile 44.0.2).**
+#   * audit.toml-ONLY residuals (cargo audit matches; cargo deny does NOT —
+#     removed from deny.toml 2026-05-23 to eliminate advisory-not-detected
+#     noise): RUSTSEC-2024-0429 (glib / GAR-513),
+#     RUSTSEC-2026-0097 (rand / GAR-513).
 #   * The 21 unmaintained-only IDs in `deny.toml` (5 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
@@ -114,6 +117,14 @@ ignore = [
     # aws-sdk-s3 1.132.0 pulled lru 0.16.4 (patched). 2 crates remain.
     # Without these ignores, the nightly `cargo audit --no-fetch --deny
     # unsound` workflow (cargo-audit.yml) fails. Expirations: 2026-07-31.
+    #
+    # DIVERGENCE NOTE (2026-05-23 health run 19 / GAR-513): cargo deny shows
+    # advisory-not-detected for BOTH of these IDs — its advisory DB no longer
+    # matches glib 0.18.5 / rand 0.7.3 version criteria. cargo audit DOES
+    # still match them as `unsound` warnings. Therefore these IDs remain here
+    # in audit.toml but were REMOVED from deny.toml 2026-05-23 (where they
+    # caused advisory-not-detected noise). Intentional audit.toml-only
+    # residual. Tracked by GAR-513. Expires: 2026-07-31.
     #
     # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
     # Tauri surface (garraia-desktop), excluded from CI builds. Zero
