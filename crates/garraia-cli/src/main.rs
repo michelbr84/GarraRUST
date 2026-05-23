@@ -9,6 +9,7 @@ mod mcp_server;
 mod migrate;
 mod migrate_workspace;
 mod repo_workflow;
+mod team;
 mod update;
 mod verify;
 mod wizard;
