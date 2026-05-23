@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-23 run 17** (health routine — all surfaces clean; no open health/ PRs; priority (i); 2 upstream-blocked alerts unchanged. GAR-689. Previous: run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-23 run 18** (health routine — all surfaces clean; PR #481 merged (GAR-689 run 17 bookkeeping); priority (i); 2 upstream-blocked alerts unchanged. GAR-690. Previous: run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,31 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-23 run 18 (~04:45 ET) — all surfaces clean, PR #481 merged, priority (i)
+
+Health routine ran on 2026-05-23 (~04:45 ET / 08:45 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open PRs resolved this run:** PR #481 (GAR-689 run 17 status note, branch `health/202605230045-run17-status-note`) was open with all 20 CI checks green — **merged as first action** (squash at `7a2e9e5`). GAR-689 marked Done. Only remaining open PR is #480 (branch `routine/202605230020-q10f-bootstrap-imessage`, roadmap territory — skipped per protocol).
+
+**New merges since run 17 (GAR-689):** `7a2e9e5` — PR #481 `docs(security): GAR-689 health run 17` (doc-only, squash-merged this run).
+
+**argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #481 (Secret Scan: success); main `7a2e9e5` |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #481 |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 stable |
+| Open Dependabot PRs | ✅ none | 0 open Dependabot PRs |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #481 (Security Audit: success) |
+| cargo-deny | ✅ pass | No new advisories; active suppressions: rsa (RUSTSEC-2023-0071), glib (RUSTSEC-2024-0429), rand (RUSTSEC-2026-0097) — all expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #481; 22 suppression ledger entries (all dismissed) |
+| CI on main (`7a2e9e5`) | ✅ green | All 20 checks passed (source: PR #481 check suite) |
+
+**No fix applied this run.** Linear: GAR-690. Next security backlog: argon2 ≥ 0.6 stable → unblocks GAR-669 Slices 3–4; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-05-23 run 17 (~00:45 ET) — all surfaces clean, no open health/ PRs, priority (i)
 
