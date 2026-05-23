@@ -1,6 +1,6 @@
 # Dependabot Status
 
-> Last updated: **2026-05-23 run 19** (health routine — all surfaces clean; PR #481 merged (GAR-689 run 17 bookkeeping); priority (i); 2 upstream-blocked alerts unchanged. GAR-690. Previous: run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated: **2026-05-23 run 20** (health routine — all surfaces clean; plans 0168+0169 marked merged (PR #484); priority (i); 2 upstream-blocked alerts unchanged. GAR-692. Previous: run 19 deny.toml advisory-not-detected cleanup GAR-513/plan 0169 (PR #483/484 merged `b3f62fd`); run 18 all surfaces clean, PR #482 merged, priority (i) (GAR-690); run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -15,6 +15,31 @@
 | With Linear ownership | mixed | **7 / 7** | **8 / 8** | **8 / 8** | **8 / 8** | **8 / 8** | **4 / 4** (post-rescan) |
 | `rustls-webpki 0.101.7` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (plan 0087) | ✅ absent | ✅ absent |
 | `rustls-webpki 0.102.8` in Cargo.lock | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ present | ✅ **REMOVED** (PR #293) |
+
+## Confirmed 2026-05-23 run 20 (~12:45 ET) — plans 0168+0169 bookkeeping, all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-23 (~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open PRs resolved this run:** None. Branch `health/202605231000-gar513-deny-toml-hygiene` was already merged into main via cleanup PR #484 (`b3f62fd`). Open routine PR #485 (GAR-691 Q10.g, branch `routine/202605231215-q10g-bootstrap-telegram`) — skipped per protocol.
+
+**Bookkeeping applied:** Plans README rows 0168 (GAR-480 Q10.f bootstrap-imessage) and 0169 (GAR-513 deny.toml cleanup) updated from "In Progress" to ✅ Merged — both were merged via cleanup PR #484 at commit `b3f62fd` on 2026-05-23.
+
+**argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #483/484 (20/20); main at `b3f62fd` |
+| Malware (cargo/npm) | ✅ none | cargo-deny green; no advisory-not-detected warnings (fixed run 19) |
+| Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 stable |
+| Open Dependabot PRs | ✅ none | 0 open |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #483 (20/20 Security Audit: success) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) only active suppression; glib+rand removed from deny.toml in run 19 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #483; 22 suppression ledger entries (all dismissed) |
+| CI on main (`b3f62fd`) | ✅ green | All 20 checks passed via PR #483 check suite before merge into PR #484 |
+
+**No security fix applied this run.** Bookkeeping-only PR (plans README update). Linear: GAR-692. Next security backlog: argon2 ≥ 0.6 stable → unblocks GAR-669 Slices 3–4; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-05-23 run 19 (~08:45 ET) — GAR-513: deny.toml advisory-not-detected cleanup
 
