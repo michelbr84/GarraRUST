@@ -187,7 +187,10 @@ fn route_goal(goal: &str, mode: &str) {
 }
 
 fn print_team_summary(summary: &TeamSummary) {
-    println!("  ── Agent Team Pipeline ──────────────────────────────────────");
+    println!(
+        "  ── Agent Team Pipeline: {} ──────────────────────────────",
+        summary.goal
+    );
     for result in &summary.phases {
         let status = match &result.decision {
             ReviewDecision::Accepted => "✓",
