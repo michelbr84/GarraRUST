@@ -106,8 +106,14 @@ struct PhaseTask {
 }
 
 enum ExecMsg {
-    Completed { phase: TeamPhase, output: SkillRunOutput },
-    Failed { phase: TeamPhase, reason: String },
+    Completed {
+        phase: TeamPhase,
+        output: SkillRunOutput,
+    },
+    Failed {
+        phase: TeamPhase,
+        reason: String,
+    },
 }
 
 struct ReviewMsg {
@@ -135,11 +141,7 @@ struct ExecutorAgent<'a> {
 impl ExecutorAgent<'_> {
     /// Receive one `PhaseTask` from `task_rx`, run the matching skill, send
     /// the result to `reply_tx`.
-    fn process(
-        &self,
-        task_rx: &mpsc::Receiver<PhaseTask>,
-        reply_tx: &mpsc::Sender<ExecMsg>,
-    ) {
+    fn process(&self, task_rx: &mpsc::Receiver<PhaseTask>, reply_tx: &mpsc::Sender<ExecMsg>) {
         let Ok(task) = task_rx.try_recv() else { return };
         let req = SkillRunRequest {
             goal: task.goal.clone(),
@@ -202,7 +204,9 @@ impl ReviewerAgent {
         fwd_rx: &mpsc::Receiver<(TeamPhase, SkillRunOutput)>,
         decision_tx: &mpsc::Sender<ReviewMsg>,
     ) {
-        let Ok((phase, output)) = fwd_rx.try_recv() else { return };
+        let Ok((phase, output)) = fwd_rx.try_recv() else {
+            return;
+        };
         let decision = Self::review(&output);
         decision_tx
             .send(ReviewMsg {
@@ -477,10 +481,7 @@ mod tests {
     #[test]
     fn review_decision_is_accepted_only_for_accepted() {
         assert!(ReviewDecision::Accepted.is_accepted());
-        assert!(!ReviewDecision::NeedsRevision {
-            reason: "x".into()
-        }
-        .is_accepted());
+        assert!(!ReviewDecision::NeedsRevision { reason: "x".into() }.is_accepted());
         assert!(!ReviewDecision::Rejected { reason: "x".into() }.is_accepted());
     }
 }
