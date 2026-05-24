@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-21 (local America/New_York) — GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163, F-3 follow-up de GAR-678): `MAX_SSE_PER_USER=5`; 429+Retry-After:60 na 6ª conexão; SseSlotGuard RAII + ChatStreamGuard decrement; 4 integration scenarios verdes. Anterior: GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (F-4 follow-up de GAR-678, merged via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`): `WorkspaceAuditAction::{ChatSubscribed, ChatUnsubscribed}` ligados ao handler `stream_chat` (subscribed in-tx pré-commit, unsubscribed via `tokio::spawn` no `ChatStreamGuard::drop`); PII-safe, `subscriber_count` no metadata, 20/20 CI checks verdes. Anterior (mesmo dia): GAR-496 Repo workflow seguro 🔄 In Progress (plan 0161, PR em CI). GAR-495 ✅ Done (PR #453 `e5a2a08`, capability prompt nativo). (2026-05-20): GAR-669 Slice 2 (windows-sys 0.52→0.61) + GAR-500 Auto Dream ✅. (2026-05-18): `garraia-embeddings` scaffoldado per ADR 0002 (GAR-372, plan 0145): traits `EmbeddingProvider` + `VectorStore`, strong types, `HybridQuery`, `DeterministicProvider`. 23 unit tests verdes. ADR 0010 promovido Proposed → **Accepted** + crate `garraia-learning` scaffoldado (GAR-642, plan 0144, PR #392). 17 Safety Gate tests verdes. (2026-05-17): Q11 modularization COMPLETA (GAR-635), RUSTSEC-2025-0134 + RUSTSEC-2025-0069 fechados, GAR-410 CredentialVault Done.
+> **Última atualização:** 2026-05-24 (local America/New_York) — GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`) e GAR-493 consolidando ADR 0011 para a decisão nativa. GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -18,7 +18,7 @@
 1. **Local-first & Privado por padrão** — inferência, memória e arquivos rodam na máquina do usuário, sincronização opcional.
 2. **Multi-tenant real** — separação rígida entre memória pessoal, de grupo e de chat (novo Group Workspace).
 3. **Multi-canal unificado** — Telegram, Discord, Slack, WhatsApp, iMessage, Mobile, Desktop, CLI, Web, todos compartilhando o mesmo runtime de agentes.
-4. **Agentico por dentro** — sub-agentes com TDD, worktrees e orquestração mestre-escravo via Superpowers.
+4. **Agentico por dentro** — sub-agentes com TDD, worktrees, safety gates e orquestração via GarraMaxPower nativo.
 5. **Compliance first** — LGPD (art. 46-49) e GDPR (art. 25, 32, 33) tratados como requisito funcional, não afterthought.
 6. **Observável e tunável** — OpenTelemetry + Prometheus + traces por request desde o dia 1 das fases novas.
 
@@ -329,7 +329,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 **Entregáveis:**
 
-1. ADR `docs/adr/0009-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
+1. ADR `docs/adr/0011-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
 2. Subseção §1.2.1 deste ROADMAP (este documento).
 3. Subcomando `garra max-power` no `garraia-cli` (esqueleto + roteamento, sem implementação dos passos pesados).
 4. Crate ou módulo `garraia-maxpower` (ou seção em `garraia-skills`) com a máquina de estados do workflow.
@@ -347,7 +347,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - `garra verify` em `main` limpo retorna exit 0 e relatório markdown; em árvore com clippy warning retorna exit ≠ 0.
 - Workflow brainstorm→spec→plan→execute em um bug real do backlog termina com PR aberto + review pelo agent team, sem intervenção manual além de approve.
 - `cargo check --workspace` e `cargo clippy --workspace -- -D warnings` permanecem verdes.
-- ADR 0009 está em `Accepted` antes do merge da última issue filha.
+- ADR 0011 está em `Accepted` antes do merge da última issue filha.
 
 **Riscos:**
 
@@ -360,13 +360,13 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 **Issues Linear filhas do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492):**
 
-- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0009 (umbrella já registra; issue filha amarra commits).
+- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).
 - `/max-power MVP` ([GAR-494](https://linear.app/chatgpt25/issue/GAR-494)) — subcomando `garra max-power` esqueleto + roteamento + banner.
 - `Capability prompt nativo` ([GAR-495](https://linear.app/chatgpt25/issue/GAR-495)) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
 - `Repo workflow seguro` ([GAR-496](https://linear.app/chatgpt25/issue/GAR-496)) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
 - `Safety gates para bash` ([GAR-497](https://linear.app/chatgpt25/issue/GAR-497)) — `safety_gate(cmd)` + denylist + testes + integração com tools.
-- `Skills MVP` ([GAR-498](https://linear.app/chatgpt25/issue/GAR-498)) — 3-5 skills nativas via registry `garraia-skills`.
-- `Agent team MVP` ([GAR-499](https://linear.app/chatgpt25/issue/GAR-499)) — orquestrador + 2 sub-agentes, dogfooded em um bug real.
+- ~~`Skills MVP` ([GAR-498](https://linear.app/chatgpt25/issue/GAR-498)) — 3-5 skills nativas via registry `garraia-skills`.~~ ✅ Done (PR #488 `c65e099`)
+- ~~`Agent team MVP` ([GAR-499](https://linear.app/chatgpt25/issue/GAR-499)) — orquestrador + 2 sub-agentes, dogfooded em um bug real.~~ ✅ Done (PR #490 `7e45ec5`)
 - `Auto Dream / handoff` ([GAR-500](https://linear.app/chatgpt25/issue/GAR-500)) — schema `.garra-estado.md` + reader/writer + redaction.
 - ~~`garra verify` ([GAR-501](https://linear.app/chatgpt25/issue/GAR-501)) — pipeline local idempotente, exit-codes sysexits, relatório markdown.~~ ✅ Done (PR #441 `ca9f1fa2`)
 
@@ -1231,7 +1231,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-21** — GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`). GAR-495 ✅ Done (PR #453, `e5a2a08`). Anterior (2026-05-20): GAR-669 Slice 2 ✅ Done (PR #451, `1e7ce50`). GAR-500 ✅ Done (PR #445, `f1fb596`).
+**Atualizado 2026-05-24** — GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-493/ADR 0011 em validação via PR #492. GAR-695 health run 23 docs ✅ Done (PRs #493/#494). Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1263,7 +1263,11 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) Repo workflow seguro**~~ ✅ **Done** (2026-05-21). `GitRunner` trait + `ProcessRunner` + `RepoWorkflow<R>`: `current_branch`, `is_clean`, `create_branch`, `push_branch`, `open_pr`. `is_protected_branch` guards main/master/release/*. `preflight_summary()` wired into `garra max-power --goal`. `MockRunner` + 12 unit tests. Plan: `plans/0161-gar-496-repo-workflow.md`. Merged via PR #455 (`1b7f04c`). Sub-issue 3/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
 
-5. **Fase 1.2.1 GarraMaxPower — próximos sub-issues ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — GAR-498 (Skills MVP), GAR-499 (Agent team MVP). Backlog.
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-498](https://linear.app/chatgpt25/issue/GAR-498) Skills MVP**~~ ✅ **Done** (2026-05-23, plan 0171, PR #488 `c65e099`). `NativeSkillRegistry` em `garraia-skills` com built-ins `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify`; comandos produzidos passam por `garraia_common::safety_gate`.
+
+5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-499](https://linear.app/chatgpt25/issue/GAR-499) Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0173, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
+
+5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
