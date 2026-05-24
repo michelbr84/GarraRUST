@@ -1,6 +1,8 @@
 # Runpod Load Balancer Serverless deployment
 
-> **Status:** GAR-603 — implementation slice (added 2026-05-13).
+> **Status:** GAR-603 — implementation slice added 2026-05-13; checklist
+> reconciled 2026-05-24 from static code/docs evidence. Public Runpod smoke
+> remains a follow-up.
 > **Audience:** operators deploying GarraIA/GarraRUST to Runpod's
 > Load Balancer Serverless runtime.
 

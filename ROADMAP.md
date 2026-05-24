@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-24 (local America/New_York) — GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`) e GAR-493 ADR 0011 ✅ **Done** (PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) `95618d3`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
+> **Última atualização:** 2026-05-24 (local America/New_York) — docs/backlog sync: `TODO.md` criado como fila operacional obrigatória, GAR-493/ADR 0011 ✅ **Done** via PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) (`95618d3`), `plans/README.md` sincronizado, e checklist GAR-603 reconciliada com evidência já presente em `Dockerfile`, `router.rs` e `docs/deployment-runpod.md`; smoke Docker/Runpod real permanece pendente. GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -248,7 +248,7 @@ Primeira implementação real do Learning Agent epic. Plan [0144](plans/0144-gar
 
 ### `garraia update` / CLI helpers / Runpod compatibility
 
-- **GAR-603 Runpod Load Balancer Serverless compat** ✅ — PR [#327](https://github.com/michelbr84/GarraRUST/pull/327) `cdebe9a`, 2026-05-13. Container HTTP server mode + `GET /ping` health + `PORT`/`PORT_HEALTH` env honor. Ver §6.1.1.
+- **GAR-603 Runpod Load Balancer Serverless compat** ✅ — PR [#327](https://github.com/michelbr84/GarraRUST/pull/327) `cdebe9a`, 2026-05-13. Container HTTP server mode + `GET /ping` health + `PORT`/`HOST` env honor; `PORT_HEALTH` documentado como igual a `PORT` até haver listener separado. Ver §6.1.1.
 - **GAR-604 DM creation via `POST /v1/groups/{id}/chats`** ✅ — PR [#324](https://github.com/michelbr84/GarraRUST/pull/324) `4ce9d75`, 2026-05-14.
 - **GAR-605 CodeQL `actions` language matrix re-add** ✅ — PR [#323](https://github.com/michelbr84/GarraRUST/pull/323) `f6698c7`, 2026-05-14. Fecha 17 alertas Medium stale.
 - **CI concurrency cancel-superseded** ✅ — PR [#311](https://github.com/michelbr84/GarraRUST/pull/311) `10f637b` + PR [#316](https://github.com/michelbr84/GarraRUST/pull/316) `f57af85`. Canonical `group: workflow-prNum||ref` + `cancel-in-progress`.
@@ -1006,29 +1006,32 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 > **Goal:** make GarraRUST/GarraIA deployable as a Runpod **Load Balancer Serverless** HTTP worker (not the queue-based serverless model — the container must run a real HTTP server, and Runpod routes traffic only to workers whose `GET /ping` on `PORT_HEALTH` returns 200).
 >
 > **Evidence:** observed during a Runpod test on 2026-05-13 against endpoint `k3d2h9xumk2r4o` (`https://k3d2h9xumk2r4o.api.runpod.ai`, internal port `3888`): build succeeded, worker reached `running`, but `GET /ping` returned `400 Bad Request` with `{"detail":"timed out waiting for worker"}`. Endpoint reachable; worker not yet healthy under the LB. Root cause not pinned — likely binding to `127.0.0.1`, missing `/ping`, REPL start command, or `PORT`/`PORT_HEALTH` not respected.
+>
+> **Status 2026-05-24:** static code/docs evidence is complete for the shipped container path (`Dockerfile` uses `garra start --host 0.0.0.0`; router exposes `GET /ping` and `GET /health`; `docs/deployment-runpod.md` documents endpoint settings, public URL and local smoke test). Not rerun in this session: local Docker smoke and public Runpod endpoint smoke.
 
 **Scope**
 
-- [ ] HTTP server mode for containers (e.g. `garra serve --host 0.0.0.0 --port $PORT`, or the equivalent existing command if already present).
-- [ ] Bind to `0.0.0.0` (not `127.0.0.1`) when running in container/serverless mode.
-- [ ] `GET /ping` returns HTTP 200 fast (no DB/provider dependency).
-- [ ] `GET /health` returns useful health information.
-- [ ] Honor `PORT` and `PORT_HEALTH` env vars from the environment.
-- [ ] Dockerfile / start command launches HTTP server mode, **not** REPL/chat mode.
-- [ ] Local Docker verification recipe documented (`docker run -p 3888:3888 …` + `curl http://localhost:3888/ping`).
-- [ ] Runpod endpoint settings documented: `PORT=3888`, `PORT_HEALTH=3888`, exposed HTTP port `3888`.
-- [ ] Document that the public URL is `https://ENDPOINT_ID.api.runpod.ai/<route>` (no `:3888` suffix — the port is internal).
-- [ ] Document the difference between Runpod **queue-based** serverless and **Load Balancer** serverless.
-- [ ] No API keys / endpoint tokens / secrets in docs or logs (per `CLAUDE.md` §"Regras absolutas" 1 & 6).
+- [x] HTTP server mode for containers (`garra start` via `Dockerfile` `ENTRYPOINT`/`CMD`).
+- [x] Bind to `0.0.0.0` (not `127.0.0.1`) when running through the shipped container command.
+- [x] `GET /ping` returns HTTP 200 fast (no DB/provider dependency) — router has stateless `ping()` returning `pong`.
+- [x] `GET /health` returns useful lightweight health information — router has stateless `health()` returning `ok`; richer `/api/health` remains available.
+- [x] Honor `PORT` and `HOST` env vars from the environment (`garra start` clap args).
+- [ ] Separate `PORT_HEALTH` listener/env support when health port must differ from `PORT`; current docs require `PORT_HEALTH=PORT` because `/ping` is served by the main listener.
+- [x] Dockerfile / start command launches HTTP server mode, **not** REPL/chat mode.
+- [x] Local Docker verification recipe documented (`docker run -p 3888:3888 …` + `curl http://localhost:3888/ping`).
+- [x] Runpod endpoint settings documented: `PORT=3888`, `PORT_HEALTH=3888`, exposed HTTP port `3888`.
+- [x] Document that the public URL is `https://ENDPOINT_ID.api.runpod.ai/<route>` (no `:3888` suffix — the port is internal).
+- [x] Document the difference between Runpod **queue-based** serverless and **Load Balancer** serverless.
+- [x] No API keys / endpoint tokens / secrets in docs or logs (per `CLAUDE.md` §"Regras absolutas" 1 & 6); this session also ran a touched-doc secret-pattern scan.
 
 **Acceptance**
 
-- [ ] Local container responds to `GET /ping` with HTTP 200.
-- [ ] Local container responds to `GET /health` with useful status.
-- [ ] App binds to `0.0.0.0:$PORT` in container mode.
+- [ ] Local container responds to `GET /ping` with HTTP 200 (not rerun in this session; requires Docker).
+- [ ] Local container responds to `GET /health` with useful status (not rerun in this session; requires Docker).
+- [ ] App binds to `0.0.0.0:$PORT` in container mode (static evidence present; runtime smoke still pending).
 - [ ] Runpod worker becomes healthy under Load Balancer Serverless.
 - [ ] `GET https://<ENDPOINT_ID>.api.runpod.ai/ping` returns HTTP 200.
-- [ ] No REPL blocks the container start command.
+- [x] No REPL blocks the container start command (`Dockerfile` runs `garra start --host 0.0.0.0`).
 - [ ] CI remains green before merge.
 
 Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Backlog) is the closest sibling and shares the cloud-deploy goal; GAR-603 narrows it to the Runpod LB Serverless surface.
@@ -1231,7 +1234,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-24** — GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-493/ADR 0011 ✅ Done (PR #492, `95618d3`). GAR-695 health run 23 docs ✅ Done (PRs #493/#494). Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
+**Atualizado 2026-05-24** — `TODO.md` criado e esta seção sincronizada. GAR-493/ADR 0011 ✅ Done via PR #492 (`95618d3`). GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-695 health run 23 docs ✅ Done (PRs #493/#494). GAR-603 Runpod checklist parcialmente reconciliada: implementação/docs estáticas marcadas, smoke Docker/Runpod real segue pendente. Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1249,7 +1252,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 1. ~~**Garra Learning Agent — Skill Safety Gates ([GAR-649](https://linear.app/chatgpt25/issue/GAR-649), 8/10)**~~ ✅ **Done** (2026-05-18). `SafetyIntent` + `gate_with_intent` (hard wall, ADR 0010 §"no dev-mode bypass") wirado em `registry::promote_with_intent` e `updater::propose_update_with_runner` ANTES de qualquer side-effect git/gh; denylist amplia para `DELETE..WHERE 1=1` / `chmod -R 777` / `sudo` / `.github/codeql-config.yml`; label `security-audit-passed` waiver ÚNICA para `CriticalPath` (não waive dangerous-command/score/PII/anti-flap); 132 unit tests verdes (11 novos cobrindo waiver semantics + call-sites).
 
-2. ~~**Fase 1.2.1 GarraMaxPower — [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). **Próximo: GAR-495..GAR-501** — state machine brainstorm→spec→plan→execute + Safety Gate wiring para `garraia-tools::safety_gate`. Sub-issues do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) ainda Backlog.
+2. ~~**Fase 1.2.1 GarraMaxPower — [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). Histórico: GAR-495..GAR-501, GAR-498 e GAR-499 foram fechados em slices posteriores; GAR-493/ADR 0011 fechou a decisão arquitetural.
 
 3. ~~**Fase 1.2.1 GarraMaxPower — [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
 
@@ -1267,7 +1270,9 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-499](https://linear.app/chatgpt25/issue/GAR-499) Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0173, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
 
-5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`.
+5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`. Registrar follow-ups concretos em `TODO.md` até virarem issues Linear.
+
+5. ~~**Trilha T1 — criar `TODO.md` operacional**~~ ✅ **Done** (2026-05-24). O arquivo agora resume concluídos, parciais, adiados, decisões e próximos passos recomendados para a próxima sessão autônoma.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 

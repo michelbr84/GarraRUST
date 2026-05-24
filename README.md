@@ -49,6 +49,8 @@
 
 O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui GarraMaxPower nativo (`garra max-power`, registry de skills e Agent Team MVP), Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Execução semana a semana acompanhada nos [projects Linear do time GarraIA-RUST](https://linear.app/chatgpt25/team/GAR/projects).
 
+Nota de sincronizacao (2026-05-24): a decisao GarraMaxPower esta formalizada em [ADR 0011](docs/adr/0011-garra-max-power.md), e o backlog operacional curto agora vive em [`TODO.md`](TODO.md) para pendencias seguras entre `ROADMAP.md` e Linear.
+
 ## Início Rápido
 
 ```bash
