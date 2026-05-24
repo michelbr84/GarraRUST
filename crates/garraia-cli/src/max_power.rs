@@ -13,6 +13,7 @@ use garraia_common::handoff;
 
 use crate::capability_prompt;
 use crate::repo_workflow;
+use crate::team::{AgentTeam, ReviewDecision, TeamSummary};
 
 /// Default path for the handoff state file (relative to CWD).
 const HANDOFF_FILE: &str = ".garra-estado.md";
@@ -180,8 +181,45 @@ fn route_goal(goal: &str, mode: &str) {
     println!("goal: {goal}");
     println!();
     print_repo_preflight();
-    println!("  [GAR-498..GAR-501] Full pipeline execution not yet implemented.");
-    println!("  Run `/garra-routine` to track progress on the state machine.");
+    let team = AgentTeam::new();
+    let summary = team.run(goal);
+    print_team_summary(&summary);
+}
+
+fn print_team_summary(summary: &TeamSummary) {
+    println!(
+        "  ── Agent Team Pipeline: {} ──────────────────────────────",
+        summary.goal
+    );
+    for result in &summary.phases {
+        let status = match &result.decision {
+            ReviewDecision::Accepted => "✓",
+            ReviewDecision::NeedsRevision { .. } => "~",
+            ReviewDecision::Rejected { .. } => "✗",
+        };
+        let role_label = match result.role {
+            crate::team::TeamRole::Orchestrator => "orch",
+            crate::team::TeamRole::Reviewer => "reviewer",
+            crate::team::TeamRole::Executor => "exec",
+        };
+        println!(
+            "  {status} [{label}/{role_label}] {summary}",
+            label = result.phase.label(),
+            summary = result.output.summary,
+        );
+        if !result.output.next_steps.is_empty() {
+            for step in &result.output.next_steps {
+                println!("      → {step}");
+            }
+        }
+    }
+    println!();
+    if summary.completed {
+        println!("  Pipeline complete. Open a PR when ready.");
+    } else {
+        println!("  Pipeline halted — review the phase marked ✗ or ~ above.");
+    }
+    println!();
 }
 
 /// Print a git preflight summary (current branch + tree status).
