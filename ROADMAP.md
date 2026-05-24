@@ -329,7 +329,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 **Entregáveis:**
 
-1. ADR `docs/adr/0009-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
+1. ADR `docs/adr/0011-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
 2. Subseção §1.2.1 deste ROADMAP (este documento).
 3. Subcomando `garra max-power` no `garraia-cli` (esqueleto + roteamento, sem implementação dos passos pesados).
 4. Crate ou módulo `garraia-maxpower` (ou seção em `garraia-skills`) com a máquina de estados do workflow.
@@ -347,7 +347,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - `garra verify` em `main` limpo retorna exit 0 e relatório markdown; em árvore com clippy warning retorna exit ≠ 0.
 - Workflow brainstorm→spec→plan→execute em um bug real do backlog termina com PR aberto + review pelo agent team, sem intervenção manual além de approve.
 - `cargo check --workspace` e `cargo clippy --workspace -- -D warnings` permanecem verdes.
-- ADR 0009 está em `Accepted` antes do merge da última issue filha.
+- ADR 0011 está em `Accepted` antes do merge da última issue filha.
 
 **Riscos:**
 
@@ -360,7 +360,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 **Issues Linear filhas do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492):**
 
-- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0009 (umbrella já registra; issue filha amarra commits).
+- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).
 - `/max-power MVP` ([GAR-494](https://linear.app/chatgpt25/issue/GAR-494)) — subcomando `garra max-power` esqueleto + roteamento + banner.
 - `Capability prompt nativo` ([GAR-495](https://linear.app/chatgpt25/issue/GAR-495)) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
 - `Repo workflow seguro` ([GAR-496](https://linear.app/chatgpt25/issue/GAR-496)) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
