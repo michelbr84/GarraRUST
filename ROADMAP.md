@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-24 (local America/New_York) — GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`) e GAR-493 consolidando ADR 0011 para a decisão nativa. GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
+> **Última atualização:** 2026-05-24 (local America/New_York) — GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`) e GAR-493 ADR 0011 ✅ **Done** (PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) `95618d3`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
 > **Owner:** @michelbr84
 > **Equipe Linear:** GAR
 > **Branch base:** `main`
@@ -360,7 +360,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 **Issues Linear filhas do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492):**
 
-- `GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).
+- ~~`GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).~~ ✅ Done (PR #492 `95618d3`)
 - `/max-power MVP` ([GAR-494](https://linear.app/chatgpt25/issue/GAR-494)) — subcomando `garra max-power` esqueleto + roteamento + banner.
 - `Capability prompt nativo` ([GAR-495](https://linear.app/chatgpt25/issue/GAR-495)) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
 - `Repo workflow seguro` ([GAR-496](https://linear.app/chatgpt25/issue/GAR-496)) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
@@ -1231,7 +1231,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-24** — GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-493/ADR 0011 em validação via PR #492. GAR-695 health run 23 docs ✅ Done (PRs #493/#494). Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
+**Atualizado 2026-05-24** — GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-493/ADR 0011 ✅ Done (PR #492, `95618d3`). GAR-695 health run 23 docs ✅ Done (PRs #493/#494). Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
