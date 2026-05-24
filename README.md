@@ -47,7 +47,7 @@
 
 ## 🗺️ Roadmap AAA
 
-O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Execução semana a semana acompanhada nos [projects Linear do time GarraIA-RUST](https://linear.app/chatgpt25/team/GAR/projects).
+O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui GarraMaxPower nativo (`garra max-power`, registry de skills e Agent Team MVP), Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Execução semana a semana acompanhada nos [projects Linear do time GarraIA-RUST](https://linear.app/chatgpt25/team/GAR/projects).
 
 ## Início Rápido
 
@@ -971,7 +971,7 @@ O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://disc
 
 Acompanhe as próximas entregas e contribua através dos nossos **[Projects no Linear (time GarraIA-RUST)](https://linear.app/chatgpt25/team/GAR/projects)**. O plano completo está consolidado em [`ROADMAP.md`](ROADMAP.md) e distribuído em 7 fases:
 
-1. **[Fase 1 — Core & Inferência](https://linear.app/chatgpt25/project/fase-1-core-and-inferencia-dc084beb8656)** — TurboQuant+ (KV cache, PagedAttention, quantização), Superpowers workflow, config reativo.
+1. **[Fase 1 — Core & Inferência](https://linear.app/chatgpt25/project/fase-1-core-and-inferencia-dc084beb8656)** — TurboQuant+ (KV cache, PagedAttention, quantização), GarraMaxPower nativo (skills registry + agent team MVP), Superpowers workflow, config reativo.
 2. **[Fase 2 — Performance, RAG & MCP](https://linear.app/chatgpt25/project/fase-2-performance-rag-and-mcp-75d77421bfd6)** — Embeddings locais, vector store, plugins WASM sandboxed, OpenTelemetry.
 3. **[Fase 3 — Group Workspace](https://linear.app/chatgpt25/project/fase-3-group-workspace-850d2a440e35)** — Multi-tenant família/equipe: arquivos, chats, memória IA, tasks, docs, RBAC com RLS Postgres. **Caminho crítico.**
 4. **[Fase 4 — UX Multi-Plataforma AAA](https://linear.app/chatgpt25/project/fase-4-ux-multi-plataforma-aaa-b4f6bbe546c1)** — Desktop Tauri AAA, Mobile Android/iOS, CLI interativa.
