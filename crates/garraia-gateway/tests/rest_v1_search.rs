@@ -1,5 +1,5 @@
-//! Integration tests for `GET /v1/search` (plan 0084 + plan 0085;
-//! GAR-549 + GAR-551).
+//! Integration tests for `GET /v1/search` (plan 0084 + plan 0085 + plan 0179;
+//! GAR-549 + GAR-551 + GAR-697).
 //!
 //! All scenarios bundled into ONE `#[tokio::test]` — same pattern as other
 //! rest_v1_* tests (sqlx runtime-teardown race documented in plan 0016 M3).
@@ -26,6 +26,11 @@
 //!   S15. GET 200 — `scope_type=user` (memory): returns only caller's personal memory.
 //!   S16. GET 404 — `scope_type=user` with another user's id → 404.
 //!   S17. GET 400 — `scope_type=user` with default types (messages,memory) → 400.
+//!
+//!   ── Slice 4 (has_attachment filter) — GAR-697 ──
+//!   S18. GET 200 — `has_attachment=true`: only messages with ≥1 attachment returned.
+//!   S19. GET 200 — `has_attachment=false`: only messages with 0 attachments returned.
+//!   S20. GET 400 — `has_attachment=true` + `types=memory`: rejected (messages required).
 
 mod common;
 
@@ -676,4 +681,112 @@ async fn search_scenarios() {
         .await
         .expect("S17 oneshot");
     assert_eq!(resp17.status(), StatusCode::BAD_REQUEST, "S17 expected 400");
+
+    // ── Slice 4: has_attachment filter (S18-S20) — GAR-697 ───────────────
+
+    // Set up: two messages with a unique word. One gets a file attachment
+    // inserted directly via admin_pool (superuser / BYPASSRLS) to avoid
+    // needing a file-upload endpoint in the test harness.
+    let msg_with_att_id = send_message(
+        &h,
+        &token,
+        &chat_id,
+        &group_id.to_string(),
+        "uniquezorblequantum with attachment",
+    )
+    .await;
+    let msg_without_att_id = send_message(
+        &h,
+        &token,
+        &chat_id,
+        &group_id.to_string(),
+        "uniquezorblequantum without attachment",
+    )
+    .await;
+
+    // Insert a stub file and wire it to msg_with_att_id via admin_pool.
+    let msg_with_att_uuid: uuid::Uuid = msg_with_att_id.parse().expect("msg_with_att uuid");
+    let file_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO files (group_id, name, size_bytes, mime_type, created_by_label)
+         VALUES ($1, 'stub-attachment.txt', 42, 'text/plain', 'test-harness')
+         RETURNING id",
+    )
+    .bind(group_id)
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("S18 insert stub file");
+
+    sqlx::query(
+        "INSERT INTO message_attachments (message_id, file_id, group_id, attached_by_label)
+         VALUES ($1, $2, $3, 'test-harness')",
+    )
+    .bind(msg_with_att_uuid)
+    .bind(file_id)
+    .bind(group_id)
+    .execute(&h.admin_pool)
+    .await
+    .expect("S18 insert message_attachment");
+
+    // ── S18. has_attachment=true → only the attached message returned ────
+    let qs18 = format!(
+        "q=uniquezorblequantum&scope_type=group&scope_id={}&types=messages&has_attachment=true",
+        group_id
+    );
+    let resp18 = h
+        .router
+        .clone()
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs18))
+        .await
+        .expect("S18 oneshot");
+    assert_eq!(resp18.status(), StatusCode::OK, "S18 status");
+    let body18 = body_json(resp18).await;
+    let items18 = body18["items"].as_array().expect("S18 items");
+    assert_eq!(
+        items18.len(),
+        1,
+        "S18 must return exactly the attached message"
+    );
+    assert_eq!(
+        items18[0]["id"].as_str().unwrap_or(""),
+        msg_with_att_id,
+        "S18 must return the message that has an attachment"
+    );
+
+    // ── S19. has_attachment=false → only the non-attached message returned
+    let qs19 = format!(
+        "q=uniquezorblequantum&scope_type=group&scope_id={}&types=messages&has_attachment=false",
+        group_id
+    );
+    let resp19 = h
+        .router
+        .clone()
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs19))
+        .await
+        .expect("S19 oneshot");
+    assert_eq!(resp19.status(), StatusCode::OK, "S19 status");
+    let body19 = body_json(resp19).await;
+    let items19 = body19["items"].as_array().expect("S19 items");
+    assert_eq!(
+        items19.len(),
+        1,
+        "S19 must return exactly the non-attached message"
+    );
+    assert_eq!(
+        items19[0]["id"].as_str().unwrap_or(""),
+        msg_without_att_id,
+        "S19 must return the message without an attachment"
+    );
+
+    // ── S20. has_attachment + types=memory only → 400 ────────────────────
+    let qs20 = format!(
+        "q=uniquezorblequantum&scope_type=group&scope_id={}&types=memory&has_attachment=true",
+        group_id
+    );
+    let resp20 = h
+        .router
+        .clone()
+        .oneshot(search_req(Some(&token), Some(&group_id.to_string()), &qs20))
+        .await
+        .expect("S20 oneshot");
+    assert_eq!(resp20.status(), StatusCode::BAD_REQUEST, "S20 expected 400");
 }

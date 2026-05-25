@@ -658,7 +658,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 - [x] `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory` — plan 0084 / [GAR-549](https://linear.app/chatgpt25/issue/GAR-549), implementado 2026-05-08 (Florida). Slice 1: messages (body_tsv GIN) + memory_items (runtime tsvector). Files deferred.
 - [x] `GET /v1/search?...&scope_type=chat&scope_id=<chat_uuid>` + `scope_type=user&scope_id=<user_uuid>` — plan 0085 / [GAR-551](https://linear.app/chatgpt25/issue/GAR-551), implementado 2026-05-08 (Florida). Slice 2 lifts the slice-1 group-only restriction; user-scope rejects `types=messages` (no user-scoped messages exist).
-- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope). `has_attachment` deferred (requires schema change).
+- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope).
+- [x] `GET /v1/search?...&has_attachment=true|false` — plan 0179 / [GAR-697](https://linear.app/chatgpt25/issue/GAR-697), implementado 2026-05-25 (Florida). Slice 4: EXISTS-equality filter on `message_attachments` (migration 020); requires `types` to include `messages`; `None` = no filter.
 
 **Auditoria**
 
@@ -873,8 +874,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 3.9 Busca unificada
 
-- [ ] Endpoint `/v1/search` retorna resultados heterogêneos (messages, files, memory) ordenados por relevância.
-- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552). Pendente: `has_attachment` (requer coluna schema).
+- [x] Endpoint `/v1/search` retorna resultados heterogêneos (messages, memory) ordenados por relevância — slices 1-4 completos (files deferred para quando file-FTS for implementado).
+- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552), `has_attachment` ✅ (slice 4 / GAR-697 / plan 0179).
 - [ ] **Híbrido**: BM25 + ANN vetorial + re-rank.
 
 **Critério de aceite:**
