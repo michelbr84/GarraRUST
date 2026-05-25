@@ -505,6 +505,22 @@ pub enum WorkspaceAuditAction {
     /// already absent). `resource_type = "task_attachments"`, `resource_id = "{task_id}"`.
     /// Metadata: `{ task_id, file_id }` — PII-safe.
     TaskFileDetached,
+
+    /// A file was attached to a message via
+    /// `POST /v1/messages/{message_id}/attachments`
+    /// (plan 0182 / GAR-700, Fase 3.4 message attachments).
+    ///
+    /// `resource_type = "message_attachments"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ message_id, file_id }` — PII-safe.
+    MessageFileAttached,
+
+    /// A file was detached from a message via
+    /// `DELETE /v1/messages/{message_id}/attachments/{file_id}`
+    /// (plan 0182 / GAR-700, Fase 3.4 message attachments).
+    ///
+    /// `resource_type = "message_attachments"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ message_id, file_id }` — PII-safe.
+    MessageFileDetached,
 }
 
 impl WorkspaceAuditAction {
@@ -560,6 +576,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FileVersionsListed => "file.versions.listed",
             WorkspaceAuditAction::TaskFileAttached => "task.file.attached",
             WorkspaceAuditAction::TaskFileDetached => "task.file.detached",
+            WorkspaceAuditAction::MessageFileAttached => "message.file.attached",
+            WorkspaceAuditAction::MessageFileDetached => "message.file.detached",
         }
     }
 }
@@ -781,6 +799,14 @@ mod tests {
             WorkspaceAuditAction::TaskFileDetached.as_str(),
             "task.file.detached"
         );
+        assert_eq!(
+            WorkspaceAuditAction::MessageFileAttached.as_str(),
+            "message.file.attached"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::MessageFileDetached.as_str(),
+            "message.file.detached"
+        );
     }
 
     #[test]
@@ -832,6 +858,8 @@ mod tests {
             WorkspaceAuditAction::FileVersionsListed.as_str(),
             WorkspaceAuditAction::TaskFileAttached.as_str(),
             WorkspaceAuditAction::TaskFileDetached.as_str(),
+            WorkspaceAuditAction::MessageFileAttached.as_str(),
+            WorkspaceAuditAction::MessageFileDetached.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
