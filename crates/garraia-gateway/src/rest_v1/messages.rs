@@ -41,7 +41,7 @@ use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::RestV1FullState;
@@ -1290,6 +1290,428 @@ pub async fn list_thread_messages(
         messages,
         next_cursor,
     }))
+}
+
+// ─── Message Attachments (plan 0182 / GAR-700) ───────────────────────────────
+
+/// Request body for `POST /v1/messages/{message_id}/attachments`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AttachFileToMessageRequest {
+    pub file_id: Uuid,
+}
+
+#[derive(sqlx::FromRow)]
+struct MessageAttachmentRow {
+    message_id: Uuid,
+    file_id: Uuid,
+    attached_by: Option<Uuid>,
+    attached_at: DateTime<Utc>,
+    file_name: String,
+    mime_type: String,
+    size_bytes: i64,
+}
+
+/// Public response shape for a single message attachment.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MessageAttachmentResponse {
+    pub message_id: Uuid,
+    pub file_id: Uuid,
+    pub attached_by: Option<Uuid>,
+    pub attached_at: DateTime<Utc>,
+    pub file_name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+}
+
+impl From<MessageAttachmentRow> for MessageAttachmentResponse {
+    fn from(r: MessageAttachmentRow) -> Self {
+        Self {
+            message_id: r.message_id,
+            file_id: r.file_id,
+            attached_by: r.attached_by,
+            attached_at: r.attached_at,
+            file_name: r.file_name,
+            mime_type: r.mime_type,
+            size_bytes: r.size_bytes,
+        }
+    }
+}
+
+/// Response envelope for `GET /v1/messages/{message_id}/attachments`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListMessageAttachmentsResponse {
+    pub items: Vec<MessageAttachmentResponse>,
+    pub next_cursor: Option<Uuid>,
+}
+
+/// Query params for `GET /v1/messages/{message_id}/attachments`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListMessageAttachmentsQuery {
+    pub cursor: Option<Uuid>,
+    pub limit: Option<u32>,
+}
+
+/// `POST /v1/messages/{message_id}/attachments` — attach a file to a message.
+///
+/// File must belong to the caller's group and must not be soft-deleted.
+/// Returns 409 if already attached. Cross-group file → 404 (not 403).
+#[utoipa::path(
+    post,
+    path = "/v1/messages/{message_id}/attachments",
+    params(("message_id" = Uuid, Path, description = "Message UUID.")),
+    request_body = AttachFileToMessageRequest,
+    responses(
+        (status = 201, description = "File attached.", body = MessageAttachmentResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message or file not found in this group.", body = super::problem::ProblemDetails),
+        (status = 409, description = "File already attached to this message.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+#[tracing::instrument(
+    name = "rest_v1.post_message_attachment",
+    skip_all,
+    fields(message_id = %message_id, file_id = %body.file_id)
+)]
+pub async fn post_message_attachment(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Json(body): Json<AttachFileToMessageRequest>,
+) -> Result<(StatusCode, Json<MessageAttachmentResponse>), RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let msg_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    if msg_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let file_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM files WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(body.file_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    if file_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row: MessageAttachmentRow = sqlx::query_as(
+        "INSERT INTO message_attachments \
+             (message_id, file_id, group_id, attached_by, attached_by_label, attached_at) \
+         VALUES ($1, $2, $3, $4, $5, now()) \
+         RETURNING \
+             message_id, file_id, attached_by, attached_at, \
+             (SELECT name      FROM files WHERE id = $2) AS file_name, \
+             (SELECT mime_type FROM files WHERE id = $2) AS mime_type, \
+             (SELECT size_bytes FROM files WHERE id = $2) AS size_bytes",
+    )
+    .bind(message_id)
+    .bind(body.file_id)
+    .bind(group_id)
+    .bind(principal.user_id)
+    .bind(&actor_label)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e
+            && db_err.code().as_deref() == Some("23505")
+        {
+            return RestError::Conflict("file already attached to this message".into());
+        }
+        RestError::Internal(e.into())
+    })?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MessageFileAttached,
+        principal.user_id,
+        group_id,
+        "message_attachments",
+        message_id.to_string(),
+        json!({ "message_id": message_id.to_string(), "file_id": body.file_id.to_string() }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(MessageAttachmentResponse::from(row)),
+    ))
+}
+
+/// `GET /v1/messages/{message_id}/attachments` — list files attached to a message.
+///
+/// Cursor-paginated by `(attached_at ASC, file_id ASC)`. Default 50, max 100.
+#[utoipa::path(
+    get,
+    path = "/v1/messages/{message_id}/attachments",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+        ListMessageAttachmentsQuery,
+    ),
+    responses(
+        (status = 200, description = "Paginated list of attachments.", body = ListMessageAttachmentsResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found in this group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+#[tracing::instrument(
+    name = "rest_v1.list_message_attachments",
+    skip_all,
+    fields(message_id = %message_id)
+)]
+pub async fn list_message_attachments(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Query(params): Query<ListMessageAttachmentsQuery>,
+) -> Result<Json<ListMessageAttachmentsResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let limit = params.limit.unwrap_or(50).min(100) as i64;
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let msg_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    if msg_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let rows: Vec<MessageAttachmentRow> = if let Some(cursor) = params.cursor {
+        sqlx::query_as(
+            "SELECT ma.message_id, ma.file_id, ma.attached_by, ma.attached_at, \
+                    f.name AS file_name, f.mime_type, f.size_bytes \
+             FROM message_attachments ma \
+             JOIN files f ON f.id = ma.file_id AND f.deleted_at IS NULL \
+             WHERE ma.message_id = $1 \
+               AND (ma.attached_at, ma.file_id) > ( \
+                   SELECT attached_at, file_id FROM message_attachments \
+                   WHERE message_id = $1 AND file_id = $2 \
+               ) \
+             ORDER BY ma.attached_at ASC, ma.file_id ASC \
+             LIMIT $3",
+        )
+        .bind(message_id)
+        .bind(cursor)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "SELECT ma.message_id, ma.file_id, ma.attached_by, ma.attached_at, \
+                    f.name AS file_name, f.mime_type, f.size_bytes \
+             FROM message_attachments ma \
+             JOIN files f ON f.id = ma.file_id AND f.deleted_at IS NULL \
+             WHERE ma.message_id = $1 \
+             ORDER BY ma.attached_at ASC, ma.file_id ASC \
+             LIMIT $2",
+        )
+        .bind(message_id)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let has_more = rows.len() as i64 > limit;
+    let items: Vec<_> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(MessageAttachmentResponse::from)
+        .collect();
+    let next_cursor = if has_more {
+        items.last().map(|r| r.file_id)
+    } else {
+        None
+    };
+
+    Ok(Json(ListMessageAttachmentsResponse { items, next_cursor }))
+}
+
+/// `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach a file.
+///
+/// Idempotent: returns 204 whether or not the attachment row existed.
+/// Returns 404 only if the parent message does not exist in this group.
+#[utoipa::path(
+    delete,
+    path = "/v1/messages/{message_id}/attachments/{file_id}",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+        ("file_id" = Uuid, Path, description = "File UUID to detach."),
+    ),
+    responses(
+        (status = 204, description = "File detached (or was never attached)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Message not found in this group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+#[tracing::instrument(
+    name = "rest_v1.delete_message_attachment",
+    skip_all,
+    fields(message_id = %message_id, file_id = %file_id)
+)]
+pub async fn delete_message_attachment(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((message_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let msg_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    if msg_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    let deleted =
+        sqlx::query("DELETE FROM message_attachments WHERE message_id = $1 AND file_id = $2")
+            .bind(message_id)
+            .bind(file_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    if deleted.rows_affected() > 0 {
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::MessageFileDetached,
+            principal.user_id,
+            group_id,
+            "message_attachments",
+            message_id.to_string(),
+            json!({ "message_id": message_id.to_string(), "file_id": file_id.to_string() }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
