@@ -88,7 +88,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 # (used by `garraia-plugins/src/runtime.rs`) became feature-gated in v44.
 # `preview1` module was renamed to `p1` in the upstream — handled in runtime.rs.
 wasmtime = "44"
-wasmtime-wasi = { version = "44", features = ["p1"] }
+wasmtime-wasi = { version = "45", features = ["p1"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }
