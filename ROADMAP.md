@@ -556,7 +556,7 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 - [x] `chat_members` (composite PK `(chat_id, user_id)`, `role` chat-local, `last_read_at`, `muted`) — migration 004 ✅
 - [x] `messages` (`id`, `chat_id`, **`group_id` denormalizado**, `sender_user_id`, `sender_label`, `body` CHECK len 1..100k, **`body_tsv tsvector GENERATED STORED + GIN`**, `reply_to_id ON DELETE SET NULL`, `thread_id` plain uuid, `deleted_at` soft-delete, **compound FK `(chat_id, group_id) → chats(id, group_id)`**) — migration 004 ✅
 - [x] `message_threads` (`id`, `chat_id`, `root_message_id UNIQUE`, `title`, `resolved_at`) — migration 004 ✅
-- [ ] `message_attachments` — deferido até GAR-387 (files) materializar
+- [x] `message_attachments` — migration 020, M:N join table (messages × files), FORCE RLS via JOIN through messages, plan 0179 / [GAR-697](https://linear.app/chatgpt25/issue/GAR-697) ✅ 2026-05-25
 - [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `files`, `file_versions`, `file_shares`
 - [x] `memory_items` (`id`, `scope_type` CHECK user/group/chat, `scope_id` sem FK, **`group_id` NULL-able** para user-scope, `created_by ON DELETE SET NULL` + `created_by_label` cache, `kind` CHECK 6 valores, `content` CHECK 10k, `sensitivity` CHECK 4 níveis + partial index em secret, `source_chat_id/source_message_id ON DELETE SET NULL`, `ttl_expires_at` CHECK future) — migration 005 ✅
@@ -655,7 +655,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 - [x] `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory` — plan 0084 / [GAR-549](https://linear.app/chatgpt25/issue/GAR-549), implementado 2026-05-08 (Florida). Slice 1: messages (body_tsv GIN) + memory_items (runtime tsvector). Files deferred.
 - [x] `GET /v1/search?...&scope_type=chat&scope_id=<chat_uuid>` + `scope_type=user&scope_id=<user_uuid>` — plan 0085 / [GAR-551](https://linear.app/chatgpt25/issue/GAR-551), implementado 2026-05-08 (Florida). Slice 2 lifts the slice-1 group-only restriction; user-scope rejects `types=messages` (no user-scoped messages exist).
-- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope). `has_attachment` deferred (requires schema change).
+- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope).
+- [x] `GET /v1/search?...&has_attachment=true|false` — plan 0179 / [GAR-697](https://linear.app/chatgpt25/issue/GAR-697), implementado 2026-05-25 (Florida). Slice 4: EXISTS-equality filter on `message_attachments` (migration 020); requires `types` to include `messages`; `None` = no filter.
 
 **Auditoria**
 
@@ -870,8 +871,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 3.9 Busca unificada
 
-- [ ] Endpoint `/v1/search` retorna resultados heterogêneos (messages, files, memory) ordenados por relevância.
-- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552). Pendente: `has_attachment` (requer coluna schema).
+- [x] Endpoint `/v1/search` retorna resultados heterogêneos (messages, memory) ordenados por relevância — slices 1-4 completos (files deferred para quando file-FTS for implementado).
+- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552), `has_attachment` ✅ (slice 4 / GAR-697 / plan 0179).
 - [ ] **Híbrido**: BM25 + ANN vetorial + re-rank.
 
 **Critério de aceite:**

@@ -1,13 +1,17 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085 + plan 0086, GAR-549 + GAR-551 + GAR-552, epic GAR-WS-SEARCH / Fase 3.4).
+//! (plan 0084 + plan 0085 + plan 0086 + plan 0179,
+//!  GAR-549 + GAR-551 + GAR-552 + GAR-697, epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slice 1 + slice 2 + slice 3)
+//! ## Scope (slice 1 + slice 2 + slice 3 + slice 4)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
 //! GET /v1/search?q=<q>&scope_type=chat &scope_id=<chat_uuid> &types=messages,memory
 //! GET /v1/search?q=<q>&scope_type=user &scope_id=<user_uuid> &types=memory
 //! ```
+//!
+//! Slice 4 adds `has_attachment=true|false` filter on message results:
+//! rows with (or without) ≥1 entry in `message_attachments` (migration 020).
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -134,6 +138,10 @@ pub struct SearchQuery {
     pub to_date: Option<DateTime<Utc>>,
     /// Filter: for message results only, restrict to this sender UUID. Rejected for `scope_type=user`.
     pub author_id: Option<Uuid>,
+    /// Filter: for message results only, restrict to messages that have (or lack) ≥1 file
+    /// attachment in `message_attachments`. `true` = with attachment; `false` = without.
+    /// Rejected when `types` does not include `messages`. Optional; absent means no filter.
+    pub has_attachment: Option<bool>,
     /// Page size. Default 20, max 50.
     pub limit: Option<u32>,
     /// Offset for pagination. Default 0, max 10 000.
@@ -162,6 +170,7 @@ struct ValidatedSearch {
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
+    has_attachment: Option<bool>,
     limit: u32,
     offset: u32,
 }
@@ -236,6 +245,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // has_attachment only applies to message results.
+    if params.has_attachment.is_some() && !include_messages {
+        return Err(RestError::BadRequest(
+            "has_attachment requires types to include 'messages'".into(),
+        ));
+    }
+
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -253,6 +269,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
+        has_attachment: params.has_attachment,
         limit,
         offset,
     })
@@ -315,7 +332,18 @@ async fn set_rls_context(
 /// - `None` → group-wide search (slice 1: `scope_type=group`)
 /// - `Some(chat_id)` → chat-scoped search (slice 2: `scope_type=chat`)
 ///
-/// `from_date` / `to_date` / `author_id` are all optional; `NULL` binds skip the predicate.
+/// `from_date` / `to_date` / `author_id` / `has_attachment` are all optional;
+/// `NULL` binds skip the predicate.
+///
+/// `has_attachment`:
+/// - `None` → no attachment filter
+/// - `Some(true)` → only messages with ≥1 row in `message_attachments`
+/// - `Some(false)` → only messages with 0 rows in `message_attachments`
+///
+/// The EXISTS-equality trick `EXISTS(...) = $7` compares the boolean EXISTS result
+/// directly with the parameter: when $7 IS NULL the outer IS-NULL guard short-circuits
+/// to TRUE (no filter); otherwise `EXISTS(...) = true` or `EXISTS(...) = false` select
+/// exactly the messages that match.
 async fn fetch_messages(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
@@ -324,6 +352,7 @@ async fn fetch_messages(
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
+    has_attachment: Option<bool>,
     fetch_up_to: i64,
 ) -> Result<Vec<MessageSearchRow>, RestError> {
     let rows = sqlx::query_as::<_, MessageSearchRow>(
@@ -342,8 +371,11 @@ async fn fetch_messages(
            AND  ($4::timestamptz IS NULL OR m.created_at >= $4)
            AND  ($5::timestamptz IS NULL OR m.created_at <= $5)
            AND  ($6::uuid IS NULL OR m.sender_user_id = $6)
+           AND  ($7::boolean IS NULL
+                 OR EXISTS (SELECT 1 FROM message_attachments ma
+                            WHERE ma.message_id = m.id) = $7)
          ORDER BY score DESC, m.created_at DESC, m.id DESC
-         LIMIT $7",
+         LIMIT $8",
     )
     .bind(q)
     .bind(group_id)
@@ -351,6 +383,7 @@ async fn fetch_messages(
     .bind(from_date)
     .bind(to_date)
     .bind(author_id)
+    .bind(has_attachment)
     .bind(fetch_up_to)
     .fetch_all(&mut **tx)
     .await
@@ -445,6 +478,7 @@ async fn fetch_memory(
 /// | `scope_type=user` + `types=messages`                          | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
+/// | `has_attachment` set + `types` excludes `messages`            | 400    |
 /// | `offset` > 10 000                                             | 400    |
 /// | Happy path                                                    | 200    |
 #[utoipa::path(
@@ -542,6 +576,7 @@ pub async fn search(
             validated.from_date,
             validated.to_date,
             validated.author_id,
+            validated.has_attachment,
             fetch_up_to,
         )
         .await?;
@@ -645,6 +680,7 @@ mod tests {
             from_date: None,
             to_date: None,
             author_id: None,
+            has_attachment: None,
             limit: None,
             offset: None,
         }
@@ -786,6 +822,7 @@ mod tests {
             from_date: None,
             to_date: None,
             author_id: None,
+            has_attachment: None,
             limit: None,
             offset: Some(10_001),
         };
@@ -802,6 +839,7 @@ mod tests {
             from_date: None,
             to_date: None,
             author_id: None,
+            has_attachment: None,
             limit: Some(999),
             offset: None,
         };
@@ -837,6 +875,7 @@ mod tests {
             from_date,
             to_date,
             author_id,
+            has_attachment: None,
             limit: None,
             offset: None,
         }
@@ -911,6 +950,7 @@ mod tests {
             from_date: None,
             to_date: None,
             author_id: Some(author),
+            has_attachment: None,
             limit: None,
             offset: None,
         };
@@ -936,5 +976,46 @@ mod tests {
         assert_eq!(v.from_date, None);
         assert_eq!(v.to_date, None);
         assert_eq!(v.author_id, None);
+    }
+
+    // ─── Slice 4: has_attachment filter tests ─────────────────────────────────
+
+    #[test]
+    fn has_attachment_true_with_messages_accepted() {
+        let mut params = make_params("hello", "group", Some("messages"));
+        params.has_attachment = Some(true);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.has_attachment, Some(true));
+    }
+
+    #[test]
+    fn has_attachment_false_with_messages_accepted() {
+        let mut params = make_params("hello", "group", Some("messages"));
+        params.has_attachment = Some(false);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.has_attachment, Some(false));
+    }
+
+    #[test]
+    fn has_attachment_none_default_accepted() {
+        let params = make_params("hello", "group", Some("messages"));
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.has_attachment, None);
+    }
+
+    #[test]
+    fn has_attachment_with_memory_only_rejected() {
+        let mut params = make_params("hello", "group", Some("memory"));
+        params.has_attachment = Some(true);
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn has_attachment_with_default_types_messages_memory_accepted() {
+        // Default types = messages,memory — messages IS included, so has_attachment is OK.
+        let mut params = make_params("hello", "group", None);
+        params.has_attachment = Some(true);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.has_attachment, Some(true));
     }
 }

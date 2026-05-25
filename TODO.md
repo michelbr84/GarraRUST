@@ -5,23 +5,19 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-05-24 (America/New_York)
+**Atualizado:** 2026-05-25 (America/New_York)
 
 ## Concluído nesta sessão
 
-- Criado `TODO.md`, que estava ausente em `main` apesar de ser obrigatório no
-  fluxo de trabalho atual.
-- Sincronizado `ROADMAP.md` com o estado pós-merge de GAR-493/ADR 0011:
-  PR #492 foi mergeado em `main` (`95618d3`), GAR-493 está Done e GAR-492 está
-  em In Review para triagem de fechamento/follow-ups.
-- Atualizado `plans/README.md`: plan 0176 agora aponta para o merge real via
-  PR #492 (`95618d3`) em vez de `In Progress`.
-- Reconciliada a checklist GAR-603 Runpod no `ROADMAP.md` com evidência já
-  presente em código/docs: `Dockerfile`, `router.rs` e
-  `docs/deployment-runpod.md`.
-- Atualizado `docs/deployment-runpod.md` para explicitar que a checklist foi
-  reconciliada por evidência estática e que o smoke público Runpod continua
-  pendente.
+- GAR-697 / plan 0179 — Search slice 4 (`has_attachment` filter):
+  - Migration 020 (`message_attachments` M:N join table, FORCE RLS via JOIN
+    through messages, índice `message_attachments_message_idx` para o EXISTS
+    subquery path).
+  - `search.rs`: `SearchQuery.has_attachment: Option<bool>`, validação (rejeita
+    quando `types` não inclui `messages`), predicado SQL EXISTS-equality trick.
+  - Tests: 5 unit tests novos (slice 4 block), S18/S19/S20 integration scenarios.
+  - ROADMAP.md + plans/README.md + TODO.md atualizados.
+  - Branch: `routine/202605250015-search-has-attachment`, PR em revisão.
 
 ## Parcialmente concluído
 
