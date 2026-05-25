@@ -9,6 +9,18 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído nesta sessão
 
+- GAR-702 / plan 0184 — Health run 28: all surfaces clean, priority (i). PR #504 squash-merged.
+
+- GAR-703 / plan 0185 — Search slice 5 (`types=files` file name FTS):
+  - `SearchResultType::File` variant added.
+  - `include_files: bool` in `ValidatedSearch`.
+  - `parse_and_validate`: recognizes `"files"`, rejects non-group scope.
+  - `FileSearchRow` struct + `fetch_files()` async function (runtime tsvector 'simple').
+  - Handler: `if validated.include_files { ... }` block mapping to `SearchResult`.
+  - 6 new unit tests; `unknown_type_rejected` updated to use `"tasks"` (not `"files"`).
+  - ROADMAP.md + plans/README.md + TODO.md updated.
+  - Branch: `routine/202605251215-search-slice5-files`.
+
 - GAR-697 / plan 0179 — Search slice 4 (`has_attachment` filter):
   - Migration 020 (`message_attachments` M:N join table, FORCE RLS via JOIN
     through messages, índice `message_attachments_message_idx` para o EXISTS
