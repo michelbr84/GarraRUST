@@ -19,7 +19,7 @@ curtos para a próxima sessão autônoma.
   - Handler: `if validated.include_files { ... }` block mapping to `SearchResult`.
   - 6 new unit tests; `unknown_type_rejected` updated to use `"tasks"` (not `"files"`).
   - ROADMAP.md + plans/README.md + TODO.md updated.
-  - Branch: `routine/202605251215-search-slice5-files`.
+  - Branch: `routine/202605251215-search-slice5-files`, PR #505, merged `bb8c040`.
 
 - GAR-697 / plan 0179 — Search slice 4 (`has_attachment` filter):
   - Migration 020 (`message_attachments` M:N join table, FORCE RLS via JOIN
