@@ -190,3 +190,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0178 | [GAR-696 — Health run 24 (2026-05-24): all surfaces clean, routine/ PR #496 noted, priority (i)](0178-gar-696-health-run-24.md) | [GAR-696](https://linear.app/chatgpt25/issue/GAR-696) | ✅ Merged 2026-05-25 via PR #497 (`149b91b`) |
 | 0179 | GAR-697 — Search slice 4: has_attachment filter + migration 020 (reserved for routine/ PR #498) | [GAR-697](https://linear.app/chatgpt25/issue/GAR-697) | 🔄 In Progress (PR #498) |
 | 0180 | [GAR-698 — Health run 25 (2026-05-25): all surfaces clean, routine/ PR #498 noted, priority (i)](0180-gar-698-health-run-25.md) | [GAR-698](https://linear.app/chatgpt25/issue/GAR-698) | ✅ Merged 2026-05-25 via PR #499 (`61bd6a7`) |
+| 0181 | [GAR-699 — Health run 26 (2026-05-25): all surfaces clean, routine/ PR #498 noted, priority (i)](0181-gar-699-health-run-26.md) | [GAR-699](https://linear.app/chatgpt25/issue/GAR-699) | 🔄 In Progress |
