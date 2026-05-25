@@ -660,6 +660,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/search?...&scope_type=chat&scope_id=<chat_uuid>` + `scope_type=user&scope_id=<user_uuid>` — plan 0085 / [GAR-551](https://linear.app/chatgpt25/issue/GAR-551), implementado 2026-05-08 (Florida). Slice 2 lifts the slice-1 group-only restriction; user-scope rejects `types=messages` (no user-scoped messages exist).
 - [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope).
 - [x] `GET /v1/search?...&has_attachment=true|false` — plan 0179 / [GAR-697](https://linear.app/chatgpt25/issue/GAR-697), implementado 2026-05-25 (Florida). Slice 4: EXISTS-equality filter on `message_attachments` (migration 020); requires `types` to include `messages`; `None` = no filter.
+- [x] `GET /v1/search?...&types=files` — plan 0185 / [GAR-703](https://linear.app/chatgpt25/issue/GAR-703), implementado 2026-05-25 (Florida). Slice 5: `files.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only; result `type: "file"`, `excerpt` = name, `kind` = mime_type.
 
 **Auditoria**
 
