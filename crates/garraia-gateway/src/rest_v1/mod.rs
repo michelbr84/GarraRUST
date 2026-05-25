@@ -371,8 +371,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0182 (GAR-700) — message attachments API.
                 .route(
                     "/v1/messages/{message_id}/attachments",
-                    post(messages::post_message_attachment)
-                        .get(messages::list_message_attachments),
+                    post(messages::post_message_attachment).get(messages::list_message_attachments),
                 )
                 .route(
                     "/v1/messages/{message_id}/attachments/{file_id}",

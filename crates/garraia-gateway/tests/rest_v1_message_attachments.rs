@@ -76,11 +76,7 @@ fn auth_req(
 }
 
 /// Creates a chat and sends one message. Returns (chat_id, message_id).
-async fn create_chat_and_message(
-    h: &Harness,
-    token: &str,
-    group_id: &str,
-) -> (String, String) {
+async fn create_chat_and_message(h: &Harness, token: &str, group_id: &str) -> (String, String) {
     let resp = h
         .router
         .clone()
@@ -175,25 +171,21 @@ async fn rest_v1_message_attachments_scenarios() {
 
     // Alice — primary actor with her own group.
     // Bob — separate group for cross-group isolation.
-    let (alice_id, alice_group_id, alice_token) =
-        seed_user_with_group(&h, "alice@msgattach.test")
-            .await
-            .expect("seed alice+group");
-    let (bob_id, bob_group_id, bob_token) =
-        seed_user_with_group(&h, "bob@msgattach.test")
-            .await
-            .expect("seed bob+group");
+    let (alice_id, alice_group_id, alice_token) = seed_user_with_group(&h, "alice@msgattach.test")
+        .await
+        .expect("seed alice+group");
+    let (bob_id, bob_group_id, bob_token) = seed_user_with_group(&h, "bob@msgattach.test")
+        .await
+        .expect("seed bob+group");
 
     let gid = alice_group_id.to_string();
     let g2id = bob_group_id.to_string();
 
     // Create a chat + message under Alice's group.
-    let (_chat_id, message_id) =
-        create_chat_and_message(&h, &alice_token, &gid).await;
+    let (_chat_id, message_id) = create_chat_and_message(&h, &alice_token, &gid).await;
 
     // Create a message under Bob's group (cross-group message guard, MA8).
-    let (_bob_chat_id, bob_message_id) =
-        create_chat_and_message(&h, &bob_token, &g2id).await;
+    let (_bob_chat_id, bob_message_id) = create_chat_and_message(&h, &bob_token, &g2id).await;
 
     // Seed a live file in Alice's group (the one we'll attach in MA1).
     let file_id = seed_file(&h, alice_group_id, alice_id, false).await;

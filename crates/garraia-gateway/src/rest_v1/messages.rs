@@ -1382,7 +1382,11 @@ pub async fn post_message_attachment(
 ) -> Result<(StatusCode, Json<MessageAttachmentResponse>), RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
     if !can(&principal, Action::ChatsWrite) {
         return Err(RestError::Forbidden);
@@ -1429,12 +1433,11 @@ pub async fn post_message_attachment(
         return Err(RestError::NotFound);
     }
 
-    let (actor_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (actor_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let row: MessageAttachmentRow = sqlx::query_as(
         "INSERT INTO message_attachments \
@@ -1478,7 +1481,10 @@ pub async fn post_message_attachment(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    Ok((StatusCode::CREATED, Json(MessageAttachmentResponse::from(row))))
+    Ok((
+        StatusCode::CREATED,
+        Json(MessageAttachmentResponse::from(row)),
+    ))
 }
 
 /// `GET /v1/messages/{message_id}/attachments` — list files attached to a message.
@@ -1512,7 +1518,11 @@ pub async fn list_message_attachments(
 ) -> Result<Json<ListMessageAttachmentsResponse>, RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
     if !can(&principal, Action::ChatsRead) {
         return Err(RestError::Forbidden);
@@ -1636,7 +1646,11 @@ pub async fn delete_message_attachment(
 ) -> Result<StatusCode, RestError> {
     let group_id = match principal.group_id {
         Some(g) => g,
-        None => return Err(RestError::BadRequest("X-Group-Id header is required".into())),
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
     };
     if !can(&principal, Action::ChatsWrite) {
         return Err(RestError::Forbidden);
