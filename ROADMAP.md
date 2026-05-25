@@ -556,7 +556,7 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 - [x] `chat_members` (composite PK `(chat_id, user_id)`, `role` chat-local, `last_read_at`, `muted`) — migration 004 ✅
 - [x] `messages` (`id`, `chat_id`, **`group_id` denormalizado**, `sender_user_id`, `sender_label`, `body` CHECK len 1..100k, **`body_tsv tsvector GENERATED STORED + GIN`**, `reply_to_id ON DELETE SET NULL`, `thread_id` plain uuid, `deleted_at` soft-delete, **compound FK `(chat_id, group_id) → chats(id, group_id)`**) — migration 004 ✅
 - [x] `message_threads` (`id`, `chat_id`, `root_message_id UNIQUE`, `title`, `resolved_at`) — migration 004 ✅
-- [ ] `message_attachments` — deferido até GAR-387 (files) materializar
+- [x] `message_attachments` (M:N join, `message_id + file_id`, FORCE RLS via `message_attachments_through_messages` policy) — migration 020, GAR-697 (plan 0179) + GAR-700 (plan 0182). ✅
 - [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
 - [ ] `files`, `file_versions`, `file_shares`
 - [x] `memory_items` (`id`, `scope_type` CHECK user/group/chat, `scope_id` sem FK, **`group_id` NULL-able** para user-scope, `created_by ON DELETE SET NULL` + `created_by_label` cache, `kind` CHECK 6 valores, `content` CHECK 10k, `sensitivity` CHECK 4 níveis + partial index em secret, `source_chat_id/source_message_id ON DELETE SET NULL`, `ttl_expires_at` CHECK future) — migration 005 ✅
@@ -626,6 +626,9 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] SSE `GET /v1/chats/{chat_id}/stream` (broadcast cap-64, backpressure via `stream.lagged`) — plan 0162, merged 2026-05-21 via PR #459. Design: SSE escolhido em vez de WebSocket — canal de chat é server→client apenas; cross-tenant isolation via FORCE RLS + `WHERE group_id = $caller_group_id`.
   - [x] **Follow-up F-3** ([GAR-679](https://linear.app/chatgpt25/issue/GAR-679)): SSE rate-limit per user/group sobre `/v1/chats/{id}/stream` — DoS hardening. `MAX_SSE_PER_USER = 5`; 6th connection → 429 + `Retry-After: 60`; `SseSlotGuard` RAII + `ChatStreamGuard` decrement. Plan 0163, merged 2026-05-21.
   - [x] **Follow-up F-4** ([GAR-680](https://linear.app/chatgpt25/issue/GAR-680)): audit-log das subscriptions SSE (`chat.subscribed` no handler dentro da tx pré-commit + `chat.unsubscribed` via `tokio::spawn` no `Drop` do `ChatStreamGuard`); `subscriber_count` em metadata, PII-safe. Cobertura: 24 unit tests verdes (3 audit_workspace + 21 chats) + cenário S5 em `rest_v1_chats_sse.rs` (integration, CI). Merged 2026-05-21 via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) (`a972947`). ✅
+- [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
+- [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
+- [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
 
 **Arquivos**
 
@@ -690,7 +693,7 @@ Novo crate: `garraia-storage`.
 - [x] Canais por grupo + DMs intra-grupo.
 - [ ] Threads (entidade dedicada, não só `parent_id`).
 - [ ] Reações, menções (`@user`, `@channel`), typing indicators.
-- [ ] Anexos via `message_attachments` → `files`.
+- [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. 🔄 In Progress.
 - [ ] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat.
 - [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.
 

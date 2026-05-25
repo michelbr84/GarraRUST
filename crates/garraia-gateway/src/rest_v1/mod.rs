@@ -368,6 +368,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(messages::patch_message)
                         .delete(messages::delete_message),
                 )
+                // Plan 0182 (GAR-700) — message attachments API.
+                .route(
+                    "/v1/messages/{message_id}/attachments",
+                    post(messages::post_message_attachment).get(messages::list_message_attachments),
+                )
+                .route(
+                    "/v1/messages/{message_id}/attachments/{file_id}",
+                    delete(messages::delete_message_attachment),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1.
                 .route(
                     "/v1/memory",
@@ -588,6 +597,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                // Plan 0182 (GAR-700) — message attachments, fail-soft 503.
+                .route(
+                    "/v1/messages/{message_id}/attachments",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/messages/{message_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
                 .route(
                     "/v1/memory",
@@ -784,6 +802,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler)
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
+                )
+                // Plan 0182 (GAR-700) — message attachments, no-auth stub.
+                .route(
+                    "/v1/messages/{message_id}/attachments",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/messages/{message_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
                 .route(
