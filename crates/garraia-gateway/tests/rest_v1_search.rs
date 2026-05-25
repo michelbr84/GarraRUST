@@ -741,7 +741,11 @@ async fn search_scenarios() {
     assert_eq!(resp18.status(), StatusCode::OK, "S18 status");
     let body18 = body_json(resp18).await;
     let items18 = body18["items"].as_array().expect("S18 items");
-    assert_eq!(items18.len(), 1, "S18 must return exactly the attached message");
+    assert_eq!(
+        items18.len(),
+        1,
+        "S18 must return exactly the attached message"
+    );
     assert_eq!(
         items18[0]["id"].as_str().unwrap_or(""),
         msg_with_att_id,
