@@ -403,6 +403,17 @@ name = "rest_v1_me_patch"
 path = "tests/rest_v1_me_patch.rs"
 required-features = ["test-helpers"]
 
+# Plan 0182 (GAR-700) — message attachments API
+# (POST/GET /v1/messages/{id}/attachments,
+#  DELETE /v1/messages/{id}/attachments/{file_id}).
+# 8 bundled scenarios (MA1-MA8). Feature-gated so
+# `cargo clippy --all-targets` without `--features test-helpers` skips
+# compilation cleanly (mirrors rest_v1_task_attachments).
+[[test]]
+name = "rest_v1_message_attachments"
+path = "tests/rest_v1_message_attachments.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly
