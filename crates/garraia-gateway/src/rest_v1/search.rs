@@ -1,9 +1,9 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085 + plan 0086 + plan 0179 + plan 0185 + plan 0192 + plan 0193,
-//!  GAR-549 + GAR-551 + GAR-552 + GAR-697 + GAR-703 + GAR-707 + GAR-710,
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195;
+//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713;
 //!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slices 1–7)
+//! ## Scope (slices 1–8)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -25,6 +25,12 @@
 //! searches `task_comments.body_md` via runtime `to_tsvector('simple', body_md)`.
 //! JOIN through `tasks` for group_id (RLS `task_comments_through_tasks` policy).
 //! Deleted comments excluded.
+//!
+//! Slice 8 (plan 0195 / GAR-713) adds optional `sort_by` parameter:
+//! `relevance` (default, `score DESC, created_at DESC, id DESC`),
+//! `created_at_desc` (`created_at DESC, score DESC, id DESC`),
+//! `created_at_asc` (`created_at ASC, score DESC, id DESC`).
+//! Applied on the Rust side after per-type fetches merge into a single Vec.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -89,6 +95,17 @@ const MAX_OFFSET: u32 = 10_000;
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
+/// Sort order for merged search results (slice 8 / GAR-713).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortBy {
+    /// FTS rank DESC, created_at DESC, id DESC (default).
+    Relevance,
+    /// created_at DESC, score DESC, id DESC.
+    CreatedAtDesc,
+    /// created_at ASC, score DESC, id DESC.
+    CreatedAtAsc,
+}
+
 /// Type discriminant for a search result item.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -151,8 +168,8 @@ pub struct SearchQuery {
     /// The group UUID to search within. Must equal the caller's active group.
     pub scope_id: Uuid,
     /// Comma-separated list of resource types to search.
-    /// Supported: `messages`, `memory`, `files`, `tasks`. Default: `messages,memory`.
-    /// `files` and `tasks` are only valid for `scope_type=group`.
+    /// Supported: `messages`, `memory`, `files`, `tasks`, `task_comments`. Default: `messages,memory`.
+    /// `files`, `tasks`, and `task_comments` are only valid for `scope_type=group`.
     pub types: Option<String>,
     /// Filter: only results created at or after this timestamp (ISO 8601 UTC). Optional.
     pub from_date: Option<DateTime<Utc>>,
@@ -164,6 +181,9 @@ pub struct SearchQuery {
     /// attachment in `message_attachments`. `true` = with attachment; `false` = without.
     /// Rejected when `types` does not include `messages`. Optional; absent means no filter.
     pub has_attachment: Option<bool>,
+    /// Sort order for merged results (slice 8 / GAR-713). Accepted values:
+    /// `relevance` (default), `created_at_desc`, `created_at_asc`.
+    pub sort_by: Option<String>,
     /// Page size. Default 20, max 50.
     pub limit: Option<u32>,
     /// Offset for pagination. Default 0, max 10 000.
@@ -198,6 +218,8 @@ struct ValidatedSearch {
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
     has_attachment: Option<bool>,
+    /// Slice 8 / GAR-713: result sort order.
+    sort_by: SortBy,
     limit: u32,
     offset: u32,
 }
@@ -312,6 +334,18 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // sort_by — slice 8 / GAR-713.
+    let sort_by = match params.sort_by.as_deref().unwrap_or("relevance") {
+        "relevance" => SortBy::Relevance,
+        "created_at_desc" => SortBy::CreatedAtDesc,
+        "created_at_asc" => SortBy::CreatedAtAsc,
+        other => {
+            return Err(RestError::BadRequest(format!(
+                "invalid sort_by '{other}'; accepted: relevance, created_at_desc, created_at_asc"
+            )));
+        }
+    };
+
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -333,6 +367,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         to_date: params.to_date,
         author_id: params.author_id,
         has_attachment: params.has_attachment,
+        sort_by,
         limit,
         offset,
     })
@@ -980,13 +1015,32 @@ pub async fn search(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    // Sort merged results: score DESC, created_at DESC, id DESC.
-    all.sort_unstable_by(|a, b| {
-        b.score
+    // Sort merged results per sort_by (slice 8 / GAR-713).
+    all.sort_unstable_by(|a, b| match validated.sort_by {
+        SortBy::Relevance => b
+            .score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.created_at.cmp(&a.created_at))
-            .then_with(|| b.id.cmp(&a.id))
+            .then_with(|| b.id.cmp(&a.id)),
+        SortBy::CreatedAtDesc => b
+            .created_at
+            .cmp(&a.created_at)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.id.cmp(&a.id)),
+        SortBy::CreatedAtAsc => a
+            .created_at
+            .cmp(&b.created_at)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.id.cmp(&a.id)),
     });
 
     // Offset slice.
@@ -1017,6 +1071,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         }
@@ -1270,6 +1325,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: Some(10_001),
         };
@@ -1287,6 +1343,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: Some(999),
             offset: None,
         };
@@ -1323,6 +1380,7 @@ mod tests {
             to_date,
             author_id,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         }
@@ -1398,6 +1456,7 @@ mod tests {
             to_date: None,
             author_id: Some(author),
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         };
@@ -1514,5 +1573,45 @@ mod tests {
         assert!(!v.include_files);
         assert!(v.include_messages);
         assert!(v.include_memory);
+    }
+
+    // ── Slice 8: sort_by parameter (GAR-713) ─────────────────────────────────
+
+    #[test]
+    fn sort_by_absent_defaults_to_relevance() {
+        let params = make_params("hello", "group", None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::Relevance);
+    }
+
+    #[test]
+    fn sort_by_relevance_explicit_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("relevance".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::Relevance);
+    }
+
+    #[test]
+    fn sort_by_created_at_desc_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("created_at_desc".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::CreatedAtDesc);
+    }
+
+    #[test]
+    fn sort_by_created_at_asc_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("created_at_asc".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::CreatedAtAsc);
+    }
+
+    #[test]
+    fn sort_by_invalid_value_rejected() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("random_order".to_owned());
+        assert!(parse_and_validate(&params).is_err());
     }
 }
