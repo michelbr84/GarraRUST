@@ -409,12 +409,14 @@ jobs:
   # **1.92** porque ~30 sub-crates `wasmtime-*` declaram
   # `rust-version = "1.92"` em seus manifests publicados. O piso real
   # (1.92) é o gate, não o piso parcial (1.88) das deps não-wasmtime.
+  # GAR-708: wasmtime 45.0.0 declara rust-version = "1.93.0" — piso
+  # elevado de 1.92 → 1.93 junto com o bump de segurança (health run 32).
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
   # mesmos motivos do clippy/build (GTK + sidecar Windows ausentes em
   # runners GHA).
   msrv:
-    name: MSRV check (1.92)
+    name: MSRV check (1.93)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -422,11 +424,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install Rust 1.92
-        uses: dtolnay/rust-toolchain@1.92
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@1.93
 
-      - name: cargo +1.92 check
-        run: cargo +1.92 check --workspace --exclude garraia-desktop --locked
+      - name: cargo +1.93 check
+        run: cargo +1.93 check --workspace --exclude garraia-desktop --locked
 
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:

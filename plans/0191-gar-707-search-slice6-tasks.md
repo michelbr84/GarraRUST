@@ -72,8 +72,8 @@ None.
 
 ```
 crates/garraia-gateway/src/rest_v1/search.rs   — augmented (tasks support)
-plans/0190-gar-707-search-slice6-tasks.md      — this file
-plans/README.md                                — row 0190 added
+plans/0191-gar-707-search-slice6-tasks.md      — this file
+plans/README.md                                — row 0191 added
 ROADMAP.md                                     — §3.9 slice 6 row added
 ```
 
