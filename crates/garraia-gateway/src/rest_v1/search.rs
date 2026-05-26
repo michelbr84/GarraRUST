@@ -1,8 +1,9 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085 + plan 0086 + plan 0179,
-//!  GAR-549 + GAR-551 + GAR-552 + GAR-697, epic GAR-WS-SEARCH / Fase 3.4).
+//! (plan 0084 + plan 0085 + plan 0086 + plan 0179 + plan 0185 + plan 0190,
+//!  GAR-549 + GAR-551 + GAR-552 + GAR-697 + GAR-703 + GAR-707,
+//!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slice 1 + slice 2 + slice 3 + slice 4)
+//! ## Scope (slices 1–6)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -12,6 +13,13 @@
 //!
 //! Slice 4 adds `has_attachment=true|false` filter on message results:
 //! rows with (or without) ≥1 entry in `message_attachments` (migration 020).
+//!
+//! Slice 5 (plan 0185 / GAR-703) adds `types=files` (group scope only):
+//! searches `files.name` via runtime `to_tsvector('simple', name)`.
+//!
+//! Slice 6 (plan 0190 / GAR-707) adds `types=tasks` (group scope only):
+//! searches `tasks.title || ' ' || coalesce(tasks.description_md, '')` via
+//! runtime `to_tsvector('simple', ...)`. Deleted tasks excluded.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -84,6 +92,8 @@ pub enum SearchResultType {
     Memory,
     /// File name match (slice 5 / GAR-703).
     File,
+    /// Task title/description match (slice 6 / GAR-707).
+    Task,
 }
 
 /// A single item in a search result list.
@@ -134,8 +144,8 @@ pub struct SearchQuery {
     /// The group UUID to search within. Must equal the caller's active group.
     pub scope_id: Uuid,
     /// Comma-separated list of resource types to search.
-    /// Supported: `messages`, `memory`, `files`. Default: `messages,memory`.
-    /// `files` is only valid for `scope_type=group`.
+    /// Supported: `messages`, `memory`, `files`, `tasks`. Default: `messages,memory`.
+    /// `files` and `tasks` are only valid for `scope_type=group`.
     pub types: Option<String>,
     /// Filter: only results created at or after this timestamp (ISO 8601 UTC). Optional.
     pub from_date: Option<DateTime<Utc>>,
@@ -173,6 +183,8 @@ struct ValidatedSearch {
     include_messages: bool,
     include_memory: bool,
     include_files: bool,
+    /// Slice 6 / GAR-707: search task titles + descriptions.
+    include_tasks: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -210,21 +222,23 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_messages = false;
     let mut include_memory = false;
     let mut include_files = false;
+    let mut include_tasks = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
             "memory" => include_memory = true,
             "files" => include_files = true,
+            "tasks" => include_tasks = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks"
                 )));
             }
         }
     }
-    if !include_messages && !include_memory && !include_files {
+    if !include_messages && !include_memory && !include_files && !include_tasks {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files".into(),
+            "types must include at least one of: messages, memory, files, tasks".into(),
         ));
     }
 
@@ -240,6 +254,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     if include_files && scope_type != ValidatedScopeType::Group {
         return Err(RestError::BadRequest(
             "types=files is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Tasks are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_tasks && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=tasks is only supported for scope_type=group".into(),
         ));
     }
 
@@ -282,6 +303,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_messages,
         include_memory,
         include_files,
+        include_tasks,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -326,6 +348,18 @@ struct FileSearchRow {
     name: String,
     group_id: Uuid,
     mime_type: String,
+    created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the tasks FTS query (slice 6 / GAR-707).
+#[derive(sqlx::FromRow)]
+struct TaskSearchRow {
+    id: Uuid,
+    score: f32,
+    title: String,
+    group_id: Uuid,
+    status: String,
     created_by: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
@@ -525,6 +559,63 @@ async fn fetch_files(
     Ok(rows)
 }
 
+/// Fetch task results by searching `tasks.title || ' ' || coalesce(tasks.description_md, '')`
+/// using runtime `to_tsvector('simple', ...)`.
+///
+/// Only `scope_type=group` is supported; `scope_type=chat` and `scope_type=user` are
+/// rejected at `parse_and_validate` before this function is ever called.
+///
+/// Uses the `'simple'` tokenizer (no stemming) — task titles are short identifiers,
+/// not prose. RLS (`tasks_group_rls_policy`, migration 006) transparently filters to
+/// `app.current_group_id`; the explicit `group_id = $2` is defense-in-depth.
+///
+/// `from_date` / `to_date` filter on `tasks.created_at`.
+/// `author_id` filters `tasks.created_by` (NULL-safe: `$5::uuid IS NULL OR t.created_by = $5`).
+/// Deleted tasks (`deleted_at IS NOT NULL`) are always excluded.
+async fn fetch_tasks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
+    fetch_up_to: i64,
+) -> Result<Vec<TaskSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, TaskSearchRow>(
+        "SELECT t.id,
+                ts_rank(
+                    to_tsvector('simple', t.title || ' ' || coalesce(t.description_md, '')),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                t.title,
+                t.group_id,
+                t.status,
+                t.created_by,
+                t.created_at
+         FROM   tasks t
+         WHERE  to_tsvector('simple', t.title || ' ' || coalesce(t.description_md, ''))
+                    @@ websearch_to_tsquery('simple', $1)
+           AND  t.group_id = $2
+           AND  t.deleted_at IS NULL
+           AND  ($3::timestamptz IS NULL OR t.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR t.created_at <= $4)
+           AND  ($5::uuid IS NULL OR t.created_by = $5)
+         ORDER BY score DESC, t.created_at DESC, t.id DESC
+         LIMIT $6",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(author_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -547,6 +638,7 @@ async fn fetch_files(
 /// | `scope_type` not in {group, chat, user}                       | 400    |
 /// | `scope_type=user` + `types=messages`                          | 400    |
 /// | `types=files` + `scope_type` ≠ `group`                       | 400    |
+/// | `types=tasks` + `scope_type` ≠ `group`                       | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -732,6 +824,36 @@ pub async fn search(
         }
     }
 
+    if validated.include_tasks {
+        // tasks are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_tasks(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            validated.author_id,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::Task,
+                id: r.id,
+                score: r.score,
+                excerpt: r.title,
+                group_id: r.group_id,
+                chat_id: None,
+                sender_user_id: r.created_by,
+                scope_type: None,
+                scope_id: None,
+                kind: Some(r.status),
+                created_at: r.created_at,
+            });
+        }
+    }
+
     tx.commit()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -876,8 +998,59 @@ mod tests {
 
     #[test]
     fn unknown_type_rejected() {
-        let params = make_params("hello", "group", Some("messages,tasks"));
+        let params = make_params("hello", "group", Some("messages,docs"));
         assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+    }
+
+    #[test]
+    fn types_tasks_chat_scope_rejected() {
+        let params = make_params("hello", "chat", Some("tasks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_user_scope_rejected() {
+        let params = make_params("hello", "user", Some("tasks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_and_messages_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_tasks);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_tasks_and_files_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("files,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_all_four_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,memory,files,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+        assert!(v.include_files);
+        assert!(v.include_tasks);
     }
 
     #[test]
