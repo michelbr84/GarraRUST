@@ -1,8 +1,9 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085 + plan 0086 + plan 0179,
-//!  GAR-549 + GAR-551 + GAR-552 + GAR-697, epic GAR-WS-SEARCH / Fase 3.4).
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195;
+//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713;
+//!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slice 1 + slice 2 + slice 3 + slice 4)
+//! ## Scope (slices 1–8)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -12,6 +13,24 @@
 //!
 //! Slice 4 adds `has_attachment=true|false` filter on message results:
 //! rows with (or without) ≥1 entry in `message_attachments` (migration 020).
+//!
+//! Slice 5 (plan 0185 / GAR-703) adds `types=files` (group scope only):
+//! searches `files.name` via runtime `to_tsvector('simple', name)`.
+//!
+//! Slice 6 (plan 0192 / GAR-707) adds `types=tasks` (group scope only):
+//! searches `tasks.title || ' ' || coalesce(tasks.description_md, '')` via
+//! runtime `to_tsvector('simple', ...)`. Deleted tasks excluded.
+//!
+//! Slice 7 (plan 0193 / GAR-710) adds `types=task_comments` (group scope only):
+//! searches `task_comments.body_md` via runtime `to_tsvector('simple', body_md)`.
+//! JOIN through `tasks` for group_id (RLS `task_comments_through_tasks` policy).
+//! Deleted comments excluded.
+//!
+//! Slice 8 (plan 0195 / GAR-713) adds optional `sort_by` parameter:
+//! `relevance` (default, `score DESC, created_at DESC, id DESC`),
+//! `created_at_desc` (`created_at DESC, score DESC, id DESC`),
+//! `created_at_asc` (`created_at ASC, score DESC, id DESC`).
+//! Applied on the Rust side after per-type fetches merge into a single Vec.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -76,6 +95,17 @@ const MAX_OFFSET: u32 = 10_000;
 
 // ─── DTOs ─────────────────────────────────────────────────────────────────────
 
+/// Sort order for merged search results (slice 8 / GAR-713).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortBy {
+    /// FTS rank DESC, created_at DESC, id DESC (default).
+    Relevance,
+    /// created_at DESC, score DESC, id DESC.
+    CreatedAtDesc,
+    /// created_at ASC, score DESC, id DESC.
+    CreatedAtAsc,
+}
+
 /// Type discriminant for a search result item.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +114,10 @@ pub enum SearchResultType {
     Memory,
     /// File name match (slice 5 / GAR-703).
     File,
+    /// Task title/description match (slice 6 / GAR-707).
+    Task,
+    /// Task comment body match (slice 7 / GAR-710).
+    TaskComment,
 }
 
 /// A single item in a search result list.
@@ -134,8 +168,8 @@ pub struct SearchQuery {
     /// The group UUID to search within. Must equal the caller's active group.
     pub scope_id: Uuid,
     /// Comma-separated list of resource types to search.
-    /// Supported: `messages`, `memory`, `files`. Default: `messages,memory`.
-    /// `files` is only valid for `scope_type=group`.
+    /// Supported: `messages`, `memory`, `files`, `tasks`, `task_comments`. Default: `messages,memory`.
+    /// `files`, `tasks`, and `task_comments` are only valid for `scope_type=group`.
     pub types: Option<String>,
     /// Filter: only results created at or after this timestamp (ISO 8601 UTC). Optional.
     pub from_date: Option<DateTime<Utc>>,
@@ -147,6 +181,9 @@ pub struct SearchQuery {
     /// attachment in `message_attachments`. `true` = with attachment; `false` = without.
     /// Rejected when `types` does not include `messages`. Optional; absent means no filter.
     pub has_attachment: Option<bool>,
+    /// Sort order for merged results (slice 8 / GAR-713). Accepted values:
+    /// `relevance` (default), `created_at_desc`, `created_at_asc`.
+    pub sort_by: Option<String>,
     /// Page size. Default 20, max 50.
     pub limit: Option<u32>,
     /// Offset for pagination. Default 0, max 10 000.
@@ -173,10 +210,16 @@ struct ValidatedSearch {
     include_messages: bool,
     include_memory: bool,
     include_files: bool,
+    /// Slice 6 / GAR-707: search task titles + descriptions.
+    include_tasks: bool,
+    /// Slice 7 / GAR-710: search task comment bodies.
+    include_task_comments: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
     has_attachment: Option<bool>,
+    /// Slice 8 / GAR-713: result sort order.
+    sort_by: SortBy,
     limit: u32,
     offset: u32,
 }
@@ -210,21 +253,31 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_messages = false;
     let mut include_memory = false;
     let mut include_files = false;
+    let mut include_tasks = false;
+    let mut include_task_comments = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
             "memory" => include_memory = true,
             "files" => include_files = true,
+            "tasks" => include_tasks = true,
+            "task_comments" => include_task_comments = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments"
                 )));
             }
         }
     }
-    if !include_messages && !include_memory && !include_files {
+    if !include_messages
+        && !include_memory
+        && !include_files
+        && !include_tasks
+        && !include_task_comments
+    {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files".into(),
+            "types must include at least one of: messages, memory, files, tasks, task_comments"
+                .into(),
         ));
     }
 
@@ -240,6 +293,20 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     if include_files && scope_type != ValidatedScopeType::Group {
         return Err(RestError::BadRequest(
             "types=files is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Tasks are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_tasks && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=tasks is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Task comments are always group-scoped (via JOIN through tasks).
+    if include_task_comments && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=task_comments is only supported for scope_type=group".into(),
         ));
     }
 
@@ -267,6 +334,18 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // sort_by — slice 8 / GAR-713.
+    let sort_by = match params.sort_by.as_deref().unwrap_or("relevance") {
+        "relevance" => SortBy::Relevance,
+        "created_at_desc" => SortBy::CreatedAtDesc,
+        "created_at_asc" => SortBy::CreatedAtAsc,
+        other => {
+            return Err(RestError::BadRequest(format!(
+                "invalid sort_by '{other}'; accepted: relevance, created_at_desc, created_at_asc"
+            )));
+        }
+    };
+
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -282,10 +361,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_messages,
         include_memory,
         include_files,
+        include_tasks,
+        include_task_comments,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
         has_attachment: params.has_attachment,
+        sort_by,
         limit,
         offset,
     })
@@ -327,6 +409,29 @@ struct FileSearchRow {
     group_id: Uuid,
     mime_type: String,
     created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the tasks FTS query (slice 6 / GAR-707).
+#[derive(sqlx::FromRow)]
+struct TaskSearchRow {
+    id: Uuid,
+    score: f32,
+    title: String,
+    group_id: Uuid,
+    status: String,
+    created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the task comments FTS query (slice 7 / GAR-710).
+#[derive(sqlx::FromRow)]
+struct TaskCommentSearchRow {
+    id: Uuid,
+    score: f32,
+    body_md: String,
+    group_id: Uuid,
+    author_user_id: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
 
@@ -525,6 +630,119 @@ async fn fetch_files(
     Ok(rows)
 }
 
+/// Fetch task results by searching `tasks.title || ' ' || coalesce(tasks.description_md, '')`
+/// using runtime `to_tsvector('simple', ...)`.
+///
+/// Only `scope_type=group` is supported; `scope_type=chat` and `scope_type=user` are
+/// rejected at `parse_and_validate` before this function is ever called.
+///
+/// Uses the `'simple'` tokenizer (no stemming) — task titles are short identifiers,
+/// not prose. RLS (`tasks_group_rls_policy`, migration 006) transparently filters to
+/// `app.current_group_id`; the explicit `group_id = $2` is defense-in-depth.
+///
+/// `from_date` / `to_date` filter on `tasks.created_at`.
+/// `author_id` filters `tasks.created_by` (NULL-safe: `$5::uuid IS NULL OR t.created_by = $5`).
+/// Deleted tasks (`deleted_at IS NOT NULL`) are always excluded.
+async fn fetch_tasks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
+    fetch_up_to: i64,
+) -> Result<Vec<TaskSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, TaskSearchRow>(
+        "SELECT t.id,
+                ts_rank(
+                    to_tsvector('simple', t.title || ' ' || coalesce(t.description_md, '')),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                t.title,
+                t.group_id,
+                t.status,
+                t.created_by,
+                t.created_at
+         FROM   tasks t
+         WHERE  to_tsvector('simple', t.title || ' ' || coalesce(t.description_md, ''))
+                    @@ websearch_to_tsquery('simple', $1)
+           AND  t.group_id = $2
+           AND  t.deleted_at IS NULL
+           AND  ($3::timestamptz IS NULL OR t.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR t.created_at <= $4)
+           AND  ($5::uuid IS NULL OR t.created_by = $5)
+         ORDER BY score DESC, t.created_at DESC, t.id DESC
+         LIMIT $6",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(author_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(rows)
+}
+
+/// Fetch task comment results by searching `task_comments.body_md` via runtime
+/// `to_tsvector('simple', body_md)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// JOINs `task_comments tc → tasks t` to get `t.group_id` for the explicit
+/// group-isolation filter (defense-in-depth; RLS `task_comments_through_tasks`
+/// also filters via this JOIN path).
+///
+/// `from_date` / `to_date` filter on `tc.created_at`.
+/// `author_id` filters `tc.author_user_id` (NULL-safe).
+/// `tc.deleted_at IS NULL` always enforced.
+/// `excerpt` is the full `body_md`; callers may truncate for display.
+async fn fetch_task_comments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
+    fetch_up_to: i64,
+) -> Result<Vec<TaskCommentSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, TaskCommentSearchRow>(
+        "SELECT tc.id,
+                ts_rank(
+                    to_tsvector('simple', tc.body_md),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                tc.body_md,
+                t.group_id,
+                tc.author_user_id,
+                tc.created_at
+         FROM   task_comments tc
+         JOIN   tasks t ON t.id = tc.task_id
+         WHERE  to_tsvector('simple', tc.body_md) @@ websearch_to_tsquery('simple', $1)
+           AND  t.group_id = $2
+           AND  tc.deleted_at IS NULL
+           AND  ($3::timestamptz IS NULL OR tc.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR tc.created_at <= $4)
+           AND  ($5::uuid IS NULL OR tc.author_user_id = $5)
+         ORDER BY score DESC, tc.created_at DESC, tc.id DESC
+         LIMIT $6",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(author_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -547,6 +765,7 @@ async fn fetch_files(
 /// | `scope_type` not in {group, chat, user}                       | 400    |
 /// | `scope_type=user` + `types=messages`                          | 400    |
 /// | `types=files` + `scope_type` ≠ `group`                       | 400    |
+/// | `types=tasks` + `scope_type` ≠ `group`                       | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -732,17 +951,96 @@ pub async fn search(
         }
     }
 
+    if validated.include_tasks {
+        // tasks are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_tasks(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            validated.author_id,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::Task,
+                id: r.id,
+                score: r.score,
+                excerpt: r.title,
+                group_id: r.group_id,
+                chat_id: None,
+                sender_user_id: r.created_by,
+                scope_type: None,
+                scope_id: None,
+                kind: Some(r.status),
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_task_comments {
+        // task_comments are always group-scoped (via tasks); scope_type != Group
+        // is rejected at parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_task_comments(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            validated.author_id,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::TaskComment,
+                id: r.id,
+                score: r.score,
+                excerpt: r.body_md,
+                group_id: r.group_id,
+                chat_id: None,
+                sender_user_id: r.author_user_id,
+                scope_type: None,
+                scope_id: None,
+                kind: None,
+                created_at: r.created_at,
+            });
+        }
+    }
+
     tx.commit()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    // Sort merged results: score DESC, created_at DESC, id DESC.
-    all.sort_unstable_by(|a, b| {
-        b.score
+    // Sort merged results per sort_by (slice 8 / GAR-713).
+    all.sort_unstable_by(|a, b| match validated.sort_by {
+        SortBy::Relevance => b
+            .score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.created_at.cmp(&a.created_at))
-            .then_with(|| b.id.cmp(&a.id))
+            .then_with(|| b.id.cmp(&a.id)),
+        SortBy::CreatedAtDesc => b
+            .created_at
+            .cmp(&a.created_at)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.id.cmp(&a.id)),
+        SortBy::CreatedAtAsc => a
+            .created_at
+            .cmp(&b.created_at)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.id.cmp(&a.id)),
     });
 
     // Offset slice.
@@ -773,6 +1071,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         }
@@ -876,8 +1175,119 @@ mod tests {
 
     #[test]
     fn unknown_type_rejected() {
-        let params = make_params("hello", "group", Some("messages,tasks"));
+        let params = make_params("hello", "group", Some("messages,docs"));
         assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+    }
+
+    #[test]
+    fn types_tasks_chat_scope_rejected() {
+        let params = make_params("hello", "chat", Some("tasks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_user_scope_rejected() {
+        let params = make_params("hello", "user", Some("tasks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_tasks_and_messages_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_tasks);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_tasks_and_files_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("files,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_all_four_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,memory,files,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(!v.include_task_comments);
+    }
+
+    // ── Slice 7: types=task_comments ─────────────────────────────────────────
+
+    #[test]
+    fn types_task_comments_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_task_comments);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+    }
+
+    #[test]
+    fn types_task_comments_chat_scope_rejected() {
+        let params = make_params("hello", "chat", Some("task_comments"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_task_comments_user_scope_rejected() {
+        let params = make_params("hello", "user", Some("task_comments"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_task_comments_and_messages_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_task_comments);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_task_comments_and_tasks_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("tasks,task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_tasks);
+        assert!(v.include_task_comments);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_all_five_group_scope_accepted() {
+        let params = make_params(
+            "hello",
+            "group",
+            Some("messages,memory,files,tasks,task_comments"),
+        );
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(v.include_task_comments);
     }
 
     #[test]
@@ -915,6 +1325,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: Some(10_001),
         };
@@ -932,6 +1343,7 @@ mod tests {
             to_date: None,
             author_id: None,
             has_attachment: None,
+            sort_by: None,
             limit: Some(999),
             offset: None,
         };
@@ -968,6 +1380,7 @@ mod tests {
             to_date,
             author_id,
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         }
@@ -1043,6 +1456,7 @@ mod tests {
             to_date: None,
             author_id: Some(author),
             has_attachment: None,
+            sort_by: None,
             limit: None,
             offset: None,
         };
@@ -1159,5 +1573,45 @@ mod tests {
         assert!(!v.include_files);
         assert!(v.include_messages);
         assert!(v.include_memory);
+    }
+
+    // ── Slice 8: sort_by parameter (GAR-713) ─────────────────────────────────
+
+    #[test]
+    fn sort_by_absent_defaults_to_relevance() {
+        let params = make_params("hello", "group", None);
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::Relevance);
+    }
+
+    #[test]
+    fn sort_by_relevance_explicit_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("relevance".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::Relevance);
+    }
+
+    #[test]
+    fn sort_by_created_at_desc_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("created_at_desc".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::CreatedAtDesc);
+    }
+
+    #[test]
+    fn sort_by_created_at_asc_accepted() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("created_at_asc".to_owned());
+        let v = parse_and_validate(&params).unwrap();
+        assert_eq!(v.sort_by, SortBy::CreatedAtAsc);
+    }
+
+    #[test]
+    fn sort_by_invalid_value_rejected() {
+        let mut params = make_params("hello", "group", None);
+        params.sort_by = Some("random_order".to_owned());
+        assert!(parse_and_validate(&params).is_err());
     }
 }
