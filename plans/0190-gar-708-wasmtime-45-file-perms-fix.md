@@ -85,7 +85,7 @@ Cargo.lock                                  — auto-updated by cargo update
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
 | API breakage in wasmtime 45 | Low | Import surface fully verified in runtime.rs; all types stable |
-| MSRV bump | Low | wasmtime 45 targets Rust 1.86+; our MSRV is 1.92 ✅ |
+| MSRV bump | Confirmed | wasmtime 45.0.0 requires Rust 1.93.0; workspace rust-version bumped 1.92→1.93 |
 | Build time on CI (windows) | Medium | ~24-25 min historical; normal CI tolerance |
 
 ## Acceptance criteria
