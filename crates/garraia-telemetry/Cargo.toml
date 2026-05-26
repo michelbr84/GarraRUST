@@ -20,7 +20,7 @@ tokio = { workspace = true }
 tracing-opentelemetry = "0.32"
 opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
 opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics"] }
-opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace", "metrics"] }
 opentelemetry-semantic-conventions = "0.26"
 
 # Metrics
