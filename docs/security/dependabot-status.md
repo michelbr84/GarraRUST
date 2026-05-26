@@ -29,7 +29,7 @@ Health routine ran on 2026-05-26 (~12:45 ET / 16:45 UTC). Full security scan com
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green |
 | CI on main (`885ed2e`) | ✅ green | All 20 checks confirmed |
 
-**No security fix applied this run.** Bookkeeping only: plan 0196 (GAR-714), plans README row 0196 added + dependabot-status run 35 note. Linear: GAR-714. Next security backlog: argon2 ≥ 0.6 stable → unblocks GAR-669 Slices 3–4; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491); GAR-711 OpenTelemetry 0.26→0.32 Backlog.
+**No security fix applied this run.** Bookkeeping only: plan 0196 (GAR-714), plans README rows 0194✅ + 0195 (GAR-713) + 0196 + dependabot-status run 35 note. Linear: GAR-714. Next security backlog: argon2 ≥ 0.6 stable → unblocks GAR-669 Slices 3–4; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491); GAR-711 OpenTelemetry 0.26→0.32 Backlog.
 
 ---
 
@@ -94,7 +94,7 @@ Health routine ran on 2026-05-26 (~00:45 ET / 04:45 UTC). Full security scan com
 
 ---
 
-> Last updated (previous): **2026-05-25 run 31** (health routine — all surfaces clean, PR #508 run 30 merged `ef040ad`, priority (i). GAR-706. Previous: run 30 all surfaces clean, PR #506 conflict resolved, priority (i) (GAR-705); run 29 all surfaces clean, routine/ PR #505 noted, priority (i) (GAR-704); run 28 all surfaces clean, PR #503 merged, priority (i) (GAR-702); run 27 all surfaces clean, PR #501 run 26 open 20/20 CI green, priority (i) (GAR-701). Previous: run 30 all surfaces clean, PR #503 run 27 merged `ba8482b`, priority (i). GAR-702. Previous: run 26 all surfaces clean, PR #499 merged `61bd6a7`, priority (i) (GAR-699); run 25 all surfaces clean, routine/ PR #498 noted (roadmap routine), priority (i) (GAR-698); run 24 all surfaces clean, routine/ PR #496 noted, priority (i) (GAR-696); run 23 all surfaces clean, routine/ PR #492 pending merge (skipped), priority (i) (GAR-695); run 22 all surfaces clean, GAR-499 agent team reviewed clean, priority (i) (GAR-694); run 21 merge run-20 PRs + plan numbering fix; 3 upstream-blocked alerts; priority (i) (GAR-693); run 20 all surfaces clean; plans 0168+0169 marked merged (PR #484); priority (i) (GAR-692); run 19 deny.toml advisory-not-detected cleanup GAR-513/plan 0169 (PR #483/484 merged `b3f62fd`); run 18 all surfaces clean, PR #482 merged, priority (i) (GAR-690); run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
+> Last updated (previous): **2026-05-25 run 31** (health routine — all surfaces clean, PR #508 run 30 merged `ef040ad`, priority (i). GAR-706. Previous: run 30 all surfaces clean, PR #506 conflict resolved, priority (i) (GAR-705); run 29 all surfaces clean, routine/ PR #505 noted, priority (i) (GAR-704); run 28 all surfaces clean, PR #503 merged, priority (i) (GAR-702); run 27 all surfaces clean, PR #501 run 26 open 20/20 CI green, priority (i) (GAR-701). Previous: run 30 all surfaces clean, PR #503 run 27 merged `ba8482b`, priority (i). GAR-702. Previous: run 26 all surfaces clean, PR #499 merged `61bd6a7`, priority (i) (GAR-699); run 25 all surfaces clean, routine/ PR #498 noted (roadmap routine), priority (i) (GAR-698); run 24 all surfaces clean, routine/ PR #496 noted, priority (i) (GAR-696); run 23 all surfaces clean, routine/ PR #492 pending merge (skipped), priority (i) (GAR-695); run 22 all surfaces clean, GAR-499 agent team reviewed clean, priority (i) (GAR-694); run 21 merge run-20 PRs + plan numbering fix; 3 upstream-blocked alerts; priority (i) (GAR-693); run 20 all surfaces clean; plans 0168+0169 marked merged (PR #484); priority (i) (GAR-692); run 19 deny.toml advisory-not-detected cleanup GAR-513/plan 0169 (PR #483/484 merged `b3f62fd`); run 18 all surfaces clean, PR #482 merged, priority (i) (GAR-690); run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661). (health routine — all surfaces clean, PR #503 run 27 merged `ba8482b`, priority (i). GAR-702. Previous: run 26 all surfaces clean, PR #499 merged `61bd6a7`, priority (i) (GAR-699); run 25 all surfaces clean, routine/ PR #498 noted (roadmap routine), priority (i) (GAR-698); run 24 all surfaces clean, routine/ PR #496 noted, priority (i) (GAR-696); run 23 all surfaces clean, routine/ PR #492 pending merge (skipped), priority (i) (GAR-695); run 22 all surfaces clean, GAR-499 agent team reviewed clean, priority (i) (GAR-694); run 21 merge run-20 PRs + plan numbering fix; 3 upstream-blocked alerts; priority (i) (GAR-693); run 20 all surfaces clean; plans 0168+0169 marked merged (PR #484); priority (i) (GAR-692); run 19 deny.toml advisory-not-detected cleanup GAR-513/plan 0169 (PR #483/484 merged `b3f62fd`); run 18 all surfaces clean, PR #482 merged, priority (i) (GAR-690); run 17 all surfaces clean, no open health/ PRs, priority (i) (GAR-689); run 16 PR #477 + PR #475 merged, all surfaces clean, priority (i) (GAR-688); run 15 CI retrigger for ubuntu-latest transient failure + RUSTSEC-2026-0149 wasmtime-wasi 44.0.1→44.0.2 fix (GAR-685, GAR-686); run 14 RUSTSEC-2026-0149 wasmtime fixed; run 13 upstream-blocked unchanged; run 12 upstream-blocked unchanged; run 11 upstream-blocked state unchanged; run 10 upstream-blocked state unchanged; run 9 upstream-blocked state unchanged; run 8 password-hash + rand upstream-blocked; run 7 GAR-674 windows-sys 0.52→0.61; run 6 GAR-673; run 5 GAR-672; run 4 GAR-671; run 3 GAR-670; run 2 GAR-668 RUSTSEC-2026-0145 + tokio-tungstenite 0.29; run 1 GAR-667 all-clean; run 6 GAR-665; run 5 GAR-664; run 4 GAR-663; run 3 GAR-662; run 2 lockfile bump PR #401; run 1 GAR-661).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
@@ -266,7 +266,7 @@ Health routine ran on 2026-05-25 (~04:45 ET / 08:45 UTC May 25). Full security s
 **Pending routine/ PR #498 noted (not actioned — routine/ territory):**
 - PR #498 (`routine/202605250015-search-has-attachment`) — GAR-697 search slice 4 has_attachment filter + migration 020 message_attachments. Skipped per protocol.
 
-**CI on main (`61bd6a7`, PR #499 health run 25 bookkeeping):** All 20 checks green.
+**CI on main (`61bd6a7`, PR #499 health run 25 bookkeeping):** All 20 checks green — Format, Clippy, Test×3, Build, MSRV, cargo-deny, Security Audit, Coverage, Analyze (rust/js-ts/actions), Playwright, E2E, Secret Scan, Dependency Review, Quality Ratchet.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -293,9 +293,9 @@ Health routine ran on 2026-05-25 (~00:45 ET / 04:45 UTC May 25). Full security s
 - None — no open `health/` PRs from previous runs.
 
 **Pending routine/ PR #498 noted (not actioned — routine/ territory):**
-- PR #498 (`routine/202605250015-search-has-attachment`) — GAR-697 search slice 4. CI in progress. Skipped per protocol.
+- PR #498 (`routine/202605250015-search-has-attachment`) — GAR-697 search slice 4 has_attachment filter + migration 020 message_attachments. CI in progress (~17/20 checks done). Skipped per protocol.
 
-**CI on main (`149b91b`, PR #497 health run 24 bookkeeping):** All 20 checks green.
+**CI on main (`149b91b`, PR #497 health run 24 bookkeeping):** All 20 checks green — Format, Clippy, Test×3, Build, MSRV, cargo-deny, Security Audit, Coverage, Analyze (rust/js-ts/actions), Playwright, E2E, Secret Scan, Dependency Review, Quality Ratchet.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -322,9 +322,9 @@ Health routine ran on 2026-05-24 (~00:45 ET / 04:45 UTC May 24). Full security s
 - `health/202605231000-gar513-deny-toml-hygiene` — orphan branch; corresponding PR #483 was already merged 2026-05-23. No action needed.
 
 **Pending routine/ PRs noted (not actioned — routine/ territory):**
-- PR #496 (`claude/wizardly-ptolemy-UncRd`) — docs sync. Merged as `73ecc5d` before this run started.
+- PR #496 (`claude/wizardly-ptolemy-UncRd`) — docs sync (TODO.md + ROADMAP + README). Merged as `73ecc5d` before this run started.
 
-**CI on main (`73ecc5d`, PR #496 TODO/ROADMAP sync):** All 20 checks green.
+**CI on main (`73ecc5d`, PR #496 TODO/ROADMAP sync):** All 20 checks green — Format, Clippy, Test×3, Build, MSRV, cargo-deny, Security Audit, Coverage, Analyze (rust/js-ts/actions), Playwright, E2E, Secret Scan, Dependency Review, Quality Ratchet.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -350,9 +350,9 @@ Health routine ran on 2026-05-24 (~00:45 ET / 04:45 UTC May 24). Full security s
 **Open health/ PRs resolved this run:**
 - None — no open `health/` PRs from previous runs.
 
-**Pending routine/ PR #492 noted (not actioned — routine/ territory):** `routine/202605240015-gar-493-garra-maxpower-adr`. Skipped per protocol.
+**Pending routine/ PR #492 noted (not actioned — routine/ territory):** `routine/202605240015-gar-493-garra-maxpower-adr`, docs-only ADR 0011 GarraMaxPower. Skipped per protocol.
 
-**CI on main (`7e45ec5`, PR #490 GAR-499):** All 20 checks green.
+**CI on main (`7e45ec5`, PR #490 GAR-499):** All 20 checks green — Format, Clippy, Test×3, Build, MSRV, cargo-deny, Security Audit, Coverage, Analyze (rust/js-ts/actions), Playwright, E2E, Secret Scan, Dependency Review, Quality Ratchet.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -372,6 +372,8 @@ Health routine ran on 2026-05-23 (~20:45 ET / 00:45 UTC May 24). Full security s
 - PR #489 (`health/202605231645-run21-status-note`, GAR-693) — all 20 CI checks green → squash-merged as `133fef8`.
 
 **Security review — routine/ PR #490 (GAR-499 agent team MVP):** New `team.rs` module (486 LOC) in `garraia-cli`. Pure Rust, no network, no file I/O in production code. Uses `std::sync::mpsc` channels with `.ok()` handling — no `unwrap()` outside `#[cfg(test)]`. No new crate dependencies. No SQL, no auth, no PII, no unsafe blocks. **CLEAN** — no security concerns.
+
+**Plan numbering conflict noted (not actioned — routine/ territory):** PR #490 adds `plans/0173-gar-499-agent-team-mvp.md` but main already has `plans/0173-gar-693-health-run-21.md`. Roadmap routine must resolve on merge.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -396,7 +398,7 @@ Health routine ran on 2026-05-23 (~16:45 ET / 20:45 UTC). Full security scan com
 
 **Pending health/ PRs resolved this run:**
 - PR #487 (`chore/plan-0170-done-bookkeeping`) — updated to current main, CI green, squash-merged at `d334516`
-- PR #486 (`health/202605231245-run20-status-note`, GAR-692) — resolved + plan numbering fix (0171=GAR-498, 0172=GAR-692), CI green, squash-merged at `07070f5`
+- PR #486 (`health/202605231245-run20-status-note`, GAR-692) — `dirty` (conflict in `plans/README.md`) → resolved + plan numbering fix (0171=GAR-498, 0172=GAR-692), CI green, squash-merged at `07070f5`
 
 **Plan numbering fix:** Commit `c65e099` added `plans/0171-gar-498-native-skills-registry.md` to main without a README entry. PR #486 had claimed `0171` for GAR-692. Fixed: GAR-498=0171, GAR-692=0172, GAR-693=0173.
 
@@ -421,9 +423,9 @@ Health routine ran on 2026-05-23 (~16:45 ET / 20:45 UTC). Full security scan com
 
 Health routine ran on 2026-05-23 (~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
 
-**Open PRs resolved this run:** None. Branch `health/202605231000-gar513-deny-toml-hygiene` was already merged into main via cleanup PR #484 (`b3f62fd`). Open routine PR #485 (GAR-691 Q10.g) — skipped per protocol.
+**Open PRs resolved this run:** None. Branch `health/202605231000-gar513-deny-toml-hygiene` was already merged into main via cleanup PR #484 (`b3f62fd`). Open routine PR #485 (GAR-691 Q10.g, branch `routine/202605231215-q10g-bootstrap-telegram`) — skipped per protocol.
 
-**Bookkeeping applied:** Plans README rows 0168 and 0169 updated from "In Progress" to ✅ Merged — both merged via PR #484 at commit `b3f62fd` on 2026-05-23.
+**Bookkeeping applied:** Plans README rows 0168 (GAR-480 Q10.f bootstrap-imessage) and 0169 (GAR-513 deny.toml cleanup) updated from "In Progress" to ✅ Merged — both were merged via cleanup PR #484 at commit `b3f62fd` on 2026-05-23.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -446,13 +448,13 @@ Health routine ran on 2026-05-23 (~12:45 ET / 16:45 UTC). Full security scan com
 
 Health routine ran on 2026-05-23 (~08:45 ET / 12:45 UTC). Full security scan completed.
 
-**Open PRs resolved this run:** PR #482 (GAR-690 run 18 status note) was open with all 20 CI checks green — **merged as first action** (squash at `850d44c`). GAR-690 already marked Done.
+**Open PRs resolved this run:** PR #482 (GAR-690 run 18 status note, branch `health/202605230445-run18-status-note`) was open with all 20 CI checks green — **merged as first action** (squash at `850d44c`). GAR-690 already marked Done.
 
-**Finding (priority h):** Branch `claude/focused-cray-BM98J` contained prepared but un-PR'd commits fixing `cargo deny` `advisory-not-detected` noise for two IDs:
+**Finding (priority h):** Branch `claude/focused-cray-BM98J` contained prepared but un-PR'd commits from health run 18 fixing `cargo deny` `advisory-not-detected` noise for two IDs:
 - `RUSTSEC-2024-0429` (glib 0.18.5 VariantStrIter unsound) → cargo deny advisory DB no longer matches this version
 - `RUSTSEC-2026-0097` (rand 0.7.3 thread_rng unsound) → cargo deny advisory DB no longer matches this version
 
-Both IDs are retained in `audit.toml`. Removed from `deny.toml` only. Plan 0169 / GAR-513.
+Both IDs are retained in `audit.toml` (cargo audit still matches them; `--deny unsound` gate still enforced). Removed from `deny.toml` only. Plan 0169 / GAR-513.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -475,7 +477,9 @@ Both IDs are retained in `audit.toml`. Removed from `deny.toml` only. Plan 0169 
 
 Health routine ran on 2026-05-23 (~04:45 ET / 08:45 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
 
-**Open PRs resolved this run:** PR #481 (GAR-689 run 17 status note) was open with all 20 CI checks green — **merged as first action** (squash at `7a2e9e5`). GAR-689 marked Done.
+**Open PRs resolved this run:** PR #481 (GAR-689 run 17 status note, branch `health/202605230045-run17-status-note`) was open with all 20 CI checks green — **merged as first action** (squash at `7a2e9e5`). GAR-689 marked Done. Only remaining open PR is #480 (branch `routine/202605230020-q10f-bootstrap-imessage`, roadmap territory — skipped per protocol).
+
+**New merges since run 17 (GAR-689):** `7a2e9e5` — PR #481 `docs(security): GAR-689 health run 17` (doc-only, squash-merged this run).
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); Cargo.lock has `argon2 = "0.5.3"`. GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -500,6 +504,10 @@ Health routine ran on 2026-05-23 (~00:45 ET). Full security scan completed. Prio
 
 **Open PRs resolved this run:** None. Only open PR is #480 (branch `routine/202605230020-q10f-bootstrap-imessage`, roadmap territory — skipped per protocol).
 
+**New merges since run 16 (GAR-688):** None. The run 16 commits (`63ef1a9`, `94791f0`, `fcb7904`) are the most recent main commits.
+
+**Security review — routine/ PR #480 (Q10.f bootstrap/imessage.rs):** Pure extraction of `build_imessage_channels` (~123 LOC) from `bootstrap/mod.rs`. No behavior change, no new external dependencies, no new attack surface. Skipped (roadmap routine territory).
+
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable). GAR-669 Slices 3–4 remain blocked until stable release.
 
 | Surface | Status | Detail |
@@ -523,7 +531,11 @@ Health routine ran on 2026-05-22 (~20:45 ET). Full security scan completed. Prio
 
 **Open PRs resolved this run:**
 - **PR #477** (`docs/mark-0167-done`) — fully green (20/20 checks) → squash-merged `fcb7904`
-- **PR #475** (`docs/mark-0166-done`) — had merge conflict → resolved via rebase, pushed `075078b`, CI re-ran → merged after green
+- **PR #475** (`docs/mark-0166-done`) — had merge conflict (0167 row present in main but not in branch) → resolved via rebase, pushed `075078b`, CI re-ran → merged after green
+
+**New merges since run 15 (GAR-686):** PR #474 (`4a51841`, GAR-478 — Q10.d extract `build_slack_channels` to `bootstrap/slack.rs`, pure refactor) + PR #476 (`60a8dff`, GAR-479 — Q10.e extract `build_whatsapp_channels` to `bootstrap/whatsapp.rs`, pure refactor).
+
+**Security review — bootstrap/slack.rs + bootstrap/whatsapp.rs:** Pure extractions from `bootstrap/mod.rs`. No behavior change, no new external dependencies, no new attack surface. No command injection, no PII exposure, no unsafe blocks introduced.
 
 **argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable). GAR-669 Slices 3–4 remain blocked until stable release.
 
@@ -545,10 +557,18 @@ Health routine ran on 2026-05-22 (~20:45 ET). Full security scan completed. Prio
 
 Health routine ran on 2026-05-22 (~08:45 ET initial scan; ~12:30 ET fix applied). New RUSTSEC advisory RUSTSEC-2026-0149 detected mid-run when CI failed on PR #472 (cargo-deny + Security Audit). Fixed immediately by lockfile upgrade wasmtime-wasi 44.0.1 → 44.0.2. Linear: GAR-685.
 
+**New merges since run 13 (GAR-682):** PR #470 (`f337cb9`, GAR-476 — Q10.b extract `build_channels` to `bootstrap/channels.rs`, pure refactor) + PR #471 (`b594ace`, GAR-477 — Q10.c extract `build_discord_channels` + `handle_discord_command` to `bootstrap/discord.rs`, pure refactor).
+
+**Security review — bootstrap/channels.rs + bootstrap/discord.rs:** Pure extractions from `bootstrap/mod.rs`. No behavior change, no new external dependencies, no new attack surface. No command injection, no PII exposure, no unsafe blocks introduced.
+
 **RUSTSEC-2026-0149 (wasmtime-wasi 44.0.1) — FIXED:**
 - Advisory: WASI path_open(TRUNCATE) bypasses `FilePerms::WRITE` host restriction (GHSA-2r75-cxrj-cmph)
-- Fix: `cargo update -p wasmtime-wasi --precise 44.0.2`
+- Vector: WASI guest could open files with O_TRUNC even with host `FilePerms::WRITE` restriction set
+- Impact: `garraia-plugins` (WASM sandbox) via `wasmtime-wasi 44.0.1`
+- Fix: `cargo update -p wasmtime-wasi --precise 44.0.2` — bumps wasmtime-wasi + wasmtime + cranelift-* ecosystem 44.0.1 → 44.0.2
 - GAR-685 → Done, included in PR #472
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 stable from upstream. Latest on crates.io: `argon2 = "0.6.0-rc.8"` (RC, not stable). No unblock path until stable release.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -560,7 +580,7 @@ Health routine ran on 2026-05-22 (~08:45 ET initial scan; ~12:30 ET fix applied)
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #472 |
 | CI on main (`b594ace`) | ✅ green | base PR #472 after routine/ Q10.c merge |
 
-**Fix applied: RUSTSEC-2026-0149 (GAR-685).** wasmtime-wasi 44.0.1 → 44.0.2 lockfile upgrade. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 stable ships.
+**Fix applied: RUSTSEC-2026-0149 (GAR-685).** wasmtime-wasi 44.0.1 → 44.0.2 lockfile upgrade. GAR-683 filed. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 stable ships.
 
 ---
 
@@ -568,9 +588,18 @@ Health routine ran on 2026-05-22 (~08:45 ET initial scan; ~12:30 ET fix applied)
 
 Health routine ran on 2026-05-21 (~16:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
 
-**New merges since run 10:** PR #459 (`d25b64c`, GAR-678 — SSE endpoint + DashMap GC fix + cross-tenant RLS test), PR #462 (`3ddaf3e`, post-merge bookkeeping), PR #463 (`a972947`, GAR-680 — audit-log of SSE chat subscriptions).
+**New merges since run 10:** PR #459 (`d25b64c`, GAR-678 — `GET /v1/chats/{id}/stream` SSE endpoint + DashMap GC fix + cross-tenant RLS test), PR #462 (`3ddaf3e`, post-merge bookkeeping), PR #463 (`a972947`, GAR-680 — audit-log of SSE chat subscriptions via `chat.subscribed`/`chat.unsubscribed` event pairs).
 
-**Security review — SSE stream handler + ChatStreamGuard:** `stream_chat` handler performs RLS context inside a proper `pool.begin()` transaction — no implicit auto-commit race. `ChatStreamGuard` RAII drop emits `chat.unsubscribed` via fire-and-forget `tokio::spawn`. `DashMap::remove_if` GC on last receiver drop prevents unbounded memory growth. All `unwrap()` calls in `rest_v1_chats_sse.rs` are inside `#[cfg(test)]` blocks. No new external dependencies. No Cargo.lock security impact.
+**Security review — SSE stream handler + ChatStreamGuard:**
+- `stream_chat` handler performs RLS context (`SET LOCAL app.current_user_id / app.current_group_id`) inside a proper `pool.begin()` transaction — no implicit auto-commit race (F-2 fix in PR #459).
+- `ChatStreamGuard` RAII drop emits `chat.unsubscribed` via a fire-and-forget `tokio::spawn` using `Handle::try_current` — safe no-op when no runtime (test teardown). No PII in metadata (`subscriber_count` integer only).
+- `DashMap::remove_if` GC on last receiver drop prevents unbounded memory growth (F-1 fix in PR #459). Race-safe under concurrent subscribe via entry lock.
+- All `unwrap()` calls in `rest_v1_chats_sse.rs` are inside `#[cfg(test)]` / integration test blocks per CLAUDE.md rules.
+- No new external dependencies introduced. No Cargo.lock security impact.
+
+**Open PRs (not health/):** PR #464 (`michelduek/gar-680-post-merge-bookkeeping`, docs-only ROADMAP update) — CI in progress at time of health run (17/20 checks green, ubuntu/windows/coverage still running).
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved. No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-21 16:45 ET.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -590,19 +619,23 @@ Health routine ran on 2026-05-21 (~16:45 ET). Full security scan completed. Prio
 
 Health routine ran on 2026-05-21 (~12:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
 
-**New merge since run 9:** PR #455 (`1b7f04c`, GAR-496 — repo workflow seguro para garra max-power) squash-merged to main as `671f760`.
+**New merge since run 9:** PR #455 (`1b7f04c`, GAR-496 — repo workflow seguro para garra max-power) squash-merged to main as `671f760` at 12:11 ET — pure CLI feature addition, no new crate dependencies, no Cargo.lock security impact.
 
-**Security review — repo_workflow.rs:** `ProcessRunner` uses `std::process::Command::new(program).args(rest)` — no shell involved, no string concatenation. Protected-branch guard correctly refuses direct pushes to `main`, `master`, `release/*`. All `unwrap()` calls confined to `#[cfg(test)]` blocks. No security issues found.
+**Security review — repo_workflow.rs:** New module reviewed for command injection. `ProcessRunner` uses `std::process::Command::new(program).args(rest)` with separate `&[&str]` arguments — no shell involved, no string concatenation into a shell command. Protected-branch guard (`is_protected_branch`) correctly refuses direct pushes to `main`, `master`, `release/*`. All `unwrap()` calls confined to `#[cfg(test)]` blocks per CLAUDE.md rules. No security issues found.
+
+**Open PRs (not health/):** PR #458 (`chore/ignore-claude-skills-local`) — 19/20 CI checks green (Windows test still in progress); PR #459 (`routine/202605211215-chats-sse-stream`) — skipped per rules (routine/ prefix).
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved. No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-21 12:45 ET.
 
 | Surface | Status | Detail |
 |---|---|---|
-| Secret scanning (gitleaks) | ✅ clean | CI pass on PRs #455 + #458 |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PRs #455 + #458 (19+/20 checks green, base main `671f760`) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PRs #455 + #458 |
 | Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 ≥ 0.6 |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PRs #455 + #458 |
 | cargo-deny | ✅ pass | advisories ok |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #458 |
-| CI on main (`671f760`) | ✅ green | PR #458 check-runs: 19/20 success |
+| CI on main (`671f760`) | ✅ green | PR #458 check-runs: 19/20 success (Windows in progress, all other checks green) |
 
 **No fix applied this run.** Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships.
 
@@ -612,17 +645,21 @@ Health routine ran on 2026-05-21 (~12:45 ET). Full security scan completed. Prio
 
 Health routine ran on 2026-05-21 (~08:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
 
-**windows-sys #422 status:** Confirmed closed — `garraia-cli/Cargo.toml` now pins `windows-sys = "0.61"`. Dependabot auto-closes on next rescan after PR #451 merged as `1e7ce50`.
+**New merge since run 8:** PR #453 (`e5a2a08`, GAR-495 — capability prompt nativo para garra max-power) — pure CLI feature addition, no new crate dependencies, no Cargo.lock security impact.
+
+**windows-sys #422 status:** Confirmed closed — `garraia-cli/Cargo.toml` now pins `windows-sys = "0.61"` (Cargo.lock carries 0.61.2). Dependabot auto-closes on next rescan after PR #451 merged as `1e7ce50`.
+
+**Upstream-blocked unchanged:** Both remaining Dependabot alerts continue to require argon2 ≥ 0.6 from upstream before they can be resolved (same finding as run 8). No argon2 release supporting `password-hash ^0.6` on crates.io as of 2026-05-21 09:00 ET.
 
 | Surface | Status | Detail |
 |---|---|---|
-| Secret scanning (gitleaks) | ✅ clean | CI pass (20/20 checks green on PRs #454 + #455) |
+| Secret scanning (gitleaks) | ✅ clean | CI pass (20/20 checks green on PRs #454 + #455, base main `e5a2a08`) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PRs #454 + #455 |
 | Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | 19 allowlisted warnings, CI green on PRs #454 + #455 |
 | cargo-deny | ✅ pass | advisories ok |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PRs #454 + #455 |
-| CI on main (`e5a2a08`) | ✅ green | 20/20 checks green |
+| CI on main (`e5a2a08`) | ✅ green | 20/20 checks green (verified via PR #454 + #455 check-runs) |
 
 **No fix applied this run.** Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 3–4 unblock when argon2 ≥ 0.6 ships.
 
@@ -632,11 +669,11 @@ Health routine ran on 2026-05-21 (~08:45 ET). Full security scan completed. Prio
 
 Health routine ran on 2026-05-21 (~04:45 ET). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
 
-**Key finding:** `password-hash 0.5→0.6` (Dependabot alert #430, GAR-669 Slice 3) is **upstream-blocked**. Registry scan confirmed that `argon2 0.5.3` is the latest argon2 release and only supports `password-hash ^0.5`. Both GAR-669 Slice 3 and Slice 4 remain deferred until argon2 publishes a release supporting `password-hash ^0.6`.
+**Key finding:** `password-hash 0.5→0.6` (Dependabot alert #430, GAR-669 Slice 3) is **upstream-blocked**. Registry scan confirmed that `argon2 0.5.3` is the latest argon2 release and only supports `password-hash ^0.5`. No argon2 version compatible with password-hash 0.6 has been published on crates.io as of 2026-05-21. The `rand = "0.8"` pin in `crates/garraia-auth` `[build-dependencies]` is a direct consequence of the same constraint (`build.rs` uses `password_hash::rand_core::OsRng` from rand_core 0.6; upgrading rand in build-deps requires upgrading password-hash first). Both GAR-669 Slice 3 and Slice 4 remain deferred until argon2 publishes a release supporting `password-hash ^0.6`.
 
 | Surface | Status | Detail |
 |---|---|---|
-| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #453 head (20/20 checks green) |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #453 head (20/20 checks green, based on main `a3c61ce`) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PR #453 |
 | Dependabot alerts | ⚠️ 2 open, UPSTREAM-BLOCKED | password-hash 0.5→0.6 (#430, GAR-669 Slice 3) + rand 0.8→0.10 (#424, GAR-669 Slice 4) — both blocked on argon2 crate not yet supporting password-hash 0.6 |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #453 |
@@ -650,7 +687,7 @@ Health routine ran on 2026-05-21 (~04:45 ET). Full security scan completed. Prio
 
 ## Confirmed 2026-05-20 run 7 (health routine — GAR-669 Slice 1: rand_chacha 0.9 + rand 0.9 co-bump)
 
-Health routine ran on 2026-05-20 (run 7, ~08:45 ET / 12:45 UTC). Full security scan completed. Fix applied: co-bumped `rand_chacha` 0.3→0.9 and `rand` 0.8→0.9 in `garraia-workspace` dev-deps, renamed `gen_range` → `random_range` in `migration_smoke.rs`. Supersedes Dependabot PR #423.
+Health routine ran on 2026-05-20 (run 7, ~08:45 ET / 12:45 UTC). Full security scan completed. Fix applied: co-bumped `rand_chacha` 0.3→0.9 and `rand` 0.8→0.9 in `garraia-workspace` dev-deps, renamed `gen_range` → `random_range` in `migration_smoke.rs`. Root cause: rand_chacha 0.9 requires rand_core 0.9 while rand 0.8 uses rand_core 0.6 — type mismatch on `SeedableRng`. Supersedes Dependabot PR #423.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -662,19 +699,19 @@ Health routine ran on 2026-05-20 (run 7, ~08:45 ET / 12:45 UTC). Full security s
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #446 |
 | CI on main (`d9f811ac`) | ✅ green | PR #446 (20/20 checks green) |
 
-**Fix applied:** PR #446 squash-merged as `d9f811ac` 2026-05-20T13:46Z. Linear: GAR-669 Done, GAR-674 Done. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 2–4 remain open.
+**Fix applied:** PR #446 squash-merged as `d9f811ac` 2026-05-20T13:46Z. Dependabot PR #423 (rand_chacha 0.3.1→0.9.0) superseded — comment added. Linear: GAR-669 Done, GAR-674 Done. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31. GAR-669 Slices 2–4 remain open.
 
 ---
 
 ## Confirmed 2026-05-19 run 4 (health routine — all surfaces clean, no actionable work)
 
-Health routine ran on 2026-05-19 (run 4, ~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+Health routine ran on 2026-05-19 (run 4, ~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 3: PR #437 GAR-497 bash safety gate (`f2ab1d9`) + docs-only PRs #436/#438/#439. None touched Cargo.lock, deny.toml, .cargo/audit.toml, or any auth/crypto path.
 
 | Surface | Status | Detail |
 |---|---|---|
 | Secret scanning (gitleaks) | ✅ clean | CI pass on PR #437 (20/20 checks green) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PR #437 |
-| Dependabot alerts | ⚠️ 4 open, major-version breaks | password-hash 0.5→0.6 (#430), rand 0.8→0.10 (#424), rand_chacha 0.3→0.9 (#423), windows-sys 0.52→0.61 (#422) — all deferred |
+| Dependabot alerts | ⚠️ 4 open, major-version breaks | password-hash 0.5→0.6 (#430), rand 0.8→0.10 (#424), rand_chacha 0.3→0.9 (#423), windows-sys 0.52→0.61 (#422) — all deferred (code changes required) |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #437 |
 | cargo-deny | ✅ pass | advisories ok |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #437 |
@@ -686,19 +723,19 @@ Health routine ran on 2026-05-19 (run 4, ~12:45 ET / 16:45 UTC). Full security s
 
 ## Confirmed 2026-05-19 run 3 (health routine — all surfaces clean, no actionable work)
 
-Health routine ran on 2026-05-19 (run 3, ~08:45 ET / 12:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+Health routine ran on 2026-05-19 (run 3, ~08:45 ET / 12:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 2: governor 0.8.1→0.10.4 (PR #425, `5375a64`) + GAR-494 max-power subcommand (PR #431, `8a9a915`). Neither touched security-sensitive files.
 
 | Surface | Status | Detail |
 |---|---|---|
 | Secret scanning (gitleaks) | ✅ clean | CI pass on main `8a9a915` (20/20 checks green) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on main |
-| Dependabot alerts | ⚠️ 4 open, major-version breaks | password-hash 0.5→0.6 (#430), rand 0.8→0.10 (#424), rand_chacha 0.3→0.9 (#423), windows-sys 0.52→0.61 (#422) — all deferred |
+| Dependabot alerts | ⚠️ 4 open, major-version breaks | password-hash 0.5→0.6 (#430), rand 0.8→0.10 (#424), rand_chacha 0.3→0.9 (#423), windows-sys 0.52→0.61 (#422) — all deferred (code changes required) |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on main `8a9a915` |
 | cargo-deny | ✅ pass | advisories ok |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on main |
 | CI on main (`8a9a915`) | ✅ green | 20/20 checks green |
 
-**No fix applied this run.** Linear issue: GAR-670 (Done). Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31.
+**No fix applied this run.** Linear issue: GAR-670 (Done). PR #422 (windows-sys) had Security Audit failure on stale base `e60fc4be` — verified the failure predates governor bump PR #425; main is clean. Next security backlog: rsa (GAR-456), glib+rand (GAR-513) — all expire 2026-07-31.
 
 ---
 
@@ -706,8 +743,8 @@ Health routine ran on 2026-05-19 (run 3, ~08:45 ET / 12:45 UTC). Full security s
 
 Health routine ran on 2026-05-19 (run 2, ~08:45 ET / 12:45 UTC). Two fixes delivered:
 
-1. **RUSTSEC-2026-0145** (PAX Header Desynchronization in `astral-tokio-tar`) — PR #432 squash-merged as `287edc1c`.
-2. **tokio-tungstenite 0.26→0.29** — clean `health/202605190850-tokio-tungstenite-0.29` branch, applied upgrade, merged as `51382a9c` (PR #433). 20/20 CI checks green. cargo audit: 0 vulnerabilities post-merge.
+1. **RUSTSEC-2026-0145** (PAX Header Desynchronization in `astral-tokio-tar`) — PR #432 (`fix/rustsec-2026-0145-astral-tokio-tar`, all 20 CI checks green) was lingering from a prior session; squash-merged as `287edc1c`. Dev-dep only (testcontainers chain).
+2. **tokio-tungstenite 0.26→0.29** — Dependabot PR #429 had Cargo.lock conflict with the RUSTSEC fix. Created clean `health/202605190850-tokio-tungstenite-0.29` branch, applied upgrade, merged as `51382a9c` (PR #433). 20/20 CI checks green. cargo audit: 0 vulnerabilities post-merge.
 
 Main now at `51382a9c`. GAR-668 / plan 0152.
 
@@ -715,22 +752,22 @@ Main now at `51382a9c`. GAR-668 / plan 0152.
 |---|---|---|
 | Secret scanning (gitleaks) | ✅ clean | CI pass on PR #433 |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PR #433 |
-| Dependabot alerts | ⚠️ 5 open, major-version breaks | password-hash 0.5→0.6, governor 0.8→0.10, rand 0.8→0.10, rand_chacha 0.3→0.9, windows-sys 0.52→0.61 — all deferred |
+| Dependabot alerts | ⚠️ 5 open, major-version breaks | password-hash 0.5→0.6, governor 0.8→0.10, rand 0.8→0.10, rand_chacha 0.3→0.9, windows-sys 0.52→0.61 — all deferred (code changes required) |
 | Security Audit (`cargo audit`) | ✅ 0 vulnerabilities | 19 allowed unmaintained warnings (pre-existing) |
 | cargo-deny | ✅ pass | advisories ok |
 | CodeQL (rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #433 |
 
 ## Confirmed 2026-05-18 run 6 (health routine — all surfaces clean, PRs #409+#410 verified, no actionable security work)
 
-Health routine ran on 2026-05-18 (run 6, ~16:45 ET / 20:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+Health routine ran on 2026-05-18 (run 6, ~16:45 ET / 20:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 5: PR #409 (GAR-648 Skill Auto-Updater, 18:58Z) + PR #410 (bookkeeping, 19:29Z) — main now at `ea026e6`. Neither PR touched `Cargo.lock`, `deny.toml`, `.cargo/audit.toml`, or any security-sensitive file.
 
 | Surface | Status | Detail |
 |---|---|---|
 | Secret scanning (gitleaks) | ✅ clean | CI pass on PR #409 (job 76592503754, completed success) |
 | Malware (cargo/npm) | ✅ none | cargo-deny green on PR #409 |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
-| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #409 |
-| cargo-deny | ✅ pass | `advisories ok` |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | CI green on PR #409 (job 76592503841, completed 18:32Z) |
+| cargo-deny | ✅ pass | `advisories ok` — job 76592503817 |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #409 |
 | CI on main (latest: `ea026e6`) | ✅ green | 20/20 checks green on PR #409 |
 
@@ -740,7 +777,7 @@ Health routine ran on 2026-05-18 (run 6, ~16:45 ET / 20:45 UTC). Full security s
 
 ## Confirmed 2026-05-18 run 5 (health routine — RUSTSEC-2026-0112 confirmed resolved, all surfaces clean)
 
-Health routine ran on 2026-05-18 (run 5, ~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found.
+Health routine ran on 2026-05-18 (run 5, ~12:45 ET / 16:45 UTC). Full security scan completed. Priority ladder exhausted at (i) — no actionable security work found. New merges on main since run 4: PRs #402 (GAR-644), #403 (bookkeeping), #404 (GAR-645 Skill Registry) — main now at `b67d030`.
 
 **Key finding this run**: Checked new RUSTSEC advisories above RUSTSEC-2026-0097. Found RUSTSEC-2026-0112 (astral-tokio-tar PAX Header Desynchronization, High severity). Confirmed our lockfile carries `astral-tokio-tar 0.6.1` — the patched version. No action required.
 
@@ -774,6 +811,12 @@ Health routine ran on 2026-05-18 (run 1, ~00:45 ET). Full security scan complete
 
 **No fix applied this run.** All 3 open Dependabot alerts remain upstream-blocked (expiry 2026-07-31). Linear issue: GAR-661 (Done).
 
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `feat/garraia-embeddings-scaffold` | PR #396 — merged as `cfda7ad5` by michelbr84 | ✅ Merged |
+
 ---
 
 ## Confirmed 2026-05-17 run 3 (health routine — RUSTSEC-2025-0069 closed, daemonize → nix)
@@ -788,15 +831,34 @@ Health routine ran on 2026-05-17 (run 3, ~12:45 ET). Full security scan complete
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | **19** allowlisted warnings (↓1 from 20 — RUSTSEC-2025-0069 removed by PR #382) |
 | cargo-deny | ✅ pass | `advisories ok`; RUSTSEC-2025-0069 NOTE added to deny.toml closed history |
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #382 all Analyze jobs green; no new open findings |
-| CI on main (latest: `a5daf344`) | ✅ green | PR #382 all 20 checks green |
+| CI on main (latest: `a5daf344`) | ✅ green | PR #382 all 20 checks green (squash-merged 2026-05-17 ~16:45 UTC) |
 
-**Fix applied this run (plan 0142 — daemonize RUSTSEC-2025-0069, GAR-656):** `daemonize` removed, `nix` direct dep added, `start_daemon()` reimplemented with `nix::unistd::{fork, setsid}` + `libc::dup2` double-fork idiom. `cargo audit` warning count: 20 → **19**.
+**Fix applied this run (plan 0142 — daemonize RUSTSEC-2025-0069, GAR-656):**
 
-Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry.
+| Change | Before | After |
+|---|---|---|
+| `daemonize` in `crates/garraia-cli/Cargo.toml` | `"0.5"` (unmaintained) | **removed** |
+| `nix` in `crates/garraia-cli/Cargo.toml` | transitive only | `{ version = "0.31", features = ["process"] }` (direct dep) |
+| `daemonize 0.5.0` in `Cargo.lock` | ✅ present | ✅ **REMOVED** |
+| `start_daemon()` implementation | `daemonize::Daemonize` | `nix::unistd::{fork, setsid}` + `libc::dup2` double-fork idiom |
+| RUSTSEC-2025-0069 in `deny.toml` | in ignore list | **REMOVED** — NOTE comment added for closed history |
+| `cargo audit` warning count | 20 | **19** |
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `health/202605171245-replace-daemonize-nix` | PR #382 — all 20 CI checks green | ✅ Merged as `a5daf344` |
+| `routine/202605171217-q11-tasks-slice6` | PR #381 — roadmap routine | Skip — roadmap routine's work |
+| `routine/202605171215-q11-tasks-slice6-activity` | PR #380 — roadmap routine | Skip — roadmap routine's work |
+| `merge/q11-slice6-and-health` | PR #383 — dirty (behind main after PR #382) | Leave — not health/ branch |
+| `release/msi-rebuild-v0.2.1` | PR #384 — release branch | Leave — not health/ branch |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. `cargo audit` warning count: **19** (was 20 at run 2, 21 at run 1, 22 at 2026-05-14).
 
 ## Confirmed 2026-05-17 run 2 (health routine — RUSTSEC-2025-0134 closed, axum-server 0.7→0.8)
 
-Health routine ran on 2026-05-17 (run 2, ~05:00 ET). Full security scan completed. Highest actionable issue found: RUSTSEC-2025-0134 (`rustls-pemfile` unmaintained), fixed by bumping `axum-server` 0.7→0.8.
+Health routine ran on 2026-05-17 (run 2, ~05:00 ET). Full security scan completed. Highest actionable issue found: RUSTSEC-2025-0134 (`rustls-pemfile` unmaintained), fixed by bumping `axum-server` 0.7→0.8 (which no longer depends on `rustls-pemfile`). Priority ladder exhausted at (i) after merging.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -805,12 +867,30 @@ Health routine ran on 2026-05-17 (run 2, ~05:00 ET). Full security scan complete
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | **20** allowlisted warnings (↓1 from 21 — RUSTSEC-2025-0134 removed by PR #378) |
 | cargo-deny | ✅ pass | `advisories ok`; RUSTSEC-2025-0134 entry removed from deny.toml |
-| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #378 + PR #376 all Analyze jobs green |
-| CI on main (latest: `1be73cd`) | ✅ green | PR #376 all 20 checks green |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #378 + PR #376 all Analyze jobs green; no new open findings |
+| CI on main (latest: `1be73cd`) | ✅ green | PR #376 all 20 checks green (squash-merged 2026-05-17 ~09:12 UTC) |
 
-**Fix applied this run (plan 0138 — axum-server RUSTSEC-2025-0134):** `axum-server` 0.7→0.8; `rustls-pemfile` removed from Cargo.lock. `cargo audit` warning count: 21 → **20**.
+**Fix applied this run (plan 0138 — axum-server RUSTSEC-2025-0134):**
 
-Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry.
+| Change | Before | After |
+|---|---|---|
+| `axum-server` in `crates/garraia-gateway/Cargo.toml` | `"0.7"` | `"0.8"` |
+| `rustls-pemfile` in `Cargo.lock` | ✅ present (via axum-server 0.7.3) | ✅ **REMOVED** (axum-server 0.8 uses rustls-pki-types) |
+| RUSTSEC-2025-0134 in `.cargo/audit.toml` | allowlisted | **REMOVED** — no longer in dependency graph |
+| RUSTSEC-2025-0134 in `deny.toml` | allowlisted | **REMOVED** atomically with audit.toml |
+| `cargo audit` warning count | 21 | **20** |
+
+**Structural work merged this run:**
+
+- PR #376 (`1be73cd`) — `refactor(gateway): Q11.e — extract rest_v1/tasks/subscriptions.rs (GAR-653)`: pure structural refactor, 3 handlers extracted from `tasks/mod.rs` into new `subscriptions.rs` (~279 LOC). Zero behavior change, no SQL/RLS/auth modifications. Closes GAR-653 (slice 5 of GAR-635 Q11).
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605170707-q11-tasks-slice5` | PR #372 family — roadmap routine | Skip — roadmap routine's work |
+
+Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. `cargo audit` warning count: **20** (was 21 at last run, 22 at 2026-05-14).
 
 ## Confirmed 2026-05-17 (health routine — all surfaces green, bookkeeping plan 0137)
 
@@ -826,6 +906,16 @@ Health routine ran on 2026-05-17 (~04:45 ET). Full security scan completed. Prio
 | CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #371 all Analyze jobs green; 22 dismissed alerts, no new open findings |
 | CI on main (latest: `efb295c`) | ✅ green | PR #371 all 20 checks green |
 
+**Bookkeeping completed this run:**
+
+- `plans/README.md` row 0137: `🚧 In Progress` → `✅ Merged 2026-05-17 via PR #371 (efb295c)` (GAR-635 slice 3 — extract `rest_v1/tasks/assignees.rs`, T8 README update was pending)
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605170404-q11-tasks-slice4` | PR #372 open, CI in-flight | Skip — roadmap routine's work |
+
 Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
 ## Confirmed 2026-05-16 run 2 (health routine — all surfaces green, bookkeeping + deny.toml comment fixes)
@@ -839,14 +929,30 @@ Health routine ran on 2026-05-16 (run 2, ~12:45 ET). Full security scan complete
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
 | Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings, no new advisories |
 | cargo-deny | ✅ pass | `advisories ok` |
-| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #368 all Analyze jobs green |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | PR #368 all Analyze jobs green; 22 dismissed alerts, no new open findings |
 | CI on main (latest: `bec410c`) | ✅ green | PR #368 all 20 checks green |
+
+**Bookkeeping completed this run:**
+
+- `plans/README.md` row 0134: `🚧 In Progress` → `✅ Merged 2026-05-16 via PR #367 (40ee126)` (GAR-634 tokio unblock, T8 README update was pending)
+- PR #364 (bookkeeping for GAR-475 / plan 0133) merged as `bec410c` — fully green CI (20/20 checks)
+- `deny.toml` SYNC NOTE: added missing "instant ×1 (GAR-627 / health/202605150000)" to closed-advisories history (matching `audit.toml`)
+- `deny.toml` RUSTSEC-2026-0097 comment: corrected "rand 0.10.1" → "rand 0.7.3" (the 0.7.x line has no fix; 0.10.1+ is patched — the actual unpatched version in our lockfile is 0.7.3 via phf_generator 0.8)
+
+**Open branches inspected:**
+
+| Branch | Status | Action |
+|---|---|---|
+| `routine/202605161215-q11-tasks-slice1` | PR #368 open, all CI green | Skip — roadmap routine's work |
+| `routine/202605151325-q9d-mcp-templates` | Stale (already merged as PR #358) | Leave — roadmap routine cleanup |
+| `routine/202605160620-q9f-bookkeeping` | Stale (PR #364 merged as `bec410c`) | Leave — roadmap routine cleanup |
+| `claude/focused-cray-eDXzA` | Orphan — deny.toml comment fixes, no PR ever opened | Absorbed into this PR |
 
 Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
 ## Confirmed 2026-05-16 (health routine — GAR-634: tokio 1.50.0→1.52.3 unblocked via nix 0.31.3)
 
-Health routine ran on 2026-05-16. **PR #366** (security dep sweep) merged. **GAR-634** (plan 0134) resolved the tokio 1.52.3 upgrade blocker.
+Health routine ran on 2026-05-16. **PR #366** (security dep sweep — h2/rustls/zerocopy/aws-lc-rs/reqwest) merged. **GAR-634** (plan 0134) resolved the tokio 1.52.3 upgrade blocker.
 
 | Surface | Status | Detail |
 |---|---|---|
@@ -857,6 +963,28 @@ Health routine ran on 2026-05-16. **PR #366** (security dep sweep) merged. **GAR
 | cargo-deny | ✅ pass | `advisories ok` |
 | CodeQL (Analyze rust + js-ts) | ✅ pass | PR #366 Analyze jobs all green |
 | CI on main (latest: `02bd9de`) | ✅ green | PR #366 all 20 checks green |
+
+**Fix applied this run (GAR-634, plan 0134):**
+
+| Package | Before | After | Type |
+|---|---|---|---|
+| `nix` | 0.31.1 (`libc =0.2.180`) | **0.31.3** (`libc =0.2.186`) | Lockfile-only patch |
+| `process-wrap` | 9.0.3 | **9.1.0** | Lockfile-only patch |
+| `libc` | 0.2.180 | **0.2.186** | Transitive (via nix) |
+| `tokio` | 1.50.0 | **1.52.3** | Lockfile-only — unblocked by nix update |
+| `mio` | 1.1.1 | **1.2.0** | Transitive (via tokio) |
+| `socket2` | 0.6.2 | **0.6.3** | Transitive (via tokio) |
+| `tokio-macros` | 2.6.1 | **2.7.0** | Transitive (via tokio) |
+
+**Dep security sweep (PR #366, merged as `02bd9de`):**
+
+| Package | Before | After |
+|---|---|---|
+| `h2` | 0.4.13 | **0.4.14** |
+| `rustls` | 0.23.36 | **0.23.40** |
+| `zerocopy` / `zerocopy-derive` | 0.8.39 | **0.8.48** |
+| `aws-lc-rs` / `aws-lc-sys` | 1.16.2 / 0.39.1 | **1.17.0 / 0.41.0** |
+| `reqwest` | 0.13.2 | **0.13.3** |
 
 Alert count: **3 open** (unchanged). All 3 upstream-blocked with 2026-07-31 expiry.
 
@@ -869,12 +997,20 @@ Health routine ran on 2026-05-14. Full `cargo audit` + `cargo deny check` scan c
 | Secret scanning (gitleaks) | ✅ clean | CI pass on PR #326 head (`84cf09f`) |
 | Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
-| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings. No new untracked advisories. |
-| cargo-deny | ✅ pass | `advisories ok` |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass | 21 allowlisted warnings (3 unsound + 18 unmaintained). No new untracked advisories. |
+| cargo-deny | ✅ pass | `advisories ok` — 2 stale `advisory-not-detected` (rustls-pemfile, rand) are expected asymmetry (documented in SYNC NOTE). |
 | CodeQL (Analyze rust + js-ts) | ✅ pass | PR #326 Analyze jobs all green |
 | CI on main (latest: `ae0306d`) | ✅ green | PR #326 all 18 checks green |
 
-**Fix applied this run:** `metrics` 0.24.5 (yanked) → **0.24.6** lockfile-only patch. `cargo audit` warning count: **22 → 21**.
+**Fix applied this run:**
+
+| Package | Before | After | Type |
+|---|---|---|---|
+| `metrics` | 0.24.5 (**yanked**) | **0.24.6** | Lockfile-only patch (`cargo update -p "metrics@0.24.5"`) |
+
+`metrics 0.24.5` was yanked from crates.io (Dependabot PR #287 introduced it). Updated to `0.24.6` (latest non-yanked patch). The API surface is unchanged — `counter`, `gauge`, `histogram` macros remain stable. `cargo audit --deny unsound` warning count: **22 → 21** (yanked warning resolved).
+
+**Dependency hygiene observation:** `tracing-opentelemetry` bumped from 0.27.0 → 0.32.1 (PR #285, Dependabot) introduced a second copy of `opentelemetry 0.31.0` alongside the existing `0.26.0`. Both are transitive via `garraia-telemetry`; no security advisory affects either version. This is a quality concern (duplicate major version), not a security risk. Tracked under normal dependency hygiene.
 
 Alert count: **3 open** (unchanged). All 3 are upstream-blocked with 2026-07-31 expiry.
 
@@ -885,12 +1021,12 @@ Health routine ran on 2026-05-12. **PR #293 (GAR-591)** merged at commit `69c357
 | Change | Result |
 |---|---|
 | serenity feature: `rustls_backend` → `native_tls_backend` | ✅ applied (PR #293, GAR-591) |
-| poise `default-features = false` | ✅ applied |
+| poise `default-features = false` | ✅ applied — prevents feature-unification re-enabling rustls_backend |
 | `rustls-webpki 0.102.8` in `Cargo.lock` | ✅ **REMOVED** — only `0.103.13` remains |
 | `rustls 0.22.4` in `Cargo.lock` | ✅ **REMOVED** |
 | `tokio-rustls 0.25.0` in `Cargo.lock` | ✅ **REMOVED** |
-| Dependabot alerts closed | ⏳ PENDING — rescan expected within 24-48h |
-| `audit.toml` + `deny.toml` cleanup | ✅ 4 RUSTSEC IDs removed atomically |
+| Dependabot alerts closed | ⏳ PENDING — rescan expected within 24-48h for alerts #37, #11, #23, #22 |
+| `audit.toml` + `deny.toml` cleanup | ✅ 4 RUSTSEC IDs removed atomically (this PR, GAR-455 CLOSED) |
 | Secret scanning (gitleaks) | ✅ clean — CI pass on PR #293 head |
 | Malware (cargo/npm) | ✅ none |
 | Security Audit (`cargo audit`) | ✅ pass — CI green on PR #293 |
@@ -899,16 +1035,19 @@ Health routine ran on 2026-05-12. **PR #293 (GAR-591)** merged at commit `69c357
 | CI on main (latest: `69c357a`) | ✅ green — all 18 checks pass |
 
 Alert count: **8 open** (pre-rescan) → **4 expected** (post-rescan, within 24-48h).
+Remaining 4 alerts: rsa/RUSTSEC-2023-0071 (GAR-456), glib/RUSTSEC-2024-0429, lru/RUSTSEC-2026-0002, rand/RUSTSEC-2026-0097 (all GAR-513).
 
 ## Confirmed 2026-05-12 run 2 (health routine — GAR-593: lru RUSTSEC-2026-0002 stale ignore removed)
 
-Health routine ran on 2026-05-12 (run 2, after PR #295 merged). **PR #297** (`8f73144`) had already landed the fix; this run removes the stale audit config entries.
+Health routine ran on 2026-05-12 (run 2, after PR #295 merged). **PR #297** (`8f73144`, `fix(security): bump aws-sdk-s3 1.119->1.132 to pull lru 0.16.4`) had already landed the fix; this run removes the stale audit config entries.
 
 | Change | Result |
 |---|---|
 | `lru` in `Cargo.lock` | ✅ **0.16.4** (patched; RUSTSEC-2026-0002 requires < 0.16.3) |
-| `RUSTSEC-2026-0002` in `audit.toml` | ✅ **REMOVED** (PR #299, GAR-593) |
+| `RUSTSEC-2026-0002` in `audit.toml` | ✅ **REMOVED** — lru 0.16.4 patches advisory (PR #299, GAR-593) |
 | `RUSTSEC-2026-0002` in `deny.toml` | ✅ **REMOVED** atomically with audit.toml |
+| SYNC NOTE in both files | ✅ updated: mandatory-sync set now rsa + glib + rand only |
+| GAR-513 carve-out header | ✅ updated: `glib + lru + rand` → `glib + rand` |
 | PR #299 CI | ✅ green — all 18 checks passed; merged as `7996dc4` |
 
 Residuals (3 remaining, all expires 2026-07-31):
@@ -921,20 +1060,21 @@ Residuals (3 remaining, all expires 2026-07-31):
 
 ## Confirmed 2026-05-14 run 2 (health routine — GAR-620: metrics 0.24.5 yanked → 0.24.6)
 
-Health routine ran on 2026-05-14 (run 2, ~8:50 AM ET). Highest actionable issue: `metrics 0.24.5` (yanked from crates.io). PR #336 implements the lockfile-only patch.
+Health routine ran on 2026-05-14 (run 2, ~8:50 AM ET). Full security scan completed. Highest actionable issue: `metrics 0.24.5` (yanked from crates.io). PR #336 (`claude/focused-cray-9fubA`) implements the lockfile-only patch.
 
 | Change | Result |
 |---|---|
 | `metrics 0.24.5` (yanked) → `0.24.6` in `Cargo.lock` | ✅ merged — `adbe00af` |
-| Secret scanning (gitleaks) | ✅ clean |
-| Malware (cargo/npm) | ✅ none |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #336 head |
+| Malware (cargo/npm) | ✅ none | |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
-| Security Audit (`cargo audit`) | ✅ pass |
-| cargo-deny | ✅ pass |
-| CodeQL (Analyze rust + js-ts + actions) | ✅ pass |
+| Security Audit (`cargo audit`) | ✅ pass | 21 warnings (↓1 from 22 once PR #336 merges) |
+| cargo-deny | ✅ pass | advisories ok |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All green on PR #336 head |
+| CI on main (31fb678) | ✅ green | All checks pass |
 | plan 0124 | ✅ created | `plans/0124-gar-620-metrics-yanked-0246.md` + GAR-620 in Linear |
 
-Alert count: **3 Dependabot open** (unchanged).
+Alert count: **3 Dependabot open** (unchanged). The `metrics 0.24.5` yanked issue reduces `cargo audit` warning count from 22 → 21 once PR #336 merges.
 
 ## Confirmed 2026-05-14 (health routine — GAR-605: CodeQL actions language fix + plan 0116)
 
@@ -942,17 +1082,17 @@ Health routine ran on 2026-05-14. Two pending non-routine PRs merged; one active
 
 | Change | Result |
 |---|---|
-| PR #321 merged (`c45fcff`) | ✅ Plan 0114 T8 bookkeeping |
-| PR #323 merged (GAR-605) | ✅ Add `language: actions, build-mode: none` to `codeql.yml` matrix |
-| 15 Medium `actions/missing-workflow-permissions` alerts | ⏳ PENDING auto-close — CodeQL re-scan on main expected within 24h |
+| PR #321 merged (`c45fcff`) | ✅ Plan 0114 T8 bookkeeping — `plans/README.md` row 0114 updated to ✅ Merged |
+| PR #323 merged (GAR-605) | ✅ Add `language: actions, build-mode: none` to `codeql.yml` matrix — `Analyze (actions)` job now active |
+| 15 Medium `actions/missing-workflow-permissions` alerts | ⏳ PENDING auto-close — CodeQL re-scan on main expected within 24h; `Analyze (actions)` ran successfully on PR #323 with no new findings |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
-| Secret scanning (gitleaks) | ✅ clean |
-| Malware (cargo/npm) | ✅ none |
-| Security Audit (`cargo audit`) | ✅ pass |
-| cargo-deny | ✅ pass |
-| CI on main (post-merge) | ✅ green |
+| Secret scanning (gitleaks) | ✅ clean | CI pass on main |
+| Malware (cargo/npm) | ✅ none | |
+| Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
+| cargo-deny | ✅ pass | SYNC NOTE audit.toml ↔ deny.toml intact (mandatory IDs: rsa, glib, rand) |
+| CI on main (post-merge) | ✅ green | All checks pass on `c45fcff` |
 
-Alert count: **3 Dependabot open** (unchanged). After next CodeQL run on main, **Medium CodeQL open count → 0**.
+Alert count: **3 Dependabot open** (unchanged). After next CodeQL run on main, **Medium CodeQL open count → 0** (all 15 `actions/missing-workflow-permissions` expected to auto-close as `fixed`).
 
 ## Confirmed 2026-05-13 (health routine — plan 0113 bookkeeping; all surfaces green)
 
@@ -964,9 +1104,11 @@ Health routine ran on 2026-05-13. Full security scan completed; no new actionabl
 | Malware (cargo/npm) | ✅ none | No malware advisories in cargo graph |
 | Dependabot alerts | ✅ 3 open, all upstream-blocked | rsa/GAR-456, glib/GAR-513, rand/GAR-513 — expiry 2026-07-31 |
 | Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
-| cargo-deny | ✅ pass | SYNC NOTE audit.toml ↔ deny.toml intact |
+| cargo-deny | ✅ pass | SYNC NOTE audit.toml ↔ deny.toml intact (mandatory IDs: rsa, glib, rand) |
 | CodeQL (Analyze rust + js-ts) | ✅ pass | No new open findings |
-| CI on main (latest: `0e0edfb`) | ✅ green | All 18 checks pass |
+| CI on main (latest: `0e0edfb`) | ✅ green | All 18 checks pass (confirmed via PR #317 check-runs) |
+
+**Bookkeeping completed this run:** `plans/0113-gar-601-aws-actions-v6.md` and `plans/README.md` row 0113 updated from `🔄 In Progress` to `✅ Merged 2026-05-13 via PR #313 (4374623)`. GAR-601 was the aws-actions/configure-aws-credentials v4→v6 bump (Node20 deprecation deadline 2026-06-02) — the fix landed in main via PR #313 on a prior session; only the plan tracking files were pending.
 
 Alert count: **3 open** (unchanged). All 3 are upstream-blocked with 2026-07-31 expiry. No Dependabot PRs open.
 
@@ -982,9 +1124,11 @@ Health routine ran on 2026-05-12 (run 3). Full security scan completed; priority
 | Security Audit (`cargo audit`) | ✅ pass | 3 allowlisted advisories, all with valid rationale |
 | cargo-deny | ✅ pass | No `advisory-not-detected` warnings; SYNC NOTE audit.toml ↔ deny.toml intact |
 | CodeQL (Analyze rust + js-ts) | ✅ pass | 22 alerts all dismissed; no new open findings |
-| CI on main (latest: `77c8947`) | ✅ green | Format + cargo-deny completed success |
+| CI on main (latest: `77c8947`) | ✅ green | Format + cargo-deny completed success; others in-flight on active PRs |
 
-Alert count: **3 open** (unchanged since PR #299 merged). All 3 are upstream-blocked with 2026-07-31 expiry.
+**Bookkeeping completed this run:** `plans/README.md` row 0108 updated from `🔄 In Progress` to `✅ Merged 2026-05-12 via PR #299 (7996dc4)`. GAR-593 was already `Done` in Linear.
+
+Alert count: **3 open** (unchanged since PR #299 merged). All 3 are upstream-blocked with 2026-07-31 expiry. Patch-and-minor Dependabot PR #296 (17 non-security bumps) and major-version PRs #284-292 are open but no CVEs are involved — outside health routine scope.
 
 ## Confirmed 2026-05-11 (health routine — all surfaces green)
 
@@ -1009,14 +1153,18 @@ Health routine ran on 2026-05-09. Defense-in-depth follow-up from GAR-455 deep-d
 | Change | Result |
 |---|---|
 | `aws-sdk-s3` feature swap: `"rustls"` → `"default-https-client"` in `crates/garraia-storage/Cargo.toml` | ✅ applied (plan 0087, GAR-553) |
-| `rustls-webpki 0.101.7` in `Cargo.lock` | ✅ **REMOVED** |
-| `rustls 0.21.12` in `Cargo.lock` | ✅ **REMOVED** |
-| `hyper-rustls 0.24.2` in `Cargo.lock` | ✅ **REMOVED** |
-| `cargo clippy --workspace ...` | ✅ clean |
+| `rustls-webpki 0.101.7` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| `rustls 0.21.12` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| `hyper-rustls 0.24.2` in `Cargo.lock` | ✅ **REMOVED** — no longer appears |
+| Dependabot alerts closed | ⚠️ 0 — serenity chain (`rustls-webpki 0.102.8`) still carries all 4 RUSTSEC IDs |
+| `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` | ✅ clean |
 | Secret scanning | ✅ pass |
 | CodeQL | ✅ 22 alerts all dismissed (unchanged) |
 
-Alert count unchanged (8 open). The `rustls-webpki 0.101.7` sub-chain that contributed to RUSTSEC-2026-0098/0099/0104 has been removed from the dependency graph.
+Alert count unchanged (8 open). The `rustls-webpki 0.101.7` sub-chain that contributed to
+RUSTSEC-2026-0098/0099/0104 has been removed from the dependency graph. Dependabot alerts remain
+open because `rustls-webpki 0.102.8` (serenity 0.12.5 chain) still independently carries all 4 IDs.
+The `audit.toml`/`deny.toml` allowlists are UNCHANGED — still required for the serenity chain.
 
 ## Confirmed 2026-05-08 (health routine — all surfaces green)
 
@@ -1028,17 +1176,26 @@ Health routine ran on 2026-05-08. All 4 security surfaces scanned:
 | cargo-deny (advisories) | ✅ pass — all allowlisted |
 | Security Audit (cargo-audit) | ✅ pass — all allowlisted |
 | Dependabot alerts | ✅ 8 open, all pre-existing, all allowlisted (GAR-455 / GAR-513 / GAR-456) |
-| CodeQL (code scanning) | ✅ 22 alerts all dismissed in ledger. No new open alerts. Re-audit deadline: 2026-08-01. |
+| CodeQL (code scanning) | ✅ 22 alerts all dismissed in ledger (alerts #40–#45 hard-coded-crypto-value + #67–#82 path-injection false positives). No new open alerts. Re-audit deadline: 2026-08-01. |
 
-No new untracked alerts. Count reconciled: 8 Dependabot open (2 HIGH, 2 MEDIUM, 4 LOW) — all pre-existing, all upstream-blocked, all allowlisted. Main branch CI green.
+No new untracked alerts. Count reconciled: 8 Dependabot open (2 HIGH, 2 MEDIUM, 4 LOW) — all pre-existing, all upstream-blocked, all allowlisted. Main branch CI green. Open routine/ PR: #217 (task subtasks slice 9 — roadmap routine, unrelated to health). Linear status note filed under GAR team (label: automation,health-routine).
+
+A targeted deep-dive on GAR-455 / Dependabot alert #37
+(RUSTSEC-2026-0104, `rustls-webpki` panic in CRL parsing) ran the same
+day. Verdict: still upstream-blocked. Details and a new finding about
+the AWS sub-chain are recorded in the next sub-section.
 
 ## GAR-455 deep-dive 2026-05-08 — alert #37 closure investigation
 
-Triggered by a question of whether GAR-455 could close today without breaking the project. Read-only investigation; no `Cargo.toml` / `Cargo.lock` / `deny.toml` / `.cargo/audit.toml` changes were made.
+Triggered by a question of whether GAR-455 could close today without
+breaking the project. Read-only investigation; no `Cargo.toml` /
+`Cargo.lock` / `deny.toml` / `.cargo/audit.toml` changes were made.
 
 ### Verdict
 
-Alert #37 (RUSTSEC-2026-0104) **stays open and remains upstream-blocked**. The allowlist entry in `.cargo/audit.toml` and the mirror in `deny.toml` continue to be the correct mitigation.
+Alert #37 (RUSTSEC-2026-0104) **stays open and remains
+upstream-blocked**. The allowlist entry in `.cargo/audit.toml` and the
+mirror in `deny.toml` continue to be the correct mitigation.
 
 ### Empirical chain map (verified 2026-05-08 via `cargo tree`)
 
@@ -1046,16 +1203,98 @@ Alert #37 (RUSTSEC-2026-0104) **stays open and remains upstream-blocked**. The a
 rustls-webpki 0.102.8  ← serenity 0.12.5
                          → tokio-tungstenite 0.21.0
                          → rustls 0.22.4
+                         (always-on; reachable from garraia-channels +
+                          garraia-cli + garraia-gateway)
                          carries ALL 4 RUSTSEC IDs of GAR-455
+                         (RUSTSEC-2026-0049 / -0098 / -0099 / -0104)
 
 rustls-webpki 0.101.7  ← aws-sdk-s3 1.119.0 (feature `rustls`)
-                         (only when `garraia-storage/storage-s3` feature is enabled)
+                         → aws-smithy-runtime 1.11.1 (feature `tls-rustls`)
+                         → aws-smithy-http-client 1.1.12
+                           (feature `legacy-rustls-ring`)
+                         → `legacy-rustls` (renamed dep, points at
+                           rustls 0.21.12)
+                         (only when `garraia-storage/storage-s3`
+                          feature is enabled)
                          carries 3 of 4 RUSTSEC IDs (-0098, -0099, -0104)
 ```
 
-### Follow-up (COMPLETED 2026-05-09 — plan 0087, GAR-553)
+### Upstream version snapshot (crates.io, 2026-05-08)
 
-The AWS-side feature-flag swap has been **landed** in plan 0087. `crates/garraia-storage/Cargo.toml` now uses `"default-https-client"` instead of `"rustls"` for `aws-sdk-s3`. `rustls 0.21.12`, `rustls-webpki 0.101.7`, `hyper-rustls 0.24.2` removed from `Cargo.lock`.
+| Crate | Lockfile | crates.io latest | Last published | Notes |
+|---|---|---|---|---|
+| `serenity` | 0.12.5 | **0.12.5** | 2025-12-20 | No 0.13.x or 0.14+ stable release. The `tokio-tungstenite 0.21` pin is internal to serenity 0.12.5; only serenity itself can lift it. |
+| `tokio-tungstenite` | 0.21.0 (via serenity) | 0.29.0 | 2026-03-17 | Workspace already declares 0.26 elsewhere; the 0.21 copy is exclusively dragged in by serenity. |
+| `aws-sdk-s3` | 1.119.0 | 1.132.0 | 2026-05-06 | A version bump alone does NOT remove rustls 0.21 — `aws-smithy-http-client` is still 1.1.12 underneath. |
+| `aws-smithy-http-client` | 1.1.12 | **1.1.12** | 2026-03-02 | Already supports modern rustls 0.23.31 via the `rustls-ring` / `rustls-aws-lc` features. The legacy chain is opt-in through `legacy-rustls-ring`. |
+
+Conclusion on the serenity side: **no upstream path exists today**.
+The 0.102.8 chain is purely waiting on a serenity 0.13 (or a 0.12
+maintenance release that bumps `tokio-tungstenite`). Re-check on the
+next monthly health routine.
+
+### New finding — the AWS sub-chain is feature-flag-fixable, not version-blocked
+
+The earlier mitigation column described the `0.101.7` chain as
+upstream-blocked on an `aws-smithy-http-client` upgrade. That framing
+is no longer accurate. Empirical reading of the upstream `Cargo.toml`s
+on 2026-05-08:
+
+- `aws-sdk-s3 1.119.0`: `rustls = ["aws-smithy-runtime/tls-rustls"]`
+- `aws-smithy-runtime 1.11.1`: `tls-rustls = ["aws-smithy-http-client?/legacy-rustls-ring", "connector-hyper-0-14-x"]`
+- `aws-smithy-http-client 1.1.12`:
+  - `legacy-rustls-ring = ["dep:legacy-hyper-rustls", "dep:legacy-rustls", ...]` (legacy `rustls 0.21.x` renamed)
+  - `rustls-ring` / `rustls-aws-lc` → `dep:rustls` at version `0.23.31`
+
+In other words, `aws-sdk-s3 1.119`'s `rustls` feature aliases to the
+**legacy** chain, while the same crate ships a separate
+`default-https-client` feature that maps to the **modern** rustls 0.23
+chain (via `aws-smithy-http-client/rustls-aws-lc`).
+
+`crates/garraia-storage/Cargo.toml` currently passes `features =
+["behavior-version-latest", "rustls", "rt-tokio"]` to both
+`aws-config` and `aws-sdk-s3`. Note that on `aws-config 1.8.16` the
+`rustls` alias already maps to modern rustls 0.23 (via `client-hyper`
+→ `aws-smithy-runtime/default-https-client` →
+`aws-smithy-http-client/rustls-aws-lc`); only the `aws-sdk-s3` side
+flips to the legacy chain.
+
+### What this finding does and does not change
+
+- It DOES open a defense-in-depth path on the AWS sub-chain: swapping
+  the `aws-sdk-s3` feature `"rustls"` for `"default-https-client"`
+  would remove `rustls 0.21.12` and `rustls-webpki 0.101.7` from
+  `Cargo.lock`, eliminating one of the two chains carrying
+  RUSTSEC-2026-0098 / -0099 / -0104.
+- It DOES NOT close Dependabot alert #37 (or any of the other 3
+  GAR-455 alerts). The serenity-driven `rustls-webpki 0.102.8` chain
+  carries all 4 RUSTSEC IDs independently. As long as serenity 0.12.5
+  is on the lockfile, the allowlist entries for the 4 IDs in
+  `.cargo/audit.toml` and `deny.toml` are required.
+- The `audit.toml` SYNC NOTE invariant is therefore unaffected: the 4
+  rustls-webpki IDs continue to mirror across both files, atomic drop
+  still gated on the serenity bump.
+
+### Follow-up (COMPLETED 2026-05-09 — plan 0087, GAR-553, PR health/202605090047)
+
+The AWS-side feature-flag swap has been **landed** in plan 0087 (health
+routine 2026-05-09). `crates/garraia-storage/Cargo.toml` now uses
+`"default-https-client"` instead of `"rustls"` for `aws-sdk-s3`:
+
+- `rustls 0.21.12`, `rustls-webpki 0.101.7`, `hyper-rustls 0.24.2`
+  removed from `Cargo.lock`.
+- S3 connectivity preserved via modern rustls 0.23 + aws-lc chain.
+- `cargo clippy --workspace --tests --exclude garraia-desktop --features garraia-gateway/test-helpers --no-deps -- -D warnings` clean.
+
+The originally-recommended validation from this section remains accurate:
+
+- `cargo audit` and `cargo deny check` should still pass; the 4
+  rustls-webpki residual IDs continue to be triggered by the serenity
+  chain, so neither file changes.
+
+The Linear placement for that follow-up is GAR-455 itself (or a
+sub-issue under it) — not a new epic — because the residual surface
+remains the same RUSTSEC IDs.
 
 ## Confirmed 2026-05-07 (health routine — no new alerts)
 
@@ -1068,20 +1307,20 @@ Health routine ran on 2026-05-07. All 4 security surfaces scanned:
 | Security Audit (cargo-audit) | ✅ pass — all allowlisted |
 | Dependabot alerts | ✅ 8 open, all pre-existing, all allowlisted (GAR-455 / GAR-513 / GAR-456) |
 
-No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matching the 8 active RUSTSEC IDs in `.cargo/audit.toml`. PR #188 merged — added `.github-health-reports/` and `audit/` to `.gitignore`.
+No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matching the 8 active RUSTSEC IDs in `.cargo/audit.toml`. The "6 estimated" in the 2026-05-06 snapshot was incorrect — the `rsa` RUSTSEC-2023-0071 entry was added to `audit.toml` on 2026-04-30 when `jsonwebtoken 10 rust_crypto` backend brought `rsa 0.9.10` into the production tree (GAR-456). The `openssl` fix on 2026-05-06 closed a separate advisory not in this table. PR #188 (`health/ratchet-20260507-gitignore-local-reports`) merged — added `.github-health-reports/` and `audit/` to `.gitignore` to unblock future health routine iterations.
 
 ## Closed 2026-05-06 (health routine)
 
 | Alert | Closure mechanism | Linear |
 |---|---|---|
-| `openssl` 0.10.78 → 0.10.79 + `openssl-sys` 0.9.114 → 0.9.115 security patch | plan 0073, health routine PR | [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) |
+| `openssl` 0.10.78 → 0.10.79 + `openssl-sys` 0.9.114 → 0.9.115 security patch | plan 0073, health routine PR (Dependabot PR #166 was closed because it grouped a breaking `rand 0.8→0.10` major bump; this narrower follow-up applies only the openssl patch). | [GAR-527](https://linear.app/chatgpt25/issue/GAR-527) |
 
 ## Closed in sprint 2026-04-22 → 2026-04-30
 
 | Alert range | Closure mechanism | Linear |
 |---|---|---|
 | 12 lockfile-only Dependabot bumps | PR #97 (`time` + bench refresh) + PR #99 (`openssl` 0.10.75 → 0.10.78) + PR #102 (rand + rustls-webpki bench cleanup) | GAR-484 (closed 2026-04-30) |
-| `jsonwebtoken 9 → 10` migration | PR #105 (plan §Step 3, replaces broken Dependabot PR #103). Adopts `rust_crypto` backend. | GAR-XXX umbrella, sub-issue 2 |
+| `jsonwebtoken 9 → 10` migration | PR #105 (this sprint, plan `personal-api-key-revogada-vectorized-matsumoto` §Step 3, replaces broken Dependabot PR #103). Adopts `rust_crypto` backend + decouples `garraia-auth` from `rand` churn via direct `getrandom::fill`. | GAR-XXX umbrella, sub-issue 2 |
 
 ## Closed 2026-05-12 (PR #293 / GAR-591)
 
@@ -1092,7 +1331,7 @@ No new untracked alerts. Count reconciled: 8 open (2 HIGH, 2 MEDIUM, 4 LOW) matc
 | #23 | RUSTSEC-2026-0099 | `rustls-webpki` | Same — part of same serenity chain. |
 | #22 | RUSTSEC-2026-0098 | `rustls-webpki` | Same — part of same serenity chain. |
 
-Dependabot rescan expected within 24-48h.
+Dependabot rescan expected within 24-48h. Until rescan completes, GH UI still shows 8 open.
 
 ## Residuals (3 open post-rescan, updated 2026-05-12 run 2)
 
@@ -1102,11 +1341,14 @@ All 3 remaining alerts have:
 - A concrete Linear owner.
 - An expiration date (**2026-07-31**) that forces re-triage.
 
+The `cargo audit` and `cargo deny` CI gates pass green because each entry
+is intentionally allowlisted, not silenced.
+
 | GH # | GHSA | Severity | Crate | RUSTSEC | Linear | Mitigation |
 |---|---|---|---|---|---|---|
-| — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via `sqlx-mysql` lockfile residual + `jsonwebtoken 10 rust_crypto`. GarraRUST emits/verifies HS256 only — no RSA code path is reachable. |
-| #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. |
-| #25 | GHSA-cq8v-f236-94qc | LOW | `rand` | RUSTSEC-2026-0097 | GAR-513 | Build-time dep only: `phf_codegen → phf_generator → selectors → tauri-utils → garraia-desktop`. Zero server runtime risk. |
+| — | — | HIGH | `rsa` | RUSTSEC-2023-0071 (Marvin Attack timing sidechannel) | GAR-456 | `rsa 0.9.10` enters tree via two paths: (1) `sqlx-mysql` lockfile residual even with `default-features = false` on all sqlx deps; (2) `jsonwebtoken 10 rust_crypto` backend (added 2026-04-30). GarraRUST emits/verifies HS256 only (`Algorithm::HS256` in `garraia-auth/src/jwt.rs`) — no RSA code path is reachable. Fix paths: (a) `jsonwebtoken` upstream isolates `rsa` behind `asymmetric` feature; (b) migrate to `sqlx-postgres` direct or sqlx 0.9. |
+| #2  | GHSA-wrw7-89jp-8q8g | MEDIUM | `glib` | RUSTSEC-2024-0429 (`VariantStrIter` Iterator unsoundness) | GAR-513 | Tauri-only path (`crates/garraia-desktop`), excluded from server CI builds. Low runtime risk in deployments. Fix path: bump glib OR gate ignore behind `desktop` feature. |
+| #25 | GHSA-cq8v-f236-94qc | LOW | `rand` | RUSTSEC-2026-0097 (custom logger unsoundness in `rand::rng()`) | GAR-513 | Build-time dep only: `phf_codegen → phf_generator → selectors → tauri-utils → garraia-desktop`. Zero server runtime risk. No 0.7.x patch; fix requires phf_codegen to bump rand. |
 
 ## Closed 2026-05-12 run 2 (PR #297 + PR #299 / GAR-593)
 
@@ -1116,15 +1358,21 @@ All 3 remaining alerts have:
 
 ## Linear ownership map
 
-- **GAR-455** — ✅ CLOSED 2026-05-12. `rustls-webpki` legacy chains fully removed.
-- **GAR-513** — Unsound triage carve-out (created 2026-05-05). 2 of 3 remaining alerts (#2 glib, #25 rand). lru (#5 / RUSTSEC-2026-0002) closed 2026-05-12 by GAR-593 / PR #299.
-- **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). Same `2026-07-31` expiration.
+- **GAR-455** — ✅ CLOSED 2026-05-12. `rustls-webpki` legacy chains fully removed. Both chains eliminated: aws-smithy (plan 0087, 2026-05-09) + serenity (PR #293, 2026-05-12). 4 of 8 former alerts (#37, #11, #23, #22) closing pending Dependabot rescan.
+- **GAR-513** — Unsound triage carve-out (created 2026-05-05; GAR-437 closed 2026-04-27). 2 of 3 remaining alerts (#2 glib, #25 rand). lru (#5 / RUSTSEC-2026-0002) closed 2026-05-12 by GAR-593 / PR #299. Each remaining entry tracked individually as upstream fixes ship.
+- **GAR-456** — Marvin Attack timing sidechannel (`rsa 0.9.10`). 1 of 4 remaining alerts (RUSTSEC-2023-0071; GH alert number unknown — cargo audit detects it as workspace advisory). GarraRUST emits and verifies HS256 only; no RSA call site is reachable. Same `2026-07-31` expiration.
 
 ## Re-triage cadence
 
-- **Weekly** (Monday): cargo-audit.yml runs `cargo audit --no-fetch --deny unsound`.
-- **Quarterly** (every 3 months): every `audit.toml` ignore is checked against its declared expiration.
-- **Ad-hoc**: a Dependabot alert that does NOT match an existing allowlist entry is treated as a real new vulnerability.
+- **Weekly** (Monday): cargo-audit.yml runs `cargo audit --no-fetch
+  --deny unsound`. Output reviewed alongside CodeQL Monday-morning batch.
+- **Quarterly** (every 3 months): every `audit.toml` ignore is checked
+  against its declared expiration. Any past-expiration entry without
+  a closing PR triggers immediate Linear sub-issue creation.
+- **Ad-hoc**: a Dependabot alert that does NOT match an existing
+  allowlist entry is treated as a real new vulnerability and follows
+  the standard mitigation procedure (`docs/security/secret-scanning-runbook.md`
+  — same 5-step playbook applies analogously).
 
 ## Operational checks
 
@@ -1151,7 +1399,8 @@ cargo deny check
   CodeQL alerts are NOT Dependabot alerts and use a different triage
   pipeline (`docs/security/codeql-setup.md`).
 - Moving from `cargo audit` 0.22.x to a version that supports
-  per-(advisory, version) ignores.
+  per-(advisory, version) ignores — would let us tighten the
+  rustls-webpki block without weakening the production hot path.
   Tracked under GAR-455 closure plan.
 
 ## See also
