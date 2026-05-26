@@ -5,9 +5,21 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-05-25 (America/New_York)
+**Atualizado:** 2026-05-26 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-705 / plan 0187 — Health run 30: all surfaces clean, priority (i). PR #508 squash-merged (`ef040ad`).
+
+- GAR-467 / plan 0188 — Q6.5 Mutation Testing — audit_event observability coverage:
+  - Added `count_audit_action(...) == 1` assertion to all 7 terminals of `verify_credential_with_ctx`.
+  - Added `row.ip.is_some()` assertion to all non-argon2id terminals (T3–8).
+  - New test `null_stored_hash_emits_unknown_hash_audit`: seeds user with NULL password_hash,
+    asserts `Err(UnknownHashFormat)` + 1 audit row committed + ip populated.
+  - Total: 11 integration tests (was 10). Tests-only PR, no production code changes.
+  - PR #509 squash-merged (`a1b0fdd`).
+
+## Concluído em sessões anteriores
 
 - GAR-702 / plan 0184 — Health run 28: all surfaces clean, priority (i). PR #504 squash-merged.
 
