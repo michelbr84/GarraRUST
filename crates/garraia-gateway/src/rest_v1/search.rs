@@ -247,9 +247,15 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
             }
         }
     }
-    if !include_messages && !include_memory && !include_files && !include_tasks && !include_task_comments {
+    if !include_messages
+        && !include_memory
+        && !include_files
+        && !include_tasks
+        && !include_task_comments
+    {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks, task_comments".into(),
+            "types must include at least one of: messages, memory, files, tasks, task_comments"
+                .into(),
         ));
     }
 
@@ -1216,7 +1222,11 @@ mod tests {
 
     #[test]
     fn types_all_five_group_scope_accepted() {
-        let params = make_params("hello", "group", Some("messages,memory,files,tasks,task_comments"));
+        let params = make_params(
+            "hello",
+            "group",
+            Some("messages,memory,files,tasks,task_comments"),
+        );
         let v = parse_and_validate(&params).unwrap();
         assert!(v.include_messages);
         assert!(v.include_memory);
