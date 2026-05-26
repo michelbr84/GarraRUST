@@ -1,9 +1,9 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plan 0084 + plan 0085 + plan 0086 + plan 0179 + plan 0185 + plan 0190,
-//!  GAR-549 + GAR-551 + GAR-552 + GAR-697 + GAR-703 + GAR-707,
+//! (plan 0084 + plan 0085 + plan 0086 + plan 0179 + plan 0185 + plan 0192 + plan 0193,
+//!  GAR-549 + GAR-551 + GAR-552 + GAR-697 + GAR-703 + GAR-707 + GAR-710,
 //!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slices 1–6)
+//! ## Scope (slices 1–7)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -17,9 +17,14 @@
 //! Slice 5 (plan 0185 / GAR-703) adds `types=files` (group scope only):
 //! searches `files.name` via runtime `to_tsvector('simple', name)`.
 //!
-//! Slice 6 (plan 0190 / GAR-707) adds `types=tasks` (group scope only):
+//! Slice 6 (plan 0192 / GAR-707) adds `types=tasks` (group scope only):
 //! searches `tasks.title || ' ' || coalesce(tasks.description_md, '')` via
 //! runtime `to_tsvector('simple', ...)`. Deleted tasks excluded.
+//!
+//! Slice 7 (plan 0193 / GAR-710) adds `types=task_comments` (group scope only):
+//! searches `task_comments.body_md` via runtime `to_tsvector('simple', body_md)`.
+//! JOIN through `tasks` for group_id (RLS `task_comments_through_tasks` policy).
+//! Deleted comments excluded.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -94,6 +99,8 @@ pub enum SearchResultType {
     File,
     /// Task title/description match (slice 6 / GAR-707).
     Task,
+    /// Task comment body match (slice 7 / GAR-710).
+    TaskComment,
 }
 
 /// A single item in a search result list.
@@ -185,6 +192,8 @@ struct ValidatedSearch {
     include_files: bool,
     /// Slice 6 / GAR-707: search task titles + descriptions.
     include_tasks: bool,
+    /// Slice 7 / GAR-710: search task comment bodies.
+    include_task_comments: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -223,22 +232,30 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_memory = false;
     let mut include_files = false;
     let mut include_tasks = false;
+    let mut include_task_comments = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
             "memory" => include_memory = true,
             "files" => include_files = true,
             "tasks" => include_tasks = true,
+            "task_comments" => include_task_comments = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files, tasks"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments"
                 )));
             }
         }
     }
-    if !include_messages && !include_memory && !include_files && !include_tasks {
+    if !include_messages
+        && !include_memory
+        && !include_files
+        && !include_tasks
+        && !include_task_comments
+    {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks".into(),
+            "types must include at least one of: messages, memory, files, tasks, task_comments"
+                .into(),
         ));
     }
 
@@ -261,6 +278,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     if include_tasks && scope_type != ValidatedScopeType::Group {
         return Err(RestError::BadRequest(
             "types=tasks is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Task comments are always group-scoped (via JOIN through tasks).
+    if include_task_comments && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=task_comments is only supported for scope_type=group".into(),
         ));
     }
 
@@ -304,6 +328,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_memory,
         include_files,
         include_tasks,
+        include_task_comments,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -361,6 +386,17 @@ struct TaskSearchRow {
     group_id: Uuid,
     status: String,
     created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the task comments FTS query (slice 7 / GAR-710).
+#[derive(sqlx::FromRow)]
+struct TaskCommentSearchRow {
+    id: Uuid,
+    score: f32,
+    body_md: String,
+    group_id: Uuid,
+    author_user_id: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
 
@@ -616,6 +652,62 @@ async fn fetch_tasks(
     Ok(rows)
 }
 
+/// Fetch task comment results by searching `task_comments.body_md` via runtime
+/// `to_tsvector('simple', body_md)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// JOINs `task_comments tc → tasks t` to get `t.group_id` for the explicit
+/// group-isolation filter (defense-in-depth; RLS `task_comments_through_tasks`
+/// also filters via this JOIN path).
+///
+/// `from_date` / `to_date` filter on `tc.created_at`.
+/// `author_id` filters `tc.author_user_id` (NULL-safe).
+/// `tc.deleted_at IS NULL` always enforced.
+/// `excerpt` is the full `body_md`; callers may truncate for display.
+async fn fetch_task_comments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    author_id: Option<Uuid>,
+    fetch_up_to: i64,
+) -> Result<Vec<TaskCommentSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, TaskCommentSearchRow>(
+        "SELECT tc.id,
+                ts_rank(
+                    to_tsvector('simple', tc.body_md),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                tc.body_md,
+                t.group_id,
+                tc.author_user_id,
+                tc.created_at
+         FROM   task_comments tc
+         JOIN   tasks t ON t.id = tc.task_id
+         WHERE  to_tsvector('simple', tc.body_md) @@ websearch_to_tsquery('simple', $1)
+           AND  t.group_id = $2
+           AND  tc.deleted_at IS NULL
+           AND  ($3::timestamptz IS NULL OR tc.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR tc.created_at <= $4)
+           AND  ($5::uuid IS NULL OR tc.author_user_id = $5)
+         ORDER BY score DESC, tc.created_at DESC, tc.id DESC
+         LIMIT $6",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(author_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -854,6 +946,36 @@ pub async fn search(
         }
     }
 
+    if validated.include_task_comments {
+        // task_comments are always group-scoped (via tasks); scope_type != Group
+        // is rejected at parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_task_comments(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            validated.author_id,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::TaskComment,
+                id: r.id,
+                score: r.score,
+                excerpt: r.body_md,
+                group_id: r.group_id,
+                chat_id: None,
+                sender_user_id: r.author_user_id,
+                scope_type: None,
+                scope_id: None,
+                kind: None,
+                created_at: r.created_at,
+            });
+        }
+    }
+
     tx.commit()
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
@@ -1051,6 +1173,66 @@ mod tests {
         assert!(v.include_memory);
         assert!(v.include_files);
         assert!(v.include_tasks);
+        assert!(!v.include_task_comments);
+    }
+
+    // ── Slice 7: types=task_comments ─────────────────────────────────────────
+
+    #[test]
+    fn types_task_comments_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_task_comments);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+    }
+
+    #[test]
+    fn types_task_comments_chat_scope_rejected() {
+        let params = make_params("hello", "chat", Some("task_comments"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_task_comments_user_scope_rejected() {
+        let params = make_params("hello", "user", Some("task_comments"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_task_comments_and_messages_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("messages,task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_task_comments);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_task_comments_and_tasks_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("tasks,task_comments"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_tasks);
+        assert!(v.include_task_comments);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_all_five_group_scope_accepted() {
+        let params = make_params(
+            "hello",
+            "group",
+            Some("messages,memory,files,tasks,task_comments"),
+        );
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(v.include_task_comments);
     }
 
     #[test]
