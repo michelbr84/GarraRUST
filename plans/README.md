@@ -204,4 +204,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0192 | [GAR-707 — Search slice 6: types=tasks — task title/description FTS in unified search](0192-gar-707-search-slice6-tasks.md) | [GAR-707](https://linear.app/chatgpt25/issue/GAR-707) | ✅ Merged 2026-05-26 via PR #526 (`c902051`) |
 | 0193 | [GAR-710 — Search slice 7: types=task_comments — task comment body FTS in unified search](0193-gar-710-search-slice7-task-comments.md) | [GAR-710](https://linear.app/chatgpt25/issue/GAR-710) | ✅ Merged 2026-05-26 via PR #532 (`238299d`) |
 | 0194 | [GAR-712 — Health run 34 (2026-05-26 ~04:45 ET): all surfaces clean, priority (i)](0194-gar-712-health-run-34.md) | [GAR-712](https://linear.app/chatgpt25/issue/GAR-712) | ✅ Merged 2026-05-26 via PR #534 (`885ed2e`) |
-| 0195 | [GAR-713 — REST /v1 search slice 8: sort_by parameter](0195-gar-713-search-slice8-sort-by.md) | [GAR-713](https://linear.app/chatgpt25/issue/GAR-713) | 🔄 In progress |
+| 0195 | [GAR-713 — REST /v1 search slice 8: sort_by parameter](0195-gar-713-search-slice8-sort-by.md) | [GAR-713](https://linear.app/chatgpt25/issue/GAR-713) | ✅ Merged 2026-05-26 via PR #535 (`bea868b`) |
