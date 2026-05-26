@@ -13,7 +13,7 @@ curtos para a próxima sessão autônoma.
 
 - GAR-467 / plan 0188 — Q6.5 Mutation Testing — audit_event observability coverage:
   - Added `count_audit_action(...) == 1` assertion to all 7 terminals of `verify_credential_with_ctx`.
-  - Added `row.ip.is_some()` assertion to all non-argon2id terminals (T3–T8).
+  - Added `row.ip.is_some()` assertion to all non-argon2id terminals (T3–8).
   - New test `null_stored_hash_emits_unknown_hash_audit`: seeds user with NULL password_hash,
     asserts `Err(UnknownHashFormat)` + 1 audit row committed + ip populated.
   - Total: 11 integration tests (was 10). Tests-only PR, no production code changes.
