@@ -36,7 +36,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Run shellcheck on install.sh
         run: shellcheck install.sh
@@ -87,7 +87,7 @@ jobs:
     # qualquer warning novo em crates ativos falha CI.
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -119,7 +119,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Run cargo-deny (advisories + bans + licenses + sources)
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -141,7 +141,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Dependency Review
         uses: actions/dependency-review-action@v5
@@ -165,7 +165,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           # Gitleaks needs the full history to scan commits reachable from
           # the PR tip — shallow clones miss the diff baseline on push.
@@ -188,7 +188,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -275,7 +275,7 @@ jobs:
       pull-requests: write   # required for gh pr comment
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # Plan abundant-thimble (GAR-439 slice 9.a, 2026-04-28): the default
       # GHA `ubuntu-latest` runner ships with ~14 GB free disk. The combo of
@@ -392,7 +392,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -409,24 +409,26 @@ jobs:
   # **1.92** porque ~30 sub-crates `wasmtime-*` declaram
   # `rust-version = "1.92"` em seus manifests publicados. O piso real
   # (1.92) é o gate, não o piso parcial (1.88) das deps não-wasmtime.
+  # GAR-708: wasmtime 45.0.0 declara rust-version = "1.93.0" — piso
+  # elevado de 1.92 → 1.93 junto com o bump de segurança (health run 32).
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
   # mesmos motivos do clippy/build (GTK + sidecar Windows ausentes em
   # runners GHA).
   msrv:
-    name: MSRV check (1.92)
+    name: MSRV check (1.93)
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Install Rust 1.92
-        uses: dtolnay/rust-toolchain@1.92
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@1.93
 
-      - name: cargo +1.92 check
-        run: cargo +1.92 check --workspace --exclude garraia-desktop --locked
+      - name: cargo +1.93 check
+        run: cargo +1.93 check --workspace --exclude garraia-desktop --locked
 
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:
@@ -474,7 +476,7 @@ jobs:
       GARRAIA_SIGNUP_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # Fake CI-only secrets are still printed in logs by default. Mask them
       # so the pattern doesn't become a precedent for real secrets later.
@@ -607,7 +609,7 @@ jobs:
         working-directory: tests
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # See `e2e` job for rationale — mask CI-only fake secrets.
       - name: Mask CI-only fake secrets
@@ -635,7 +637,7 @@ jobs:
         run: cargo build --bin garra --release
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'npm'
@@ -720,7 +722,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable

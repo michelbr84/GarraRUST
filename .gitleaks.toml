@@ -32,6 +32,14 @@ regexes = [
     '''sk-ant-test-key-for-ci''',
     '''ci-test-bearer-token''',
     '''garraia-insecure-default-jwt-secret-change-me''',
+    # CI-only fake credentials in .github/workflows/ci.yml (e2e + playwright
+    # jobs). These are localhost-only test values masked at runtime with
+    # ::add-mask:: — not real secrets.
+    '''ci-e2e-''',
+    '''ci-playwright-''',
+    # Localhost Postgres DSN — always a test-only value; production DSNs
+    # never use @localhost in this repo.
+    '''postgres://[^@]+@localhost''',
     # Documentation placeholders
     '''your[-_][A-Za-z0-9_-]+[-_](key|token|secret)''',
     '''<your[-_].*?>''',
