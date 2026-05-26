@@ -206,6 +206,12 @@ async fn argon2id_happy_path_emits_login_success_audit() -> anyhow::Result<()> {
         row.metadata.get("request_id").and_then(|v| v.as_str()),
         Some("req-abc-123")
     );
+    // GAR-467 Q6.5: exactly 1 row — kills "extra audit row" mutants.
+    assert_eq!(
+        count_audit_action(&f.admin_pool, AuditAction::LoginSuccess.as_str()).await?,
+        1,
+        "exactly 1 login.success row expected"
+    );
     Ok(())
 }
 
@@ -296,6 +302,20 @@ async fn wrong_password_returns_none_with_failure_audit() -> anyhow::Result<()> 
     )
     .await?;
     assert_eq!(row.actor_user_id, Some(user_id));
+    // GAR-467 Q6.5: count=1 + ip populated.
+    assert_eq!(
+        count_audit_action(
+            &f.admin_pool,
+            AuditAction::LoginFailureWrongPassword.as_str()
+        )
+        .await?,
+        1,
+        "exactly 1 login.failure_wrong_password row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
     Ok(())
 }
 
@@ -320,6 +340,20 @@ async fn user_not_found_returns_none_with_null_actor_audit() -> anyhow::Result<(
     );
     assert_eq!(row.actor_label.as_deref(), Some("ghost@example.com"));
     assert!(row.resource_id.is_none());
+    // GAR-467 Q6.5: count=1 + ip populated.
+    assert_eq!(
+        count_audit_action(
+            &f.admin_pool,
+            AuditAction::LoginFailureUserNotFound.as_str()
+        )
+        .await?,
+        1,
+        "exactly 1 login.failure_user_not_found row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
     Ok(())
 }
 
@@ -343,6 +377,20 @@ async fn suspended_account_returns_none_with_account_audit() -> anyhow::Result<(
     )
     .await?;
     assert_eq!(row.actor_user_id, Some(user_id));
+    // GAR-467 Q6.5: count=1 + ip populated.
+    assert_eq!(
+        count_audit_action(
+            &f.admin_pool,
+            AuditAction::LoginFailureAccountNotActive.as_str()
+        )
+        .await?,
+        1,
+        "exactly 1 login.failure_account_suspended row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
     Ok(())
 }
 
@@ -366,6 +414,20 @@ async fn deleted_account_takes_same_path_as_suspended() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(row.actor_user_id, Some(user_id));
+    // GAR-467 Q6.5: count=1 + ip populated.
+    assert_eq!(
+        count_audit_action(
+            &f.admin_pool,
+            AuditAction::LoginFailureAccountNotActive.as_str()
+        )
+        .await?,
+        1,
+        "exactly 1 login.failure_account_suspended row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
     Ok(())
 }
 
@@ -393,6 +455,63 @@ async fn unknown_hash_format_returns_err_with_audit() -> anyhow::Result<()> {
     // tx commit on the err path).
     let row = last_audit_for(&f.admin_pool, AuditAction::LoginFailureUnknownHash.as_str()).await?;
     assert_eq!(row.actor_user_id, Some(user_id));
+    // GAR-467 Q6.5: count=1 + ip populated.
+    assert_eq!(
+        count_audit_action(&f.admin_pool, AuditAction::LoginFailureUnknownHash.as_str()).await?,
+        1,
+        "exactly 1 login.failure_unknown_hash row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
+    Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GAR-467 Q6.5 — NULL stored_hash terminal (not tested before this PR).
+//
+// When `user_identities.password_hash IS NULL` (operational misconfiguration
+// for an `internal` provider row), `verify_credential_with_ctx` must:
+//   1. Return `Err(AuthError::UnknownHashFormat)`
+//   2. Commit a `login.failure_unknown_hash` audit row BEFORE returning
+//      (forensic trail even on error path, intentional per ADR 0005).
+//   3. Populate `actor_user_id` (user EXISTS, hash is missing).
+//   4. Populate `ip` from `RequestCtx`.
+// ───────────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn null_stored_hash_emits_unknown_hash_audit() -> anyhow::Result<()> {
+    let f = boot().await?;
+    // Seed a valid ACTIVE user but with NULL password_hash (mis-config).
+    let (user_id, _identity_id) =
+        seed_user(&f.admin_pool, "nullhash@example.com", None, "active").await?;
+
+    let cred = Credential::Internal {
+        email: "nullhash@example.com".into(),
+        password: SecretString::from("any".to_owned()),
+    };
+    match f.provider.verify_credential_with_ctx(&cred, &ctx()).await {
+        Err(AuthError::UnknownHashFormat) => {}
+        other => panic!("expected UnknownHashFormat for NULL hash, got: {other:?}"),
+    }
+
+    // Audit row MUST be committed (error path commits before returning).
+    let row = last_audit_for(&f.admin_pool, AuditAction::LoginFailureUnknownHash.as_str()).await?;
+    assert_eq!(
+        row.actor_user_id,
+        Some(user_id),
+        "actor_user_id must be set — user exists, only the hash is missing"
+    );
+    assert_eq!(
+        count_audit_action(&f.admin_pool, AuditAction::LoginFailureUnknownHash.as_str()).await?,
+        1,
+        "exactly 1 login.failure_unknown_hash row expected"
+    );
+    assert!(
+        row.ip.is_some(),
+        "ip column must be populated from RequestCtx"
+    );
     Ok(())
 }
 
