@@ -637,7 +637,7 @@ jobs:
         run: cargo build --bin garra --release
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'npm'
