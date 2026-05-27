@@ -1,4 +1,4 @@
-# Plan 0197 — GAR-716: REST /v1 search slice 9 — `types=folders` folder name FTS
+# Plan 0199 — GAR-716: REST /v1 search slice 9 — `types=folders` folder name FTS
 
 ## Goal
 
@@ -55,7 +55,7 @@ Same pattern as slices 5-7 (files/tasks/task_comments):
 - [x] `folders.deleted_at` column exists for soft-delete exclusion.
 - [x] `folders.created_by` nullable FK — mirrors `files.created_by` handling.
 - [x] No existing "search slice 9 folders" Linear issue (searched, none found).
-- [x] Next plan number is 0197 (0196 used by health run 35 PR #536).
+- [x] Next plan number is 0199 (0196 used by health run 35 PR #536).
 
 ## Out of Scope
 
@@ -83,8 +83,8 @@ None — the implementation pattern is fully established by slices 5-7.
 crates/garraia-gateway/src/rest_v1/
   search.rs   ← all changes (see Tasks)
 plans/
-  0197-gar-716-search-slice9-folders.md   ← this file
-  README.md                                ← row 0197 added
+  0199-gar-716-search-slice9-folders.md   ← this file
+  README.md                                ← row 0199 added
 ROADMAP.md                                 ← search checklist `[x]` for folders
 ```
 
@@ -116,7 +116,7 @@ ROADMAP.md                                 ← search checklist `[x]` for folder
 
 - [x] ROADMAP.md: add `[x] GET /v1/search?...&types=folders` to "Busca unificada"
       checklist (after slice 8 sort_by entry).
-- [x] plans/README.md: add row 0197.
+- [x] plans/README.md: add row 0199.
 
 ## Risk Register
 
@@ -136,7 +136,7 @@ ROADMAP.md                                 ← search checklist `[x]` for folder
 - 6 new unit tests all pass locally.
 - CI green (all 20 actual checks).
 - ROADMAP.md checklist row added.
-- plans/README.md row 0197 present.
+- plans/README.md row 0199 present.
 
 ## Cross-references
 

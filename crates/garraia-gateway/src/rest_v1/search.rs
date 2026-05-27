@@ -32,7 +32,7 @@
 //! `created_at_asc` (`created_at ASC, score DESC, id DESC`).
 //! Applied on the Rust side after per-type fetches merge into a single Vec.
 //!
-//! Slice 9 (plan 0197 / GAR-716) adds `types=folders` (group scope only):
+//! Slice 9 (plan 0199 / GAR-716) adds `types=folders` (group scope only):
 //! searches `folders.name` via `to_tsvector('simple', name)`.
 //! Deleted folders excluded. `sender_user_id` = `created_by`. `kind` = null.
 //!
