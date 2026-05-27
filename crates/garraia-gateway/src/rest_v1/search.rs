@@ -1191,8 +1191,7 @@ pub async fn search(
     if validated.include_task_lists {
         // task_lists are always group-scoped; scope_type != Group is rejected at
         // parse_and_validate, so this branch only fires for Group scope.
-        let rows =
-            fetch_task_lists(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
+        let rows = fetch_task_lists(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
         for r in rows {
             all.push(SearchResult {
                 result_type: SearchResultType::TaskList,
