@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-05-27 run 43** (health routine — all surfaces clean, docker/build-push-action Dependabot PR merged to main as `0a820a01`, 8 open Dependabot PRs (none security-labeled), routine/ PR #548 GAR-721 noted, priority (i). GAR-725. Previous: run 42 all surfaces clean, PR #549 `4ad84a1`, priority (i) (GAR-724)).
+> Last updated: **2026-05-27 run 44** (health routine — all surfaces clean, 8 open Dependabot PRs (none security-labeled), routine/ PR #548 GAR-721 noted, priority (i). GAR-727. Previous: run 43 all surfaces clean, PR #550 `7143a85`, priority (i) (GAR-725)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-27 run 44 (~20:45 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-27 (~20:45 ET / 00:45 UTC 2026-05-28). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open health/ PRs resolved this run:** None open at scan time (PR #550 GAR-725 run 43 already squash-merged as `7143a85`).
+
+**Pending routine/ PRs noted (NOT actioned — routine/ territory):** PR #548 (`routine/202605271220-search-slice11-task-lists`, GAR-721) — open, In Progress, skipped per protocol.
+
+**CI on main (`7143a85`, PR #550 GAR-725 health run 43):** All 20 checks confirmed green via PR #550 check runs.
+
+**Notable change vs run 43:** No change to Dependabot PRs (still 8 open, none security-labeled). No new security advisories.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #550 (7143a85), Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #550 |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 8 open, none security | tracing-opentelemetry, lopdf, otel-semantic-conventions, otel-otlp, criterion (dev), rand_chacha, otel_sdk, patch-and-minor group |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass (CI) | All 20 checks green on PR #550 |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) + RUSTSEC-2024-0429 (glib) + RUSTSEC-2026-0097 (rand) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #550 |
+| CI on main (`7143a85`) | ✅ green | 20/20 checks confirmed via PR #550 |
 
 ## Confirmed 2026-05-27 run 43 (~16:45 ET) — all surfaces clean, priority (i)
 
