@@ -1,9 +1,9 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195;
-//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713;
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0197;
+//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713, GAR-716;
 //!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slices 1–8)
+//! ## Scope (slices 1–9)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -31,6 +31,10 @@
 //! `created_at_desc` (`created_at DESC, score DESC, id DESC`),
 //! `created_at_asc` (`created_at ASC, score DESC, id DESC`).
 //! Applied on the Rust side after per-type fetches merge into a single Vec.
+//!
+//! Slice 9 (plan 0199 / GAR-716) adds `types=folders` (group scope only):
+//! searches `folders.name` via `to_tsvector('simple', name)`.
+//! Deleted folders excluded. `sender_user_id` = `created_by`. `kind` = null.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -118,6 +122,8 @@ pub enum SearchResultType {
     Task,
     /// Task comment body match (slice 7 / GAR-710).
     TaskComment,
+    /// Folder name match (slice 9 / GAR-716).
+    Folder,
 }
 
 /// A single item in a search result list.
@@ -214,6 +220,8 @@ struct ValidatedSearch {
     include_tasks: bool,
     /// Slice 7 / GAR-710: search task comment bodies.
     include_task_comments: bool,
+    /// Slice 9 / GAR-716: search folder names.
+    include_folders: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -255,6 +263,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_files = false;
     let mut include_tasks = false;
     let mut include_task_comments = false;
+    let mut include_folders = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
@@ -262,9 +271,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
             "files" => include_files = true,
             "tasks" => include_tasks = true,
             "task_comments" => include_task_comments = true,
+            "folders" => include_folders = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders"
                 )));
             }
         }
@@ -274,9 +284,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         && !include_files
         && !include_tasks
         && !include_task_comments
+        && !include_folders
     {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks, task_comments"
+            "types must include at least one of: messages, memory, files, tasks, task_comments, folders"
                 .into(),
         ));
     }
@@ -307,6 +318,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     if include_task_comments && scope_type != ValidatedScopeType::Group {
         return Err(RestError::BadRequest(
             "types=task_comments is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Folders are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_folders && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=folders is only supported for scope_type=group".into(),
         ));
     }
 
@@ -363,6 +381,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_files,
         include_tasks,
         include_task_comments,
+        include_folders,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -432,6 +451,17 @@ struct TaskCommentSearchRow {
     body_md: String,
     group_id: Uuid,
     author_user_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the folders FTS query (slice 9 / GAR-716).
+#[derive(sqlx::FromRow)]
+struct FolderSearchRow {
+    id: Uuid,
+    score: f32,
+    name: String,
+    group_id: Uuid,
+    created_by: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
 
@@ -743,6 +773,50 @@ async fn fetch_task_comments(
     Ok(rows)
 }
 
+/// Fetch folder results by searching `folders.name` using runtime
+/// `to_tsvector('simple', name)`.
+///
+/// Only `scope_type=group` is supported; `scope_type=chat` and `scope_type=user` are
+/// rejected at `parse_and_validate` before this function is ever called.
+///
+/// Uses the `'simple'` tokenizer (no stemming) — folder names are identifiers, not prose.
+/// RLS (`folders_group_isolation` FORCE policy, migration 003) transparently filters to
+/// `app.current_group_id`; the explicit `group_id = $2` is defense-in-depth.
+///
+/// Soft-deleted folders (`deleted_at IS NOT NULL`) are always excluded.
+async fn fetch_folders(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    fetch_up_to: i64,
+) -> Result<Vec<FolderSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, FolderSearchRow>(
+        "SELECT f.id,
+                ts_rank(
+                    to_tsvector('simple', f.name),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                f.name,
+                f.group_id,
+                f.created_by,
+                f.created_at
+         FROM   folders f
+         WHERE  to_tsvector('simple', f.name) @@ websearch_to_tsquery('simple', $1)
+           AND  f.group_id = $2
+           AND  f.deleted_at IS NULL
+         ORDER BY score DESC, f.created_at DESC, f.id DESC
+         LIMIT $3",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -766,6 +840,7 @@ async fn fetch_task_comments(
 /// | `scope_type=user` + `types=messages`                          | 400    |
 /// | `types=files` + `scope_type` ≠ `group`                       | 400    |
 /// | `types=tasks` + `scope_type` ≠ `group`                       | 400    |
+/// | `types=folders` + `scope_type` ≠ `group`                     | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -1003,6 +1078,27 @@ pub async fn search(
                 group_id: r.group_id,
                 chat_id: None,
                 sender_user_id: r.author_user_id,
+                scope_type: None,
+                scope_id: None,
+                kind: None,
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_folders {
+        // folders are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_folders(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::Folder,
+                id: r.id,
+                score: r.score,
+                excerpt: r.name,
+                group_id: r.group_id,
+                chat_id: None,
+                sender_user_id: r.created_by,
                 scope_type: None,
                 scope_id: None,
                 kind: None,
@@ -1613,5 +1709,67 @@ mod tests {
         let mut params = make_params("hello", "group", None);
         params.sort_by = Some("random_order".to_owned());
         assert!(parse_and_validate(&params).is_err());
+    }
+
+    // ── Slice 9: types=folders (GAR-716) ─────────────────────────────────────
+
+    #[test]
+    fn types_folders_group_scope_accepted() {
+        let params = make_params("reports", "group", Some("folders"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_folders);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+        assert!(!v.include_task_comments);
+    }
+
+    #[test]
+    fn types_folders_chat_scope_rejected() {
+        let params = make_params("reports", "chat", Some("folders"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_folders_user_scope_rejected() {
+        let params = make_params("reports", "user", Some("folders"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_folders_and_files_group_scope_accepted() {
+        let params = make_params("docs", "group", Some("folders,files"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_folders);
+        assert!(v.include_files);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_folders_and_tasks_group_scope_accepted() {
+        let params = make_params("project", "group", Some("folders,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_folders);
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_all_six_group_scope_accepted() {
+        let params = make_params(
+            "hello",
+            "group",
+            Some("messages,memory,files,tasks,task_comments,folders"),
+        );
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_messages);
+        assert!(v.include_memory);
+        assert!(v.include_files);
+        assert!(v.include_tasks);
+        assert!(v.include_task_comments);
+        assert!(v.include_folders);
     }
 }
