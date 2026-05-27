@@ -1,8 +1,38 @@
 # Dependabot Status
 
-> Last updated: **2026-05-27 run 42** (health routine — all surfaces clean, PR #547 GAR-723 run 41 squash-merged as `3f7c345`, PR #543 GAR-718 merged to main as `5472b63`, 9 open Dependabot PRs (none security-labeled), routine/ PR #548 GAR-721 noted, priority (i). GAR-724. Previous: run 41 all surfaces clean, PR #547 `3f7c345`, priority (i) (GAR-723)).
+> Last updated: **2026-05-27 run 43** (health routine — all surfaces clean, docker/build-push-action Dependabot PR merged to main as `0a820a01`, 8 open Dependabot PRs (none security-labeled), routine/ PR #548 GAR-721 noted, priority (i). GAR-725. Previous: run 42 all surfaces clean, PR #549 `4ad84a1`, priority (i) (GAR-724)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-27 run 43 (~16:45 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-27 (~16:45 ET / 20:45 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open health/ PRs resolved this run:** None open at scan time (PR #549 GAR-724 run 42 already squash-merged as `4ad84a1`).
+
+**Pending routine/ PRs noted (NOT actioned — routine/ territory):** PR #548 (`routine/202605271220-search-slice11-task-lists`, GAR-721) — open, In Progress, skipped per protocol.
+
+**CI on main (`4ad84a1`, PR #549 GAR-724 health run 42):** All 20 checks confirmed green via PR #549 check runs.
+
+**Notable change vs run 42:** docker/build-push-action Dependabot PR (was open at run 42) now merged to main as `0a820a011acac96` (2026-05-26). Dependabot PR count: 9 → 8. No security surface change.
+
+**argon2 upstream:** Still `0.6.0-rc.8` (RC, not stable); GAR-669 Slices 3–4 remain blocked until stable release.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on PR #549 (4ad84a1) |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on PR #549 |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 8 open, none security | tracing-opentelemetry, lopdf, otel-semantic-conventions, otel-otlp, criterion (dev), rand_chacha, otel_sdk, patch-and-minor group |
+| Security Audit (`cargo audit --deny unsound`) | ✅ pass (CI) | All 20 checks green on PR #549 |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) + RUSTSEC-2024-0429 (glib) + RUSTSEC-2026-0097 (rand) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on PR #549 |
+| CI on main (`4ad84a1`) | ✅ green | 20/20 checks confirmed via PR #549 |
+
+**No security fix applied this run.** Bookkeeping only: plan 0206 (GAR-725), plans README row 0205 marked ✅ Merged + row 0206 added, dependabot-status run 43 note. Linear: GAR-725. Next security backlog: argon2 ≥ 0.6 stable → unblocks GAR-669 Slices 3–4; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491); GAR-711 OpenTelemetry 0.26→0.32 Backlog.
+
+---
+
 
 ## Confirmed 2026-05-27 run 42 (~12:50 ET) — all surfaces clean, priority (i)
 
