@@ -1,4 +1,4 @@
-# Plan 0205 — GAR-721: REST /v1 search slice 11 — `types=task_lists` task list name/description FTS
+# Plan 0207 — GAR-721: REST /v1 search slice 11 — `types=task_lists` task list name/description FTS
 
 ## Goal
 
@@ -59,7 +59,7 @@ Same pattern as slices 5-9 (files/tasks/task_comments/folders/chats):
 - [x] `task_lists.created_by` nullable FK — mirrors folders/files handling.
 - [x] `task_lists.type` column exists (CHECK 'list'|'board'|'calendar') — used as `kind`.
 - [x] GAR-721 Linear issue exists and is In Progress.
-- [x] Next plan number is 0205 (0200-0204 used by slice 10 + health runs 38-41).
+- [x] Next plan number is 0207 (0200-0206 used by slice 10 + health runs 38-43).
 
 ## Out of Scope
 
@@ -76,7 +76,7 @@ Revert the diff to `search.rs`. No migration to roll back.
 
 ```
 crates/garraia-gateway/src/rest_v1/search.rs  ← only file changed
-plans/0205-gar-721-search-slice11-task-lists.md  ← this file
+plans/0207-gar-721-search-slice11-task-lists.md  ← this file
 plans/README.md  ← row added
 ROADMAP.md  ← checklist row added
 ```
