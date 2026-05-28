@@ -1,8 +1,28 @@
 # Dependabot Status
 
-> Last updated: **2026-05-27 run 44** (health routine — all surfaces clean, 8 open Dependabot PRs (none security-labeled), routine/ PR #548 GAR-721 noted, priority (i). GAR-727. Previous: run 43 all surfaces clean, PR #550 `7143a85`, priority (i) (GAR-725)).
+> Last updated: **2026-05-27 run 45** (health routine — all surfaces clean, 8 open Dependabot PRs (none security-labeled), routine/ PR #552 GAR-726 noted, priority (i). GAR-728. Previous: run 44 all surfaces clean, PR #551 `d418248`, priority (i) (GAR-727)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-27 run 45 (~20:45 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-27 (~20:45 ET / 00:45 UTC 2026-05-28). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open health/ PRs resolved this run:** None open at scan time (PR #551 GAR-727 run 44 already squash-merged as `d418248`).
+
+**Pending routine/ PRs noted (NOT actioned — routine/ territory):** PR #552 (`routine/202605280018-search-slice12-threads`, GAR-726) — open, CI in progress, skipped per protocol.
+
+**CI on main (`2604843`, PR #548 GAR-721 search slice 11):** Security Audit ✅, Dependency Review ✅, cargo-deny ✅, Secret Scan ✅, CodeQL Analyze(rust/js-ts/actions) ✅, all confirmed green via routine PR #552 check runs.
+
+**Security surfaces:**
+- Secret scanning (gitleaks): ✅ clean
+- Malware/cargo-deny: ✅ clean (RUSTSEC-2023-0071 rsa suppressed, expiry 2026-07-31, GAR-456)
+- Dependabot: 8 open PRs, none CVE-flagged — #513, #515, #516, #517, #518, #519, #520, #522
+- CodeQL: ✅ all Analyze jobs green
+
+**Security backlog (unchanged):** GAR-456 (rsa/RUSTSEC-2023-0071 HIGH, expiry 2026-07-31), GAR-513 (glib+rand, audit.toml-only, expiry 2026-07-31), GAR-491 (CodeQL ledger), GAR-669 (argon2), GAR-711 (OTel).
+
+---
 
 ## Confirmed 2026-05-27 run 44 (~20:45 ET) — all surfaces clean, priority (i)
 
