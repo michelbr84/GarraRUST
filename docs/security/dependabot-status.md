@@ -1,8 +1,10 @@
 # Dependabot Status
 
-> Last updated: **2026-05-28 run 48** (health routine — all surfaces clean, PR #557 GAR-731 run 47 squash-merged as `a6e368a`, 8 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-732. Previous: run 47 all surfaces clean, PR #557 `a6e368a`, priority (i) (GAR-731)).
+> Last updated: **2026-05-28 run 49** (health routine — all surfaces clean, PR #559 GAR-732 run 48 squash-merged as `1130c4f`, 8 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-734. Previous: run 48 all surfaces clean, PR #559 `1130c4f`, priority (i) (GAR-732)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-28 run 49 (~12:45 ET) — all surfaces clean, priority (i)
 
 ## Confirmed 2026-05-28 run 48 (~08:45 ET) — all surfaces clean, priority (i)
 
