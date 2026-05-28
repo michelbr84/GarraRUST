@@ -41,7 +41,7 @@
 //! runtime `to_tsvector('simple', ...)`. Archived chats excluded.
 //! `excerpt` = `name`. `sender_user_id` = `created_by`. `kind` = `type` ('channel','dm','thread').
 //!
-//! Slice 11 (plan 0207 / GAR-721) adds `types=task_lists` (group scope only):
+//! Slice 11 (plan 0208 / GAR-721) adds `types=task_lists` (group scope only):
 //! searches `task_lists.name || ' ' || coalesce(task_lists.description, '')` via
 //! runtime `to_tsvector('simple', ...)`. Archived lists excluded.
 //! `excerpt` = name; `kind` = type ('list', 'board', 'calendar');
