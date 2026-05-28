@@ -50,8 +50,8 @@ docs/security/
 - [x] T2: Update plans/README.md
 - [x] T3: Update docs/security/dependabot-status.md
 - [x] T4: Commit + push on health/202605280045-run45-status-note
-- [ ] T5: Open PR, await CI green, merge
-- [ ] T6: Mark GAR-728 Done in Linear
+- [x] T5: Open PR, await CI green, merge — PR #553 squash-merged as c573a3eb (2026-05-28 ~00:46 ET)
+- [x] T6: Mark GAR-728 Done in Linear — auto-completed on merge
 
 ## Risk register
 
