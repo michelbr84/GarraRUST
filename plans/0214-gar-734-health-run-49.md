@@ -1,4 +1,4 @@
-# Plan 0213 — GAR-734: Health run 49 (2026-05-28 ~12:45 ET)
+# Plan 0214 — GAR-734: Health run 49 (2026-05-28 ~12:45 ET)
 
 **Status:** Done
 **Linear:** [GAR-734](https://linear.app/chatgpt25/issue/GAR-734)
@@ -84,5 +84,5 @@ Daily security/dependency health routine — run 49. Full security scan complete
 ## Files Changed
 
 - `docs/security/dependabot-status.md` — prepended run 49 entry, updated header
-- `plans/0213-gar-734-health-run-49.md` — this file
-- `plans/README.md` — row 0212 marked ✅ Merged (`1130c4f`), row 0213 added
+- `plans/0214-gar-734-health-run-49.md` — this file (renumbered from 0213 due to collision with GAR-726 slice 12)
+- `plans/README.md` — row 0212 marked ✅ Merged (`1130c4f`), row 0213 (GAR-726 slice 12) marked ✅, row 0214 added
