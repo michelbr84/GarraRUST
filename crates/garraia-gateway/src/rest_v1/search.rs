@@ -235,6 +235,7 @@ enum ValidatedScopeType {
 }
 
 /// Parsed, validated search parameters.
+#[derive(Debug)]
 struct ValidatedSearch {
     q: String,
     scope_type: ValidatedScopeType,
@@ -2119,69 +2120,6 @@ mod tests {
     }
 
     // ── Slice 11: types=task_lists (GAR-721) ─────────────────────────────────
-
-    #[test]
-    fn types_task_lists_group_scope_accepted() {
-        let params = make_params("sprint", "group", Some("task_lists"));
-        let v = parse_and_validate(&params).unwrap();
-        assert!(v.include_task_lists);
-        assert!(!v.include_messages);
-        assert!(!v.include_memory);
-        assert!(!v.include_files);
-        assert!(!v.include_tasks);
-        assert!(!v.include_task_comments);
-        assert!(!v.include_folders);
-    }
-
-    #[test]
-    fn types_task_lists_chat_scope_rejected() {
-        let params = make_params("sprint", "chat", Some("task_lists"));
-        assert!(parse_and_validate(&params).is_err());
-    }
-
-    #[test]
-    fn types_task_lists_user_scope_rejected() {
-        let params = make_params("sprint", "user", Some("task_lists"));
-        assert!(parse_and_validate(&params).is_err());
-    }
-
-    #[test]
-    fn types_task_lists_and_tasks_group_scope_accepted() {
-        let params = make_params("sprint", "group", Some("task_lists,tasks"));
-        let v = parse_and_validate(&params).unwrap();
-        assert!(v.include_task_lists);
-        assert!(v.include_tasks);
-        assert!(!v.include_messages);
-        assert!(!v.include_memory);
-    }
-
-    #[test]
-    fn types_task_lists_and_folders_group_scope_accepted() {
-        let params = make_params("project", "group", Some("task_lists,folders"));
-        let v = parse_and_validate(&params).unwrap();
-        assert!(v.include_task_lists);
-        assert!(v.include_folders);
-        assert!(!v.include_messages);
-        assert!(!v.include_memory);
-    }
-
-    #[test]
-    fn types_all_eight_group_scope_accepted() {
-        let params = make_params(
-            "hello",
-            "group",
-            Some("messages,memory,files,tasks,task_comments,folders,chats,task_lists"),
-        );
-        let v = parse_and_validate(&params).unwrap();
-        assert!(v.include_messages);
-        assert!(v.include_memory);
-        assert!(v.include_files);
-        assert!(v.include_tasks);
-        assert!(v.include_task_comments);
-        assert!(v.include_folders);
-        assert!(v.include_chats);
-        assert!(v.include_task_lists);
-    }
 
     #[test]
     fn types_task_lists_group_scope_accepted() {
