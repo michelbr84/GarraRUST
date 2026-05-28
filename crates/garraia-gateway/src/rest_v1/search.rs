@@ -1,9 +1,10 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0205;
-//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713, GAR-716, GAR-718, GAR-721;
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0208, 0209;
+//!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713, GAR-716, GAR-718,
+//!  GAR-721, GAR-726;
 //!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slices 1–11)
+//! ## Scope (slices 1–12)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -46,6 +47,12 @@
 //! runtime `to_tsvector('simple', ...)`. Archived lists excluded.
 //! `excerpt` = name; `kind` = type ('list', 'board', 'calendar');
 //! `sender_user_id` = `created_by`.
+//!
+//! Slice 12 (plan 0209 / GAR-726) adds `types=threads` (group scope only):
+//! searches `message_threads.title` via runtime `to_tsvector('simple', title)` with
+//! `title IS NOT NULL` guard. JOIN through `chats` for `group_id` (RLS policy
+//! `message_threads_through_chats`, migration 007). `excerpt` = `title`; `kind` = null;
+//! `sender_user_id` = `created_by`; `chat_id` = `chat_id`.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -139,6 +146,8 @@ pub enum SearchResultType {
     Chat,
     /// Task list name/description match (slice 11 / GAR-721).
     TaskList,
+    /// Message thread title match (slice 12 / GAR-726).
+    Thread,
 }
 
 /// A single item in a search result list.
@@ -189,8 +198,10 @@ pub struct SearchQuery {
     /// The group UUID to search within. Must equal the caller's active group.
     pub scope_id: Uuid,
     /// Comma-separated list of resource types to search.
-    /// Supported: `messages`, `memory`, `files`, `tasks`, `task_comments`, `folders`, `chats`, `task_lists`. Default: `messages,memory`.
-    /// `files`, `tasks`, `task_comments`, `folders`, `chats`, and `task_lists` are only valid for `scope_type=group`.
+    /// Supported: `messages`, `memory`, `files`, `tasks`, `task_comments`, `folders`, `chats`,
+    /// `task_lists`, `threads`. Default: `messages,memory`.
+    /// `files`, `tasks`, `task_comments`, `folders`, `chats`, `task_lists`, and `threads`
+    /// are only valid for `scope_type=group`.
     pub types: Option<String>,
     /// Filter: only results created at or after this timestamp (ISO 8601 UTC). Optional.
     pub from_date: Option<DateTime<Utc>>,
@@ -224,6 +235,7 @@ enum ValidatedScopeType {
 }
 
 /// Parsed, validated search parameters.
+#[derive(Debug)]
 struct ValidatedSearch {
     q: String,
     scope_type: ValidatedScopeType,
@@ -241,6 +253,8 @@ struct ValidatedSearch {
     include_chats: bool,
     /// Slice 11 / GAR-721: search task list names + descriptions.
     include_task_lists: bool,
+    /// Slice 12 / GAR-726: search message thread titles.
+    include_threads: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -285,6 +299,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_folders = false;
     let mut include_chats = false;
     let mut include_task_lists = false;
+    let mut include_threads = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
@@ -295,9 +310,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
             "folders" => include_folders = true,
             "chats" => include_chats = true,
             "task_lists" => include_task_lists = true,
+            "threads" => include_threads = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads"
                 )));
             }
         }
@@ -310,9 +326,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         && !include_folders
         && !include_chats
         && !include_task_lists
+        && !include_threads
     {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists"
+            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads"
                 .into(),
         ));
     }
@@ -364,6 +381,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     if include_task_lists && scope_type != ValidatedScopeType::Group {
         return Err(RestError::BadRequest(
             "types=task_lists is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Threads are scoped via chats → groups — they cannot be retrieved via chat or user scope.
+    if include_threads && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=threads is only supported for scope_type=group".into(),
         ));
     }
 
@@ -423,6 +447,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_folders,
         include_chats,
         include_task_lists,
+        include_threads,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -527,6 +552,18 @@ struct TaskListSearchRow {
     group_id: Uuid,
     list_type: String,
     created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Row returned by the message_threads FTS query (slice 12 / GAR-726).
+#[derive(sqlx::FromRow)]
+struct ThreadSearchRow {
+    id: Uuid,
+    score: f32,
+    title: String,
+    group_id: Uuid,
+    chat_id: Uuid,
+    created_by: Uuid,
     created_at: DateTime<Utc>,
 }
 
@@ -934,12 +971,9 @@ async fn fetch_chats(
 ///
 /// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
 ///
-/// Uses the `'simple'` tokenizer (no stemming) — list names are short identifiers.
 /// RLS (`task_lists_group_isolation` FORCE policy, migration 006) transparently
 /// filters to `app.current_group_id`; the explicit `group_id = $2` is
-/// defense-in-depth.
-///
-/// Archived lists (`archived_at IS NOT NULL`) are always excluded.
+/// defense-in-depth. Archived lists excluded.
 async fn fetch_task_lists(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     q: &str,
@@ -963,6 +997,48 @@ async fn fetch_task_lists(
            AND  tl.group_id = $2
            AND  tl.archived_at IS NULL
          ORDER BY score DESC, tl.created_at DESC, tl.id DESC
+         LIMIT $3",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    Ok(rows)
+}
+
+/// Fetch message thread results by searching `message_threads.title` using
+/// runtime `to_tsvector('simple', title)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// RLS (`message_threads_through_chats` FORCE policy, migration 007) scopes via
+/// JOIN to `chats`; the explicit `c.group_id = $2` is defense-in-depth.
+/// `title IS NOT NULL` guard: threads with no title have no searchable content.
+async fn fetch_threads(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    fetch_up_to: i64,
+) -> Result<Vec<ThreadSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, ThreadSearchRow>(
+        "SELECT mt.id,
+                ts_rank(
+                    to_tsvector('simple', mt.title),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                mt.title,
+                c.group_id,
+                mt.chat_id,
+                mt.created_by,
+                mt.created_at
+         FROM   message_threads mt
+         JOIN   chats c ON c.id = mt.chat_id
+         WHERE  to_tsvector('simple', mt.title) @@ websearch_to_tsquery('simple', $1)
+           AND  c.group_id = $2
+           AND  mt.title IS NOT NULL
+         ORDER BY score DESC, mt.created_at DESC, mt.id DESC
          LIMIT $3",
     )
     .bind(q)
@@ -1000,6 +1076,7 @@ async fn fetch_task_lists(
 /// | `types=folders` + `scope_type` ≠ `group`                     | 400    |
 /// | `types=chats` + `scope_type` ≠ `group`                       | 400    |
 /// | `types=task_lists` + `scope_type` ≠ `group`                  | 400    |
+/// | `types=threads` + `scope_type` ≠ `group`                     | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -1303,6 +1380,27 @@ pub async fn search(
                 scope_type: None,
                 scope_id: None,
                 kind: Some(r.list_type),
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_threads {
+        // threads are scoped via chats → groups; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_threads(&mut tx, &validated.q, caller_group_id, fetch_up_to).await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::Thread,
+                id: r.id,
+                score: r.score,
+                excerpt: r.title,
+                group_id: r.group_id,
+                chat_id: Some(r.chat_id),
+                sender_user_id: Some(r.created_by),
+                scope_type: None,
+                scope_id: None,
+                kind: None,
                 created_at: r.created_at,
             });
         }
@@ -2034,6 +2132,8 @@ mod tests {
         assert!(!v.include_tasks);
         assert!(!v.include_task_comments);
         assert!(!v.include_folders);
+        assert!(!v.include_chats);
+        assert!(!v.include_threads);
     }
 
     #[test]
@@ -2069,11 +2169,11 @@ mod tests {
     }
 
     #[test]
-    fn types_all_eight_group_scope_accepted() {
+    fn types_all_nine_group_scope_accepted() {
         let params = make_params(
             "hello",
             "group",
-            Some("messages,memory,files,tasks,task_comments,folders,chats,task_lists"),
+            Some("messages,memory,files,tasks,task_comments,folders,chats,task_lists,threads"),
         );
         let v = parse_and_validate(&params).unwrap();
         assert!(v.include_messages);
@@ -2084,5 +2184,53 @@ mod tests {
         assert!(v.include_folders);
         assert!(v.include_chats);
         assert!(v.include_task_lists);
+        assert!(v.include_threads);
+    }
+
+    #[test]
+    fn types_threads_group_scope_accepted() {
+        let params = make_params("question", "group", Some("threads"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_threads);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+        assert!(!v.include_task_comments);
+        assert!(!v.include_folders);
+        assert!(!v.include_chats);
+        assert!(!v.include_task_lists);
+    }
+
+    #[test]
+    fn types_threads_chat_scope_rejected() {
+        let params = make_params("question", "chat", Some("threads"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_threads_user_scope_rejected() {
+        let params = make_params("question", "user", Some("threads"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_threads_and_chats_group_scope_accepted() {
+        let params = make_params("question", "group", Some("threads,chats"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_threads);
+        assert!(v.include_chats);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+    }
+
+    #[test]
+    fn types_threads_and_task_lists_group_scope_accepted() {
+        let params = make_params("question", "group", Some("threads,task_lists"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_threads);
+        assert!(v.include_task_lists);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
     }
 }
