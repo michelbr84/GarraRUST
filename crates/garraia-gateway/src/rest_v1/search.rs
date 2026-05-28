@@ -1,5 +1,5 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0208, 0211, 0212;
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0208, 0213, 0214;
 //!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713, GAR-716, GAR-718,
 //!  GAR-721, GAR-726, GAR-730;
 //!  epic GAR-WS-SEARCH / Fase 3.4).
@@ -54,7 +54,7 @@
 //! `message_threads_through_chats`, migration 007). `excerpt` = `title`; `kind` = null;
 //! `sender_user_id` = `created_by`; `chat_id` = `chat_id`.
 //!
-//! Slice 13 (plan 0212 / GAR-730) adds `types=users` (group scope only):
+//! Slice 13 (plan 0214 / GAR-730) adds `types=users` (group scope only):
 //! searches `users.display_name` via runtime `to_tsvector('simple', display_name)`.
 //! JOIN through `group_members` for group isolation; `status = 'active'` guard.
 //! `excerpt` = `display_name`; `kind` = null; `sender_user_id` = `users.id` (the
