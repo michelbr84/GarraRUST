@@ -1,4 +1,4 @@
-# Plan 0209 — GAR-726: REST /v1 search slice 12 — `types=threads` message thread title FTS
+# Plan 0211 — GAR-726: REST /v1 search slice 12 — `types=threads` message thread title FTS
 
 ## Goal
 
