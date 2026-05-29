@@ -150,6 +150,14 @@ pub enum WorkspaceAuditAction {
     /// read-back.
     ThreadCreated,
 
+    /// A thread was updated via `PATCH /v1/threads/{thread_id}` (plan 0227 /
+    /// GAR-745, epic GAR-WS-CHAT slice 7).
+    ///
+    /// `resource_type = "message_threads"`, `resource_id = "{thread_id}"`.
+    /// Metadata: `{ changed_fields: ["resolved"|"title"] }`. Title is
+    /// user-controlled and may contain PII — never logged in metadata.
+    ThreadUpdated,
+
     /// A memory item was created via `POST /v1/memory` (plan 0062 /
     /// GAR-514, epic GAR-WS-MEMORY slice 1).
     ///
@@ -296,6 +304,14 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "chat_members"`, `resource_id = "{user_id}"`.
     /// Metadata: `{ role }`.
     ChatMemberRemoved,
+
+    /// A chat member's settings were updated via
+    /// `PATCH /v1/chats/{chat_id}/members/{user_id}` (plan 0227 / GAR-745,
+    /// epic GAR-WS-CHAT slice 7).
+    ///
+    /// `resource_type = "chat_members"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{ changed_fields: ["muted"|"last_read_at"|"role"] }`.
+    ChatMemberUpdated,
 
     /// A subscriber connected to a chat's SSE stream via
     /// `GET /v1/chats/{chat_id}/stream` (plan 0162 / GAR-678, audit follow-up
@@ -538,6 +554,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MessageEdited => "message.edited",
             WorkspaceAuditAction::MessageDeleted => "message.deleted",
             WorkspaceAuditAction::ThreadCreated => "thread.created",
+            WorkspaceAuditAction::ThreadUpdated => "thread.updated",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
             WorkspaceAuditAction::MemoryPinned => "memory.pinned",
@@ -554,6 +571,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ChatArchived => "chat.archived",
             WorkspaceAuditAction::ChatMemberAdded => "chat.member.added",
             WorkspaceAuditAction::ChatMemberRemoved => "chat.member.removed",
+            WorkspaceAuditAction::ChatMemberUpdated => "chat.member.updated",
             WorkspaceAuditAction::ChatSubscribed => "chat.subscribed",
             WorkspaceAuditAction::ChatUnsubscribed => "chat.unsubscribed",
             WorkspaceAuditAction::TaskAssigneeAdded => "task.assignee.added",
@@ -683,6 +701,10 @@ mod tests {
             "thread.created"
         );
         assert_eq!(
+            WorkspaceAuditAction::ThreadUpdated.as_str(),
+            "thread.updated"
+        );
+        assert_eq!(
             WorkspaceAuditAction::MemoryCreated.as_str(),
             "memory.created"
         );
@@ -726,6 +748,10 @@ mod tests {
         assert_eq!(
             WorkspaceAuditAction::ChatMemberRemoved.as_str(),
             "chat.member.removed"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::ChatMemberUpdated.as_str(),
+            "chat.member.updated"
         );
         assert_eq!(
             WorkspaceAuditAction::ChatSubscribed.as_str(),
@@ -824,6 +850,7 @@ mod tests {
             WorkspaceAuditAction::MessageEdited.as_str(),
             WorkspaceAuditAction::MessageDeleted.as_str(),
             WorkspaceAuditAction::ThreadCreated.as_str(),
+            WorkspaceAuditAction::ThreadUpdated.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
             WorkspaceAuditAction::MemoryPinned.as_str(),
@@ -839,6 +866,7 @@ mod tests {
             WorkspaceAuditAction::ChatArchived.as_str(),
             WorkspaceAuditAction::ChatMemberAdded.as_str(),
             WorkspaceAuditAction::ChatMemberRemoved.as_str(),
+            WorkspaceAuditAction::ChatMemberUpdated.as_str(),
             WorkspaceAuditAction::ChatSubscribed.as_str(),
             WorkspaceAuditAction::ChatUnsubscribed.as_str(),
             WorkspaceAuditAction::TaskAssigneeAdded.as_str(),
