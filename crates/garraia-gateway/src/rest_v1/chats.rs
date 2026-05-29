@@ -2205,10 +2205,10 @@ impl PatchChatMemberRequest {
                 _ => return Err("role must be one of: member, moderator"),
             }
         }
-        if let Some(lra) = self.last_read_at {
-            if lra > Utc::now() {
-                return Err("last_read_at must not be in the future");
-            }
+        if let Some(lra) = self.last_read_at
+            && lra > Utc::now()
+        {
+            return Err("last_read_at must not be in the future");
         }
         Ok(())
     }
@@ -2767,5 +2767,212 @@ mod tests {
             .unwrap_or(DEFAULT_THREAD_LIMIT)
             .clamp(1, MAX_THREAD_LIMIT);
         assert_eq!(effective, MAX_THREAD_LIMIT);
+    }
+
+    // ── PatchThreadRequest::validate (plan 0227 / GAR-745) ──────────────────
+
+    #[test]
+    fn patch_thread_empty_body_rejected() {
+        let req = PatchThreadRequest {
+            title: None,
+            resolved: None,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "at least one of 'title' or 'resolved' must be provided"
+        );
+    }
+
+    #[test]
+    fn patch_thread_resolved_only_valid() {
+        let req = PatchThreadRequest {
+            title: None,
+            resolved: Some(true),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_thread_unresolve_valid() {
+        let req = PatchThreadRequest {
+            title: None,
+            resolved: Some(false),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_thread_title_only_valid() {
+        let req = PatchThreadRequest {
+            title: Some("New title".into()),
+            resolved: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_thread_blank_title_rejected() {
+        let req = PatchThreadRequest {
+            title: Some("   ".into()),
+            resolved: None,
+        };
+        assert_eq!(req.validate().unwrap_err(), "title must not be blank");
+    }
+
+    #[test]
+    fn patch_thread_title_over_500_chars_rejected() {
+        let req = PatchThreadRequest {
+            title: Some("a".repeat(501)),
+            resolved: None,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "title must be 500 characters or fewer"
+        );
+    }
+
+    #[test]
+    fn patch_thread_title_at_500_chars_accepted() {
+        let req = PatchThreadRequest {
+            title: Some("a".repeat(500)),
+            resolved: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_thread_title_uses_char_count_not_byte_len() {
+        // 250 emoji = 250 chars but 1000 bytes — must pass the 500-char limit.
+        let req = PatchThreadRequest {
+            title: Some("🌟".repeat(250)),
+            resolved: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_thread_both_fields_valid() {
+        let req = PatchThreadRequest {
+            title: Some("Updated".into()),
+            resolved: Some(true),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    // ── PatchChatMemberRequest::validate (plan 0227 / GAR-745) ──────────────
+
+    #[test]
+    fn patch_chat_member_empty_body_rejected() {
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: None,
+            role: None,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "at least one of 'muted', 'last_read_at', or 'role' must be provided"
+        );
+    }
+
+    #[test]
+    fn patch_chat_member_muted_only_valid() {
+        let req = PatchChatMemberRequest {
+            muted: Some(true),
+            last_read_at: None,
+            role: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_chat_member_unmute_valid() {
+        let req = PatchChatMemberRequest {
+            muted: Some(false),
+            last_read_at: None,
+            role: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_chat_member_valid_role_member() {
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: None,
+            role: Some("member".into()),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_chat_member_valid_role_moderator() {
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: None,
+            role: Some("moderator".into()),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_chat_member_invalid_role_owner_rejected() {
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: None,
+            role: Some("owner".into()),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: member, moderator"
+        );
+    }
+
+    #[test]
+    fn patch_chat_member_invalid_role_admin_rejected() {
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: None,
+            role: Some("admin".into()),
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "role must be one of: member, moderator"
+        );
+    }
+
+    #[test]
+    fn patch_chat_member_past_last_read_at_valid() {
+        let past = Utc::now() - chrono::Duration::hours(1);
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: Some(past),
+            role: None,
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn patch_chat_member_future_last_read_at_rejected() {
+        let future = Utc::now() + chrono::Duration::hours(1);
+        let req = PatchChatMemberRequest {
+            muted: None,
+            last_read_at: Some(future),
+            role: None,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "last_read_at must not be in the future"
+        );
+    }
+
+    #[test]
+    fn patch_chat_member_all_fields_valid() {
+        let past = Utc::now() - chrono::Duration::minutes(5);
+        let req = PatchChatMemberRequest {
+            muted: Some(false),
+            last_read_at: Some(past),
+            role: Some("moderator".into()),
+        };
+        assert!(req.validate().is_ok());
     }
 }
