@@ -163,12 +163,7 @@ impl ObjectStore for LocalFs {
                 written += n as u64;
             }
             file.flush().await?;
-            let digest = hasher.finalize();
-            let mut etag = String::with_capacity(64);
-            for b in digest.as_slice() {
-                use std::fmt::Write as _;
-                let _ = write!(etag, "{b:02x}");
-            }
+            let etag = hex::encode(hasher.finalize());
             Ok::<(u64, String), StorageError>((written, etag))
         }
         .await;

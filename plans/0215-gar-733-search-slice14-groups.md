@@ -59,5 +59,5 @@ only the caller's groups — no explicit `WHERE group_id IN (...)` needed.
 - [x] T2: Add 6 unit tests
 - [x] T3: Update ROADMAP.md + plans/README.md
 - [x] T4: Commit + push on `routine/202605281240-search-slice14-groups`
-- [ ] T5: Open PR, await CI green, merge
-- [ ] T6: Mark GAR-733 Done in Linear
+- [x] T5: Open PR, await CI green, merge — PR #561 squash-merged 2026-05-29 (`1bb2f10`)
+- [x] T6: Mark GAR-733 Done in Linear — auto-closed by merge
