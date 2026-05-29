@@ -17,10 +17,10 @@ serde = { workspace = true }
 tokio = { workspace = true }
 
 # OpenTelemetry (direct versions — not in workspace)
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
 opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics"] }
-opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace", "metrics"] }
 opentelemetry-semantic-conventions = "0.26"
 
 # Metrics
