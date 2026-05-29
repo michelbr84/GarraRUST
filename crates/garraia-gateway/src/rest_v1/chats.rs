@@ -1943,7 +1943,16 @@ pub async fn list_chat_threads(
     let items = rows
         .into_iter()
         .map(
-            |(id, chat_id, root_message_id, title, created_by, created_at, resolved_at, reply_count)| {
+            |(
+                id,
+                chat_id,
+                root_message_id,
+                title,
+                created_by,
+                created_at,
+                resolved_at,
+                reply_count,
+            )| {
                 ChatThreadSummary {
                     id,
                     chat_id,
@@ -2291,24 +2300,37 @@ mod tests {
         limit: Option<u32>,
         include_resolved: Option<bool>,
     ) -> ListChatThreadsQuery {
-        ListChatThreadsQuery { after, limit, include_resolved }
+        ListChatThreadsQuery {
+            after,
+            limit,
+            include_resolved,
+        }
     }
 
     #[test]
     fn list_threads_limit_default() {
         let q = thread_query(None, None, None);
-        let effective = q.limit.unwrap_or(DEFAULT_THREAD_LIMIT).clamp(1, MAX_THREAD_LIMIT);
+        let effective = q
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
         assert_eq!(effective, 20);
     }
 
     #[test]
     fn list_threads_limit_clamped() {
         let q_zero = thread_query(None, Some(0), None);
-        let effective_zero = q_zero.limit.unwrap_or(DEFAULT_THREAD_LIMIT).clamp(1, MAX_THREAD_LIMIT);
+        let effective_zero = q_zero
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
         assert_eq!(effective_zero, 1);
 
         let q_over = thread_query(None, Some(100), None);
-        let effective_over = q_over.limit.unwrap_or(DEFAULT_THREAD_LIMIT).clamp(1, MAX_THREAD_LIMIT);
+        let effective_over = q_over
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
         assert_eq!(effective_over, 50);
     }
 
@@ -2329,7 +2351,10 @@ mod tests {
     #[test]
     fn list_threads_limit_max_boundary() {
         let q = thread_query(None, Some(MAX_THREAD_LIMIT), None);
-        let effective = q.limit.unwrap_or(DEFAULT_THREAD_LIMIT).clamp(1, MAX_THREAD_LIMIT);
+        let effective = q
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
         assert_eq!(effective, MAX_THREAD_LIMIT);
     }
 }
