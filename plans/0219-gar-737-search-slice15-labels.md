@@ -60,5 +60,5 @@ results are strictly scoped to the caller's group.
 - [x] T3: Add 5 unit tests
 - [x] T4: Update ROADMAP.md + plans/README.md
 - [x] T5: Commit + push on `routine/202605290025-search-slice15-labels`
-- [ ] T6: Open PR, await CI green, merge
-- [ ] T7: Mark GAR-737 Done in Linear
+- [x] T6: Open PR, await CI green, merge — PR #564 merged 2026-05-29 (`e0d3e3e`)
+- [x] T7: Mark GAR-737 Done in Linear
