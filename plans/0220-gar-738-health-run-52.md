@@ -1,4 +1,4 @@
-# Plan 0219 — GAR-738: Health run 52 (2026-05-29 ~00:45 ET) — all surfaces clean, priority (i)
+# Plan 0220 — GAR-738: Health run 52 (2026-05-29 ~00:45 ET) — all surfaces clean, priority (i)
 
 ## Goal
 
@@ -51,8 +51,8 @@ at the start of this run.
 ## Bookkeeping
 
 - Plan 0218 (GAR-736, run 51) merged via PR #563 → squash-merged as `46eadc5`
-- Plan **0219** (this run, GAR-738) created
-- `plans/README.md` — row 0215 updated (GAR-733 routine PR merged `1bb2f10`), row 0218 → ✅ Merged (`46eadc5`), row 0219 added
+- Plan **0220** (this run, GAR-738) created
+- `plans/README.md` — row 0218 → ✅ Merged (`46eadc5`), row 0219 for GAR-737 already on main, row 0220 added
 - `docs/security/dependabot-status.md` — run 52 entry prepended
 - GAR-736 marked Done in Linear (already done by run 51)
 - GAR-738 created + In Progress → Done on merge
@@ -73,7 +73,7 @@ at the start of this run.
 - [x] CI on main confirmed green (20/20)
 - [x] All security surfaces scanned
 - [x] Priority ladder exhausted at (i)
-- [x] Plan 0219 committed
+- [x] Plan 0220 committed
 - [x] plans/README.md updated
 - [x] docs/security/dependabot-status.md updated
 - [x] GAR-738 In Progress → Done on merge
