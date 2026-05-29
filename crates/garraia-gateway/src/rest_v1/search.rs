@@ -1,10 +1,10 @@
 //! `GET /v1/search` — unified full-text search across messages and memory_items
-//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0208, 0213, 0214, 0215;
+//! (plans 0084–0086, 0179, 0185, 0192, 0193, 0195, 0199, 0200, 0208, 0213, 0214, 0215, 0219;
 //!  GAR-549, GAR-551, GAR-552, GAR-697, GAR-703, GAR-707, GAR-710, GAR-713, GAR-716, GAR-718,
-//!  GAR-721, GAR-726, GAR-730, GAR-733;
+//!  GAR-721, GAR-726, GAR-730, GAR-733, GAR-737;
 //!  epic GAR-WS-SEARCH / Fase 3.4).
 //!
-//! ## Scope (slices 1–14)
+//! ## Scope (slices 1–15)
 //!
 //! ```text
 //! GET /v1/search?q=<q>&scope_type=group&scope_id=<group_uuid>&types=messages,memory
@@ -66,6 +66,13 @@
 //! no explicit membership SQL predicate needed. `excerpt` = `name`; `kind` = group
 //! `type` column ('family' | 'team' | 'personal'); `sender_user_id` = `created_by`;
 //! `chat_id` = null. `group_id` = the matching group's own `id`.
+//!
+//! Slice 15 (plan 0219 / GAR-737) adds `types=labels` (group scope only):
+//! searches `task_labels.name` via runtime `to_tsvector('simple', name)`.
+//! Cross-tenant isolation via FORCE RLS (`task_labels_group_isolation`, migration 006)
+//! + explicit `AND group_id = $2` defense-in-depth. `excerpt` = `name`; `kind` =
+//!   color (`#RRGGBB`); `sender_user_id` = `created_by` (nullable, ON DELETE SET NULL);
+//!   `chat_id` = null. `group_id` = `caller_group_id`.
 //!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
@@ -165,6 +172,8 @@ pub enum SearchResultType {
     User,
     /// Group name match (slice 14 / GAR-733).
     Group,
+    /// Task label name match (slice 15 / GAR-737).
+    Label,
 }
 
 /// A single item in a search result list.
@@ -277,6 +286,8 @@ struct ValidatedSearch {
     include_users: bool,
     /// Slice 14 / GAR-733: search group names.
     include_groups: bool,
+    /// Slice 15 / GAR-737: search task label names.
+    include_labels: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -324,6 +335,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_threads = false;
     let mut include_users = false;
     let mut include_groups = false;
+    let mut include_labels = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
@@ -337,9 +349,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
             "threads" => include_threads = true,
             "users" => include_users = true,
             "groups" => include_groups = true,
+            "labels" => include_labels = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels"
                 )));
             }
         }
@@ -355,9 +368,10 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         && !include_threads
         && !include_users
         && !include_groups
+        && !include_labels
     {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups"
+            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels"
                 .into(),
         ));
     }
@@ -435,6 +449,13 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // Labels are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_labels && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=labels is only supported for scope_type=group".into(),
+        ));
+    }
+
     // author_id is only meaningful for message results; user scope never has messages.
     if params.author_id.is_some() && scope_type == ValidatedScopeType::User {
         return Err(RestError::BadRequest(
@@ -494,6 +515,7 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_threads,
         include_users,
         include_groups,
+        include_labels,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -1207,6 +1229,63 @@ async fn fetch_groups(
     Ok(rows)
 }
 
+/// Row returned by the task label name FTS query.
+#[derive(sqlx::FromRow)]
+struct LabelSearchRow {
+    id: Uuid,
+    score: f32,
+    name: String,
+    color: String,
+    created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Fetch label results by searching `task_labels.name` using runtime
+/// `to_tsvector('simple', name)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// Cross-tenant isolation: FORCE RLS on `task_labels` (migration 006) via
+/// `task_labels_group_isolation` policy — only labels with `group_id` matching
+/// `app.current_group_id` are visible. Explicit `AND tl.group_id = $5` is
+/// defense-in-depth.
+async fn fetch_labels(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    fetch_up_to: i64,
+) -> Result<Vec<LabelSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, LabelSearchRow>(
+        "SELECT tl.id,
+                ts_rank(
+                    to_tsvector('simple', tl.name),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                tl.name,
+                tl.color,
+                tl.created_by,
+                tl.created_at
+         FROM   task_labels tl
+         WHERE  to_tsvector('simple', tl.name) @@ websearch_to_tsquery('simple', $1)
+           AND  tl.group_id = $2
+           AND  ($3::timestamptz IS NULL OR tl.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR tl.created_at <= $4)
+         ORDER BY score DESC, tl.created_at DESC, tl.id DESC
+         LIMIT $5",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -1234,6 +1313,7 @@ async fn fetch_groups(
 /// | `types=chats` + `scope_type` ≠ `group`                       | 400    |
 /// | `types=task_lists` + `scope_type` ≠ `group`                  | 400    |
 /// | `types=threads` + `scope_type` ≠ `group`                     | 400    |
+/// | `types=labels` + `scope_type` ≠ `group`                      | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -1617,6 +1697,35 @@ pub async fn search(
                 scope_type: None,
                 scope_id: None,
                 kind: Some(r.kind),
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_labels {
+        // task_labels are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_labels(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::Label,
+                id: r.id,
+                score: r.score,
+                excerpt: r.name,
+                group_id: caller_group_id,
+                chat_id: None,
+                sender_user_id: r.created_by,
+                scope_type: None,
+                scope_id: None,
+                kind: Some(r.color),
                 created_at: r.created_at,
             });
         }
@@ -2586,5 +2695,58 @@ mod tests {
             ),
         );
         assert!(parse_and_validate(&params).is_err());
+    }
+
+    // ── Slice 15: types=labels ────────────────────────────────────────────────
+
+    #[test]
+    fn types_labels_group_scope_accepted() {
+        let params = make_params("bug", "group", Some("labels"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_labels);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+        assert!(!v.include_task_comments);
+        assert!(!v.include_folders);
+        assert!(!v.include_chats);
+        assert!(!v.include_task_lists);
+        assert!(!v.include_threads);
+        assert!(!v.include_users);
+        assert!(!v.include_groups);
+    }
+
+    #[test]
+    fn types_labels_user_scope_rejected() {
+        let params = make_params("bug", "user", Some("labels"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_labels_chat_scope_rejected() {
+        let params = make_params("bug", "chat", Some("labels"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_labels_and_tasks_group_scope_accepted() {
+        let params = make_params("bug", "group", Some("labels,tasks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_labels);
+        assert!(v.include_tasks);
+        assert!(!v.include_messages);
+        assert!(!v.include_groups);
+    }
+
+    #[test]
+    fn types_labels_in_supported_types_error_message() {
+        let params = make_params("bug", "group", Some("nonexistent_type"));
+        let err = parse_and_validate(&params).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("labels"),
+            "error message should list 'labels' as supported type"
+        );
     }
 }
