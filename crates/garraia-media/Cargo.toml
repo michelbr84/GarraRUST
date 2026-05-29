@@ -15,7 +15,7 @@ bytes = { workspace = true }
 reqwest = { workspace = true }
 
 # PDF processing
-lopdf = "0.40"
+lopdf = "0.34"
 
 # Image processing — AVIF feature-gated OFF intentionally (plan 0053 PR-5,
 # GAR-451) to drop the rav1e → ravif → bitstream-io → core2 (yanked)
