@@ -628,7 +628,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
   - [x] **Follow-up F-4** ([GAR-680](https://linear.app/chatgpt25/issue/GAR-680)): audit-log das subscriptions SSE (`chat.subscribed` no handler dentro da tx pré-commit + `chat.unsubscribed` via `tokio::spawn` no `Drop` do `ChatStreamGuard`); `subscriber_count` em metadata, PII-safe. Cobertura: 24 unit tests verdes (3 audit_workspace + 21 chats) + cenário S5 em `rest_v1_chats_sse.rs` (integration, CI). Merged 2026-05-21 via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) (`a972947`). ✅
 - [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
 - [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
-- [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
+- [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅ Done.
+- [x] `GET /v1/chats/{chat_id}/threads?after=<uuid>&limit=<n>&include_resolved=<bool>` — cursor-paginated list of threads in a chat, plan 0225 / [GAR-740](https://linear.app/chatgpt25/issue/GAR-740), 2026-05-29 (Florida).
 
 **Arquivos**
 
