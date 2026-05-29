@@ -2068,7 +2068,14 @@ pub async fn patch_thread(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     // Load the thread, verifying it belongs to a chat in the caller's group.
-    type ThreadRow = (Uuid, Uuid, Option<String>, Option<Uuid>, Option<DateTime<Utc>>, DateTime<Utc>);
+    type ThreadRow = (
+        Uuid,
+        Uuid,
+        Option<String>,
+        Option<Uuid>,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    );
     let row: Option<ThreadRow> = sqlx::query_as(
         "SELECT mt.id, mt.chat_id, mt.title, mt.created_by, mt.resolved_at, mt.created_at \
          FROM message_threads mt \
@@ -2084,26 +2091,31 @@ pub async fn patch_thread(
     let (_, _chat_id, current_title, created_by, _, _) = row.ok_or(RestError::NotFound)?;
 
     // Load root_message_id separately (not in the JOIN above for clarity).
-    let root_row: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT root_message_id FROM message_threads WHERE id = $1",
-    )
-    .bind(thread_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let root_row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT root_message_id FROM message_threads WHERE id = $1")
+            .bind(thread_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     let root_message_id = root_row.map(|(id,)| id).ok_or(RestError::NotFound)?;
 
     // Title update requires ChatsModerate if the caller is not the creator.
     if body.title.is_some() {
-        let is_own = created_by.map(|id| id == principal.user_id).unwrap_or(false);
+        let is_own = created_by
+            .map(|id| id == principal.user_id)
+            .unwrap_or(false);
         if !is_own && !can(&principal, Action::ChatsModerate) {
             return Err(RestError::Forbidden);
         }
     }
 
     // Build the SET clause dynamically; at least one field is guaranteed by validate().
-    let new_title: Option<String> = body.title.as_deref().map(|t| t.trim().to_owned()).or(current_title);
+    let new_title: Option<String> = body
+        .title
+        .as_deref()
+        .map(|t| t.trim().to_owned())
+        .or(current_title);
 
     let updated: ThreadRow = match body.resolved {
         Some(true) => sqlx::query_as(
@@ -2320,8 +2332,7 @@ pub async fn patch_chat_member(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    let (cur_role, joined_at, cur_muted, cur_last_read) =
-        member.ok_or(RestError::NotFound)?;
+    let (cur_role, joined_at, cur_muted, cur_last_read) = member.ok_or(RestError::NotFound)?;
 
     let new_role = body.role.as_deref().unwrap_or(&cur_role).to_owned();
     let new_muted = body.muted.unwrap_or(cur_muted);
