@@ -5,9 +5,17 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-05-26 (America/New_York)
+**Atualizado:** 2026-05-29 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-733 / plan 0215 — Search slice 14 (`types=groups` group name FTS):
+  - `SearchResultType::Group` variant; `include_groups: bool` in `ValidatedSearch`.
+  - `parse_and_validate`: recognizes `"groups"`, rejects non-user scope with 400.
+  - `GroupSearchRow` struct + `fetch_groups()` async (runtime `to_tsvector('simple', g.name)`).
+  - Handler block: `if validated.include_groups { ... }` mapping to `SearchResult`.
+  - 6 unit tests (scope guards + multi-type combos). No migration needed — FORCE RLS migration 018.
+  - PR #561 squash-merged 2026-05-29 (`1bb2f10`). GAR-733 Done in Linear.
 
 - GAR-705 / plan 0187 — Health run 30: all surfaces clean, priority (i). PR #508 squash-merged (`ef040ad`).
 
