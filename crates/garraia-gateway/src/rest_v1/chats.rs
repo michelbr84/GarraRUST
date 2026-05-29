@@ -1970,6 +1970,417 @@ pub async fn list_chat_threads(
     Ok(Json(ChatThreadsResponse { items, next_cursor }))
 }
 
+// ─── PATCH /v1/threads/{thread_id} (plan 0227 / GAR-745) ────────────────────
+
+/// Request body for `PATCH /v1/threads/{thread_id}`.
+/// At least one field must be present; all-`None` returns 400.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchThreadRequest {
+    /// New title for the thread. Trimmed; must be 1–500 chars if supplied.
+    pub title: Option<String>,
+    /// `true` → mark resolved (`resolved_at = NOW()`).
+    /// `false` → clear resolution (`resolved_at = NULL`).
+    pub resolved: Option<bool>,
+}
+
+impl PatchThreadRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.title.is_none() && self.resolved.is_none() {
+            return Err("at least one of 'title' or 'resolved' must be provided");
+        }
+        if let Some(ref t) = self.title {
+            let trimmed = t.trim();
+            if trimmed.is_empty() {
+                return Err("title must not be blank");
+            }
+            if trimmed.chars().count() > 500 {
+                return Err("title must be 500 characters or fewer");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Response body for `PATCH /v1/threads/{thread_id}`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ThreadDetailResponse {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub root_message_id: Uuid,
+    pub title: Option<String>,
+    pub created_by: Option<Uuid>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// `PATCH /v1/threads/{thread_id}` — update a thread's title and/or resolve state.
+///
+/// Any member may resolve/unresolve (`ChatsRead`). Updating the title of a
+/// thread created by someone else requires `ChatsModerate`.
+#[utoipa::path(
+    patch,
+    path = "/v1/threads/{thread_id}",
+    params(("thread_id" = Uuid, Path, description = "Thread UUID.")),
+    request_body = PatchThreadRequest,
+    responses(
+        (status = 200, description = "Thread updated.", body = ThreadDetailResponse),
+        (status = 400, description = "Validation failure.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks required permission.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Thread not found or in another group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_thread(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(thread_id): Path<Uuid>,
+    Json(body): Json<PatchThreadRequest>,
+) -> Result<Json<ThreadDetailResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Load the thread, verifying it belongs to a chat in the caller's group.
+    type ThreadRow = (Uuid, Uuid, Option<String>, Option<Uuid>, Option<DateTime<Utc>>, DateTime<Utc>);
+    let row: Option<ThreadRow> = sqlx::query_as(
+        "SELECT mt.id, mt.chat_id, mt.title, mt.created_by, mt.resolved_at, mt.created_at \
+         FROM message_threads mt \
+         JOIN chats c ON c.id = mt.chat_id \
+         WHERE mt.id = $1 AND c.group_id = $2",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (_, _chat_id, current_title, created_by, _, _) = row.ok_or(RestError::NotFound)?;
+
+    // Load root_message_id separately (not in the JOIN above for clarity).
+    let root_row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT root_message_id FROM message_threads WHERE id = $1",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let root_message_id = root_row.map(|(id,)| id).ok_or(RestError::NotFound)?;
+
+    // Title update requires ChatsModerate if the caller is not the creator.
+    if body.title.is_some() {
+        let is_own = created_by.map(|id| id == principal.user_id).unwrap_or(false);
+        if !is_own && !can(&principal, Action::ChatsModerate) {
+            return Err(RestError::Forbidden);
+        }
+    }
+
+    // Build the SET clause dynamically; at least one field is guaranteed by validate().
+    let new_title: Option<String> = body.title.as_deref().map(|t| t.trim().to_owned()).or(current_title);
+
+    let updated: ThreadRow = match body.resolved {
+        Some(true) => sqlx::query_as(
+            "UPDATE message_threads \
+             SET title = $2, resolved_at = NOW() \
+             WHERE id = $1 \
+             RETURNING id, chat_id, title, created_by, resolved_at, created_at",
+        )
+        .bind(thread_id)
+        .bind(&new_title)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        Some(false) => sqlx::query_as(
+            "UPDATE message_threads \
+             SET title = $2, resolved_at = NULL \
+             WHERE id = $1 \
+             RETURNING id, chat_id, title, created_by, resolved_at, created_at",
+        )
+        .bind(thread_id)
+        .bind(&new_title)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        None => sqlx::query_as(
+            "UPDATE message_threads \
+             SET title = $2 \
+             WHERE id = $1 \
+             RETURNING id, chat_id, title, created_by, resolved_at, created_at",
+        )
+        .bind(thread_id)
+        .bind(&new_title)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+    };
+
+    let (id, chat_id_ret, title_ret, created_by_ret, resolved_at_ret, created_at_ret) = updated;
+
+    let mut changed_fields: Vec<&str> = Vec::new();
+    if body.title.is_some() {
+        changed_fields.push("title");
+    }
+    if body.resolved.is_some() {
+        changed_fields.push("resolved");
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ThreadUpdated,
+        principal.user_id,
+        group_id,
+        "message_threads",
+        thread_id.to_string(),
+        json!({ "changed_fields": changed_fields }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(ThreadDetailResponse {
+        id,
+        chat_id: chat_id_ret,
+        root_message_id,
+        title: title_ret,
+        created_by: created_by_ret,
+        resolved_at: resolved_at_ret,
+        created_at: created_at_ret,
+    }))
+}
+
+// ─── PATCH /v1/chats/{chat_id}/members/{user_id} (plan 0227 / GAR-745) ──────
+
+/// Request body for `PATCH /v1/chats/{chat_id}/members/{user_id}`.
+/// At least one field must be present.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchChatMemberRequest {
+    /// Mute/unmute the chat for this member.
+    pub muted: Option<bool>,
+    /// Mark messages up to this timestamp as read. Must not be in the future.
+    pub last_read_at: Option<DateTime<Utc>>,
+    /// Change the member's chat-local role. Only `'member'` and `'moderator'`
+    /// are accepted; requires `MembersManage`.
+    pub role: Option<String>,
+}
+
+impl PatchChatMemberRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.muted.is_none() && self.last_read_at.is_none() && self.role.is_none() {
+            return Err("at least one of 'muted', 'last_read_at', or 'role' must be provided");
+        }
+        if let Some(ref r) = self.role {
+            match r.as_str() {
+                "member" | "moderator" => {}
+                _ => return Err("role must be one of: member, moderator"),
+            }
+        }
+        if let Some(lra) = self.last_read_at {
+            if lra > Utc::now() {
+                return Err("last_read_at must not be in the future");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Enriched response body for chat member operations — extends the basic
+/// `ChatMemberResponse` with muted state and last_read_at cursor.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatMemberDetailResponse {
+    pub user_id: Uuid,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+    pub muted: bool,
+    pub last_read_at: Option<DateTime<Utc>>,
+}
+
+/// `PATCH /v1/chats/{chat_id}/members/{user_id}` — update muted, last_read_at,
+/// or chat-local role for a chat member.
+///
+/// Any authenticated chat member may update their **own** `muted` and
+/// `last_read_at`. Updating another member's settings, or changing any
+/// member's `role`, requires `MembersManage`.
+#[utoipa::path(
+    patch,
+    path = "/v1/chats/{chat_id}/members/{user_id}",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+        ("user_id" = Uuid, Path, description = "Member user UUID."),
+    ),
+    request_body = PatchChatMemberRequest,
+    responses(
+        (status = 200, description = "Member updated.", body = ChatMemberDetailResponse),
+        (status = 400, description = "Validation failure.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks required permission.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found or member not found.", body = super::problem::ProblemDetails),
+        (status = 422, description = "last_read_at is in the future.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_chat_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((chat_id, target_user_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchChatMemberRequest>,
+) -> Result<Json<ChatMemberDetailResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    // Callers updating another member's muted/last_read_at need MembersManage.
+    let is_own = principal.user_id == target_user_id;
+    if !is_own && !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+    if body.role.is_some() && !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Verify the chat exists and belongs to the caller's group.
+    let chat_exists: Option<(bool,)> = sqlx::query_as(
+        "SELECT true FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Load the member row — 404 if not a member.
+    type MemberRow = (String, DateTime<Utc>, bool, Option<DateTime<Utc>>);
+    let member: Option<MemberRow> = sqlx::query_as(
+        "SELECT role, joined_at, muted, last_read_at \
+         FROM chat_members \
+         WHERE chat_id = $1 AND user_id = $2",
+    )
+    .bind(chat_id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (cur_role, joined_at, cur_muted, cur_last_read) =
+        member.ok_or(RestError::NotFound)?;
+
+    let new_role = body.role.as_deref().unwrap_or(&cur_role).to_owned();
+    let new_muted = body.muted.unwrap_or(cur_muted);
+    let new_last_read: Option<DateTime<Utc>> = if body.last_read_at.is_some() {
+        body.last_read_at
+    } else {
+        cur_last_read
+    };
+
+    sqlx::query(
+        "UPDATE chat_members \
+         SET role = $3, muted = $4, last_read_at = $5 \
+         WHERE chat_id = $1 AND user_id = $2",
+    )
+    .bind(chat_id)
+    .bind(target_user_id)
+    .bind(&new_role)
+    .bind(new_muted)
+    .bind(new_last_read)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let mut changed_fields: Vec<&str> = Vec::new();
+    if body.muted.is_some() {
+        changed_fields.push("muted");
+    }
+    if body.last_read_at.is_some() {
+        changed_fields.push("last_read_at");
+    }
+    if body.role.is_some() {
+        changed_fields.push("role");
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ChatMemberUpdated,
+        principal.user_id,
+        group_id,
+        "chat_members",
+        target_user_id.to_string(),
+        json!({ "changed_fields": changed_fields }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(ChatMemberDetailResponse {
+        user_id: target_user_id,
+        role: new_role,
+        joined_at,
+        muted: new_muted,
+        last_read_at: new_last_read,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
