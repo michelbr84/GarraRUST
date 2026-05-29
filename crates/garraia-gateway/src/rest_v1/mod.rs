@@ -354,6 +354,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0162 (GAR-670) — SSE stream slice.
                 .route("/v1/chats/{chat_id}/stream", get(chats::stream_chat))
+                // Plan 0221 (GAR-740) — chats slice 6: list threads in a chat.
+                .route("/v1/chats/{chat_id}/threads", get(chats::list_chat_threads))
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
                 .route(
@@ -583,6 +585,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0162 (GAR-670) — SSE stream, fail-soft 503.
                 .route("/v1/chats/{chat_id}/stream", get(unconfigured_handler))
+                // Plan 0221 (GAR-740) — chats slice 6: list threads, fail-soft 503.
+                .route("/v1/chats/{chat_id}/threads", get(unconfigured_handler))
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
                 // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
@@ -789,6 +793,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 // Plan 0162 (GAR-670) — SSE stream, no-auth stub.
                 .route("/v1/chats/{chat_id}/stream", get(unconfigured_handler))
+                // Plan 0221 (GAR-740) — chats slice 6: list threads, no-auth stub.
+                .route("/v1/chats/{chat_id}/threads", get(unconfigured_handler))
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.
                 .route(

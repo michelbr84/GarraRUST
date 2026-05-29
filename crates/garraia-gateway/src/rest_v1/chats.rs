@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use chrono::{DateTime, Utc};
@@ -44,7 +44,7 @@ use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_even
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::RestV1FullState;
@@ -57,6 +57,12 @@ const MAX_TOPIC_CHARS: usize = 4_000;
 /// Plan 0163 (GAR-679): maximum concurrent SSE connections per user.
 /// Above this, the handler returns 429 Too Many Requests.
 const MAX_SSE_PER_USER: usize = 5;
+
+/// Default page size for `GET /v1/chats/{chat_id}/threads` (plan 0221 / GAR-740).
+const DEFAULT_THREAD_LIMIT: u32 = 20;
+
+/// Maximum page size for `GET /v1/chats/{chat_id}/threads`.
+const MAX_THREAD_LIMIT: u32 = 50;
 
 /// Request body for `POST /v1/groups/{group_id}/chats`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1751,6 +1757,219 @@ async fn emit_chat_unsubscribed(
     Ok(())
 }
 
+// ─── GET /v1/chats/{chat_id}/threads (plan 0221 / GAR-740) ───────────────────
+
+/// Query parameters for `GET /v1/chats/{chat_id}/threads`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListChatThreadsQuery {
+    /// Keyset cursor — UUID of the last thread received. Omit for first page.
+    pub after: Option<Uuid>,
+    /// Page size. Default 20, max 50.
+    pub limit: Option<u32>,
+    /// When `true`, includes resolved threads. Default: `false` (only unresolved).
+    pub include_resolved: Option<bool>,
+}
+
+/// A single thread entry returned by `GET /v1/chats/{chat_id}/threads`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatThreadSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub root_message_id: Uuid,
+    pub title: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    /// Count of non-deleted replies (`messages.thread_id = id AND deleted_at IS NULL`).
+    pub reply_count: i64,
+}
+
+/// Response body for `GET /v1/chats/{chat_id}/threads`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChatThreadsResponse {
+    pub items: Vec<ChatThreadSummary>,
+    /// Pass as `?after=<uuid>` on the next request. `null` when no more pages.
+    pub next_cursor: Option<Uuid>,
+}
+
+/// `GET /v1/chats/{chat_id}/threads` — list threads in a chat.
+///
+/// Returns a cursor-paginated list of `message_threads` rows. Default returns
+/// only unresolved threads; set `include_resolved=true` to include resolved ones.
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status | Source         |
+/// |----------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                    | 401    | Principal ext. |
+/// | Non-member of group                    | 403    | Principal ext. |
+/// | `X-Group-Id` header missing            | 400    | this handler   |
+/// | Chat not found / not in caller's group | 404    | this handler   |
+/// | Happy path                             | 200    |                |
+#[utoipa::path(
+    get,
+    path = "/v1/chats/{chat_id}/threads",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+        ListChatThreadsQuery,
+    ),
+    responses(
+        (status = 200, description = "Paginated thread list.", body = ChatThreadsResponse),
+        (status = 400, description = "X-Group-Id header missing.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found or in another group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_chat_threads(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(chat_id): Path<Uuid>,
+    Query(params): Query<ListChatThreadsQuery>,
+) -> Result<Json<ChatThreadsResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let limit = i64::from(
+        params
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT),
+    );
+    let include_resolved = params.include_resolved.unwrap_or(false);
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Cross-tenant guard: 404 (not 403) to avoid leaking cross-tenant chat existence.
+    let chat_exists: Option<(bool,)> = sqlx::query_as(
+        "SELECT true FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    type ThreadListRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        Option<String>,
+        Uuid,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        i64,
+    );
+
+    let rows: Vec<ThreadListRow> = if let Some(after_id) = params.after {
+        sqlx::query_as(
+            "SELECT mt.id, mt.chat_id, mt.root_message_id, mt.title, mt.created_by,
+                    mt.created_at, mt.resolved_at,
+                    (SELECT COUNT(*) FROM messages m
+                     WHERE m.thread_id = mt.id AND m.deleted_at IS NULL)::bigint AS reply_count
+             FROM   message_threads mt
+             WHERE  mt.chat_id = $1
+               AND  ($2::bool IS TRUE OR mt.resolved_at IS NULL)
+               AND  (mt.created_at, mt.id) < (
+                        SELECT created_at, id FROM message_threads
+                        WHERE  id = $4 AND chat_id = $1
+                    )
+             ORDER BY mt.created_at DESC, mt.id DESC
+             LIMIT  $3",
+        )
+        .bind(chat_id)
+        .bind(include_resolved)
+        .bind(limit)
+        .bind(after_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "SELECT mt.id, mt.chat_id, mt.root_message_id, mt.title, mt.created_by,
+                    mt.created_at, mt.resolved_at,
+                    (SELECT COUNT(*) FROM messages m
+                     WHERE m.thread_id = mt.id AND m.deleted_at IS NULL)::bigint AS reply_count
+             FROM   message_threads mt
+             WHERE  mt.chat_id = $1
+               AND  ($2::bool IS TRUE OR mt.resolved_at IS NULL)
+             ORDER BY mt.created_at DESC, mt.id DESC
+             LIMIT  $3",
+        )
+        .bind(chat_id)
+        .bind(include_resolved)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let next_cursor = if rows.len() as i64 == limit {
+        rows.last().map(|(id, ..)| *id)
+    } else {
+        None
+    };
+
+    let items = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                chat_id,
+                root_message_id,
+                title,
+                created_by,
+                created_at,
+                resolved_at,
+                reply_count,
+            )| {
+                ChatThreadSummary {
+                    id,
+                    chat_id,
+                    root_message_id,
+                    title,
+                    created_by,
+                    created_at,
+                    resolved_at,
+                    reply_count,
+                }
+            },
+        )
+        .collect();
+
+    Ok(Json(ChatThreadsResponse { items, next_cursor }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2072,5 +2291,70 @@ mod tests {
         let simulated_row: Option<(Uuid,)> = None; // what DB returns for cross-tenant query
         let result = simulated_row.ok_or(RestError::NotFound);
         assert!(matches!(result, Err(RestError::NotFound)));
+    }
+
+    // ── GET /v1/chats/{chat_id}/threads (plan 0221 / GAR-740) ────────────────
+
+    fn thread_query(
+        after: Option<Uuid>,
+        limit: Option<u32>,
+        include_resolved: Option<bool>,
+    ) -> ListChatThreadsQuery {
+        ListChatThreadsQuery {
+            after,
+            limit,
+            include_resolved,
+        }
+    }
+
+    #[test]
+    fn list_threads_limit_default() {
+        let q = thread_query(None, None, None);
+        let effective = q
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
+        assert_eq!(effective, 20);
+    }
+
+    #[test]
+    fn list_threads_limit_clamped() {
+        let q_zero = thread_query(None, Some(0), None);
+        let effective_zero = q_zero
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
+        assert_eq!(effective_zero, 1);
+
+        let q_over = thread_query(None, Some(100), None);
+        let effective_over = q_over
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
+        assert_eq!(effective_over, 50);
+    }
+
+    #[test]
+    fn list_threads_include_resolved_default() {
+        let q = thread_query(None, None, None);
+        let resolved = q.include_resolved.unwrap_or(false);
+        assert!(!resolved, "default must exclude resolved threads");
+    }
+
+    #[test]
+    fn list_threads_include_resolved_true() {
+        let q = thread_query(None, None, Some(true));
+        let resolved = q.include_resolved.unwrap_or(false);
+        assert!(resolved, "explicit true must include resolved threads");
+    }
+
+    #[test]
+    fn list_threads_limit_max_boundary() {
+        let q = thread_query(None, Some(MAX_THREAD_LIMIT), None);
+        let effective = q
+            .limit
+            .unwrap_or(DEFAULT_THREAD_LIMIT)
+            .clamp(1, MAX_THREAD_LIMIT);
+        assert_eq!(effective, MAX_THREAD_LIMIT);
     }
 }
