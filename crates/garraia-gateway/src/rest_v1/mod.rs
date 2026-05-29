@@ -345,8 +345,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/chats/{chat_id}/members/{user_id}",
-                    delete(chats::remove_chat_member)
-                        .patch(chats::patch_chat_member),
+                    delete(chats::remove_chat_member).patch(chats::patch_chat_member),
                 )
                 // Plan 0055 (GAR-507) — messages slice 2.
                 .route(
