@@ -705,7 +705,9 @@ Novo crate: `garraia-storage`.
 
 - [x] Canais por grupo + DMs intra-grupo.
 - [x] Threads (entidade dedicada, não só `parent_id`) — plan 0227 / GAR-745 — `PATCH /v1/threads/{id}` + `PATCH /v1/chats/{id}/members/{uid}` mergeados via branch `routine/202605291819-chats-slice7-thread-member-patch`.
-- [x] Reações — `POST/DELETE/GET /v1/messages/{id}/reactions` — plan 0231 / GAR-747. Menções (`@user`, `@channel`) e typing indicators são slices futuros.
+- [x] Reações — `POST/DELETE/GET /v1/messages/{id}/reactions` — plan 0231 / GAR-747.
+- [x] Typing indicator — `POST /v1/chats/{chat_id}/typing` (ephemeral SSE broadcast, no DB write) — plan 0233 / GAR-752.
+- [ ] Menções (`@user`, `@channel`) — slice futuro.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. 🔄 In Progress.
 - [ ] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat.
 - [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.

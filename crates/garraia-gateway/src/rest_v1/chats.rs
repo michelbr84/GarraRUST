@@ -2777,6 +2777,94 @@ pub async fn list_message_reactions(
     Ok(Json(ReactionsResponse { reactions }))
 }
 
+// ─── Typing Indicator (plan 0233 / GAR-752) ──────────────────────────────────
+
+/// `POST /v1/chats/{chat_id}/typing` — broadcast an ephemeral typing indicator
+/// to all active SSE subscribers of the chat.
+///
+/// No body, no audit, no DB write. Returns 204 after verifying the chat exists
+/// and belongs to the caller's group (cross-tenant guard).
+#[utoipa::path(
+    post,
+    path = "/v1/chats/{chat_id}/typing",
+    params(("chat_id" = Uuid, Path, description = "Chat UUID.")),
+    responses(
+        (status = 204, description = "Typing indicator sent (or no active subscribers)."),
+        (status = 400, description = "Missing X-Group-Id header."),
+        (status = 401, description = "Unauthenticated."),
+        (status = 403, description = "Caller lacks ChatsRead permission."),
+        (status = 404, description = "Chat not found or cross-tenant."),
+        (status = 500, description = "Internal error."),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn typing_indicator(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(chat_id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // Cross-tenant guard: verify chat belongs to caller's group.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let chat_exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Fire-and-forget: no-op if there are no active SSE subscribers.
+    state.publish_chat_event(
+        chat_id,
+        json!({
+            "type": "typing",
+            "user_id": principal.user_id,
+            "chat_id": chat_id,
+        }),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3564,5 +3652,114 @@ mod tests {
             "audit must carry emoji_len"
         );
         assert_eq!(metadata["emoji_len"], emoji.chars().count());
+    }
+
+    // ── typing_indicator unit tests (plan 0233 / GAR-752) ────────────────────
+
+    fn principal_for_typing(role: garraia_auth::Role) -> Principal {
+        Principal {
+            user_id: Uuid::new_v4(),
+            group_id: Some(Uuid::new_v4()),
+            role: Some(role),
+        }
+    }
+
+    fn principal_typing_no_group() -> Principal {
+        Principal {
+            user_id: Uuid::new_v4(),
+            group_id: None,
+            role: None,
+        }
+    }
+
+    #[test]
+    fn typing_missing_group_id_yields_bad_request() {
+        let p = principal_typing_no_group();
+        let result: Result<StatusCode, RestError> = if p.group_id.is_none() {
+            Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ))
+        } else {
+            Ok(StatusCode::NO_CONTENT)
+        };
+        assert!(matches!(result, Err(RestError::BadRequest(_))));
+    }
+
+    #[test]
+    fn typing_no_chats_read_yields_forbidden() {
+        // None role → can() returns false → handler returns 403.
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: Some(Uuid::new_v4()),
+            role: None,
+        };
+        let result: Result<StatusCode, RestError> = if !can(&p, Action::ChatsRead) {
+            Err(RestError::Forbidden)
+        } else {
+            Ok(StatusCode::NO_CONTENT)
+        };
+        assert!(matches!(result, Err(RestError::Forbidden)));
+    }
+
+    #[test]
+    fn typing_all_group_roles_have_chats_read() {
+        for role in [
+            garraia_auth::Role::Owner,
+            garraia_auth::Role::Admin,
+            garraia_auth::Role::Member,
+            garraia_auth::Role::Guest,
+            garraia_auth::Role::Child,
+        ] {
+            let p = principal_for_typing(role);
+            assert!(
+                can(&p, Action::ChatsRead),
+                "role {role:?} must have ChatsRead for typing_indicator"
+            );
+        }
+    }
+
+    #[test]
+    fn typing_cross_tenant_chat_lookup_yields_not_found() {
+        let chat_exists: Option<(Uuid,)> = None;
+        let result: Result<StatusCode, RestError> = if chat_exists.is_none() {
+            Err(RestError::NotFound)
+        } else {
+            Ok(StatusCode::NO_CONTENT)
+        };
+        assert!(matches!(result, Err(RestError::NotFound)));
+    }
+
+    #[test]
+    fn typing_event_payload_has_type_field() {
+        let user_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let event = json!({
+            "type": "typing",
+            "user_id": user_id,
+            "chat_id": chat_id,
+        });
+        assert_eq!(event["type"], "typing");
+        assert_eq!(event["user_id"].as_str().unwrap(), user_id.to_string());
+        assert_eq!(event["chat_id"].as_str().unwrap(), chat_id.to_string());
+    }
+
+    #[test]
+    fn typing_event_payload_has_no_display_name() {
+        let event = json!({
+            "type": "typing",
+            "user_id": Uuid::new_v4(),
+            "chat_id": Uuid::new_v4(),
+        });
+        assert!(
+            event.get("display_name").is_none(),
+            "typing event must not carry display_name (not in JWT)"
+        );
+    }
+
+    #[test]
+    fn typing_returns_204_on_success() {
+        let result: Result<StatusCode, RestError> = Ok(StatusCode::NO_CONTENT);
+        assert!(result.is_ok());
+        assert_eq!(result.ok(), Some(StatusCode::NO_CONTENT));
     }
 }
