@@ -540,7 +540,7 @@ pub enum WorkspaceAuditAction {
 
     /// A user added an emoji reaction to a message via
     /// `POST /v1/messages/{message_id}/reactions`
-    /// (plan 0229 / GAR-747, Fase 3.4 chats slice 8).
+    /// (plan 0231 / GAR-747, Fase 3.4 chats slice 8).
     ///
     /// `resource_type = "message_reactions"`, `resource_id = "{message_id}"`.
     /// Metadata: `{ emoji_len: N }` — length of the emoji string only (PII-safe;
@@ -550,7 +550,7 @@ pub enum WorkspaceAuditAction {
 
     /// A user removed their emoji reaction from a message via
     /// `DELETE /v1/messages/{message_id}/reactions/{emoji}`
-    /// (plan 0229 / GAR-747, Fase 3.4 chats slice 8).
+    /// (plan 0231 / GAR-747, Fase 3.4 chats slice 8).
     ///
     /// Emitted only when a row was actually deleted (idempotent DELETE emits
     /// no event if the reaction was already absent).

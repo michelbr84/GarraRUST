@@ -2392,7 +2392,7 @@ pub async fn patch_chat_member(
     }))
 }
 
-// ─── Message Reactions (plan 0229 / GAR-747) ─────────────────────────────────
+// ─── Message Reactions (plan 0231 / GAR-747) ─────────────────────────────────
 
 /// Request body for `POST /v1/messages/{message_id}/reactions`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -3420,7 +3420,7 @@ mod tests {
         assert!(reaction_req("👍🏽").validate().is_ok());
     }
 
-    // ── Auth guard logic tests (plan 0229 / GAR-747) ─────────────────────────
+    // ── Auth guard logic tests (plan 0231 / GAR-747) ─────────────────────────
 
     #[test]
     fn add_reaction_missing_group_id_yields_forbidden() {

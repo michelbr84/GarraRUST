@@ -1,4 +1,4 @@
-# Plan 0229 — GAR-747: Chats Slice 8 — Message Reactions
+# Plan 0231 — GAR-747: Chats Slice 8 — Message Reactions
 
 > **For agentic workers:** Use `superpowers:executing-plans` to implement task-by-task.
 
