@@ -537,6 +537,26 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "message_attachments"`, `resource_id = "{message_id}"`.
     /// Metadata: `{ message_id, file_id }` — PII-safe.
     MessageFileDetached,
+
+    /// A user added an emoji reaction to a message via
+    /// `POST /v1/messages/{message_id}/reactions`
+    /// (plan 0231 / GAR-747, Fase 3.4 chats slice 8).
+    ///
+    /// `resource_type = "message_reactions"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ emoji_len: N }` — length of the emoji string only (PII-safe;
+    /// the emoji itself is not a secret but we avoid storing user preferences in
+    /// the audit log for consistency with the redaction invariant).
+    MessageReactionAdded,
+
+    /// A user removed their emoji reaction from a message via
+    /// `DELETE /v1/messages/{message_id}/reactions/{emoji}`
+    /// (plan 0231 / GAR-747, Fase 3.4 chats slice 8).
+    ///
+    /// Emitted only when a row was actually deleted (idempotent DELETE emits
+    /// no event if the reaction was already absent).
+    /// `resource_type = "message_reactions"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ emoji_len: N }` — PII-safe.
+    MessageReactionRemoved,
 }
 
 impl WorkspaceAuditAction {
@@ -596,6 +616,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskFileDetached => "task.file.detached",
             WorkspaceAuditAction::MessageFileAttached => "message.file.attached",
             WorkspaceAuditAction::MessageFileDetached => "message.file.detached",
+            WorkspaceAuditAction::MessageReactionAdded => "message.reaction.added",
+            WorkspaceAuditAction::MessageReactionRemoved => "message.reaction.removed",
         }
     }
 }
@@ -833,6 +855,14 @@ mod tests {
             WorkspaceAuditAction::MessageFileDetached.as_str(),
             "message.file.detached"
         );
+        assert_eq!(
+            WorkspaceAuditAction::MessageReactionAdded.as_str(),
+            "message.reaction.added"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::MessageReactionRemoved.as_str(),
+            "message.reaction.removed"
+        );
     }
 
     #[test]
@@ -888,6 +918,8 @@ mod tests {
             WorkspaceAuditAction::TaskFileDetached.as_str(),
             WorkspaceAuditAction::MessageFileAttached.as_str(),
             WorkspaceAuditAction::MessageFileDetached.as_str(),
+            WorkspaceAuditAction::MessageReactionAdded.as_str(),
+            WorkspaceAuditAction::MessageReactionRemoved.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

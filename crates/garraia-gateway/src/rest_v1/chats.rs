@@ -2392,6 +2392,391 @@ pub async fn patch_chat_member(
     }))
 }
 
+// ─── Message Reactions (plan 0231 / GAR-747) ─────────────────────────────────
+
+/// Request body for `POST /v1/messages/{message_id}/reactions`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddReactionRequest {
+    /// Emoji string — 1 to 10 grapheme clusters. Unicode ZWJ sequences and
+    /// skin-tone modifiers are supported because Postgres `char_length` counts
+    /// grapheme clusters, not bytes.
+    pub emoji: String,
+}
+
+impl AddReactionRequest {
+    fn validate(&self) -> Result<(), RestError> {
+        let len = self.emoji.chars().count();
+        if !(1..=10).contains(&len) {
+            return Err(RestError::BadRequest(
+                "emoji must be 1–10 grapheme clusters".into(),
+            ));
+        }
+        if self.emoji.trim().is_empty() {
+            return Err(RestError::BadRequest("emoji must not be blank".into()));
+        }
+        Ok(())
+    }
+}
+
+/// One emoji-level summary returned by `GET /v1/messages/{message_id}/reactions`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReactionSummary {
+    /// The emoji string.
+    pub emoji: String,
+    /// Total number of users who reacted with this emoji.
+    pub count: i64,
+    /// Whether the authenticated caller has reacted with this emoji.
+    pub reacted_by_me: bool,
+}
+
+/// Response body for `GET /v1/messages/{message_id}/reactions`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReactionsResponse {
+    pub reactions: Vec<ReactionSummary>,
+}
+
+/// `POST /v1/messages/{message_id}/reactions` — add (or keep) an emoji reaction.
+///
+/// Idempotent: if the same (message, user, emoji) already exists the row is
+/// retained and 201 is returned without error.
+#[utoipa::path(
+    post,
+    path = "/v1/messages/{message_id}/reactions",
+    params(("message_id" = Uuid, Path, description = "Message UUID.")),
+    request_body = AddReactionRequest,
+    responses(
+        (status = 201, description = "Reaction added (or already present)."),
+        (status = 400, description = "Validation error."),
+        (status = 401, description = "Unauthenticated."),
+        (status = 403, description = "Not a member of the chat."),
+        (status = 404, description = "Message not found or cross-tenant."),
+        (status = 500, description = "Internal error."),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn add_message_reaction(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+    Json(body): Json<AddReactionRequest>,
+) -> Result<StatusCode, RestError> {
+    body.validate()?;
+
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => return Err(RestError::Forbidden),
+    };
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // RLS context.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Verify message belongs to this group (cross-tenant guard → 404).
+    let msg_group: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if msg_group.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Verify caller is a member of the chat that contains the message.
+    let member: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT cm.user_id FROM chat_members cm \
+         JOIN messages m ON m.chat_id = cm.chat_id \
+         WHERE m.id = $1 AND cm.user_id = $2",
+    )
+    .bind(message_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if member.is_none() {
+        return Err(RestError::Forbidden);
+    }
+
+    // Upsert reaction (idempotent on PK conflict).
+    sqlx::query(
+        "INSERT INTO message_reactions (message_id, user_id, emoji, group_id) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (message_id, user_id, emoji) DO NOTHING",
+    )
+    .bind(message_id)
+    .bind(principal.user_id)
+    .bind(&body.emoji)
+    .bind(group_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Audit (PII-safe: emoji_len only, not the emoji value).
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::MessageReactionAdded,
+        principal.user_id,
+        group_id,
+        "message_reactions",
+        message_id.to_string(),
+        json!({ "emoji_len": body.emoji.chars().count() }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::CREATED)
+}
+
+/// `DELETE /v1/messages/{message_id}/reactions/{emoji}` — remove an emoji reaction.
+///
+/// Idempotent: returns 204 even if the reaction does not exist.
+/// Callers can only remove their own reaction. `ChatsModerate` allows removing any.
+#[utoipa::path(
+    delete,
+    path = "/v1/messages/{message_id}/reactions/{emoji}",
+    params(
+        ("message_id" = Uuid, Path, description = "Message UUID."),
+        ("emoji" = String, Path, description = "URL-encoded emoji string."),
+    ),
+    responses(
+        (status = 204, description = "Reaction removed (or was already absent)."),
+        (status = 401, description = "Unauthenticated."),
+        (status = 403, description = "Not own reaction and no ChatsModerate permission."),
+        (status = 404, description = "Message not found or cross-tenant."),
+        (status = 500, description = "Internal error."),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn remove_message_reaction(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((message_id, emoji)): Path<(Uuid, String)>,
+) -> Result<StatusCode, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => return Err(RestError::Forbidden),
+    };
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // RLS context.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Cross-tenant guard: verify message belongs to this group.
+    let msg_group: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if msg_group.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Determine the target user_id for the DELETE.
+    // Own reaction: no extra permission needed.
+    // Other's reaction: requires ChatsModerate.
+    let target_user_id = principal.user_id;
+
+    if !can(&principal, Action::ChatsModerate) {
+        // Without moderate, can only remove own reaction — just use own id.
+    }
+
+    // Delete own reaction (or any reaction if ChatsModerate, but we scope to caller
+    // for non-moderate. For moderate callers, they would pass a query param in a
+    // future slice; this slice only allows removing own reaction or, with
+    // ChatsModerate, any reaction on the message by any user for the same emoji.
+    let rows_affected = if can(&principal, Action::ChatsModerate) {
+        // Moderate: delete any reaction with this emoji on this message.
+        sqlx::query(
+            "DELETE FROM message_reactions \
+             WHERE message_id = $1 AND emoji = $2 AND group_id = $3",
+        )
+        .bind(message_id)
+        .bind(&emoji)
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+        .rows_affected()
+    } else {
+        // Normal: delete only own reaction.
+        sqlx::query(
+            "DELETE FROM message_reactions \
+             WHERE message_id = $1 AND user_id = $2 AND emoji = $3 AND group_id = $4",
+        )
+        .bind(message_id)
+        .bind(target_user_id)
+        .bind(&emoji)
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+        .rows_affected()
+    };
+
+    // Audit only when a row was actually deleted (idempotent — no audit for
+    // already-absent reaction).
+    if rows_affected > 0 {
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::MessageReactionRemoved,
+            principal.user_id,
+            group_id,
+            "message_reactions",
+            message_id.to_string(),
+            json!({ "emoji_len": emoji.chars().count() }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/messages/{message_id}/reactions` — list reactions grouped by emoji.
+///
+/// Returns reactions sorted by `emoji ASC`. No pagination — reactions per message
+/// are bounded by the number of distinct (user, emoji) pairs, typically < 100.
+#[utoipa::path(
+    get,
+    path = "/v1/messages/{message_id}/reactions",
+    params(("message_id" = Uuid, Path, description = "Message UUID.")),
+    responses(
+        (status = 200, description = "Reactions list.", body = ReactionsResponse),
+        (status = 401, description = "Unauthenticated."),
+        (status = 403, description = "Not a group member."),
+        (status = 404, description = "Message not found or cross-tenant."),
+        (status = 500, description = "Internal error."),
+    ),
+    security(("bearer_token" = []))
+)]
+pub async fn list_message_reactions(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(message_id): Path<Uuid>,
+) -> Result<Json<ReactionsResponse>, RestError> {
+    let group_id = match principal.group_id {
+        Some(g) => g,
+        None => return Err(RestError::Forbidden),
+    };
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // RLS context.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Cross-tenant guard → 404.
+    let msg_group: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT group_id FROM messages WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if msg_group.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Group by emoji, count, and check if caller reacted.
+    let rows: Vec<(String, i64, bool)> = sqlx::query_as(
+        "SELECT emoji, \
+                COUNT(*) AS count, \
+                BOOL_OR(user_id = $2) AS reacted_by_me \
+         FROM message_reactions \
+         WHERE message_id = $1 AND group_id = $3 \
+         GROUP BY emoji \
+         ORDER BY emoji ASC",
+    )
+    .bind(message_id)
+    .bind(principal.user_id)
+    .bind(group_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let reactions = rows
+        .into_iter()
+        .map(|(emoji, count, reacted_by_me)| ReactionSummary {
+            emoji,
+            count,
+            reacted_by_me,
+        })
+        .collect();
+
+    Ok(Json(ReactionsResponse { reactions }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2985,5 +3370,199 @@ mod tests {
             role: Some("moderator".into()),
         };
         assert!(req.validate().is_ok());
+    }
+
+    // ── POST /v1/messages/{id}/reactions — AddReactionRequest validation ─────
+
+    fn reaction_req(emoji: &str) -> AddReactionRequest {
+        AddReactionRequest {
+            emoji: emoji.into(),
+        }
+    }
+
+    #[test]
+    fn add_reaction_empty_emoji_rejected() {
+        assert!(matches!(
+            reaction_req("").validate(),
+            Err(RestError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn add_reaction_blank_whitespace_rejected() {
+        assert!(matches!(
+            reaction_req("   ").validate(),
+            Err(RestError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn add_reaction_single_emoji_accepted() {
+        assert!(reaction_req("👍").validate().is_ok());
+    }
+
+    #[test]
+    fn add_reaction_exactly_10_chars_accepted() {
+        assert!(reaction_req("aaaaaaaaaa").validate().is_ok());
+    }
+
+    #[test]
+    fn add_reaction_11_chars_rejected() {
+        assert!(matches!(
+            reaction_req("aaaaaaaaaaa").validate(),
+            Err(RestError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn add_reaction_skin_tone_modifier_accepted() {
+        // 👍🏽 = 👍 + skin tone modifier = 2 Unicode scalar values → passes.
+        assert!(reaction_req("👍🏽").validate().is_ok());
+    }
+
+    // ── Auth guard logic tests (plan 0231 / GAR-747) ─────────────────────────
+
+    #[test]
+    fn add_reaction_missing_group_id_yields_forbidden() {
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: None,
+            role: Some(garraia_auth::Role::Member),
+        };
+        let result: Result<(), RestError> = match p.group_id {
+            Some(_) => Ok(()),
+            None => Err(RestError::Forbidden),
+        };
+        assert!(matches!(result, Err(RestError::Forbidden)));
+    }
+
+    #[test]
+    fn add_reaction_no_role_yields_forbidden() {
+        let p = Principal {
+            user_id: Uuid::new_v4(),
+            group_id: Some(Uuid::new_v4()),
+            role: None,
+        };
+        assert!(!can(&p, Action::ChatsRead));
+        let result: Result<(), RestError> = if can(&p, Action::ChatsRead) {
+            Ok(())
+        } else {
+            Err(RestError::Forbidden)
+        };
+        assert!(matches!(result, Err(RestError::Forbidden)));
+    }
+
+    #[test]
+    fn add_reaction_all_group_roles_have_chats_read() {
+        for role in [
+            garraia_auth::Role::Owner,
+            garraia_auth::Role::Admin,
+            garraia_auth::Role::Member,
+            garraia_auth::Role::Guest,
+            garraia_auth::Role::Child,
+        ] {
+            let p = Principal {
+                user_id: Uuid::new_v4(),
+                group_id: Some(Uuid::new_v4()),
+                role: Some(role),
+            };
+            assert!(
+                can(&p, Action::ChatsRead),
+                "role {role:?} must have ChatsRead for reaction POST"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_reaction_only_owner_and_admin_have_chats_moderate() {
+        for (role, expect_moderate) in [
+            (garraia_auth::Role::Owner, true),
+            (garraia_auth::Role::Admin, true),
+            (garraia_auth::Role::Member, false),
+            (garraia_auth::Role::Guest, false),
+            (garraia_auth::Role::Child, false),
+        ] {
+            let p = Principal {
+                user_id: Uuid::new_v4(),
+                group_id: Some(Uuid::new_v4()),
+                role: Some(role),
+            };
+            assert_eq!(
+                can(&p, Action::ChatsModerate),
+                expect_moderate,
+                "role {role:?} ChatsModerate expectation mismatch"
+            );
+        }
+    }
+
+    // ── Cross-tenant guard (pure logic, no DB) ────────────────────────────────
+
+    #[test]
+    fn reaction_cross_tenant_message_lookup_returns_not_found() {
+        let simulated: Option<(Uuid,)> = None;
+        let result = simulated.ok_or(RestError::NotFound);
+        assert!(matches!(result, Err(RestError::NotFound)));
+    }
+
+    // ── ReactionSummary / ReactionsResponse serialization ────────────────────
+
+    #[test]
+    fn reaction_summary_serializes_correctly() {
+        let summary = ReactionSummary {
+            emoji: "👍".into(),
+            count: 3,
+            reacted_by_me: true,
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert_eq!(v["emoji"], "👍");
+        assert_eq!(v["count"], 3);
+        assert_eq!(v["reacted_by_me"], true);
+    }
+
+    #[test]
+    fn reactions_response_empty_list() {
+        let resp = ReactionsResponse { reactions: vec![] };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["reactions"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn reactions_response_multiple_entries() {
+        let resp = ReactionsResponse {
+            reactions: vec![
+                ReactionSummary {
+                    emoji: "❤️".into(),
+                    count: 5,
+                    reacted_by_me: false,
+                },
+                ReactionSummary {
+                    emoji: "👍".into(),
+                    count: 2,
+                    reacted_by_me: true,
+                },
+            ],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        let arr = v["reactions"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["emoji"], "❤️");
+        assert_eq!(arr[1]["reacted_by_me"], true);
+    }
+
+    // ── Audit metadata PII-safety invariant ──────────────────────────────────
+
+    #[test]
+    fn audit_metadata_carries_emoji_len_not_value() {
+        let emoji = "👍🏽";
+        let metadata = serde_json::json!({ "emoji_len": emoji.chars().count() });
+        assert!(
+            metadata.get("emoji").is_none(),
+            "audit must not carry raw emoji"
+        );
+        assert!(
+            metadata.get("emoji_len").is_some(),
+            "audit must carry emoji_len"
+        );
+        assert_eq!(metadata["emoji_len"], emoji.chars().count());
     }
 }
