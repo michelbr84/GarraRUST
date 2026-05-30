@@ -391,10 +391,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(chats::remove_message_reaction),
                 )
                 // Plan 0233 (GAR-752) — typing indicator slice 9.
-                .route(
-                    "/v1/chats/{chat_id}/typing",
-                    post(chats::typing_indicator),
-                )
+                .route("/v1/chats/{chat_id}/typing", post(chats::typing_indicator))
                 // Plan 0062 (GAR-514) — memory API slice 1.
                 .route(
                     "/v1/memory",
@@ -638,10 +635,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 // Plan 0233 (GAR-752) — typing indicator, fail-soft 503.
-                .route(
-                    "/v1/chats/{chat_id}/typing",
-                    post(unconfigured_handler),
-                )
+                .route("/v1/chats/{chat_id}/typing", post(unconfigured_handler))
                 // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
                 .route(
                     "/v1/memory",
@@ -862,10 +856,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(unconfigured_handler),
                 )
                 // Plan 0233 (GAR-752) — typing indicator, no-auth stub.
-                .route(
-                    "/v1/chats/{chat_id}/typing",
-                    post(unconfigured_handler),
-                )
+                .route("/v1/chats/{chat_id}/typing", post(unconfigured_handler))
                 // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
                 .route(
                     "/v1/memory",
