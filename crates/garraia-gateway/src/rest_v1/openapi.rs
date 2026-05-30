@@ -13,7 +13,10 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
-use super::chats::{ChatListResponse, ChatResponse, ChatSummary, CreateChatRequest};
+use super::chats::{
+    ChatListResponse, ChatMemberDetailResponse, ChatResponse, ChatSummary, CreateChatRequest,
+    PatchChatMemberRequest, PatchThreadRequest, ThreadDetailResponse,
+};
 use super::files::{
     CreateFolderRequest, FileCreatedResponse, FileListResponse, FileSummary,
     FileVersionListResponse, FileVersionResponse, FileVersionSummary, FolderListResponse,
@@ -104,6 +107,8 @@ impl Modify for SecurityAddon {
         super::uploads::options_uploads,
         super::chats::create_chat,
         super::chats::list_chats,
+        super::chats::patch_thread,
+        super::chats::patch_chat_member,
         super::messages::send_message,
         super::messages::list_messages,
         super::messages::create_thread,
@@ -178,6 +183,10 @@ impl Modify for SecurityAddon {
         ChatResponse,
         ChatSummary,
         ChatListResponse,
+        PatchThreadRequest,
+        ThreadDetailResponse,
+        PatchChatMemberRequest,
+        ChatMemberDetailResponse,
         SendMessageRequest,
         MessageResponse,
         MessageSummary,
