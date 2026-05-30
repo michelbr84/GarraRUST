@@ -1,6 +1,33 @@
 # Dependabot Status
 
-> Last updated: **2026-05-29 run 59** (health routine — all surfaces clean, PR #576 GAR-746 run 58 bookkeeping squash-merged as `3dbe48c`, 5 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-748. PR #575 routine/ noted (roadmap territory). Previous: run 58 all surfaces clean, `3dbe48c`, priority (i) (GAR-746)).
+> Last updated: **2026-05-30 run 60** (health routine — all surfaces clean, PR #578 closed superseded, 5 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-749. PR #580 routine/ noted (roadmap territory). Previous: run 59 all surfaces clean, `358b3d4`, priority (i) (GAR-748)).
+> Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
+> rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-30 run 60 (~00:46 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-30 (~00:46 ET / 04:46 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open health/ PRs resolved this run:** PR #578 (`docs/plan-0227-bookkeeping`) — closed as superseded. Plan 0227 status already reflected in main via PR #579 (`358b3d4`).
+
+**CI on main (`358b3d4`):** All 20 checks confirmed green (via PR #579 check runs).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on `358b3d4`, Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on `358b3d4` |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 5 open, none security | #513 (patch-and-minor w/ pgvector MSRV blocker), #515/#519/#522 (OTel major), #577 (benches/PoC) |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities, 19 unmaintained (all deny.toml, unchanged) |
+| cargo-deny | ✅ pass (CI) | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on `358b3d4` |
+| CI on main (`358b3d4`) | ✅ green | 20/20 checks confirmed |
+
+**No security fix applied this run.** Bookkeeping only: plan 0230 (GAR-749), plans README row 0229 → ✅ Merged + row 0230 added, dependabot-status run 60 note. Linear: GAR-749. Next security backlog: GAR-711 OpenTelemetry 0.26→0.32 Backlog; rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
+
+> Last updated (previous): **2026-05-29 run 59** (health routine — all surfaces clean, PR #576 GAR-746 run 58 bookkeeping squash-merged as `3dbe48c`, 5 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-748. PR #575 routine/ noted (roadmap territory). Previous: run 58 all surfaces clean, `3dbe48c`, priority (i) (GAR-746)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
 
