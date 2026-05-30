@@ -3375,7 +3375,9 @@ mod tests {
     // ── POST /v1/messages/{id}/reactions — AddReactionRequest validation ─────
 
     fn reaction_req(emoji: &str) -> AddReactionRequest {
-        AddReactionRequest { emoji: emoji.into() }
+        AddReactionRequest {
+            emoji: emoji.into(),
+        }
     }
 
     #[test]
@@ -3528,8 +3530,16 @@ mod tests {
     fn reactions_response_multiple_entries() {
         let resp = ReactionsResponse {
             reactions: vec![
-                ReactionSummary { emoji: "❤️".into(), count: 5, reacted_by_me: false },
-                ReactionSummary { emoji: "👍".into(), count: 2, reacted_by_me: true },
+                ReactionSummary {
+                    emoji: "❤️".into(),
+                    count: 5,
+                    reacted_by_me: false,
+                },
+                ReactionSummary {
+                    emoji: "👍".into(),
+                    count: 2,
+                    reacted_by_me: true,
+                },
             ],
         };
         let v = serde_json::to_value(&resp).unwrap();
@@ -3545,8 +3555,14 @@ mod tests {
     fn audit_metadata_carries_emoji_len_not_value() {
         let emoji = "👍🏽";
         let metadata = serde_json::json!({ "emoji_len": emoji.chars().count() });
-        assert!(metadata.get("emoji").is_none(), "audit must not carry raw emoji");
-        assert!(metadata.get("emoji_len").is_some(), "audit must carry emoji_len");
+        assert!(
+            metadata.get("emoji").is_none(),
+            "audit must not carry raw emoji"
+        );
+        assert!(
+            metadata.get("emoji_len").is_some(),
+            "audit must carry emoji_len"
+        );
         assert_eq!(metadata["emoji_len"], emoji.chars().count());
     }
 }
