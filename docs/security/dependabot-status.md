@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-05-30 run 62** (health routine — all surfaces clean, run 61 (GAR-750) filed bare Linear note only (no plan/PR), 5 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-751. Previous: run 60 all surfaces clean, `4986c1f`, priority (i) (GAR-749); run 61 all surfaces clean, bare Linear note, priority (i) (GAR-750)).
+> Last updated: **2026-05-30 run 63** (health routine — all surfaces clean, 5 open Dependabot PRs (none security-labeled), 3 upstream-blocked alerts unchanged, priority (i). GAR-753. Previous: run 62 all surfaces clean, `593f029`, priority (i) (GAR-751); run 61 all surfaces clean, bare Linear note, priority (i) (GAR-750)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-30 run 63 (~08:49 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-30 (~08:49 ET / 12:49 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**Open health/ PRs resolved this run:** None (run 62 bookkeeping `593f029` already on main via PR #583).
+
+**CI on main (`0c8bd45`):** All 20 checks confirmed green (via PR #584 check runs).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI pass on `0c8bd45`, Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on `0c8bd45` |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 5 open, none security | #513 (patch-and-minor), #515 (OTel SDK 9/20 CI failing GAR-711), #519/#522 (OTel major, tied to #515), #577 (benches/PoC) |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities, 19 unmaintained (all deny.toml, unchanged) |
+| cargo-deny | ✅ pass (CI) | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on `0c8bd45` (PR #584) |
+| CI on main (`0c8bd45`) | ✅ green | 20/20 checks confirmed |
+
+**No security fix applied this run.** Bookkeeping only: plan 0233 (GAR-753), plans README row 0233 added. Linear: GAR-753. Next security backlog: GAR-711 OpenTelemetry 0.26→0.32 Backlog (unblocks PRs #515/#519/#522); rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-05-30 run 62 (~08:46 ET) — all surfaces clean, priority (i)
 
