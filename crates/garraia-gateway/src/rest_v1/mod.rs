@@ -381,6 +381,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/attachments/{file_id}",
                     delete(messages::delete_message_attachment),
                 )
+                // Plan 0229 (GAR-747) — message reactions slice 8.
+                .route(
+                    "/v1/messages/{message_id}/reactions",
+                    post(chats::add_message_reaction).get(chats::list_message_reactions),
+                )
+                .route(
+                    "/v1/messages/{message_id}/reactions/{emoji}",
+                    delete(chats::remove_message_reaction),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1.
                 .route(
                     "/v1/memory",
@@ -614,6 +623,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/messages/{message_id}/attachments/{file_id}",
                     delete(unconfigured_handler),
                 )
+                // Plan 0229 (GAR-747) — message reactions, fail-soft 503.
+                .route(
+                    "/v1/messages/{message_id}/reactions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/messages/{message_id}/reactions/{emoji}",
+                    delete(unconfigured_handler),
+                )
                 // Plan 0062 (GAR-514) — memory API slice 1, fail-soft 503.
                 .route(
                     "/v1/memory",
@@ -822,6 +840,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/messages/{message_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
+                )
+                // Plan 0229 (GAR-747) — message reactions, no-auth stub.
+                .route(
+                    "/v1/messages/{message_id}/reactions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/messages/{message_id}/reactions/{emoji}",
                     delete(unconfigured_handler),
                 )
                 // Plan 0062 (GAR-514) — memory API slice 1, no-auth stub.
