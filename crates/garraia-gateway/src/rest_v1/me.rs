@@ -713,7 +713,16 @@ pub async fn list_my_chats(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     // Columns: chat_id, group_id, name, type, role, joined_at, muted, last_read_at
-    type ChatRow = (Uuid, Uuid, String, String, String, DateTime<Utc>, bool, Option<DateTime<Utc>>);
+    type ChatRow = (
+        Uuid,
+        Uuid,
+        String,
+        String,
+        String,
+        DateTime<Utc>,
+        bool,
+        Option<DateTime<Utc>>,
+    );
 
     let rows: Vec<ChatRow> = match (params.after, params.chat_type.as_deref()) {
         (None, None) => sqlx::query_as(
@@ -1158,8 +1167,14 @@ mod tests {
             last_read_at: None,
         };
         let v = serde_json::to_value(&summary).unwrap();
-        assert_eq!(v["type"], "dm", "Rust field chat_type must serialize as JSON key 'type'");
-        assert!(v.get("chat_type").is_none(), "'chat_type' key must not appear");
+        assert_eq!(
+            v["type"], "dm",
+            "Rust field chat_type must serialize as JSON key 'type'"
+        );
+        assert!(
+            v.get("chat_type").is_none(),
+            "'chat_type' key must not appear"
+        );
     }
 
     #[test]

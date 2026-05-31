@@ -28,8 +28,9 @@ use super::groups::{
 };
 use super::invites::AcceptInviteResponse;
 use super::me::{
-    ChatMembershipSummary, MeResponse, MentionSummary, MentionsListResponse, MyChatsMembershipResponse,
-    PatchMeRequest, PatchMeResponse, TaskAssignmentSummary, TasksListResponse,
+    ChatMembershipSummary, MeResponse, MentionSummary, MentionsListResponse,
+    MyChatsMembershipResponse, PatchMeRequest, PatchMeResponse, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
