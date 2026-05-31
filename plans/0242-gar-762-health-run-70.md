@@ -32,8 +32,8 @@ Priority ladder exhausted at **(i)** — all surfaces clean, no actionable secur
 | Surface | Status | Detail |
 |---|---|---|
 | Secret scanning (gitleaks CI) | ✅ Clean | All 20 CI checks green on `main` (`22fddb9`); gitleaks job: success |
-| Malware / cargo-deny advisories | ✅ Clean | cargo-deny job: success; all RUSTSEC ignores justified (rsa GAR-513, glib/rand upstream-blocked) |
-| Dependabot alerts | ✅ No CVEs | 5 open PRs — pure version bumps, no advisory backing. Security Audit passes on main. |
+| Malware / cargo-deny advisories | ✅ Clean | cargo-deny job: success; all RUSTSEC ignores justified (rsa GAR-456, glib/rand GAR-513) |
+| Dependabot alerts | ⚠️ 1 moderate (known-deferred) | GitHub reports alert #42 (1 moderate) on default branch. Identified as **rsa 0.9.10 / RUSTSEC-2023-0071** (Marvin Attack timing sidechannel) — already explicitly tracked in GAR-456, already in both `.cargo/audit.toml` and `deny.toml` ignore lists. CI Security Audit + cargo-deny pass. No first_patched_version in rsa 0.9.x; fix requires upstream jsonwebtoken update or library switch. Correctly deferred. |
 | Code scanning (CodeQL) | ✅ Clean | Analyze (rust) + Analyze (javascript-typescript) + Analyze (actions): all success |
 
 ### Dependabot Open PRs (non-blocking — version bumps only)
