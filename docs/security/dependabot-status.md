@@ -1,8 +1,29 @@
 # Dependabot Status
 
-> Last updated: **2026-05-31 run 66** (health routine — all surfaces clean, 5 open Dependabot PRs (none security), 3 upstream-blocked alerts unchanged, priority (i). GAR-757. Previous: run 65 all surfaces clean, `f372a55`, priority (i) (GAR-756); run 64 all surfaces clean, `fb9df70`, priority (i) (GAR-754)).
+> Last updated: **2026-05-31 run 67** (health routine — all surfaces clean, 5 open Dependabot PRs (none security), 3 upstream-blocked alerts unchanged, priority (i). GAR-758. Previous: run 66 all surfaces clean, `6fd3c9b`, priority (i) (GAR-757); run 65 all surfaces clean, `f372a55`, priority (i) (GAR-756)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-31 run 67 (~00:46 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-31 (~00:46 ET / 04:46 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**CI on main (`6fd3c9b`):** 20/20 checks green (PR #592 check runs — all success).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI green on `6fd3c9b`, Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on `6fd3c9b` |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 5 open, none security | #513 (patch-and-minor: serde_json/getrandom/pgvector/aws-*), #515 (OTel SDK — GAR-711), #519/#522 (OTel major, tied to #515), #577 (benches/PoC) |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities (20/20 CI green on main `6fd3c9b`) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on `6fd3c9b` |
+| CI on main (`6fd3c9b`) | ✅ green | All 20/20 checks success (PR #592 check runs) |
+
+**No security fix applied this run.** Bookkeeping only: plan 0239 (GAR-758), plans README row 0238 → ✅ Merged (PR #592 / `6fd3c9b`) + row 0239 added, dependabot-status run 67 note. Linear: GAR-758. Next security backlog: GAR-711 OpenTelemetry 0.26→0.32 Backlog (unblocks PRs #515/#519/#522); rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-05-31 run 66 (~00:47 ET) — all surfaces clean, priority (i)
 
