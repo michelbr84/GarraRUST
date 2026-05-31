@@ -1,4 +1,4 @@
-# Plan 0240 — GAR-759: Chats Slice 11 — Bot Garra no Chat
+# Plan 0241 — GAR-759: Chats Slice 11 — Bot Garra no Chat
 
 > **For agentic workers:** Use `superpowers:executing-plans` to implement task-by-task.
 
