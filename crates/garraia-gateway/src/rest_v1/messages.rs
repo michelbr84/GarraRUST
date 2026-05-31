@@ -2057,6 +2057,7 @@ mod tests {
             sender_label: "Alice".into(),
             body: "Hi".into(),
             reply_to_id: None,
+            is_bot_response: false,
             created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
             mentions: vec![Uuid::nil()],
         };
@@ -2074,6 +2075,7 @@ mod tests {
             sender_label: "Alice".into(),
             body: "Hi".into(),
             reply_to_id: None,
+            is_bot_response: false,
             created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
             mentions: vec![],
         };
