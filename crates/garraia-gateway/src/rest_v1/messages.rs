@@ -91,6 +91,7 @@ pub struct MessageResponse {
     pub sender_label: String,
     pub body: String,
     pub reply_to_id: Option<Uuid>,
+    pub is_bot_response: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -103,6 +104,7 @@ pub struct MessageSummary {
     pub sender_label: String,
     pub body: String,
     pub reply_to_id: Option<Uuid>,
+    pub is_bot_response: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -281,9 +283,22 @@ pub async fn send_message(
             "sender_label": sender_label,
             "body": trimmed_body,
             "reply_to_id": body.reply_to_id,
+            "is_bot_response": false,
             "created_at": created_at,
         }),
     );
+
+    // 10. Bot trigger detection (plan 0240, GAR-759). Fire-and-forget.
+    if let Some(stripped) = trimmed_body.strip_prefix("/garra ") {
+        let prompt = stripped.trim().to_string();
+        tokio::spawn(bot_reply_task(
+            state.clone(),
+            chat_id,
+            group_id,
+            principal.user_id,
+            prompt,
+        ));
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -295,6 +310,7 @@ pub async fn send_message(
             sender_label,
             body: trimmed_body,
             reply_to_id: body.reply_to_id,
+            is_bot_response: false,
             created_at,
         }),
     ))
@@ -408,11 +424,13 @@ pub async fn list_messages(
         String,
         String,
         Option<Uuid>,
+        bool,
         DateTime<Utc>,
     );
     let rows: Vec<MsgRow> = if let Some(after_id) = params.after {
         sqlx::query_as(
-            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                    is_bot_response, created_at \
              FROM messages \
              WHERE chat_id = $1 \
                AND deleted_at IS NULL \
@@ -431,7 +449,8 @@ pub async fn list_messages(
         .map_err(|e| RestError::Internal(e.into()))?
     } else {
         sqlx::query_as(
-            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                    is_bot_response, created_at \
              FROM messages \
              WHERE chat_id = $1 \
                AND deleted_at IS NULL \
@@ -458,7 +477,16 @@ pub async fn list_messages(
     let items = rows
         .into_iter()
         .map(
-            |(id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at)| {
+            |(
+                id,
+                chat_id,
+                sender_user_id,
+                sender_label,
+                body,
+                reply_to_id,
+                is_bot_response,
+                created_at,
+            )| {
                 MessageSummary {
                     id,
                     chat_id,
@@ -466,6 +494,7 @@ pub async fn list_messages(
                     sender_label,
                     body,
                     reply_to_id,
+                    is_bot_response,
                     created_at,
                 }
             },
@@ -1042,10 +1071,12 @@ pub async fn get_message(
         String,
         String,
         Option<Uuid>,
+        bool,
         DateTime<Utc>,
     );
     let row: Option<MsgRow> = sqlx::query_as(
-        "SELECT id, chat_id, group_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+        "SELECT id, chat_id, group_id, sender_user_id, sender_label, body, reply_to_id, \
+                is_bot_response, created_at \
          FROM messages \
          WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL",
     )
@@ -1069,6 +1100,7 @@ pub async fn get_message(
             sender_label,
             body,
             reply_to_id,
+            is_bot_response,
             created_at,
         )) => Ok(Json(MessageResponse {
             id,
@@ -1078,6 +1110,7 @@ pub async fn get_message(
             sender_label,
             body,
             reply_to_id,
+            is_bot_response,
             created_at,
         })),
     }
@@ -1219,11 +1252,13 @@ pub async fn list_thread_messages(
             String,
             String,
             Option<Uuid>,
+            bool,
             DateTime<Utc>,
         );
         let rows: Vec<ReplyRow> = if let Some(after_id) = params.after {
             sqlx::query_as(
-                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                        is_bot_response, created_at \
                  FROM messages \
                  WHERE thread_id = $1 \
                    AND deleted_at IS NULL \
@@ -1242,7 +1277,8 @@ pub async fn list_thread_messages(
             .map_err(|e| RestError::Internal(e.into()))?
         } else {
             sqlx::query_as(
-                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at \
+                "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                        is_bot_response, created_at \
                  FROM messages \
                  WHERE thread_id = $1 \
                    AND deleted_at IS NULL \
@@ -1258,7 +1294,16 @@ pub async fn list_thread_messages(
 
         rows.into_iter()
             .map(
-                |(id, chat_id, sender_user_id, sender_label, body, reply_to_id, created_at)| {
+                |(
+                    id,
+                    chat_id,
+                    sender_user_id,
+                    sender_label,
+                    body,
+                    reply_to_id,
+                    is_bot_response,
+                    created_at,
+                )| {
                     MessageSummary {
                         id,
                         chat_id,
@@ -1266,6 +1311,7 @@ pub async fn list_thread_messages(
                         sender_label,
                         body,
                         reply_to_id,
+                        is_bot_response,
                         created_at,
                     }
                 },
@@ -1714,6 +1760,87 @@ pub async fn delete_message_attachment(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Fire-and-forget bot reply task (plan 0240, GAR-759).
+///
+/// Spawned by `send_message` when the message body starts with `/garra `.
+/// Runs in an independent Tokio task; the 201 response returns to the
+/// caller before this task completes. DB failure → error log, no panic.
+///
+/// V1 limitation: `sender_user_id` is the triggering user's UUID.
+/// `is_bot_response = TRUE` distinguishes bot messages from human messages.
+async fn bot_reply_task(
+    state: RestV1FullState,
+    chat_id: Uuid,
+    group_id: Uuid,
+    user_id: Uuid,
+    prompt: String,
+) {
+    let response_body = if prompt.is_empty() {
+        "Uso: /garra <prompt>. Exemplo: /garra me dê um resumo desta conversa.".to_string()
+    } else {
+        match state
+            .agents
+            .process_message(&chat_id.to_string(), &prompt, &[])
+            .await
+        {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::warn!(chat_id=%chat_id, error=%e, "bot_reply_task: AgentRuntime error");
+                format!("Garra: provider não disponível ({})", e)
+            }
+        }
+    };
+
+    let pool = state.app_pool.pool_for_handlers();
+    let result: Result<(), sqlx::Error> = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+            .bind(user_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+            .bind(group_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        let (bot_msg_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+            "INSERT INTO messages \
+               (chat_id, group_id, sender_user_id, sender_label, body, is_bot_response) \
+             VALUES ($1, $2, $3, 'Garra', $4, TRUE) \
+             RETURNING id, created_at",
+        )
+        .bind(chat_id)
+        .bind(group_id)
+        .bind(user_id)
+        .bind(&response_body)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        state.publish_chat_event(
+            chat_id,
+            serde_json::json!({
+                "id": bot_msg_id,
+                "chat_id": chat_id,
+                "group_id": group_id,
+                "sender_user_id": user_id,
+                "sender_label": "Garra",
+                "body": response_body,
+                "is_bot_response": true,
+                "created_at": created_at,
+            }),
+        );
+
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        tracing::error!(chat_id=%chat_id, error=%e, "bot_reply_task: DB write failed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1827,5 +1954,28 @@ mod tests {
             title: Some("x".repeat(MAX_TITLE_CHARS)),
         };
         assert!(req.validate().is_ok());
+    }
+
+    // ── Plan 0240 (GAR-759): bot trigger unit tests ───────────────────────────
+
+    #[test]
+    fn bot_trigger_detects_prefix() {
+        assert!("/garra hello".starts_with("/garra "));
+        assert!(!"hello".starts_with("/garra "));
+        assert!(!"/garraXYZ".starts_with("/garra "));
+    }
+
+    #[test]
+    fn bot_prompt_extraction() {
+        let body = "/garra   hello world  ";
+        let prompt = body.strip_prefix("/garra ").unwrap().trim();
+        assert_eq!(prompt, "hello world");
+    }
+
+    #[test]
+    fn bot_empty_prompt() {
+        let body = "/garra ";
+        let prompt = body.strip_prefix("/garra ").unwrap().trim();
+        assert!(prompt.is_empty());
     }
 }

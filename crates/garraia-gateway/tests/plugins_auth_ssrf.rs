@@ -33,7 +33,7 @@ use tower::ServiceExt;
 fn build_test_router() -> Router {
     let state = Arc::new(AppState::new(
         AppConfig::default(),
-        AgentRuntime::new(),
+        Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
     ));
     let admin_store = Arc::new(Mutex::new(

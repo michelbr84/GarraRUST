@@ -98,6 +98,7 @@ impl GatewayServer {
         }
 
         let channels = build_channels(&self.config).await;
+        let agents = Arc::new(agents);
         let mut state = AppState::new(self.config, agents, channels);
         state.mcp_manager = Some(mcp_manager);
 
@@ -212,9 +213,13 @@ impl GatewayServer {
                 state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(
                     &store,
                 ))));
-                state
-                    .agents
-                    .register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));
+                // Arc::get_mut is safe here: agents has rc=1 (AppState not yet
+                // wrapped in Arc<AppState> and no RestV1FullState clone exists).
+                if let Some(a) = Arc::get_mut(&mut state.agents) {
+                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));
+                } else {
+                    warn!("ScheduleHeartbeat tool not registered: agents Arc has multiple owners");
+                }
                 info!("session store opened at {}", sessions_db.display());
             }
             Err(e) => {
@@ -771,7 +776,11 @@ pub async fn build_router_for_test_with_storage(
     // Zero-config minimal runtime + channel registry. No providers,
     // no tools, no channels wired. Confirmed by team-coordinator gate
     // against state.rs unit tests.
-    let mut state = AppState::new(config, AgentRuntime::new(), ChannelRegistry::new());
+    let mut state = AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    );
 
     // Inject the auth pieces the harness built against testcontainer.
     state.set_auth_components(login_pool, signup_pool, jwt_issuer, app_pool);

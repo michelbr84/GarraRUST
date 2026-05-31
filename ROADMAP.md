@@ -709,7 +709,7 @@ Novo crate: `garraia-storage`.
 - [x] Typing indicator — `POST /v1/chats/{chat_id}/typing` (ephemeral SSE broadcast, no DB write) — plan 0233 / GAR-752.
 - [ ] Menções (`@user`, `@channel`) — slice futuro.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. 🔄 In Progress.
-- [ ] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat.
+- [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
 - [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.
 
 **Critério de aceite:**

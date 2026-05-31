@@ -50,6 +50,7 @@ use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::{delete, get, head, patch, post};
 use dashmap::DashMap;
+use garraia_agents::AgentRuntime;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -130,6 +131,8 @@ pub struct RestV1FullState {
     pub chat_events: Arc<DashMap<Uuid, tokio::sync::broadcast::Sender<serde_json::Value>>>,
     /// Plan 0163 (GAR-679): per-user concurrent SSE connection counter shared with AppState.
     pub sse_connections: Arc<DashMap<Uuid, Arc<AtomicUsize>>>,
+    /// Plan 0240 (GAR-759): AgentRuntime shared with AppState for bot replies.
+    pub agents: Arc<AgentRuntime>,
 }
 
 impl RestV1FullState {
@@ -143,6 +146,7 @@ impl RestV1FullState {
             storage: RestV1StorageState::from_app_state(app),
             chat_events: app.chat_events.clone(),
             sse_connections: app.sse_connections.clone(),
+            agents: app.agents.clone(),
         })
     }
 

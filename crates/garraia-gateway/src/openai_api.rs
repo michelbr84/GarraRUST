@@ -299,7 +299,7 @@ pub async fn chat_completions(
             .agents
             .default_provider()
             .is_some()
-            .then_some(&state.agents);
+            .then_some(&*state.agents);
         let auto_mode = crate::auto_router::auto_classify(
             &user_text_for_router,
             cfg.agent.auto_router_llm_enabled,

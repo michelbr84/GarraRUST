@@ -557,7 +557,7 @@ mod tests {
     fn test_state_without_auth() -> AppState {
         AppState::new(
             AppConfig::default(),
-            AgentRuntime::new(),
+            Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         )
     }
@@ -565,7 +565,7 @@ mod tests {
     fn test_state_with_auth_secret(secret: &str) -> AppState {
         let mut state = AppState::new(
             AppConfig::default(),
-            AgentRuntime::new(),
+            Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         );
         let cfg = AuthConfig {
