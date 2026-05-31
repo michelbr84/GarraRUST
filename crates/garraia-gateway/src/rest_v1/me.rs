@@ -465,12 +465,20 @@ pub async fn list_my_tasks(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    type TaskRow = (Uuid, Uuid, Uuid, String, String, String, Option<DateTime<Utc>>, DateTime<Utc>);
+    type TaskRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    );
 
     let rows: Vec<TaskRow> = match (params.after, params.status.as_deref()) {
-        (None, None) => {
-            sqlx::query_as(
-                "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
+        (None, None) => sqlx::query_as(
+            "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
                         t.due_at, t.created_at \
                  FROM task_assignees ta \
                  JOIN tasks t ON ta.task_id = t.id \
@@ -479,17 +487,15 @@ pub async fn list_my_tasks(
                    AND t.deleted_at IS NULL \
                  ORDER BY t.created_at DESC, t.id DESC \
                  LIMIT $3",
-            )
-            .bind(principal.user_id)
-            .bind(group_id)
-            .bind(limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
-        (None, Some(status)) => {
-            sqlx::query_as(
-                "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
+        )
+        .bind(principal.user_id)
+        .bind(group_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+        (None, Some(status)) => sqlx::query_as(
+            "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
                         t.due_at, t.created_at \
                  FROM task_assignees ta \
                  JOIN tasks t ON ta.task_id = t.id \
@@ -499,15 +505,14 @@ pub async fn list_my_tasks(
                    AND t.deleted_at IS NULL \
                  ORDER BY t.created_at DESC, t.id DESC \
                  LIMIT $4",
-            )
-            .bind(principal.user_id)
-            .bind(group_id)
-            .bind(status)
-            .bind(limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
+        )
+        .bind(principal.user_id)
+        .bind(group_id)
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
         (Some(after_id), None) => {
             // Cursor subquery: if after_id is deleted or from a different group,
             // the subquery returns NULL → comparison is always false → empty safe result.
@@ -534,9 +539,8 @@ pub async fn list_my_tasks(
             .await
             .map_err(|e| RestError::Internal(e.into()))?
         }
-        (Some(after_id), Some(status)) => {
-            sqlx::query_as(
-                "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
+        (Some(after_id), Some(status)) => sqlx::query_as(
+            "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
                         t.due_at, t.created_at \
                  FROM task_assignees ta \
                  JOIN tasks t ON ta.task_id = t.id \
@@ -550,16 +554,15 @@ pub async fn list_my_tasks(
                    ) \
                  ORDER BY t.created_at DESC, t.id DESC \
                  LIMIT $5",
-            )
-            .bind(principal.user_id)
-            .bind(group_id)
-            .bind(status)
-            .bind(after_id)
-            .bind(limit)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?
-        }
+        )
+        .bind(principal.user_id)
+        .bind(group_id)
+        .bind(status)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
     };
 
     tx.commit()
@@ -782,12 +785,22 @@ mod tests {
             created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
         };
         let v = serde_json::to_value(&summary).unwrap();
-        assert!(v.get("due_at").is_some(), "present due_at must be serialized");
+        assert!(
+            v.get("due_at").is_some(),
+            "present due_at must be serialized"
+        );
     }
 
     #[test]
     fn list_tasks_query_status_valid_values() {
-        for s in &["backlog", "todo", "in_progress", "review", "done", "canceled"] {
+        for s in &[
+            "backlog",
+            "todo",
+            "in_progress",
+            "review",
+            "done",
+            "canceled",
+        ] {
             assert!(
                 ListTasksQuery::validate_status(s),
                 "expected '{s}' to be valid"
