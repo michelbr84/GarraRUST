@@ -68,7 +68,7 @@ mod tests {
     fn test_state() -> SharedState {
         Arc::new(AppState::new(
             AppConfig::default(),
-            AgentRuntime::new(),
+            Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         ))
     }
