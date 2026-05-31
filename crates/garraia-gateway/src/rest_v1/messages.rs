@@ -2004,7 +2004,10 @@ mod tests {
             reply_to_id: None,
             mentions,
         };
-        assert!(req.validate().is_ok(), "exactly 50 mentions must be accepted");
+        assert!(
+            req.validate().is_ok(),
+            "exactly 50 mentions must be accepted"
+        );
     }
 
     #[test]
@@ -2028,14 +2031,20 @@ mod tests {
             reply_to_id: None,
             mentions: vec![],
         };
-        assert!(req.validate().is_ok(), "empty mentions list must be accepted");
+        assert!(
+            req.validate().is_ok(),
+            "empty mentions list must be accepted"
+        );
     }
 
     #[test]
     fn send_message_request_mentions_default_to_empty_when_absent() {
         let json = r#"{"body": "Hello"}"#;
         let req: SendMessageRequest = serde_json::from_str(json).unwrap();
-        assert!(req.mentions.is_empty(), "absent mentions must default to empty vec");
+        assert!(
+            req.mentions.is_empty(),
+            "absent mentions must default to empty vec"
+        );
     }
 
     #[test]

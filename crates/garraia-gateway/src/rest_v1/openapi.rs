@@ -27,7 +27,9 @@ use super::groups::{
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
-use super::me::{MeResponse, MentionSummary, MentionsListResponse, PatchMeRequest, PatchMeResponse};
+use super::me::{
+    MeResponse, MentionSummary, MentionsListResponse, PatchMeRequest, PatchMeResponse,
+};
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
     PatchMemoryRequest, PinMemoryResponse,

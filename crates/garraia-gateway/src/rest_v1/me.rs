@@ -236,11 +236,7 @@ pub async fn list_my_mentions(
     // membership check is needed because RLS will return 0 rows for any
     // group the caller does not belong to (correct behavior: empty inbox).
 
-    let limit = params
-        .limit
-        .map(|l| l.min(100))
-        .unwrap_or(50)
-        .max(1);
+    let limit = params.limit.map(|l| l.min(100)).unwrap_or(50).max(1);
 
     let group_id = params.group_id;
 
@@ -326,7 +322,15 @@ pub async fn list_my_mentions(
     let items = rows
         .into_iter()
         .map(
-            |(message_id, chat_id, group_id, sender_user_id, sender_label, body_excerpt, created_at)| {
+            |(
+                message_id,
+                chat_id,
+                group_id,
+                sender_user_id,
+                sender_label,
+                body_excerpt,
+                created_at,
+            )| {
                 MentionSummary {
                     message_id,
                     chat_id,
@@ -412,16 +416,25 @@ mod tests {
 
     #[test]
     fn mentions_list_response_empty_no_cursor() {
-        let resp = MentionsListResponse { items: vec![], next_cursor: None };
+        let resp = MentionsListResponse {
+            items: vec![],
+            next_cursor: None,
+        };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["items"].as_array().unwrap().len(), 0);
-        assert!(v.get("next_cursor").is_none(), "absent cursor must be skipped");
+        assert!(
+            v.get("next_cursor").is_none(),
+            "absent cursor must be skipped"
+        );
     }
 
     #[test]
     fn mentions_list_response_with_cursor() {
         let cursor = Uuid::parse_str("aaaaaaaa-0000-0000-0000-000000000001").unwrap();
-        let resp = MentionsListResponse { items: vec![], next_cursor: Some(cursor) };
+        let resp = MentionsListResponse {
+            items: vec![],
+            next_cursor: Some(cursor),
+        };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["next_cursor"], "aaaaaaaa-0000-0000-0000-000000000001");
     }
