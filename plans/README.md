@@ -252,3 +252,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0240 | [GAR-761 — Health run 69 (2026-05-31 ~08:45 ET): all surfaces clean, priority (i)](0240-gar-761-health-run-69.md) | [GAR-761](https://linear.app/chatgpt25/issue/GAR-761) | ✅ Merged 2026-05-31 via PR #596 (`1a4a15f`) |
 | 0241 | [GAR-759 — Chats slice 11: Bot Garra no chat — /garra detection + AgentRuntime async reply](0241-gar-759-chats-slice11-bot-garra.md) | [GAR-759](https://linear.app/chatgpt25/issue/GAR-759) | ✅ Merged 2026-05-31 via PR #595 (`22fddb9`) |
 | 0242 | [GAR-763 — GET /v1/me/tasks (caller-scoped task inbox)](0242-gar-763-me-tasks-inbox.md) | [GAR-763](https://linear.app/chatgpt25/issue/GAR-763) | ✅ Merged 2026-05-31 via PR #598 (`f732cb5`) |
+| 0243 | [GAR-762 — Health run 70 (2026-05-31 ~12:45 ET): PR #594 closed superseded, all surfaces clean, priority (i)](0243-gar-762-health-run-70.md) | [GAR-762](https://linear.app/chatgpt25/issue/GAR-762) | ⏳ In Progress |
