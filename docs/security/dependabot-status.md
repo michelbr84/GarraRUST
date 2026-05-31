@@ -1,8 +1,29 @@
 # Dependabot Status
 
-> Last updated: **2026-05-30 run 65** (health routine — PR #588 closed superseded, all surfaces clean, 1 open Dependabot PR (non-security PoC), 3 upstream-blocked alerts unchanged, priority (i). GAR-756. Previous: run 64 all surfaces clean, `fb9df70`, priority (i) (GAR-754); run 63 all surfaces clean, `07db8f6`, priority (i) (GAR-753)).
+> Last updated: **2026-05-31 run 66** (health routine — all surfaces clean, 5 open Dependabot PRs (none security), 3 upstream-blocked alerts unchanged, priority (i). GAR-757. Previous: run 65 all surfaces clean, `f372a55`, priority (i) (GAR-756); run 64 all surfaces clean, `fb9df70`, priority (i) (GAR-754)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-05-31 run 66 (~00:47 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-05-31 (~00:47 ET / 04:47 UTC). Full security scan completed. Priority ladder exhausted at **(i)** — no actionable security work found.
+
+**CI on main (`f372a55`):** 17/20 checks completed green on PR #591 at scan time (3 in-progress: Test ubuntu, Build Check, Coverage); all completed checks green including Security Audit, cargo-deny, Secret Scan, CodeQL Analyze (rust/js-ts/actions).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI green on `f372a55`, Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny green on `f372a55` |
+| Dependabot alerts | ⚠️ 3 open, UPSTREAM-BLOCKED | rsa HIGH (GAR-456), glib MEDIUM (GAR-513), rand LOW (GAR-513) |
+| Open Dependabot PRs | ⚠️ 5 open, none security | #513 (patch-and-minor: serde_json/getrandom/pgvector/aws-*), #515 (OTel SDK — GAR-711), #519/#522 (OTel major, tied to #515), #577 (benches/PoC) |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities, 19 unmaintained (all deny.toml, unchanged) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | All 3 Analyze jobs green on `f372a55` (PR #591) |
+| CI on main (`f372a55`) | ✅ green | All completed checks green (20/20 expected) |
+
+**No security fix applied this run.** Bookkeeping only: plan 0238 (GAR-757), plans README row 0236 → ✅ Merged (PR #590 / `f372a55`) + row 0238 added, dependabot-status run 66 note. Linear: GAR-757. Next security backlog: GAR-711 OpenTelemetry 0.26→0.32 Backlog (unblocks PRs #515/#519/#522); rsa (GAR-456), glib+rand (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-05-30 run 65 (~20:45 ET) — all surfaces clean, priority (i)
 
