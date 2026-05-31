@@ -29,6 +29,7 @@ use super::groups::{
 use super::invites::AcceptInviteResponse;
 use super::me::{
     MeResponse, MentionSummary, MentionsListResponse, PatchMeRequest, PatchMeResponse,
+    TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -94,6 +95,7 @@ impl Modify for SecurityAddon {
         super::me::get_me,
         super::me::patch_me,
         super::me::list_my_mentions,
+        super::me::list_my_tasks,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -173,6 +175,8 @@ impl Modify for SecurityAddon {
         MentionsListResponse,
         PatchMeRequest,
         PatchMeResponse,
+        TaskAssignmentSummary,
+        TasksListResponse,
         ProblemDetails,
         CreateGroupRequest,
         UpdateGroupRequest,
