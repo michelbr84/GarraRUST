@@ -27,7 +27,9 @@ use super::groups::{
     MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
-use super::me::{MeResponse, PatchMeRequest, PatchMeResponse};
+use super::me::{
+    MeResponse, MentionSummary, MentionsListResponse, PatchMeRequest, PatchMeResponse,
+};
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
     PatchMemoryRequest, PinMemoryResponse,
@@ -91,6 +93,7 @@ impl Modify for SecurityAddon {
     paths(
         super::me::get_me,
         super::me::patch_me,
+        super::me::list_my_mentions,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -166,6 +169,8 @@ impl Modify for SecurityAddon {
     ),
     components(schemas(
         MeResponse,
+        MentionSummary,
+        MentionsListResponse,
         PatchMeRequest,
         PatchMeResponse,
         ProblemDetails,

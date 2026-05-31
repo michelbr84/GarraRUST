@@ -53,6 +53,9 @@ const MAX_BODY_CHARS: usize = 100_000;
 /// Maximum thread title length (chars).
 const MAX_TITLE_CHARS: usize = 500;
 
+/// Maximum number of @mentions per message (plan 0237 / GAR-755).
+const MAX_MENTIONS: usize = 50;
+
 /// Request body for `POST /v1/chats/{chat_id}/messages`.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +69,11 @@ pub struct SendMessageRequest {
     /// integrity and returns a 400 if the referenced id does not exist.
     #[serde(default)]
     pub reply_to_id: Option<Uuid>,
+    /// Optional list of user UUIDs to @mention in this message.
+    /// Max 50. All UUIDs must be active members of the caller's group (422 otherwise).
+    /// Deduplicated by the server — duplicate UUIDs in the list are ignored.
+    #[serde(default)]
+    pub mentions: Vec<Uuid>,
 }
 
 impl SendMessageRequest {
@@ -76,6 +84,9 @@ impl SendMessageRequest {
         }
         if self.body.chars().count() > MAX_BODY_CHARS {
             return Err("message body must be 100,000 characters or fewer");
+        }
+        if self.mentions.len() > MAX_MENTIONS {
+            return Err("too many mentions: maximum is 50 per message");
         }
         Ok(())
     }
@@ -93,6 +104,8 @@ pub struct MessageResponse {
     pub reply_to_id: Option<Uuid>,
     pub is_bot_response: bool,
     pub created_at: DateTime<Utc>,
+    /// List of user UUIDs @mentioned in this message. Empty when no mentions.
+    pub mentions: Vec<Uuid>,
 }
 
 /// Compact summary used by `GET /v1/chats/{chat_id}/messages`.
@@ -251,7 +264,66 @@ pub async fn send_message(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 9. Audit. Metadata is STRUCTURAL only — body content is PII.
+    // 9. Process @mentions (plan 0237 / GAR-755).
+    //    Deduplicate the input list (PK will reject duplicates, but we need
+    //    the deduplicated count for validation and audit).
+    let mut mention_ids = body.mentions.clone();
+    mention_ids.sort_unstable();
+    mention_ids.dedup();
+    let mention_count = mention_ids.len();
+
+    if mention_count > 0 {
+        // 9a. Validate: every mentioned UUID must be an active group member.
+        //     COUNT(*) must equal the deduplicated input count; any mismatch
+        //     means at least one UUID is not in this group → 422.
+        let (valid_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM group_members \
+             WHERE group_id = $1 AND user_id = ANY($2)",
+        )
+        .bind(group_id)
+        .bind(&mention_ids)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        if valid_count as usize != mention_count {
+            return Err(RestError::UnprocessableEntity(
+                "one or more mentioned users are not members of this group".into(),
+            ));
+        }
+
+        // 9b. Batch-INSERT into message_mentions (one query per mention — no SQL concat).
+        //     ON CONFLICT DO NOTHING makes it idempotent in edge cases.
+        for &mentioned_user_id in &mention_ids {
+            sqlx::query(
+                "INSERT INTO message_mentions \
+                     (message_id, mentioned_user_id, group_id) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(msg_id)
+            .bind(mentioned_user_id)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+        }
+
+        // 9c. Audit for mentions — PII-safe: count only, no user IDs.
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::MessageMentionCreated,
+            principal.user_id,
+            group_id,
+            "message_mentions",
+            msg_id.to_string(),
+            json!({ "mention_count": mention_count }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+    }
+
+    // 10. Audit. Metadata is STRUCTURAL only — body content is PII.
     audit_workspace_event(
         &mut tx,
         WorkspaceAuditAction::MessageSent,
@@ -262,6 +334,7 @@ pub async fn send_message(
         json!({
             "body_len": trimmed_body.chars().count(),
             "has_reply_to": body.reply_to_id.is_some(),
+            "mention_count": mention_count,
         }),
     )
     .await
@@ -285,6 +358,7 @@ pub async fn send_message(
             "reply_to_id": body.reply_to_id,
             "is_bot_response": false,
             "created_at": created_at,
+            "mentions": mention_ids,
         }),
     );
 
@@ -312,6 +386,7 @@ pub async fn send_message(
             reply_to_id: body.reply_to_id,
             is_bot_response: false,
             created_at,
+            mentions: mention_ids,
         }),
     ))
 }
@@ -1112,6 +1187,7 @@ pub async fn get_message(
             reply_to_id,
             is_bot_response,
             created_at,
+            mentions: vec![],
         })),
     }
 }
@@ -1850,6 +1926,7 @@ mod tests {
         let req = SendMessageRequest {
             body: "Hello world".into(),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert!(req.validate().is_ok());
     }
@@ -1859,6 +1936,7 @@ mod tests {
         let req = SendMessageRequest {
             body: "".into(),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert_eq!(
             req.validate().unwrap_err(),
@@ -1871,6 +1949,7 @@ mod tests {
         let req = SendMessageRequest {
             body: "   \t\n  ".into(),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert_eq!(
             req.validate().unwrap_err(),
@@ -1883,6 +1962,7 @@ mod tests {
         let req = SendMessageRequest {
             body: "a".repeat(MAX_BODY_CHARS + 1),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert_eq!(
             req.validate().unwrap_err(),
@@ -1895,6 +1975,7 @@ mod tests {
         let req = SendMessageRequest {
             body: "a".repeat(MAX_BODY_CHARS),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert!(req.validate().is_ok());
     }
@@ -1905,11 +1986,101 @@ mod tests {
         let req = SendMessageRequest {
             body: "🌟".repeat(25_000),
             reply_to_id: None,
+            mentions: vec![],
         };
         assert!(
             req.validate().is_ok(),
             "25_000 emoji chars must pass the chars()-based limit"
         );
+    }
+
+    // ── @mentions validation ────────────────────────────────────────────────
+
+    #[test]
+    fn send_message_request_accepts_mentions_within_limit() {
+        let mentions: Vec<Uuid> = (0..MAX_MENTIONS).map(|_| Uuid::new_v4()).collect();
+        let req = SendMessageRequest {
+            body: "Hello team".into(),
+            reply_to_id: None,
+            mentions,
+        };
+        assert!(
+            req.validate().is_ok(),
+            "exactly 50 mentions must be accepted"
+        );
+    }
+
+    #[test]
+    fn send_message_request_rejects_mentions_over_limit() {
+        let mentions: Vec<Uuid> = (0..=MAX_MENTIONS).map(|_| Uuid::new_v4()).collect();
+        let req = SendMessageRequest {
+            body: "Hello team".into(),
+            reply_to_id: None,
+            mentions,
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "too many mentions: maximum is 50 per message"
+        );
+    }
+
+    #[test]
+    fn send_message_request_accepts_empty_mentions() {
+        let req = SendMessageRequest {
+            body: "No mentions here".into(),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert!(
+            req.validate().is_ok(),
+            "empty mentions list must be accepted"
+        );
+    }
+
+    #[test]
+    fn send_message_request_mentions_default_to_empty_when_absent() {
+        let json = r#"{"body": "Hello"}"#;
+        let req: SendMessageRequest = serde_json::from_str(json).unwrap();
+        assert!(
+            req.mentions.is_empty(),
+            "absent mentions must default to empty vec"
+        );
+    }
+
+    #[test]
+    fn message_response_includes_mentions_field() {
+        let resp = MessageResponse {
+            id: Uuid::nil(),
+            chat_id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            sender_user_id: Uuid::nil(),
+            sender_label: "Alice".into(),
+            body: "Hi".into(),
+            reply_to_id: None,
+            is_bot_response: false,
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            mentions: vec![Uuid::nil()],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["mentions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn message_response_mentions_empty_serializes() {
+        let resp = MessageResponse {
+            id: Uuid::nil(),
+            chat_id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            sender_user_id: Uuid::nil(),
+            sender_label: "Alice".into(),
+            body: "Hi".into(),
+            reply_to_id: None,
+            is_bot_response: false,
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            mentions: vec![],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["mentions"].as_array().unwrap().len(), 0);
     }
 
     #[test]
