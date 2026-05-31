@@ -557,6 +557,14 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "message_reactions"`, `resource_id = "{message_id}"`.
     /// Metadata: `{ emoji_len: N }` — PII-safe.
     MessageReactionRemoved,
+
+    /// One or more users were @mentioned in a message via
+    /// `POST /v1/chats/{chat_id}/messages` with a non-empty `mentions` list
+    /// (plan 0237 / GAR-755, Fase 3.4 chats slice 10).
+    ///
+    /// `resource_type = "message_mentions"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ mention_count: N }` — count only (PII-safe; no user IDs).
+    MessageMentionCreated,
 }
 
 impl WorkspaceAuditAction {
@@ -618,6 +626,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MessageFileDetached => "message.file.detached",
             WorkspaceAuditAction::MessageReactionAdded => "message.reaction.added",
             WorkspaceAuditAction::MessageReactionRemoved => "message.reaction.removed",
+            WorkspaceAuditAction::MessageMentionCreated => "message.mention.created",
         }
     }
 }
@@ -863,6 +872,10 @@ mod tests {
             WorkspaceAuditAction::MessageReactionRemoved.as_str(),
             "message.reaction.removed"
         );
+        assert_eq!(
+            WorkspaceAuditAction::MessageMentionCreated.as_str(),
+            "message.mention.created"
+        );
     }
 
     #[test]
@@ -920,6 +933,7 @@ mod tests {
             WorkspaceAuditAction::MessageFileDetached.as_str(),
             WorkspaceAuditAction::MessageReactionAdded.as_str(),
             WorkspaceAuditAction::MessageReactionRemoved.as_str(),
+            WorkspaceAuditAction::MessageMentionCreated.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
