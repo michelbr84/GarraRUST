@@ -81,6 +81,11 @@ pub enum RestError {
     /// No payload — `{0}` detail is emitted but MUST NOT embed user PII.
     #[error("{0}")]
     TooManyRequests(String),
+    /// Plan 0237 (GAR-755): semantically invalid request entity (e.g. mentioned
+    /// user is not a member of the group). The `{0}` detail is emitted — MUST NOT
+    /// embed user PII.
+    #[error("{0}")]
+    UnprocessableEntity(String),
     /// Internal error wrapper. **Callers MUST NOT `.context("...")` with
     /// user-identifying data (email, user_id, hashes)** before converting
     /// to `RestError::Internal`: the `Display` impl of `anyhow::Error` will
@@ -105,6 +110,7 @@ impl RestError {
             RestError::BadGateway(_) => StatusCode::BAD_GATEWAY,
             RestError::AuthUnconfigured => StatusCode::SERVICE_UNAVAILABLE,
             RestError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            RestError::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             RestError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -123,6 +129,7 @@ impl RestError {
             RestError::BadGateway(_) => "Bad Gateway",
             RestError::AuthUnconfigured => "Service Unavailable",
             RestError::TooManyRequests(_) => "Too Many Requests",
+            RestError::UnprocessableEntity(_) => "Unprocessable Entity",
             RestError::Internal(_) => "Internal Server Error",
         }
     }

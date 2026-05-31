@@ -315,7 +315,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
 
             Router::new()
                 // Plan 0110 (GAR-599) — PATCH /v1/me self-service profile update.
+                // Plan 0237 (GAR-755) — GET /v1/me/mentions @mention inbox.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
+                .route("/v1/me/mentions", get(me::list_my_mentions))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -554,7 +556,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // whether `GARRAIA_APP_DATABASE_URL` is set.
             Router::new()
                 // Plan 0110 (GAR-599) — PATCH /v1/me stub (no AppPool in mode 2).
+                // Plan 0237 (GAR-755) — GET /v1/me/mentions stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
+                .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -772,10 +776,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
             // by spec — always return the discovery headers.
             Router::new()
                 // Plan 0110 (GAR-599) — PATCH /v1/me stub (no-auth mode).
+                // Plan 0237 (GAR-755) — GET /v1/me/mentions stub.
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
+                .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
