@@ -611,6 +611,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
 - [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
+- [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) ✅
 
 **Chats**
 
@@ -710,6 +711,7 @@ Novo crate: `garraia-storage`.
 - [x] Menções (`@user`, `@channel`) — migration 022 `message_mentions` + `mentions: Vec<Uuid>` em `POST /v1/chats/{id}/messages` + `GET /v1/me/mentions` (cursor-paginated inbox) — plan 0237 / GAR-755.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. 🔄 In Progress.
 - [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
+- [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765.
 - [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.
 
 **Critério de aceite:**

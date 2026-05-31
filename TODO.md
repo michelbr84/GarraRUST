@@ -5,9 +5,22 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-05-29 (America/New_York)
+**Atualizado:** 2026-05-31 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-765 / plan 0245 — GET /v1/me/chats (caller-scoped chat membership inbox):
+  - `ListMyChatsQuery` struct with `group_id` (required), `after`, `limit`, `type` (optional).
+  - `ChatMembershipSummary` fields: `chat_id`, `group_id`, `name`, `type`, `role`, `joined_at`, `muted`, `last_read_at`.
+  - `MyChatsMembershipResponse` with `items` + `next_cursor` (skip_serializing_if None).
+  - 4-branch query (cursor × type filter), keyset on `(cm.joined_at DESC, cm.chat_id DESC)`.
+  - Route `.route("/v1/me/chats", get(me::list_my_chats))` registered in `mod.rs`.
+  - OpenAPI annotation + component registration in `openapi.rs`.
+  - 8 new unit tests (serialization, type filter validation, cursor, muted/last_read_at).
+  - All CI checks expected green (no migration, additive handler only).
+  - Branch: `routine/202605311818-me-chats-inbox`. GAR-765 In Progress → Done.
+
+## Concluído em sessões anteriores
 
 - GAR-733 / plan 0215 — Search slice 14 (`types=groups` group name FTS):
   - `SearchResultType::Group` variant; `include_groups: bool` in `ValidatedSearch`.

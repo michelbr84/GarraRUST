@@ -317,9 +317,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0110 (GAR-599) — PATCH /v1/me self-service profile update.
                 // Plan 0237 (GAR-755) — GET /v1/me/mentions @mention inbox.
                 // Plan 0242 (GAR-763) — GET /v1/me/tasks assigned-task inbox.
+                // Plan 0245 (GAR-765) — GET /v1/me/chats chat membership inbox.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
+                .route("/v1/me/chats", get(me::list_my_chats))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
