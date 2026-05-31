@@ -477,7 +477,16 @@ pub async fn list_messages(
     let items = rows
         .into_iter()
         .map(
-            |(id, chat_id, sender_user_id, sender_label, body, reply_to_id, is_bot_response, created_at)| {
+            |(
+                id,
+                chat_id,
+                sender_user_id,
+                sender_label,
+                body,
+                reply_to_id,
+                is_bot_response,
+                created_at,
+            )| {
                 MessageSummary {
                     id,
                     chat_id,
@@ -1285,7 +1294,16 @@ pub async fn list_thread_messages(
 
         rows.into_iter()
             .map(
-                |(id, chat_id, sender_user_id, sender_label, body, reply_to_id, is_bot_response, created_at)| {
+                |(
+                    id,
+                    chat_id,
+                    sender_user_id,
+                    sender_label,
+                    body,
+                    reply_to_id,
+                    is_bot_response,
+                    created_at,
+                )| {
                     MessageSummary {
                         id,
                         chat_id,
@@ -1760,7 +1778,11 @@ async fn bot_reply_task(
     let response_body = if prompt.is_empty() {
         "Uso: /garra <prompt>. Exemplo: /garra me dê um resumo desta conversa.".to_string()
     } else {
-        match state.agents.process_message(&chat_id.to_string(), &prompt, &[]).await {
+        match state
+            .agents
+            .process_message(&chat_id.to_string(), &prompt, &[])
+            .await
+        {
             Ok(text) => text,
             Err(e) => {
                 tracing::warn!(chat_id=%chat_id, error=%e, "bot_reply_task: AgentRuntime error");

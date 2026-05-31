@@ -912,7 +912,11 @@ mod tests {
     fn continuity_key_with_shared_continuity_enabled() {
         let mut config = AppConfig::default();
         config.memory.shared_continuity = true;
-        let state = AppState::new(config, Arc::new(AgentRuntime::new()), ChannelRegistry::new());
+        let state = AppState::new(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
         let key = state.continuity_key(Some("user1"));
         assert_eq!(key, Some("bus:shared-global".to_string()));
     }
@@ -921,7 +925,11 @@ mod tests {
     fn continuity_key_with_shared_continuity_disabled() {
         let mut config = AppConfig::default();
         config.memory.shared_continuity = false;
-        let state = AppState::new(config, Arc::new(AgentRuntime::new()), ChannelRegistry::new());
+        let state = AppState::new(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
         let key = state.continuity_key(Some("user1"));
         assert_eq!(key, None);
     }

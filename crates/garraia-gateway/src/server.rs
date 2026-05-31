@@ -776,7 +776,11 @@ pub async fn build_router_for_test_with_storage(
     // Zero-config minimal runtime + channel registry. No providers,
     // no tools, no channels wired. Confirmed by team-coordinator gate
     // against state.rs unit tests.
-    let mut state = AppState::new(config, Arc::new(AgentRuntime::new()), ChannelRegistry::new());
+    let mut state = AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    );
 
     // Inject the auth pieces the harness built against testcontainer.
     state.set_auth_components(login_pool, signup_pool, jwt_issuer, app_pool);
