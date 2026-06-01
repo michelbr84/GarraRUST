@@ -1,15 +1,15 @@
 //! OTLP gRPC tracer pipeline.
 
-use opentelemetry::{KeyValue, global};
+use opentelemetry::global;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
-    trace::{self as sdktrace, Sampler, TracerProvider},
+    trace::{Sampler, SdkTracerProvider},
 };
 
 use crate::{Error, config::TelemetryConfig};
 
-pub fn init_tracer(config: &TelemetryConfig) -> Result<Option<TracerProvider>, Error> {
+pub fn init_tracer(config: &TelemetryConfig) -> Result<Option<SdkTracerProvider>, Error> {
     if !config.enabled {
         return Ok(None);
     }
@@ -19,25 +19,21 @@ pub fn init_tracer(config: &TelemetryConfig) -> Result<Option<TracerProvider>, E
         .clone()
         .unwrap_or_else(|| "http://localhost:4317".to_string());
 
-    let resource = Resource::new(vec![KeyValue::new(
-        "service.name",
-        config.service_name.clone(),
-    )]);
+    let resource = Resource::builder_empty()
+        .with_service_name(config.service_name.clone())
+        .build();
 
-    let trace_config = sdktrace::Config::default()
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .map_err(|e| Error::Init(format!("failed to build OTLP exporter: {e}")))?;
+
+    let provider = SdkTracerProvider::builder()
         .with_sampler(Sampler::TraceIdRatioBased(config.sample_ratio))
-        .with_resource(resource);
-
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
-        .with_endpoint(endpoint);
-
-    let provider = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(exporter)
-        .with_trace_config(trace_config)
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .map_err(|e| Error::Init(format!("failed to install OTLP tracer: {e}")))?;
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
 
     global::set_tracer_provider(provider.clone());
 

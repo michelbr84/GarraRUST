@@ -261,3 +261,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0249 | [GAR-770 — GET /v1/me/memory (caller-scoped personal memory inbox)](0249-gar-770-me-memory-inbox.md) | [GAR-770](https://linear.app/chatgpt25/issue/GAR-770) | ✅ Merged 2026-06-01 via PR #608 (`ec6922c`) |
 | 0250 | [GAR-771 — Persona amistosa do Garra (inspirado em OpenHuman): persona default + copy humanizada + erros amigáveis](0250-gar-771-garra-friendly-persona.md) | GAR-771 | ✅ Merged 2026-06-01 via PR #610 (`cbdc702`) |
 | 0251 | [GAR-771 — Health run 74 (2026-06-01 ~08:45 ET): PR #610 persona merged, all surfaces clean, priority (i)](0251-gar-771-health-run-74.md) | [GAR-771](https://linear.app/chatgpt25/issue/GAR-771) | ✅ Merged 2026-06-01 via PR #611 (`3dd4ce3`) |
+| 0252 | [GAR-711 — Upgrade OpenTelemetry 0.26 → 0.32 (RUSTSEC-2025-0052 async-std)](0252-gar-711-otel-0.26-to-0.31.md) | [GAR-711](https://linear.app/chatgpt25/issue/GAR-711) | 🔄 In Progress |
