@@ -1083,7 +1083,10 @@ pub struct ListMyMemoryQuery {
 
 impl ListMyMemoryQuery {
     fn validate_kind(k: &str) -> bool {
-        matches!(k, "fact" | "preference" | "note" | "reminder" | "rule" | "profile")
+        matches!(
+            k,
+            "fact" | "preference" | "note" | "reminder" | "rule" | "profile"
+        )
     }
 }
 
@@ -1835,8 +1838,14 @@ mod tests {
         assert_eq!(v["id"], "aaaaaaaa-0000-0000-0000-000000000001");
         assert_eq!(v["kind"], "fact");
         assert_eq!(v["content_preview"], "Alice prefers dark mode");
-        assert!(v.get("pinned_at").is_some(), "present pinned_at must be serialized");
-        assert!(v.get("ttl_expires_at").is_some(), "present ttl_expires_at must be serialized");
+        assert!(
+            v.get("pinned_at").is_some(),
+            "present pinned_at must be serialized"
+        );
+        assert!(
+            v.get("ttl_expires_at").is_some(),
+            "present ttl_expires_at must be serialized"
+        );
     }
 
     #[test]
@@ -1850,8 +1859,14 @@ mod tests {
             created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
         };
         let v = serde_json::to_value(&summary).unwrap();
-        assert!(v.get("pinned_at").is_none(), "absent pinned_at must be omitted");
-        assert!(v.get("ttl_expires_at").is_none(), "absent ttl_expires_at must be omitted");
+        assert!(
+            v.get("pinned_at").is_none(),
+            "absent pinned_at must be omitted"
+        );
+        assert!(
+            v.get("ttl_expires_at").is_none(),
+            "absent ttl_expires_at must be omitted"
+        );
     }
 
     #[test]
