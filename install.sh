@@ -154,12 +154,42 @@ download_and_verify() {
     (
         cd "${GARRAIA_TMPDIR}"
         # Extract just the line matching our artifact from SHA256SUMS and pipe it
-        # into `<tool> -c -`. The expected format is `<hash>  <filename>`.
-        if ! grep "  ${ARTIFACT}\$" SHA256SUMS | ${SHA_TOOL} >/dev/null 2>&1; then
+        # into `<tool> -c -`. SHA256SUMS may be emitted in GNU *text mode*
+        # (`<hash>  <filename>`, two spaces) or *binary mode*
+        # (`<hash> *<filename>`, one space + asterisk — what `sha256sum -b`
+        # and several Windows/Tauri toolchains produce; e.g. the published
+        # v0.2.1 release). `sha256sum -c` understands both, but the previous
+        # two-space-only grep silently matched nothing on binary-mode files,
+        # piping an empty stream into the tool and aborting with a misleading
+        # "Checksum verification failed". `select_checksum_line` normalizes
+        # CR endings and accepts either separator.
+        expected_line="$(select_checksum_line "${ARTIFACT}" SHA256SUMS || true)"
+        if [ -z "${expected_line}" ]; then
+            error "Checksum verification failed for ${ARTIFACT}: no entry found in SHA256SUMS."
+        fi
+        if ! printf '%s\n' "${expected_line}" | ${SHA_TOOL} >/dev/null 2>&1; then
             error "Checksum verification failed for ${ARTIFACT}."
         fi
     )
     echo "Checksum verified."
+}
+
+# Select the SHA256SUMS line for ${1} from file ${2}, tolerating both the
+# two-space text-mode separator and the one-space + `*` binary-mode separator,
+# plus stray CR line endings from Windows-generated checksum files. Prints the
+# (CR-stripped) matching line to stdout, or nothing if absent. Kept as a
+# standalone function so it can be unit-tested via GARRAIA_INSTALL_SH_LIBRARY=1
+# (see tests/install_sh/checksum_format.sh).
+select_checksum_line() {
+    artifact="$1"
+    sums_file="$2"
+    # The character immediately before the filename is a space (text mode, the
+    # second of two) or `*` (binary mode). Anchor the filename to end-of-line so
+    # `garraia-linux-x86_64` never matches `garraia-linux-x86_64.sha256` or a
+    # longer sibling name.
+    tr -d '\r' < "${sums_file}" \
+        | grep -E "[ *]${artifact}\$" \
+        | head -1
 }
 
 install_binary() {
