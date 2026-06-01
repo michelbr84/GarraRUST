@@ -810,6 +810,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_persona_defaults_to_friendly() {
+        // Plan 0250 (GAR-771): the warm persona is the default; persona_lang
+        // is unset (PT-BR resolved at runtime).
+        let config = AppConfig::default();
+        assert_eq!(config.agent.persona, super::PersonaMode::Friendly);
+        assert!(config.agent.persona_lang.is_none());
+    }
+
+    #[test]
+    fn agent_persona_parses_neutral_lowercase() {
+        // Plan 0250: the config contract is lowercase (`friendly` | `neutral`).
+        let raw = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3888
+agent:
+  persona: neutral
+  persona_lang: "en"
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("parse");
+        assert_eq!(config.agent.persona, super::PersonaMode::Neutral);
+        assert_eq!(config.agent.persona_lang.as_deref(), Some("en"));
+    }
+
+    #[test]
     fn parses_memory_and_embedding_config() {
         let raw = r#"
 gateway:
