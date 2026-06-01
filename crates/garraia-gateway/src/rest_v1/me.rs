@@ -1436,7 +1436,10 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["items"].as_array().unwrap().len(), 0);
-        assert!(v.get("next_cursor").is_none(), "absent cursor must be omitted");
+        assert!(
+            v.get("next_cursor").is_none(),
+            "absent cursor must be omitted"
+        );
     }
 
     #[test]
