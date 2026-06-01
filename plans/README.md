@@ -257,4 +257,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0245 | [GAR-765 — GET /v1/me/chats (caller-scoped chat membership inbox)](0245-gar-765-me-chats-inbox.md) | [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) | ✅ Merged 2026-05-31 via PR #601 (`2bf1f5b`) |
 | 0246 | [GAR-767 — GET /v1/me/files (caller-scoped uploaded-files inbox)](0246-gar-767-me-files-inbox.md) | [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) | ✅ Merged 2026-06-01 via PR #603 |
 | 0247 | [GAR-768 — Health run 72 (2026-05-31 ~20:45 ET): all surfaces clean, priority (i)](0247-gar-768-health-run-72.md) | [GAR-768](https://linear.app/chatgpt25/issue/GAR-768) | ✅ Merged 2026-06-01 via PR #604 (`5f08141`) |
-| 0248 | [GAR-769 — Health run 73 (2026-06-01 ~00:45 ET): all surfaces clean, priority (i)](0248-gar-769-health-run-73.md) | [GAR-769](https://linear.app/chatgpt25/issue/GAR-769) | ⏳ In Progress |
+| 0248 | [GAR-769 — Health run 73 (2026-06-01 ~00:45 ET): all surfaces clean, priority (i)](0248-gar-769-health-run-73.md) | [GAR-769](https://linear.app/chatgpt25/issue/GAR-769) | ✅ Merged 2026-06-01 via PR #607 (`b2848a8`) |
+| 0249 | [GAR-770 — GET /v1/me/memory (caller-scoped personal memory inbox)](0249-gar-770-me-memory-inbox.md) | [GAR-770](https://linear.app/chatgpt25/issue/GAR-770) | ⏳ In Progress |
