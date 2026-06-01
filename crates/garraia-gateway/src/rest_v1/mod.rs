@@ -318,10 +318,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0237 (GAR-755) — GET /v1/me/mentions @mention inbox.
                 // Plan 0242 (GAR-763) — GET /v1/me/tasks assigned-task inbox.
                 // Plan 0245 (GAR-765) — GET /v1/me/chats chat membership inbox.
+                // Plan 0246 (GAR-767) — GET /v1/me/files uploaded-files inbox.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
                 .route("/v1/me/chats", get(me::list_my_chats))
+                .route("/v1/me/files", get(me::list_my_files))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -562,9 +564,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0110 (GAR-599) — PATCH /v1/me stub (no AppPool in mode 2).
                 // Plan 0237 (GAR-755) — GET /v1/me/mentions stub.
                 // Plan 0242 (GAR-763) — GET /v1/me/tasks stub.
+                // Plan 0246 (GAR-767) — GET /v1/me/files stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
+                .route("/v1/me/files", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -784,12 +788,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0110 (GAR-599) — PATCH /v1/me stub (no-auth mode).
                 // Plan 0237 (GAR-755) — GET /v1/me/mentions stub.
                 // Plan 0242 (GAR-763) — GET /v1/me/tasks stub.
+                // Plan 0246 (GAR-767) — GET /v1/me/files stub.
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
+                .route("/v1/me/files", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",

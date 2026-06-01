@@ -9,6 +9,16 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído nesta sessão
 
+- GAR-767 / plan 0246 — GET /v1/me/files (caller-scoped uploaded-files inbox):
+  - `ListMyFilesQuery` struct with `group_id` (required), `after`, `limit`, `folder_id` (optional).
+  - `MyFileSummary` fields: `id`, `group_id`, `name`, `mime_type`, `size_bytes`, `folder_id` (skip_if_none), `created_at`, `updated_at` (skip_if_none).
+  - `MyFilesResponse` with `items` + `next_cursor` (skip_serializing_if None).
+  - 4-branch query (cursor × folder_id filter), keyset on `(files.created_at DESC, files.id DESC)`.
+  - Route `.route("/v1/me/files", get(me::list_my_files))` registered in all 3 `mod.rs` branches.
+  - OpenAPI annotation + component registration in `openapi.rs`.
+  - 8 new unit tests (serialization, limit clamp, folder filter, cursor, large size).
+  - Branch: `routine/202506010015-me-files-inbox`. GAR-767 In Progress → Done pending CI.
+
 - GAR-765 / plan 0245 — GET /v1/me/chats (caller-scoped chat membership inbox):
   - `ListMyChatsQuery` struct with `group_id` (required), `after`, `limit`, `type` (optional).
   - `ChatMembershipSummary` fields: `chat_id`, `group_id`, `name`, `type`, `role`, `joined_at`, `muted`, `last_read_at`.

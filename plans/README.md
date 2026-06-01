@@ -255,3 +255,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0243 | [GAR-762 — Health run 70 (2026-05-31 ~12:45 ET): PR #594 closed superseded, all surfaces clean, priority (i)](0243-gar-762-health-run-70.md) | [GAR-762](https://linear.app/chatgpt25/issue/GAR-762) | ✅ Merged 2026-05-31 via PR #597 (`b66f6db`) |
 | 0244 | [GAR-764 — Health run 71 (2026-05-31 ~17:05 ET): PR #597+#599 merged, all surfaces clean, priority (i)](0244-gar-764-health-run-71.md) | [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) | ✅ Merged 2026-05-31 via PR #600 (`5e126b1`) |
 | 0245 | [GAR-765 — GET /v1/me/chats (caller-scoped chat membership inbox)](0245-gar-765-me-chats-inbox.md) | [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) | ✅ Merged 2026-05-31 via PR #601 (`2bf1f5b`) |
+| 0246 | [GAR-767 — GET /v1/me/files (caller-scoped uploaded-files inbox)](0246-gar-767-me-files-inbox.md) | [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) | 🔄 In Progress |
