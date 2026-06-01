@@ -17,11 +17,11 @@ serde = { workspace = true }
 tokio = { workspace = true }
 
 # OpenTelemetry (direct versions — not in workspace)
-tracing-opentelemetry = "0.32"
-opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
-opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics"] }
-opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "trace", "metrics"] }
-opentelemetry-semantic-conventions = "0.26"
+# Upgraded from 0.26 → 0.32 (plan 0252 / GAR-711 / RUSTSEC-2025-0052 async-std removed)
+tracing-opentelemetry = "0.33"
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace"] }
 
 # Metrics
 metrics = "0.24"
@@ -39,5 +39,5 @@ uuid = { version = "1", features = ["v7"] }
 [dev-dependencies]
 tokio = { workspace = true }
 tracing-test = "0.2"
-opentelemetry_sdk = { version = "0.26", features = ["rt-tokio", "trace", "metrics", "testing"] }
-opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace", "testing"] }
+opentelemetry = { version = "0.32", features = ["trace"] }

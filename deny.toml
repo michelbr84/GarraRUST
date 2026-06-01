@@ -60,7 +60,9 @@ ignore = [
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
     "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
-    "RUSTSEC-2025-0052", # async-std (via opentelemetry_sdk 0.26 → garraia-telemetry)
+    # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
+    # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
+    # opentelemetry_sdk >= 0.28 dropped async-std entirely. Removed from deny.toml.
     # NOTE: RUSTSEC-2025-0134 (rustls-pemfile unmaintained) CLOSED 2026-05-17.
     # Resolution: axum-server 0.7.3 → 0.8.0 (health routine PR
     # chore/sec-20260517-axum-server-0.8). axum-server 0.8 migrated to

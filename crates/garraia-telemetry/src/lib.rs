@@ -32,7 +32,7 @@ pub type Config = TelemetryConfig;
 /// so the gateway can spawn its dedicated `/metrics` listener against
 /// the same globally-installed recorder.
 pub struct Guard {
-    tracer_provider: Option<opentelemetry_sdk::trace::TracerProvider>,
+    tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
     metrics_handle: Option<PrometheusHandle>,
 }
 

@@ -3,16 +3,21 @@
 //! These tests deliberately avoid any network I/O. Strategy A uses
 //! `InMemorySpanExporter` from `opentelemetry_sdk`'s `testing` module
 //! (enabled via the `testing` feature in dev-dependencies) to verify that
-//! a span produced against a `TracerProvider` is captured end-to-end.
+//! a span produced against a `SdkTracerProvider` is captured end-to-end.
+//!
+//! API changes from OTel 0.26 → 0.32 (plan 0252 / GAR-711):
+//! - `TracerProvider` → `SdkTracerProvider`
+//! - `opentelemetry_sdk::testing::trace::InMemorySpanExporter`
+//!   → `opentelemetry_sdk::trace::InMemorySpanExporter`
+//! - `force_flush() -> Vec<Result<..>>` → `force_flush() -> OTelSdkResult`
 
 use opentelemetry::trace::{Span as _, Tracer, TracerProvider as _};
-use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
 #[test]
 fn smoke_in_memory_exporter_captures_span() {
     let exporter = InMemorySpanExporter::default();
-    let provider = TracerProvider::builder()
+    let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
         .build();
 
@@ -23,9 +28,10 @@ fn smoke_in_memory_exporter_captures_span() {
     // SimpleSpanProcessor exports on span end, but force_flush is safe and
     // cheap. We must read spans BEFORE `provider.shutdown()` because the
     // in-memory exporter clears its backing store on shutdown.
-    for result in provider.force_flush() {
-        result.expect("force_flush must succeed for simple exporter");
-    }
+    // In 0.32, force_flush returns a single OTelSdkResult (not Vec<Result<..>>).
+    provider
+        .force_flush()
+        .expect("force_flush must succeed for simple exporter");
 
     let spans = exporter
         .get_finished_spans()
