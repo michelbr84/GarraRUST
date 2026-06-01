@@ -42,14 +42,14 @@ pub use multi_agent::{
     SubAgentConfig,
 };
 pub use ollama::OllamaProvider;
-pub use persona::{
-    default_persona, resolve_system_prompt, DEFAULT_PERSONA_EN, DEFAULT_PERSONA_PT, Lang,
-    PersonaMode,
-};
 pub use openai::OpenAiProvider;
 pub use orchestrator::{
     Orchestrator, OrchestratorLimits, OrchestratorPlan, OrchestratorStep, OrchestratorSummary,
     StepDetail, StepStatus, ValidationResult,
+};
+pub use persona::{
+    DEFAULT_PERSONA_EN, DEFAULT_PERSONA_PT, Lang, PersonaMode, default_persona,
+    resolve_system_prompt,
 };
 pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use providers::{
