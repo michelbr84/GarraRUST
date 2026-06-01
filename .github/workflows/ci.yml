@@ -67,11 +67,17 @@ jobs:
       - name: Run shellcheck on installer fixtures
         run: shellcheck tests/install_sh/fixtures/garraia-stub.sh
 
+      - name: Run shellcheck on installer unit tests
+        run: shellcheck tests/install_sh/checksum_format.sh
+
       - name: Syntax-check the bash test runner
         run: bash -n tests/install_sh/bootstrap_phase.sh
 
       - name: Execute installer bootstrap_phase tests
         run: bash tests/install_sh/bootstrap_phase.sh
+
+      - name: Execute installer checksum-format tests
+        run: bash tests/install_sh/checksum_format.sh
 
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
