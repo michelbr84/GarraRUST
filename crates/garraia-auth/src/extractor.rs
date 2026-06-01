@@ -146,7 +146,9 @@ mod tests {
     fn owner_principal() -> Principal {
         Principal {
             user_id: Uuid::nil(),
-            group_id: Some(Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])),
+            group_id: Some(Uuid::from_bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])),
             role: Some(Role::Owner),
         }
     }
@@ -154,7 +156,9 @@ mod tests {
     fn child_principal() -> Principal {
         Principal {
             user_id: Uuid::nil(),
-            group_id: Some(Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2])),
+            group_id: Some(Uuid::from_bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            ])),
             role: Some(Role::Child),
         }
     }
