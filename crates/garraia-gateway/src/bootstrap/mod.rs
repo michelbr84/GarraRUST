@@ -49,6 +49,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     let mut runtime = AgentRuntime::new();
     let mut unreachable_local_providers: Vec<String> = Vec::new();
 
+    // Plan 0250 (GAR-771): if the vault is locked, tell the operator clearly and
+    // early — before the "no API key" warnings that are the *symptom*.
+    config::warn_if_vault_locked();
+
     let llm_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(
             config.timeouts.llm.default_secs,
@@ -701,6 +705,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // --- Agent Config ---
     if let Some(prompt) = &config.agent.system_prompt {
         runtime.set_system_prompt(prompt.clone());
+    }
+    // Plan 0250 (GAR-771): wire the default persona. When no `system_prompt` is
+    // configured, Garra speaks with the warm "friendly" voice by default; set
+    // `agent.persona = "neutral"` to opt out.
+    runtime.set_persona_mode(match config.agent.persona {
+        garraia_config::model::PersonaMode::Friendly => garraia_agents::PersonaMode::Friendly,
+        garraia_config::model::PersonaMode::Neutral => garraia_agents::PersonaMode::Neutral,
+    });
+    if let Some(lang) = &config.agent.persona_lang {
+        runtime.set_persona_lang(garraia_agents::Lang::from_code(lang));
     }
     if let Some(max_tokens) = config.agent.max_tokens {
         runtime.set_max_tokens(max_tokens);

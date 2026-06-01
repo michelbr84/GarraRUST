@@ -440,9 +440,28 @@ impl Default for MemoryConfig {
     }
 }
 
+/// Plan 0250 (GAR-771): default voice Garra uses when no `system_prompt` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersonaMode {
+    /// Warm "Garra" persona (default — plan 0250).
+    #[default]
+    Friendly,
+    /// No default system prompt; the base model's neutral tone (pre-0250).
+    Neutral,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub system_prompt: Option<String>,
+    /// Plan 0250 (GAR-771): which default persona to use when `system_prompt`
+    /// is empty. Defaults to the warm "friendly" Garra voice; set to `neutral`
+    /// to restore the pre-0250 behavior (no default system prompt).
+    #[serde(default)]
+    pub persona: PersonaMode,
+    /// Plan 0250: language for the default persona copy (e.g. "pt-BR", "en").
+    /// Defaults to PT-BR when unset.
+    pub persona_lang: Option<String>,
     pub default_provider: Option<String>,
     pub max_tokens: Option<u32>,
     pub max_context_tokens: Option<usize>,

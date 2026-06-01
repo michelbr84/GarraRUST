@@ -258,3 +258,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0246 | [GAR-767 — GET /v1/me/files (caller-scoped uploaded-files inbox)](0246-gar-767-me-files-inbox.md) | [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) | ✅ Merged 2026-06-01 via PR #603 |
 | 0247 | [GAR-768 — Health run 72 (2026-05-31 ~20:45 ET): all surfaces clean, priority (i)](0247-gar-768-health-run-72.md) | [GAR-768](https://linear.app/chatgpt25/issue/GAR-768) | ✅ Merged 2026-06-01 via PR #604 (`5f08141`) |
 | 0248 | [GAR-769 — Health run 73 (2026-06-01 ~00:45 ET): all surfaces clean, priority (i)](0248-gar-769-health-run-73.md) | [GAR-769](https://linear.app/chatgpt25/issue/GAR-769) | ⏳ In Progress |
+| 0250 | [GAR-771 — Persona amistosa do Garra (inspirado em OpenHuman): persona default + copy humanizada + erros amigáveis](0250-gar-771-garra-friendly-persona.md) | GAR-771 | 🔄 In Progress |

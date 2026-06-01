@@ -51,6 +51,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0009](0009-web-console-design-system.md) | Web Console design system "Garra Glass" (HTML+CSS custom tokens, zero CDN) | ✅ accepted | 2026-05-13 | [GAR-607](https://linear.app/chatgpt25/issue/GAR-607) |
 | [0010](0010-garra-learning-agent.md) | Garra Learning Agent / Self-Improving Operations Manual | ✅ accepted | 2026-05-17 | [GAR-641](https://linear.app/chatgpt25/issue/GAR-641) |
 | [0011](0011-garra-max-power.md) | GarraMaxPower — Native Agent-Advanced Mode (`garra max-power`) | ✅ accepted | 2026-05-24 | [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) |
+| [0012](0012-garra-persona.md) | Persona Amistosa do Garra — tom de voz padrão (inspirado em OpenHuman) | ✅ accepted | 2026-06-01 | GAR-771 |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

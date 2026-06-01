@@ -45,6 +45,21 @@
 
 <!-- TODO: Adicionar GIF de demonstração do terminal VHS aqui (#103) -->
 
+## 🐾 Conheça o Garra
+
+O **Garra** não é só um endpoint de API — ele é o seu assistente pessoal, e fala
+como um. Desde o primeiro `garra start`, ele se apresenta com nome, conversa em
+português do Brasil na primeira pessoa e mantém um tom caloroso, direto e honesto
+(sem bajulação). Quando algo dá errado, ele explica o que aconteceu e qual é o
+próximo passo — nada de despejar códigos de erro crus.
+
+> _"Oi! 👋 Eu sou o Garra, seu assistente pessoal. Pode falar comigo como você
+> falaria com um amigo."_
+
+Essa personalidade é **o padrão**, mas você manda: defina `agent.system_prompt`
+para dar a ele uma personalidade própria, ou `agent.persona = "neutral"` para um
+tom totalmente neutro. Veja [ADR 0012](docs/adr/0012-garra-persona.md).
+
 ## 🗺️ Roadmap AAA
 
 O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui GarraMaxPower nativo (`garra max-power`, registry de skills e Agent Team MVP), Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Execução semana a semana acompanhada nos [projects Linear do time GarraIA-RUST](https://linear.app/chatgpt25/team/GAR/projects).

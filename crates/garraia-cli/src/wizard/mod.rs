@@ -57,8 +57,8 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     }
 
     println!();
-    println!("  GarraIA Setup Wizard");
-    println!("  ----------------------");
+    println!("  Oi! 👋 Vamos configurar o Garra juntos — leva só um minutinho.");
+    println!("  ----------------------------------------------------------------");
     println!();
 
     // --- 1. Detect the environment -----------------------------------------
@@ -187,13 +187,19 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     };
 
     // --- 8. System prompt --------------------------------------------------
+    // Plan 0250 (GAR-771): leaving this empty now gives Garra its warm default
+    // persona automatically (resolved at runtime). Only fill it in to give Garra
+    // a *custom* personality.
+    println!();
+    println!("  Personalidade: deixe em branco e eu já falo com o jeitinho do Garra.");
+    println!("  (Preencha só se quiser me dar uma personalidade diferente.)");
     let system_prompt_input: String = Input::new()
-        .with_prompt("System prompt (optional)")
-        .default("You are a helpful personal AI assistant.".to_string())
+        .with_prompt("Personalidade do Garra (opcional)")
+        .default(String::new())
         .allow_empty(true)
         .interact_text()
         .context("system prompt input cancelled")?;
-    let system_prompt = if system_prompt_input.is_empty() {
+    let system_prompt = if system_prompt_input.trim().is_empty() {
         None
     } else {
         Some(system_prompt_input)
@@ -291,9 +297,10 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
 
     // --- 12. Final summary -------------------------------------------------
     println!();
-    println!("  Config written to {}", written.display());
-    println!("  Next: `garraia start` to launch the gateway in the foreground.");
-    println!("  Press Ctrl+C to stop. To run later in background: garraia start -d");
+    println!("  Prontinho! 🎉 O Garra está configurado e pronto pra te ajudar.");
+    println!("  Config salva em {}", written.display());
+    println!("  Agora é só rodar `garraia start` pra eu entrar no ar.");
+    println!("  Pra parar, é só Ctrl+C. Pra rodar em segundo plano: garraia start -d");
     println!("  Logs: {}/garraia.log", config_dir.display());
     if outcome.voice_enabled {
         println!("  Voice was enabled — see docs/voice.md to install Chatterbox + faster-whisper.");

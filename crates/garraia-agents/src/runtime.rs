@@ -121,6 +121,12 @@ pub struct AgentRuntime {
     embeddings: Option<Arc<dyn EmbeddingProvider>>,
     tools: Vec<Box<dyn Tool>>,
     system_prompt: Option<String>,
+    /// Plan 0250 (GAR-771): default persona used when `system_prompt` is unset.
+    /// `Friendly` gives Garra a warm default voice; `Neutral` restores the
+    /// pre-0250 behavior (no default system prompt).
+    persona_mode: crate::persona::PersonaMode,
+    /// Plan 0250: language for the default persona copy (PT-BR default).
+    persona_lang: crate::persona::Lang,
     max_tokens: Option<u32>,
     max_context_tokens: Option<usize>,
     max_tool_calls: Option<usize>,
@@ -145,6 +151,8 @@ impl AgentRuntime {
             embeddings: None,
             tools: Vec::new(),
             system_prompt: None,
+            persona_mode: crate::persona::PersonaMode::default(),
+            persona_lang: crate::persona::Lang::default(),
             max_tokens: None,
             max_context_tokens: None,
             max_tool_calls: None,
@@ -218,6 +226,25 @@ impl AgentRuntime {
 
     pub fn set_system_prompt(&mut self, prompt: String) {
         self.system_prompt = Some(prompt);
+    }
+
+    /// Plan 0250 (GAR-771): choose the default persona voice used when no
+    /// explicit `system_prompt` is set.
+    pub fn set_persona_mode(&mut self, mode: crate::persona::PersonaMode) {
+        self.persona_mode = mode;
+    }
+
+    /// Plan 0250: set the language for the default persona copy.
+    pub fn set_persona_lang(&mut self, lang: crate::persona::Lang) {
+        self.persona_lang = lang;
+    }
+
+    /// Plan 0250: resolve the base system prompt, applying the default persona
+    /// fallback when no explicit prompt is configured. An explicit
+    /// (non-empty) prompt always wins; `PersonaMode::Neutral` yields `None`
+    /// (pre-0250 behavior).
+    fn base_system_prompt(&self, explicit: Option<&str>) -> Option<String> {
+        crate::persona::resolve_system_prompt(explicit, self.persona_mode, self.persona_lang)
     }
 
     pub fn set_max_tokens(&mut self, max_tokens: u32) {
@@ -575,9 +602,13 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
-        let effective_system_prompt = system_prompt_override
+        // Plan 0250 (GAR-771): resolve override → config prompt → default
+        // persona. An explicit prompt always wins; the persona only fills in
+        // when nothing is configured (and not in Neutral mode).
+        let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
             .or_else(|| self.system_prompt.clone());
+        let effective_system_prompt = self.base_system_prompt(explicit_prompt.as_deref());
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
@@ -817,7 +848,9 @@ impl AgentRuntime {
             _ => None,
         };
 
-        let system = match (&self.system_prompt, memory_context) {
+        // Plan 0250 (GAR-771): apply default persona fallback here too.
+        let effective_system_prompt = self.base_system_prompt(self.system_prompt.as_deref());
+        let system = match (&effective_system_prompt, memory_context) {
             (Some(prompt), Some(ctx)) => Some(format!("{prompt}\n\n{ctx}")),
             (Some(prompt), None) => Some(prompt.clone()),
             (None, Some(ctx)) => Some(ctx),
@@ -1140,9 +1173,13 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
-        let effective_system_prompt = system_prompt_override
+        // Plan 0250 (GAR-771): resolve override → config prompt → default
+        // persona. An explicit prompt always wins; the persona only fills in
+        // when nothing is configured (and not in Neutral mode).
+        let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
             .or_else(|| self.system_prompt.clone());
+        let effective_system_prompt = self.base_system_prompt(explicit_prompt.as_deref());
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())

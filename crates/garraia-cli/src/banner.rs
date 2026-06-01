@@ -121,7 +121,7 @@ pub fn print_banner(host: &str, port: u16, config: &AppConfig, config_dir: &Path
 
     println!("{top}");
     println!("{}", row("", ""));
-    println!("{}", row("  Welcome to GarraIA!", "Gateway"));
+    println!("{}", row("  Oi! Eu sou o Garra 🐾", "Gateway"));
     println!("{}", row("", &url));
     println!("{}", row("      _~^~^~_", &"─".repeat(right_w - 2)));
     println!(
@@ -137,7 +137,7 @@ pub fn print_banner(host: &str, port: u16, config: &AppConfig, config_dir: &Path
         row("    / '-----' \\", &format!("Skills      {skills}"))
     );
     println!("{}", row("", &format!("MCP         {mcp}")));
-    println!("{}", row("  Rust · Personal AI", ""));
+    println!("{}", row("  Seu assistente pessoal", ""));
     println!("{}", row("", &format!("Config      {config_display}")));
     println!("{}", row("", &format!("CWD         {cwd_display}")));
     println!("{}", row("", "Press Ctrl+C to stop"));

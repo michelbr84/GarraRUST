@@ -47,7 +47,12 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap();
             let registry = state.command_registry.read().unwrap();
             let cmds = registry.list_for_role(ctx.user_role);
-            let mut help = String::from("📋 GarraIA Commands\n\n");
+            // Plan 0250 (GAR-771): warmer, PT-BR help header in Garra's voice.
+            let mut help = String::from(
+                "Claro! 🐾 Aqui está o que eu sei fazer por atalho.\n\
+                 Mas lembra: você não precisa decorar nada — é só falar comigo \
+                 normalmente.\n\n",
+            );
             for (name, desc) in &cmds {
                 help.push_str(&format!("/{name} — {desc}\n"));
             }

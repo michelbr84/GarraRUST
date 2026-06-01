@@ -17,15 +17,23 @@ impl SlashCommand for StartCommand {
         false
     }
 
-    fn execute(&self, _ctx: &CommandContext) -> CommandResult {
-        Ok(
-            "Welcome to GarraIA! Send me a message and I will respond.\n\n\
-             Commands:\n\
-             /help - show this help\n\
-             /clear - reset conversation history\n\
-             /model [name] - get or set the LLM model\n\
-             /pair - generate invite code (owner only)"
-                .to_string(),
-        )
+    fn execute(&self, ctx: &CommandContext) -> CommandResult {
+        // Plan 0250 (GAR-771): warm, PT-BR-first welcome that introduces Garra
+        // in the first person and nudges the user toward a first interaction.
+        let name = ctx.user_name.trim();
+        let greeting = if name.is_empty() {
+            "Oi! 👋 Eu sou o Garra".to_string()
+        } else {
+            format!("Oi, {name}! 👋 Eu sou o Garra")
+        };
+        Ok(format!(
+            "{greeting}, seu assistente pessoal.\n\n\
+             Pode falar comigo como você falaria com um amigo — é só me mandar \
+             uma mensagem. Por exemplo:\n\
+             • \"Me ajuda a organizar minha semana\"\n\
+             • \"Resume esse texto pra mim\"\n\
+             • \"O que você consegue fazer?\"\n\n\
+             Se quiser ver os atalhos, é só mandar /help. Vamos lá? 🐾"
+        ))
     }
 }
