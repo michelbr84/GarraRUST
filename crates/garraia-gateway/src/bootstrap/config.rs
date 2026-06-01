@@ -21,6 +21,33 @@ pub(super) fn default_allowlist_path() -> PathBuf {
     garraia_config::ConfigLoader::default_config_dir().join("allowlist.json")
 }
 
+/// Plan 0250 (GAR-771): emit one friendly, actionable warning when a credential
+/// vault exists on disk but `GARRAIA_VAULT_PASSPHRASE` is not set — the exact
+/// situation that silently disables providers/channels (the keys are encrypted
+/// and we can't open the vault). Without this, the operator only sees a cryptic
+/// "no API key" and has no idea their secrets are right there, locked.
+pub(crate) fn warn_if_vault_locked() {
+    let Some(vault_path) = default_vault_path() else {
+        return;
+    };
+    if !vault_path.exists() {
+        return;
+    }
+    let passphrase_set = std::env::var("GARRAIA_VAULT_PASSPHRASE")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if passphrase_set {
+        return;
+    }
+    tracing::warn!(
+        "🔒 Encontrei seu cofre de credenciais em {}, mas preciso da senha pra \
+         abri-lo. Suas chaves estão guardadas e seguras — só defina a variável \
+         GARRAIA_VAULT_PASSPHRASE (a mesma senha que você criou no wizard) e me \
+         reinicie. Sem ela, eu subo, mas os provedores e canais ficam desligados.",
+        vault_path.display()
+    );
+}
+
 /// Resolve an API key using the priority chain: vault -> config -> env var.
 pub(crate) fn resolve_api_key(
     config_key: Option<&str>,

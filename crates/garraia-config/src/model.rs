@@ -440,9 +440,28 @@ impl Default for MemoryConfig {
     }
 }
 
+/// Plan 0250 (GAR-771): default voice Garra uses when no `system_prompt` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PersonaMode {
+    /// Warm "Garra" persona (default — plan 0250).
+    #[default]
+    Friendly,
+    /// No default system prompt; the base model's neutral tone (pre-0250).
+    Neutral,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub system_prompt: Option<String>,
+    /// Plan 0250 (GAR-771): which default persona to use when `system_prompt`
+    /// is empty. Defaults to the warm "friendly" Garra voice; set to `neutral`
+    /// to restore the pre-0250 behavior (no default system prompt).
+    #[serde(default)]
+    pub persona: PersonaMode,
+    /// Plan 0250: language for the default persona copy (e.g. "pt-BR", "en").
+    /// Defaults to PT-BR when unset.
+    pub persona_lang: Option<String>,
     pub default_provider: Option<String>,
     pub max_tokens: Option<u32>,
     pub max_context_tokens: Option<usize>,
@@ -788,6 +807,31 @@ mod tests {
         assert!(config.memory.enabled);
         assert!(!config.memory.shared_continuity);
         assert!(config.embeddings.is_empty());
+    }
+
+    #[test]
+    fn agent_persona_defaults_to_friendly() {
+        // Plan 0250 (GAR-771): the warm persona is the default; persona_lang
+        // is unset (PT-BR resolved at runtime).
+        let config = AppConfig::default();
+        assert_eq!(config.agent.persona, super::PersonaMode::Friendly);
+        assert!(config.agent.persona_lang.is_none());
+    }
+
+    #[test]
+    fn agent_persona_parses_neutral_lowercase() {
+        // Plan 0250: the config contract is lowercase (`friendly` | `neutral`).
+        let raw = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3888
+agent:
+  persona: neutral
+  persona_lang: "en"
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("parse");
+        assert_eq!(config.agent.persona, super::PersonaMode::Neutral);
+        assert_eq!(config.agent.persona_lang.as_deref(), Some("en"));
     }
 
     #[test]

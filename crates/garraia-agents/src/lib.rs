@@ -16,6 +16,7 @@ pub mod multi_agent;
 pub mod ollama;
 pub mod openai;
 pub mod orchestrator;
+pub mod persona;
 pub mod provider_resilience;
 pub mod providers;
 pub mod runtime;
@@ -45,6 +46,10 @@ pub use openai::OpenAiProvider;
 pub use orchestrator::{
     Orchestrator, OrchestratorLimits, OrchestratorPlan, OrchestratorStep, OrchestratorSummary,
     StepDetail, StepStatus, ValidationResult,
+};
+pub use persona::{
+    DEFAULT_PERSONA_EN, DEFAULT_PERSONA_PT, Lang, PersonaMode, default_persona,
+    resolve_system_prompt,
 };
 pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use providers::{
