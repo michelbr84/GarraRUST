@@ -1,0 +1,114 @@
+name: Branch Cleanup
+
+# Apaga todas as branches remotas exceto `main` (e exceto branches que são head
+# de algum PR ABERTO, por segurança). Roda nos runners do GitHub com o
+# GITHUB_TOKEN do repositório — que TEM permissão de deletar refs —, resolvendo
+# o caso em que proxies/clientes externos não conseguem `git push --delete`.
+#
+# Disparos:
+#  * push em `main` que toque ESTE arquivo — dispara UMA vez (quando o workflow
+#    é mergeado), faz a varredura de verdade. Como é filtrado por path, não
+#    re-dispara em pushes futuros que não mexam neste arquivo.
+#  * workflow_dispatch — botão "Run workflow" na aba Actions, para re-rodar
+#    manualmente quando quiser. Padrão = dry-run; marque confirm=true p/ apagar.
+#
+# Limpeza de branches (2026-06-01, plan 0250 / acompanha o pedido do usuário de
+# "deixar apenas o main").
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/branch-cleanup.yml']
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Digite "true" para APAGAR de fato (senão é só dry-run).'
+        required: true
+        type: boolean
+        default: false
+      keep_open_pr_branches:
+        description: 'Preservar branches que são head de PRs abertos.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+# Evita corridas se dois disparos coincidirem.
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete non-main branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete branches (except main / open-PR heads)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+          KEEP_OPEN_PR: ${{ inputs.keep_open_pr_branches }}
+        run: |
+          set -euo pipefail
+
+          # Em push (merge deste workflow) confirmamos a deleção; em
+          # workflow_dispatch respeitamos o input `confirm`.
+          if [ "${EVENT_NAME}" = "push" ]; then
+            CONFIRM="true"
+          else
+            CONFIRM="${INPUT_CONFIRM}"
+          fi
+
+          # Preservar heads de PRs abertos (default true; push não tem input,
+          # então tratamos como true).
+          keep="${KEEP_OPEN_PR:-true}"
+          protected_file="$(mktemp)"
+          if [ "${keep}" != "false" ]; then
+            gh pr list --state open --json headRefName \
+              --jq '.[].headRefName' > "${protected_file}" 2>/dev/null || true
+          fi
+          echo "Branches de PRs abertos preservadas:"
+          sed 's/^/  - /' "${protected_file}" 2>/dev/null || true
+          echo "----"
+
+          deleted=0; skipped=0; failed=0
+          # Lista todas as branches via API (paginado) e apaga as que não são main.
+          while read -r b; do
+            [ -z "${b}" ] && continue
+            [ "${b}" = "main" ] && continue
+            if grep -qxF "${b}" "${protected_file}" 2>/dev/null; then
+              echo "PULANDO (PR aberto): ${b}"
+              skipped=$((skipped+1)); continue
+            fi
+            if [ "${CONFIRM}" = "true" ]; then
+              if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${b}" >/dev/null 2>&1; then
+                echo "APAGADA: ${b}"; deleted=$((deleted+1))
+              else
+                echo "FALHA ao apagar (protegida?): ${b}"; failed=$((failed+1))
+              fi
+            else
+              echo "[dry-run] apagaria: ${b}"
+            fi
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/branches" --jq '.[].name')
+
+          echo "----"
+          echo "Apagadas: ${deleted} | puladas (PR aberto): ${skipped} | falhas: ${failed}"
+          [ "${CONFIRM}" = "true" ] || echo "DRY-RUN — rode com confirm=true para apagar."
+
+      - name: Remaining branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "Branches restantes:"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/branches" --jq '.[].name' \
+            | sed 's/^/  - /'
