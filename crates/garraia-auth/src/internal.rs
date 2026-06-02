@@ -437,6 +437,8 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     // GAR-466 / Q6.4 — kill the `is_unique_violation -> true` constant
@@ -457,6 +459,74 @@ mod tests {
     #[test]
     fn is_unique_violation_false_on_configuration() {
         let err = sqlx::Error::Configuration("not a db error".into());
+        assert!(!is_unique_violation(&err));
+    }
+
+    // GAR-775 / Q6.12 — kill the two surviving mutations:
+    //   • `is_unique_violation → false` (constant-false replaces the body)
+    //   • `== → !=` in the SQLSTATE code comparison
+    // The integration test `signup_duplicate_email` exercises the true path
+    // end-to-end but the mutation runner skips `test-support`-gated binaries,
+    // so those mutations survive. These unit tests close the gap without
+    // testcontainers by constructing a fake `sqlx::Error::Database` in-process.
+
+    struct FakeDatabaseError {
+        code: &'static str,
+    }
+
+    impl std::fmt::Debug for FakeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FakeDatabaseError({})", self.code)
+        }
+    }
+
+    impl std::fmt::Display for FakeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "db error code={}", self.code)
+        }
+    }
+
+    impl std::error::Error for FakeDatabaseError {}
+
+    impl sqlx::error::DatabaseError for FakeDatabaseError {
+        fn message(&self) -> &str {
+            "fake database error"
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.code))
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            if self.code == "23505" {
+                sqlx::error::ErrorKind::UniqueViolation
+            } else {
+                sqlx::error::ErrorKind::Other
+            }
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    #[test]
+    fn is_unique_violation_true_on_23505() {
+        let err = sqlx::Error::Database(Box::new(FakeDatabaseError { code: "23505" }));
+        assert!(is_unique_violation(&err));
+    }
+
+    #[test]
+    fn is_unique_violation_false_on_other_db_error_code() {
+        let err = sqlx::Error::Database(Box::new(FakeDatabaseError { code: "42501" }));
         assert!(!is_unique_violation(&err));
     }
 }
