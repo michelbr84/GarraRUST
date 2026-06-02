@@ -73,7 +73,7 @@ jobs:
     steps:
       - name: Checkout repository
         # Match version pinned in ci.yml (verified 2026-04-30).
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
