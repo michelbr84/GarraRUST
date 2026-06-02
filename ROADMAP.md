@@ -614,6 +614,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) ✅
 - [x] `GET /v1/me/files` — caller-scoped uploaded-files inbox (cursor-paginated, optional folder filter) — plan 0246 / [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) ✅
 - [x] `GET /v1/me/memory` — caller-scoped personal memory inbox (cursor-paginated, optional kind filter) — plan 0249 / [GAR-770](https://linear.app/chatgpt25/issue/GAR-770) ✅
+- [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
 
 **Chats**
 

@@ -29,8 +29,9 @@ use super::groups::{
 use super::invites::AcceptInviteResponse;
 use super::me::{
     ChatMembershipSummary, MeResponse, MentionSummary, MentionsListResponse,
-    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyMemoryResponse, MyMemorySummary,
-    PatchMeRequest, PatchMeResponse, TaskAssignmentSummary, TasksListResponse,
+    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse,
+    MyMemorySummary, PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -100,6 +101,7 @@ impl Modify for SecurityAddon {
         super::me::list_my_chats,
         super::me::list_my_files,
         super::me::list_my_memory,
+        super::me::list_my_invites,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -183,6 +185,8 @@ impl Modify for SecurityAddon {
         MyFileSummary,
         MyMemoryResponse,
         MyMemorySummary,
+        MyInvitesResponse,
+        PendingInviteSummary,
         PatchMeRequest,
         PatchMeResponse,
         TaskAssignmentSummary,
