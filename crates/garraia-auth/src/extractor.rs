@@ -133,3 +133,94 @@ pub fn require_permission(
 ) -> Result<(), (StatusCode, &'static str)> {
     RequirePermission::check(principal, action)
 }
+
+// Unit tests for `unauth`, `forbid`, `RequirePermission::check`, and
+// `require_permission`. These tests must NOT use testcontainers so they run
+// under `cargo mutants --package garraia-auth` (which omits
+// `--features test-support` and therefore skips all testcontainer-backed
+// integration test binaries). GAR-774 / Q6.11.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner_principal() -> Principal {
+        Principal {
+            user_id: Uuid::nil(),
+            group_id: Some(Uuid::from_bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ])),
+            role: Some(Role::Owner),
+        }
+    }
+
+    fn child_principal() -> Principal {
+        Principal {
+            user_id: Uuid::nil(),
+            group_id: Some(Uuid::from_bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            ])),
+            role: Some(Role::Child),
+        }
+    }
+
+    #[test]
+    fn unauth_returns_unauthorized_status() {
+        let (status, msg) = unauth();
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "unauth() must return 401 — mutation `(Default::default(), \"\")` produces 200"
+        );
+        assert!(
+            !msg.is_empty(),
+            "unauth() rejection message must not be empty"
+        );
+    }
+
+    #[test]
+    fn forbid_returns_forbidden_status() {
+        let (status, msg) = forbid();
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "forbid() must return 403 — mutation `(Default::default(), \"\")` produces 200"
+        );
+        assert!(
+            !msg.is_empty(),
+            "forbid() rejection message must not be empty"
+        );
+    }
+
+    #[test]
+    fn require_permission_check_denies_insufficient_role() {
+        // Child-role principal must NOT be able to delete the group.
+        // Mutation `RequirePermission::check → Ok(())` would make this
+        // return Ok and panic on `.expect_err()`.
+        let err = RequirePermission::check(&child_principal(), Action::GroupDelete)
+            .expect_err("Child must not have GroupDelete permission");
+        assert_eq!(
+            err.0,
+            StatusCode::FORBIDDEN,
+            "permission denial must return 403"
+        );
+    }
+
+    #[test]
+    fn require_permission_check_allows_sufficient_role() {
+        // Owner must be able to delete the group; this positive path ensures
+        // we don't accidentally reject valid principals.
+        assert!(
+            RequirePermission::check(&owner_principal(), Action::GroupDelete).is_ok(),
+            "Owner must have GroupDelete permission"
+        );
+    }
+
+    #[test]
+    fn require_permission_free_fn_denies_insufficient_role() {
+        // Exercises the free-function wrapper. Mutation `require_permission → Ok(())`
+        // would make this return Ok and panic on `.expect_err()`.
+        let err = require_permission(&child_principal(), Action::FilesWrite)
+            .expect_err("Child must not be able to write files");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+}
