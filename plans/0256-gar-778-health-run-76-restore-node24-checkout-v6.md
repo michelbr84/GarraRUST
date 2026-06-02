@@ -79,9 +79,9 @@ plans/
 
 ## Acceptance criteria
 
-- [ ] `grep -r "checkout@v4\|setup-node@v4" .github/workflows/` returns zero hits
-- [ ] All CI checks pass on the PR
-- [ ] No Node.js 20 deprecation warning in any CI run on this branch
+- [x] `grep -r "checkout@v4\|setup-node@v4" .github/workflows/` returns zero hits
+- [x] All CI checks pass on the PR
+- [x] No Node.js 20 deprecation warning in any CI run on this branch
 
 ## Cross-references
 
