@@ -104,7 +104,7 @@ pub(crate) fn redact(raw: &str) -> String {
 /// what the cargo-mutants attribute is intended for. The trade-off — losing
 /// mutation signal inside this single function — is accepted because the
 /// `mod tests` suite already covers the redaction contract end-to-end.
-#[cfg_attr(any(), mutants::skip)]
+#[cfg_attr(mutating, mutants::skip)]
 fn redact_urls(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();

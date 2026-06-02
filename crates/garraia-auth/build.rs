@@ -27,6 +27,9 @@ use password_hash::{PasswordHasher, SaltString};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // cargo-mutants injects `--cfg mutating` when running mutation tests.
+    // Declare the key so rustc does not emit `unexpected_cfg` warnings.
+    println!("cargo::rustc-check-cfg=cfg(mutating)");
 
     // RFC 9106 first recommendation: m=65536 KiB (64 MiB), t=3, p=4, output=32B.
     let params = Params::new(64 * 1024, 3, 4, Some(32))
