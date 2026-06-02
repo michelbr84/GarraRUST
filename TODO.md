@@ -5,9 +5,25 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-05-31 (America/New_York)
+**Atualizado:** 2026-06-02 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-777 / plan 0255 — GET /v1/me/invites (caller-scoped pending group invites inbox):
+  - `ListMyInvitesQuery` struct with `after`, `limit` (both optional; no `group_id` — cross-group inbox).
+  - `PendingInviteSummary` fields: `id`, `group_id`, `proposed_role`, `created_at`, `expires_at`.
+    - `token_hash` and `invited_email` deliberately excluded (security / PII).
+  - `MyInvitesResponse` with `items` + `next_cursor` (skip_serializing_if None).
+  - 2-branch query (cursor / no-cursor): JOIN `group_invites` + `users ON email = invited_email`,
+    WHERE `u.id = $principal_user_id AND accepted_at IS NULL AND expires_at > now()`,
+    keyset on `(gi.created_at DESC, gi.id DESC)`.
+  - No SET LOCAL / no transaction (neither table has FORCE RLS).
+  - Route `.route("/v1/me/invites", get(me::list_my_invites))` registered in all 3 `mod.rs` branches.
+  - OpenAPI annotation + component registration in `openapi.rs`.
+  - 7 new unit tests (serialization, token_hash absent, limit clamp, cursor, field defaults).
+  - Branch: `routine/202506021230-me-invites-inbox`. GAR-777 In Progress → Done pending CI.
+
+- Also merged in this session: GAR-776 / GAR-773 (health run bookkeeping), PR #620 (deny.toml).
 
 - GAR-767 / plan 0246 — GET /v1/me/files (caller-scoped uploaded-files inbox):
   - `ListMyFilesQuery` struct with `group_id` (required), `after`, `limit`, `folder_id` (optional).
