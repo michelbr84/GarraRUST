@@ -18,8 +18,8 @@
 #     (health/20260523 — advisory-not-detected: cargo deny advisory DB no
 #     longer matches glib 0.18.5 / rand 0.7.3; both retained in audit.toml).
 #     Drop atomically from BOTH files when an upstream fix lands.**
-#   * The 21 unmaintained-only IDs (5 directly named: daemonize,
-#     derivative, fxhash, proc-macro-error, async-std
+#   * The 17 unmaintained-only IDs (2 directly named: derivative,
+#     proc-macro-error
 #     + 10× gtk-rs + 5× unic-*) are intentionally NOT
 #     mirrored in `audit.toml`. `cargo audit` auto-classifies them as
 #     "allowed warnings" and does NOT require explicit ignore.
@@ -58,7 +58,9 @@ ignore = [
     # (health/202605171245-replace-daemonize-nix, plan 0142 / GAR-656).
     # nix 0.31.3 was already a transitive dep; libc was already a direct dep.
     "RUSTSEC-2024-0388", # derivative (transitive via poise/serenity)
-    "RUSTSEC-2025-0057", # fxhash (transitive via wasmtime)
+    # NOTE: RUSTSEC-2025-0057 (fxhash unmaintained) CLOSED 2026-04-27.
+    # Resolution: wasmtime 28.0.1 → 44.0.0 (GAR-454) removed fxhash from
+    # Cargo.lock. advisory-not-detected in cargo deny. Removed from deny.toml.
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
     # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
     # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
