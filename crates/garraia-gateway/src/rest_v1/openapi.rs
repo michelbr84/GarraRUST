@@ -29,9 +29,9 @@ use super::groups::{
 use super::invites::AcceptInviteResponse;
 use super::me::{
     ChatMembershipSummary, MeResponse, MentionSummary, MentionsListResponse,
-    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse,
-    MyMemoryResponse, MyMemorySummary, PatchMeRequest, PatchMeResponse, PendingInviteSummary,
-    TaskAssignmentSummary, TasksListResponse,
+    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse,
+    MyMemorySummary, PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
