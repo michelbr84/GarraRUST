@@ -19,7 +19,7 @@ accepted. This plan adds:
 
 Both require `Action::MembersManage` (owner/admin only — `invited_email` is PII).
 
-## Schema change — Migration 021
+## Schema change — Migration 024
 
 `group_invites` gains two nullable columns:
 
@@ -68,7 +68,7 @@ Re-invite after revocation is now possible (unique index updated).
 
 | File | Change |
 |------|--------|
-| `crates/garraia-workspace/migrations/021_group_invites_revoked_at.sql` | New migration |
+| `crates/garraia-workspace/migrations/024_group_invites_revoked_at.sql` | New migration |
 | `crates/garraia-auth/src/audit_workspace.rs` | `InviteRevoked` variant + `as_str` + test |
 | `crates/garraia-gateway/src/rest_v1/groups.rs` | `get_invite` + `revoke_invite` + updated `list_invites` WHERE + 5 unit tests |
 | `crates/garraia-gateway/src/rest_v1/mod.rs` | Route in all 3 branches |

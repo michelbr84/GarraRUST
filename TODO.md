@@ -15,7 +15,7 @@ curtos para a próxima sessão autônoma.
   - Bookkeeping PR #624 (docs/mark-plan-0255-merged) open, CI running.
 
 - GAR-780 / plan 0257 — GET + DELETE /v1/groups/{id}/invites/{invite_id} (invite revocation):
-  - Migration 021: `revoked_at` + `revoked_by` columns on `group_invites`; recreated partial unique index to exclude revoked rows (enables re-invite after revocation).
+  - Migration 024: `revoked_at` + `revoked_by` columns on `group_invites`; recreated partial unique index to exclude revoked rows (enables re-invite after revocation).
   - `WorkspaceAuditAction::InviteRevoked` variant + `"invite.revoked"` string + test assertion.
   - `list_invites` WHERE updated: `AND revoked_at IS NULL`.
   - `get_invite` handler: returns `InviteSummary` (404 if not found/accepted/revoked).

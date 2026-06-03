@@ -1,4 +1,4 @@
--- Migration 021: Add revoked_at + revoked_by to group_invites; update partial unique index.
+-- Migration 024: Add revoked_at + revoked_by to group_invites; update partial unique index.
 --
 -- A revoked invite is one cancelled by an owner/admin before the invitee
 -- acted on it. Both columns are nullable; NULL means not revoked.
