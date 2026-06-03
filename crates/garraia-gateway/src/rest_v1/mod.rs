@@ -328,6 +328,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/files", get(me::list_my_files))
                 .route("/v1/me/memory", get(me::list_my_memory))
                 .route("/v1/me/invites", get(me::list_my_invites))
+                // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline (invitee decline).
+                .route(
+                    "/v1/me/invites/{invite_id}/decline",
+                    post(me::decline_invite),
+                )
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -340,6 +345,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{id}/invites",
                     post(groups::create_invite).get(groups::list_invites),
+                )
+                // Plan 0257 (GAR-780) — invite revocation: get + delete single invite.
+                .route(
+                    "/v1/groups/{id}/invites/{invite_id}",
+                    get(groups::get_invite).delete(groups::revoke_invite),
                 )
                 // Plan 0097 (GAR-574) — groups slice 2: list members + invites.
                 .route("/v1/groups/{id}/members", get(groups::list_members))
@@ -572,6 +582,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0246 (GAR-767) — GET /v1/me/files stub.
                 // Plan 0249 (GAR-770) — GET /v1/me/memory stub.
                 // Plan 0255 (GAR-777) — GET /v1/me/invites stub.
+                // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
@@ -579,6 +590,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/files", get(unconfigured_handler))
                 .route("/v1/me/memory", get(unconfigured_handler))
                 .route("/v1/me/invites", get(unconfigured_handler))
+                .route(
+                    "/v1/me/invites/{invite_id}/decline",
+                    post(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -587,6 +602,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{id}/invites",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0257 (GAR-780) — invite revocation, fail-soft 503.
+                .route(
+                    "/v1/groups/{id}/invites/{invite_id}",
+                    get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 // Plan 0097 (GAR-574) — groups slice 2, fail-soft 503.
                 .route("/v1/groups/{id}/members", get(unconfigured_handler))
@@ -802,6 +822,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0246 (GAR-767) — GET /v1/me/files stub.
                 // Plan 0249 (GAR-770) — GET /v1/me/memory stub.
                 // Plan 0255 (GAR-777) — GET /v1/me/invites stub.
+                // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline stub.
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
@@ -812,6 +833,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/files", get(unconfigured_handler))
                 .route("/v1/me/memory", get(unconfigured_handler))
                 .route("/v1/me/invites", get(unconfigured_handler))
+                .route(
+                    "/v1/me/invites/{invite_id}/decline",
+                    post(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -820,6 +845,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{id}/invites",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                // Plan 0257 (GAR-780) — invite revocation, no-auth stub.
+                .route(
+                    "/v1/groups/{id}/invites/{invite_id}",
+                    get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 // Plan 0097 (GAR-574) — groups slice 2, no-auth stub.
                 .route("/v1/groups/{id}/members", get(unconfigured_handler))
