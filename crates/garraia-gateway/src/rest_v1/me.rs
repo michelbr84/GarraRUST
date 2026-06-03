@@ -2845,7 +2845,10 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert!(v["items"].as_array().unwrap().is_empty());
-        assert!(v.get("next_cursor").is_none(), "next_cursor must be absent when None");
+        assert!(
+            v.get("next_cursor").is_none(),
+            "next_cursor must be absent when None"
+        );
     }
 
     #[test]
@@ -2879,7 +2882,10 @@ mod tests {
         let s = make_thread_summary("creator");
         let v = serde_json::to_value(&s).unwrap();
         assert!(v.get("title").is_none(), "title must be absent when None");
-        assert!(v.get("resolved_at").is_none(), "resolved_at must be absent when None");
+        assert!(
+            v.get("resolved_at").is_none(),
+            "resolved_at must be absent when None"
+        );
     }
 
     #[test]
@@ -2921,6 +2927,9 @@ mod tests {
         assert!(q.after.is_none());
         assert!(q.limit.is_none());
         assert!(q.include_resolved.is_none());
-        assert!(!q.include_resolved.unwrap_or(false), "default include_resolved is false");
+        assert!(
+            !q.include_resolved.unwrap_or(false),
+            "default include_resolved is false"
+        );
     }
 }
