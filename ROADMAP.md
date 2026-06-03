@@ -620,6 +620,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) ✅
 - [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
 - [x] `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline; `declined_at`+`declined_by` (migration 025); `InviteDeclined` audit event; re-invite enabled — plan 0258 / [GAR-783](https://linear.app/chatgpt25/issue/GAR-783) ✅
+- [x] `GET /v1/me/reactions` — caller-scoped emoji-reactions inbox (cursor-paginated, grouped by message with `ARRAY_AGG` emojis) — plan 0260 / [GAR-788](https://linear.app/chatgpt25/issue/GAR-788) ✅
 
 **Chats**
 
@@ -635,8 +636,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] SSE `GET /v1/chats/{chat_id}/stream` (broadcast cap-64, backpressure via `stream.lagged`) — plan 0162, merged 2026-05-21 via PR #459. Design: SSE escolhido em vez de WebSocket — canal de chat é server→client apenas; cross-tenant isolation via FORCE RLS + `WHERE group_id = $caller_group_id`.
   - [x] **Follow-up F-3** ([GAR-679](https://linear.app/chatgpt25/issue/GAR-679)): SSE rate-limit per user/group sobre `/v1/chats/{id}/stream` — DoS hardening. `MAX_SSE_PER_USER = 5`; 6th connection → 429 + `Retry-After: 60`; `SseSlotGuard` RAII + `ChatStreamGuard` decrement. Plan 0163, merged 2026-05-21.
   - [x] **Follow-up F-4** ([GAR-680](https://linear.app/chatgpt25/issue/GAR-680)): audit-log das subscriptions SSE (`chat.subscribed` no handler dentro da tx pré-commit + `chat.unsubscribed` via `tokio::spawn` no `Drop` do `ChatStreamGuard`); `subscriber_count` em metadata, PII-safe. Cobertura: 24 unit tests verdes (3 audit_workspace + 21 chats) + cenário S5 em `rest_v1_chats_sse.rs` (integration, CI). Merged 2026-05-21 via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) (`a972947`). ✅
-- [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
-- [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). 🔄 In Progress.
+- [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅
+- [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅
 - [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅ Done.
 - [x] `GET /v1/chats/{chat_id}/threads?after=<uuid>&limit=<n>&include_resolved=<bool>` — cursor-paginated list of threads in a chat, plan 0225 / [GAR-740](https://linear.app/chatgpt25/issue/GAR-740), 2026-05-29 (Florida).
 
@@ -717,7 +718,7 @@ Novo crate: `garraia-storage`.
 - [x] Reações — `POST/DELETE/GET /v1/messages/{id}/reactions` — plan 0231 / GAR-747.
 - [x] Typing indicator — `POST /v1/chats/{chat_id}/typing` (ephemeral SSE broadcast, no DB write) — plan 0233 / GAR-752.
 - [x] Menções (`@user`, `@channel`) — migration 022 `message_mentions` + `mentions: Vec<Uuid>` em `POST /v1/chats/{id}/messages` + `GET /v1/me/mentions` (cursor-paginated inbox) — plan 0237 / GAR-755.
-- [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. 🔄 In Progress.
+- [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. ✅
 - [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765.
 - [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.

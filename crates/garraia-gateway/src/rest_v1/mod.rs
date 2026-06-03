@@ -321,6 +321,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0246 (GAR-767) — GET /v1/me/files uploaded-files inbox.
                 // Plan 0249 (GAR-770) — GET /v1/me/memory personal memory inbox.
                 // Plan 0255 (GAR-777) — GET /v1/me/invites pending-invites inbox.
+                // Plan 0260 (GAR-788) — GET /v1/me/reactions emoji-reactions inbox.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
@@ -333,6 +334,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/me/invites/{invite_id}/decline",
                     post(me::decline_invite),
                 )
+                .route("/v1/me/reactions", get(me::list_my_reactions))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -583,6 +585,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0249 (GAR-770) — GET /v1/me/memory stub.
                 // Plan 0255 (GAR-777) — GET /v1/me/invites stub.
                 // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline stub.
+                // Plan 0260 (GAR-788) — GET /v1/me/reactions stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
@@ -594,6 +597,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/me/invites/{invite_id}/decline",
                     post(unconfigured_handler),
                 )
+                .route("/v1/me/reactions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -823,6 +827,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0249 (GAR-770) — GET /v1/me/memory stub.
                 // Plan 0255 (GAR-777) — GET /v1/me/invites stub.
                 // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline stub.
+                // Plan 0260 (GAR-788) — GET /v1/me/reactions stub.
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
@@ -837,6 +842,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/me/invites/{invite_id}/decline",
                     post(unconfigured_handler),
                 )
+                .route("/v1/me/reactions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
