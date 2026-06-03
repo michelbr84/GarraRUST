@@ -20,12 +20,17 @@
 //!
 //! `GET /v1/me/invites` — cursor-paginated inbox of pending group invites
 //! addressed to the caller's email address (plan 0255 / GAR-777).
+//!
+//! `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline of a
+//! pending group invite (plan 0258 / GAR-783).
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use garraia_auth::Principal;
+use garraia_auth::{Principal, WorkspaceAuditAction, audit_workspace_event};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -1381,6 +1386,8 @@ pub async fn list_my_invites(
              JOIN users u ON u.email = gi.invited_email \
              WHERE u.id = $1 \
                AND gi.accepted_at IS NULL \
+               AND gi.revoked_at IS NULL \
+               AND gi.declined_at IS NULL \
                AND gi.expires_at > now() \
              ORDER BY gi.created_at DESC, gi.id DESC \
              LIMIT $2",
@@ -1397,6 +1404,8 @@ pub async fn list_my_invites(
              JOIN users u ON u.email = gi.invited_email \
              WHERE u.id = $1 \
                AND gi.accepted_at IS NULL \
+               AND gi.revoked_at IS NULL \
+               AND gi.declined_at IS NULL \
                AND gi.expires_at > now() \
                AND (gi.created_at, gi.id) < ( \
                    SELECT gi2.created_at, gi2.id FROM group_invites gi2 \
@@ -1434,6 +1443,113 @@ pub async fn list_my_invites(
         .collect();
 
     Ok(Json(MyInvitesResponse { items, next_cursor }))
+}
+
+// ─── POST /v1/me/invites/{invite_id}/decline ─────────────────────────────────
+
+/// `POST /v1/me/invites/{invite_id}/decline` — invitee-side decline of a pending
+/// group invite (plan 0258 / GAR-783).
+///
+/// Sets `declined_at = now()` and `declined_by = caller_user_id` on the invite row.
+/// Returns 204 No Content on success. Returns 404 if the invite does not exist,
+/// does not belong to the caller, has already been accepted, revoked, or declined.
+///
+/// No `X-Group-Id` header required — `group_id` is resolved from the invite row.
+/// No capability check — any authenticated user may decline their own invite.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Invite not found / not the caller's / terminal | 404    |
+/// | Happy path                                     | 204    |
+#[utoipa::path(
+    post,
+    path = "/v1/me/invites/{invite_id}/decline",
+    params(
+        ("invite_id" = Uuid, Path, description = "Invite UUID to decline."),
+    ),
+    responses(
+        (status = 204, description = "Invite declined."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Invite not found, not addressed to caller, or already terminal (accepted/revoked/declined).", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn decline_invite(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(invite_id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // SET LOCAL user_id for FORCE-RLS on audit_events.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Soft-decline: verify the caller is the invitee (JOIN users ON email),
+    // ensure the invite is still pending, then set declined_at + declined_by.
+    // RETURNING group_id + proposed_role for audit (group_id also needed for
+    // SET LOCAL app.current_group_id before the audit_events INSERT).
+    #[derive(sqlx::FromRow)]
+    struct DeclinedRow {
+        group_id: Uuid,
+        proposed_role: String,
+    }
+
+    let declined: Option<DeclinedRow> = sqlx::query_as(
+        "UPDATE group_invites gi \
+         SET declined_at = now(), declined_by = u.id \
+         FROM users u \
+         WHERE u.email = gi.invited_email \
+           AND u.id = $1 \
+           AND gi.id = $2 \
+           AND gi.accepted_at IS NULL \
+           AND gi.revoked_at IS NULL \
+           AND gi.declined_at IS NULL \
+         RETURNING gi.group_id, gi.proposed_role",
+    )
+    .bind(principal.user_id)
+    .bind(invite_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = declined.ok_or(RestError::NotFound)?;
+
+    // SET LOCAL group_id now that we know it (required for FORCE-RLS audit_events INSERT).
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(row.group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Emit audit event. Metadata: proposed_role only — invited_email is PII.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::InviteDeclined,
+        principal.user_id,
+        row.group_id,
+        "group_invites",
+        invite_id.to_string(),
+        json!({ "proposed_role": row.proposed_role }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -2150,5 +2266,55 @@ mod tests {
         };
         assert_eq!(q.after, Some(after));
         assert_eq!(q.limit, Some(10));
+    }
+
+    // ─── POST /v1/me/invites/{invite_id}/decline ─────────────────────────────
+
+    #[test]
+    fn pending_invite_summary_no_declined_at_field() {
+        // PendingInviteSummary must not expose declined_at (migration 025 column
+        // must never leak into the JSON response).
+        let summary = PendingInviteSummary {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            proposed_role: "member".into(),
+            created_at: chrono::DateTime::UNIX_EPOCH,
+            expires_at: chrono::DateTime::UNIX_EPOCH,
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert!(
+            v.get("declined_at").is_none(),
+            "declined_at must not leak into summary response"
+        );
+        assert!(
+            v.get("declined_by").is_none(),
+            "declined_by must not leak into summary response"
+        );
+    }
+
+    #[test]
+    fn my_invites_response_with_declined_invite_excluded() {
+        // When a declined invite is excluded, the inbox is empty.
+        let resp = MyInvitesResponse {
+            items: vec![],
+            next_cursor: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 0);
+        assert!(v.get("next_cursor").is_none() || v["next_cursor"].is_null());
+    }
+
+    #[test]
+    fn my_invites_response_next_cursor_omitted_when_none() {
+        let resp = MyInvitesResponse {
+            items: vec![],
+            next_cursor: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        // next_cursor must be absent (skip_serializing_if None), not "null".
+        assert!(
+            v.get("next_cursor").is_none(),
+            "next_cursor must be omitted when None"
+        );
     }
 }

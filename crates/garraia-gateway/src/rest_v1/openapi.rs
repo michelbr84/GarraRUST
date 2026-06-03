@@ -102,6 +102,7 @@ impl Modify for SecurityAddon {
         super::me::list_my_files,
         super::me::list_my_memory,
         super::me::list_my_invites,
+        super::me::decline_invite,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
