@@ -489,8 +489,8 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // different rand_core majors.
     fn unit_vector(seed: u64) -> pgvector::Vector {
         use rand_chacha::{
-            rand_core::{Rng, SeedableRng},
             ChaCha8Rng,
+            rand_core::{Rng, SeedableRng},
         };
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut v: Vec<f32> = (0..768)
