@@ -548,7 +548,7 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 - [x] `api_keys` (`id`, `user_id`, `label`, `key_hash UNIQUE`, `scopes jsonb`, `created_at`, `revoked_at`, `last_used_at`) — Argon2id pinned, migration 001 ✅
 - [x] `groups` (`id`, `name`, `type`, `created_by`, `settings jsonb`, `created_at`, `updated_at`) — migration 001 ✅
 - [x] `group_members` (`group_id`, `user_id`, `role`, `status`, `joined_at`, `invited_by`) — migration 001 ✅
-- [x] `group_invites` (`id`, `group_id`, `invited_email citext`, `proposed_role`, `token_hash UNIQUE`, `expires_at`, `created_by`, `created_at`, `accepted_at`, `accepted_by`) — migration 001 ✅
+- [x] `group_invites` (`id`, `group_id`, `invited_email citext`, `proposed_role`, `token_hash UNIQUE`, `expires_at`, `created_by`, `created_at`, `accepted_at`, `accepted_by`, `revoked_at`, `revoked_by`) — migration 001 + 021 (plan 0257) ✅
 - [x] `roles`, `permissions`, `role_permissions` — migration 002 ✅ (5 roles + 22 permissions + 63 role_permissions, seed estático)
 - [x] `audit_events` (`id`, `group_id`, `actor_user_id`, `actor_label`, `action`, `resource_type`, `resource_id`, `ip`, `user_agent`, `metadata`, `created_at`) — NO FK intencional, sobrevive CASCADE para LGPD art. 8 §5 / GDPR art. 17(1), migration 002 ✅
 - [x] `group_members_single_owner_idx` — partial unique index `WHERE role = 'owner'` (fecha GAR-414 M1), migration 002 ✅
@@ -609,11 +609,15 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `DELETE /v1/groups/{group_id}/members/{user_id}` — plan 0020, entregue 2026-04-20
 - [x] `GET /v1/groups/{group_id}/members` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
 - [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
+- [x] `GET /v1/groups/{group_id}/invites/{invite_id}` — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
+- [x] `DELETE /v1/groups/{group_id}/invites/{invite_id}` (revoke) — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
 - [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) ✅
 - [x] `GET /v1/me/files` — caller-scoped uploaded-files inbox (cursor-paginated, optional folder filter) — plan 0246 / [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) ✅
 - [x] `GET /v1/me/memory` — caller-scoped personal memory inbox (cursor-paginated, optional kind filter) — plan 0249 / [GAR-770](https://linear.app/chatgpt25/issue/GAR-770) ✅
+- [x] `GET /v1/me/tasks` — caller-scoped task assignment inbox (cursor-paginated) — plan 0243 / [GAR-763](https://linear.app/chatgpt25/issue/GAR-763) ✅
+- [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) ✅
 - [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
 
 **Chats**

@@ -10,20 +10,22 @@ curtos para a próxima sessão autônoma.
 ## Concluído nesta sessão
 
 - GAR-777 / plan 0255 — GET /v1/me/invites (caller-scoped pending group invites inbox):
-  - `ListMyInvitesQuery` struct with `after`, `limit` (both optional; no `group_id` — cross-group inbox).
-  - `PendingInviteSummary` fields: `id`, `group_id`, `proposed_role`, `created_at`, `expires_at`.
-    - `token_hash` and `invited_email` deliberately excluded (security / PII).
-  - `MyInvitesResponse` with `items` + `next_cursor` (skip_serializing_if None).
-  - 2-branch query (cursor / no-cursor): JOIN `group_invites` + `users ON email = invited_email`,
-    WHERE `u.id = $principal_user_id AND accepted_at IS NULL AND expires_at > now()`,
-    keyset on `(gi.created_at DESC, gi.id DESC)`.
-  - No SET LOCAL / no transaction (neither table has FORCE RLS).
-  - Route `.route("/v1/me/invites", get(me::list_my_invites))` registered in all 3 `mod.rs` branches.
-  - OpenAPI annotation + component registration in `openapi.rs`.
-  - 7 new unit tests (serialization, token_hash absent, limit clamp, cursor, field defaults).
-  - Branch: `routine/202506021230-me-invites-inbox`. GAR-777 In Progress → Done pending CI.
+  - Merged PR #621 (`762d63c`) after CI went 20/20 green.
+  - GAR-777 → Done in Linear.
+  - Bookkeeping PR #624 (docs/mark-plan-0255-merged) open, CI running.
 
-- Also merged in this session: GAR-776 / GAR-773 (health run bookkeeping), PR #620 (deny.toml).
+- GAR-780 / plan 0257 — GET + DELETE /v1/groups/{id}/invites/{invite_id} (invite revocation):
+  - Migration 024: `revoked_at` + `revoked_by` columns on `group_invites`; recreated partial unique index to exclude revoked rows (enables re-invite after revocation).
+  - `WorkspaceAuditAction::InviteRevoked` variant + `"invite.revoked"` string + test assertion.
+  - `list_invites` WHERE updated: `AND revoked_at IS NULL`.
+  - `get_invite` handler: returns `InviteSummary` (404 if not found/accepted/revoked).
+  - `revoke_invite` handler: `UPDATE SET revoked_at = now()`, emits `InviteRevoked` audit event, 204 No Content (404 if already accepted/revoked).
+  - Routes in all 3 `mod.rs` branches. OpenAPI paths + schemas (`InviteSummary`, `ListInvitesResponse`).
+  - 5 unit tests (serialization, cursor, role round-trip, no `revoked_at` in response).
+  - Branch: `routine/202506021830-invite-revoke`. PR #625 open, CI starting.
+
+## Concluído em sessões anteriores
+
 
 - GAR-767 / plan 0246 — GET /v1/me/files (caller-scoped uploaded-files inbox):
   - `ListMyFilesQuery` struct with `group_id` (required), `after`, `limit`, `folder_id` (optional).

@@ -1685,7 +1685,7 @@ pub async fn list_invites(
         sqlx::query_as(
             "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
              FROM group_invites \
-             WHERE group_id = $1 AND accepted_at IS NULL \
+             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL \
                AND (created_at, id) > (\
                    SELECT created_at, id FROM group_invites WHERE id = $2\
                ) \
@@ -1700,7 +1700,7 @@ pub async fn list_invites(
         sqlx::query_as(
             "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
              FROM group_invites \
-             WHERE group_id = $1 AND accepted_at IS NULL \
+             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL \
              ORDER BY created_at ASC, id ASC LIMIT $2",
         )
         .bind(id)
@@ -1736,6 +1736,215 @@ pub async fn list_invites(
         .collect();
 
     Ok(Json(ListInvitesResponse { items, next_cursor }))
+}
+
+// ─── Handlers: get_invite / revoke_invite ─────────────────────────────────────
+
+/// `GET /v1/groups/{id}/invites/{invite_id}` — fetch a single pending invite (plan 0257, GAR-780).
+///
+/// Returns the `InviteSummary` for one pending (not accepted, not revoked,
+/// not expired) invite. The invite must belong to the group in the path.
+/// Requires `Action::MembersManage`.
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{id}/invites/{invite_id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID."),
+        ("invite_id" = Uuid, Path, description = "Invite UUID."),
+    ),
+    responses(
+        (status = 200, description = "Pending invite detail.", body = InviteSummary),
+        (status = 400, description = "Missing or mismatched X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` capability.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Invite not found, already accepted, or revoked.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_invite(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, invite_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<InviteSummary>, RestError> {
+    // 1. Path/header coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check — email is PII, owner/admin only.
+    if !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Open tx + SET LOCAL.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Fetch single pending invite. token_hash deliberately excluded.
+    #[derive(sqlx::FromRow)]
+    struct InviteRow {
+        id: Uuid,
+        invited_email: String,
+        proposed_role: String,
+        expires_at: DateTime<Utc>,
+        created_by: Uuid,
+        created_at: DateTime<Utc>,
+    }
+
+    let row: Option<InviteRow> = sqlx::query_as(
+        "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
+         FROM group_invites \
+         WHERE id = $1 AND group_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL",
+    )
+    .bind(invite_id)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let r = row.ok_or(RestError::NotFound)?;
+
+    Ok(Json(InviteSummary {
+        id: r.id,
+        invited_email: r.invited_email,
+        proposed_role: r.proposed_role,
+        expires_at: r.expires_at,
+        created_by: r.created_by,
+        created_at: r.created_at,
+    }))
+}
+
+/// `DELETE /v1/groups/{id}/invites/{invite_id}` — revoke a pending invite (plan 0257, GAR-780).
+///
+/// Sets `revoked_at = now()` and `revoked_by = caller_id` on the invite row.
+/// Returns 204 No Content on success. Returns 404 if the invite does not exist,
+/// belongs to a different group, has already been accepted, or was already revoked.
+/// Requires `Action::MembersManage`.
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{id}/invites/{invite_id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID."),
+        ("invite_id" = Uuid, Path, description = "Invite UUID."),
+    ),
+    responses(
+        (status = 204, description = "Invite revoked."),
+        (status = 400, description = "Missing or mismatched X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `members.manage` capability.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Invite not found, already accepted, or already revoked.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn revoke_invite(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, invite_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, RestError> {
+    // 1. Path/header coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check.
+    if !can(&principal, Action::MembersManage) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Open tx + SET LOCAL both user_id and group_id (group_id is
+    //    required for the audit_events FORCE-RLS INSERT).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Soft-revoke: set revoked_at + revoked_by.
+    //    WHERE guards: must belong to the group, not accepted, not already revoked.
+    //    rows_affected == 0 → 404 (not found, wrong group, accepted, or already revoked).
+    #[derive(sqlx::FromRow)]
+    struct RevokedRow {
+        proposed_role: String,
+    }
+
+    let revoked: Option<RevokedRow> = sqlx::query_as(
+        "UPDATE group_invites \
+         SET revoked_at = now(), revoked_by = $1 \
+         WHERE id = $2 AND group_id = $3 AND accepted_at IS NULL AND revoked_at IS NULL \
+         RETURNING proposed_role",
+    )
+    .bind(principal.user_id)
+    .bind(invite_id)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = revoked.ok_or(RestError::NotFound)?;
+
+    // 5. Emit audit event. Metadata: proposed_role only (invited_email is PII).
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::InviteRevoked,
+        principal.user_id,
+        id,
+        "group_invites",
+        invite_id.to_string(),
+        json!({ "proposed_role": row.proposed_role }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── DTOs: list_groups ────────────────────────────────────────────────────────
@@ -2191,5 +2400,87 @@ mod tests {
         // re-evaluate the plan 0020 design invariants §6 and the
         // hierarchy model before accepting the divergence.
         assert_eq!(ALLOWED_SETROLE_VALUES, ALLOWED_INVITE_ROLES);
+    }
+
+    // ── InviteSummary / get_invite / revoke_invite (plan 0257, GAR-780) ────
+
+    #[test]
+    fn invite_summary_serializes_all_fields() {
+        let id = Uuid::nil();
+        let created_by = Uuid::nil();
+        let now = chrono::Utc::now();
+        let summary = InviteSummary {
+            id,
+            invited_email: "alice@example.com".into(),
+            proposed_role: "member".into(),
+            expires_at: now,
+            created_by,
+            created_at: now,
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(v["id"], id.to_string());
+        assert_eq!(v["invited_email"], "alice@example.com");
+        assert_eq!(v["proposed_role"], "member");
+        assert!(
+            v.get("token_hash").is_none(),
+            "token_hash must not be serialized"
+        );
+    }
+
+    #[test]
+    fn list_invites_response_empty_has_no_next_cursor() {
+        let resp = ListInvitesResponse {
+            items: vec![],
+            next_cursor: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 0);
+        assert!(v["next_cursor"].is_null());
+    }
+
+    #[test]
+    fn list_invites_response_with_cursor_serializes() {
+        let cursor_id = Uuid::new_v4();
+        let resp = ListInvitesResponse {
+            items: vec![],
+            next_cursor: Some(cursor_id),
+        };
+        let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["next_cursor"], cursor_id.to_string());
+    }
+
+    #[test]
+    fn invite_summary_proposed_role_reflects_original() {
+        let now = chrono::Utc::now();
+        for role in &["admin", "member", "guest", "child"] {
+            let summary = InviteSummary {
+                id: Uuid::nil(),
+                invited_email: "x@y.com".into(),
+                proposed_role: role.to_string(),
+                expires_at: now,
+                created_by: Uuid::nil(),
+                created_at: now,
+            };
+            let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+            assert_eq!(v["proposed_role"], *role);
+        }
+    }
+
+    #[test]
+    fn invite_summary_does_not_expose_revoked_at() {
+        let now = chrono::Utc::now();
+        let summary = InviteSummary {
+            id: Uuid::nil(),
+            invited_email: "bob@example.com".into(),
+            proposed_role: "guest".into(),
+            expires_at: now,
+            created_by: Uuid::nil(),
+            created_at: now,
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        assert!(
+            v.get("revoked_at").is_none(),
+            "revoked_at must not leak into summary response"
+        );
     }
 }

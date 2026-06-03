@@ -24,7 +24,7 @@ use super::files::{
 };
 use super::groups::{
     CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
-    MemberResponse, SetRoleRequest, UpdateGroupRequest,
+    InviteSummary, ListInvitesResponse, MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
 use super::me::{
@@ -108,6 +108,8 @@ impl Modify for SecurityAddon {
         super::groups::patch_group,
         super::groups::create_invite,
         super::groups::list_invites,
+        super::groups::get_invite,
+        super::groups::revoke_invite,
         super::groups::list_members,
         super::groups::set_member_role,
         super::groups::delete_member,
@@ -199,6 +201,8 @@ impl Modify for SecurityAddon {
         GroupResponse,
         GroupReadResponse,
         InviteResponse,
+        InviteSummary,
+        ListInvitesResponse,
         MemberResponse,
         AcceptInviteResponse,
         CreateUploadRequest,
