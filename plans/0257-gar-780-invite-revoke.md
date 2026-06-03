@@ -1,6 +1,6 @@
 # Plan 0257 — GAR-780: GET + DELETE /v1/groups/{id}/invites/{invite_id} (invite revocation)
 
-**Status:** In Progress
+**Status:** Merged — PR #625 (`46a8658`) 2026-06-03
 **Linear:** [GAR-780](https://linear.app/chatgpt25/issue/GAR-780)
 **Branch:** `routine/202506021830-invite-revoke`
 **Date:** 2026-06-02 (America/New_York)
