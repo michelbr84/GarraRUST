@@ -31,7 +31,8 @@ use super::me::{
     ChatMembershipSummary, MeResponse, MentionSummary, MentionsListResponse,
     MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse,
     MyMemorySummary, MyReactionSummary, MyReactionsResponse, MyThreadSummary, MyThreadsResponse,
-    PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary, TasksListResponse,
+    PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
