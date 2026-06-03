@@ -1,6 +1,6 @@
 # Plan 0259 — GAR-784 + GAR-785: lopdf 0.34→0.40 + rand_chacha 0.9→0.10 compat fixes
 
-**Status:** In Progress
+**Status:** Done — merged 2026-06-03 via PR #634 (`fa8e3c0`)
 **Linear:** [GAR-784](https://linear.app/chatgpt25/issue/GAR-784) + [GAR-785](https://linear.app/chatgpt25/issue/GAR-785)
 **Branch:** `routine/202506031615-deps-lopdf-randchacha-compat`
 **Date:** 2026-06-03 (America/New_York)
