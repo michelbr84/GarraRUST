@@ -1,8 +1,8 @@
 //! GAR-266: Benchmark suite — glob matching at 10k, 100k, 200k paths.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
 use garraia_glob::pattern::{GlobConfig, GlobMode, GlobPattern};
+use std::hint::black_box;
 
 // ── Test data generators ──────────────────────────────────────────────────
 
