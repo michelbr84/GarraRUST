@@ -69,6 +69,18 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ proposed_role }` — never `invited_email` (PII).
     InviteRevoked,
 
+    /// A pending invite was declined by the invitee via
+    /// `POST /v1/me/invites/{invite_id}/decline` (plan 0258 /
+    /// GAR-783, Fase 3.4 invite decline).
+    ///
+    /// Emitted only when `declined_at` transitions from NULL (first
+    /// decline). Already-declined, accepted, or revoked invites return
+    /// 404 without emitting an event.
+    ///
+    /// `resource_type = "group_invites"`, `resource_id = invite.id`.
+    /// Metadata: `{ proposed_role }` — never `invited_email` (PII).
+    InviteDeclined,
+
     /// A member's role was changed via
     /// `POST /v1/groups/{id}/members/{user_id}/setRole` (plan 0020).
     ///
@@ -585,6 +597,7 @@ impl WorkspaceAuditAction {
         match self {
             WorkspaceAuditAction::InviteAccepted => "invite.accepted",
             WorkspaceAuditAction::InviteRevoked => "invite.revoked",
+            WorkspaceAuditAction::InviteDeclined => "invite.declined",
             WorkspaceAuditAction::MemberRoleChanged => "member.role_changed",
             WorkspaceAuditAction::MemberRemoved => "member.removed",
             WorkspaceAuditAction::UploadCompleted => "upload.completed",
@@ -713,6 +726,10 @@ mod tests {
         assert_eq!(
             WorkspaceAuditAction::InviteRevoked.as_str(),
             "invite.revoked"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::InviteDeclined.as_str(),
+            "invite.declined"
         );
         assert_eq!(
             WorkspaceAuditAction::MemberRoleChanged.as_str(),

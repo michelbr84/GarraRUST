@@ -1685,7 +1685,7 @@ pub async fn list_invites(
         sqlx::query_as(
             "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
              FROM group_invites \
-             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL \
+             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL \
                AND (created_at, id) > (\
                    SELECT created_at, id FROM group_invites WHERE id = $2\
                ) \
@@ -1700,7 +1700,7 @@ pub async fn list_invites(
         sqlx::query_as(
             "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
              FROM group_invites \
-             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL \
+             WHERE group_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL \
              ORDER BY created_at ASC, id ASC LIMIT $2",
         )
         .bind(id)
@@ -1813,7 +1813,7 @@ pub async fn get_invite(
     let row: Option<InviteRow> = sqlx::query_as(
         "SELECT id, invited_email, proposed_role, expires_at, created_by, created_at \
          FROM group_invites \
-         WHERE id = $1 AND group_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL",
+         WHERE id = $1 AND group_id = $2 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL",
     )
     .bind(invite_id)
     .bind(id)
@@ -1915,7 +1915,7 @@ pub async fn revoke_invite(
     let revoked: Option<RevokedRow> = sqlx::query_as(
         "UPDATE group_invites \
          SET revoked_at = now(), revoked_by = $1 \
-         WHERE id = $2 AND group_id = $3 AND accepted_at IS NULL AND revoked_at IS NULL \
+         WHERE id = $2 AND group_id = $3 AND accepted_at IS NULL AND revoked_at IS NULL AND declined_at IS NULL \
          RETURNING proposed_role",
     )
     .bind(principal.user_id)

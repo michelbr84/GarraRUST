@@ -619,6 +619,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/me/tasks` — caller-scoped task assignment inbox (cursor-paginated) — plan 0243 / [GAR-763](https://linear.app/chatgpt25/issue/GAR-763) ✅
 - [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) ✅
 - [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
+- [x] `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline; `declined_at`+`declined_by` (migration 025); `InviteDeclined` audit event; re-invite enabled — plan 0258 / [GAR-783](https://linear.app/chatgpt25/issue/GAR-783) 🔄 In Progress
 
 **Chats**
 
