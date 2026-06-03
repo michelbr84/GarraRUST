@@ -23,8 +23,8 @@ use super::files::{
     FolderSummary, PatchFileRequest, PatchFolderRequest,
 };
 use super::groups::{
-    CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteSummary,
-    ListInvitesResponse, InviteResponse, MemberResponse, SetRoleRequest, UpdateGroupRequest,
+    CreateGroupRequest, CreateInviteRequest, GroupReadResponse, GroupResponse, InviteResponse,
+    InviteSummary, ListInvitesResponse, MemberResponse, SetRoleRequest, UpdateGroupRequest,
 };
 use super::invites::AcceptInviteResponse;
 use super::me::{

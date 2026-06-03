@@ -2421,7 +2421,10 @@ mod tests {
         assert_eq!(v["id"], id.to_string());
         assert_eq!(v["invited_email"], "alice@example.com");
         assert_eq!(v["proposed_role"], "member");
-        assert!(v.get("token_hash").is_none(), "token_hash must not be serialized");
+        assert!(
+            v.get("token_hash").is_none(),
+            "token_hash must not be serialized"
+        );
     }
 
     #[test]
