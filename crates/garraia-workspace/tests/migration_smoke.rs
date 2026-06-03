@@ -482,14 +482,20 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     .await?;
 
     // Deterministic unit-normalized 768-d vectors. We use ChaCha8Rng
-    // explicitly (not StdRng) so the bit-for-bit output is stable across
-    // rand crate major versions — StdRng's backing algorithm is not
-    // guaranteed by the rand contract.
+    // explicitly (not StdRng) so the output is stable across rand_chacha
+    // patch releases — StdRng's backing algorithm is not guaranteed by the
+    // rand contract. Float generation uses RngCore::next_u64 directly to
+    // avoid a rand_core version mismatch when rand_chacha and rand are on
+    // different rand_core majors.
     fn unit_vector(seed: u64) -> pgvector::Vector {
-        use rand::{Rng, SeedableRng};
-        use rand_chacha::ChaCha8Rng;
+        use rand_chacha::{
+            rand_core::{Rng, SeedableRng},
+            ChaCha8Rng,
+        };
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut v: Vec<f32> = (0..768).map(|_| rng.random_range(-1.0..1.0)).collect();
+        let mut v: Vec<f32> = (0..768)
+            .map(|_| (rng.next_u64() as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32)
+            .collect();
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for x in v.iter_mut() {
