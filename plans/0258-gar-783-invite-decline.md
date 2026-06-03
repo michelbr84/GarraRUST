@@ -1,6 +1,6 @@
 # Plan 0258 — GAR-783: POST /v1/me/invites/{invite_id}/decline (invitee-side invite decline)
 
-**Status:** In Progress
+**Status:** Done — merged 2026-06-03 via PR #632 (`593206f`)
 **Linear:** [GAR-783](https://linear.app/chatgpt25/issue/GAR-783)
 **Branch:** `routine/202506031430-invite-decline`
 **Date:** 2026-06-03 (America/New_York)

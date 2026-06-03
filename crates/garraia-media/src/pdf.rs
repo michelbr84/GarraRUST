@@ -115,32 +115,32 @@ impl PdfProcessor {
         DocumentMetadata {
             title: info_dict
                 .and_then(|d| d.get(b"Title").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             author: info_dict
                 .and_then(|d| d.get(b"Author").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             subject: info_dict
                 .and_then(|d| d.get(b"Subject").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             creator: info_dict
                 .and_then(|d| d.get(b"Creator").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             producer: info_dict
                 .and_then(|d| d.get(b"Producer").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             creation_date: info_dict
                 .and_then(|d| d.get(b"CreationDate").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
             modification_date: info_dict
                 .and_then(|d| d.get(b"ModDate").ok())
-                .and_then(|v| v.as_string().ok())
-                .map(|s| s.to_string()),
+                .and_then(|v| v.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
         }
     }
 
