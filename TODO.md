@@ -5,7 +5,7 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-06-02 (America/New_York)
+**Atualizado:** 2026-06-03 (America/New_York)
 
 ## Concluído nesta sessão
 
@@ -22,7 +22,9 @@ curtos para a próxima sessão autônoma.
   - `revoke_invite` handler: `UPDATE SET revoked_at = now()`, emits `InviteRevoked` audit event, 204 No Content (404 if already accepted/revoked).
   - Routes in all 3 `mod.rs` branches. OpenAPI paths + schemas (`InviteSummary`, `ListInvitesResponse`).
   - 5 unit tests (serialization, cursor, role round-trip, no `revoked_at` in response).
-  - Branch: `routine/202506021830-invite-revoke`. PR #625 open, CI starting.
+  - Squash-merged PR #625 (`46a8658`) 2026-06-03 — 20/20 CI green.
+  - GAR-780 → Done in Linear.
+  - Bookkeeping PR (docs/mark-plan-0257-merged) open.
 
 ## Concluído em sessões anteriores
 
