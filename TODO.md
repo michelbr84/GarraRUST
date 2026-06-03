@@ -26,6 +26,7 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído em sessões anteriores
 
+
 - GAR-767 / plan 0246 — GET /v1/me/files (caller-scoped uploaded-files inbox):
   - `ListMyFilesQuery` struct with `group_id` (required), `after`, `limit`, `folder_id` (optional).
   - `MyFileSummary` fields: `id`, `group_id`, `name`, `mime_type`, `size_bytes`, `folder_id` (skip_if_none), `created_at`, `updated_at` (skip_if_none).
