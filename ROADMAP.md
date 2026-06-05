@@ -783,6 +783,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / GAR-520 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / GAR-520 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / GAR-520 ✅
+- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` (edit body, sender-only) — plan 0264 / [GAR-795](https://linear.app/chatgpt25/issue/GAR-795) ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/assignees` — plan 0077 / GAR-533 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/assignees` — plan 0077 / GAR-533 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}` — plan 0077 / GAR-533 ✅

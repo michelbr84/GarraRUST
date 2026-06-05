@@ -47,10 +47,10 @@ use super::search::{SearchResponse, SearchResult, SearchResultType};
 use super::tasks::{
     AddAssigneeRequest, AssignTaskLabelRequest, AssigneeResponse, CommentResponse,
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
-    LabelAssignmentResponse, ListCommentsResponse, ListSubtasksResponse, ListTaskListsResponse,
-    ListTasksResponse, MoveTaskRequest, PatchTaskListRequest, PatchTaskRequest,
-    SubscriptionResponse, TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse,
-    TaskSummary,
+    EditCommentRequest, EditedCommentResponse, LabelAssignmentResponse, ListCommentsResponse,
+    ListSubtasksResponse, ListTaskListsResponse, ListTasksResponse, MoveTaskRequest,
+    PatchTaskListRequest, PatchTaskRequest, SubscriptionResponse, TaskLabelResponse,
+    TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -153,6 +153,7 @@ impl Modify for SecurityAddon {
         super::tasks::comments::create_task_comment,
         super::tasks::comments::list_task_comments,
         super::tasks::comments::delete_task_comment,
+        super::tasks::comments::patch_task_comment,
         super::tasks::assignees::add_task_assignee,
         super::tasks::assignees::list_task_assignees,
         super::tasks::assignees::remove_task_assignee,
@@ -251,6 +252,8 @@ impl Modify for SecurityAddon {
         CreateCommentRequest,
         CommentResponse,
         ListCommentsResponse,
+        EditCommentRequest,
+        EditedCommentResponse,
         AddAssigneeRequest,
         AssigneeResponse,
         CreateTaskLabelRequest,

@@ -9,6 +9,17 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído nesta sessão
 
+- PR #643 (docs/mark-plan-0263-merged) — merged (20/20 CI green); GAR-794 → Done in Linear.
+
+- GAR-795 / plan 0264 — PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
+  - `TaskCommentEdited` variant added to `WorkspaceAuditAction` in `garraia-auth`.
+  - `EditCommentRequest` + `EditedCommentResponse` types in `comments.rs`.
+  - `patch_task_comment` handler: sender-only (404 for other authors), body_md 1-50k validated,
+    `edited_at = now()` in same UPDATE, audit `body_len` only (no PII).
+  - Route wired in all 3 `mod.rs` branches; OpenAPI path + components registered.
+  - 6 unit tests pass. `cargo clippy --workspace` green (622+6 tests, 0 warnings).
+  - Closes CRUD gap: POST/GET/DELETE were GAR-520; PATCH was missing.
+
 - GAR-794 / plan 0263 — POST /v1/me/invites/{invite_id}/accept:
   - `accept_my_invite` handler in `me.rs`: UUID-based authenticated accept.
   - Atomic tx: UPDATE group_invites (with all terminal guards in WHERE) + INSERT group_members + audit InviteAccepted.
