@@ -2002,7 +2002,7 @@ impl PatchThreadRequest {
     }
 }
 
-/// Response body for `PATCH /v1/threads/{thread_id}`.
+/// Response body for `GET` and `PATCH /v1/threads/{thread_id}`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ThreadDetailResponse {
     pub id: Uuid,
@@ -2012,6 +2012,93 @@ pub struct ThreadDetailResponse {
     pub created_by: Option<Uuid>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+}
+
+/// `GET /v1/threads/{thread_id}` — fetch a single thread by ID.
+///
+/// Returns 404 for threads that belong to a different group (no existence leak).
+#[utoipa::path(
+    get,
+    path = "/v1/threads/{thread_id}",
+    params(("thread_id" = Uuid, Path, description = "Thread UUID.")),
+    responses(
+        (status = 200, description = "Thread detail.", body = ThreadDetailResponse),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks required permission.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Thread not found or in another group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_thread(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(thread_id): Path<Uuid>,
+) -> Result<Json<ThreadDetailResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    type ThreadRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        Option<String>,
+        Option<Uuid>,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    );
+    let row: Option<ThreadRow> = sqlx::query_as(
+        "SELECT mt.id, mt.chat_id, mt.root_message_id, mt.title, mt.created_by, \
+         mt.resolved_at, mt.created_at \
+         FROM message_threads mt \
+         JOIN chats c ON c.id = mt.chat_id \
+         WHERE mt.id = $1 AND c.group_id = $2",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (id, chat_id, root_message_id, title, created_by, resolved_at, created_at) =
+        row.ok_or(RestError::NotFound)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(ThreadDetailResponse {
+        id,
+        chat_id,
+        root_message_id,
+        title,
+        created_by,
+        resolved_at,
+        created_at,
+    }))
 }
 
 /// `PATCH /v1/threads/{thread_id}` — update a thread's title and/or resolve state.
@@ -3761,5 +3848,124 @@ mod tests {
         let result: Result<StatusCode, RestError> = Ok(StatusCode::NO_CONTENT);
         assert!(result.is_ok());
         assert_eq!(result.ok(), Some(StatusCode::NO_CONTENT));
+    }
+
+    // ── GET /v1/threads/{thread_id} ──────────────────────────────────────────
+
+    #[test]
+    fn get_thread_response_serializes_all_fields() {
+        let id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let root_message_id = Uuid::new_v4();
+        let created_by = Uuid::new_v4();
+        let now = Utc::now();
+        let resp = ThreadDetailResponse {
+            id,
+            chat_id,
+            root_message_id,
+            title: Some("Release planning".to_owned()),
+            created_by: Some(created_by),
+            resolved_at: Some(now),
+            created_at: now,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["id"].as_str().unwrap(), id.to_string());
+        assert_eq!(v["chat_id"].as_str().unwrap(), chat_id.to_string());
+        assert_eq!(
+            v["root_message_id"].as_str().unwrap(),
+            root_message_id.to_string()
+        );
+        assert_eq!(v["title"].as_str().unwrap(), "Release planning");
+        assert_eq!(v["created_by"].as_str().unwrap(), created_by.to_string());
+        assert!(v["resolved_at"].is_string());
+        assert!(v["created_at"].is_string());
+    }
+
+    #[test]
+    fn get_thread_response_nil_title_serializes_null() {
+        let resp = ThreadDetailResponse {
+            id: Uuid::new_v4(),
+            chat_id: Uuid::new_v4(),
+            root_message_id: Uuid::new_v4(),
+            title: None,
+            created_by: Some(Uuid::new_v4()),
+            resolved_at: None,
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["title"].is_null());
+    }
+
+    #[test]
+    fn get_thread_response_nil_created_by_serializes_null() {
+        let resp = ThreadDetailResponse {
+            id: Uuid::new_v4(),
+            chat_id: Uuid::new_v4(),
+            root_message_id: Uuid::new_v4(),
+            title: Some("thread".to_owned()),
+            created_by: None,
+            resolved_at: None,
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["created_by"].is_null());
+    }
+
+    #[test]
+    fn get_thread_response_unresolved_has_null_resolved_at() {
+        let resp = ThreadDetailResponse {
+            id: Uuid::new_v4(),
+            chat_id: Uuid::new_v4(),
+            root_message_id: Uuid::new_v4(),
+            title: None,
+            created_by: None,
+            resolved_at: None,
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["resolved_at"].is_null());
+    }
+
+    #[test]
+    fn get_thread_response_resolved_has_resolved_at_timestamp() {
+        let resolved_at = Utc::now();
+        let resp = ThreadDetailResponse {
+            id: Uuid::new_v4(),
+            chat_id: Uuid::new_v4(),
+            root_message_id: Uuid::new_v4(),
+            title: Some("Sprint retro".to_owned()),
+            created_by: Some(Uuid::new_v4()),
+            resolved_at: Some(resolved_at),
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["resolved_at"].is_string());
+        let s = v["resolved_at"].as_str().unwrap();
+        assert!(
+            s.ends_with('Z'),
+            "resolved_at must be UTC ISO-8601 with Z suffix: {s}"
+        );
+    }
+
+    #[test]
+    fn get_thread_response_nil_uuid_round_trips() {
+        let resp = ThreadDetailResponse {
+            id: Uuid::nil(),
+            chat_id: Uuid::nil(),
+            root_message_id: Uuid::nil(),
+            title: None,
+            created_by: None,
+            resolved_at: None,
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            v["id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(
+            v["root_message_id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
     }
 }

@@ -642,6 +642,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅
 - [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅ Done.
 - [x] `GET /v1/chats/{chat_id}/threads?after=<uuid>&limit=<n>&include_resolved=<bool>` — cursor-paginated list of threads in a chat, plan 0225 / [GAR-740](https://linear.app/chatgpt25/issue/GAR-740), 2026-05-29 (Florida).
+- [x] `GET /v1/threads/{thread_id}` — fetch single thread detail (id, chat_id, root_message_id, title, created_by, resolved_at, created_at) — plan 0265 / [GAR-798](https://linear.app/chatgpt25/issue/GAR-798) ✅
 
 **Arquivos**
 
