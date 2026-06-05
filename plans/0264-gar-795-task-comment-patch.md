@@ -1,6 +1,6 @@
 # Plan 0264 — GAR-795: PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}
 
-**Status:** In Progress
+**Status:** ✅ Done — Merged 2026-06-05 via PR #644 (squash SHA `6974812`)
 **Issue:** [GAR-795](https://linear.app/chatgpt25/issue/GAR-795)
 **Branch:** `routine/202506051215-task-comment-patch`
 **Epic:** GAR-396 (Tasks + WebSocket kanban)
