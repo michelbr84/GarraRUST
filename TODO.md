@@ -5,9 +5,20 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-06-03 (America/New_York)
+**Atualizado:** 2026-06-05 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-794 / plan 0263 — POST /v1/me/invites/{invite_id}/accept:
+  - `accept_my_invite` handler in `me.rs`: UUID-based authenticated accept.
+  - Atomic tx: UPDATE group_invites (with all terminal guards in WHERE) + INSERT group_members + audit InviteAccepted.
+  - 410 (expired) distinguished from 404 via follow-up SELECT when UPDATE returns None.
+  - 409 (already member) via SQLSTATE 23505 on group_members INSERT.
+  - Route registered in all 3 mod.rs branches; OpenAPI path + AcceptMyInviteResponse schema registered.
+  - 6 unit tests covering: serialization, no-PII fields, role variants, nil UUID round-trip, PendingInviteSummary excludes accepted_at, exactly-3-fields shape.
+  - Completes the invite lifecycle: list (GAR-777) → accept (GAR-794) / decline (GAR-783); token-based accept (plan 0019) unchanged.
+
+## Concluído em sessões anteriores
 
 - GAR-777 / plan 0255 — GET /v1/me/invites (caller-scoped pending group invites inbox):
   - Merged PR #621 (`762d63c`) after CI went 20/20 green.
