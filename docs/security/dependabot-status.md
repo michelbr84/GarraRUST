@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-06-01 run 73** (health routine — all surfaces clean, 5 open Dependabot PRs (none security), 3 upstream-blocked alerts unchanged, priority (i). GAR-769. Previous: run 72 all surfaces clean, priority (i) (GAR-768); run 71 all surfaces clean, priority (i) (GAR-764); run 70 all surfaces clean, priority (i) (GAR-762); run 69 all surfaces clean, `1a4a15f`, priority (i) (GAR-761); run 68 all surfaces clean, `e317136`, priority (i) (GAR-760); run 67 all surfaces clean, `e317136`, priority (i) (GAR-758)).
+> Last updated: **2026-06-05 run 82** (health routine — priority (h) fix: drop stale RUSTSEC-2026-0097 from audit.toml (rand 0.7.3 gone from Cargo.lock). GAR-789, plan 0262. Previous: runs 74-81 all surfaces clean, priority (i) (GAR-771, GAR-772, GAR-773, GAR-776, GAR-779, GAR-781, GAR-782, GAR-786, GAR-787, GAR-789, GAR-791); run 73 all surfaces clean, priority (i) (GAR-769)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-05 run 82 (~00:45 ET) — RUSTSEC-2026-0097 stale entry removed, priority (h)
+
+Health routine ran on 2026-06-05 (~00:45 ET / 04:45 UTC). Full security scan completed. Priority **(h)** — stale audit.toml suppress entry removed.
+
+**CI on main (`1f501ea`):** All workflow runs success (Security Audit 2026-06-04 run #26946647912 pass, CodeQL 2026-06-04 run #26921505072 pass, CI 2026-06-04 run #26921505055 pass).
+
+**Fix applied this run:** Removed `RUSTSEC-2026-0097` (rand 0.7.3 `thread_rng` unsound) from `.cargo/audit.toml`. Confirmed `rand 0.7.3` absent from Cargo.lock (versions: 0.8.6 / 0.9.4 / 0.10.1). `phf_generator 0.13.x` switched from `rand` to `fastrand`, severing the last chain. Stale entry violated audit.toml policy. deny.toml was already clean since 2026-05-23 (health run 19). Branch: `health/202506050045-drop-stale-rustsec-2026-0097`, plan 0262, GAR-789.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI green on `1f501ea` (run #26921505055) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI green (same Cargo.lock) |
+| Dependabot alerts | ⚠️ 2 active suppress, 1 fixed | rsa HIGH (GAR-456) upstream-blocked; glib MEDIUM (GAR-513) upstream-blocked; rand RUSTSEC-2026-0097 CLOSED this run |
+| Open Dependabot PRs | ✅ 0 open | All prior PRs merged |
+| Security Audit (CI) | ✅ pass | cargo-audit run #26946647912 2026-06-04 success |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed; all others clean |
+| CodeQL (Analyze rust + js-ts) | ✅ pass | run #26921505072 2026-06-04 success |
+| CI on main (`1f501ea`) | ✅ green | All checks success |
+
+**Security backlog after this run:** rsa (GAR-456) upstream-blocked, expiry 2026-07-31; glib (GAR-513) upstream-blocked, expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-01 run 73 (~00:45 ET) — all surfaces clean, priority (i)
 

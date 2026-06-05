@@ -37,8 +37,10 @@
 #     wasmtime-wasi ×1 (GAR-685 / health run 14, PR #472 — lockfile 44.0.2).**
 #   * audit.toml-ONLY residuals (cargo audit matches; cargo deny does NOT —
 #     removed from deny.toml 2026-05-23 to eliminate advisory-not-detected
-#     noise): RUSTSEC-2024-0429 (glib / GAR-513),
-#     RUSTSEC-2026-0097 (rand / GAR-513).
+#     noise): RUSTSEC-2024-0429 (glib / GAR-513).
+#     Closed history: RUSTSEC-2026-0097 (rand 0.7.3) removed from audit.toml
+#     2026-06-05 (health run 82 / GAR-789 plan 0262) — rand 0.7.3 no longer in
+#     Cargo.lock; phf_generator 0.13 switched from rand to fastrand.
 #   * The 21 unmaintained-only IDs in `deny.toml` (5 directly named +
 #     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
 #     "fix" the asymmetry by mass-mirroring; that would change runtime
@@ -110,21 +112,21 @@ ignore = [
     # Removed: RUSTSEC-2026-0049, RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104.
 
     # =========================================================================
-    # GAR-513 carve-out — unsound warnings (glib + rand)
+    # GAR-513 carve-out — unsound warnings (glib only, rand closed)
     # =========================================================================
     # GAR-437 (Q7 RUSTSEC triage) was marked Done 2026-04-27. Originally
-    # 3 crates (glib, lru, rand); lru closed 2026-05-12 by GAR-593 when
-    # aws-sdk-s3 1.132.0 pulled lru 0.16.4 (patched). 2 crates remain.
-    # Without these ignores, the nightly `cargo audit --no-fetch --deny
-    # unsound` workflow (cargo-audit.yml) fails. Expirations: 2026-07-31.
+    # 3 crates (glib, lru, rand); lru closed 2026-05-12 by GAR-593; rand
+    # closed 2026-06-05 below (GAR-789, plan 0262). 1 crate remains.
+    # Without this ignore, the nightly `cargo audit --no-fetch --deny
+    # unsound` workflow (cargo-audit.yml) fails. Expires: 2026-07-31.
     #
     # DIVERGENCE NOTE (2026-05-23 health run 19 / GAR-513): cargo deny shows
-    # advisory-not-detected for BOTH of these IDs — its advisory DB no longer
-    # matches glib 0.18.5 / rand 0.7.3 version criteria. cargo audit DOES
-    # still match them as `unsound` warnings. Therefore these IDs remain here
-    # in audit.toml but were REMOVED from deny.toml 2026-05-23 (where they
-    # caused advisory-not-detected noise). Intentional audit.toml-only
-    # residual. Tracked by GAR-513. Expires: 2026-07-31.
+    # advisory-not-detected for glib — its advisory DB no longer matches
+    # glib 0.18.5 version criteria. cargo audit DOES still match it as
+    # `unsound`. Therefore this ID remains here in audit.toml but was
+    # REMOVED from deny.toml 2026-05-23 (where it caused advisory-not-detected
+    # noise). Intentional audit.toml-only residual. Tracked by GAR-513.
+    # Expires: 2026-07-31.
     #
     # glib 0.18.5 — `VariantStrIter` unsound Iterator impls. Pulled via
     # Tauri surface (garraia-desktop), excluded from CI builds. Zero
@@ -137,12 +139,13 @@ ignore = [
     # Resolution: aws-sdk-s3 1.119→1.132 (PR #297) pulled lru 0.16.4 which
     # patches the advisory. Removed from BOTH audit.toml and deny.toml.
 
-    # rand 0.7.3 — `thread_rng` unsound custom-logger reentrance. This
-    # version is a BUILD-TIME dep only: phf_codegen → phf_generator →
-    # selectors → tauri-utils → garraia-desktop. Zero server runtime risk.
-    # No patch exists for the 0.7.x line; fix requires phf_codegen to
-    # upgrade its rand dep. Tracked by: GAR-513. Expires: 2026-07-31.
-    "RUSTSEC-2026-0097",
+    # NOTE: RUSTSEC-2026-0097 (rand 0.7.3 thread_rng unsound) CLOSED
+    # 2026-06-05 (health run 82 / GAR-789 / plan 0262). Resolution:
+    # phf_generator 0.13.x switched from rand to fastrand, severing the
+    # phf_codegen → phf_generator → selectors → tauri-utils chain that
+    # brought rand 0.7.3 into the lockfile. Cargo.lock now carries only
+    # rand 0.8.6 / 0.9.4 / 0.10.1. Removed from audit.toml (deny.toml
+    # already cleaned 2026-05-23 health run 19 / GAR-513). Ignore removed.
 
     # NOTE: RUSTSEC-2026-0037 (quinn-proto DoS in Quinn endpoints) was
     # closed by GAR-457 (2026-04-27, PR-following-#75). Resolution:
