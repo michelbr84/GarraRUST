@@ -1,6 +1,6 @@
 # Plan 0263 — GAR-794: POST /v1/me/invites/{invite_id}/accept (invitee-side authenticated invite acceptance)
 
-**Status:** In Progress
+**Status:** ✅ Merged 2026-06-05 via PR #642 (`cec4545`)
 **Linear:** [GAR-794](https://linear.app/chatgpt25/issue/GAR-794)
 **Branch:** `routine/202606050615-me-invite-accept`
 **Date:** 2026-06-05 (America/New_York)
