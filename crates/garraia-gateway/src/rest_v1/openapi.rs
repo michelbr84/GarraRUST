@@ -125,6 +125,7 @@ impl Modify for SecurityAddon {
         super::uploads::options_uploads,
         super::chats::create_chat,
         super::chats::list_chats,
+        super::chats::get_thread,
         super::chats::patch_thread,
         super::chats::patch_chat_member,
         super::chats::typing_indicator,

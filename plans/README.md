@@ -274,3 +274,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0262 | [GAR-789 — Drop stale RUSTSEC-2026-0097 (rand 0.7.3) from audit.toml](0262-gar-789-drop-stale-rustsec-2026-0097.md) | [GAR-789](https://linear.app/chatgpt25/issue/GAR-789) | ✅ Done (PR #640 / 9f3e760) |
 | 0263 | [GAR-794 — POST /v1/me/invites/{invite_id}/accept (invitee-side authenticated invite acceptance)](0263-gar-794-me-invite-accept.md) | [GAR-794](https://linear.app/chatgpt25/issue/GAR-794) | ✅ Merged 2026-06-05 via PR #642 (`cec4545`) |
 | 0264 | [GAR-795 — PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id} (edit task comment body)](0264-gar-795-task-comment-patch.md) | [GAR-795](https://linear.app/chatgpt25/issue/GAR-795) | ✅ Merged 2026-06-05 via PR #644 (6974812) |
+| 0265 | [GAR-798 — GET /v1/threads/{thread_id} — fetch single thread detail](0265-gar-798-get-thread.md) | [GAR-798](https://linear.app/chatgpt25/issue/GAR-798) | 🔄 In Progress |

@@ -48,7 +48,7 @@ use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, head, patch, post};
+use axum::routing::{delete, get, head, post};
 use dashmap::DashMap;
 use garraia_agents::AgentRuntime;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
@@ -392,7 +392,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0221 (GAR-740) — chats slice 6: list threads in a chat.
                 .route("/v1/chats/{chat_id}/threads", get(chats::list_chat_threads))
                 // Plan 0227 (GAR-745) — chats slice 7: patch thread (resolve/title).
-                .route("/v1/threads/{thread_id}", patch(chats::patch_thread))
+                // Plan 0265 (GAR-798) — get single thread.
+                .route(
+                    "/v1/threads/{thread_id}",
+                    get(chats::get_thread).patch(chats::patch_thread),
+                )
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
                 .route(
@@ -667,7 +671,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0221 (GAR-740) — chats slice 6: list threads, fail-soft 503.
                 .route("/v1/chats/{chat_id}/threads", get(unconfigured_handler))
                 // Plan 0227 (GAR-745) — chats slice 7: patch thread, fail-soft 503.
-                .route("/v1/threads/{thread_id}", patch(unconfigured_handler))
+                // Plan 0265 (GAR-798) — get single thread, fail-soft 503.
+                .route(
+                    "/v1/threads/{thread_id}",
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
                 // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
@@ -917,7 +925,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0221 (GAR-740) — chats slice 6: list threads, no-auth stub.
                 .route("/v1/chats/{chat_id}/threads", get(unconfigured_handler))
                 // Plan 0227 (GAR-745) — chats slice 7: patch thread, no-auth stub.
-                .route("/v1/threads/{thread_id}", patch(unconfigured_handler))
+                // Plan 0265 (GAR-798) — get single thread, no-auth stub.
+                .route(
+                    "/v1/threads/{thread_id}",
+                    get(unconfigured_handler).patch(unconfigured_handler),
+                )
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.
                 .route(

@@ -9,6 +9,18 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído nesta sessão
 
+- GAR-798 / plan 0265 — GET /v1/threads/{thread_id}:
+  - `get_thread` handler in `chats.rs` (before `patch_thread`): validates group_id, ChatsRead check,
+    SET LOCAL both RLS configs, single JOIN query (`message_threads JOIN chats WHERE group_id = $2`),
+    returns `ThreadDetailResponse`; 404 for cross-group or unknown threads (no existence leak).
+  - Route wired as `get(chats::get_thread).patch(chats::patch_thread)` in all 3 `mod.rs` branches.
+  - `super::chats::get_thread` added to `openapi.rs` paths list.
+  - Removed now-unused standalone `patch` import from `mod.rs`.
+  - 6 unit tests: serializes all fields, nil title → null, nil created_by → null,
+    unresolved → null resolved_at, resolved → UTC ISO-8601 Z timestamp, nil UUID round-trip.
+  - `cargo clippy --workspace` clean (0 warnings). Branch: `routine/202506051820-get-thread`.
+  - PR pending CI.
+
 - PR #643 (docs/mark-plan-0263-merged) — merged (20/20 CI green); GAR-794 → Done in Linear.
 
 - GAR-795 / plan 0264 — PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
