@@ -1677,9 +1677,7 @@ pub async fn accept_my_invite(
             .map_err(|e| RestError::Internal(e.into()))?;
 
             return match expiry {
-                Some(e) if e.is_expired => {
-                    Err(RestError::Gone("this invite has expired".into()))
-                }
+                Some(e) if e.is_expired => Err(RestError::Gone("this invite has expired".into())),
                 _ => Err(RestError::NotFound),
             };
         }
@@ -2992,13 +2990,11 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(
-            v["group_id"],
-            "00000000-0000-0000-0000-000000000000",
+            v["group_id"], "00000000-0000-0000-0000-000000000000",
             "nil UUID must serialize as all-zeros string"
         );
         assert_eq!(
-            v["invite_id"],
-            "00000000-0000-0000-0000-000000000000",
+            v["invite_id"], "00000000-0000-0000-0000-000000000000",
             "nil UUID must serialize as all-zeros string"
         );
     }
