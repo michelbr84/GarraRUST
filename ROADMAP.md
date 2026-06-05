@@ -620,6 +620,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) ✅
 - [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
 - [x] `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline; `declined_at`+`declined_by` (migration 025); `InviteDeclined` audit event; re-invite enabled — plan 0258 / [GAR-783](https://linear.app/chatgpt25/issue/GAR-783) ✅
+- [x] `POST /v1/me/invites/{invite_id}/accept` — invitee-side authenticated accept (UUID-based, no raw token); atomically sets `accepted_at`+`accepted_by`, inserts `group_members`, emits `InviteAccepted` audit event — plan 0263 / [GAR-794](https://linear.app/chatgpt25/issue/GAR-794) ✅
 - [x] `GET /v1/me/reactions` — caller-scoped emoji-reactions inbox (cursor-paginated, grouped by message with `ARRAY_AGG` emojis) — plan 0260 / [GAR-788](https://linear.app/chatgpt25/issue/GAR-788) ✅
 - [x] `GET /v1/me/threads` — caller-scoped thread participation inbox (cursor-paginated, `include_resolved` filter; creator vs participant role) — plan 0261 / [GAR-790](https://linear.app/chatgpt25/issue/GAR-790) ✅
 
