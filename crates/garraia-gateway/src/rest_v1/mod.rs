@@ -470,7 +470,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
-                    delete(tasks::delete_task_comment),
+                    delete(tasks::delete_task_comment).patch(tasks::patch_task_comment),
                 )
                 // Plan 0077 (GAR-533) — task assignees API slice 4.
                 .route(
@@ -781,7 +781,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
-                    delete(unconfigured_handler),
+                    delete(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees",
@@ -1027,7 +1027,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
-                    delete(unconfigured_handler),
+                    delete(unconfigured_handler).patch(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees",

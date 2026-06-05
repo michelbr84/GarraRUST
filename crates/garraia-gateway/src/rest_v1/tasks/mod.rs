@@ -91,8 +91,9 @@ pub use task_lists::{
 pub mod comments;
 pub use comments::{
     __path_create_task_comment, __path_delete_task_comment, __path_list_task_comments,
-    CommentResponse, CreateCommentRequest, ListCommentsQuery, ListCommentsResponse,
-    create_task_comment, delete_task_comment, list_task_comments,
+    __path_patch_task_comment, CommentResponse, CreateCommentRequest, EditCommentRequest,
+    EditedCommentResponse, ListCommentsQuery, ListCommentsResponse, create_task_comment,
+    delete_task_comment, list_task_comments, patch_task_comment,
 };
 
 pub mod assignees;

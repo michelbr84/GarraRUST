@@ -295,6 +295,15 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ body_len }`.
     TaskCommentDeleted,
 
+    /// A comment body was edited via
+    /// `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}`
+    /// (plan 0264 / GAR-795).
+    ///
+    /// `resource_type = "task_comments"`, `resource_id = "{comment_id}"`.
+    /// Metadata: `{ body_len }`. Body text is user-controlled PII — only
+    /// length is carried.
+    TaskCommentEdited,
+
     /// A chat was updated (name/topic changed) via
     /// `PATCH /v1/chats/{chat_id}` (plan 0076 / GAR-530,
     /// epic GAR-WS-CHAT slice 4).
@@ -621,6 +630,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskListArchived => "task_list.archived",
             WorkspaceAuditAction::TaskCommentCreated => "task.comment.created",
             WorkspaceAuditAction::TaskCommentDeleted => "task.comment.deleted",
+            WorkspaceAuditAction::TaskCommentEdited => "task.comment.edited",
             WorkspaceAuditAction::ChatUpdated => "chat.updated",
             WorkspaceAuditAction::ChatArchived => "chat.archived",
             WorkspaceAuditAction::ChatMemberAdded => "chat.member.added",
@@ -804,6 +814,10 @@ mod tests {
             WorkspaceAuditAction::TaskCommentDeleted.as_str(),
             "task.comment.deleted"
         );
+        assert_eq!(
+            WorkspaceAuditAction::TaskCommentEdited.as_str(),
+            "task.comment.edited"
+        );
         assert_eq!(WorkspaceAuditAction::ChatUpdated.as_str(), "chat.updated");
         assert_eq!(WorkspaceAuditAction::ChatArchived.as_str(), "chat.archived");
         assert_eq!(
@@ -939,6 +953,7 @@ mod tests {
             WorkspaceAuditAction::TaskListArchived.as_str(),
             WorkspaceAuditAction::TaskCommentCreated.as_str(),
             WorkspaceAuditAction::TaskCommentDeleted.as_str(),
+            WorkspaceAuditAction::TaskCommentEdited.as_str(),
             WorkspaceAuditAction::ChatUpdated.as_str(),
             WorkspaceAuditAction::ChatArchived.as_str(),
             WorkspaceAuditAction::ChatMemberAdded.as_str(),
