@@ -19,6 +19,8 @@ curtos para a próxima sessão autônoma.
   - Route wired in all 3 `mod.rs` branches; OpenAPI path + components registered.
   - 6 unit tests pass. `cargo clippy --workspace` green (622+6 tests, 0 warnings).
   - Closes CRUD gap: POST/GET/DELETE were GAR-520; PATCH was missing.
+  - Squash-merged PR #644 (`6974812`) 2026-06-05 — 20/20 CI green.
+  - GAR-795 → Done in Linear.
 
 - GAR-794 / plan 0263 — POST /v1/me/invites/{invite_id}/accept:
   - `accept_my_invite` handler in `me.rs`: UUID-based authenticated accept.
