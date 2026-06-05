@@ -3941,7 +3941,10 @@ mod tests {
         let v = serde_json::to_value(&resp).unwrap();
         assert!(v["resolved_at"].is_string());
         let s = v["resolved_at"].as_str().unwrap();
-        assert!(s.ends_with('Z'), "resolved_at must be UTC ISO-8601 with Z suffix: {s}");
+        assert!(
+            s.ends_with('Z'),
+            "resolved_at must be UTC ISO-8601 with Z suffix: {s}"
+        );
     }
 
     #[test]
