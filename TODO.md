@@ -5,9 +5,19 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-06-05 (America/New_York)
+**Atualizado:** 2026-06-06 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-800 / plan 0266 — PATCH /v1/groups/{group_id}/task-labels/{label_id}:
+  - `PatchTaskLabelRequest { name, color }` + `patch_task_label` handler in `labels.rs`.
+  - COALESCE UPDATE (at least one field required → 400, 404 on 0 rows, 409 on duplicate name).
+  - `WorkspaceAuditAction::TaskLabelEdited` added to `audit_workspace.rs` (PII-safe).
+  - Routes wired in all 3 `mod.rs` branches (full / auth-only stub / no-auth stub).
+  - OpenAPI: `super::tasks::labels::patch_task_label` path + `PatchTaskLabelRequest` schema.
+  - 6 unit tests: name-only / color-only / both-absent roundtrip, hex valid/invalid, response nil-UUID.
+  - `cargo clippy --workspace` clean; 634 unit tests pass. Branch: `routine/202506060020-task-label-patch`.
+  - PR pending CI.
 
 - GAR-798 / plan 0265 — GET /v1/threads/{thread_id}:
   - `get_thread` handler in `chats.rs` (before `patch_thread`): validates group_id, ChatsRead check,
