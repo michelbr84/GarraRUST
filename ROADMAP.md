@@ -791,6 +791,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `POST /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
 - [x] `GET /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
 - [x] `DELETE /v1/groups/{group_id}/task-labels/{label_id}` — plan 0078 / GAR-536 ✅
+- [x] `PATCH /v1/groups/{group_id}/task-labels/{label_id}` — plan 0266 / GAR-800 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/labels` — plan 0078 / GAR-536 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}` — plan 0078 / GAR-536 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
