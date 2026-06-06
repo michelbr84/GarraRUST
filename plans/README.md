@@ -276,4 +276,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0264 | [GAR-795 — PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id} (edit task comment body)](0264-gar-795-task-comment-patch.md) | [GAR-795](https://linear.app/chatgpt25/issue/GAR-795) | ✅ Merged 2026-06-05 via PR #644 (6974812) |
 | 0265 | [GAR-798 — GET /v1/threads/{thread_id} — fetch single thread detail](0265-gar-798-get-thread.md) | [GAR-798](https://linear.app/chatgpt25/issue/GAR-798) | ✅ Merged PR #646 (`7913904`) |
 | 0266 | [GAR-800 — PATCH /v1/groups/{group_id}/task-labels/{label_id} (edit task label name/color)](0266-gar-800-task-label-patch.md) | [GAR-800](https://linear.app/chatgpt25/issue/GAR-800) | ✅ Merged PR #649 (`28d052a`) |
-| 0267 | [GAR-802 — GET /v1/groups/{group_id}/task-labels/{label_id} (fetch single task label)](0267-gar-802-get-task-label.md) | [GAR-802](https://linear.app/chatgpt25/issue/GAR-802) | 🚧 In Progress |
+| 0267 | [GAR-802 — GET /v1/groups/{group_id}/task-labels/{label_id} (fetch single task label)](0267-gar-802-get-task-label.md) | [GAR-802](https://linear.app/chatgpt25/issue/GAR-802) | ✅ Merged PR #651 (`afe02ce`) |
