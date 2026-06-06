@@ -19,6 +19,7 @@
 //! **Slice 3 (plan 0069 / GAR-520):**
 //! - `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — create comment
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/comments` — cursor-paginated comment list
+//! - `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch single comment
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — soft-delete comment
 //!
 //! **Slice 4 (plan 0077 / GAR-533):**
@@ -93,10 +94,11 @@ pub use task_lists::{
 
 pub mod comments;
 pub use comments::{
-    __path_create_task_comment, __path_delete_task_comment, __path_list_task_comments,
-    __path_patch_task_comment, CommentResponse, CreateCommentRequest, EditCommentRequest,
-    EditedCommentResponse, ListCommentsQuery, ListCommentsResponse, create_task_comment,
-    delete_task_comment, list_task_comments, patch_task_comment,
+    __path_create_task_comment, __path_delete_task_comment, __path_get_task_comment,
+    __path_list_task_comments, __path_patch_task_comment, CommentResponse, CreateCommentRequest,
+    EditCommentRequest, EditedCommentResponse, ListCommentsQuery, ListCommentsResponse,
+    create_task_comment, delete_task_comment, get_task_comment, list_task_comments,
+    patch_task_comment,
 };
 
 pub mod assignees;

@@ -2,9 +2,10 @@
 //!
 //! Extracted from `rest_v1/tasks/mod.rs` by GAR-635 (plan 0136, Q11 slice 2).
 //!
-//! Four endpoints:
+//! Five endpoints:
 //! - `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — create a comment (plan 0069 / GAR-520)
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/comments` — cursor-paginated list (plan 0069 / GAR-520)
+//! - `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch single comment (plan 0269 / GAR-806)
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — soft-delete (plan 0069 / GAR-520)
 //! - `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — edit body (plan 0264 / GAR-795)
 
@@ -440,6 +441,78 @@ pub async fn delete_task_comment(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── GET single handler (plan 0269 / GAR-806) ────────────────────────────────
+
+/// `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch a single comment.
+///
+/// Returns 200 + `CommentResponse` on success. Returns 404 if the comment does not
+/// exist, has been soft-deleted, or belongs to a different task/group (no existence leak).
+/// Authz: `Action::TasksRead`.
+///
+/// ## Error matrix
+///
+/// | Condition                                      | Status |
+/// |------------------------------------------------|--------|
+/// | Missing/invalid JWT                            | 401    |
+/// | Non-member of group                            | 403    |
+/// | Path group_id ≠ principal group_id             | 403    |
+/// | Comment not found / deleted / cross-tenant     | 404    |
+/// | Happy path                                     | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+        ("comment_id" = Uuid, Path, description = "Comment UUID."),
+    ),
+    responses(
+        (status = 200, description = "Task comment.", body = CommentResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::super::problem::ProblemDetails),
+        (status = 404, description = "Comment not found, already deleted, or cross-tenant.", body = super::super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_task_comment(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id, comment_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<CommentResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // RLS JOIN policy on task_comments scopes to current group via tasks.
+    // Binding task_id prevents cross-task UUID collisions from leaking existence.
+    let row: Option<CommentRow> = sqlx::query_as(
+        "SELECT id, task_id, author_user_id, author_label, body_md, created_at, edited_at \
+         FROM task_comments \
+         WHERE id = $1 AND task_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(comment_id)
+    .bind(task_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+    Ok(Json(CommentResponse::from(row)))
+}
+
 // ─── PATCH handler (plan 0264 / GAR-795) ─────────────────────────────────────
 
 /// Request body for `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}`.
@@ -647,5 +720,119 @@ mod tests {
             body_md: "   ".to_string(),
         };
         assert!(req.validate().is_ok());
+    }
+
+    // ─── GET single comment response tests (plan 0269 / GAR-806) ─────────────
+
+    #[test]
+    fn comment_response_serializes_all_fields() {
+        let id = Uuid::nil();
+        let task_id = Uuid::nil();
+        let created_at = DateTime::from_timestamp(0, 0).unwrap();
+        let resp = CommentResponse {
+            id,
+            task_id,
+            author_user_id: None,
+            author_label: "Alice".to_string(),
+            body_md: "hello world".to_string(),
+            created_at,
+            edited_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val.get("id").is_some());
+        assert!(val.get("task_id").is_some());
+        assert!(val.get("author_label").is_some());
+        assert!(val.get("body_md").is_some());
+        assert!(val.get("created_at").is_some());
+        assert_eq!(val["body_md"], serde_json::json!("hello world"));
+    }
+
+    #[test]
+    fn comment_response_nil_author_user_id_is_null() {
+        let resp = CommentResponse {
+            id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            author_user_id: None,
+            author_label: "Alice".to_string(),
+            body_md: "test".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            edited_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val["author_user_id"].is_null());
+    }
+
+    #[test]
+    fn comment_response_nil_edited_at_is_null() {
+        let resp = CommentResponse {
+            id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            author_user_id: None,
+            author_label: "Alice".to_string(),
+            body_md: "test".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            edited_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val["edited_at"].is_null());
+    }
+
+    #[test]
+    fn comment_response_edited_at_is_utc_iso8601() {
+        let edited_at = DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let resp = CommentResponse {
+            id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            author_user_id: None,
+            author_label: "Bob".to_string(),
+            body_md: "edited".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            edited_at: Some(edited_at),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        let s = val["edited_at"].as_str().unwrap();
+        assert!(s.ends_with('Z'), "edited_at must end with Z: {s}");
+    }
+
+    #[test]
+    fn comment_response_round_trips_nil_uuid() {
+        let resp = CommentResponse {
+            id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            author_user_id: Some(Uuid::nil()),
+            author_label: "Charlie".to_string(),
+            body_md: "round trip".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            edited_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            val["id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(
+            val["task_id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn comment_response_task_id_preserved() {
+        use uuid::uuid;
+        let task_id = uuid!("11111111-1111-1111-1111-111111111111");
+        let resp = CommentResponse {
+            id: Uuid::nil(),
+            task_id,
+            author_user_id: None,
+            author_label: "Dave".to_string(),
+            body_md: "task check".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            edited_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            val["task_id"].as_str().unwrap(),
+            "11111111-1111-1111-1111-111111111111"
+        );
     }
 }

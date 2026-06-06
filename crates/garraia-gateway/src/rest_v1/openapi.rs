@@ -153,6 +153,7 @@ impl Modify for SecurityAddon {
         super::tasks::delete_task,
         super::tasks::comments::create_task_comment,
         super::tasks::comments::list_task_comments,
+        super::tasks::comments::get_task_comment,
         super::tasks::comments::delete_task_comment,
         super::tasks::comments::patch_task_comment,
         super::tasks::assignees::add_task_assignee,

@@ -783,6 +783,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}` (soft delete) — plan 0068 / GAR-518 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / GAR-520 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / GAR-520 ✅
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch single comment (no existence leak for deleted/cross-tenant) — plan 0269 / [GAR-806](https://linear.app/chatgpt25/issue/GAR-806) ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / GAR-520 ✅
 - [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` (edit body, sender-only) — plan 0264 / [GAR-795](https://linear.app/chatgpt25/issue/GAR-795) ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/assignees` — plan 0077 / GAR-533 ✅
@@ -790,6 +791,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}` — plan 0077 / GAR-533 ✅
 - [x] `POST /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
 - [x] `GET /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
+- [x] `GET /v1/groups/{group_id}/task-labels/{label_id}` — fetch single label — plan 0267 / [GAR-802](https://linear.app/chatgpt25/issue/GAR-802) ✅
 - [x] `DELETE /v1/groups/{group_id}/task-labels/{label_id}` — plan 0078 / GAR-536 ✅
 - [x] `PATCH /v1/groups/{group_id}/task-labels/{label_id}` — plan 0266 / GAR-800 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/labels` — plan 0078 / GAR-536 ✅

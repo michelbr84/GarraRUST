@@ -9,6 +9,19 @@ curtos para a próxima sessão autônoma.
 
 ## Concluído nesta sessão
 
+- GAR-806 / plan 0269 — GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
+  - `get_task_comment` handler in `comments.rs`: validates group_id, TasksRead check,
+    SET LOCAL both RLS configs, single query (`task_comments WHERE id=$1 AND task_id=$2 AND deleted_at IS NULL`),
+    returns `CommentResponse`; 404 for deleted/cross-group/unknown (no existence leak).
+  - Route wired as `get(tasks::get_task_comment)` alongside delete+patch in all 3 `mod.rs` branches.
+  - `super::tasks::comments::get_task_comment` added to `openapi.rs` paths list.
+  - ROADMAP §3.8 and §3.4 updated with GET single task-label (GAR-802) and GET single comment (GAR-806).
+  - 6 unit tests: serializes all fields, nil author_user_id → null, nil edited_at → null,
+    edited_at UTC ISO-8601 Z, nil UUID round-trip, task_id preserved.
+  - `cargo clippy --workspace` clean (0 warnings). 12 total comments tests pass.
+  - Branch: `routine/202506061830-get-task-comment`.
+
+
 - GAR-800 / plan 0266 — PATCH /v1/groups/{group_id}/task-labels/{label_id}:
   - `PatchTaskLabelRequest { name, color }` + `patch_task_label` handler in `labels.rs`.
   - COALESCE UPDATE (at least one field required → 400, 404 on 0 rows, 409 on duplicate name).
