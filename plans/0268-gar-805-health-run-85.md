@@ -23,7 +23,7 @@ No open `health/` PRs to complete. No `routine/` PRs touched (roadmap routine te
 |---------|----------|--------|
 | Secret scanning | No open alerts on GitHub Secret Scanning | ✅ clean |
 | Malware (cargo/npm graph) | cargo-deny CI check on main → success; no malware advisories | ✅ clean |
-| Dependabot alerts | 2 upstream-blocked advisories (HIGH `rsa` RUSTSEC-2023-0071 / GAR-456, MEDIUM `glib` RUSTSEC-2024-0429 / GAR-513) — same as run 84; both suppressed with expiry 2026-07-31; `rand` RUSTSEC-2026-0097 fully closed (run 82 / GAR-789) | ✅ no new critical/high |
+| Dependabot alerts | GitHub push revealed Dependabot alert #42 (moderate) on main — likely glib RUSTSEC-2024-0429 (GAR-513, MEDIUM, allowlisted expiry 2026-07-31) or related GHSA entry. cargo audit log: 0 vulnerabilities, 17 unmaintained warnings all allowlisted. HIGH `rsa` RUSTSEC-2023-0071 / GAR-456 also allowlisted. `rand` RUSTSEC-2026-0097 fully closed (run 82 / GAR-789). | ⚠️ alert #42 observed — tracked via GAR-513 |
 | CodeQL — Analyze (rust) | CI on main → success; 0 open code-scanning alerts | ✅ clean |
 | CodeQL — Analyze (javascript-typescript) | CI on main → success | ✅ clean |
 | Security Audit (cargo audit) | Security Audit CI on main 2026-06-06T09:26 UTC → success | ✅ clean |
@@ -37,6 +37,7 @@ No open `health/` PRs to complete. No `routine/` PRs touched (roadmap routine te
 | (b) | Malware advisory | ❌ none |
 | (c) | Critical Dependabot + patch available | ❌ none |
 | (d) | High Dependabot + patch available | ❌ none (rsa UPSTREAM-BLOCKED, no patch, expiry 2026-07-31) |
+| (h) | Medium alert, low blast radius | ⚠️ Dependabot #42 (moderate) observed post-scan — matches known glib GAR-513 allowlist (expiry 2026-07-31); cargo audit clean; no first_patched_version available; treated as ongoing carve-out |
 | (e) | Critical CodeQL with clear fix | ❌ none |
 | (f) | High CodeQL with clear fix | ❌ none |
 | (g) | Workflow failure on main (last 24h) | ❌ main is green (20/20) |
