@@ -106,9 +106,10 @@ pub use assignees::{
 pub mod labels;
 pub use labels::{
     __path_assign_task_label, __path_create_task_label, __path_delete_task_label,
-    __path_list_task_labels, __path_remove_task_label_from_task, AssignTaskLabelRequest,
-    CreateTaskLabelRequest, LabelAssignmentResponse, TaskLabelResponse, assign_task_label,
-    create_task_label, delete_task_label, list_task_labels, remove_task_label_from_task,
+    __path_list_task_labels, __path_patch_task_label, __path_remove_task_label_from_task,
+    AssignTaskLabelRequest, CreateTaskLabelRequest, LabelAssignmentResponse, PatchTaskLabelRequest,
+    TaskLabelResponse, assign_task_label, create_task_label, delete_task_label, list_task_labels,
+    patch_task_label, remove_task_label_from_task,
 };
 
 pub mod subscriptions;

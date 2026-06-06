@@ -288,6 +288,128 @@ pub async fn delete_task_label(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Request body for `PATCH /v1/groups/{group_id}/task-labels/{label_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchTaskLabelRequest {
+    /// New label name (1–80 chars). If absent the name is unchanged.
+    pub name: Option<String>,
+    /// New color in `#RRGGBB` format. If absent the color is unchanged.
+    pub color: Option<String>,
+}
+
+/// `PATCH /v1/groups/{group_id}/task-labels/{label_id}` — edit a task label's name/color.
+///
+/// At least one of `name` or `color` must be provided. Returns the updated label
+/// on success. 409 if the new name conflicts with an existing label in this group.
+/// 404 if `label_id` does not exist or belongs to a different group.
+/// Authz: `Action::TasksWrite`.
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/task-labels/{label_id}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("label_id" = Uuid, Path, description = "Label UUID."),
+    ),
+    request_body = PatchTaskLabelRequest,
+    responses(
+        (status = 200, description = "Label updated.", body = TaskLabelResponse),
+        (status = 400, description = "Validation error or no fields provided.", body = super::super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::super::problem::ProblemDetails),
+        (status = 404, description = "Label not found in this group.", body = super::super::problem::ProblemDetails),
+        (status = 409, description = "Label name already exists in this group.", body = super::super::problem::ProblemDetails),
+        (status = 422, description = "Invalid color format (expected #RRGGBB).", body = super::super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_task_label(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, label_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<PatchTaskLabelRequest>,
+) -> Result<Json<TaskLabelResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    if body.name.is_none() && body.color.is_none() {
+        return Err(RestError::BadRequest(
+            "at least one of name or color must be provided".into(),
+        ));
+    }
+
+    let name = body.name.as_deref().map(str::trim).map(str::to_string);
+    let color = body.color.as_deref().map(str::trim).map(str::to_string);
+
+    if let Some(ref n) = name
+        && (n.is_empty() || n.len() > 80)
+    {
+        return Err(RestError::BadRequest(
+            "name must be 1\u{2013}80 characters".into(),
+        ));
+    }
+    if let Some(ref c) = color
+        && !is_valid_hex_color(c)
+    {
+        return Err(RestError::BadRequest(
+            "color must be in #RRGGBB format".into(),
+        ));
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<TaskLabelRow> = sqlx::query_as(
+        "UPDATE task_labels \
+         SET name = COALESCE($3, name), color = COALESCE($4, color) \
+         WHERE id = $1 AND group_id = $2 \
+         RETURNING id, group_id, name, color, created_by, created_by_label, created_at",
+    )
+    .bind(label_id)
+    .bind(group_id)
+    .bind(&name)
+    .bind(&color)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e
+            && db_err.code().as_deref() == Some("23505")
+        {
+            return RestError::Conflict("label name already exists in this group".into());
+        }
+        RestError::Internal(e.into())
+    })?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    let name_len = row.name.len();
+    let updated_color = row.color.clone();
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::TaskLabelEdited,
+        principal.user_id,
+        group_id,
+        "task_labels",
+        label_id.to_string(),
+        json!({ "name_len": name_len, "color": updated_color }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(TaskLabelResponse::from(row)))
+}
+
 /// DB row for a label assignment.
 #[derive(sqlx::FromRow)]
 struct LabelAssignmentRow {
@@ -543,4 +665,68 @@ fn is_valid_hex_color(color: &str) -> bool {
         return false;
     }
     bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_request_name_only_roundtrip() {
+        let json = r#"{"name":"urgent"}"#;
+        let req: PatchTaskLabelRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name.as_deref(), Some("urgent"));
+        assert!(req.color.is_none());
+    }
+
+    #[test]
+    fn patch_request_color_only_roundtrip() {
+        let json = r##"{"color":"#FF0000"}"##;
+        let req: PatchTaskLabelRequest = serde_json::from_str(json).unwrap();
+        assert!(req.name.is_none());
+        assert_eq!(req.color.as_deref(), Some("#FF0000"));
+    }
+
+    #[test]
+    fn patch_request_both_absent_roundtrip() {
+        let json = r#"{}"#;
+        let req: PatchTaskLabelRequest = serde_json::from_str(json).unwrap();
+        assert!(req.name.is_none());
+        assert!(req.color.is_none());
+    }
+
+    #[test]
+    fn hex_color_valid_formats() {
+        assert!(is_valid_hex_color("#AABBCC"));
+        assert!(is_valid_hex_color("#000000"));
+        assert!(is_valid_hex_color("#ffffff"));
+        assert!(is_valid_hex_color("#1a2B3c"));
+    }
+
+    #[test]
+    fn hex_color_invalid_formats() {
+        assert!(!is_valid_hex_color("AABBCC"));
+        assert!(!is_valid_hex_color("#AABBCCD"));
+        assert!(!is_valid_hex_color("#AABBC"));
+        assert!(!is_valid_hex_color("#GGHHII"));
+        assert!(!is_valid_hex_color(""));
+    }
+
+    #[test]
+    fn task_label_response_nil_uuid_round_trip() {
+        let resp = TaskLabelResponse {
+            id: Uuid::nil(),
+            group_id: Uuid::nil(),
+            name: "test".to_string(),
+            color: "#123456".to_string(),
+            created_by: None,
+            created_by_label: "Alice".to_string(),
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(val["name"], "test");
+        assert_eq!(val["color"], "#123456");
+        assert!(val.get("created_by").is_some());
+    }
 }

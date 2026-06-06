@@ -486,13 +486,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(tasks::remove_task_assignee),
                 )
                 // Plan 0078 (GAR-536) — task labels API slice 5.
+                // Plan 0266 (GAR-800) — task label PATCH (edit name/color).
                 .route(
                     "/v1/groups/{group_id}/task-labels",
                     post(tasks::create_task_label).get(tasks::list_task_labels),
                 )
                 .route(
                     "/v1/groups/{group_id}/task-labels/{label_id}",
-                    delete(tasks::delete_task_label),
+                    delete(tasks::delete_task_label).patch(tasks::patch_task_label),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels",
@@ -823,6 +824,24 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}",
                     delete(unconfigured_handler),
                 )
+                // Plan 0078 (GAR-536) — task labels API slice 5, fail-soft 503.
+                // Plan 0266 (GAR-800) — task label PATCH, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/task-labels",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-labels/{label_id}",
+                    delete(unconfigured_handler).patch(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels",
+                    post(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
+                    delete(unconfigured_handler),
+                )
                 .route(
                     "/v1/uploads",
                     post(unconfigured_handler).options(uploads::options_uploads),
@@ -1071,6 +1090,24 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}",
+                    delete(unconfigured_handler),
+                )
+                // Plan 0078 (GAR-536) — task labels API slice 5, no-auth stub.
+                // Plan 0266 (GAR-800) — task label PATCH, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/task-labels",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/task-labels/{label_id}",
+                    delete(unconfigured_handler).patch(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels",
+                    post(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
                     delete(unconfigured_handler),
                 )
                 .route(

@@ -403,6 +403,13 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ assignments_cascade: true }`.
     TaskLabelDeleted,
 
+    /// A task label's name/color was edited via
+    /// `PATCH /v1/groups/{group_id}/task-labels/{label_id}` (plan 0266 / GAR-800).
+    ///
+    /// `resource_type = "task_labels"`, `resource_id = "{label_id}"`.
+    /// Metadata: `{ name_len: N, color }` — no raw label name (PII-safe).
+    TaskLabelEdited,
+
     /// A label was assigned to a task via
     /// `POST /v1/groups/{group_id}/tasks/{task_id}/labels` (plan 0078 / GAR-536,
     /// epic GAR-WS-TASKS slice 5).
@@ -642,6 +649,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::TaskAssigneeRemoved => "task.assignee.removed",
             WorkspaceAuditAction::TaskLabelCreated => "task_label.created",
             WorkspaceAuditAction::TaskLabelDeleted => "task_label.deleted",
+            WorkspaceAuditAction::TaskLabelEdited => "task_label.edited",
             WorkspaceAuditAction::TaskLabelAssigned => "task.label.assigned",
             WorkspaceAuditAction::TaskLabelRemoved => "task.label.removed",
             WorkspaceAuditAction::TaskSubscribed => "task.subscribed",
@@ -857,6 +865,10 @@ mod tests {
             "task_label.deleted"
         );
         assert_eq!(
+            WorkspaceAuditAction::TaskLabelEdited.as_str(),
+            "task_label.edited"
+        );
+        assert_eq!(
             WorkspaceAuditAction::TaskLabelAssigned.as_str(),
             "task.label.assigned"
         );
@@ -965,6 +977,7 @@ mod tests {
             WorkspaceAuditAction::TaskAssigneeRemoved.as_str(),
             WorkspaceAuditAction::TaskLabelCreated.as_str(),
             WorkspaceAuditAction::TaskLabelDeleted.as_str(),
+            WorkspaceAuditAction::TaskLabelEdited.as_str(),
             WorkspaceAuditAction::TaskLabelAssigned.as_str(),
             WorkspaceAuditAction::TaskLabelRemoved.as_str(),
             WorkspaceAuditAction::TaskSubscribed.as_str(),

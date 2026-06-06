@@ -49,8 +49,8 @@ use super::tasks::{
     CreateCommentRequest, CreateTaskLabelRequest, CreateTaskListRequest, CreateTaskRequest,
     EditCommentRequest, EditedCommentResponse, LabelAssignmentResponse, ListCommentsResponse,
     ListSubtasksResponse, ListTaskListsResponse, ListTasksResponse, MoveTaskRequest,
-    PatchTaskListRequest, PatchTaskRequest, SubscriptionResponse, TaskLabelResponse,
-    TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+    PatchTaskLabelRequest, PatchTaskListRequest, PatchTaskRequest, SubscriptionResponse,
+    TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
@@ -161,6 +161,7 @@ impl Modify for SecurityAddon {
         super::tasks::labels::create_task_label,
         super::tasks::labels::list_task_labels,
         super::tasks::labels::delete_task_label,
+        super::tasks::labels::patch_task_label,
         super::tasks::labels::assign_task_label,
         super::tasks::labels::remove_task_label_from_task,
         super::tasks::subscriptions::subscribe_to_task,
@@ -258,6 +259,7 @@ impl Modify for SecurityAddon {
         AddAssigneeRequest,
         AssigneeResponse,
         CreateTaskLabelRequest,
+        PatchTaskLabelRequest,
         TaskLabelResponse,
         AssignTaskLabelRequest,
         LabelAssignmentResponse,
