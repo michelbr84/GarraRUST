@@ -1,8 +1,29 @@
 # Dependabot Status
 
-> Last updated: **2026-06-07 run 87** (health routine — all surfaces clean, priority (i). GAR-809. Previous: runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 84 all surfaces clean, priority (i) (GAR-804); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-07 run 88** (health routine — all surfaces clean, priority (i). GAR-810. Previous: run 87 (GAR-809) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-07 run 88 (~00:45 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-06-07 (~00:45 ET / 04:45 UTC). Full security scan completed. Priority **(i)** — no actionable security work found.
+
+**CI on main (`42d98e2`):** All 15 jobs green — CI run 27079530277 success (2026-06-07T01:45Z), CodeQL run 27079530287 success, Quality Ratchet run 27079530296 success.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan job success on `42d98e2` (run 27079530277) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot alerts | ⚠️ 2 active suppressed | rsa HIGH (GAR-456) upstream-blocked; glib MEDIUM (GAR-513) upstream-blocked; both expiry 2026-07-31 |
+| Open Dependabot PRs | ✅ 0 open health/ | routine/ PR #659 (GAR-808) skipped per protocol |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities (Security Audit job success, run 27079530277) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | all 3 Analyze jobs green on `42d98e2` (run 27079530287) |
+| CI on main (`42d98e2`) | ✅ green | All 15 jobs success (CI run 27079530277, 2026-06-07T01:45Z) |
+
+**No security fix applied this run.** Bookkeeping only: GAR-810, dependabot-status run 88 note. Linear: GAR-810. Next security backlog: rsa (GAR-456), glib (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-07 run 87 (~20:45 ET) — all surfaces clean, priority (i)
 
