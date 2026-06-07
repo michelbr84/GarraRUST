@@ -1,8 +1,33 @@
 # Dependabot Status
 
-> Last updated: **2026-06-07 run 90** (health routine — all surfaces clean, priority (i). GAR-813. Previous: run 89 (GAR-812) all surfaces clean, priority (i); run 88 (GAR-810) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-07 run 91** (health routine — all surfaces clean, priority (i). GAR-815. Previous: run 90 (GAR-813) all surfaces clean, priority (i); run 89 (GAR-812) all surfaces clean, priority (i); run 88 (GAR-810) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-07 run 91 (~12:47 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-06-07 (~12:47 ET / 16:47 UTC). Full security scan completed. Priority **(i)** — no actionable security work found.
+
+**Housekeeping this run:** GAR-812 (run 89) was still "In Progress" in Linear — marked Done. PR #669 (`docs/mark-plan-0271-done`) — bookkeeping PR from prior session — merged at start of this run after CI completed.
+
+**Pending routine/ PR noted (NOT actioned):** PR #664 (`routine/202606070621-post-thread-reply`, GAR-811) — skipped per protocol.
+
+**CI on main (`d7d8a82`):** All workflow checks green — CI run 27089153103 success, CodeQL run 27092758644 success, Quality Ratchet run 27092758629 success, Security Audit run 27089433913 success (2026-06-07T09:52-12:36Z).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan job success on main `d7d8a82` (CodeQL run 27092758644, 2026-06-07T12:36Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot alerts | ⚠️ 1 active (#42 glib MEDIUM GAR-513) | alert #42: glib 0.18.5 / RUSTSEC-2024-0429 upstream-blocked, expiry 2026-07-31. rsa RUSTSEC-2023-0071 tracked in audit.toml (GAR-456) — no active Dependabot alert. |
+| Open Dependabot PRs | ✅ 0 open health/ | routine/ PR #664 (GAR-811) skipped per protocol |
+| Security Audit (cargo-audit) | ✅ pass | CI Security Audit job success (run 27089433913) — 0 vulnerabilities, 17 allowed unmaintained warnings |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | all 3 Analyze jobs green on main `d7d8a82` (run 27092758644, 2026-06-07T12:36-12:40Z) |
+| CI on main (`d7d8a82`) | ✅ green | All workflow checks success |
+
+**No security fix applied this run.** Bookkeeping only: GAR-815, dependabot-status run 91 note. Linear: GAR-815. Next security backlog: rsa (GAR-456), glib (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-07 run 90 (~04:45 ET) — all surfaces clean, priority (i)
 
