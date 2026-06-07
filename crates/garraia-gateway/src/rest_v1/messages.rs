@@ -2328,7 +2328,7 @@ mod tests {
         assert!(prompt.is_empty());
     }
 
-    // ── Plan 0274 (GAR-811): send_thread_reply validation ─────────────────────
+    // ── Plan 0276 (GAR-811): send_thread_reply validation ─────────────────────
 
     #[test]
     fn send_thread_reply_accepts_valid_body() {
