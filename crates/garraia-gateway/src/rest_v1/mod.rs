@@ -495,6 +495,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0078 (GAR-536) — task labels API slice 5.
                 // Plan 0266 (GAR-800) — task label PATCH (edit name/color).
                 // Plan 0267 (GAR-802) — task label GET single item.
+                // Plan 0271 (GAR-808) — task label assignment GET list.
                 .route(
                     "/v1/groups/{group_id}/task-labels",
                     post(tasks::create_task_label).get(tasks::list_task_labels),
@@ -507,7 +508,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels",
-                    post(tasks::assign_task_label),
+                    post(tasks::assign_task_label).get(tasks::list_task_label_assignments),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
@@ -844,6 +845,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0078 (GAR-536) — task labels API slice 5, fail-soft 503.
                 // Plan 0266 (GAR-800) — task label PATCH, fail-soft 503.
                 // Plan 0267 (GAR-802) — task label GET single item, fail-soft 503.
+                // Plan 0271 (GAR-808) — task label assignment GET list, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/task-labels",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -856,7 +858,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
@@ -1122,6 +1124,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0078 (GAR-536) — task labels API slice 5, no-auth stub.
                 // Plan 0266 (GAR-800) — task label PATCH, no-auth stub.
                 // Plan 0267 (GAR-802) — task label GET single item, no-auth stub.
+                // Plan 0271 (GAR-808) — task label assignment GET list, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/task-labels",
                     post(unconfigured_handler).get(unconfigured_handler),
@@ -1134,7 +1137,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}",
