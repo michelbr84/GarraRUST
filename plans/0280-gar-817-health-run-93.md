@@ -2,11 +2,11 @@
 
 ## Goal
 
-Autonomous health & security scan run 93. Document results and merge status note. Priority **(i)** — all surfaces clean, no actionable security work.
+Autonomous health & security scan run 93. Priority **upgraded to (h)** during CI: cargo-deny failed on RUSTSEC-2026-0173 (proc-macro-error2 newly unmaintained). Fix: suppress in deny.toml (unmaintained-only section) with expiry 2026-07-31.
 
 ## Architecture
 
-Docs-only commit: plan file + dependabot-status.md run 93 note + plans/README.md rows.
+Two-commit PR: (1) status note docs, (2) deny.toml suppression for RUSTSEC-2026-0173.
 
 ## Tech stack
 
@@ -36,18 +36,20 @@ None.
 plans/0280-gar-817-health-run-93.md       ← this file (new)
 plans/README.md                            ← row 0277 marked ✅ Merged, row 0278 added
 docs/security/dependabot-status.md        ← run 93 section prepended
+deny.toml                                  ← RUSTSEC-2026-0173 suppressed (unmaintained-only)
 ```
 
 ## Tasks
 
 - [x] T1: Check open PRs — PR #664 (routine/202606070621-post-thread-reply, GAR-811) skipped per protocol
 - [x] T2: Sync main → `ab025c0`
-- [x] T3: Scan all security surfaces (Secret/Malware/Dependabot/CodeQL/CI) — all clean
+- [x] T3: Scan all security surfaces (Secret/Malware/Dependabot/CodeQL/CI) — CI cargo-deny failed on RUSTSEC-2026-0173
 - [x] T4: Create GAR-817 Linear issue
 - [x] T5: Write plan 0280
 - [x] T6: Update plans/README.md (row 0277 → ✅ Merged, add row 0278)
 - [x] T7: Update docs/security/dependabot-status.md
-- [ ] T8: Commit + push on branch health/202606072047-run93-status-note
+- [x] T8a: Commit + push status note on branch health/202606072047-run93-status-note
+- [ ] T8b: Fix CI: add RUSTSEC-2026-0173 to deny.toml (unmaintained-only section), commit + push
 - [ ] T9: Open PR, wait for CI green, squash-merge
 - [ ] T10: Mark GAR-817 Done in Linear
 
