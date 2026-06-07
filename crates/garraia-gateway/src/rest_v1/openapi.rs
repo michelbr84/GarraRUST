@@ -165,6 +165,7 @@ impl Modify for SecurityAddon {
         super::tasks::labels::delete_task_label,
         super::tasks::labels::patch_task_label,
         super::tasks::labels::assign_task_label,
+        super::tasks::labels::list_task_label_assignments,
         super::tasks::labels::remove_task_label_from_task,
         super::tasks::subscriptions::subscribe_to_task,
         super::tasks::subscriptions::list_task_subscriptions,
