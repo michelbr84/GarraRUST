@@ -283,3 +283,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0271 | [GAR-808 — GET /v1/groups/{group_id}/tasks/{task_id}/labels — list labels assigned to a task](0271-gar-808-get-task-label-assignments.md) | [GAR-808](https://linear.app/chatgpt25/issue/GAR-808) | ✅ Merged PR #659 |
 | 0272 | [GAR-809 — Health run 87 (2026-06-07 ~20:45 ET): all surfaces clean, priority (i)](0272-gar-809-health-run-87.md) | [GAR-809](https://linear.app/chatgpt25/issue/GAR-809) | ✅ Merged 2026-06-07 via PR #660 (`95e2860`) |
 | 0273 | [GAR-810 — Health run 88 (2026-06-07 ~00:45 ET): all surfaces clean, priority (i)](0273-gar-810-health-run-88.md) | [GAR-810](https://linear.app/chatgpt25/issue/GAR-810) | ✅ Merged via PR #662 (`9b529dd`) |
+| 0274 | [GAR-812 — Health run 89 (2026-06-07 ~04:15 ET): all surfaces clean, priority (i)](0274-gar-812-health-run-89.md) | [GAR-812](https://linear.app/chatgpt25/issue/GAR-812) | ✅ Merged via PR #665 (`75c311ab`) |
+| 0275 | [GAR-813 — Health run 90 (2026-06-07 ~04:45 ET): all surfaces clean, priority (i)](0275-gar-813-health-run-90.md) | [GAR-813](https://linear.app/chatgpt25/issue/GAR-813) | ✅ Merged via PR #667 (`f254585`) |
