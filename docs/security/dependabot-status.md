@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-06-06 run 84** (health routine — all surfaces clean, priority (i). GAR-804. Previous: run 83 all surfaces clean, priority (i) (GAR-793, bare note only); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-07 run 87** (health routine — all surfaces clean, priority (i). GAR-809. Previous: runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 84 all surfaces clean, priority (i) (GAR-804); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-07 run 87 (~20:45 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-06-07 (~20:45 ET / 00:45 UTC 2026-06-08). Full security scan completed. Priority **(i)** — no actionable security work found.
+
+**Note:** Runs 85 (GAR-805, ~12:47 ET Jun 6) and 86 (GAR-807, ~16:46 ET Jun 6) were also priority (i) but did not update this file (plans-only commits). Both confirmed all surfaces clean; no code changes applied.
+
+**CI on main (`7ace764`):** All checks green — CI run 27074525517 success, CodeQL run 27074525516 success, Quality Ratchet run 27074525522 success (2026-06-06T21:35Z).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI green on `7ace764`, Secret Scan job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI green |
+| Dependabot alerts | ⚠️ 2 active suppressed | rsa HIGH (GAR-456) upstream-blocked; glib MEDIUM (GAR-513) upstream-blocked; both expiry 2026-07-31 |
+| Open Dependabot PRs | ✅ 0 open health/ | routine/ PR #659 (GAR-808) skipped per protocol |
+| Security Audit (CI) | ✅ pass | 0 vulnerabilities (CI green all recent runs) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | all 3 Analyze jobs green on `7ace764` |
+| CI on main (`7ace764`) | ✅ green | All checks success (CI/CodeQL/Quality Ratchet) |
+
+**No security fix applied this run.** Bookkeeping only: GAR-809, dependabot-status run 87 note (also backfills runs 85+86). Linear: GAR-809. Next security backlog: rsa (GAR-456), glib (GAR-513) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-06 run 84 (~08:45 ET) — all surfaces clean, priority (i)
 
