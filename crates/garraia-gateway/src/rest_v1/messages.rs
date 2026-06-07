@@ -2016,12 +2016,11 @@ pub async fn send_thread_reply(
     };
 
     // 7. Resolve sender_label from users.display_name within the tx.
-    let (sender_label,): (String,) =
-        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
-            .bind(principal.user_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let (sender_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     // 8. INSERT reply message with thread_id set.
     //    NEVER include body_tsv — it is GENERATED ALWAYS AS.
@@ -2399,7 +2398,10 @@ mod tests {
             reply_to_id: None,
             mentions: vec![],
         };
-        assert!(req.validate().is_ok(), "non-empty body with whitespace passes validate");
+        assert!(
+            req.validate().is_ok(),
+            "non-empty body with whitespace passes validate"
+        );
         let trimmed = req.body.trim().to_string();
         assert_eq!(trimmed, "text");
     }
