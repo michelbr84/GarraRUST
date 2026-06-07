@@ -1,4 +1,4 @@
-# Plan 0276 — GAR-811: POST /v1/threads/{thread_id}/messages (thread reply)
+# Plan 0278 — GAR-811: POST /v1/threads/{thread_id}/messages (thread reply)
 
 **Issue:** [GAR-811](https://linear.app/chatgpt25/issue/GAR-811)
 **Branch:** `routine/202606070621-post-thread-reply`
@@ -82,7 +82,7 @@ Add `ThreadReplied` variant to `WorkspaceAuditAction` enum in
 
 ```rust
 /// A reply was posted to a thread via
-/// `POST /v1/threads/{thread_id}/messages` (plan 0276 / GAR-811).
+/// `POST /v1/threads/{thread_id}/messages` (plan 0278 / GAR-811).
 ThreadReplied,
 ```
 
@@ -141,7 +141,7 @@ Six unit tests in `messages.rs` (no DB required):
 | `crates/garraia-auth/src/audit_workspace.rs` | +`ThreadReplied` variant + `as_str` arm + tests |
 | `crates/garraia-gateway/src/rest_v1/messages.rs` | +`send_thread_reply` handler + 6 unit tests |
 | `crates/garraia-gateway/src/rest_v1/mod.rs` | +route in all 3 branches |
-| `plans/README.md` | +row for plan 0276 |
+| `plans/README.md` | +row for plan 0278 |
 | `ROADMAP.md` | mark `POST /v1/threads/{thread_id}/messages` done |
 
 ## 7. Security
