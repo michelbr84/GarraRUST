@@ -285,4 +285,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0273 | [GAR-810 — Health run 88 (2026-06-07 ~00:45 ET): all surfaces clean, priority (i)](0273-gar-810-health-run-88.md) | [GAR-810](https://linear.app/chatgpt25/issue/GAR-810) | ✅ Merged via PR #662 (`9b529dd`) |
 | 0274 | [GAR-812 — Health run 89 (2026-06-07 ~04:15 ET): all surfaces clean, priority (i)](0274-gar-812-health-run-89.md) | [GAR-812](https://linear.app/chatgpt25/issue/GAR-812) | ✅ Merged via PR #665 (`75c311ab`) |
 | 0275 | [GAR-813 — Health run 90 (2026-06-07 ~04:45 ET): all surfaces clean, priority (i)](0275-gar-813-health-run-90.md) | [GAR-813](https://linear.app/chatgpt25/issue/GAR-813) | ✅ Merged via PR #667 (`f254585`) |
-| 0276 | [GAR-815 — Health run 91 (2026-06-07 ~12:47 ET): all surfaces clean, priority (i)](0276-gar-815-health-run-91.md) | [GAR-815](https://linear.app/chatgpt25/issue/GAR-815) | 🔄 In progress |
+| 0276 | [GAR-815 — Health run 91 (2026-06-07 ~12:47 ET): all surfaces clean, priority (i)](0276-gar-815-health-run-91.md) | [GAR-815](https://linear.app/chatgpt25/issue/GAR-815) | ✅ Merged via PR #670 (`d3c3324`) |
+| 0277 | [GAR-816 — Health run 92 (2026-06-07 ~12:45 ET): all surfaces clean, priority (i)](0277-gar-816-health-run-92.md) | [GAR-816](https://linear.app/chatgpt25/issue/GAR-816) | 🔄 In progress |
