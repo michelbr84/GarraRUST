@@ -186,6 +186,7 @@ impl Modify for SecurityAddon {
         super::files::delete_folder,
         super::files::download_file,
         super::files::list_file_versions,
+        super::files::get_file_version,
         super::files::post_new_version,
     ),
     components(schemas(

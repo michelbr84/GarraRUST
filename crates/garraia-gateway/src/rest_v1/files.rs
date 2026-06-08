@@ -2057,6 +2057,92 @@ pub async fn list_file_versions(
     Ok(Json(FileVersionListResponse { items, next_cursor }))
 }
 
+/// `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}` — single version detail
+/// (plan 0283, GAR-820). Returns `FileVersionSummary` for the requested integer version.
+///
+/// Auth: `Principal` + `X-Group-Id` header + `FilesRead` action.
+/// Cross-group guard: `path_group_id` must equal `principal.group_id` → 403.
+/// Version not found (or belonging to a different file/group) → 404.
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/files/{file_id}/versions/{version}",
+    tag = "files",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID"),
+        ("file_id"  = Uuid, Path, description = "File UUID"),
+        ("version"  = i32,  Path, description = "Version number (positive integer)"),
+    ),
+    responses(
+        (status = 200, description = "Version detail", body = FileVersionSummary),
+        (status = 400, description = "Missing X-Group-Id header"),
+        (status = 403, description = "Forbidden — cross-group or insufficient role"),
+        (status = 404, description = "File or version not found"),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn get_file_version(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id, version)): Path<(Uuid, Uuid, i32)>,
+) -> Result<Json<FileVersionSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+
+    if path_group_id != group_id {
+        return Err(RestError::Forbidden);
+    }
+
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<FileVersionRow> = sqlx::query_as(
+        "SELECT version, size_bytes, mime_type, checksum_sha256, \
+                created_by, created_by_label, created_at \
+         FROM   file_versions \
+         WHERE  file_id  = $1 \
+           AND  group_id = $2 \
+           AND  version  = $3",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(version)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileVersionRead,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({
+            "file_id": file_id,
+            "group_id": group_id,
+            "version": version,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FileVersionSummary::from(row)))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2435,5 +2521,116 @@ mod tests {
         };
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.next_cursor, Some(id1));
+    }
+
+    // ─── get_file_version unit tests (plan 0283, GAR-820) ─────────────────────
+
+    #[test]
+    fn file_version_summary_serializes_all_fields() {
+        let user_id = Uuid::new_v4();
+        let now = Utc::now();
+        let row = FileVersionRow {
+            version: 3,
+            size_bytes: 42_000,
+            mime_type: "application/pdf".to_string(),
+            checksum_sha256: "abc123".to_string(),
+            created_by: Some(user_id),
+            created_by_label: "alice".to_string(),
+            created_at: now,
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.version, 3);
+        assert_eq!(summary.size_bytes, 42_000);
+        assert_eq!(summary.mime_type, "application/pdf");
+        assert_eq!(summary.checksum_sha256, "abc123");
+        assert_eq!(summary.created_by, Some(user_id));
+        assert_eq!(summary.created_by_label, "alice");
+        assert_eq!(summary.created_at, now);
+    }
+
+    #[test]
+    fn file_version_summary_nil_created_by_is_none() {
+        let now = Utc::now();
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: 0,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "0".to_string(),
+            created_by: None,
+            created_by_label: "system".to_string(),
+            created_at: now,
+        };
+        let summary = FileVersionSummary::from(row);
+        assert!(summary.created_by.is_none());
+    }
+
+    #[test]
+    fn file_version_summary_created_at_utc_z() {
+        use chrono::TimeZone;
+        let ts = Utc.with_ymd_and_hms(2026, 6, 8, 7, 0, 0).unwrap();
+        let row = FileVersionRow {
+            version: 2,
+            size_bytes: 1,
+            mime_type: "image/png".to_string(),
+            checksum_sha256: "ff".to_string(),
+            created_by: None,
+            created_by_label: "x".to_string(),
+            created_at: ts,
+        };
+        let summary = FileVersionSummary::from(row);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(serialized.contains("2026-06-08T07:00:00Z"), "{serialized}");
+    }
+
+    #[test]
+    fn file_version_summary_nil_uuid_round_trips() {
+        let nil = Uuid::nil();
+        let now = Utc::now();
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: 0,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "0".to_string(),
+            created_by: Some(nil),
+            created_by_label: "x".to_string(),
+            created_at: now,
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.created_by, Some(nil));
+    }
+
+    #[test]
+    fn file_version_summary_version_integer_preserved() {
+        let now = Utc::now();
+        let row = FileVersionRow {
+            version: 42,
+            size_bytes: 100,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "ab".to_string(),
+            created_by: None,
+            created_by_label: "x".to_string(),
+            created_at: now,
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.version, 42);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(serialized.contains("\"version\":42"), "{serialized}");
+    }
+
+    #[test]
+    fn file_version_summary_large_size_bytes_preserved() {
+        let now = Utc::now();
+        let large: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: large,
+            mime_type: "application/octet-stream".to_string(),
+            checksum_sha256: "deadbeef".to_string(),
+            created_by: None,
+            created_by_label: "x".to_string(),
+            created_at: now,
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.size_bytes, large);
     }
 }
