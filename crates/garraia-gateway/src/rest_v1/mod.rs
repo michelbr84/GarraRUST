@@ -397,6 +397,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/threads/{thread_id}",
                     get(chats::get_thread).patch(chats::patch_thread),
                 )
+                // Plan 0274 (GAR-811) — thread reply.
+                .route(
+                    "/v1/threads/{thread_id}/messages",
+                    post(messages::send_thread_reply),
+                )
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
                 .route(
@@ -683,6 +688,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/threads/{thread_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
+                // Plan 0274 (GAR-811) — thread reply, fail-soft 503.
+                .route(
+                    "/v1/threads/{thread_id}/messages",
+                    post(unconfigured_handler),
+                )
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
                 // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
                 .route(
@@ -960,6 +970,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/threads/{thread_id}",
                     get(unconfigured_handler).patch(unconfigured_handler),
+                )
+                // Plan 0274 (GAR-811) — thread reply, no-auth stub.
+                .route(
+                    "/v1/threads/{thread_id}/messages",
+                    post(unconfigured_handler),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.

@@ -182,6 +182,14 @@ pub enum WorkspaceAuditAction {
     /// user-controlled and may contain PII — never logged in metadata.
     ThreadUpdated,
 
+    /// A reply was posted to a thread via
+    /// `POST /v1/threads/{thread_id}/messages` (plan 0274 / GAR-811).
+    ///
+    /// `resource_type = "messages"`, `resource_id = "{message_id}"`.
+    /// Metadata: `{ thread_id, body_len }`. Body text is user-generated and
+    /// may contain PII — only its length is carried in the audit record.
+    ThreadReplied,
+
     /// A memory item was created via `POST /v1/memory` (plan 0062 /
     /// GAR-514, epic GAR-WS-MEMORY slice 1).
     ///
@@ -625,6 +633,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MessageDeleted => "message.deleted",
             WorkspaceAuditAction::ThreadCreated => "thread.created",
             WorkspaceAuditAction::ThreadUpdated => "thread.updated",
+            WorkspaceAuditAction::ThreadReplied => "thread.replied",
             WorkspaceAuditAction::MemoryCreated => "memory.created",
             WorkspaceAuditAction::MemoryDeleted => "memory.deleted",
             WorkspaceAuditAction::MemoryPinned => "memory.pinned",
@@ -786,6 +795,10 @@ mod tests {
         assert_eq!(
             WorkspaceAuditAction::ThreadUpdated.as_str(),
             "thread.updated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::ThreadReplied.as_str(),
+            "thread.replied"
         );
         assert_eq!(
             WorkspaceAuditAction::MemoryCreated.as_str(),
@@ -954,6 +967,7 @@ mod tests {
             WorkspaceAuditAction::MessageDeleted.as_str(),
             WorkspaceAuditAction::ThreadCreated.as_str(),
             WorkspaceAuditAction::ThreadUpdated.as_str(),
+            WorkspaceAuditAction::ThreadReplied.as_str(),
             WorkspaceAuditAction::MemoryCreated.as_str(),
             WorkspaceAuditAction::MemoryDeleted.as_str(),
             WorkspaceAuditAction::MemoryPinned.as_str(),

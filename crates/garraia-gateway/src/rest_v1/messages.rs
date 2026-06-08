@@ -1917,6 +1917,184 @@ async fn bot_reply_task(
     }
 }
 
+/// `POST /v1/threads/{thread_id}/messages` — post a reply to an existing thread.
+///
+/// Inserts a new message with `thread_id` set, scoped to the thread's parent
+/// chat. The caller must be a member of the group that owns the thread.
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status | Source         |
+/// |----------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                    | 401    | Principal ext. |
+/// | Non-member of group                    | 403    | Principal ext. |
+/// | `X-Group-Id` header missing            | 400    | this handler   |
+/// | body empty / whitespace-only           | 400    | validate()     |
+/// | body > 100,000 characters              | 400    | validate()     |
+/// | Thread not found or in another group   | 404    | this handler   |
+/// | Happy path                             | 201    |                |
+#[utoipa::path(
+    post,
+    path = "/v1/threads/{thread_id}/messages",
+    params(
+        ("thread_id" = Uuid, Path, description = "Thread UUID to reply to."),
+    ),
+    request_body = SendMessageRequest,
+    responses(
+        (status = 201, description = "Reply posted.", body = MessageResponse),
+        (status = 400, description = "Validation error or missing header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Thread not found or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn send_thread_reply(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(thread_id): Path<Uuid>,
+    Json(body): Json<SendMessageRequest>,
+) -> Result<(StatusCode, Json<MessageResponse>), RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate — ChatsWrite required (same as send_message).
+    if !can(&principal, Action::ChatsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Structural validation.
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+
+    let trimmed_body = body.body.trim().to_string();
+
+    // 4. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Tenant context — both user and group required.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 6. Resolve thread → chat_id via JOIN to chats for group isolation.
+    //    0 rows → 404 (no existence leak for threads in other groups).
+    let thread_row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT mt.chat_id \
+         FROM message_threads mt \
+         JOIN chats c ON c.id = mt.chat_id \
+         WHERE mt.id = $1 AND c.group_id = $2",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (chat_id,) = match thread_row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    // 7. Resolve sender_label from users.display_name within the tx.
+    let (sender_label,): (String,) = sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+        .bind(principal.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 8. INSERT reply message with thread_id set.
+    //    NEVER include body_tsv — it is GENERATED ALWAYS AS.
+    let (msg_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO messages \
+             (chat_id, group_id, sender_user_id, sender_label, body, thread_id) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, created_at",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .bind(principal.user_id)
+    .bind(&sender_label)
+    .bind(&trimmed_body)
+    .bind(thread_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 9. Audit. Metadata is STRUCTURAL only — body text is PII.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ThreadReplied,
+        principal.user_id,
+        group_id,
+        "messages",
+        msg_id.to_string(),
+        serde_json::json!({
+            "thread_id": thread_id,
+            "body_len": trimmed_body.chars().count(),
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 10. Notify SSE subscribers on the parent chat channel.
+    state.publish_chat_event(
+        chat_id,
+        serde_json::json!({
+            "id": msg_id,
+            "chat_id": chat_id,
+            "group_id": group_id,
+            "sender_user_id": principal.user_id,
+            "sender_label": sender_label,
+            "body": trimmed_body,
+            "thread_id": thread_id,
+            "reply_to_id": null,
+            "is_bot_response": false,
+            "created_at": created_at,
+            "mentions": [],
+        }),
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(MessageResponse {
+            id: msg_id,
+            chat_id,
+            group_id,
+            sender_user_id: principal.user_id,
+            sender_label,
+            body: trimmed_body,
+            reply_to_id: None,
+            is_bot_response: false,
+            created_at,
+            mentions: vec![],
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2148,5 +2326,83 @@ mod tests {
         let body = "/garra ";
         let prompt = body.strip_prefix("/garra ").unwrap().trim();
         assert!(prompt.is_empty());
+    }
+
+    // ── Plan 0276 (GAR-811): send_thread_reply validation ─────────────────────
+
+    #[test]
+    fn send_thread_reply_accepts_valid_body() {
+        let req = SendMessageRequest {
+            body: "Thread reply here".into(),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn send_thread_reply_rejects_empty_body() {
+        let req = SendMessageRequest {
+            body: "".into(),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "message body must not be empty"
+        );
+    }
+
+    #[test]
+    fn send_thread_reply_rejects_whitespace_body() {
+        let req = SendMessageRequest {
+            body: "   ".into(),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "message body must not be empty"
+        );
+    }
+
+    #[test]
+    fn send_thread_reply_rejects_body_over_100k_chars() {
+        let req = SendMessageRequest {
+            body: "x".repeat(MAX_BODY_CHARS + 1),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert_eq!(
+            req.validate().unwrap_err(),
+            "message body must be 100,000 characters or fewer"
+        );
+    }
+
+    #[test]
+    fn send_thread_reply_accepts_body_at_100k_chars() {
+        let req = SendMessageRequest {
+            body: "x".repeat(MAX_BODY_CHARS),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn send_thread_reply_body_trimmed_in_validate() {
+        // validate() itself does not trim; trimming happens in the handler.
+        // A body of purely-whitespace is rejected by validate() before any trim.
+        let req = SendMessageRequest {
+            body: "  text  ".into(),
+            reply_to_id: None,
+            mentions: vec![],
+        };
+        assert!(
+            req.validate().is_ok(),
+            "non-empty body with whitespace passes validate"
+        );
+        let trimmed = req.body.trim().to_string();
+        assert_eq!(trimmed, "text");
     }
 }
