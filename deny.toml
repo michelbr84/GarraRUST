@@ -64,6 +64,8 @@ ignore = [
     # Resolution: wasmtime 28.0.1 → 44.0.0 (GAR-454) removed fxhash from
     # Cargo.lock. advisory-not-detected in cargo deny. Removed from deny.toml.
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
+    "RUSTSEC-2026-0173", # proc-macro-error2 (fork also unmaintained; no safe upgrade;
+                         # pulled via aquamarine→teloxide and validator_derive→validator)
     # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
     # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
     # opentelemetry_sdk >= 0.28 dropped async-std entirely. Removed from deny.toml.
