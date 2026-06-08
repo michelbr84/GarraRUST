@@ -576,9 +576,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(files::get_file).patch(files::patch_file),
                 )
                 // Plan 0095 (GAR-569) — files API slice 8: list versions.
+                // Plan 0283 (GAR-820) — GET single file version by version number.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}/versions",
                     get(files::list_file_versions),
+                )
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions/{version}",
+                    get(files::get_file_version),
                 )
                 // Plan 0090 (GAR-559) — files API slice 3: GET single folder.
                 // Plan 0091 (GAR-561) — files API slice 4: PATCH folder rename.
@@ -792,8 +797,13 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 // Plan 0095 (GAR-569) — files API slice 8: list versions, fail-soft 503.
+                // Plan 0283 (GAR-820) — GET single file version, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}/versions",
+                    get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions/{version}",
                     get(unconfigured_handler),
                 )
                 .route(
@@ -1072,8 +1082,13 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 // Plan 0095 (GAR-569) — files API slice 8: list versions, no-auth stub.
+                // Plan 0283 (GAR-820) — GET single file version, no-auth stub.
                 .route(
                     "/v1/groups/{group_id}/files/{file_id}/versions",
+                    get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/groups/{group_id}/files/{file_id}/versions/{version}",
                     get(unconfigured_handler),
                 )
                 .route(

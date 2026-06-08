@@ -2057,6 +2057,106 @@ pub async fn list_file_versions(
     Ok(Json(FileVersionListResponse { items, next_cursor }))
 }
 
+// ─── Plan 0283 (GAR-820) — GET single file version ───────────────────────────
+
+/// `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}` — fetch a
+/// single file version by its integer version number (plan 0283, GAR-820).
+///
+/// Returns `FileVersionSummary`. 404 if the parent file doesn't exist,
+/// is soft-deleted, or the specific version number is not found (no
+/// existence leak for cross-group access — FORCE RLS + group_id guard).
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{group_id}/files/{file_id}/versions/{version}",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID (must match caller's JWT group)."),
+        ("file_id"  = Uuid, Path, description = "File UUID."),
+        ("version"  = i32,  Path, description = "Version number (positive integer)."),
+    ),
+    responses(
+        (status = 200, description = "File version detail", body = FileVersionSummary),
+        (status = 400, description = "Missing X-Group-Id header"),
+        (status = 403, description = "Forbidden — cross-group or insufficient role"),
+        (status = 404, description = "File or version not found"),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn get_file_version(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, file_id, version)): Path<(Uuid, Uuid, i32)>,
+) -> Result<Json<FileVersionSummary>, RestError> {
+    let group_id = require_group_id(&principal)?;
+
+    if path_group_id != group_id {
+        return Err(RestError::Forbidden);
+    }
+
+    if !can(&principal, Action::FilesRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Verify parent file exists and is not soft-deleted.
+    let file_exists: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM files WHERE id = $1 AND deleted_at IS NULL")
+            .bind(file_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    if file_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Fetch the specific version (group_id guard + FORCE RLS double-locks cross-group).
+    let row: Option<FileVersionRow> = sqlx::query_as(
+        "SELECT version, size_bytes, mime_type, checksum_sha256, \
+                created_by, created_by_label, created_at \
+         FROM   file_versions \
+         WHERE  file_id  = $1 \
+           AND  group_id = $2 \
+           AND  version  = $3",
+    )
+    .bind(file_id)
+    .bind(group_id)
+    .bind(version)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::FileVersionRead,
+        principal.user_id,
+        group_id,
+        "files",
+        file_id.to_string(),
+        json!({
+            "file_id": file_id,
+            "group_id": group_id,
+            "version": version,
+        }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(FileVersionSummary::from(row)))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2435,5 +2535,106 @@ mod tests {
         };
         assert_eq!(resp.items.len(), 1);
         assert_eq!(resp.next_cursor, Some(id1));
+    }
+
+    // ─── Plan 0283 (GAR-820) — get_file_version unit tests ───────────────────
+
+    fn make_version_row(version: i32, created_by: Option<Uuid>) -> FileVersionRow {
+        FileVersionRow {
+            version,
+            size_bytes: 1024,
+            mime_type: "application/pdf".to_string(),
+            checksum_sha256: "abc123def456".to_string(),
+            created_by,
+            created_by_label: "Alice".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn file_version_summary_from_row_preserves_all_fields() {
+        let user_id = Uuid::new_v4();
+        let row = make_version_row(3, Some(user_id));
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.version, 3);
+        assert_eq!(summary.size_bytes, 1024);
+        assert_eq!(summary.mime_type, "application/pdf");
+        assert_eq!(summary.checksum_sha256, "abc123def456");
+        assert_eq!(summary.created_by, Some(user_id));
+        assert_eq!(summary.created_by_label, "Alice");
+    }
+
+    #[test]
+    fn file_version_summary_nil_created_by_is_none() {
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: 0,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "0".repeat(64),
+            created_by: None,
+            created_by_label: "system".to_string(),
+            created_at: Utc::now(),
+        };
+        let summary = FileVersionSummary::from(row);
+        assert!(summary.created_by.is_none());
+    }
+
+    #[test]
+    fn file_version_summary_created_at_is_utc() {
+        let ts = Utc::now();
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: 0,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "x".to_string(),
+            created_by: None,
+            created_by_label: "x".to_string(),
+            created_at: ts,
+        };
+        let summary = FileVersionSummary::from(row);
+        // Verify the timestamp is preserved (UTC timezone invariant).
+        assert_eq!(summary.created_at, ts);
+        assert_eq!(summary.created_at.timezone(), Utc);
+    }
+
+    #[test]
+    fn file_version_summary_nil_uuid_roundtrip() {
+        let nil_id = Uuid::nil();
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: 0,
+            mime_type: "text/plain".to_string(),
+            checksum_sha256: "x".to_string(),
+            created_by: Some(nil_id),
+            created_by_label: "x".to_string(),
+            created_at: Utc::now(),
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.created_by, Some(nil_id));
+    }
+
+    #[test]
+    fn file_version_summary_version_integer_preserved() {
+        for v in [1i32, 2, 100, i32::MAX] {
+            let row = make_version_row(v, None);
+            let summary = FileVersionSummary::from(row);
+            assert_eq!(summary.version, v, "version={v} round-trip");
+        }
+    }
+
+    #[test]
+    fn file_version_summary_large_size_bytes_preserved() {
+        let large: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
+        let row = FileVersionRow {
+            version: 1,
+            size_bytes: large,
+            mime_type: "video/mp4".to_string(),
+            checksum_sha256: "x".to_string(),
+            created_by: None,
+            created_by_label: "x".to_string(),
+            created_at: Utc::now(),
+        };
+        let summary = FileVersionSummary::from(row);
+        assert_eq!(summary.size_bytes, large);
     }
 }
