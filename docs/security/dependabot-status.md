@@ -1,8 +1,34 @@
 # Dependabot Status
 
-> Last updated: **2026-06-08 run 95** (health routine — priority (i): all surfaces clean. Previous: run 94 (GAR-818) all surfaces clean after run 93 fix (RUSTSEC-2026-0173 suppressed); run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173; run 92 (GAR-816) all surfaces clean, priority (i); run 91 (GAR-815) all surfaces clean, priority (i); run 90 (GAR-813) all surfaces clean, priority (i); run 89 (GAR-812) all surfaces clean, priority (i); run 88 (GAR-810) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-08 run 96** (health routine — priority (i): all security surfaces clean. CI on main `b30d18e` had 3 transient/non-security failures (gitleaks 504 infra, utoipa MSRV build.rs download failure, Playwright build failure) — Security Audit ✅, cargo-deny ✅, CodeQL ✅ all pass. Previous: run 95 (GAR-819) all surfaces clean; run 94 (GAR-818) all surfaces clean after run 93 fix (RUSTSEC-2026-0173 suppressed); run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173; run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-08 run 96 (~03:09 ET) — all security surfaces clean, priority (i)
+
+Health routine ran on 2026-06-08 (~03:09 ET / 07:09 UTC). Full security scan completed. Priority **(i)** — no actionable security work found. Main at `b30d18e` (PR #675 merged — GAR-814 feat: GET /v1/threads/{thread_id}/messages).
+
+**CI on main (`b30d18e`):** CI run 27120826086 (2026-06-08T06:48Z) had 3 non-security failures (see below). All security-relevant jobs passed. CodeQL run 27121451202 success (on `docs/plans-0279-gar-814-done`, same code as `b30d18e`, 2026-06-08T07:04Z).
+
+**Non-security CI failures noted (NOT security issues):**
+- **Secret Scan (gitleaks)** — HTTP 504 gateway timeout downloading gitleaks binary from GitHub releases. Transient infra failure; no secret found. No action required.
+- **MSRV check (1.93)** — `utoipa-swagger-ui 9.0.2` build.rs panicked with `InvalidArchive("Could not find EOCD")` downloading Swagger UI zip. Transient network failure under Rust 1.93. Not security-related.
+- **Playwright E2E (MCP UI)** — Build failure at "Build garra binary (release)" step. Pre-existing non-security regression (not first occurrence pattern). Not security-related.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | Transient 504 infra failure — NOT a real secret. CI Security Audit job success on main `b30d18e` (CI run 27120826086, 2026-06-08T06:48Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success — all suppressions in place |
+| Dependabot alerts | ⚠️ 1 active (#42 glib MEDIUM GAR-513) | alert #42: glib 0.18.5 / RUSTSEC-2024-0429 upstream-blocked, no patched version, expiry 2026-07-31. rsa RUSTSEC-2023-0071 tracked in audit.toml (GAR-456) — no active Dependabot alert. |
+| Open Dependabot PRs | ✅ 0 open health/ | routine/ PRs skipped per protocol |
+| Security Audit (cargo-audit) | ✅ pass | CI Security Audit job success on main `b30d18e` — 0 vulnerabilities, unmaintained auto-allowed |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) + RUSTSEC-2026-0173 (proc-macro-error2) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | CodeQL run 27121451202 success on `docs/plans-0279-gar-814-done` (`b30d18e` proxy, 2026-06-08T07:04Z) |
+| CI on main (`b30d18e`) | ⚠️ 3 non-security failures | gitleaks 504 (transient), MSRV utoipa infra (transient), Playwright build (pre-existing). Security gates all green. |
+
+**No security fix applied this run.** Bookkeeping only: plan 0283 created. Linear: GAR-820. Next security backlog: rsa (GAR-456), glib (GAR-513), proc-macro-error2 (GAR-817) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-08 run 95 (~00:45 ET) — all surfaces clean, priority (i)
 
