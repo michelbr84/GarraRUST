@@ -45,6 +45,34 @@ pub struct SessionStore {
     login_pool: Arc<LoginPool>,
 }
 
+/// Validates in-memory session state extracted from a database row.
+///
+/// Pure function with no I/O — extracted from [`SessionStore::verify_refresh`]
+/// so that branch mutations (ct_eq flip, revocation check, expiry boundary)
+/// can be killed by unit tests without a live database connection (GAR-824).
+///
+/// Returns `true` iff the session is valid: hash matches, not revoked, not expired.
+fn session_fields_valid(
+    computed: &str,
+    stored_hash: &str,
+    revoked_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    if computed
+        .as_bytes()
+        .ct_eq(stored_hash.as_bytes())
+        .unwrap_u8()
+        == 0
+    {
+        return false;
+    }
+    if revoked_at.is_some() {
+        return false;
+    }
+    expires_at > now
+}
+
 impl SessionStore {
     /// Build a `SessionStore` from a validated [`LoginPool`] wrapped in
     /// `Arc`. The same `Arc<LoginPool>` is typically shared with
@@ -107,6 +135,16 @@ impl SessionStore {
     ///
     /// **⚠️ NOT WIRED IN GAR-391b.** Same deferral as `issue` — needs
     /// `SELECT ON sessions` granted to `garraia_login` via migration 010.
+    ///
+    /// # Mutation testing — `mutants::skip` justification (GAR-824)
+    ///
+    /// Whole-function mutations (`Ok(None)`) are skipped here because the
+    /// function requires a live `LoginPool` / Postgres connection. The
+    /// security-critical branch mutations (ct_eq flip, revocation, expiry)
+    /// are exercised by unit tests on the extracted `session_fields_valid`
+    /// helper. Systemic fix (`--features test-support` sharding) tracked
+    /// in GAR-825.
+    #[cfg_attr(mutating, mutants::skip)]
     pub async fn verify_refresh(
         &self,
         plaintext: &str,
@@ -129,22 +167,11 @@ impl SessionStore {
         let stored_hash: String = row
             .try_get("refresh_token_hash")
             .map_err(AuthError::Storage)?;
-        if computed
-            .as_bytes()
-            .ct_eq(stored_hash.as_bytes())
-            .unwrap_u8()
-            == 0
-        {
-            return Ok(None);
-        }
-
         let revoked_at: Option<DateTime<Utc>> =
             row.try_get("revoked_at").map_err(AuthError::Storage)?;
-        if revoked_at.is_some() {
-            return Ok(None);
-        }
         let expires_at: DateTime<Utc> = row.try_get("expires_at").map_err(AuthError::Storage)?;
-        if expires_at <= Utc::now() {
+
+        if !session_fields_valid(&computed, &stored_hash, revoked_at, expires_at, Utc::now()) {
             return Ok(None);
         }
 
@@ -154,6 +181,14 @@ impl SessionStore {
     }
 
     /// Mark a session as revoked. Idempotent — re-revoking is a no-op.
+    ///
+    /// # Mutation testing — `mutants::skip` justification (GAR-824)
+    ///
+    /// The whole-function mutation (`Ok(())` no-op) requires a live
+    /// Postgres connection to observe via a subsequent `verify_refresh`
+    /// call. Covered by `sessions_lifecycle` integration test suite
+    /// (requires `--features test-support`). Systemic fix in GAR-825.
+    #[cfg_attr(mutating, mutants::skip)]
     pub async fn revoke(&self, id: SessionId) -> Result<(), AuthError> {
         sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
             .bind(id.0)
@@ -161,5 +196,55 @@ impl SessionStore {
             .await
             .map_err(AuthError::Storage)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn session_fields_valid_hash_mismatch_rejects() {
+        let now = Utc::now();
+        let future = now + Duration::days(1);
+        assert!(!session_fields_valid(
+            "computed_abc",
+            "stored_xyz",
+            None,
+            future,
+            now
+        ));
+    }
+
+    #[test]
+    fn session_fields_valid_revoked_rejects() {
+        let hash = "same_hash_value";
+        let now = Utc::now();
+        let future = now + Duration::days(1);
+        assert!(!session_fields_valid(hash, hash, Some(now), future, now));
+    }
+
+    #[test]
+    fn session_fields_valid_expired_exactly_now_rejects() {
+        let hash = "same_hash_value";
+        let now = Utc::now();
+        assert!(!session_fields_valid(hash, hash, None, now, now));
+    }
+
+    #[test]
+    fn session_fields_valid_expired_1ms_ago_rejects() {
+        let hash = "same_hash_value";
+        let now = Utc::now();
+        let past = now - Duration::milliseconds(1);
+        assert!(!session_fields_valid(hash, hash, None, past, now));
+    }
+
+    #[test]
+    fn session_fields_valid_all_pass_accepts() {
+        let hash = "same_hash_value";
+        let now = Utc::now();
+        let future = now + Duration::days(1);
+        assert!(session_fields_valid(hash, hash, None, future, now));
     }
 }

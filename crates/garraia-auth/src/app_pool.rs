@@ -213,6 +213,16 @@ impl AppPool {
 }
 
 impl std::fmt::Debug for AppPool {
+    /// # Mutation testing — `mutants::skip` justification (GAR-824)
+    ///
+    /// `AppPool` can only be constructed via `from_dedicated_config`, which
+    /// requires a live Postgres connection (`garraia_app` role). There is no
+    /// way to obtain an `AppPool` instance for a unit test without
+    /// testcontainers. The mutation (`Ok(Default::default())`) would change
+    /// the formatted output but not the security property (no credential leak).
+    /// The security invariant is verified end-to-end by the `debug_redaction_pools`
+    /// integration suite (`--features test-support`). Systemic fix in GAR-825.
+    #[cfg_attr(mutating, mutants::skip)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never expose the inner pool — it carries the connection string.
         f.debug_struct("AppPool")

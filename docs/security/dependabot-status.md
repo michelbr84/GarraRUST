@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-06-08 run 96** (health routine — priority (i): all security surfaces clean. CI on main `b30d18e` had 3 transient/non-security failures (gitleaks 504 infra, utoipa MSRV build.rs download failure, Playwright build failure) — Security Audit ✅, cargo-deny ✅, CodeQL ✅ all pass. Previous: run 95 (GAR-819) all surfaces clean; run 94 (GAR-818) all surfaces clean after run 93 fix (RUSTSEC-2026-0173 suppressed); run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173; run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-08 run 98** (health routine — priority (g): mutation testing failure fixed (GAR-824). CI on main `3d4ae04` fully green. run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) all surfaces clean; run 95 (GAR-819) all surfaces clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-08 run 98 (~08:45 ET) — priority (g): mutation testing fix GAR-824
+
+Health routine ran on 2026-06-08 (~08:45 ET / 12:45 UTC). Priority **(g)** — workflow failure on main within 24h (`Mutation Testing — garraia-auth (pilot)`, run 27127805467, 2026-06-08T09:17Z, exit code 2: 26 missed, 102 caught).
+
+**Fix:** GAR-824 (plan 0287) — extract `session_fields_valid` pure helper + 5 unit tests (kills `sessions.rs:136/:143/:147`); add `#[cfg_attr(mutating, mutants::skip)]` to `verify_refresh`, `revoke`, `SignupPool::fmt`, `AppPool::fmt`.
+
+**CI on main (`3d4ae04`):** CI run 27137045458 (2026-06-08T12:17Z) — SUCCESS. All workflow jobs green.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Security Audit + gitleaks jobs green on main `3d4ae04` |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot alerts | ⚠️ 1 active (#42 glib MEDIUM GAR-513) | upstream-blocked, expiry 2026-07-31 |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2026-0173 suppressed, expiry 2026-07-31 |
+| CodeQL | ✅ pass | run 27138110388 success (2026-06-08T12:37Z) |
+| CI on main | ✅ green | run 27137045458 (2026-06-08T12:17Z) — all jobs success |
+| Mutation testing (pilot) | 🔧 fixed (partial) | GAR-824: 3 branch mutations now unit-tested; 4 whole-fn + 2 role-guard mutations deferred to GAR-825 |
+
+**Next security backlog:** rsa (GAR-456), glib (GAR-513), proc-macro-error2 (GAR-817) suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491); systemic mutation fix GAR-825 (--features test-support sharding).
+
+---
 
 ## Confirmed 2026-06-08 run 96 (~03:09 ET) — all security surfaces clean, priority (i)
 
