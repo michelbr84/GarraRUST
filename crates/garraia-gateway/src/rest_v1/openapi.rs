@@ -116,6 +116,7 @@ impl Modify for SecurityAddon {
         super::groups::get_invite,
         super::groups::revoke_invite,
         super::groups::list_members,
+        super::groups::get_member,
         super::groups::set_member_role,
         super::groups::delete_member,
         super::invites::accept_invite,

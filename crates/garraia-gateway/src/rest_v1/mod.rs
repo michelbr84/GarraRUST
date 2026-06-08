@@ -267,7 +267,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{id}/members/{user_id}",
-                    delete(groups::delete_member),
+                    get(groups::get_member).delete(groups::delete_member),
                 )
                 .route("/v1/invites/{token}/accept", post(invites::accept_invite))
                 .layer(axum::middleware::from_fn_with_state(
@@ -656,7 +656,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{id}/members/{user_id}",
-                    delete(unconfigured_handler),
+                    get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
                 // Plan 0054 (GAR-506) — chats slice 1, fail-soft 503.
@@ -945,7 +945,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{id}/members/{user_id}",
-                    delete(unconfigured_handler),
+                    get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route("/v1/invites/{token}/accept", post(unconfigured_handler))
                 // Plan 0054 (GAR-506) — chats slice 1, no-auth stub.
