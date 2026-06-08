@@ -59,7 +59,12 @@ fn session_fields_valid(
     expires_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> bool {
-    if computed.as_bytes().ct_eq(stored_hash.as_bytes()).unwrap_u8() == 0 {
+    if computed
+        .as_bytes()
+        .ct_eq(stored_hash.as_bytes())
+        .unwrap_u8()
+        == 0
+    {
         return false;
     }
     if revoked_at.is_some() {
@@ -203,7 +208,13 @@ mod tests {
     fn session_fields_valid_hash_mismatch_rejects() {
         let now = Utc::now();
         let future = now + Duration::days(1);
-        assert!(!session_fields_valid("computed_abc", "stored_xyz", None, future, now));
+        assert!(!session_fields_valid(
+            "computed_abc",
+            "stored_xyz",
+            None,
+            future,
+            now
+        ));
     }
 
     #[test]
