@@ -292,3 +292,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0280 | [GAR-817 — Health run 93 (2026-06-07 ~20:47 ET): all surfaces clean, priority (i)](0280-gar-817-health-run-93.md) | [GAR-817](https://linear.app/chatgpt25/issue/GAR-817) | ✅ Merged via PR #673 (`cf16c4e`) |
 | 0281 | [GAR-818 — Health run 94 (2026-06-07 ~21:01 ET): all surfaces clean, priority (i)](0281-gar-818-health-run-94.md) | [GAR-818](https://linear.app/chatgpt25/issue/GAR-818) | ✅ Merged via PR #676 (`4e2c2a4`) |
 | 0282 | [GAR-819 — Health run 95 (2026-06-08 ~00:45 ET): all surfaces clean, priority (i)](0282-gar-819-health-run-95.md) | [GAR-819](https://linear.app/chatgpt25/issue/GAR-819) | 🔄 In Progress |
+| 0284 | [GAR-822 — fix(ci): cache swagger-ui zip to eliminate utoipa-swagger-ui reqwest build failure (health run 97)](0284-gar-822-swagger-ci-cache.md) | [GAR-822](https://linear.app/chatgpt25/issue/GAR-822) | 🔄 In Progress |
