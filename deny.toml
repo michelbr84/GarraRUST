@@ -64,6 +64,14 @@ ignore = [
     # Resolution: wasmtime 28.0.1 → 44.0.0 (GAR-454) removed fxhash from
     # Cargo.lock. advisory-not-detected in cargo deny. Removed from deny.toml.
     "RUSTSEC-2024-0370", # proc-macro-error (transitive, no maintained alt)
+    # RUSTSEC-2026-0173: proc-macro-error2 v2.0.1 unmaintained. Author confirmed no
+    # longer maintained (GnomedDev/proc-macro-error-2#17). No safe upgrade — both
+    # the original (RUSTSEC-2024-0370) and this fork are now abandoned.
+    # Pulled transitively via: aquamarine 0.6.0 → teloxide 0.17.0 → garraia-channels,
+    # and validator_derive 0.20.0 → validator 0.20.0 → garraia-auth/config/telemetry/workspace.
+    # Alternatives (manyhow, proc-macro2-diagnostics) require upstream crate updates.
+    # Owner: GAR-817. Expiry: 2026-07-31. Re-evaluate when teloxide/validator upgrade.
+    "RUSTSEC-2026-0173", # proc-macro-error2 (transitive via teloxide+validator, no fix)
     # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
     # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
     # opentelemetry_sdk >= 0.28 dropped async-std entirely. Removed from deny.toml.
