@@ -398,9 +398,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(chats::get_thread).patch(chats::patch_thread),
                 )
                 // Plan 0274 (GAR-811) — thread reply.
+                // Plan 0279 (GAR-814) — list replies by thread_id.
                 .route(
                     "/v1/threads/{thread_id}/messages",
-                    post(messages::send_thread_reply),
+                    post(messages::send_thread_reply).get(messages::get_thread_messages_by_id),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
@@ -689,9 +690,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 // Plan 0274 (GAR-811) — thread reply, fail-soft 503.
+                // Plan 0279 (GAR-814) — list replies by thread_id, fail-soft 503.
                 .route(
                     "/v1/threads/{thread_id}/messages",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3, fail-soft 503.
                 // Plan 0109 (GAR-595) — messages slice 6, fail-soft 503.
@@ -972,9 +974,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).patch(unconfigured_handler),
                 )
                 // Plan 0274 (GAR-811) — thread reply, no-auth stub.
+                // Plan 0279 (GAR-814) — list replies by thread_id, no-auth stub.
                 .route(
                     "/v1/threads/{thread_id}/messages",
-                    post(unconfigured_handler),
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3, no-auth stub.
                 // Plan 0109 (GAR-595) — messages slice 6, no-auth stub.

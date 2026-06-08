@@ -2095,6 +2095,209 @@ pub async fn send_thread_reply(
     ))
 }
 
+// ─── GET /v1/threads/{thread_id}/messages (plan 0279 / GAR-814) ──────────────
+
+/// `GET /v1/threads/{thread_id}/messages` — list replies in a thread by thread_id.
+///
+/// Addresses the thread directly by its UUID, unlike
+/// `GET /v1/messages/{message_id}/threads` which requires the root message ID.
+/// Returns the thread metadata and cursor-paginated replies oldest-first.
+///
+/// ## Error matrix
+///
+/// | Condition                             | Status | Source         |
+/// |---------------------------------------|--------|----------------|
+/// | Missing/invalid JWT                   | 401    | Principal ext. |
+/// | Non-member of group                   | 403    | Principal ext. |
+/// | `X-Group-Id` header missing           | 400    | this handler   |
+/// | `limit` < 1                           | 400    | this handler   |
+/// | Thread not found or in another group  | 404    | this handler   |
+/// | Happy path                            | 200    |                |
+#[utoipa::path(
+    get,
+    path = "/v1/threads/{thread_id}/messages",
+    params(
+        ("thread_id" = Uuid, Path, description = "Thread UUID."),
+        ("after" = Option<Uuid>, Query, description = "Cursor for pagination."),
+        ("limit" = Option<i64>, Query, description = "Page size (default 50, max 100)."),
+    ),
+    responses(
+        (status = 200, description = "Thread info and replies.", body = ThreadMessagesResponse),
+        (status = 400, description = "Missing X-Group-Id header or bad limit.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member of the group.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Thread not found or not in caller's group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_thread_messages_by_id(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(thread_id): Path<Uuid>,
+    Query(params): Query<ListThreadMessagesQuery>,
+) -> Result<Json<ThreadMessagesResponse>, RestError> {
+    // 1. X-Group-Id header required.
+    let group_id = match principal.group_id {
+        Some(hdr) => hdr,
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    };
+
+    // 2. Capability gate.
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    // 3. Parse + clamp limit.
+    let limit: i64 = match params.limit {
+        None => 50,
+        Some(n) if n < 1 => {
+            return Err(RestError::BadRequest("limit must be at least 1".into()));
+        }
+        Some(n) => n.min(100),
+    };
+
+    // 4. Open transaction with RLS context.
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5. Look up thread by thread_id with cross-group isolation via JOIN on chats.
+    //    0 rows → 404 (no existence leak for threads in other groups).
+    type ThreadRow = (Uuid, Uuid, Uuid, Option<String>, Uuid, DateTime<Utc>);
+    let thread_row: Option<ThreadRow> = sqlx::query_as(
+        "SELECT mt.id, mt.chat_id, mt.root_message_id, mt.title, mt.created_by, mt.created_at \
+         FROM message_threads mt \
+         JOIN chats c ON c.id = mt.chat_id \
+         WHERE mt.id = $1 AND c.group_id = $2",
+    )
+    .bind(thread_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let thread = match thread_row {
+        None => return Err(RestError::NotFound),
+        Some((id, chat_id, root_message_id, title, created_by, created_at)) => ThreadResponse {
+            id,
+            chat_id,
+            root_message_id,
+            title,
+            created_by,
+            created_at,
+        },
+    };
+
+    // 6. Fetch replies cursor-paginated (ASC).
+    type ReplyRow = (
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<Uuid>,
+        bool,
+        DateTime<Utc>,
+    );
+    let rows: Vec<ReplyRow> = if let Some(after_id) = params.after {
+        sqlx::query_as(
+            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                    is_bot_response, created_at \
+             FROM messages \
+             WHERE thread_id = $1 \
+               AND deleted_at IS NULL \
+               AND (created_at, id) > ( \
+                   SELECT created_at, id FROM messages \
+                   WHERE id = $2 AND thread_id = $1 AND deleted_at IS NULL \
+               ) \
+             ORDER BY created_at ASC, id ASC \
+             LIMIT $3",
+        )
+        .bind(thread_id)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    } else {
+        sqlx::query_as(
+            "SELECT id, chat_id, sender_user_id, sender_label, body, reply_to_id, \
+                    is_bot_response, created_at \
+             FROM messages \
+             WHERE thread_id = $1 \
+               AND deleted_at IS NULL \
+             ORDER BY created_at ASC, id ASC \
+             LIMIT $2",
+        )
+        .bind(thread_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let messages: Vec<MessageSummary> = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                chat_id,
+                sender_user_id,
+                sender_label,
+                body,
+                reply_to_id,
+                is_bot_response,
+                created_at,
+            )| {
+                MessageSummary {
+                    id,
+                    chat_id,
+                    sender_user_id,
+                    sender_label,
+                    body,
+                    reply_to_id,
+                    is_bot_response,
+                    created_at,
+                }
+            },
+        )
+        .collect();
+
+    let next_cursor = if messages.len() as i64 == limit {
+        messages.last().map(|m| m.id)
+    } else {
+        None
+    };
+
+    Ok(Json(ThreadMessagesResponse {
+        thread: Some(thread),
+        messages,
+        next_cursor,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2404,5 +2607,97 @@ mod tests {
         );
         let trimmed = req.body.trim().to_string();
         assert_eq!(trimmed, "text");
+    }
+
+    // ── Plan 0279 (GAR-814): get_thread_messages_by_id validation ─────────────
+
+    #[test]
+    fn get_thread_msgs_by_id_default_limit_is_50() {
+        let params = ListThreadMessagesQuery {
+            after: None,
+            limit: None,
+        };
+        let resolved = params.limit.unwrap_or(50).min(100);
+        assert_eq!(resolved, 50);
+    }
+
+    #[test]
+    fn get_thread_msgs_by_id_clamps_limit_to_100() {
+        let params = ListThreadMessagesQuery {
+            after: None,
+            limit: Some(999),
+        };
+        assert_eq!(params.limit.unwrap().min(100), 100);
+    }
+
+    #[test]
+    fn get_thread_msgs_by_id_rejects_limit_zero() {
+        let params = ListThreadMessagesQuery {
+            after: None,
+            limit: Some(0),
+        };
+        assert!(params.limit.unwrap() < 1);
+    }
+
+    #[test]
+    fn get_thread_msgs_by_id_rejects_limit_negative() {
+        let params = ListThreadMessagesQuery {
+            after: None,
+            limit: Some(-5),
+        };
+        assert!(params.limit.unwrap() < 1);
+    }
+
+    #[test]
+    fn get_thread_msgs_by_id_next_cursor_present_when_full_page() {
+        let limit = 3_i64;
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+        let now = Utc::now();
+        let messages: Vec<MessageSummary> = vec![id1, id2, id3]
+            .into_iter()
+            .map(|id| MessageSummary {
+                id,
+                chat_id: Uuid::new_v4(),
+                sender_user_id: Uuid::new_v4(),
+                sender_label: "u".into(),
+                body: "x".into(),
+                reply_to_id: None,
+                is_bot_response: false,
+                created_at: now,
+            })
+            .collect();
+        let next_cursor = if messages.len() as i64 == limit {
+            messages.last().map(|m| m.id)
+        } else {
+            None
+        };
+        assert_eq!(next_cursor, Some(id3));
+    }
+
+    #[test]
+    fn get_thread_msgs_by_id_next_cursor_null_on_partial_page() {
+        let limit = 5_i64;
+        let now = Utc::now();
+        let messages: Vec<MessageSummary> = vec![Uuid::new_v4(), Uuid::new_v4()]
+            .into_iter()
+            .map(|id| MessageSummary {
+                id,
+                chat_id: Uuid::new_v4(),
+                sender_user_id: Uuid::new_v4(),
+                sender_label: "u".into(),
+                body: "x".into(),
+                reply_to_id: None,
+                is_bot_response: false,
+                created_at: now,
+            })
+            .collect();
+        let next_cursor = if messages.len() as i64 == limit {
+            messages.last().map(|m| m.id)
+        } else {
+            None
+        };
+        assert_eq!(next_cursor, None);
     }
 }
