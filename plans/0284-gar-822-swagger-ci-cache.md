@@ -84,8 +84,8 @@ reqwest. Pre-existing behaviour restored.
 
 - [x] Create `plans/0284-gar-822-swagger-ci-cache.md`
 - [x] Update `plans/README.md`
-- [ ] Push + open PR (base=main)
-- [ ] Merge after CI green
+- [x] Push + open PR (base=main) — PR #682
+- [x] Merge after CI green — `5f0dfeb` (2026-06-08)
 
 ---
 
@@ -100,11 +100,11 @@ reqwest. Pre-existing behaviour restored.
 
 ## Acceptance criteria
 
-- [ ] MSRV check (1.93) conclusion = success in PR CI
-- [ ] Test (ubuntu-latest) conclusion = success
-- [ ] Test (windows-latest) conclusion = success
-- [ ] Test (macos-latest) conclusion = success
-- [ ] No new failures introduced
+- [x] MSRV check (1.93) conclusion = success in PR CI
+- [x] Test (ubuntu-latest) conclusion = success
+- [x] Test (windows-latest) conclusion = success
+- [x] Test (macos-latest) conclusion = success
+- [x] No new failures introduced
 
 ## Cross-references
 
