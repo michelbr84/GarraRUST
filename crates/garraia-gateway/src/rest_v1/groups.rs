@@ -1599,6 +1599,102 @@ pub async fn list_members(
     Ok(Json(ListMembersResponse { items, next_cursor }))
 }
 
+/// `GET /v1/groups/{id}/members/{user_id}` — fetch a single group member by user UUID (plan 0286, GAR-823).
+///
+/// Any active member of the group can fetch another member's summary. Fields returned
+/// (`user_id`, `role`, `status`, `joined_at`, `invited_by`) are non-PII, so no extra
+/// capability gate is applied — FORCE RLS on `group_members` (migration 018) already
+/// ensures callers from a different group receive 0 rows (surfaced as 404).
+#[utoipa::path(
+    get,
+    path = "/v1/groups/{id}/members/{user_id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID."),
+        ("user_id" = Uuid, Path, description = "Target member's user UUID."),
+    ),
+    responses(
+        (status = 200, description = "Member found.", body = MemberSummary),
+        (status = 400, description = "Missing or mismatched X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Member not found or belongs to a different group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<MemberSummary>, RestError> {
+    // 1. Path/header coherence.
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Open tx + SET LOCAL tenant context (both load-bearing for FORCE RLS on group_members).
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 3. Fetch single member row. 0 rows → 404 (no existence leak for cross-group).
+    #[derive(sqlx::FromRow)]
+    struct MemberRow {
+        user_id: Uuid,
+        role: String,
+        status: String,
+        joined_at: DateTime<Utc>,
+        invited_by: Option<Uuid>,
+    }
+
+    let row: Option<MemberRow> = sqlx::query_as(
+        "SELECT user_id, role, status, joined_at, invited_by \
+         FROM group_members \
+         WHERE group_id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let r = row.ok_or(RestError::NotFound)?;
+
+    Ok(Json(MemberSummary {
+        user_id: r.user_id,
+        role: r.role,
+        status: r.status,
+        joined_at: r.joined_at,
+        invited_by: r.invited_by,
+    }))
+}
+
 /// `GET /v1/groups/{id}/invites` — cursor-paginated list of pending group invites (plan 0097, GAR-574).
 ///
 /// Requires `Action::MembersManage` (owner/admin) because `invited_email` is PII.
@@ -2482,5 +2578,105 @@ mod tests {
             v.get("revoked_at").is_none(),
             "revoked_at must not leak into summary response"
         );
+    }
+
+    // ── MemberSummary / get_member (plan 0286, GAR-823) ────────────────────
+
+    #[test]
+    fn member_summary_serializes_all_fields() {
+        let user_id = Uuid::new_v4();
+        let invited_by = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let summary = MemberSummary {
+            user_id,
+            role: "member".into(),
+            status: "active".into(),
+            joined_at: now,
+            invited_by: Some(invited_by),
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(v["user_id"], user_id.to_string());
+        assert_eq!(v["role"], "member");
+        assert_eq!(v["status"], "active");
+        assert_eq!(v["invited_by"], invited_by.to_string());
+    }
+
+    #[test]
+    fn member_summary_nil_invited_by_serializes_as_null() {
+        let now = chrono::Utc::now();
+        let summary = MemberSummary {
+            user_id: Uuid::nil(),
+            role: "owner".into(),
+            status: "active".into(),
+            joined_at: now,
+            invited_by: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        assert!(v["invited_by"].is_null());
+    }
+
+    #[test]
+    fn member_summary_joined_at_is_utc_iso8601_z() {
+        let now = chrono::Utc::now();
+        let summary = MemberSummary {
+            user_id: Uuid::nil(),
+            role: "admin".into(),
+            status: "active".into(),
+            joined_at: now,
+            invited_by: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        let joined_str = v["joined_at"].as_str().unwrap();
+        assert!(
+            joined_str.ends_with('Z'),
+            "joined_at must be UTC ISO-8601 with Z suffix, got: {joined_str}"
+        );
+    }
+
+    #[test]
+    fn member_summary_nil_uuid_round_trips() {
+        let now = chrono::Utc::now();
+        let summary = MemberSummary {
+            user_id: Uuid::nil(),
+            role: "guest".into(),
+            status: "active".into(),
+            joined_at: now,
+            invited_by: Some(Uuid::nil()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(v["user_id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(v["invited_by"], "00000000-0000-0000-0000-000000000000");
+    }
+
+    #[test]
+    fn member_summary_role_variants_serialize() {
+        let now = chrono::Utc::now();
+        for role in &["owner", "admin", "member", "guest", "child"] {
+            let summary = MemberSummary {
+                user_id: Uuid::nil(),
+                role: role.to_string(),
+                status: "active".into(),
+                joined_at: now,
+                invited_by: None,
+            };
+            let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+            assert_eq!(v["role"], *role, "role {role} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn member_summary_status_variants_serialize() {
+        let now = chrono::Utc::now();
+        for status in &["active", "invited", "removed", "banned"] {
+            let summary = MemberSummary {
+                user_id: Uuid::nil(),
+                role: "member".into(),
+                status: status.to_string(),
+                joined_at: now,
+                invited_by: None,
+            };
+            let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
+            assert_eq!(v["status"], *status, "status {status} did not round-trip");
+        }
     }
 }
