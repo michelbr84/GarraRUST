@@ -401,8 +401,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0279 (GAR-814) — list replies by thread_id.
                 .route(
                     "/v1/threads/{thread_id}/messages",
-                    post(messages::send_thread_reply)
-                        .get(messages::get_thread_messages_by_id),
+                    post(messages::send_thread_reply).get(messages::get_thread_messages_by_id),
                 )
                 // Plan 0057 (GAR-509) — threads slice 3.
                 // Plan 0109 (GAR-595) — messages slice 6: GET thread messages.
