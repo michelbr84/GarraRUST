@@ -1,8 +1,31 @@
 # Dependabot Status
 
-> Last updated: **2026-06-07 run 93** (health routine — priority (h) fix: RUSTSEC-2026-0173 proc-macro-error2 unmaintained suppressed in deny.toml. GAR-817. Previous: run 92 (GAR-816) all surfaces clean, priority (i); run 91 (GAR-815) all surfaces clean, priority (i); run 90 (GAR-813) all surfaces clean, priority (i); run 89 (GAR-812) all surfaces clean, priority (i); run 88 (GAR-810) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
+> Last updated: **2026-06-07 run 94** (health routine — priority (i): all surfaces clean after run 93 fix (RUSTSEC-2026-0173 suppressed in deny.toml via PR #673 `cf16c4e`, GAR-817). Previous: run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173; run 92 (GAR-816) all surfaces clean, priority (i); run 91 (GAR-815) all surfaces clean, priority (i); run 90 (GAR-813) all surfaces clean, priority (i); run 89 (GAR-812) all surfaces clean, priority (i); run 88 (GAR-810) all surfaces clean, priority (i); runs 85 (GAR-805) and 86 (GAR-807) skipped this file (plans-only commits); run 82 priority (h) fix: drop stale RUSTSEC-2026-0097 (GAR-789, plan 0262)).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-07 run 94 (~21:01 ET) — all surfaces clean, priority (i)
+
+Health routine ran on 2026-06-07 (~21:01 ET / 01:01 UTC Jun 8). Full security scan completed. Priority **(i)** — no actionable security work found. Main at `cf16c4e` (PR #673 merged — RUSTSEC-2026-0173 fix from run 93).
+
+**Pending routine/ PR noted (NOT actioned):** PR #664 (`routine/202606070621-post-thread-reply`, GAR-811) — skipped per protocol.
+
+**CI on main (`cf16c4e`):** All workflow checks green on PR #673 branch (CI run 27109625718, 2026-06-08T00:34Z) — 20/20 checks pass. Main CI post-merge expected green (same code).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan job success on PR #673 (`dd8f9a7`, CI run 27109625718) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success — RUSTSEC-2026-0173 now suppressed |
+| Dependabot alerts | ⚠️ 1 active (#42 glib MEDIUM GAR-513) | alert #42: glib 0.18.5 / RUSTSEC-2024-0429 upstream-blocked, no patched version, expiry 2026-07-31. rsa RUSTSEC-2023-0071 tracked in audit.toml (GAR-456) — no active Dependabot alert. |
+| Open Dependabot PRs | ✅ 0 open health/ | routine/ PR #664 (GAR-811) skipped per protocol |
+| Security Audit (cargo-audit) | ✅ pass | CI Security Audit job success — 0 vulnerabilities, unmaintained auto-allowed |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 (rsa) + RUSTSEC-2026-0173 (proc-macro-error2) suppressed, expiry 2026-07-31 |
+| CodeQL (Analyze rust + js-ts + actions) | ✅ pass | all 3 Analyze jobs green on PR #673 (CI run 27109625719, 2026-06-08T00:34Z) |
+| CI on main (`cf16c4e`) | ✅ green | All 20 workflow checks success on PR #673 branch |
+
+**No security fix applied this run.** Bookkeeping only: merged PR #673 (run 93 fix), GAR-818 status note. Linear: GAR-818. Next security backlog: rsa (GAR-456), glib (GAR-513), proc-macro-error2 (GAR-817) — suppression expiry 2026-07-31; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-07 run 93 (~20:47 ET) — all surfaces clean, priority (i)
 
