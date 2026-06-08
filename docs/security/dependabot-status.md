@@ -1,8 +1,29 @@
 # Dependabot Status
 
-> Last updated: **2026-06-08 run 98** (health routine — priority (g): mutation testing failure fixed (GAR-824). CI on main `3d4ae04` fully green. run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) all surfaces clean; run 95 (GAR-819) all surfaces clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-08 run 99** (health routine — priority (g) completed: GAR-824 PR #684 merged (`8f5ab8f`), 20/20 CI green. run 98 (GAR-824) mutation fix created PR; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) all surfaces clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-08 run 99 (~13:00 ET) — priority (g) completed: GAR-824 PR #684 merged
+
+Health routine ran on 2026-06-08 (~13:00 ET / 17:00 UTC). Completed outstanding health/ PR from run 98. Priority **(g)** — mutation testing failure on main resolved.
+
+**Fix merged:** GAR-824 (plan 0287) — PR #684 squash-merged to main at `8f5ab8f`. Rebased over `b98a580` (plans/README.md conflict resolved cleanly). 20/20 CI checks green before merge.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | PR Secret Scan (gitleaks) job success |
+| Malware (cargo/npm) | ✅ none | cargo-deny job success |
+| Dependabot alerts | ⚠️ 1 active (#42 glib MEDIUM GAR-513) | upstream-blocked, expiry 2026-07-31 |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities (18 allowed warnings) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2026-0173 suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) + Analyze (actions) all success |
+| CI on main (`8f5ab8f`) | ✅ green | 20/20 checks success |
+| Mutation testing (pilot) | ✅ fixed (partial) | GAR-824 merged: 3 branch mutations now unit-tested. 4 whole-fn deferred to GAR-825 |
+
+**Next security backlog:** rsa (GAR-456), glib (GAR-513), proc-macro-error2 (GAR-817) suppression expiry 2026-07-31; systemic mutation fix GAR-825 (--features test-support sharding); CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-08 run 98 (~08:45 ET) — priority (g): mutation testing fix GAR-824
 
