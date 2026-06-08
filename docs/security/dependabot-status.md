@@ -1,8 +1,30 @@
 # Dependabot Status
 
-> Last updated: **2026-06-08 run 99** (health routine — priority (g) completed: GAR-824 PR #684 merged (`8f5ab8f`), 20/20 CI green. run 98 (GAR-824) mutation fix created PR; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) all surfaces clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-08 run 100** (health routine — priority (i): all surfaces clean. Duplicate PR #686 closed (superseded by PR #687). run 99 (GAR-824) merged PR #687; run 98 (GAR-824) mutation fix; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-08 run 100 (~16:47 ET) — priority (i): all surfaces clean, PR #686 closed
+
+Health routine ran on 2026-06-08 (~16:47 ET / 20:47 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #686 (`docs/gar-824-mark-done`) closed as superseded — identical change to mark plan 0287 Done already merged via PR #687 (`6a5a681`).
+
+**Transient failures investigated:** Garra Routine Trigger (HTTP 502 GitHub GraphQL API) + Dependabot cargo update (crates.io network error for `tauri`) — both infrastructure-only, not code issues.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan (gitleaks) success on main `6a5a681` (run 27155179868, 2026-06-08T17:28Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot alerts | ⚠️ 3 open, all allowlisted | rsa RUSTSEC-2023-0071 (GAR-456), glib RUSTSEC-2024-0429 (GAR-513), rand RUSTSEC-2026-0097 (GAR-513) — expiry 2026-07-31 |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities (allowlisted advisories) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + RUSTSEC-2026-0097 + RUSTSEC-2026-0173 suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) + Analyze (actions) all success |
+| CI on main (`6a5a681`) | ✅ green | 15/15 CI jobs success |
+
+**Next security backlog:** rsa (GAR-456), glib/rand (GAR-513), proc-macro-error2 (GAR-817) suppression expiry 2026-07-31; systemic mutation fix GAR-825; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-08 run 99 (~13:00 ET) — priority (g) completed: GAR-824 PR #684 merged
 
