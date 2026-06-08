@@ -657,8 +657,9 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/files/{file_id}/download` (streaming bytes via ObjectStore) — plan 0093 / [GAR-564](https://linear.app/chatgpt25/issue/GAR-564), implementado 2026-05-10 (Florida) ✅ PR #250 (`b2de161`)
 - [x] `POST /v1/groups/{group_id}/files/{file_id}/versions` (new content version, direct upload) — plan 0094 / [GAR-567](https://linear.app/chatgpt25/issue/GAR-567), implementado 2026-05-10 (Florida)
 - [x] `GET /v1/groups/{group_id}/files/{file_id}/versions` (list content versions, cursor-paginated) — plan 0095 / [GAR-569](https://linear.app/chatgpt25/issue/GAR-569), implementado 2026-05-10 (Florida) ✅ PR #253 (`0cc9a85`)
+- [x] `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}` (fetch single file version by number) — plan 0283 / [GAR-820](https://linear.app/chatgpt25/issue/GAR-820) ✅
 - [x] `DELETE /v1/files/{file_id}` (soft delete + lixeira) ✅ PR #235 GAR-555
-- [ ] Suporte a **tus** (resumable upload) como alternativa
+- [x] Suporte a **tus** (resumable upload) como alternativa — plan 0041-0047 / [GAR-395](https://linear.app/chatgpt25/issue/GAR-395) ✅ PR #62 (`96f5c03`)
 
 **Memória**
 
@@ -726,7 +727,7 @@ Novo crate: `garraia-storage`.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. ✅
 - [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765.
-- [ ] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens.
+- [x] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens — slices 1-12 (planos 0084-0085, 0185, 0192-0193, 0200, 0225, 0231-0237 etc.), GAR-549..GAR-726, todos ✅.
 
 **Critério de aceite:**
 

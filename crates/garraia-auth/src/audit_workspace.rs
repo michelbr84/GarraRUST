@@ -553,6 +553,12 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ file_id, group_id, version_count: usize }` — PII-safe.
     FileVersionsListed,
 
+    /// Emitted when `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}`
+    /// returns successfully (plan 0283, GAR-820).
+    /// `resource_type = "files"`, `resource_id = "{file_id}"`.
+    /// Metadata: `{ file_id, group_id, version: i32 }` — PII-safe.
+    FileVersionRead,
+
     /// An existing file was attached to a task via
     /// `POST /v1/groups/{group_id}/tasks/{task_id}/attachments`
     /// (plan 0096 / GAR-572, Fase 3.4 tasks slice 9).
@@ -673,6 +679,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::FileDownloadIssued => "file.download_issued",
             WorkspaceAuditAction::FileVersionCreated => "file.version.created",
             WorkspaceAuditAction::FileVersionsListed => "file.versions.listed",
+            WorkspaceAuditAction::FileVersionRead => "file.version.read",
             WorkspaceAuditAction::TaskFileAttached => "task.file.attached",
             WorkspaceAuditAction::TaskFileDetached => "task.file.detached",
             WorkspaceAuditAction::MessageFileAttached => "message.file.attached",
@@ -1003,6 +1010,7 @@ mod tests {
             WorkspaceAuditAction::FileDownloadIssued.as_str(),
             WorkspaceAuditAction::FileVersionCreated.as_str(),
             WorkspaceAuditAction::FileVersionsListed.as_str(),
+            WorkspaceAuditAction::FileVersionRead.as_str(),
             WorkspaceAuditAction::TaskFileAttached.as_str(),
             WorkspaceAuditAction::TaskFileDetached.as_str(),
             WorkspaceAuditAction::MessageFileAttached.as_str(),
