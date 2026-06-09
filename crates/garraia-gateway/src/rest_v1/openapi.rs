@@ -129,6 +129,7 @@ impl Modify for SecurityAddon {
         super::chats::list_chats,
         super::chats::get_thread,
         super::chats::patch_thread,
+        super::chats::get_chat_member,
         super::chats::patch_chat_member,
         super::chats::typing_indicator,
         super::messages::send_message,

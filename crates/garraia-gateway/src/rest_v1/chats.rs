@@ -2324,6 +2324,99 @@ pub struct ChatMemberDetailResponse {
     pub last_read_at: Option<DateTime<Utc>>,
 }
 
+/// `GET /v1/chats/{chat_id}/members/{user_id}` — fetch a single chat member (plan 0291, GAR-831).
+///
+/// Any caller with `ChatsRead` in the same group can fetch any member's details.
+/// Returns 404 for: chat not in caller's group (no 403 leak), user not a member.
+#[utoipa::path(
+    get,
+    path = "/v1/chats/{chat_id}/members/{user_id}",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+        ("user_id" = Uuid, Path, description = "Target member's user UUID."),
+    ),
+    responses(
+        (status = 200, description = "Member detail.", body = ChatMemberDetailResponse),
+        (status = 400, description = "Missing X-Group-Id.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks ChatsRead.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found, archived, or user not a member.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_chat_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((chat_id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ChatMemberDetailResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Verify the chat exists in the caller's group (404, not 403 — no cross-tenant leak).
+    let chat_exists: Option<(bool,)> = sqlx::query_as(
+        "SELECT true FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Fetch single member row — 404 if not a member.
+    type MemberRow = (String, DateTime<Utc>, bool, Option<DateTime<Utc>>);
+    let row: Option<MemberRow> = sqlx::query_as(
+        "SELECT role, joined_at, muted, last_read_at \
+         FROM chat_members \
+         WHERE chat_id = $1 AND user_id = $2",
+    )
+    .bind(chat_id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (role, joined_at, muted, last_read_at) = row.ok_or(RestError::NotFound)?;
+
+    Ok(Json(ChatMemberDetailResponse {
+        user_id: target_user_id,
+        role,
+        joined_at,
+        muted,
+        last_read_at,
+    }))
+}
+
 /// `PATCH /v1/chats/{chat_id}/members/{user_id}` — update muted, last_read_at,
 /// or chat-local role for a chat member.
 ///
@@ -3548,6 +3641,99 @@ mod tests {
     }
 
     // ── POST /v1/messages/{id}/reactions — AddReactionRequest validation ─────
+
+    // ── GET /v1/chats/{chat_id}/members/{user_id} — ChatMemberDetailResponse (plan 0291, GAR-831) ──
+
+    #[test]
+    fn get_chat_member_response_serializes_all_fields() {
+        let user_id = Uuid::new_v4();
+        let joined = Utc::now();
+        let last_read = Utc::now() - chrono::Duration::minutes(10);
+        let r = ChatMemberDetailResponse {
+            user_id,
+            role: "member".into(),
+            joined_at: joined,
+            muted: false,
+            last_read_at: Some(last_read),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["user_id"], user_id.to_string());
+        assert_eq!(v["role"], "member");
+        assert_eq!(v["muted"], false);
+        assert!(v["last_read_at"].is_string());
+    }
+
+    #[test]
+    fn get_chat_member_response_nil_uuid_roundtrips() {
+        let r = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "owner".into(),
+            joined_at: Utc::now(),
+            muted: true,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["user_id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(v["muted"], true);
+        assert!(v["last_read_at"].is_null());
+    }
+
+    #[test]
+    fn get_chat_member_response_joined_at_is_utc_iso8601() {
+        let now = Utc::now();
+        let r = ChatMemberDetailResponse {
+            user_id: Uuid::new_v4(),
+            role: "moderator".into(),
+            joined_at: now,
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let ts = v["joined_at"].as_str().unwrap();
+        assert!(ts.ends_with('Z'), "joined_at must be UTC: {ts}");
+    }
+
+    #[test]
+    fn get_chat_member_response_last_read_at_utc_iso8601() {
+        let past = Utc::now() - chrono::Duration::seconds(30);
+        let r = ChatMemberDetailResponse {
+            user_id: Uuid::new_v4(),
+            role: "viewer".into(),
+            joined_at: Utc::now(),
+            muted: false,
+            last_read_at: Some(past),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let ts = v["last_read_at"].as_str().unwrap();
+        assert!(ts.ends_with('Z'), "last_read_at must be UTC: {ts}");
+    }
+
+    #[test]
+    fn get_chat_member_response_owner_role_preserved() {
+        let r = ChatMemberDetailResponse {
+            user_id: Uuid::new_v4(),
+            role: "owner".into(),
+            joined_at: Utc::now(),
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["role"], "owner");
+    }
+
+    #[test]
+    fn get_chat_member_response_has_exactly_five_fields() {
+        let r = ChatMemberDetailResponse {
+            user_id: Uuid::new_v4(),
+            role: "member".into(),
+            joined_at: Utc::now(),
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 5, "expected exactly 5 fields, got: {:?}", obj.keys().collect::<Vec<_>>());
+    }
 
     fn reaction_req(emoji: &str) -> AddReactionRequest {
         AddReactionRequest {

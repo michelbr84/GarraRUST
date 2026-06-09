@@ -728,6 +728,7 @@ Novo crate: `garraia-storage`.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. ✅
 - [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765.
+- [x] `GET /v1/chats/{chat_id}/members/{user_id}` — fetch single chat member detail — plan 0291 / [GAR-831](https://linear.app/chatgpt25/issue/GAR-831) ✅
 - [x] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens — slices 1-12 (planos 0084-0085, 0185, 0192-0193, 0200, 0225, 0231-0237 etc.), GAR-549..GAR-726, todos ✅.
 
 **Critério de aceite:**
