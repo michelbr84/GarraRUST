@@ -1,8 +1,30 @@
 # Dependabot Status
 
-> Last updated: **2026-06-08 run 100** (health routine — priority (i): all surfaces clean. Duplicate PR #686 closed (superseded by PR #687). run 99 (GAR-824) merged PR #687; run 98 (GAR-824) mutation fix; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-09 run 101** (health routine — priority (i): all surfaces clean. Dependabot cargo worker failed (external crates.io tauri resolver issue — non-actionable). run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 98 (GAR-824) mutation fix; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-09 run 101 (~00:45 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-09 (~00:45 ET / 04:45 UTC). Priority **(i)** — no actionable security work found.
+
+**Workflow failures investigated:**
+1. **Dependabot cargo update worker** (run 27147116363, 2026-06-08 15:08 UTC) — `dependency_file_not_resolvable` for 7 packages (wasmtime-wasi, chrono, lopdf, pbkdf2, rusqlite, reqwest, sqlx). Root cause: `garraia-desktop` has `tauri` as a dependency; Dependabot's resolver fails with `[8] Weird server reply (Invalid status line)` when fetching the `tauri` crate index from `https://index.crates.io/ta/ur/tauri`. This is an external crates.io sparse-registry infrastructure issue — not actionable via code change in this repo.
+2. **Garra Routine Trigger** failure at 20:32 UTC — superseded by successful run at 23:35 UTC; not a CI failure, unrelated to security.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan success on main `6a947cf` (run 27171618235, 2026-06-08T22:42Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot security alerts | ⚠️ 1 moderate open (alert #42), allowlisted | GitHub push scan shows 1 moderate alert remaining (down from 3 in run 100 — rand RUSTSEC-2026-0097 + possibly glib auto-closed). Remaining: rsa RUSTSEC-2023-0071 (GAR-456) or glib RUSTSEC-2024-0429 (GAR-513) — in audit.toml allowlist, expiry 2026-07-31. No first_patched_version deterministically available. |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities (allowlisted advisories) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + RUSTSEC-2026-0097 + RUSTSEC-2026-0173 suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) + Analyze (actions) all success |
+| CI on main (`6a947cf`) | ✅ green | 15/15 CI jobs success at 22:42 UTC |
+
+**Next security backlog:** rsa (GAR-456), glib/rand (GAR-513), proc-macro-error2 (GAR-817) suppression expiry 2026-07-31; systemic mutation fix GAR-825; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-08 run 100 (~16:47 ET) — priority (i): all surfaces clean, PR #686 closed
 
