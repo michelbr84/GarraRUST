@@ -516,11 +516,13 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     delete(tasks::remove_task_label_from_task),
                 )
                 // Plan 0079 (GAR-539) — task subscriptions API slice 6.
+                // Plan 0288 (GAR-827) — PATCH muted flag.
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
                     post(tasks::subscribe_to_task)
                         .get(tasks::list_task_subscriptions)
-                        .delete(tasks::unsubscribe_from_task),
+                        .delete(tasks::unsubscribe_from_task)
+                        .patch(tasks::patch_task_subscription),
                 )
                 // Plan 0080 (GAR-541) — task activity API slice 7.
                 .route(
@@ -830,6 +832,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
                 )
+                // Plan 0079 (GAR-539) / Plan 0288 (GAR-827) — task subscriptions, fail-soft 503.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+                    post(unconfigured_handler)
+                        .get(unconfigured_handler)
+                        .delete(unconfigured_handler)
+                        .patch(unconfigured_handler),
+                )
                 // Plan 0080 (GAR-541) — task activity API slice 7, fail-soft 503.
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/activity",
@@ -1114,6 +1124,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}",
                     delete(unconfigured_handler),
+                )
+                // Plan 0079 (GAR-539) / Plan 0288 (GAR-827) — task subscriptions, no-auth stub.
+                .route(
+                    "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+                    post(unconfigured_handler)
+                        .get(unconfigured_handler)
+                        .delete(unconfigured_handler)
+                        .patch(unconfigured_handler),
                 )
                 // Plan 0080 (GAR-541) — task activity API slice 7, no-auth stub.
                 .route(
