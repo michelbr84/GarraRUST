@@ -1,8 +1,30 @@
 # Dependabot Status
 
-> Last updated: **2026-06-09 run 101** (health routine — priority (i): all surfaces clean. Dependabot cargo worker failed (external crates.io tauri resolver issue — non-actionable). run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 98 (GAR-824) mutation fix; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-09 run 102** (health routine — priority (i): all surfaces clean. PR #691 (run 101 status note) merged (sha: 6c3eb62). run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-09 run 102 (~01:00 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-09 (~01:00 ET / 05:00 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #691 (`health/202606090445-run101-status-note`, GAR-828) was open and fully green (20/20 checks) → squash-merged to main (sha: `6c3eb62`). PR #690 (`routine/` prefix, GAR-827) left untouched — roadmap routine's territory.
+
+**Workflow failures investigated:** Garra Routine Trigger failure at 2026-06-08T20:32 UTC — superseded by success at 23:35 UTC; not a CI failure, unrelated to security.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI Secret Scan success on main `6c3eb62` / `6a947cf` (run 27171618235, 2026-06-08T22:42Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot security alerts | ⚠️ 1 moderate open (alert #42), allowlisted | rsa RUSTSEC-2023-0071 (GAR-456) — in audit.toml allowlist, expiry 2026-07-31. No first_patched_version available. |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities (allowlisted advisories) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + RUSTSEC-2026-0097 + RUSTSEC-2026-0173 suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) + Analyze (actions) all success |
+| CI on main (`6c3eb62`) | ✅ green | 15/15 CI jobs success |
+
+**Next security backlog:** rsa (GAR-456), glib/rand (GAR-513), proc-macro-error2 (GAR-817) suppression expiry 2026-07-31; systemic mutation fix GAR-825; CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-09 run 101 (~00:45 ET) — priority (i): all surfaces clean
 
