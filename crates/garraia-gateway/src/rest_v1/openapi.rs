@@ -13,6 +13,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
+use super::docs::{CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse};
 use super::chats::{
     ChatListResponse, ChatMemberDetailResponse, ChatResponse, ChatSummary, CreateChatRequest,
     PatchChatMemberRequest, PatchThreadRequest, ThreadDetailResponse,
@@ -190,6 +191,8 @@ impl Modify for SecurityAddon {
         super::files::download_file,
         super::files::list_file_versions,
         super::files::post_new_version,
+        super::docs::create_doc_page,
+        super::docs::list_doc_pages,
     ),
     components(schemas(
         MeResponse,
@@ -289,6 +292,10 @@ impl Modify for SecurityAddon {
         CreateFolderRequest,
         FileVersionSummary,
         FileVersionListResponse,
+        CreateDocPageRequest,
+        DocPageResponse,
+        DocPageSummary,
+        ListDocPagesResponse,
     )),
     modifiers(&SecurityAddon)
 )]

@@ -850,15 +850,15 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **Schema:**
 
-- [ ] `doc_pages` (`id`, `group_id`, `parent_page_id`, `title`, `icon`, `cover_file_id`, `created_by`, `created_at`, `updated_at`, `archived_at`)
+- [x] `doc_pages` (`id`, `group_id`, `parent_page_id`, `title`, `icon`, `cover_file_id`, `created_by`, `created_at`, `updated_at`, `archived_at`) — migration 026, plan 0297 / GAR-835
 - [ ] `doc_blocks` (`id`, `page_id`, `parent_block_id`, `position`, `type`, `content_jsonb`, `created_at`, `updated_at`) — tipos: `heading|paragraph|todo|bullet|numbered|code|quote|callout|divider|file_embed|task_embed|chat_embed|image`
 - [ ] `doc_page_versions` (`id`, `page_id`, `snapshot_jsonb`, `created_by`, `created_at`)
 - [ ] `doc_page_mentions` (`page_id`, `mentioned_user_id | mentioned_task_id | mentioned_file_id`)
 
 **API:**
 
-- [ ] `POST /v1/groups/{group_id}/doc-pages`
-- [ ] `GET /v1/groups/{group_id}/doc-pages?parent=...`
+- [x] `POST /v1/groups/{group_id}/doc-pages` — plan 0297 / GAR-835
+- [x] `GET /v1/groups/{group_id}/doc-pages?parent=...` — plan 0297 / GAR-835
 - [ ] `GET /v1/doc-pages/{page_id}` (com blocks)
 - [ ] `PATCH /v1/doc-pages/{page_id}`
 - [ ] `POST /v1/doc-pages/{page_id}/blocks`
