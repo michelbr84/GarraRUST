@@ -2,17 +2,18 @@
 //!
 //! Extracted from `rest_v1/tasks/mod.rs` by GAR-635 (plan 0140, Q11 slice 5).
 //!
-//! Three endpoints (plan 0079 / GAR-539):
+//! Four endpoints (plan 0079 / GAR-539 + plan 0288 / GAR-827):
 //! - `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — current user subscribes
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — list subscribers
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — current user unsubscribes (idempotent)
+//! - `PATCH /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — update caller's muted flag
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -294,4 +295,160 @@ pub async fn unsubscribe_from_task(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Request body for `PATCH /v1/groups/{group_id}/tasks/{task_id}/subscriptions`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchSubscriptionRequest {
+    /// New muted state for this subscription.
+    pub muted: bool,
+}
+
+/// `PATCH /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — update the
+/// caller's own subscription `muted` flag.
+///
+/// Returns 200 with the updated `SubscriptionResponse`, or 404 if the caller
+/// has no active subscription for this task (no existence leak — "task not in
+/// this group" and "not subscribed" both surface as 404). Authz: `TasksWrite`.
+#[utoipa::path(
+    patch,
+    path = "/v1/groups/{group_id}/tasks/{task_id}/subscriptions",
+    params(
+        ("group_id" = Uuid, Path, description = "Group UUID."),
+        ("task_id" = Uuid, Path, description = "Task UUID."),
+    ),
+    request_body = PatchSubscriptionRequest,
+    responses(
+        (status = 200, description = "Subscription updated.", body = SubscriptionResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member or group mismatch.", body = super::super::problem::ProblemDetails),
+        (status = 404, description = "Task not found or caller not subscribed.", body = super::super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_task_subscription(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((path_group_id, task_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<PatchSubscriptionRequest>,
+) -> Result<Json<SubscriptionResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    check_group_match(path_group_id, group_id)?;
+    if !can(&principal, Action::TasksWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<SubscriptionRow> = sqlx::query_as(
+        "UPDATE task_subscriptions \
+         SET muted = $1 \
+         WHERE task_id = $2 AND user_id = $3 \
+         RETURNING user_id, subscribed_at, muted",
+    )
+    .bind(req.muted)
+    .bind(task_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let row = row.ok_or(RestError::NotFound)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(SubscriptionResponse {
+        task_id,
+        user_id: row.user_id,
+        subscribed_at: row.subscribed_at,
+        muted: row.muted,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn nil_uuid() -> Uuid {
+        Uuid::nil()
+    }
+
+    fn fixed_ts() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 6, 9, 0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn subscription_response_muted_false_serializes() {
+        let resp = SubscriptionResponse {
+            task_id: nil_uuid(),
+            user_id: nil_uuid(),
+            subscribed_at: fixed_ts(),
+            muted: false,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["muted"], false);
+    }
+
+    #[test]
+    fn subscription_response_muted_true_serializes() {
+        let resp = SubscriptionResponse {
+            task_id: nil_uuid(),
+            user_id: nil_uuid(),
+            subscribed_at: fixed_ts(),
+            muted: true,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["muted"], true);
+    }
+
+    #[test]
+    fn subscription_response_nil_uuid_round_trips() {
+        let resp = SubscriptionResponse {
+            task_id: nil_uuid(),
+            user_id: nil_uuid(),
+            subscribed_at: fixed_ts(),
+            muted: false,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["task_id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(v["user_id"], "00000000-0000-0000-0000-000000000000");
+    }
+
+    #[test]
+    fn patch_subscription_request_muted_true_deserializes() {
+        let body = r#"{"muted": true}"#;
+        let req: PatchSubscriptionRequest = serde_json::from_str(body).unwrap();
+        assert!(req.muted);
+    }
+
+    #[test]
+    fn patch_subscription_request_muted_false_deserializes() {
+        let body = r#"{"muted": false}"#;
+        let req: PatchSubscriptionRequest = serde_json::from_str(body).unwrap();
+        assert!(!req.muted);
+    }
+
+    #[test]
+    fn subscription_response_subscribed_at_utc_iso8601() {
+        let resp = SubscriptionResponse {
+            task_id: nil_uuid(),
+            user_id: nil_uuid(),
+            subscribed_at: fixed_ts(),
+            muted: false,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        let ts = v["subscribed_at"].as_str().unwrap();
+        assert!(
+            ts.ends_with('Z'),
+            "subscribed_at must be UTC ISO-8601 with Z suffix: {ts}"
+        );
+    }
 }

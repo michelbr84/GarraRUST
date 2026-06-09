@@ -120,8 +120,9 @@ pub use labels::{
 
 pub mod subscriptions;
 pub use subscriptions::{
-    __path_list_task_subscriptions, __path_subscribe_to_task, __path_unsubscribe_from_task,
-    SubscriptionResponse, list_task_subscriptions, subscribe_to_task, unsubscribe_from_task,
+    __path_list_task_subscriptions, __path_patch_task_subscription, __path_subscribe_to_task,
+    __path_unsubscribe_from_task, PatchSubscriptionRequest, SubscriptionResponse,
+    list_task_subscriptions, patch_task_subscription, subscribe_to_task, unsubscribe_from_task,
 };
 
 pub mod activity;
