@@ -446,6 +446,9 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         let ts = v["subscribed_at"].as_str().unwrap();
-        assert!(ts.ends_with('Z'), "subscribed_at must be UTC ISO-8601 with Z suffix: {ts}");
+        assert!(
+            ts.ends_with('Z'),
+            "subscribed_at must be UTC ISO-8601 with Z suffix: {ts}"
+        );
     }
 }

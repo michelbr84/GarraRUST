@@ -50,8 +50,8 @@ use super::tasks::{
     EditCommentRequest, EditedCommentResponse, LabelAssignmentResponse, ListCommentsResponse,
     ListSubtasksResponse, ListTaskListsResponse, ListTasksResponse, MoveTaskRequest,
     PatchSubscriptionRequest, PatchTaskLabelRequest, PatchTaskListRequest, PatchTaskRequest,
-    SubscriptionResponse,
-    TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse, TaskSummary,
+    SubscriptionResponse, TaskLabelResponse, TaskListResponse, TaskListSummary, TaskResponse,
+    TaskSummary,
 };
 use super::uploads::{CreateUploadRequest, CreateUploadResponse};
 
