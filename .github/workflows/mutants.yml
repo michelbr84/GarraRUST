@@ -53,16 +53,18 @@ env:
 
 jobs:
   mutants:
-    name: cargo-mutants (garraia-auth pilot)
+    name: cargo-mutants (garraia-auth pilot) — shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
-    # 150 min based on empirical evidence from run 25109221846 (GAR-469 Q6.7):
-    # 154 of 179 mutants processed in the 90-min window before cancellation
-    # (~35s per outcome with build overhead included). Completing all 179 needs
-    # ~105 min wall-clock; 150 leaves ~45 min (~43%) headroom for future test
-    # growth and slow shared-runner conditions. If the suite ever exceeds this
-    # again, the next step is shard/parallel (open a follow-up issue), not a
-    # blind bump to 180+.
+    # GAR-825 (Q6.14): 3-way sharding introduced so each shard stays well
+    # within 150 min even with --features test-support (testcontainer-backed
+    # suites add ~5s per mutant after the first Docker image pull).
+    # Per-shard estimate: ~55 mutants × ~43s ≈ ~40 min; 150 min gives ~110 min
+    # headroom for Docker startup variance and future test growth.
     timeout-minutes: 150
+    strategy:
+      matrix:
+        shard: [0, 1, 2]
+      fail-fast: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -85,18 +87,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mutants-
 
+      - name: Pre-pull Docker image for testcontainers
+        # The garraia-auth integration suites (sessions_lifecycle,
+        # app_pool_role_guard, extractor, etc.) boot pgvector/pgvector:pg16
+        # via testcontainers-rs. Pre-pulling warms the Docker layer cache so
+        # each mutant's container start takes ~3-5 s (warm) rather than ~60 s
+        # (cold pull). The OnceCell harness shares one container per binary
+        # invocation, so there is exactly one container start per mutant.
+        run: docker pull pgvector/pgvector:pg16
+
       - name: Install cargo-mutants
         # `--locked` matches the supply-chain pattern of cargo-audit /
         # cargo-deny / cargo-llvm-cov in this repo — never `cargo install`
         # without `--locked`.
         run: cargo install --locked --version '^25' cargo-mutants
 
-      - name: Run cargo-mutants on garraia-auth
+      - name: Run cargo-mutants on garraia-auth (shard ${{ matrix.shard }}/3)
         # Strategy: --no-shuffle keeps mutant ordering stable across runs,
-        # making the report comparable week-over-week. --in-place writes
+        # making the report comparable week-over-week and ensuring that the
+        # same shard always covers the same mutants. --in-place writes
         # mutants directly into the workspace (CI is ephemeral, no risk of
         # cross-contamination). --timeout-multiplier 5 is conservative for
-        # tests with testcontainers warmup.
+        # tests with testcontainers warmup. --features test-support enables
+        # the 8 integration test binaries gated by required-features in
+        # Cargo.toml (sessions_lifecycle, app_pool_role_guard, extractor,
+        # verify_internal, signup_flow, debug_redaction_pools,
+        # concurrent_upgrade, skeleton) — these are the suites that kill
+        # the security-critical mutations. GAR-825 (Q6.14).
         #
         # Env: garraia-auth integration tests instantiate their own JWT/HMAC
         # fixtures via testcontainers + per-test setup (see
@@ -111,20 +128,23 @@ jobs:
         run: |
           cargo mutants \
             --package garraia-auth \
+            --features test-support \
+            --shard ${{ matrix.shard }}/3 \
             --no-shuffle \
             --in-place \
             --timeout-multiplier 5 \
             --output mutants.out
 
-      - name: Upload mutants report
+      - name: Upload mutants report (shard ${{ matrix.shard }})
         # Always upload — capture partial reports on failure for triage.
         # `mutants.out/` contains `outcomes.json`, `mutants.json`, per-mutant
-        # logs, and the summary. 30d retention is enough to compare across
-        # ~4 weekly runs.
+        # logs, and the summary. Artifact names include the shard index so all
+        # 3 can coexist in the same workflow run. 30d retention is enough to
+        # compare across ~4 weekly runs.
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: mutants-report-${{ github.run_id }}
+          name: mutants-report-${{ github.run_id }}-shard-${{ matrix.shard }}
           path: mutants.out/
           retention-days: 30
           if-no-files-found: error
