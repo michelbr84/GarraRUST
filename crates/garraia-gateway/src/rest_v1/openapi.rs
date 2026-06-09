@@ -13,11 +13,11 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::audit::{AuditEventSummary, ListAuditResponse};
-use super::docs::{CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse};
 use super::chats::{
     ChatListResponse, ChatMemberDetailResponse, ChatResponse, ChatSummary, CreateChatRequest,
     PatchChatMemberRequest, PatchThreadRequest, ThreadDetailResponse,
 };
+use super::docs::{CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse};
 use super::files::{
     CreateFolderRequest, FileCreatedResponse, FileListResponse, FileSummary,
     FileVersionListResponse, FileVersionResponse, FileVersionSummary, FolderListResponse,

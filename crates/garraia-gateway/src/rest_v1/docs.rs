@@ -248,13 +248,12 @@ pub async fn create_doc_page(
 
     // Validate parent_page_id if provided.
     if let Some(parent_id) = body.parent_page_id {
-        let parent_exists: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM doc_pages WHERE id = $1 AND archived_at IS NULL",
-        )
-        .bind(parent_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+        let parent_exists: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM doc_pages WHERE id = $1 AND archived_at IS NULL")
+                .bind(parent_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
 
         if parent_exists.is_none() {
             return Err(RestError::NotFound);
