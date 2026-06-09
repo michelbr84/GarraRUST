@@ -3732,7 +3732,12 @@ mod tests {
         };
         let v = serde_json::to_value(&r).unwrap();
         let obj = v.as_object().unwrap();
-        assert_eq!(obj.len(), 5, "expected exactly 5 fields, got: {:?}", obj.keys().collect::<Vec<_>>());
+        assert_eq!(
+            obj.len(),
+            5,
+            "expected exactly 5 fields, got: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
     }
 
     fn reaction_req(emoji: &str) -> AddReactionRequest {
