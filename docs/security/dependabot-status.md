@@ -1,8 +1,33 @@
 # Dependabot Status
 
-> Last updated: **2026-06-09 run 107** (health routine — priority (i): all surfaces clean. run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-10 run 108** (health routine — priority (i): all surfaces clean. run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-10 run 108 (~00:45 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-10 (~00:45 ET / 2026-06-10T04:45 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #707 (`health/202606092047-run107-status-note`) had merge conflict in plans/README.md resolved and merged as `7a20572`. PR #709 (`routine/202606100020-doc-pages-single-crud`) open with routine/ prefix — skipped per protocol.
+
+**Scan scope:** cargo audit (CI — Security job), cargo-deny CI, GitHub Actions CI, Linear security issues.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `619f806` (2026-06-10T00:17Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot PRs | ✅ none open | 0 open Dependabot PRs |
+| Dependabot security alerts | ⚠️ 1 moderate open (alert #42), allowlisted | rsa RUSTSEC-2023-0071 — in audit.toml allowlist, expiry 2026-07-31. No first_patched_version available. |
+| Security Audit (cargo-audit) | ✅ pass | CI Security — cargo audit success |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) all success |
+| CI on main (`619f806`) | ✅ green | All 20 CI jobs success (2026-06-10T00:17Z) |
+
+**rsa chain confirmed:** `rsa v0.9.10 ← jsonwebtoken v10.4.0 ← garraia-auth + garraia-gateway`. HS256-only invariant holds. Expiry 2026-07-31.
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (expiry 2026-07-31), glib/rand (GAR-513), CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-09 run 107 (~20:47 ET) — priority (i): all surfaces clean
 
