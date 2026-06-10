@@ -305,3 +305,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0294 | [GAR-825 — Q6.14: 3-way shard + --features test-support in mutants.yml](0294-gar-825-mutants-shard-test-support.md) | [GAR-825](https://linear.app/chatgpt25/issue/GAR-825) | ✅ Merged via PR #701 (`6060116`) |
 | 0295 | [GAR-832 — Health run 105 (2026-06-09 ~08:45 ET): all surfaces clean, priority (i)](0295-gar-832-health-run-105.md) | [GAR-832](https://linear.app/chatgpt25/issue/GAR-832) | ✅ Merged 2026-06-09 via PR #702 (`3cc8771`) |
 | 0296 | [GAR-833 — Health run 106 (2026-06-09 ~12:45 ET): all surfaces clean, priority (i)](0296-gar-833-health-run-106.md) | [GAR-833](https://linear.app/chatgpt25/issue/GAR-833) | ✅ Merged via PR #704 (`7b0bade`) |
+| 0297 | [GAR-835 — Docs Tier 2 scaffold: migration 026 + POST/GET /v1/groups/{group_id}/doc-pages](0297-gar-835-doc-pages-scaffold.md) | [GAR-835](https://linear.app/chatgpt25/issue/GAR-835) | 🔄 In Progress |

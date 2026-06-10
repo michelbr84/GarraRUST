@@ -31,6 +31,7 @@
 
 pub mod audit;
 pub mod chats;
+pub mod docs;
 pub mod files;
 pub mod groups;
 pub mod invites;
@@ -596,6 +597,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(files::patch_folder)
                         .delete(files::delete_folder),
                 )
+                // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages.
+                .route(
+                    "/v1/groups/{group_id}/doc-pages",
+                    post(docs::create_doc_page).get(docs::list_doc_pages),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -896,6 +902,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages stub.
+                .route(
+                    "/v1/groups/{group_id}/doc-pages",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -1188,6 +1199,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     head(unconfigured_handler)
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
+                )
+                // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages stub.
+                .route(
+                    "/v1/groups/{group_id}/doc-pages",
+                    post(unconfigured_handler).get(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
