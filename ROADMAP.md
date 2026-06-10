@@ -859,8 +859,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 - [x] `POST /v1/groups/{group_id}/doc-pages` — plan 0297 / GAR-835
 - [x] `GET /v1/groups/{group_id}/doc-pages?parent=...` — plan 0297 / GAR-835
-- [ ] `GET /v1/doc-pages/{page_id}` (com blocks)
-- [ ] `PATCH /v1/doc-pages/{page_id}`
+- [x] `GET /v1/doc-pages/{page_id}` — plan 0299 / GAR-837
+- [x] `PATCH /v1/doc-pages/{page_id}` — plan 0299 / GAR-837
+- [x] `DELETE /v1/doc-pages/{page_id}` (soft-delete) — plan 0299 / GAR-837
 - [ ] `POST /v1/doc-pages/{page_id}/blocks`
 - [ ] `PATCH /v1/doc-blocks/{block_id}`
 - [ ] `DELETE /v1/doc-blocks/{block_id}`

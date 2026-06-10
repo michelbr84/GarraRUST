@@ -625,6 +625,18 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
     /// Metadata: `{ title_len: N }` — length only (no raw title, PII-safe).
     DocPageCreated,
+    /// A doc page was updated via `PATCH /v1/doc-pages/{page_id}`
+    /// (plan 0299 / GAR-837).
+    ///
+    /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
+    /// Metadata: `{ fields_updated: ["title", "icon", ...] }` — field names only.
+    DocPageUpdated,
+    /// A doc page was soft-deleted via `DELETE /v1/doc-pages/{page_id}`
+    /// (plan 0299 / GAR-837).
+    ///
+    /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
+    /// Metadata: `{}`.
+    DocPageDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -694,6 +706,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MessageReactionRemoved => "message.reaction.removed",
             WorkspaceAuditAction::MessageMentionCreated => "message.mention.created",
             WorkspaceAuditAction::DocPageCreated => "doc_page.created",
+            WorkspaceAuditAction::DocPageUpdated => "doc_page.updated",
+            WorkspaceAuditAction::DocPageDeleted => "doc_page.deleted",
         }
     }
 }
@@ -967,6 +981,14 @@ mod tests {
             WorkspaceAuditAction::DocPageCreated.as_str(),
             "doc_page.created"
         );
+        assert_eq!(
+            WorkspaceAuditAction::DocPageUpdated.as_str(),
+            "doc_page.updated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::DocPageDeleted.as_str(),
+            "doc_page.deleted"
+        );
     }
 
     #[test]
@@ -1029,6 +1051,9 @@ mod tests {
             WorkspaceAuditAction::MessageReactionAdded.as_str(),
             WorkspaceAuditAction::MessageReactionRemoved.as_str(),
             WorkspaceAuditAction::MessageMentionCreated.as_str(),
+            WorkspaceAuditAction::DocPageCreated.as_str(),
+            WorkspaceAuditAction::DocPageUpdated.as_str(),
+            WorkspaceAuditAction::DocPageDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
