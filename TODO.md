@@ -5,9 +5,24 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-06-06 (America/New_York)
+**Atualizado:** 2026-06-10 (America/New_York)
 
 ## Concluído nesta sessão
+
+- GAR-835 / plan 0297 — Docs Tier 2 scaffold: migration 026 + POST/GET /v1/groups/{group_id}/doc-pages:
+  - Migration `026_doc_pages.sql`: `doc_pages` table with FORCE RLS, NULLIF fail-closed group
+    isolation policy, `GRANT SELECT/INSERT/UPDATE` to `garraia_app`, keyset + parent indexes.
+  - `WorkspaceAuditAction::DocPageCreated` → `"doc_page.created"` added to `garraia-auth`.
+  - `docs.rs`: `CreateDocPageRequest`, `DocPageResponse`, `DocPageSummary`, `ListDocPagesResponse`,
+    `ListDocPagesQuery`; `create_doc_page` (POST 201, authz DocsWrite) and `list_doc_pages`
+    (GET, cursor-keyset, optional `parent_page_id` filter, authz DocsRead); 6 unit tests pass.
+  - Routes wired in all 3 `mod.rs` branches (full / auth-stub / no-auth stub).
+  - `openapi.rs`: paths + schemas registered.
+  - ROADMAP §3.8 Tier 2: `doc_pages` schema + 2 API endpoints marked ✅.
+  - PR #706 squash-merged 2026-06-10 (`54f88bc`) — 20/20 CI green.
+  - GAR-835 → Done in Linear.
+
+## Concluído em sessões anteriores
 
 - GAR-806 / plan 0269 — GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
   - `get_task_comment` handler in `comments.rs`: validates group_id, TasksRead check,
