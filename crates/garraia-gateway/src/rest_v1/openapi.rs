@@ -21,7 +21,8 @@ use super::doc_blocks::{
     CreateDocBlockRequest, DocBlockResponse, ListDocBlocksResponse, PatchDocBlockRequest,
 };
 use super::docs::{
-    CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse, PatchDocPageRequest,
+    CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse,
+    PatchDocPageRequest,
 };
 use super::files::{
     CreateFolderRequest, FileCreatedResponse, FileListResponse, FileSummary,

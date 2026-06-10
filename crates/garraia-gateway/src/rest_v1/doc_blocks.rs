@@ -283,7 +283,9 @@ pub async fn create_doc_block(
         max_pos.unwrap_or(0.0) + 1.0
     };
 
-    let content = body.content.unwrap_or(serde_json::Value::Object(Default::default()));
+    let content = body
+        .content
+        .unwrap_or(serde_json::Value::Object(Default::default()));
 
     let row: DocBlockRow = sqlx::query_as(
         "INSERT INTO doc_blocks \
@@ -487,8 +489,7 @@ pub async fn update_doc_block(
     let new_content = body.content.as_ref().unwrap_or(&current.content_jsonb);
     let new_position = body.position.unwrap_or(current.position);
     // None → keep current; Some(None) → set NULL; Some(Some(id)) → set to id.
-    let new_parent_block_id: Option<Uuid> =
-        body.parent_block_id.unwrap_or(current.parent_block_id);
+    let new_parent_block_id: Option<Uuid> = body.parent_block_id.unwrap_or(current.parent_block_id);
 
     // Track which fields changed (PII-safe: names only).
     let mut fields_updated: Vec<&str> = Vec::new();
@@ -651,7 +652,10 @@ mod tests {
         let resp = DocBlockResponse::from(row);
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["type"], "paragraph");
-        assert!(v.get("block_type").is_none(), "block_type should not appear in JSON");
+        assert!(
+            v.get("block_type").is_none(),
+            "block_type should not appear in JSON"
+        );
     }
 
     #[test]
