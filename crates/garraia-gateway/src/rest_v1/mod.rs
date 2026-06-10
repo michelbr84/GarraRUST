@@ -598,9 +598,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .delete(files::delete_folder),
                 )
                 // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages.
+                // Plan 0299 (GAR-837) — single-page CRUD: GET/PATCH/DELETE.
                 .route(
                     "/v1/groups/{group_id}/doc-pages",
                     post(docs::create_doc_page).get(docs::list_doc_pages),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}",
+                    get(docs::get_doc_page)
+                        .patch(docs::patch_doc_page)
+                        .delete(docs::delete_doc_page),
                 )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
@@ -903,9 +910,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .delete(unconfigured_handler),
                 )
                 // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages stub.
+                // Plan 0299 (GAR-837) — single-page CRUD stub.
                 .route(
                     "/v1/groups/{group_id}/doc-pages",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
@@ -1201,9 +1215,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .delete(unconfigured_handler),
                 )
                 // Plan 0297 (GAR-834) — Docs Tier 2 scaffold: doc pages stub.
+                // Plan 0299 (GAR-837) — single-page CRUD stub.
                 .route(
                     "/v1/groups/{group_id}/doc-pages",
                     post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}",
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))

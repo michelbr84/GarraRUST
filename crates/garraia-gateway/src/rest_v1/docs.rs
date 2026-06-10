@@ -451,6 +451,283 @@ pub async fn list_doc_pages(
     Ok(Json(ListDocPagesResponse { items, next_cursor }))
 }
 
+// ─── Single-page handlers (plan 0299 / GAR-837) ──────────────────────────────
+
+/// Request body for `PATCH /v1/doc-pages/{page_id}`.
+///
+/// All fields are optional — only provided fields are updated.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchDocPageRequest {
+    /// New page title. 1–255 characters.
+    pub title: Option<String>,
+    /// New icon identifier. `null` clears the icon.
+    pub icon: Option<String>,
+    /// New parent page UUID. `null` promotes the page to root level.
+    pub parent_page_id: Option<Uuid>,
+    /// Set `true` to archive the page, `false` to restore it.
+    pub archived: Option<bool>,
+}
+
+impl PatchDocPageRequest {
+    fn validate(&self) -> Result<(), &'static str> {
+        if let Some(title) = &self.title {
+            let len = title.chars().count();
+            if len == 0 {
+                return Err("title must not be empty");
+            }
+            if len > 255 {
+                return Err("title exceeds 255 character limit");
+            }
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.icon.is_none()
+            && self.parent_page_id.is_none()
+            && self.archived.is_none()
+    }
+}
+
+/// `GET /v1/doc-pages/{page_id}` — fetch a single doc page.
+///
+/// Returns the page regardless of `archived_at` (caller checks the field).
+/// Authz: `Action::DocsRead`. The FORCE RLS policy ensures cross-group
+/// isolation: if `page_id` doesn't belong to the caller's group, 404 is
+/// returned (RLS filters the row, `fetch_optional` returns `None`).
+#[utoipa::path(
+    get,
+    path = "/v1/doc-pages/{page_id}",
+    params(
+        ("page_id" = Uuid, Path, description = "Doc page UUID."),
+    ),
+    responses(
+        (status = 200, description = "Doc page.", body = DocPageResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Page not found.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_doc_page(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(page_id): Path<Uuid>,
+) -> Result<Json<DocPageResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<DocPageRow> = sqlx::query_as(
+        "SELECT id, group_id, parent_page_id, title, icon, \
+                created_by, created_by_label, archived_at, created_at, updated_at \
+         FROM doc_pages WHERE id = $1",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    match row {
+        Some(r) => Ok(Json(DocPageResponse::from(r))),
+        None => Err(RestError::NotFound),
+    }
+}
+
+/// `PATCH /v1/doc-pages/{page_id}` — update a doc page.
+///
+/// Authz: `Action::DocsWrite`. At least one field must be provided.
+/// Cross-group attempts return 404 (RLS).
+#[utoipa::path(
+    patch,
+    path = "/v1/doc-pages/{page_id}",
+    params(
+        ("page_id" = Uuid, Path, description = "Doc page UUID."),
+    ),
+    request_body = PatchDocPageRequest,
+    responses(
+        (status = 200, description = "Updated doc page.", body = DocPageResponse),
+        (status = 400, description = "Validation error.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Page not found.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_doc_page(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(page_id): Path<Uuid>,
+    Json(body): Json<PatchDocPageRequest>,
+) -> Result<Json<DocPageResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsWrite) {
+        return Err(RestError::Forbidden);
+    }
+    body.validate()
+        .map_err(|msg| RestError::BadRequest(msg.into()))?;
+    if body.is_empty() {
+        return Err(RestError::BadRequest("no fields to update".into()));
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let mut fields_updated: Vec<&'static str> = Vec::new();
+
+    let archived_at_update = body.archived.map(|archive| {
+        if archive {
+            Some(chrono::Utc::now())
+        } else {
+            None::<DateTime<Utc>>
+        }
+    });
+
+    let row: Option<DocPageRow> = sqlx::query_as(
+        "UPDATE doc_pages SET \
+             title         = COALESCE($2, title), \
+             icon          = CASE WHEN $3::boolean THEN $4 ELSE icon END, \
+             parent_page_id = CASE WHEN $5::boolean THEN $6 ELSE parent_page_id END, \
+             archived_at   = CASE WHEN $7::boolean THEN $8 ELSE archived_at END, \
+             updated_at    = now() \
+         WHERE id = $1 \
+         RETURNING id, group_id, parent_page_id, title, icon, \
+                   created_by, created_by_label, archived_at, created_at, updated_at",
+    )
+    .bind(page_id)
+    .bind(body.title.as_deref().map(str::trim))
+    .bind(body.icon.is_some())
+    .bind(body.icon.as_deref())
+    .bind(body.parent_page_id.is_some() || body.archived.map(|a| !a).unwrap_or(false))
+    .bind(body.parent_page_id)
+    .bind(body.archived.is_some())
+    .bind(archived_at_update.flatten())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let updated = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    if body.title.is_some() {
+        fields_updated.push("title");
+    }
+    if body.icon.is_some() {
+        fields_updated.push("icon");
+    }
+    if body.parent_page_id.is_some() {
+        fields_updated.push("parent_page_id");
+    }
+    if body.archived.is_some() {
+        fields_updated.push("archived");
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::DocPageUpdated,
+        principal.user_id,
+        group_id,
+        "doc_pages",
+        page_id.to_string(),
+        serde_json::json!({ "fields_updated": fields_updated }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(DocPageResponse::from(updated)))
+}
+
+/// `DELETE /v1/doc-pages/{page_id}` — soft-delete (archive) a doc page.
+///
+/// Sets `archived_at = now()`. Idempotent: already-archived pages return 204.
+/// Authz: `Action::DocsDelete`. Cross-group attempts return 404 (RLS).
+#[utoipa::path(
+    delete,
+    path = "/v1/doc-pages/{page_id}",
+    params(
+        ("page_id" = Uuid, Path, description = "Doc page UUID."),
+    ),
+    responses(
+        (status = 204, description = "Page archived (soft-deleted)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Page not found.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_doc_page(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(page_id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsDelete) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let result = sqlx::query(
+        "UPDATE doc_pages SET archived_at = COALESCE(archived_at, now()), updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(page_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if result.rows_affected() == 0 {
+        return Err(RestError::NotFound);
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::DocPageDeleted,
+        principal.user_id,
+        group_id,
+        "doc_pages",
+        page_id.to_string(),
+        serde_json::json!({}),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -539,5 +816,60 @@ mod tests {
             icon: None,
         };
         assert_eq!(req.validate(), Err("title must not be empty"));
+    }
+
+    #[test]
+    fn patch_request_validation_rejects_empty_title() {
+        let req = PatchDocPageRequest {
+            title: Some("".to_string()),
+            icon: None,
+            parent_page_id: None,
+            archived: None,
+        };
+        assert_eq!(req.validate(), Err("title must not be empty"));
+    }
+
+    #[test]
+    fn patch_request_validation_rejects_title_over_255() {
+        let req = PatchDocPageRequest {
+            title: Some("a".repeat(256)),
+            icon: None,
+            parent_page_id: None,
+            archived: None,
+        };
+        assert_eq!(req.validate(), Err("title exceeds 255 character limit"));
+    }
+
+    #[test]
+    fn patch_request_is_empty_when_no_fields() {
+        let req = PatchDocPageRequest {
+            title: None,
+            icon: None,
+            parent_page_id: None,
+            archived: None,
+        };
+        assert!(req.is_empty());
+    }
+
+    #[test]
+    fn patch_request_not_empty_with_archived_field() {
+        let req = PatchDocPageRequest {
+            title: None,
+            icon: None,
+            parent_page_id: None,
+            archived: Some(true),
+        };
+        assert!(!req.is_empty());
+    }
+
+    #[test]
+    fn patch_request_valid_title_passes() {
+        let req = PatchDocPageRequest {
+            title: Some("Valid Title".to_string()),
+            icon: None,
+            parent_page_id: None,
+            archived: None,
+        };
+        assert!(req.validate().is_ok());
     }
 }
