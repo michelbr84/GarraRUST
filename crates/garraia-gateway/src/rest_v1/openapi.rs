@@ -20,9 +20,7 @@ use super::chats::{
 use super::doc_blocks::{
     CreateDocBlockRequest, DocBlockResponse, ListDocBlocksResponse, PatchDocBlockRequest,
 };
-use super::doc_versions::{
-    DocPageVersionFull, DocPageVersionHeader, ListDocPageVersionsResponse,
-};
+use super::doc_versions::{DocPageVersionFull, DocPageVersionHeader, ListDocPageVersionsResponse};
 use super::docs::{
     CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse,
     PatchDocPageRequest,

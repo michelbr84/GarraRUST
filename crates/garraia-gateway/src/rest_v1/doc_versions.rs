@@ -179,9 +179,7 @@ fn require_group_id(principal: &Principal) -> Result<Uuid, RestError> {
 }
 
 fn clamp_limit(limit: Option<u32>) -> i64 {
-    limit
-        .unwrap_or(DEFAULT_LIMIT)
-        .min(MAX_LIMIT) as i64
+    limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -272,13 +270,12 @@ pub async fn create_doc_page_version(
     });
 
     // Look up created_by_label from the users table.
-    let created_by_label: Option<String> = sqlx::query_scalar(
-        "SELECT display_name FROM users WHERE id = $1",
-    )
-    .bind(principal.user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let created_by_label: Option<String> =
+        sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
     let created_by_label = created_by_label.unwrap_or_else(|| "unknown".to_string());
 
     let row: DocPageVersionHeaderRow = sqlx::query_as(
