@@ -1,4 +1,4 @@
-# Plan 0299 — GAR-837: GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD
+# Plan 0301 — GAR-837: GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD
 
 ## Goal
 
@@ -53,8 +53,8 @@ crates/garraia-auth/src/audit_workspace.rs     — add DocPageUpdated, DocPageDe
 crates/garraia-gateway/src/rest_v1/docs.rs     — add PatchDocPageRequest + 3 handlers + 5 tests
 crates/garraia-gateway/src/rest_v1/mod.rs      — wire routes in all 3 modes
 crates/garraia-gateway/src/rest_v1/openapi.rs  — register 3 paths + PatchDocPageRequest schema
-plans/0299-gar-837-doc-pages-single-crud.md    — this file
-plans/README.md                                — plan 0299 row added
+plans/0301-gar-837-doc-pages-single-crud.md    — this file
+plans/README.md                                — plan 0301 row added
 ROADMAP.md                                     — §3.8 Tier 2 doc_pages API items checked
 ```
 
