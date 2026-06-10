@@ -1,8 +1,33 @@
 # Dependabot Status
 
-> Last updated: **2026-06-10 run 110** (health routine — priority (i): all surfaces clean. New June 2026 advisories checked: none affect Cargo.lock. bytes 1.11.1 already patched. run 109 (GAR-839) clean; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-10 run 111** (health routine — priority (i): all surfaces clean. run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-10 run 111 (~08:45 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-10 (~08:45 ET / 2026-06-10T12:45 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #713 (`claude/focused-cray-s4k0eh`) squash-merged as `5662253` — health run 110 / GAR-841, all 20 CI checks green. PR #712 (`routine/202606100620-doc-blocks-crud`) open with routine/ prefix — skipped per protocol.
+
+**Scan scope:** cargo audit (CI — Security job), cargo-deny CI, GitHub Actions CI, Linear security issues.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `ed1093f` (2026-06-10T06:43Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot PRs | ✅ none open | 0 open Dependabot PRs |
+| Dependabot security alerts | ⚠️ 1 moderate open (RUSTSEC-2023-0071), allowlisted | rsa 0.9.10 — Marvin Attack timing sidechannel. HS256-only invariant holds. Allowlisted in audit.toml + deny.toml, expiry 2026-07-31. No first_patched_version available. |
+| Security Audit (cargo-audit) | ✅ pass | 0 vulnerabilities, 18 allowed unmaintained warnings (all suppressed in deny.toml) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + 18 unmaintained suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) + Analyze (actions) all success |
+| CI on main (`ed1093f`) | ✅ green | All 15 CI jobs success (2026-06-10T06:43Z) |
+
+**rsa chain confirmed:** `rsa v0.9.10 ← jsonwebtoken v10.4.0 ← garraia-auth + garraia-gateway`. HS256-only invariant holds. Expiry 2026-07-31.
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (expiry 2026-07-31), glib/rand (GAR-513), CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-10 run 110 (~07:07 ET) — priority (i): all surfaces clean
 

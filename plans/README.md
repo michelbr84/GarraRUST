@@ -308,6 +308,8 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0297 | [GAR-835 — Docs Tier 2 scaffold: migration 026 + POST/GET /v1/groups/{group_id}/doc-pages](0297-gar-835-doc-pages-scaffold.md) | [GAR-835](https://linear.app/chatgpt25/issue/GAR-835) | ✅ Merged 2026-06-10 via PR #706 (`54f88bc`) |
 | 0298 | [GAR-836 — Health run 107 (2026-06-09 ~20:47 ET): all surfaces clean, priority (i)](0298-gar-836-health-run-107.md) | [GAR-836](https://linear.app/chatgpt25/issue/GAR-836) | ✅ Merged via PR #707 (`7a20572`) |
 | 0299 | [GAR-838 — Health run 108 (2026-06-10 ~00:45 ET): all surfaces clean, priority (i)](0299-gar-838-health-run-108.md) | [GAR-838](https://linear.app/chatgpt25/issue/GAR-838) | ✅ Merged via PR #710 (`8495527`) |
-| 0300 | [GAR-839 — Health run 109 (2026-06-10 ~04:45 ET): PR #710 merged, all surfaces clean, priority (i)](0300-gar-839-health-run-109.md) | [GAR-839](https://linear.app/chatgpt25/issue/GAR-839) | ✅ Merged via PR #711 (`59a13e7`) |
-| 0301 | [GAR-837 — GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD](0301-gar-837-doc-pages-single-crud.md) | [GAR-837](https://linear.app/chatgpt25/issue/GAR-837) | ✅ Merged via PR #709 (`ed1093f`) |
-| 0302 | [GAR-841 — Health run 110 (2026-06-10 ~07:07 ET): all surfaces clean, June 2026 advisory sweep, priority (i)](0302-gar-841-health-run-110.md) | [GAR-841](https://linear.app/chatgpt25/issue/GAR-841) | ⏳ In progress |
+| 0300 | [GAR-839 — Health run 109 (2026-06-10 ~04:45 ET): PR #710 merged, all surfaces clean, priority (i)](0300-gar-839-health-run-109.md) | [GAR-839](https://linear.app/chatgpt25/issue/GAR-839) | ✅ Merged 2026-06-10 via PR #711 (`59a13e7`) |
+| 0301 | [GAR-837 — GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD](0301-gar-837-doc-pages-single-crud.md) | [GAR-837](https://linear.app/chatgpt25/issue/GAR-837) | ✅ Merged 2026-06-10 via PR #709 (`ed1093f`) |
+| 0302 | [GAR-841 — Health run 110 (2026-06-10 ~07:07 ET): all surfaces clean, priority (i)](0302-gar-841-health-run-110.md) | [GAR-841](https://linear.app/chatgpt25/issue/GAR-841) | ✅ Merged 2026-06-10 via PR #713 (`5662253`) |
+| 0303 | [GAR-842 — Health run 111 (2026-06-10 ~08:45 ET): PR #713 merged, all surfaces clean, priority (i)](0303-gar-842-health-run-111.md) | [GAR-842](https://linear.app/chatgpt25/issue/GAR-842) | ⏳ In progress |
+
