@@ -32,6 +32,7 @@
 pub mod audit;
 pub mod chats;
 pub mod doc_blocks;
+pub mod doc_versions;
 pub mod docs;
 pub mod files;
 pub mod groups;
@@ -619,6 +620,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-blocks/{block_id}",
                     patch(doc_blocks::update_doc_block).delete(doc_blocks::delete_doc_block),
                 )
+                // Plan 0307 (GAR-845) — Docs Tier 2: page version snapshots.
+                .route(
+                    "/v1/doc-pages/{page_id}/versions",
+                    post(doc_versions::create_doc_page_version)
+                        .get(doc_versions::list_doc_page_versions),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}",
+                    get(doc_versions::get_doc_page_version),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -931,6 +942,24 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                // Plan 0302 (GAR-840) — doc blocks stub (mode 2).
+                .route(
+                    "/v1/doc-pages/{page_id}/blocks",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-blocks/{block_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
+                )
+                // Plan 0307 (GAR-845) — doc versions stub (mode 2).
+                .route(
+                    "/v1/doc-pages/{page_id}/versions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}",
+                    get(unconfigured_handler),
+                )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -1235,6 +1264,24 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler)
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
+                )
+                // Plan 0302 (GAR-840) — doc blocks stub (mode 3).
+                .route(
+                    "/v1/doc-pages/{page_id}/blocks",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-blocks/{block_id}",
+                    patch(unconfigured_handler).delete(unconfigured_handler),
+                )
+                // Plan 0307 (GAR-845) — doc versions stub (mode 3).
+                .route(
+                    "/v1/doc-pages/{page_id}/versions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}",
+                    get(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
