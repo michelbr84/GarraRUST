@@ -619,6 +619,12 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "message_mentions"`, `resource_id = "{message_id}"`.
     /// Metadata: `{ mention_count: N }` — count only (PII-safe; no user IDs).
     MessageMentionCreated,
+    /// A new doc page was created via
+    /// `POST /v1/groups/{group_id}/doc-pages` (plan 0297 / GAR-834).
+    ///
+    /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
+    /// Metadata: `{ title_len: N }` — length only (no raw title, PII-safe).
+    DocPageCreated,
 }
 
 impl WorkspaceAuditAction {
@@ -687,6 +693,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::MessageReactionAdded => "message.reaction.added",
             WorkspaceAuditAction::MessageReactionRemoved => "message.reaction.removed",
             WorkspaceAuditAction::MessageMentionCreated => "message.mention.created",
+            WorkspaceAuditAction::DocPageCreated => "doc_page.created",
         }
     }
 }
@@ -955,6 +962,10 @@ mod tests {
         assert_eq!(
             WorkspaceAuditAction::MessageMentionCreated.as_str(),
             "message.mention.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::DocPageCreated.as_str(),
+            "doc_page.created"
         );
     }
 
