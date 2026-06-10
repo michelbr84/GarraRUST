@@ -1,4 +1,4 @@
-# Plan 0299 — GAR-837: GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD
+# Plan 0301 — GAR-837: GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD
 
 ## Goal
 
