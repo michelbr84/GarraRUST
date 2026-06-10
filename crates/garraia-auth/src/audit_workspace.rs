@@ -626,17 +626,34 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ title_len: N }` — length only (no raw title, PII-safe).
     DocPageCreated,
     /// A doc page was updated via `PATCH /v1/doc-pages/{page_id}`
-    /// (plan 0299 / GAR-837).
+    /// (plan 0301 / GAR-837).
     ///
     /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
     /// Metadata: `{ fields_updated: ["title", "icon", ...] }` — field names only.
     DocPageUpdated,
     /// A doc page was soft-deleted via `DELETE /v1/doc-pages/{page_id}`
-    /// (plan 0299 / GAR-837).
+    /// (plan 0301 / GAR-837).
     ///
     /// `resource_type = "doc_pages"`, `resource_id = "{page_id}"`.
     /// Metadata: `{}`.
     DocPageDeleted,
+    /// A new doc block was created via
+    /// `POST /v1/doc-pages/{page_id}/blocks` (plan 0302 / GAR-840).
+    ///
+    /// `resource_type = "doc_blocks"`, `resource_id = "{block_id}"`.
+    /// Metadata: `{ block_type: "...", position: N }` — type and position
+    /// only, no `content_jsonb` (user-generated content, PII risk).
+    DocBlockCreated,
+    /// A doc block was updated via `PATCH /v1/doc-blocks/{block_id}`.
+    ///
+    /// `resource_type = "doc_blocks"`, `resource_id = "{block_id}"`.
+    /// Metadata: `{ fields_updated: [...] }` — field names only.
+    DocBlockUpdated,
+    /// A doc block was deleted via `DELETE /v1/doc-blocks/{block_id}`.
+    ///
+    /// `resource_type = "doc_blocks"`, `resource_id = "{block_id}"`.
+    /// Metadata: `{ block_type: "..." }`.
+    DocBlockDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -708,6 +725,9 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocPageCreated => "doc_page.created",
             WorkspaceAuditAction::DocPageUpdated => "doc_page.updated",
             WorkspaceAuditAction::DocPageDeleted => "doc_page.deleted",
+            WorkspaceAuditAction::DocBlockCreated => "doc_block.created",
+            WorkspaceAuditAction::DocBlockUpdated => "doc_block.updated",
+            WorkspaceAuditAction::DocBlockDeleted => "doc_block.deleted",
         }
     }
 }
@@ -989,6 +1009,18 @@ mod tests {
             WorkspaceAuditAction::DocPageDeleted.as_str(),
             "doc_page.deleted"
         );
+        assert_eq!(
+            WorkspaceAuditAction::DocBlockCreated.as_str(),
+            "doc_block.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::DocBlockUpdated.as_str(),
+            "doc_block.updated"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::DocBlockDeleted.as_str(),
+            "doc_block.deleted"
+        );
     }
 
     #[test]
@@ -1054,6 +1086,9 @@ mod tests {
             WorkspaceAuditAction::DocPageCreated.as_str(),
             WorkspaceAuditAction::DocPageUpdated.as_str(),
             WorkspaceAuditAction::DocPageDeleted.as_str(),
+            WorkspaceAuditAction::DocBlockCreated.as_str(),
+            WorkspaceAuditAction::DocBlockUpdated.as_str(),
+            WorkspaceAuditAction::DocBlockDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

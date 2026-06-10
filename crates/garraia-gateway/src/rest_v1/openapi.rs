@@ -17,9 +17,11 @@ use super::chats::{
     ChatListResponse, ChatMemberDetailResponse, ChatResponse, ChatSummary, CreateChatRequest,
     PatchChatMemberRequest, PatchThreadRequest, ThreadDetailResponse,
 };
+use super::doc_blocks::{
+    CreateDocBlockRequest, DocBlockResponse, ListDocBlocksResponse, PatchDocBlockRequest,
+};
 use super::docs::{
-    CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse,
-    PatchDocPageRequest,
+    CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse, PatchDocPageRequest,
 };
 use super::files::{
     CreateFolderRequest, FileCreatedResponse, FileListResponse, FileSummary,
@@ -199,6 +201,10 @@ impl Modify for SecurityAddon {
         super::docs::get_doc_page,
         super::docs::patch_doc_page,
         super::docs::delete_doc_page,
+        super::doc_blocks::create_doc_block,
+        super::doc_blocks::list_doc_blocks,
+        super::doc_blocks::update_doc_block,
+        super::doc_blocks::delete_doc_block,
     ),
     components(schemas(
         MeResponse,
@@ -303,6 +309,10 @@ impl Modify for SecurityAddon {
         DocPageSummary,
         ListDocPagesResponse,
         PatchDocPageRequest,
+        CreateDocBlockRequest,
+        DocBlockResponse,
+        ListDocBlocksResponse,
+        PatchDocBlockRequest,
     )),
     modifiers(&SecurityAddon)
 )]

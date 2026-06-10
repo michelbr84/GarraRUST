@@ -31,6 +31,7 @@
 
 pub mod audit;
 pub mod chats;
+pub mod doc_blocks;
 pub mod docs;
 pub mod files;
 pub mod groups;
@@ -49,7 +50,7 @@ use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, head, post};
+use axum::routing::{delete, get, head, patch, post};
 use dashmap::DashMap;
 use garraia_agents::AgentRuntime;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
@@ -608,6 +609,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(docs::get_doc_page)
                         .patch(docs::patch_doc_page)
                         .delete(docs::delete_doc_page),
+                )
+                // Plan 0302 (GAR-840) — Docs Tier 2: doc blocks CRUD.
+                .route(
+                    "/v1/doc-pages/{page_id}/blocks",
+                    post(doc_blocks::create_doc_block).get(doc_blocks::list_doc_blocks),
+                )
+                .route(
+                    "/v1/doc-blocks/{block_id}",
+                    patch(doc_blocks::update_doc_block).delete(doc_blocks::delete_doc_block),
                 )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
