@@ -312,3 +312,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0301 | [GAR-837 — GET/PATCH/DELETE /v1/doc-pages/{page_id} — Docs Tier 2 single-page CRUD](0301-gar-837-doc-pages-single-crud.md) | [GAR-837](https://linear.app/chatgpt25/issue/GAR-837) | ✅ Merged 2026-06-10 via PR #709 (`ed1093f`) |
 | 0302 | [GAR-841 — Health run 110 (2026-06-10 ~07:07 ET): all surfaces clean, priority (i)](0302-gar-841-health-run-110.md) | [GAR-841](https://linear.app/chatgpt25/issue/GAR-841) | ✅ Merged 2026-06-10 via PR #713 (`5662253`) |
 | 0303 | [GAR-842 — Health run 111 (2026-06-10 ~08:45 ET): PR #713 merged, all surfaces clean, priority (i)](0303-gar-842-health-run-111.md) | [GAR-842](https://linear.app/chatgpt25/issue/GAR-842) | ⏳ In progress |
+
