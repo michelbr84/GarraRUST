@@ -74,6 +74,19 @@
 //!   color (`#RRGGBB`); `sender_user_id` = `created_by` (nullable, ON DELETE SET NULL);
 //!   `chat_id` = null. `group_id` = `caller_group_id`.
 //!
+//! Slice 16 (plan 0317 / GAR-856) adds `types=doc_pages` (group scope only):
+//! searches `doc_pages.title` via runtime `to_tsvector('simple', title)`.
+//! FORCE RLS on `doc_pages` (migration 026) + explicit `AND group_id = $2`.
+//! Archived pages excluded (`archived_at IS NULL`). `excerpt` = title;
+//! `sender_user_id` = `created_by`; `kind` = null; `chat_id` = null.
+//!
+//! Slice 17 (plan 0317 / GAR-856) adds `types=doc_blocks` (group scope only):
+//! searches `doc_blocks.content_jsonb::text` via runtime `to_tsvector('simple', ...)`.
+//! FORCE RLS on `doc_blocks` (migration 027) + explicit `AND group_id = $2`.
+//! Non-text block types excluded (`divider`, `file_embed`, `task_embed`, `chat_embed`, `image`).
+//! `excerpt` = first 200 chars of `content_jsonb::text`; `kind` = `block_type`;
+//! `chat_id` = `page_id` (parent container, for navigation); `sender_user_id` = null.
+//!
 //! Searches two FORCE-RLS tables within a single transaction:
 //!
 //! - `messages.body_tsv` (GIN-indexed, 'portuguese' tokenizer, migration 004)
@@ -174,6 +187,10 @@ pub enum SearchResultType {
     Group,
     /// Task label name match (slice 15 / GAR-737).
     Label,
+    /// Doc page title match (slice 16 / GAR-856).
+    DocPage,
+    /// Doc block content match (slice 17 / GAR-856).
+    DocBlock,
 }
 
 /// A single item in a search result list.
@@ -288,6 +305,10 @@ struct ValidatedSearch {
     include_groups: bool,
     /// Slice 15 / GAR-737: search task label names.
     include_labels: bool,
+    /// Slice 16 / GAR-856: search doc page titles.
+    include_doc_pages: bool,
+    /// Slice 17 / GAR-856: search doc block content.
+    include_doc_blocks: bool,
     from_date: Option<DateTime<Utc>>,
     to_date: Option<DateTime<Utc>>,
     author_id: Option<Uuid>,
@@ -336,6 +357,8 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
     let mut include_users = false;
     let mut include_groups = false;
     let mut include_labels = false;
+    let mut include_doc_pages = false;
+    let mut include_doc_blocks = false;
     for t in types_str.split(',') {
         match t.trim() {
             "messages" => include_messages = true,
@@ -350,9 +373,11 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
             "users" => include_users = true,
             "groups" => include_groups = true,
             "labels" => include_labels = true,
+            "doc_pages" => include_doc_pages = true,
+            "doc_blocks" => include_doc_blocks = true,
             other => {
                 return Err(RestError::BadRequest(format!(
-                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels"
+                    "unknown type '{other}'; supported: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels, doc_pages, doc_blocks"
                 )));
             }
         }
@@ -369,9 +394,11 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         && !include_users
         && !include_groups
         && !include_labels
+        && !include_doc_pages
+        && !include_doc_blocks
     {
         return Err(RestError::BadRequest(
-            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels"
+            "types must include at least one of: messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels, doc_pages, doc_blocks"
                 .into(),
         ));
     }
@@ -456,6 +483,20 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         ));
     }
 
+    // Doc pages are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_doc_pages && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=doc_pages is only supported for scope_type=group".into(),
+        ));
+    }
+
+    // Doc blocks are always group-scoped — they cannot be retrieved via chat or user scope.
+    if include_doc_blocks && scope_type != ValidatedScopeType::Group {
+        return Err(RestError::BadRequest(
+            "types=doc_blocks is only supported for scope_type=group".into(),
+        ));
+    }
+
     // author_id is only meaningful for message results; user scope never has messages.
     if params.author_id.is_some() && scope_type == ValidatedScopeType::User {
         return Err(RestError::BadRequest(
@@ -516,6 +557,8 @@ fn parse_and_validate(params: &SearchQuery) -> Result<ValidatedSearch, RestError
         include_users,
         include_groups,
         include_labels,
+        include_doc_pages,
+        include_doc_blocks,
         from_date: params.from_date,
         to_date: params.to_date,
         author_id: params.author_id,
@@ -1286,6 +1329,125 @@ async fn fetch_labels(
     Ok(rows)
 }
 
+/// Row returned by the doc_pages FTS query (slice 16 / GAR-856).
+#[derive(sqlx::FromRow)]
+struct DocPageSearchRow {
+    id: Uuid,
+    score: f32,
+    title: String,
+    created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+/// Fetch doc page results by searching `doc_pages.title` using runtime
+/// `to_tsvector('simple', title)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// Cross-tenant isolation: FORCE RLS on `doc_pages` (migration 026) via
+/// `doc_pages_group_isolation` policy — only pages with `group_id` matching
+/// `app.current_group_id` are visible. Explicit `AND dp.group_id = $2` is
+/// defense-in-depth. Archived pages excluded via `AND dp.archived_at IS NULL`.
+async fn fetch_doc_pages(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    fetch_up_to: i64,
+) -> Result<Vec<DocPageSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, DocPageSearchRow>(
+        "SELECT dp.id,
+                ts_rank(
+                    to_tsvector('simple', dp.title),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                dp.title,
+                dp.created_by,
+                dp.created_at
+         FROM   doc_pages dp
+         WHERE  to_tsvector('simple', dp.title) @@ websearch_to_tsquery('simple', $1)
+           AND  dp.group_id = $2
+           AND  dp.archived_at IS NULL
+           AND  ($3::timestamptz IS NULL OR dp.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR dp.created_at <= $4)
+         ORDER BY score DESC, dp.created_at DESC, dp.id DESC
+         LIMIT $5",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    Ok(rows)
+}
+
+/// Row returned by the doc_blocks FTS query (slice 17 / GAR-856).
+#[derive(sqlx::FromRow)]
+struct DocBlockSearchRow {
+    id: Uuid,
+    score: f32,
+    excerpt: String,
+    page_id: Uuid,
+    block_type: String,
+    created_at: DateTime<Utc>,
+}
+
+/// Fetch doc block results by searching `doc_blocks.content_jsonb::text` using
+/// runtime `to_tsvector('simple', ...)`.
+///
+/// Only `scope_type=group` is supported; rejected at `parse_and_validate`.
+///
+/// Cross-tenant isolation: FORCE RLS on `doc_blocks` (migration 027) via
+/// `doc_blocks_group_isolation` policy — only blocks with `group_id` matching
+/// `app.current_group_id` are visible. Explicit `AND db.group_id = $2` is
+/// defense-in-depth.
+///
+/// Non-text block types (`divider`, `file_embed`, `task_embed`, `chat_embed`,
+/// `image`) are excluded as they carry no searchable text content.
+///
+/// `page_id` is returned as `chat_id` in the search result for navigation.
+async fn fetch_doc_blocks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    q: &str,
+    group_id: Uuid,
+    from_date: Option<DateTime<Utc>>,
+    to_date: Option<DateTime<Utc>>,
+    fetch_up_to: i64,
+) -> Result<Vec<DocBlockSearchRow>, RestError> {
+    let rows = sqlx::query_as::<_, DocBlockSearchRow>(
+        "SELECT db.id,
+                ts_rank(
+                    to_tsvector('simple', db.content_jsonb::text),
+                    websearch_to_tsquery('simple', $1)
+                )::real AS score,
+                left(db.content_jsonb::text, 200) AS excerpt,
+                db.page_id,
+                db.block_type,
+                db.created_at
+         FROM   doc_blocks db
+         WHERE  to_tsvector('simple', db.content_jsonb::text) @@ websearch_to_tsquery('simple', $1)
+           AND  db.group_id = $2
+           AND  db.block_type NOT IN ('divider', 'file_embed', 'task_embed', 'chat_embed', 'image')
+           AND  ($3::timestamptz IS NULL OR db.created_at >= $3)
+           AND  ($4::timestamptz IS NULL OR db.created_at <= $4)
+         ORDER BY score DESC, db.created_at DESC, db.id DESC
+         LIMIT $5",
+    )
+    .bind(q)
+    .bind(group_id)
+    .bind(from_date)
+    .bind(to_date)
+    .bind(fetch_up_to)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    Ok(rows)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 /// `GET /v1/search` — unified full-text search across messages and memory.
@@ -1314,6 +1476,8 @@ async fn fetch_labels(
 /// | `types=task_lists` + `scope_type` ≠ `group`                  | 400    |
 /// | `types=threads` + `scope_type` ≠ `group`                     | 400    |
 /// | `types=labels` + `scope_type` ≠ `group`                      | 400    |
+/// | `types=doc_pages` + `scope_type` ≠ `group`                   | 400    |
+/// | `types=doc_blocks` + `scope_type` ≠ `group`                  | 400    |
 /// | Empty `q` or `q` > 256 chars                                  | 400    |
 /// | Unknown type in `types`                                       | 400    |
 /// | `has_attachment` set + `types` excludes `messages`            | 400    |
@@ -1726,6 +1890,64 @@ pub async fn search(
                 scope_type: None,
                 scope_id: None,
                 kind: Some(r.color),
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_doc_pages {
+        // doc_pages are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_doc_pages(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::DocPage,
+                id: r.id,
+                score: r.score,
+                excerpt: r.title,
+                group_id: caller_group_id,
+                chat_id: None,
+                sender_user_id: r.created_by,
+                scope_type: None,
+                scope_id: None,
+                kind: None,
+                created_at: r.created_at,
+            });
+        }
+    }
+
+    if validated.include_doc_blocks {
+        // doc_blocks are always group-scoped; scope_type != Group is rejected at
+        // parse_and_validate, so this branch only fires for Group scope.
+        let rows = fetch_doc_blocks(
+            &mut tx,
+            &validated.q,
+            caller_group_id,
+            validated.from_date,
+            validated.to_date,
+            fetch_up_to,
+        )
+        .await?;
+        for r in rows {
+            all.push(SearchResult {
+                result_type: SearchResultType::DocBlock,
+                id: r.id,
+                score: r.score,
+                excerpt: r.excerpt,
+                group_id: caller_group_id,
+                chat_id: Some(r.page_id),
+                sender_user_id: None,
+                scope_type: None,
+                scope_id: None,
+                kind: Some(r.block_type),
                 created_at: r.created_at,
             });
         }
@@ -2747,6 +2969,97 @@ mod tests {
         assert!(
             msg.contains("labels"),
             "error message should list 'labels' as supported type"
+        );
+    }
+
+    // ── Slice 16: types=doc_pages ─────────────────────────────────────────────
+
+    #[test]
+    fn types_doc_pages_group_scope_accepted() {
+        let params = make_params("meeting notes", "group", Some("doc_pages"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_doc_pages);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_files);
+        assert!(!v.include_tasks);
+        assert!(!v.include_task_comments);
+        assert!(!v.include_folders);
+        assert!(!v.include_chats);
+        assert!(!v.include_task_lists);
+        assert!(!v.include_threads);
+        assert!(!v.include_users);
+        assert!(!v.include_groups);
+        assert!(!v.include_labels);
+        assert!(!v.include_doc_blocks);
+    }
+
+    #[test]
+    fn types_doc_pages_user_scope_rejected() {
+        let params = make_params("meeting notes", "user", Some("doc_pages"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_doc_pages_chat_scope_rejected() {
+        let params = make_params("meeting notes", "chat", Some("doc_pages"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_doc_pages_and_doc_blocks_group_scope_accepted() {
+        let params = make_params("hello", "group", Some("doc_pages,doc_blocks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_doc_pages);
+        assert!(v.include_doc_blocks);
+        assert!(!v.include_messages);
+        assert!(!v.include_tasks);
+    }
+
+    #[test]
+    fn types_doc_pages_in_supported_types_error_message() {
+        let params = make_params("meeting notes", "group", Some("nonexistent_type"));
+        let err = parse_and_validate(&params).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("doc_pages"),
+            "error message should list 'doc_pages' as supported type"
+        );
+    }
+
+    // ── Slice 17: types=doc_blocks ────────────────────────────────────────────
+
+    #[test]
+    fn types_doc_blocks_group_scope_accepted() {
+        let params = make_params("action item", "group", Some("doc_blocks"));
+        let v = parse_and_validate(&params).unwrap();
+        assert!(v.include_doc_blocks);
+        assert!(!v.include_doc_pages);
+        assert!(!v.include_messages);
+        assert!(!v.include_memory);
+        assert!(!v.include_groups);
+    }
+
+    #[test]
+    fn types_doc_blocks_user_scope_rejected() {
+        let params = make_params("action item", "user", Some("doc_blocks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_doc_blocks_chat_scope_rejected() {
+        let params = make_params("action item", "chat", Some("doc_blocks"));
+        assert!(parse_and_validate(&params).is_err());
+    }
+
+    #[test]
+    fn types_doc_blocks_in_supported_types_error_message() {
+        let params = make_params("action item", "group", Some("nonexistent_type"));
+        let err = parse_and_validate(&params).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("doc_blocks"),
+            "error message should list 'doc_blocks' as supported type"
         );
     }
 }
