@@ -542,6 +542,69 @@ pub async fn update_doc_block(
     Ok(Json(DocBlockResponse::from(row)))
 }
 
+/// `GET /v1/doc-blocks/{block_id}` — fetch a single doc block by UUID.
+///
+/// Authz: `Action::DocsRead`. The block must belong to `principal.group_id`.
+///
+/// ## Error matrix
+///
+/// | Condition                     | Status |
+/// |-------------------------------|--------|
+/// | Missing/invalid JWT           | 401    |
+/// | Caller not a group member     | 403    |
+/// | Missing X-Group-Id header     | 400    |
+/// | Block not found / cross-group | 404    |
+/// | Happy path                    | 200    |
+#[utoipa::path(
+    get,
+    path = "/v1/doc-blocks/{block_id}",
+    params(
+        ("block_id" = Uuid, Path, description = "Block UUID."),
+    ),
+    responses(
+        (status = 200, description = "Block found.", body = DocBlockResponse),
+        (status = 400, description = "Missing X-Group-Id.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Block not found or cross-group.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_doc_block(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(block_id): Path<Uuid>,
+) -> Result<Json<DocBlockResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    let row: Option<DocBlockRow> = sqlx::query_as(
+        "SELECT id, page_id, group_id, parent_block_id, position, \
+                block_type, content_jsonb, created_at, updated_at \
+         FROM doc_blocks WHERE id = $1",
+    )
+    .bind(block_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let block = row.ok_or(RestError::NotFound)?;
+    Ok(Json(DocBlockResponse::from(block)))
+}
+
 /// `DELETE /v1/doc-blocks/{block_id}` — delete a doc block (hard delete).
 ///
 /// Children (`parent_block_id = this id`) have `parent_block_id` set to NULL
@@ -741,5 +804,96 @@ mod tests {
     #[test]
     fn valid_block_types_count() {
         assert_eq!(VALID_BLOCK_TYPES.len(), 13, "expected 13 block types");
+    }
+
+    #[test]
+    fn get_doc_block_response_from_row_has_all_fields() {
+        let id = Uuid::new_v4();
+        let page_id = Uuid::new_v4();
+        let group_id = Uuid::new_v4();
+        let row = DocBlockRow {
+            id,
+            page_id,
+            group_id,
+            parent_block_id: None,
+            position: 3.5,
+            block_type: "code".to_string(),
+            content_jsonb: json!({"language": "rust", "text": "fn main() {}"}),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 11, 10, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 11, 11, 0, 0).unwrap(),
+        };
+        let resp = DocBlockResponse::from(row);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["id"], id.to_string());
+        assert_eq!(v["page_id"], page_id.to_string());
+        assert_eq!(v["group_id"], group_id.to_string());
+        assert!(v["parent_block_id"].is_null());
+        assert_eq!(v["position"], 3.5f64);
+        assert_eq!(v["type"], "code");
+        assert_eq!(v["content"]["language"], "rust");
+    }
+
+    #[test]
+    fn get_doc_block_response_with_parent_block_id() {
+        let id = Uuid::new_v4();
+        let parent_id = Uuid::new_v4();
+        let row = DocBlockRow {
+            id,
+            page_id: Uuid::new_v4(),
+            group_id: Uuid::new_v4(),
+            parent_block_id: Some(parent_id),
+            position: 1.0,
+            block_type: "paragraph".to_string(),
+            content_jsonb: json!({"text": "nested paragraph"}),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 11, 10, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 11, 10, 0, 0).unwrap(),
+        };
+        let resp = DocBlockResponse::from(row);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["parent_block_id"], parent_id.to_string());
+        assert!(!v["parent_block_id"].is_null());
+    }
+
+    #[test]
+    fn get_doc_block_response_type_field_uses_type_key_not_block_type() {
+        let row = make_row(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), "todo");
+        let resp = DocBlockResponse::from(row);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["type"], "todo");
+        assert!(
+            v.get("block_type").is_none(),
+            "block_type must not appear in serialized JSON"
+        );
+    }
+
+    #[test]
+    fn get_doc_block_response_timestamps_are_iso8601() {
+        let row = DocBlockRow {
+            id: Uuid::new_v4(),
+            page_id: Uuid::new_v4(),
+            group_id: Uuid::new_v4(),
+            parent_block_id: None,
+            position: 2.0,
+            block_type: "heading".to_string(),
+            content_jsonb: json!({"text": "Hello"}),
+            created_at: Utc.with_ymd_and_hms(2026, 6, 11, 9, 30, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 6, 11, 10, 15, 0).unwrap(),
+        };
+        let resp = DocBlockResponse::from(row);
+        let v = serde_json::to_value(&resp).unwrap();
+        let created_str = v["created_at"].as_str().unwrap();
+        let updated_str = v["updated_at"].as_str().unwrap();
+        assert!(
+            created_str.contains("2026-06-11"),
+            "created_at must contain date"
+        );
+        assert!(
+            updated_str.contains("2026-06-11"),
+            "updated_at must contain date"
+        );
+        assert!(
+            created_str.ends_with('Z') || created_str.contains('+'),
+            "must be UTC"
+        );
     }
 }

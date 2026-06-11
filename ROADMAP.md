@@ -851,8 +851,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 **Schema:**
 
 - [x] `doc_pages` (`id`, `group_id`, `parent_page_id`, `title`, `icon`, `cover_file_id`, `created_by`, `created_at`, `updated_at`, `archived_at`) — migration 026, plan 0297 / GAR-835
-- [ ] `doc_blocks` (`id`, `page_id`, `parent_block_id`, `position`, `type`, `content_jsonb`, `created_at`, `updated_at`) — tipos: `heading|paragraph|todo|bullet|numbered|code|quote|callout|divider|file_embed|task_embed|chat_embed|image`
-- [ ] `doc_page_versions` (`id`, `page_id`, `snapshot_jsonb`, `created_by`, `created_at`)
+- [x] `doc_blocks` (`id`, `page_id`, `parent_block_id`, `position`, `type`, `content_jsonb`, `created_at`, `updated_at`) — tipos: `heading|paragraph|todo|bullet|numbered|code|quote|callout|divider|file_embed|task_embed|chat_embed|image` — migration 027, plan 0304 / GAR-840
+- [x] `doc_page_versions` (`id`, `page_id`, `snapshot_jsonb`, `created_by`, `created_at`) — migration 028, plan 0307 / GAR-845
 - [ ] `doc_page_mentions` (`page_id`, `mentioned_user_id | mentioned_task_id | mentioned_file_id`)
 
 **API:**
@@ -862,11 +862,16 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/doc-pages/{page_id}` — plan 0299 / GAR-837
 - [x] `PATCH /v1/doc-pages/{page_id}` — plan 0299 / GAR-837
 - [x] `DELETE /v1/doc-pages/{page_id}` (soft-delete) — plan 0299 / GAR-837
-- [ ] `POST /v1/doc-pages/{page_id}/blocks`
-- [ ] `PATCH /v1/doc-blocks/{block_id}`
-- [ ] `DELETE /v1/doc-blocks/{block_id}`
-- [ ] `POST /v1/doc-pages/{page_id}:duplicate`
-- [ ] `GET /v1/doc-pages/{page_id}/versions`
+- [x] `POST /v1/doc-pages/{page_id}/blocks` — plan 0304 / GAR-840
+- [x] `GET /v1/doc-pages/{page_id}/blocks` — plan 0304 / GAR-840
+- [x] `GET /v1/doc-blocks/{block_id}` — plan 0314 / GAR-853
+- [x] `PATCH /v1/doc-blocks/{block_id}` — plan 0304 / GAR-840
+- [x] `DELETE /v1/doc-blocks/{block_id}` — plan 0304 / GAR-840
+- [x] `POST /v1/doc-pages/{page_id}:duplicate` — plan 0309 / GAR-847
+- [x] `GET /v1/doc-pages/{page_id}/versions` — plan 0307 / GAR-845
+- [x] `POST /v1/doc-pages/{page_id}/versions` (snapshot) — plan 0307 / GAR-845
+- [x] `GET /v1/doc-pages/{page_id}/versions/{version_id}` — plan 0307 / GAR-845
+- [x] `POST /v1/doc-pages/{page_id}/versions/{version_id}/restore` — plan 0312 / GAR-850
 
 **Colaboração em tempo real:**
 
