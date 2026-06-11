@@ -51,7 +51,7 @@ use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::{delete, get, head, patch, post};
+use axum::routing::{delete, get, head, post};
 use dashmap::DashMap;
 use garraia_agents::AgentRuntime;
 use garraia_auth::{AppPool, JwtIssuer, LoginPool};
@@ -618,7 +618,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/doc-blocks/{block_id}",
-                    patch(doc_blocks::update_doc_block).delete(doc_blocks::delete_doc_block),
+                    get(doc_blocks::get_doc_block)
+                        .patch(doc_blocks::update_doc_block)
+                        .delete(doc_blocks::delete_doc_block),
                 )
                 // Plan 0307 (GAR-845) — Docs Tier 2: page version snapshots.
                 .route(
@@ -959,7 +961,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/doc-blocks/{block_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 // Plan 0307 (GAR-845) — doc versions stub (mode 2).
                 .route(
@@ -1292,7 +1296,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/doc-blocks/{block_id}",
-                    patch(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 // Plan 0307 (GAR-845) — doc versions stub (mode 3).
                 .route(
