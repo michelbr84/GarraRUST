@@ -728,6 +728,130 @@ pub async fn delete_doc_page(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /v1/doc-pages/{page_id}/duplicate` — deep-copy a doc page.
+///
+/// Creates a new page in the same group with `title = "{original} (copy)"`.
+/// Copies all blocks from the source page; `parent_block_id` is NULL in copies
+/// (flat copy — remapping deferred per plan 0309 scope).
+/// Authz: `Action::DocsWrite`. Cross-group source `page_id` → 404 (RLS).
+///
+/// ## Error matrix
+///
+/// | Condition                          | Status |
+/// |------------------------------------|--------|
+/// | Missing/invalid JWT                | 401    |
+/// | Non-member of group                | 403    |
+/// | Missing X-Group-Id header          | 400    |
+/// | Source page not found / cross-group | 404   |
+/// | Happy path                         | 201    |
+#[utoipa::path(
+    post,
+    path = "/v1/doc-pages/{page_id}/duplicate",
+    params(
+        ("page_id" = Uuid, Path, description = "Source doc page UUID."),
+    ),
+    responses(
+        (status = 201, description = "Duplicated doc page.", body = DocPageResponse),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Source page not found.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn duplicate_doc_page(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(page_id): Path<Uuid>,
+) -> Result<(StatusCode, Json<DocPageResponse>), RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Fetch source page — RLS filters cross-group → None → 404.
+    let source: Option<DocPageRow> = sqlx::query_as(
+        "SELECT id, group_id, parent_page_id, title, icon, \
+                created_by, created_by_label, archived_at, created_at, updated_at \
+         FROM doc_pages WHERE id = $1",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let source = match source {
+        Some(p) => p,
+        None => return Err(RestError::NotFound),
+    };
+
+    let (created_by_label,): (String,) =
+        sqlx::query_as("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let new_title = format!("{} (copy)", source.title);
+
+    let new_page: DocPageRow = sqlx::query_as(
+        "INSERT INTO doc_pages \
+             (group_id, parent_page_id, title, icon, created_by, created_by_label) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, group_id, parent_page_id, title, icon, \
+                   created_by, created_by_label, archived_at, created_at, updated_at",
+    )
+    .bind(group_id)
+    .bind(source.parent_page_id)
+    .bind(&new_title)
+    .bind(&source.icon)
+    .bind(principal.user_id)
+    .bind(&created_by_label)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Bulk-copy blocks; parent_block_id excluded → NULL (flat copy, scope per plan 0309).
+    let copied = sqlx::query(
+        "INSERT INTO doc_blocks (page_id, group_id, position, block_type, content_jsonb) \
+         SELECT $1, group_id, position, block_type, content_jsonb \
+         FROM doc_blocks \
+         WHERE page_id = $2",
+    )
+    .bind(new_page.id)
+    .bind(page_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let block_count = copied.rows_affected();
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::DocPageDuplicated,
+        principal.user_id,
+        group_id,
+        "doc_pages",
+        new_page.id.to_string(),
+        json!({ "source_page_id": page_id, "block_count": block_count }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((StatusCode::CREATED, Json(DocPageResponse::from(new_page))))
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -871,5 +995,20 @@ mod tests {
             archived: None,
         };
         assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn duplicate_title_format() {
+        let original = "Meeting Notes";
+        let copy_title = format!("{original} (copy)");
+        assert_eq!(copy_title, "Meeting Notes (copy)");
+    }
+
+    #[test]
+    fn doc_page_response_from_row_preserves_icon() {
+        let mut row = make_row(Uuid::new_v4(), Uuid::new_v4(), "Source");
+        row.icon = Some("🗂️".to_string());
+        let resp = DocPageResponse::from(row);
+        assert_eq!(resp.icon.as_deref(), Some("🗂️"));
     }
 }
