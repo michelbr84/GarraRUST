@@ -1,4 +1,4 @@
-# Plan 0312 — GAR-852: Health run 116 status note (2026-06-11 ~07:05 ET)
+# Plan 0313 — GAR-852: Health run 116 status note (2026-06-11 ~07:05 ET)
 
 **Type:** Security health routine — status note (priority i)
 **Linear:** [GAR-852](https://linear.app/chatgpt25/issue/GAR-852)
