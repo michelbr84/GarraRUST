@@ -630,6 +630,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(doc_versions::get_doc_page_version),
                 )
+                // Plan 0312 (GAR-850) — Docs Tier 2: restore page to a prior version.
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}/restore",
+                    post(doc_versions::restore_doc_page_version),
+                )
                 // Plan 0309 (GAR-847) — Docs Tier 2: duplicate a doc page.
                 .route(
                     "/v1/doc-pages/{page_id}/duplicate",
@@ -965,6 +970,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(unconfigured_handler),
                 )
+                // Plan 0312 (GAR-850) — restore stub (mode 2).
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}/restore",
+                    post(unconfigured_handler),
+                )
                 // Plan 0309 (GAR-847) — duplicate stub (mode 2).
                 .route(
                     "/v1/doc-pages/{page_id}/duplicate",
@@ -1292,6 +1302,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(unconfigured_handler),
+                )
+                // Plan 0312 (GAR-850) — restore stub (mode 3).
+                .route(
+                    "/v1/doc-pages/{page_id}/versions/{version_id}/restore",
+                    post(unconfigured_handler),
                 )
                 // Plan 0309 (GAR-847) — duplicate stub (mode 3).
                 .route(

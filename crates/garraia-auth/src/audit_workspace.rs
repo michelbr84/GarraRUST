@@ -666,6 +666,12 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "doc_pages"`, `resource_id = "{new_page_id}"`.
     /// Metadata: `{ source_page_id: UUID, block_count: N }`.
     DocPageDuplicated,
+    /// A doc page was restored to a prior version snapshot via
+    /// `POST /v1/doc-pages/{page_id}/versions/{version_id}/restore` (plan 0312 / GAR-850).
+    ///
+    /// `resource_type = "doc_page_versions"`, `resource_id = "{version_id}"`.
+    /// Metadata: `{ source_version_id: UUID, block_count: N }`.
+    DocPageVersionRestored,
 }
 
 impl WorkspaceAuditAction {
@@ -742,6 +748,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocBlockDeleted => "doc_block.deleted",
             WorkspaceAuditAction::DocPageVersionCreated => "doc_page.version_created",
             WorkspaceAuditAction::DocPageDuplicated => "doc_page.duplicated",
+            WorkspaceAuditAction::DocPageVersionRestored => "doc_page.version_restored",
         }
     }
 }
@@ -1043,6 +1050,10 @@ mod tests {
             WorkspaceAuditAction::DocPageDuplicated.as_str(),
             "doc_page.duplicated"
         );
+        assert_eq!(
+            WorkspaceAuditAction::DocPageVersionRestored.as_str(),
+            "doc_page.version_restored"
+        );
     }
 
     #[test]
@@ -1113,6 +1124,7 @@ mod tests {
             WorkspaceAuditAction::DocBlockDeleted.as_str(),
             WorkspaceAuditAction::DocPageVersionCreated.as_str(),
             WorkspaceAuditAction::DocPageDuplicated.as_str(),
+            WorkspaceAuditAction::DocPageVersionRestored.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

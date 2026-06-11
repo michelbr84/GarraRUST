@@ -63,6 +63,42 @@ struct DocPageVersionRow {
     created_at: DateTime<Utc>,
 }
 
+// ─── Restore row ──────────────────────────────────────────────────────────────
+
+/// Private row type for the `doc_pages` UPDATE…RETURNING result in
+/// `restore_doc_page_version`. Mirrors `docs::DocPageRow` but kept local
+/// to avoid coupling the two modules.
+#[derive(sqlx::FromRow)]
+struct DocPageRestoreRow {
+    id: Uuid,
+    group_id: Uuid,
+    parent_page_id: Option<Uuid>,
+    title: String,
+    icon: Option<String>,
+    created_by: Option<Uuid>,
+    created_by_label: String,
+    archived_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<DocPageRestoreRow> for super::docs::DocPageResponse {
+    fn from(r: DocPageRestoreRow) -> Self {
+        Self {
+            id: r.id,
+            group_id: r.group_id,
+            parent_page_id: r.parent_page_id,
+            title: r.title,
+            icon: r.icon,
+            created_by: r.created_by,
+            created_by_label: r.created_by_label,
+            archived_at: r.archived_at,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
 // ─── Snapshot builder types ───────────────────────────────────────────────────
 
 #[derive(sqlx::FromRow)]
@@ -523,6 +559,177 @@ pub async fn get_doc_page_version(
     Ok(Json(DocPageVersionFull::from(row)))
 }
 
+/// `POST /v1/doc-pages/{page_id}/versions/{version_id}/restore` — restore a page to a prior snapshot.
+///
+/// Applies `snapshot_jsonb` from the given version back to `doc_pages` (UPDATE
+/// title/icon/parent_page_id) and `doc_blocks` (DELETE all + re-INSERT from snapshot
+/// with fresh UUIDs). `parent_block_id` values are preserved verbatim from the snapshot
+/// and may reference old block UUIDs (known limitation — UUID remapping is deferred).
+/// Authz: `Action::DocsWrite`.
+///
+/// ## Error matrix
+///
+/// | Condition                           | Status |
+/// |-------------------------------------|--------|
+/// | Missing/invalid JWT                 | 401    |
+/// | Caller not a group member           | 403    |
+/// | Missing X-Group-Id header           | 400    |
+/// | Page not found / cross-group        | 404    |
+/// | Version not found / wrong page      | 404    |
+/// | Happy path                          | 200    |
+#[utoipa::path(
+    post,
+    path = "/v1/doc-pages/{page_id}/versions/{version_id}/restore",
+    params(
+        ("page_id"    = Uuid, Path, description = "Doc page UUID."),
+        ("version_id" = Uuid, Path, description = "Version UUID to restore."),
+    ),
+    responses(
+        (status = 200, description = "Page restored to snapshot.", body = super::docs::DocPageResponse),
+        (status = 400, description = "Validation error.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Page or version not found.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn restore_doc_page_version(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((page_id, version_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<super::docs::DocPageResponse>, RestError> {
+    let group_id = require_group_id(&principal)?;
+    if !can(&principal, Action::DocsWrite) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    set_rls_context(&mut tx, principal.user_id, group_id).await?;
+
+    // Verify the page exists and belongs to the caller's group (RLS enforced).
+    let page_exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM doc_pages WHERE id = $1 AND archived_at IS NULL")
+            .bind(page_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+    if page_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    // Fetch the version snapshot — must belong to this page (cross-page = 404).
+    let snapshot_val: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT snapshot_jsonb FROM doc_page_versions WHERE id = $1 AND page_id = $2",
+    )
+    .bind(version_id)
+    .bind(page_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+    let snapshot = snapshot_val.ok_or(RestError::NotFound)?;
+
+    // Parse snapshot fields.
+    let title = snapshot["title"]
+        .as_str()
+        .ok_or_else(|| RestError::Internal(anyhow::anyhow!("snapshot missing title")))?
+        .to_string();
+    let icon: Option<String> = snapshot["icon"].as_str().map(|s| s.to_string());
+    let parent_page_id: Option<Uuid> = snapshot["parent_page_id"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    let blocks = snapshot["blocks"]
+        .as_array()
+        .ok_or_else(|| RestError::Internal(anyhow::anyhow!("snapshot missing blocks")))?;
+    let block_count = blocks.len();
+
+    // Look up caller's display name for block attribution.
+    let created_by_label: Option<String> =
+        sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+            .bind(principal.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+    let created_by_label = created_by_label.unwrap_or_else(|| "unknown".to_string());
+
+    // Apply snapshot to doc_pages.
+    let page_row: DocPageRestoreRow = sqlx::query_as(
+        "UPDATE doc_pages \
+         SET title = $2, icon = $3, parent_page_id = $4, updated_at = NOW() \
+         WHERE id = $1 \
+         RETURNING id, group_id, parent_page_id, title, icon, \
+                   created_by, created_by_label, archived_at, created_at, updated_at",
+    )
+    .bind(page_id)
+    .bind(&title)
+    .bind(&icon)
+    .bind(parent_page_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Remove all current blocks for this page.
+    sqlx::query("DELETE FROM doc_blocks WHERE page_id = $1")
+        .bind(page_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Re-insert blocks from snapshot with fresh UUIDs. parent_block_id is
+    // preserved verbatim — may reference old block UUIDs (documented limitation).
+    for block in blocks {
+        let parent_block_id: Option<Uuid> = block["parent_block_id"]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let block_type = block["type"]
+            .as_str()
+            .ok_or_else(|| RestError::Internal(anyhow::anyhow!("block missing type")))?;
+        let position: f64 = block["position"]
+            .as_f64()
+            .ok_or_else(|| RestError::Internal(anyhow::anyhow!("block missing position")))?;
+        let content = &block["content"];
+
+        sqlx::query(
+            "INSERT INTO doc_blocks \
+             (id, page_id, group_id, parent_block_id, position, block_type, \
+              content_jsonb, created_by, created_by_label) \
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(page_id)
+        .bind(group_id)
+        .bind(parent_block_id)
+        .bind(position)
+        .bind(block_type)
+        .bind(content)
+        .bind(principal.user_id)
+        .bind(&created_by_label)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::DocPageVersionRestored,
+        principal.user_id,
+        group_id,
+        "doc_page_versions",
+        version_id.to_string(),
+        json!({ "source_version_id": version_id, "block_count": block_count }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(super::docs::DocPageResponse::from(page_row)))
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -613,5 +820,55 @@ mod tests {
         });
         assert_eq!(snap["blocks"][0]["type"], "paragraph");
         assert_eq!(snap["blocks"][0]["position"], 1.0);
+    }
+
+    #[test]
+    fn restore_snapshot_parses_scalar_fields() {
+        let snap = json!({
+            "title": "Restored Title",
+            "icon": null,
+            "parent_page_id": null,
+            "blocks": []
+        });
+        assert_eq!(snap["title"].as_str().unwrap(), "Restored Title");
+        assert_eq!(snap["icon"].as_str(), None);
+        assert_eq!(snap["parent_page_id"].as_str(), None);
+        assert_eq!(snap["blocks"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn restore_snapshot_parses_block_fields() {
+        let snap = json!({
+            "title": "Page",
+            "icon": null,
+            "parent_page_id": null,
+            "blocks": [{
+                "id": Uuid::new_v4(),
+                "parent_block_id": null,
+                "type": "heading",
+                "position": 2.0,
+                "content": {"level": 1, "text": "Hello"}
+            }]
+        });
+        let blocks = snap["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"].as_str().unwrap(), "heading");
+        assert_eq!(blocks[0]["position"].as_f64().unwrap(), 2.0);
+        assert_eq!(blocks[0]["parent_block_id"].as_str(), None);
+    }
+
+    #[test]
+    fn restore_snapshot_parent_page_id_parses_uuid_string() {
+        let parent_id = Uuid::new_v4();
+        let snap = json!({
+            "title": "Child",
+            "icon": null,
+            "parent_page_id": parent_id.to_string(),
+            "blocks": []
+        });
+        let parsed: Option<Uuid> = snap["parent_page_id"]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        assert_eq!(parsed, Some(parent_id));
     }
 }

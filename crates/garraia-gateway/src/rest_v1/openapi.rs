@@ -211,6 +211,7 @@ impl Modify for SecurityAddon {
         super::doc_versions::create_doc_page_version,
         super::doc_versions::list_doc_page_versions,
         super::doc_versions::get_doc_page_version,
+        super::doc_versions::restore_doc_page_version,
     ),
     components(schemas(
         MeResponse,
