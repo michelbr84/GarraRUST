@@ -20,6 +20,7 @@ use super::chats::{
 use super::doc_blocks::{
     CreateDocBlockRequest, DocBlockResponse, ListDocBlocksResponse, PatchDocBlockRequest,
 };
+use super::doc_versions::{DocPageVersionFull, DocPageVersionHeader, ListDocPageVersionsResponse};
 use super::docs::{
     CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse,
     PatchDocPageRequest,
@@ -206,6 +207,9 @@ impl Modify for SecurityAddon {
         super::doc_blocks::list_doc_blocks,
         super::doc_blocks::update_doc_block,
         super::doc_blocks::delete_doc_block,
+        super::doc_versions::create_doc_page_version,
+        super::doc_versions::list_doc_page_versions,
+        super::doc_versions::get_doc_page_version,
     ),
     components(schemas(
         MeResponse,
@@ -314,6 +318,9 @@ impl Modify for SecurityAddon {
         DocBlockResponse,
         ListDocBlocksResponse,
         PatchDocBlockRequest,
+        DocPageVersionHeader,
+        DocPageVersionFull,
+        ListDocPageVersionsResponse,
     )),
     modifiers(&SecurityAddon)
 )]
