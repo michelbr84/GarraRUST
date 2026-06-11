@@ -1,8 +1,34 @@
 # Dependabot Status
 
-> Last updated: **2026-06-11 run 115** (health routine — priority (i): all surfaces clean. run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-11 run 116** (health routine — priority (i): all surfaces clean. run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-11 run 116 (~07:05 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-11 (~07:05 ET / 2026-06-11T11:05 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #722 (`health/202606110445-run115-status-note`) squash-merged as `2a58538` — health run 115 / GAR-849. PR #723 (`routine/202606111634-doc-pages-version-restore` / GAR-850) open, CI in progress — skipped per protocol. All CI checks green on main `d8e80e2` (2026-06-11T06:58Z).
+
+**Scan scope:** GitHub Actions CI on main, Dependabot PRs (0 open), manual RUSTSEC/CVE web research across 1,073 locked crates (cargo-audit not in remote session toolchain; CI cargo-audit passes green). Advisories checked: RUSTSEC-2024-0332 (h2), RUSTSEC-2025-0009 (ring), RUSTSEC-2026-0007 (bytes), RUSTSEC-2024-0399 (rustls), RUSTSEC-2024-0421 (idna), RUSTSEC-2024-0344 (curve25519-dalek), RUSTSEC-2026-0095/0149/CVE-2026-34944 (wasmtime 45.0.0), RUSTSEC-2023-0065 (tungstenite via serenity), CVE-2025-29787 (zip), CVE-2026-49975 (HTTP/2 Bomb — not applicable to h2 Rust crate).
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `d8e80e2` (2026-06-11T06:58Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success |
+| Dependabot PRs | ✅ none open | 0 open Dependabot PRs (confirmed via GitHub search) |
+| Dependabot security alerts | ⚠️ 1 moderate open (RUSTSEC-2023-0071), allowlisted | rsa 0.9.10 — Marvin Attack timing sidechannel. HS256-only invariant holds. Allowlisted in audit.toml + deny.toml, expiry 2026-07-31. |
+| Security Audit (cargo-audit) | ✅ pass | CI success on main `d8e80e2` (2026-06-11T06:58Z) |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + 18 unmaintained suppressed |
+| CodeQL | ✅ pass | CI success on main `d8e80e2` (2026-06-11T06:58Z) |
+| Quality Ratchet | ✅ pass | CI success on main `d8e80e2` (2026-06-11T06:58Z) |
+| CI on main (`d8e80e2`) | ✅ green | All CI jobs success (2026-06-11T06:58Z) |
+| wasmtime 45.0.0 | ✅ no unpatched CVEs | RUSTSEC-2026-0095/0149, CVE-2026-34944 all patched; 45.0.1 is correctness-only patch |
+| HTTP/2 Bomb CVE-2026-49975 | ✅ not applicable | Affects nginx/Apache/IIS/Envoy/Pingora — no h2/hyper Rust RUSTSEC advisory found |
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (expiry 2026-07-31), glib RUSTSEC-2024-0429 (GAR-513, expiry 2026-07-31), CodeQL ledger re-audit due 2026-08-01 (GAR-491), monitor CVE-2026-49975 for h2/hyper Rust advisory.
+
+---
 
 ## Confirmed 2026-06-11 run 115 (~04:45 ET) — priority (i): all surfaces clean
 
