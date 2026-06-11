@@ -630,6 +630,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(doc_versions::get_doc_page_version),
                 )
+                // Plan 0309 (GAR-847) — Docs Tier 2: duplicate a doc page.
+                .route(
+                    "/v1/doc-pages/{page_id}/duplicate",
+                    post(docs::duplicate_doc_page),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -960,6 +965,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(unconfigured_handler),
                 )
+                // Plan 0309 (GAR-847) — duplicate stub (mode 2).
+                .route(
+                    "/v1/doc-pages/{page_id}/duplicate",
+                    post(unconfigured_handler),
+                )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -1282,6 +1292,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/doc-pages/{page_id}/versions/{version_id}",
                     get(unconfigured_handler),
+                )
+                // Plan 0309 (GAR-847) — duplicate stub (mode 3).
+                .route(
+                    "/v1/doc-pages/{page_id}/duplicate",
+                    post(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
