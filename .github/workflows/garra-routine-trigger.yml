@@ -78,13 +78,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          existing="$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --label garra-routine \
-            --limit 1 \
-            --json number \
-            --jq '.[0].number // empty')"
+          # Retry up to 3 times with 5s linear backoff to survive transient
+          # GitHub API 401 blips (same-workflow 401 observed 2026-06-10 run
+          # 27289189001 despite valid GITHUB_TOKEN with issues:write).
+          existing=""
+          for attempt in 1 2 3; do
+            if existing="$(gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --label garra-routine \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number // empty')"; then
+              break
+            fi
+            echo "gh issue list attempt $attempt failed — retrying in 5s…"
+            sleep 5
+          done
           if [ -n "$existing" ]; then
             echo "Existing tracking issue #$existing — will comment, not create"
             echo "existing=$existing" >> "$GITHUB_OUTPUT"
