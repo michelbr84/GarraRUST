@@ -860,7 +860,10 @@ mod tests {
         let resp = DocBlockResponse::from(row);
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["type"], "todo");
-        assert!(v.get("block_type").is_none(), "block_type must not appear in serialized JSON");
+        assert!(
+            v.get("block_type").is_none(),
+            "block_type must not appear in serialized JSON"
+        );
     }
 
     #[test]
@@ -880,8 +883,17 @@ mod tests {
         let v = serde_json::to_value(&resp).unwrap();
         let created_str = v["created_at"].as_str().unwrap();
         let updated_str = v["updated_at"].as_str().unwrap();
-        assert!(created_str.contains("2026-06-11"), "created_at must contain date");
-        assert!(updated_str.contains("2026-06-11"), "updated_at must contain date");
-        assert!(created_str.ends_with('Z') || created_str.contains('+'), "must be UTC");
+        assert!(
+            created_str.contains("2026-06-11"),
+            "created_at must contain date"
+        );
+        assert!(
+            updated_str.contains("2026-06-11"),
+            "updated_at must contain date"
+        );
+        assert!(
+            created_str.ends_with('Z') || created_str.contains('+'),
+            "must be UTC"
+        );
     }
 }
