@@ -888,8 +888,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **Busca:**
 
-- [ ] FTS indexa `doc_blocks.content_jsonb` via tsvector.
-- [ ] Busca unificada passa a cobrir `messages + files + memory + tasks + docs`.
+- [x] FTS indexa `doc_blocks.content_jsonb` via tsvector.
+- [x] Busca unificada passa a cobrir `messages + files + memory + tasks + docs`.
 
 **Critério de aceite Tier 2:**
 
