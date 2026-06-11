@@ -206,6 +206,7 @@ impl Modify for SecurityAddon {
         super::docs::duplicate_doc_page,
         super::doc_blocks::create_doc_block,
         super::doc_blocks::list_doc_blocks,
+        super::doc_blocks::get_doc_block,
         super::doc_blocks::update_doc_block,
         super::doc_blocks::delete_doc_block,
         super::doc_versions::create_doc_page_version,
