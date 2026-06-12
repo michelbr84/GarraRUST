@@ -853,7 +853,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `doc_pages` (`id`, `group_id`, `parent_page_id`, `title`, `icon`, `cover_file_id`, `created_by`, `created_at`, `updated_at`, `archived_at`) — migration 026, plan 0297 / GAR-835
 - [x] `doc_blocks` (`id`, `page_id`, `parent_block_id`, `position`, `type`, `content_jsonb`, `created_at`, `updated_at`) — tipos: `heading|paragraph|todo|bullet|numbered|code|quote|callout|divider|file_embed|task_embed|chat_embed|image` — migration 027, plan 0304 / GAR-840
 - [x] `doc_page_versions` (`id`, `page_id`, `snapshot_jsonb`, `created_by`, `created_at`) — migration 028, plan 0307 / GAR-845
-- [ ] `doc_page_mentions` (`page_id`, `mentioned_user_id | mentioned_task_id | mentioned_file_id`)
+- [x] `doc_page_mentions` (`page_id`, `mentioned_user_id`, `group_id`, `created_at`) — migration 029, plan 0318 / GAR-858
 
 **API:**
 
@@ -872,6 +872,10 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `POST /v1/doc-pages/{page_id}/versions` (snapshot) — plan 0307 / GAR-845
 - [x] `GET /v1/doc-pages/{page_id}/versions/{version_id}` — plan 0307 / GAR-845
 - [x] `POST /v1/doc-pages/{page_id}/versions/{version_id}/restore` — plan 0312 / GAR-850
+- [x] `POST /v1/doc-pages/{page_id}/mentions` — add @mention (201/200 idempotent) — plan 0318 / GAR-858
+- [x] `GET /v1/doc-pages/{page_id}/mentions` — list mentions (cursor-paginated) — plan 0318 / GAR-858
+- [x] `DELETE /v1/doc-pages/{page_id}/mentions/{user_id}` — remove mention (204 idempotent) — plan 0318 / GAR-858
+- [x] `GET /v1/me/doc-page-mentions` — caller @mention inbox for doc pages (cursor-paginated) — plan 0318 / GAR-858
 
 **Colaboração em tempo real:**
 

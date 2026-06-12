@@ -20,6 +20,9 @@ use super::chats::{
 use super::doc_blocks::{
     CreateDocBlockRequest, DocBlockResponse, ListDocBlocksResponse, PatchDocBlockRequest,
 };
+use super::doc_mentions::{
+    AddDocPageMentionRequest, DocPageMentionSummary, ListDocPageMentionsResponse,
+};
 use super::doc_versions::{DocPageVersionFull, DocPageVersionHeader, ListDocPageVersionsResponse};
 use super::docs::{
     CreateDocPageRequest, DocPageResponse, DocPageSummary, ListDocPagesResponse,
@@ -36,11 +39,12 @@ use super::groups::{
 };
 use super::invites::AcceptInviteResponse;
 use super::me::{
-    AcceptMyInviteResponse, ChatMembershipSummary, MeResponse, MentionSummary,
-    MentionsListResponse, MyChatsMembershipResponse, MyFileSummary, MyFilesResponse,
-    MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse,
-    MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PendingInviteSummary,
-    TaskAssignmentSummary, TasksListResponse,
+    AcceptMyInviteResponse, ChatMembershipSummary, DocPageMentionInboxSummary,
+    DocPageMentionsInboxResponse, MeResponse, MentionSummary, MentionsListResponse,
+    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse,
+    MyMemorySummary, MyReactionSummary, MyReactionsResponse, MyThreadSummary, MyThreadsResponse,
+    PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -213,6 +217,10 @@ impl Modify for SecurityAddon {
         super::doc_versions::list_doc_page_versions,
         super::doc_versions::get_doc_page_version,
         super::doc_versions::restore_doc_page_version,
+        super::doc_mentions::add_doc_page_mention,
+        super::doc_mentions::list_doc_page_mentions,
+        super::doc_mentions::delete_doc_page_mention,
+        super::me::list_my_doc_page_mentions,
     ),
     components(schemas(
         MeResponse,
@@ -324,6 +332,11 @@ impl Modify for SecurityAddon {
         DocPageVersionHeader,
         DocPageVersionFull,
         ListDocPageVersionsResponse,
+        DocPageMentionSummary,
+        ListDocPageMentionsResponse,
+        AddDocPageMentionRequest,
+        DocPageMentionInboxSummary,
+        DocPageMentionsInboxResponse,
     )),
     modifiers(&SecurityAddon)
 )]

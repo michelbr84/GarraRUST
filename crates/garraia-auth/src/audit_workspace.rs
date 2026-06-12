@@ -672,6 +672,12 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "doc_page_versions"`, `resource_id = "{version_id}"`.
     /// Metadata: `{ source_version_id: UUID, block_count: N }`.
     DocPageVersionRestored,
+    /// A user was @mentioned in a doc page via
+    /// `POST /v1/doc-pages/{page_id}/mentions` (plan 0318 / GAR-858).
+    ///
+    /// `resource_type = "doc_page_mentions"`, `resource_id = "{page_id}"`.
+    /// Metadata: `{ mentioned_user_id: UUID }` — PII-safe (no mention body).
+    DocPageMentionAdded,
 }
 
 impl WorkspaceAuditAction {
@@ -749,6 +755,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocPageVersionCreated => "doc_page.version_created",
             WorkspaceAuditAction::DocPageDuplicated => "doc_page.duplicated",
             WorkspaceAuditAction::DocPageVersionRestored => "doc_page.version_restored",
+            WorkspaceAuditAction::DocPageMentionAdded => "doc_page.mention_added",
         }
     }
 }
@@ -1054,6 +1061,10 @@ mod tests {
             WorkspaceAuditAction::DocPageVersionRestored.as_str(),
             "doc_page.version_restored"
         );
+        assert_eq!(
+            WorkspaceAuditAction::DocPageMentionAdded.as_str(),
+            "doc_page.mention_added"
+        );
     }
 
     #[test]
@@ -1125,6 +1136,7 @@ mod tests {
             WorkspaceAuditAction::DocPageVersionCreated.as_str(),
             WorkspaceAuditAction::DocPageDuplicated.as_str(),
             WorkspaceAuditAction::DocPageVersionRestored.as_str(),
+            WorkspaceAuditAction::DocPageMentionAdded.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
