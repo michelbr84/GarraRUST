@@ -1,4 +1,4 @@
-# Plan 0318 — GAR-858: Doc page mentions — migration 029 + POST/GET/DELETE /v1/doc-pages/{page_id}/mentions + GET /v1/me/doc-page-mentions
+# Plan 0320 — GAR-858: Doc page mentions — migration 029 + POST/GET/DELETE /v1/doc-pages/{page_id}/mentions + GET /v1/me/doc-page-mentions
 
 **Issue:** [GAR-858](https://linear.app/chatgpt25/issue/GAR-858)
 **Branch:** `routine/202506120015-doc-page-mentions`
