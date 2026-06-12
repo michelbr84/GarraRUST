@@ -41,10 +41,10 @@ use super::invites::AcceptInviteResponse;
 use super::me::{
     AcceptMyInviteResponse, ChatMembershipSummary, DocPageMentionInboxSummary,
     DocPageMentionsInboxResponse, MeResponse, MentionSummary, MentionsListResponse,
-    MyChatsMembershipResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse,
-    MyMemorySummary, MyReactionSummary, MyReactionsResponse, MyThreadSummary, MyThreadsResponse,
-    PatchMeRequest, PatchMeResponse, PendingInviteSummary, TaskAssignmentSummary,
-    TasksListResponse,
+    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
+    MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
+    MyReactionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse,
+    PendingInviteSummary, TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -120,6 +120,7 @@ impl Modify for SecurityAddon {
         super::me::accept_my_invite,
         super::me::list_my_reactions,
         super::me::list_my_threads,
+        super::me::list_my_doc_pages,
         super::groups::create_group,
         super::groups::list_groups,
         super::groups::get_group,
@@ -337,6 +338,8 @@ impl Modify for SecurityAddon {
         AddDocPageMentionRequest,
         DocPageMentionInboxSummary,
         DocPageMentionsInboxResponse,
+        MyDocPageSummary,
+        MyDocPagesResponse,
     )),
     modifiers(&SecurityAddon)
 )]
