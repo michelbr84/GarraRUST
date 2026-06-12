@@ -389,9 +389,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/chats/{chat_id}/members",
                     get(chats::list_chat_members).post(chats::add_chat_member),
                 )
+                // Plan 0325 (GAR-864) — get single chat member.
                 .route(
                     "/v1/chats/{chat_id}/members/{user_id}",
-                    delete(chats::remove_chat_member).patch(chats::patch_chat_member),
+                    get(chats::get_chat_member)
+                        .delete(chats::remove_chat_member)
+                        .patch(chats::patch_chat_member),
                 )
                 // Plan 0055 (GAR-507) — messages slice 2.
                 .route(
@@ -747,7 +750,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/chats/{chat_id}/members/{user_id}",
-                    delete(unconfigured_handler).patch(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .delete(unconfigured_handler)
+                        .patch(unconfigured_handler),
                 )
                 // Plan 0055 (GAR-507) — messages slice 2, fail-soft 503.
                 .route(
@@ -1098,7 +1103,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/chats/{chat_id}/members/{user_id}",
-                    delete(unconfigured_handler).patch(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .delete(unconfigured_handler)
+                        .patch(unconfigured_handler),
                 )
                 // Plan 0055 (GAR-507) — messages slice 2, no-auth stub.
                 .route(
