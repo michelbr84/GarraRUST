@@ -330,3 +330,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0319 | [GAR-859 — Health run 120 (2026-06-12 ~00:45 ET): all surfaces clean, priority (i)](0319-gar-859-health-run-120.md) | [GAR-859](https://linear.app/chatgpt25/issue/GAR-859) | ✅ Merged 2026-06-12 via PR #732 (`a7a73aa`) |
 | 0320 | [GAR-858 — doc_page_mentions: migration 029, REST handlers, inbox endpoint, OpenAPI wiring](0320-gar-858-doc-page-mentions.md) | [GAR-858](https://linear.app/chatgpt25/issue/GAR-858) | ✅ Merged 2026-06-12 via PR #730 (`cf8be02`) |
 | 0321 | [GAR-861 — Health run 121 (2026-06-12 ~04:45 ET): all surfaces clean, priority (i)](0321-gar-861-health-run-121.md) | [GAR-861](https://linear.app/chatgpt25/issue/GAR-861) | ✅ Merged 2026-06-12 via PR #733 (`dcb12c6`) |
+| 0322 | [GAR-860 — GET /v1/me/doc-pages — caller-scoped authored doc pages inbox](0322-gar-860-me-doc-pages.md) | [GAR-860](https://linear.app/chatgpt25/issue/GAR-860) | In Progress |

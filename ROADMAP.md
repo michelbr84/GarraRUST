@@ -876,6 +876,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/doc-pages/{page_id}/mentions` — list mentions (cursor-paginated) — plan 0318 / GAR-858
 - [x] `DELETE /v1/doc-pages/{page_id}/mentions/{user_id}` — remove mention (204 idempotent) — plan 0318 / GAR-858
 - [x] `GET /v1/me/doc-page-mentions` — caller @mention inbox for doc pages (cursor-paginated) — plan 0318 / GAR-858
+- [x] `GET /v1/me/doc-pages` — caller-authored doc pages inbox (cursor-paginated) — plan 0322 / GAR-860
 
 **Colaboração em tempo real:**
 
