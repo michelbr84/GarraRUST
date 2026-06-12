@@ -130,13 +130,12 @@ pub async fn add_doc_page_mention(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     // Verify page belongs to caller's group (RLS filters cross-group → 0 rows → 404).
-    let page_exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM doc_pages WHERE id = $1 AND archived_at IS NULL",
-    )
-    .bind(page_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let page_exists: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM doc_pages WHERE id = $1 AND archived_at IS NULL")
+            .bind(page_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     if page_exists.is_none() {
         return Err(RestError::NotFound);
@@ -156,7 +155,9 @@ pub async fn add_doc_page_mention(
     .map_err(|e| RestError::Internal(e.into()))?;
 
     if let Some((pid, uid, gid, created_at)) = existing {
-        tx.commit().await.map_err(|e| RestError::Internal(e.into()))?;
+        tx.commit()
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
         return Ok((
             StatusCode::OK,
             Json(DocPageMentionSummary {
@@ -192,7 +193,9 @@ pub async fn add_doc_page_mention(
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
 
-    tx.commit().await.map_err(|e| RestError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok((
         StatusCode::CREATED,
@@ -320,7 +323,9 @@ pub async fn list_doc_page_mentions(
         .map_err(|e| RestError::Internal(e.into()))?
     };
 
-    tx.commit().await.map_err(|e| RestError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let next_cursor = if rows.len() as i64 == limit {
         rows.last().map(|(_, uid, _, _)| *uid)
@@ -404,16 +409,16 @@ pub async fn delete_doc_page_mention(
     }
 
     // Delete idempotently — 0 rows affected is not an error.
-    sqlx::query(
-        "DELETE FROM doc_page_mentions WHERE page_id = $1 AND mentioned_user_id = $2",
-    )
-    .bind(page_id)
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("DELETE FROM doc_page_mentions WHERE page_id = $1 AND mentioned_user_id = $2")
+        .bind(page_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
-    tx.commit().await.map_err(|e| RestError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -469,7 +474,10 @@ mod tests {
             next_cursor: None,
         };
         let v = serde_json::to_value(&resp).unwrap();
-        assert!(v.get("next_cursor").is_none(), "next_cursor should be omitted when None");
+        assert!(
+            v.get("next_cursor").is_none(),
+            "next_cursor should be omitted when None"
+        );
     }
 
     #[test]

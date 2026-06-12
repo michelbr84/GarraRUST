@@ -2290,7 +2290,9 @@ pub async fn list_my_doc_page_mentions(
         .map_err(|e| RestError::Internal(e.into()))?
     };
 
-    tx.commit().await.map_err(|e| RestError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     let next_cursor = if rows.len() as i64 == limit {
         rows.last().map(|(pid, _, _, _)| *pid)
@@ -2300,12 +2302,14 @@ pub async fn list_my_doc_page_mentions(
 
     let items = rows
         .into_iter()
-        .map(|(page_id, group_id, page_title, created_at)| DocPageMentionInboxSummary {
-            page_id,
-            group_id,
-            page_title,
-            created_at,
-        })
+        .map(
+            |(page_id, group_id, page_title, created_at)| DocPageMentionInboxSummary {
+                page_id,
+                group_id,
+                page_title,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(DocPageMentionsInboxResponse { items, next_cursor }))
