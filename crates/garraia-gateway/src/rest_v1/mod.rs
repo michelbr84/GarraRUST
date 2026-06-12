@@ -32,6 +32,7 @@
 pub mod audit;
 pub mod chats;
 pub mod doc_blocks;
+pub mod doc_mentions;
 pub mod doc_versions;
 pub mod docs;
 pub mod files;
@@ -326,6 +327,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0255 (GAR-777) — GET /v1/me/invites pending-invites inbox.
                 // Plan 0260 (GAR-788) — GET /v1/me/reactions emoji-reactions inbox.
                 // Plan 0261 (GAR-790) — GET /v1/me/threads thread-participation inbox.
+                // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions doc-page @mention inbox.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
@@ -345,6 +347,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/me/reactions", get(me::list_my_reactions))
                 .route("/v1/me/threads", get(me::list_my_threads))
+                .route(
+                    "/v1/me/doc-page-mentions",
+                    get(me::list_my_doc_page_mentions),
+                )
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -642,6 +648,16 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/duplicate",
                     post(docs::duplicate_doc_page),
                 )
+                // Plan 0318 (GAR-858) — Docs Tier 2: doc page mentions.
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions",
+                    post(doc_mentions::add_doc_page_mention)
+                        .get(doc_mentions::list_doc_page_mentions),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions/{user_id}",
+                    delete(doc_mentions::delete_doc_page_mention),
+                )
                 .merge(rate_limited_routes)
                 .merge(tus_routes)
                 .with_state(full)
@@ -665,6 +681,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0263 (GAR-794) — POST /v1/me/invites/{id}/accept stub.
                 // Plan 0260 (GAR-788) — GET /v1/me/reactions stub.
                 // Plan 0261 (GAR-790) — GET /v1/me/threads stub.
+                // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions stub (mode 2).
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
@@ -682,6 +699,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route("/v1/me/reactions", get(unconfigured_handler))
                 .route("/v1/me/threads", get(unconfigured_handler))
+                .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -984,6 +1002,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     "/v1/doc-pages/{page_id}/duplicate",
                     post(unconfigured_handler),
                 )
+                // Plan 0318 (GAR-858) — doc page mentions stub (mode 2).
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions/{user_id}",
+                    delete(unconfigured_handler),
+                )
                 .with_state(auth)
                 .merge(SwaggerUi::new("/docs").url("/v1/openapi.json", ApiDoc::openapi()))
         }
@@ -1002,6 +1029,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0258 (GAR-783) — POST /v1/me/invites/{id}/decline stub.
                 // Plan 0263 (GAR-794) — POST /v1/me/invites/{id}/accept stub.
                 // Plan 0260 (GAR-788) — GET /v1/me/reactions stub.
+                // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions stub (mode 3).
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
@@ -1021,6 +1049,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     post(unconfigured_handler),
                 )
                 .route("/v1/me/reactions", get(unconfigured_handler))
+                .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -1318,6 +1347,15 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/doc-pages/{page_id}/duplicate",
                     post(unconfigured_handler),
+                )
+                // Plan 0318 (GAR-858) — doc page mentions stub (mode 3).
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/doc-pages/{page_id}/mentions/{user_id}",
+                    delete(unconfigured_handler),
                 )
                 .route("/v1/openapi.json", get(unconfigured_handler))
                 .route("/docs", get(unconfigured_handler))
