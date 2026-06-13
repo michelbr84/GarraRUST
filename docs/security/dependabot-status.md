@@ -1,8 +1,33 @@
 # Dependabot Status
 
-> Last updated: **2026-06-12 run 123** (health routine — priority (i): all surfaces clean. run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-13 run 124** (health routine — priority (i): all surfaces clean. run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-13 run 124 (~00:45 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-13 (~00:45 ET / 2026-06-13T04:45 UTC). Priority **(i)** — no actionable security work found.
+
+**Housekeeping:** PR #741 (`claude/festive-bell-r8l7jr` — branch cleanup) has all 20 CI checks green but branch protection blocked squash-merge (4 required checks enforcement). Left for owner to resolve. Routine/ PR #738 (GAR-864) skipped per protocol.
+
+**Scan scope:** GitHub Actions CI on main (last 20 runs), Dependabot PRs (0 open), security surfaces: cargo-audit, cargo-deny, CodeQL, gitleaks, GitHub secret scanning. All confirmed clean.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `ba9b2d6` (2026-06-12T21:32Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI job success (`advisories ok, bans ok, licenses ok, sources ok`) |
+| Dependabot PRs | ✅ none open | 0 open Dependabot PRs |
+| Dependabot security alerts | ⚠️ 1 moderate (RUSTSEC-2023-0071), allowlisted | rsa 0.9.10 — Marvin Attack timing sidechannel. HS256-only invariant holds. Allowlisted, expiry 2026-07-31. No first_patched_version available. |
+| Security Audit (cargo-audit) | ✅ pass | CI success on main `ba9b2d6` (2026-06-12T21:35Z); 0 vulnerabilities, 0 unsound |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + RUSTSEC-2024-0429 + unmaintained suppressed |
+| CodeQL | ✅ pass | Analyze (rust) + Analyze (js-ts) success on main `ba9b2d6` (2026-06-12T21:31Z) |
+| Quality Ratchet | ✅ pass | CI success on main `ba9b2d6` |
+| CI on main (`ba9b2d6`) | ✅ green | All 15 jobs success |
+| Workflow failures (last 7d) | ✅ none | No failures in last 7 days |
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (expiry 2026-07-31), glib RUSTSEC-2024-0429 (GAR-513, expiry 2026-07-31), CodeQL ledger re-audit due 2026-08-01 (GAR-491), monitor CVE-2026-49975 for h2/hyper Rust advisory.
+
+---
 
 ## Confirmed 2026-06-12 run 123 (~20:45 ET) — priority (i): all surfaces clean
 
