@@ -339,4 +339,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0328 | [GAR-869 — DELETE /v1/me/sessions — revoke all active sessions ("sign out from all devices")](0328-gar-869-revoke-all-sessions.md) | [GAR-869](https://linear.app/chatgpt25/issue/GAR-869) | ✅ Merged 2026-06-13 via PR #747 (`ed38d1a`) |
 | 0329 | [GAR-868 — Health run 125 (2026-06-13 ~04:45 ET): all surfaces clean, priority (i)](0329-gar-868-health-run-125.md) | [GAR-868](https://linear.app/chatgpt25/issue/GAR-868) | ✅ Merged 2026-06-13 via PR #746 (`0691153`) |
 | 0330 | [GAR-870 — Health run 126 (2026-06-13 ~08:45 ET): all surfaces clean, priority (i)](0330-gar-870-health-run-126.md) | [GAR-870](https://linear.app/chatgpt25/issue/GAR-870) | ✅ Merged 2026-06-13 via PR #749 (`1f36836`) |
-| 0331 | [GAR-871 — POST/GET /v1/me/api-keys + DELETE /v1/me/api-keys/{key_id}](0331-gar-871-me-api-keys.md) | [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) | In Progress |
+| 0331 | [GAR-871 — POST/GET /v1/me/api-keys + DELETE /v1/me/api-keys/{key_id}](0331-gar-871-me-api-keys.md) | [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) | ✅ Merged 2026-06-13 via PR #751 (`b63a2d4`) |
