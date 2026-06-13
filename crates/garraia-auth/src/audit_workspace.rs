@@ -678,6 +678,18 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "doc_page_mentions"`, `resource_id = "{page_id}"`.
     /// Metadata: `{ mentioned_user_id: UUID }` — PII-safe (no mention body).
     DocPageMentionAdded,
+
+    /// A session was explicitly revoked by the authenticated user via
+    /// `DELETE /v1/me/sessions/{session_id}` (plan 0326 / GAR-866).
+    ///
+    /// Sessions are user-scoped, not group-scoped. `group_id` in the
+    /// audit row carries the nil-uuid (`00000000-...`) by convention —
+    /// `app.current_group_id` is set to nil-uuid before the INSERT so
+    /// the `audit_events_group_or_self` WITH CHECK passes (branch 1).
+    ///
+    /// `resource_type = "sessions"`, `resource_id = "{session_id}"`.
+    /// Metadata: `{}` — no PII; device info is not logged.
+    SessionRevoked,
 }
 
 impl WorkspaceAuditAction {
@@ -756,6 +768,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocPageDuplicated => "doc_page.duplicated",
             WorkspaceAuditAction::DocPageVersionRestored => "doc_page.version_restored",
             WorkspaceAuditAction::DocPageMentionAdded => "doc_page.mention_added",
+            WorkspaceAuditAction::SessionRevoked => "session.revoked",
         }
     }
 }
@@ -1065,6 +1078,10 @@ mod tests {
             WorkspaceAuditAction::DocPageMentionAdded.as_str(),
             "doc_page.mention_added"
         );
+        assert_eq!(
+            WorkspaceAuditAction::SessionRevoked.as_str(),
+            "session.revoked"
+        );
     }
 
     #[test]
@@ -1137,6 +1154,7 @@ mod tests {
             WorkspaceAuditAction::DocPageDuplicated.as_str(),
             WorkspaceAuditAction::DocPageVersionRestored.as_str(),
             WorkspaceAuditAction::DocPageMentionAdded.as_str(),
+            WorkspaceAuditAction::SessionRevoked.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

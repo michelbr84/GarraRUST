@@ -43,8 +43,9 @@ use super::me::{
     DocPageMentionsInboxResponse, MeResponse, MentionSummary, MentionsListResponse,
     MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
     MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
-    MyReactionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse,
-    PendingInviteSummary, TaskAssignmentSummary, TasksListResponse,
+    MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest,
+    PatchMeResponse, PendingInviteSummary, SessionSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -223,6 +224,8 @@ impl Modify for SecurityAddon {
         super::doc_mentions::list_doc_page_mentions,
         super::doc_mentions::delete_doc_page_mention,
         super::me::list_my_doc_page_mentions,
+        super::me::list_my_sessions,
+        super::me::revoke_my_session,
     ),
     components(schemas(
         MeResponse,
@@ -341,6 +344,8 @@ impl Modify for SecurityAddon {
         DocPageMentionsInboxResponse,
         MyDocPageSummary,
         MyDocPagesResponse,
+        SessionSummary,
+        MySessionsResponse,
     )),
     modifiers(&SecurityAddon)
 )]
