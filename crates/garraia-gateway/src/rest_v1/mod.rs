@@ -330,6 +330,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions doc-page @mention inbox.
                 // Plan 0322 (GAR-860) — GET /v1/me/doc-pages authored doc-pages inbox.
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id}.
+                // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions).
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
@@ -354,7 +355,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(me::list_my_doc_page_mentions),
                 )
                 .route("/v1/me/doc-pages", get(me::list_my_doc_pages))
-                .route("/v1/me/sessions", get(me::list_my_sessions))
+                .route(
+                    "/v1/me/sessions",
+                    get(me::list_my_sessions).delete(me::revoke_all_my_sessions),
+                )
                 .route(
                     "/v1/me/sessions/{session_id}",
                     delete(me::revoke_my_session),
@@ -695,6 +699,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions stub (mode 2).
                 // Plan 0322 (GAR-860) — GET /v1/me/doc-pages stub (mode 2).
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id} stub.
+                // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions) stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
@@ -714,7 +719,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/threads", get(unconfigured_handler))
                 .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/me/doc-pages", get(unconfigured_handler))
-                .route("/v1/me/sessions", get(unconfigured_handler))
+                .route(
+                    "/v1/me/sessions",
+                    get(unconfigured_handler).delete(unconfigured_handler),
+                )
                 .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
@@ -1070,7 +1078,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/reactions", get(unconfigured_handler))
                 .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/me/doc-pages", get(unconfigured_handler))
-                .route("/v1/me/sessions", get(unconfigured_handler))
+                // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions) stub.
+                .route(
+                    "/v1/me/sessions",
+                    get(unconfigured_handler).delete(unconfigured_handler),
+                )
                 .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
