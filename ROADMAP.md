@@ -624,6 +624,9 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `POST /v1/me/invites/{invite_id}/accept` — invitee-side authenticated accept (UUID-based, no raw token); atomically sets `accepted_at`+`accepted_by`, inserts `group_members`, emits `InviteAccepted` audit event — plan 0263 / [GAR-794](https://linear.app/chatgpt25/issue/GAR-794) ✅
 - [x] `GET /v1/me/reactions` — caller-scoped emoji-reactions inbox (cursor-paginated, grouped by message with `ARRAY_AGG` emojis) — plan 0260 / [GAR-788](https://linear.app/chatgpt25/issue/GAR-788) ✅
 - [x] `GET /v1/me/threads` — caller-scoped thread participation inbox (cursor-paginated, `include_resolved` filter; creator vs participant role) — plan 0261 / [GAR-790](https://linear.app/chatgpt25/issue/GAR-790) ✅
+- [x] `GET /v1/me/sessions` — list caller's active sessions (cursor-paginated; `expires_at`, `created_at`, `user_agent`) — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
+- [x] `DELETE /v1/me/sessions/{session_id}` — revoke single session by ID — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
+- [x] `DELETE /v1/me/sessions` — bulk-revoke all active sessions ("sign out from all devices"); `SessionsAllRevoked` audit event — plan 0328 / [GAR-869](https://linear.app/chatgpt25/issue/GAR-869) ✅ merged PR #747 (`ed38d1a`)
 
 **Chats**
 
