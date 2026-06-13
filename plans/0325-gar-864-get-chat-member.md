@@ -1,6 +1,6 @@
 # Plan 0325 — GAR-864: GET /v1/chats/{chat_id}/members/{user_id} — fetch single chat member
 
-> **Status:** In Progress
+> **Status:** ✅ Merged 2026-06-12 via PR #738 (`1d3142f`)
 > **Linear:** [GAR-864](https://linear.app/chatgpt25/issue/GAR-864)
 > **Branch:** `routine/202606121915-get-chat-member`
 > **Parent plan:** 0323
