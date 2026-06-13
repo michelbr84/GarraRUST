@@ -226,6 +226,7 @@ impl Modify for SecurityAddon {
         super::me::list_my_doc_page_mentions,
         super::me::list_my_sessions,
         super::me::revoke_my_session,
+        super::me::revoke_all_my_sessions,
     ),
     components(schemas(
         MeResponse,

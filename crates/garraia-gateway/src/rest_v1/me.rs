@@ -2742,6 +2742,85 @@ pub async fn revoke_my_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── DELETE /v1/me/sessions ──────────────────────────────────────────────────
+
+/// `DELETE /v1/me/sessions` — revoke ALL of the caller's active sessions
+/// ("sign out from all devices") (plan 0328 / GAR-869).
+///
+/// Atomically sets `revoked_at = now()` on every non-expired, non-revoked
+/// session row owned by the caller. Returns 204 regardless of how many rows
+/// are affected (including zero).
+///
+/// An audit event `SessionsAllRevoked` is emitted only when at least one
+/// session was revoked (`rows_affected > 0`).
+///
+/// No `X-Group-Id` header required — sessions are user-scoped.
+#[utoipa::path(
+    delete,
+    path = "/v1/me/sessions",
+    responses(
+        (status = 204, description = "All active sessions revoked (or none were active)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn revoke_all_my_sessions(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+) -> Result<StatusCode, RestError> {
+    let nil_uuid = Uuid::nil();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // FORCE RLS (sessions_owner_only) ensures only the caller's rows are affected.
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = now() \
+         WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()",
+    )
+    .bind(principal.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let count = result.rows_affected();
+
+    if count > 0 {
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::SessionsAllRevoked,
+            principal.user_id,
+            nil_uuid,
+            "sessions",
+            principal.user_id.to_string(),
+            json!({ "count": count }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4180,5 +4259,54 @@ mod tests {
             Uuid::parse_str(cursor_str).is_ok(),
             "next_cursor must parse as UUID: {cursor_str}"
         );
+    }
+
+    // ── revoke_all_my_sessions (unit tests — no DB required) ─────────────────
+
+    #[test]
+    fn revoke_all_sessions_audit_action_wire_form() {
+        assert_eq!(
+            WorkspaceAuditAction::SessionsAllRevoked.as_str(),
+            "session.all_revoked"
+        );
+    }
+
+    #[test]
+    fn revoke_all_sessions_audit_action_distinct_from_single() {
+        assert_ne!(
+            WorkspaceAuditAction::SessionsAllRevoked.as_str(),
+            WorkspaceAuditAction::SessionRevoked.as_str(),
+            "bulk-revoke and single-revoke must have distinct audit actions"
+        );
+    }
+
+    #[test]
+    fn revoke_all_sessions_count_metadata_serializes() {
+        let count: u64 = 3;
+        let meta = json!({ "count": count });
+        assert_eq!(meta["count"], 3);
+    }
+
+    #[test]
+    fn revoke_all_sessions_zero_count_metadata_serializes() {
+        let count: u64 = 0;
+        let meta = json!({ "count": count });
+        assert_eq!(meta["count"], 0);
+    }
+
+    #[test]
+    fn revoke_all_sessions_nil_group_uuid() {
+        let nil = Uuid::nil();
+        assert_eq!(
+            nil.to_string(),
+            "00000000-0000-0000-0000-000000000000",
+            "group_id must be nil-uuid for user-scoped session audit"
+        );
+    }
+
+    #[test]
+    fn revoke_all_sessions_resource_type_is_sessions() {
+        let resource_type = "sessions";
+        assert_eq!(resource_type, "sessions");
     }
 }

@@ -690,6 +690,17 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "sessions"`, `resource_id = "{session_id}"`.
     /// Metadata: `{}` — no PII; device info is not logged.
     SessionRevoked,
+
+    /// All of the caller's active sessions were bulk-revoked via
+    /// `DELETE /v1/me/sessions` (plan 0328 / GAR-869).
+    ///
+    /// Sessions are user-scoped, not group-scoped. `group_id` carries the
+    /// nil-uuid by convention (same as `SessionRevoked` above).
+    ///
+    /// `resource_type = "sessions"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{"count": N}` — number of sessions revoked. No PII.
+    /// Not emitted when `count == 0` (nothing to record).
+    SessionsAllRevoked,
 }
 
 impl WorkspaceAuditAction {
@@ -769,6 +780,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocPageVersionRestored => "doc_page.version_restored",
             WorkspaceAuditAction::DocPageMentionAdded => "doc_page.mention_added",
             WorkspaceAuditAction::SessionRevoked => "session.revoked",
+            WorkspaceAuditAction::SessionsAllRevoked => "session.all_revoked",
         }
     }
 }
@@ -1082,6 +1094,10 @@ mod tests {
             WorkspaceAuditAction::SessionRevoked.as_str(),
             "session.revoked"
         );
+        assert_eq!(
+            WorkspaceAuditAction::SessionsAllRevoked.as_str(),
+            "session.all_revoked"
+        );
     }
 
     #[test]
@@ -1155,6 +1171,7 @@ mod tests {
             WorkspaceAuditAction::DocPageVersionRestored.as_str(),
             WorkspaceAuditAction::DocPageMentionAdded.as_str(),
             WorkspaceAuditAction::SessionRevoked.as_str(),
+            WorkspaceAuditAction::SessionsAllRevoked.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
