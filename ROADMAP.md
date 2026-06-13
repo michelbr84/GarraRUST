@@ -722,6 +722,7 @@ Novo crate: `garraia-storage`.
 
 - [x] Canais por grupo + DMs intra-grupo.
 - [x] Threads (entidade dedicada, não só `parent_id`) — plan 0227 / GAR-745 — `PATCH /v1/threads/{id}` + `PATCH /v1/chats/{id}/members/{uid}` mergeados via branch `routine/202605291819-chats-slice7-thread-member-patch`.
+- [x] `GET /v1/chats/{chat_id}/members/{user_id}` (fetch single chat member) — plan 0325 / [GAR-864](https://linear.app/chatgpt25/issue/GAR-864) ✅
 - [x] Reações — `POST/DELETE/GET /v1/messages/{id}/reactions` — plan 0231 / GAR-747.
 - [x] Typing indicator — `POST /v1/chats/{chat_id}/typing` (ephemeral SSE broadcast, no DB write) — plan 0233 / GAR-752.
 - [x] Menções (`@user`, `@channel`) — migration 022 `message_mentions` + `mentions: Vec<Uuid>` em `POST /v1/chats/{id}/messages` + `GET /v1/me/mentions` (cursor-paginated inbox) — plan 0237 / GAR-755.
