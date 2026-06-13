@@ -701,6 +701,24 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{"count": N}` — number of sessions revoked. No PII.
     /// Not emitted when `count == 0` (nothing to record).
     SessionsAllRevoked,
+
+    /// A new API key was created via `POST /v1/me/api-keys` (plan 0331 / GAR-871).
+    ///
+    /// API keys are user-scoped, not group-scoped. `group_id` in the audit
+    /// row carries the nil-uuid (`00000000-...`) by convention.
+    ///
+    /// `resource_type = "api_keys"`, `resource_id = "{key_id}"`.
+    /// Metadata: `{"label_len": N}` — label length only; raw key and hash are NOT logged.
+    ApiKeyCreated,
+
+    /// An API key was revoked via `DELETE /v1/me/api-keys/{key_id}` (plan 0331 / GAR-871).
+    ///
+    /// API keys are user-scoped, not group-scoped. `group_id` carries the
+    /// nil-uuid by convention (same as `ApiKeyCreated` above).
+    ///
+    /// `resource_type = "api_keys"`, `resource_id = "{key_id}"`.
+    /// Metadata: `{}` — no PII.
+    ApiKeyRevoked,
 }
 
 impl WorkspaceAuditAction {
@@ -781,6 +799,8 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::DocPageMentionAdded => "doc_page.mention_added",
             WorkspaceAuditAction::SessionRevoked => "session.revoked",
             WorkspaceAuditAction::SessionsAllRevoked => "session.all_revoked",
+            WorkspaceAuditAction::ApiKeyCreated => "api_key.created",
+            WorkspaceAuditAction::ApiKeyRevoked => "api_key.revoked",
         }
     }
 }
@@ -1098,6 +1118,14 @@ mod tests {
             WorkspaceAuditAction::SessionsAllRevoked.as_str(),
             "session.all_revoked"
         );
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyCreated.as_str(),
+            "api_key.created"
+        );
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyRevoked.as_str(),
+            "api_key.revoked"
+        );
     }
 
     #[test]
@@ -1172,6 +1200,8 @@ mod tests {
             WorkspaceAuditAction::DocPageMentionAdded.as_str(),
             WorkspaceAuditAction::SessionRevoked.as_str(),
             WorkspaceAuditAction::SessionsAllRevoked.as_str(),
+            WorkspaceAuditAction::ApiKeyCreated.as_str(),
+            WorkspaceAuditAction::ApiKeyRevoked.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

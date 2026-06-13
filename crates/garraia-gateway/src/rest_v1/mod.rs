@@ -331,6 +331,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0322 (GAR-860) — GET /v1/me/doc-pages authored doc-pages inbox.
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id}.
                 // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions).
+                // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id}.
                 .route("/v1/me", get(me::get_me).patch(me::patch_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
@@ -362,6 +363,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route(
                     "/v1/me/sessions/{session_id}",
                     delete(me::revoke_my_session),
+                )
+                .route(
+                    "/v1/me/api-keys",
+                    post(me::create_my_api_key).get(me::list_my_api_keys),
+                )
+                .route(
+                    "/v1/me/api-keys/{key_id}",
+                    get(me::get_my_api_key).delete(me::revoke_my_api_key),
                 )
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
@@ -700,6 +709,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0322 (GAR-860) — GET /v1/me/doc-pages stub (mode 2).
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id} stub.
                 // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions) stub.
+                // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id} stub.
                 .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
@@ -724,6 +734,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
+                .route(
+                    "/v1/me/api-keys",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/me/api-keys/{key_id}",
+                    get(unconfigured_handler).delete(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -1057,6 +1075,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0260 (GAR-788) — GET /v1/me/reactions stub.
                 // Plan 0318 (GAR-858) — GET /v1/me/doc-page-mentions stub (mode 3).
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id} stub.
+                // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id} stub.
                 .route(
                     "/v1/me",
                     get(unconfigured_handler).patch(unconfigured_handler),
@@ -1084,6 +1103,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(unconfigured_handler).delete(unconfigured_handler),
                 )
                 .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
+                .route(
+                    "/v1/me/api-keys",
+                    post(unconfigured_handler).get(unconfigured_handler),
+                )
+                .route(
+                    "/v1/me/api-keys/{key_id}",
+                    get(unconfigured_handler).delete(unconfigured_handler),
+                )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",

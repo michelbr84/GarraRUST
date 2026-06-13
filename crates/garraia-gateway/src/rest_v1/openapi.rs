@@ -39,13 +39,13 @@ use super::groups::{
 };
 use super::invites::AcceptInviteResponse;
 use super::me::{
-    AcceptMyInviteResponse, ChatMembershipSummary, DocPageMentionInboxSummary,
-    DocPageMentionsInboxResponse, MeResponse, MentionSummary, MentionsListResponse,
-    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
-    MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
-    MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest,
-    PatchMeResponse, PendingInviteSummary, SessionSummary, TaskAssignmentSummary,
-    TasksListResponse,
+    AcceptMyInviteResponse, ApiKeySummary, ChatMembershipSummary, CreateApiKeyRequest,
+    CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, MeResponse,
+    MentionSummary, MentionsListResponse, MyApiKeysResponse, MyChatsMembershipResponse,
+    MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse,
+    MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse, MySessionsResponse,
+    MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PendingInviteSummary,
+    SessionSummary, TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -227,6 +227,10 @@ impl Modify for SecurityAddon {
         super::me::list_my_sessions,
         super::me::revoke_my_session,
         super::me::revoke_all_my_sessions,
+        super::me::create_my_api_key,
+        super::me::list_my_api_keys,
+        super::me::get_my_api_key,
+        super::me::revoke_my_api_key,
     ),
     components(schemas(
         MeResponse,
@@ -347,6 +351,10 @@ impl Modify for SecurityAddon {
         MyDocPagesResponse,
         SessionSummary,
         MySessionsResponse,
+        CreateApiKeyRequest,
+        CreateApiKeyResponse,
+        ApiKeySummary,
+        MyApiKeysResponse,
     )),
     modifiers(&SecurityAddon)
 )]

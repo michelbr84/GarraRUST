@@ -40,13 +40,28 @@
 //! (plan 0326 / GAR-866). No `X-Group-Id` required — sessions are user-scoped.
 //!
 //! `DELETE /v1/me/sessions/{session_id}` — revoke a specific session
-//! (plan 0326 / GAR-866). Idempotent: already-revoked returns 204..
+//! (plan 0326 / GAR-866). Idempotent: already-revoked returns 204.
+//!
+//! `POST /v1/me/api-keys` — create a new API key (plan 0331 / GAR-871).
+//! Returns the raw key **once only**; stored as Argon2id hash in `api_keys`.
+//!
+//! `GET /v1/me/api-keys` — cursor-paginated list of the caller's API keys
+//! (plan 0331 / GAR-871). Key hash is never returned.
+//!
+//! `GET /v1/me/api-keys/{key_id}` — fetch single API key metadata.
+//!
+//! `DELETE /v1/me/api-keys/{key_id}` — revoke an API key (soft-delete,
+//! sets `revoked_at`). Idempotent 204 (plan 0331 / GAR-871).
 
+use argon2::PasswordHasher;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Principal, WorkspaceAuditAction, audit_workspace_event};
+use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -2821,6 +2836,475 @@ pub async fn revoke_all_my_sessions(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── POST /v1/me/api-keys ────────────────────────────────────────────────────
+
+/// Request body for `POST /v1/me/api-keys`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApiKeyRequest {
+    /// Human-readable label. 1–255 characters.
+    pub label: String,
+    /// Permission scope strings, e.g. `["workspace.read"]`. Defaults to `[]`.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Response body for `POST /v1/me/api-keys` — raw key returned **once only**.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateApiKeyResponse {
+    /// UUID of the newly created key row.
+    pub id: Uuid,
+    /// Label supplied in the request.
+    pub label: String,
+    /// Scope strings stored with the key.
+    pub scopes: Vec<String>,
+    /// Creation timestamp (UTC).
+    pub created_at: DateTime<Utc>,
+    /// Raw API key — show once and discard; only the Argon2id hash is stored.
+    pub key: String,
+}
+
+/// One API key entry — `key` field is never present (raw key is one-time only).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiKeySummary {
+    /// API key UUID.
+    pub id: Uuid,
+    /// Human-readable label.
+    pub label: String,
+    /// Permission scope strings.
+    pub scopes: Vec<String>,
+    /// When the key was created (UTC).
+    pub created_at: DateTime<Utc>,
+    /// When the key was last used to authenticate (UTC), if ever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// When the key was revoked (UTC). `null` means the key is still active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Query parameters for `GET /v1/me/api-keys`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListMyApiKeysQuery {
+    /// Cursor: `id` of the last key on the previous page.
+    pub after: Option<Uuid>,
+    /// Maximum items per page. Clamped to `[1, 100]`; default 20.
+    pub limit: Option<i64>,
+}
+
+/// Response body for `GET /v1/me/api-keys`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MyApiKeysResponse {
+    pub api_keys: Vec<ApiKeySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Uuid>,
+}
+
+/// Creates a new API key for the authenticated caller.
+///
+/// Generates a cryptographically-random `gai_<base64url>` key, stores only
+/// its Argon2id hash, and returns the raw key **once** in the 201 response.
+/// The raw key is unrecoverable afterwards.
+///
+/// Label must be 1–255 characters. Scopes default to `[]`.
+/// No `X-Group-Id` header required — API keys are user-scoped.
+#[utoipa::path(
+    post,
+    path = "/v1/me/api-keys",
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created. Raw key returned once only.", body = CreateApiKeyResponse),
+        (status = 400, description = "Validation error (label empty or >255 chars).", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_my_api_key(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Json(body): Json<CreateApiKeyRequest>,
+) -> Result<(StatusCode, Json<CreateApiKeyResponse>), RestError> {
+    let label = body.label.trim().to_owned();
+    if label.is_empty() || label.len() > 255 {
+        return Err(RestError::BadRequest(
+            "label must be 1–255 characters".into(),
+        ));
+    }
+    for scope in &body.scopes {
+        if scope.is_empty() {
+            return Err(RestError::BadRequest(
+                "scopes must be non-empty strings".into(),
+            ));
+        }
+    }
+
+    // Generate 32 random bytes → "gai_<url-safe-base64-no-pad>"
+    let mut key_bytes = [0u8; 32];
+    password_hash::rand_core::OsRng.fill_bytes(&mut key_bytes);
+    let raw_key = format!("gai_{}", URL_SAFE_NO_PAD.encode(key_bytes));
+
+    // Argon2id hash of the raw key (PHC string format).
+    let salt = password_hash::SaltString::generate(&mut password_hash::rand_core::OsRng);
+    let key_hash = argon2::Argon2::default()
+        .hash_password(raw_key.as_bytes(), &salt)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("argon2 hash failure: {e}")))?
+        .to_string();
+
+    let scopes_json = serde_json::to_value(&body.scopes)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("scopes serialize: {e}")))?;
+
+    let nil_uuid = Uuid::nil();
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (key_id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO api_keys (user_id, label, key_hash, scopes) \
+         VALUES ($1, $2, $3, $4) \
+         RETURNING id, created_at",
+    )
+    .bind(principal.user_id)
+    .bind(&label)
+    .bind(&key_hash)
+    .bind(&scopes_json)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ApiKeyCreated,
+        principal.user_id,
+        nil_uuid,
+        "api_keys",
+        key_id.to_string(),
+        json!({ "label_len": label.len() }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            id: key_id,
+            label,
+            scopes: body.scopes,
+            created_at,
+            key: raw_key,
+        }),
+    ))
+}
+
+// ─── GET /v1/me/api-keys ─────────────────────────────────────────────────────
+
+/// Lists all API keys for the authenticated caller (active + revoked history).
+///
+/// Cursor-paginated (`after` = last `id` from previous page, `limit` default 20).
+/// The raw key is never returned — only metadata. No `X-Group-Id` required.
+#[utoipa::path(
+    get,
+    path = "/v1/me/api-keys",
+    params(ListMyApiKeysQuery),
+    responses(
+        (status = 200, description = "Paginated list of the caller's API keys.", body = MyApiKeysResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_my_api_keys(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Query(params): Query<ListMyApiKeysQuery>,
+) -> Result<Json<MyApiKeysResponse>, RestError> {
+    let limit = params.limit.map(|l| l.min(100)).unwrap_or(20).max(1);
+    let nil_uuid = Uuid::nil();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    type ApiKeyRow = (
+        Uuid,
+        String,
+        serde_json::Value,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    );
+
+    let rows: Vec<ApiKeyRow> = match params.after {
+        None => sqlx::query_as(
+            "SELECT id, label, scopes, created_at, last_used_at, revoked_at \
+             FROM api_keys \
+             WHERE user_id = $1 \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $2",
+        )
+        .bind(principal.user_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+
+        Some(after_id) => sqlx::query_as(
+            "SELECT id, label, scopes, created_at, last_used_at, revoked_at \
+             FROM api_keys \
+             WHERE user_id = $1 \
+               AND (created_at, id) < ( \
+                   SELECT created_at, id FROM api_keys \
+                   WHERE id = $2 AND user_id = $1 \
+               ) \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $3",
+        )
+        .bind(principal.user_id)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?,
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let next_cursor = if rows.len() as i64 == limit {
+        rows.last().map(|(id, ..)| *id)
+    } else {
+        None
+    };
+
+    let api_keys = rows
+        .into_iter()
+        .map(
+            |(id, label, scopes_val, created_at, last_used_at, revoked_at)| ApiKeySummary {
+                id,
+                label,
+                scopes: serde_json::from_value(scopes_val).unwrap_or_default(),
+                created_at,
+                last_used_at,
+                revoked_at,
+            },
+        )
+        .collect();
+
+    Ok(Json(MyApiKeysResponse {
+        api_keys,
+        next_cursor,
+    }))
+}
+
+// ─── GET /v1/me/api-keys/{key_id} ────────────────────────────────────────────
+
+/// Fetches metadata for a single API key owned by the authenticated caller.
+///
+/// Returns 404 if the key does not exist or belongs to another user
+/// (FORCE RLS via `api_keys_owner_only`). Raw key is never returned.
+#[utoipa::path(
+    get,
+    path = "/v1/me/api-keys/{key_id}",
+    params(
+        ("key_id" = Uuid, Path, description = "API key UUID."),
+    ),
+    responses(
+        (status = 200, description = "API key metadata.", body = ApiKeySummary),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Key not found or belongs to another user.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_my_api_key(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(key_id): Path<Uuid>,
+) -> Result<Json<ApiKeySummary>, RestError> {
+    let nil_uuid = Uuid::nil();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    type ApiKeyRow = (
+        Uuid,
+        String,
+        serde_json::Value,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    );
+
+    let row: Option<ApiKeyRow> = sqlx::query_as(
+        "SELECT id, label, scopes, created_at, last_used_at, revoked_at \
+         FROM api_keys \
+         WHERE id = $1 AND user_id = $2",
+    )
+    .bind(key_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    match row {
+        None => Err(RestError::NotFound),
+        Some((id, label, scopes_val, created_at, last_used_at, revoked_at)) => {
+            Ok(Json(ApiKeySummary {
+                id,
+                label,
+                scopes: serde_json::from_value(scopes_val).unwrap_or_default(),
+                created_at,
+                last_used_at,
+                revoked_at,
+            }))
+        }
+    }
+}
+
+// ─── DELETE /v1/me/api-keys/{key_id} ─────────────────────────────────────────
+
+/// Revokes an API key owned by the authenticated caller (soft-delete).
+///
+/// Sets `revoked_at = now()`. Idempotent: already-revoked keys return 204.
+/// Returns 404 if the key is not found or belongs to another user (FORCE RLS).
+/// No `X-Group-Id` required.
+#[utoipa::path(
+    delete,
+    path = "/v1/me/api-keys/{key_id}",
+    params(
+        ("key_id" = Uuid, Path, description = "API key UUID to revoke."),
+    ),
+    responses(
+        (status = 204, description = "API key revoked, or already revoked (idempotent)."),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Key not found or belongs to another user.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn revoke_my_api_key(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(key_id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    let nil_uuid = Uuid::nil();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // FORCE RLS (api_keys_owner_only) ensures cross-user key_id returns 0 rows.
+    let result = sqlx::query(
+        "UPDATE api_keys SET revoked_at = now() \
+         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(key_id)
+    .bind(principal.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if result.rows_affected() == 0 {
+        // Distinguish "already revoked" (204) from "not found / cross-user" (404).
+        let exists: Option<(bool,)> =
+            sqlx::query_as("SELECT true FROM api_keys WHERE id = $1 AND user_id = $2")
+                .bind(key_id)
+                .bind(principal.user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+        return if exists.is_some() {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(RestError::NotFound)
+        };
+    }
+
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ApiKeyRevoked,
+        principal.user_id,
+        nil_uuid,
+        "api_keys",
+        key_id.to_string(),
+        json!({}),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4308,5 +4792,102 @@ mod tests {
     fn revoke_all_sessions_resource_type_is_sessions() {
         let resource_type = "sessions";
         assert_eq!(resource_type, "sessions");
+    }
+
+    // ── API keys (unit tests — no DB required) ────────────────────────────────
+
+    #[test]
+    fn api_key_created_audit_action_wire_form() {
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyCreated.as_str(),
+            "api_key.created"
+        );
+    }
+
+    #[test]
+    fn api_key_revoked_audit_action_wire_form() {
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyRevoked.as_str(),
+            "api_key.revoked"
+        );
+    }
+
+    #[test]
+    fn api_key_audit_actions_distinct() {
+        assert_ne!(
+            WorkspaceAuditAction::ApiKeyCreated.as_str(),
+            WorkspaceAuditAction::ApiKeyRevoked.as_str(),
+        );
+    }
+
+    #[test]
+    fn api_key_summary_serialization_no_key_field() {
+        let summary = ApiKeySummary {
+            id: Uuid::nil(),
+            label: "test key".into(),
+            scopes: vec!["workspace.read".into()],
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            last_used_at: None,
+            revoked_at: None,
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert!(
+            v.get("key").is_none(),
+            "ApiKeySummary must not expose raw key"
+        );
+        assert!(
+            v.get("key_hash").is_none(),
+            "ApiKeySummary must not expose key_hash"
+        );
+        assert_eq!(v["label"], "test key");
+        assert_eq!(v["scopes"][0], "workspace.read");
+    }
+
+    #[test]
+    fn create_api_key_response_has_key_field() {
+        let resp = CreateApiKeyResponse {
+            id: Uuid::nil(),
+            label: "my key".into(),
+            scopes: vec![],
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            key: "gai_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        let key_str = v["key"].as_str().unwrap();
+        assert!(
+            key_str.starts_with("gai_"),
+            "API key must start with gai_ prefix"
+        );
+    }
+
+    #[test]
+    fn list_my_api_keys_limit_clamp() {
+        let q = ListMyApiKeysQuery {
+            after: None,
+            limit: Some(999),
+        };
+        let clamped = q.limit.map(|l| l.min(100)).unwrap_or(20).max(1);
+        assert_eq!(clamped, 100, "limit must clamp to 100");
+    }
+
+    #[test]
+    fn list_my_api_keys_query_defaults() {
+        let q = ListMyApiKeysQuery {
+            after: None,
+            limit: None,
+        };
+        let effective = q.limit.map(|l| l.min(100)).unwrap_or(20).max(1);
+        assert_eq!(effective, 20, "default limit must be 20");
+        assert!(q.after.is_none(), "default after must be None");
+    }
+
+    #[test]
+    fn api_key_nil_group_uuid_convention() {
+        let nil = Uuid::nil();
+        assert_eq!(
+            nil.to_string(),
+            "00000000-0000-0000-0000-000000000000",
+            "group_id must be nil-uuid for user-scoped API key audit"
+        );
     }
 }
