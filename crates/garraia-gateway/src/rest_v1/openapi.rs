@@ -41,7 +41,7 @@ use super::invites::AcceptInviteResponse;
 use super::me::{
     AcceptMyInviteResponse, ApiKeySummary, ChatMembershipSummary, CreateApiKeyRequest,
     CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, MeResponse,
-    MentionSummary, MentionsListResponse, MyChatsMembershipResponse, MyApiKeysResponse,
+    MentionSummary, MentionsListResponse, MyApiKeysResponse, MyChatsMembershipResponse,
     MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse,
     MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse, MySessionsResponse,
     MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PendingInviteSummary,

@@ -2931,7 +2931,9 @@ pub async fn create_my_api_key(
     }
     for scope in &body.scopes {
         if scope.is_empty() {
-            return Err(RestError::BadRequest("scopes must be non-empty strings".into()));
+            return Err(RestError::BadRequest(
+                "scopes must be non-empty strings".into(),
+            ));
         }
     }
 
@@ -3106,14 +3108,16 @@ pub async fn list_my_api_keys(
 
     let api_keys = rows
         .into_iter()
-        .map(|(id, label, scopes_val, created_at, last_used_at, revoked_at)| ApiKeySummary {
-            id,
-            label,
-            scopes: serde_json::from_value(scopes_val).unwrap_or_default(),
-            created_at,
-            last_used_at,
-            revoked_at,
-        })
+        .map(
+            |(id, label, scopes_val, created_at, last_used_at, revoked_at)| ApiKeySummary {
+                id,
+                label,
+                scopes: serde_json::from_value(scopes_val).unwrap_or_default(),
+                created_at,
+                last_used_at,
+                revoked_at,
+            },
+        )
         .collect();
 
     Ok(Json(MyApiKeysResponse {
@@ -4827,8 +4831,14 @@ mod tests {
             revoked_at: None,
         };
         let v = serde_json::to_value(&summary).unwrap();
-        assert!(v.get("key").is_none(), "ApiKeySummary must not expose raw key");
-        assert!(v.get("key_hash").is_none(), "ApiKeySummary must not expose key_hash");
+        assert!(
+            v.get("key").is_none(),
+            "ApiKeySummary must not expose raw key"
+        );
+        assert!(
+            v.get("key_hash").is_none(),
+            "ApiKeySummary must not expose key_hash"
+        );
         assert_eq!(v["label"], "test key");
         assert_eq!(v["scopes"][0], "workspace.read");
     }
