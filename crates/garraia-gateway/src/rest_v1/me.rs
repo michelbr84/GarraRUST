@@ -3427,14 +3427,13 @@ pub async fn patch_my_api_key(
 
     if updated.is_none() {
         // Disambiguate: revoked (409) vs not-found/cross-user (404).
-        let row: Option<(bool,)> = sqlx::query_as(
-            "SELECT true FROM api_keys WHERE id = $1 AND user_id = $2",
-        )
-        .bind(key_id)
-        .bind(principal.user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+        let row: Option<(bool,)> =
+            sqlx::query_as("SELECT true FROM api_keys WHERE id = $1 AND user_id = $2")
+                .bind(key_id)
+                .bind(principal.user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
 
         tx.commit()
             .await
