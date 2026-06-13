@@ -2324,6 +2324,98 @@ pub struct ChatMemberDetailResponse {
     pub last_read_at: Option<DateTime<Utc>>,
 }
 
+/// `GET /v1/chats/{chat_id}/members/{user_id}` — fetch a single chat member.
+///
+/// Returns 404 for non-members, archived chats, or chats in another group
+/// (no 403 existence leak).
+#[utoipa::path(
+    get,
+    path = "/v1/chats/{chat_id}/members/{user_id}",
+    params(
+        ("chat_id" = Uuid, Path, description = "Chat UUID."),
+        ("user_id" = Uuid, Path, description = "Member user UUID."),
+    ),
+    responses(
+        (status = 200, description = "Chat member detail.", body = ChatMemberDetailResponse),
+        (status = 400, description = "Missing X-Group-Id header.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller is not a group member.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Chat not found, archived, in another group, or user is not a member.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_chat_member(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path((chat_id, target_user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ChatMemberDetailResponse>, RestError> {
+    let group_id = principal
+        .group_id
+        .ok_or_else(|| RestError::BadRequest("X-Group-Id header is required".into()))?;
+
+    if !can(&principal, Action::ChatsRead) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Verify the chat exists in the caller's group (404, no 403 — no cross-tenant leak).
+    let chat_exists: Option<(bool,)> = sqlx::query_as(
+        "SELECT true FROM chats WHERE id = $1 AND group_id = $2 AND archived_at IS NULL",
+    )
+    .bind(chat_id)
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if chat_exists.is_none() {
+        return Err(RestError::NotFound);
+    }
+
+    type MemberRow = (String, DateTime<Utc>, bool, Option<DateTime<Utc>>);
+    let member: Option<MemberRow> = sqlx::query_as(
+        "SELECT role, joined_at, muted, last_read_at \
+         FROM chat_members \
+         WHERE chat_id = $1 AND user_id = $2",
+    )
+    .bind(chat_id)
+    .bind(target_user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (role, joined_at, muted, last_read_at) = member.ok_or(RestError::NotFound)?;
+
+    Ok(Json(ChatMemberDetailResponse {
+        user_id: target_user_id,
+        role,
+        joined_at,
+        muted,
+        last_read_at,
+    }))
+}
+
 /// `PATCH /v1/chats/{chat_id}/members/{user_id}` — update muted, last_read_at,
 /// or chat-local role for a chat member.
 ///
@@ -3967,5 +4059,102 @@ mod tests {
             v["root_message_id"].as_str().unwrap(),
             "00000000-0000-0000-0000-000000000000"
         );
+    }
+
+    // ── get_chat_member unit tests ───────────────────────────────────────────
+
+    #[test]
+    fn get_chat_member_response_serializes_all_fields() {
+        let resp = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "member".into(),
+            joined_at: DateTime::parse_from_rfc3339("2026-06-12T19:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["role"].as_str().unwrap(), "member");
+        assert!(!v["muted"].as_bool().unwrap());
+        assert!(v["last_read_at"].is_null());
+    }
+
+    #[test]
+    fn get_chat_member_response_muted_true() {
+        let resp = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "owner".into(),
+            joined_at: Utc::now(),
+            muted: true,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["muted"].as_bool().unwrap());
+        assert_eq!(v["role"].as_str().unwrap(), "owner");
+    }
+
+    #[test]
+    fn get_chat_member_response_last_read_at_some_utc_z() {
+        let ts = DateTime::parse_from_rfc3339("2026-06-12T15:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let resp = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "moderator".into(),
+            joined_at: ts,
+            muted: false,
+            last_read_at: Some(ts),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        let s = v["last_read_at"].as_str().unwrap();
+        assert!(s.ends_with('Z'), "timestamp must be UTC Z: {s}");
+    }
+
+    #[test]
+    fn get_chat_member_response_role_viewer() {
+        let resp = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "viewer".into(),
+            joined_at: Utc::now(),
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["role"].as_str().unwrap(), "viewer");
+    }
+
+    #[test]
+    fn get_chat_member_response_nil_uuid_roundtrip() {
+        let id = Uuid::nil();
+        let resp = ChatMemberDetailResponse {
+            user_id: id,
+            role: "member".into(),
+            joined_at: Utc::now(),
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            v["user_id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn get_chat_member_response_joined_at_utc_z() {
+        let ts = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let resp = ChatMemberDetailResponse {
+            user_id: Uuid::nil(),
+            role: "member".into(),
+            joined_at: ts,
+            muted: false,
+            last_read_at: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        let s = v["joined_at"].as_str().unwrap();
+        assert!(s.ends_with('Z'), "joined_at must be UTC Z: {s}");
     }
 }
