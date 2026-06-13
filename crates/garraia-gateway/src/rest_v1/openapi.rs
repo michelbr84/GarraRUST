@@ -44,8 +44,8 @@ use super::me::{
     MentionSummary, MentionsListResponse, MyApiKeysResponse, MyChatsMembershipResponse,
     MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse,
     MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse, MySessionsResponse,
-    MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PendingInviteSummary,
-    SessionSummary, TaskAssignmentSummary, TasksListResponse,
+    MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PatchMyApiKeyRequest,
+    PendingInviteSummary, SessionSummary, TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -230,6 +230,7 @@ impl Modify for SecurityAddon {
         super::me::create_my_api_key,
         super::me::list_my_api_keys,
         super::me::get_my_api_key,
+        super::me::patch_my_api_key,
         super::me::revoke_my_api_key,
     ),
     components(schemas(
@@ -355,6 +356,7 @@ impl Modify for SecurityAddon {
         CreateApiKeyResponse,
         ApiKeySummary,
         MyApiKeysResponse,
+        PatchMyApiKeyRequest,
     )),
     modifiers(&SecurityAddon)
 )]

@@ -370,7 +370,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/me/api-keys/{key_id}",
-                    get(me::get_my_api_key).delete(me::revoke_my_api_key),
+                    get(me::get_my_api_key)
+                        .patch(me::patch_my_api_key)
+                        .delete(me::revoke_my_api_key),
                 )
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
@@ -740,7 +742,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/me/api-keys/{key_id}",
-                    get(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
@@ -1109,7 +1113,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/me/api-keys/{key_id}",
-                    get(unconfigured_handler).delete(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
