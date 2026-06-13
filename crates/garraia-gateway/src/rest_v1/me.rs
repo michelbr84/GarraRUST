@@ -3305,6 +3305,176 @@ pub async fn revoke_my_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── PATCH /v1/me/api-keys/{key_id} ──────────────────────────────────────────
+
+/// Request body for `PATCH /v1/me/api-keys/{key_id}`.
+/// At least one field must be present.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchMyApiKeyRequest {
+    /// New human-readable label (1–255 chars, trimmed).
+    pub label: Option<String>,
+    /// Replacement scopes array (non-empty strings).
+    pub scopes: Option<Vec<String>>,
+}
+
+/// Updates the label and/or scopes of an API key owned by the authenticated caller.
+///
+/// At least one field must be provided. Returns 400 if neither is given or validation
+/// fails. Returns 404 if the key is not found or belongs to another user. Returns 409
+/// if the key has already been revoked. No `X-Group-Id` header required.
+#[utoipa::path(
+    patch,
+    path = "/v1/me/api-keys/{key_id}",
+    params(
+        ("key_id" = Uuid, Path, description = "API key UUID to update."),
+    ),
+    request_body = PatchMyApiKeyRequest,
+    responses(
+        (status = 200, description = "API key updated.", body = ApiKeySummary),
+        (status = 400, description = "Validation error (no fields, label too long, empty scope).", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 404, description = "Key not found or belongs to another user.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Key is already revoked.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn patch_my_api_key(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(key_id): Path<Uuid>,
+    Json(body): Json<PatchMyApiKeyRequest>,
+) -> Result<Json<ApiKeySummary>, RestError> {
+    // Validate: at least one field required.
+    if body.label.is_none() && body.scopes.is_none() {
+        return Err(RestError::BadRequest(
+            "at least one field (label or scopes) must be provided".into(),
+        ));
+    }
+
+    // Validate label if present.
+    let new_label: Option<String> = body.label.map(|l| l.trim().to_owned());
+    if let Some(ref lbl) = new_label
+        && (lbl.is_empty() || lbl.len() > 255)
+    {
+        return Err(RestError::BadRequest(
+            "label must be 1–255 characters".into(),
+        ));
+    }
+
+    // Validate scopes if present.
+    if let Some(ref scopes) = body.scopes {
+        for scope in scopes {
+            if scope.is_empty() {
+                return Err(RestError::BadRequest(
+                    "scopes must be non-empty strings".into(),
+                ));
+            }
+        }
+    }
+
+    let scopes_json: Option<serde_json::Value> = match &body.scopes {
+        Some(s) => Some(
+            serde_json::to_value(s)
+                .map_err(|e| RestError::Internal(anyhow::anyhow!("scopes serialize: {e}")))?,
+        ),
+        None => None,
+    };
+
+    let nil_uuid = Uuid::nil();
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // COALESCE: only provided fields change.
+    // FORCE RLS (api_keys_owner_only) + `AND user_id = $2` guard cross-user.
+    // `AND revoked_at IS NULL` guard: 0 rows → disambiguate revoked vs not-found.
+    type UpdatedRow = (
+        Uuid,
+        String,
+        serde_json::Value,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    );
+    let updated: Option<UpdatedRow> = sqlx::query_as(
+        "UPDATE api_keys \
+         SET label  = COALESCE($1, label), \
+             scopes = COALESCE($2, scopes) \
+         WHERE id = $3 AND user_id = $4 AND revoked_at IS NULL \
+         RETURNING id, label, scopes, created_at, last_used_at, revoked_at",
+    )
+    .bind(&new_label)
+    .bind(&scopes_json)
+    .bind(key_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    if updated.is_none() {
+        // Disambiguate: revoked (409) vs not-found/cross-user (404).
+        let row: Option<(bool,)> =
+            sqlx::query_as("SELECT true FROM api_keys WHERE id = $1 AND user_id = $2")
+                .bind(key_id)
+                .bind(principal.user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+        return if row.is_some() {
+            Err(RestError::Conflict("api key is already revoked".into()))
+        } else {
+            Err(RestError::NotFound)
+        };
+    }
+
+    let (id, label, scopes_val, created_at, last_used_at, revoked_at) = updated.unwrap();
+
+    let label_len = label.len();
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::ApiKeyUpdated,
+        principal.user_id,
+        nil_uuid,
+        "api_keys",
+        id.to_string(),
+        json!({ "label_len": label_len }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(Json(ApiKeySummary {
+        id,
+        label,
+        scopes: serde_json::from_value(scopes_val).unwrap_or_default(),
+        created_at,
+        last_used_at,
+        revoked_at,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4889,5 +5059,65 @@ mod tests {
             "00000000-0000-0000-0000-000000000000",
             "group_id must be nil-uuid for user-scoped API key audit"
         );
+    }
+
+    // ── PATCH /v1/me/api-keys/{key_id} unit tests ─────────────────────────────
+
+    #[test]
+    fn patch_api_key_request_label_only_is_valid() {
+        let req = PatchMyApiKeyRequest {
+            label: Some("renamed key".into()),
+            scopes: None,
+        };
+        assert!(req.label.is_some());
+        assert!(req.scopes.is_none());
+    }
+
+    #[test]
+    fn patch_api_key_request_scopes_only_is_valid() {
+        let req = PatchMyApiKeyRequest {
+            label: None,
+            scopes: Some(vec!["workspace.read".into()]),
+        };
+        assert!(req.label.is_none());
+        assert_eq!(req.scopes.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn patch_api_key_request_both_fields_is_valid() {
+        let req = PatchMyApiKeyRequest {
+            label: Some("my key".into()),
+            scopes: Some(vec!["workspace.read".into(), "files.write".into()]),
+        };
+        assert!(req.label.is_some());
+        assert_eq!(req.scopes.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn patch_api_key_audit_action_wire_form() {
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyUpdated.as_str(),
+            "api_key.updated"
+        );
+    }
+
+    #[test]
+    fn patch_api_key_audit_action_distinct_from_created_and_revoked() {
+        assert_ne!(
+            WorkspaceAuditAction::ApiKeyUpdated.as_str(),
+            WorkspaceAuditAction::ApiKeyCreated.as_str(),
+        );
+        assert_ne!(
+            WorkspaceAuditAction::ApiKeyUpdated.as_str(),
+            WorkspaceAuditAction::ApiKeyRevoked.as_str(),
+        );
+    }
+
+    #[test]
+    fn patch_api_key_label_length_255_is_boundary() {
+        let label = "a".repeat(255);
+        assert_eq!(label.len(), 255, "255-char label is at the boundary");
+        let too_long = "a".repeat(256);
+        assert!(too_long.len() > 255, "256-char label exceeds limit");
     }
 }

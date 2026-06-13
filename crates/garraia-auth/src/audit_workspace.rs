@@ -719,6 +719,12 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "api_keys"`, `resource_id = "{key_id}"`.
     /// Metadata: `{}` — no PII.
     ApiKeyRevoked,
+
+    /// An API key's label/scopes were updated via `PATCH /v1/me/api-keys/{key_id}` (plan 0334 / GAR-874).
+    ///
+    /// `resource_type = "api_keys"`, `resource_id = "{key_id}"`.
+    /// Metadata: `{"label_len": N}` — label length only; raw label is NOT logged.
+    ApiKeyUpdated,
 }
 
 impl WorkspaceAuditAction {
@@ -801,6 +807,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::SessionsAllRevoked => "session.all_revoked",
             WorkspaceAuditAction::ApiKeyCreated => "api_key.created",
             WorkspaceAuditAction::ApiKeyRevoked => "api_key.revoked",
+            WorkspaceAuditAction::ApiKeyUpdated => "api_key.updated",
         }
     }
 }
@@ -1126,6 +1133,10 @@ mod tests {
             WorkspaceAuditAction::ApiKeyRevoked.as_str(),
             "api_key.revoked"
         );
+        assert_eq!(
+            WorkspaceAuditAction::ApiKeyUpdated.as_str(),
+            "api_key.updated"
+        );
     }
 
     #[test]
@@ -1202,6 +1213,7 @@ mod tests {
             WorkspaceAuditAction::SessionsAllRevoked.as_str(),
             WorkspaceAuditAction::ApiKeyCreated.as_str(),
             WorkspaceAuditAction::ApiKeyRevoked.as_str(),
+            WorkspaceAuditAction::ApiKeyUpdated.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
