@@ -626,6 +626,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/me/threads` — caller-scoped thread participation inbox (cursor-paginated, `include_resolved` filter; creator vs participant role) — plan 0261 / [GAR-790](https://linear.app/chatgpt25/issue/GAR-790) ✅
 - [x] `GET /v1/me/sessions` — list caller's active sessions (cursor-paginated; `expires_at`, `created_at`, `user_agent`) — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
 - [x] `DELETE /v1/me/sessions/{session_id}` — revoke single session by ID — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
+- [x] `DELETE /v1/me/sessions` — bulk-revoke all active sessions ("sign out from all devices"); `SessionsAllRevoked` audit event — plan 0328 / [GAR-869](https://linear.app/chatgpt25/issue/GAR-869) ✅ merged PR #747 (`ed38d1a`)
 
 **Chats**
 
