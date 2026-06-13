@@ -44,7 +44,8 @@ use super::me::{
     MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
     MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
     MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest,
-    PatchMeResponse, PendingInviteSummary, SessionSummary, TaskAssignmentSummary, TasksListResponse,
+    PatchMeResponse, PendingInviteSummary, SessionSummary, TaskAssignmentSummary,
+    TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,

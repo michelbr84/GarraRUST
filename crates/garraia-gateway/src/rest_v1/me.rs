@@ -2704,14 +2704,13 @@ pub async fn revoke_my_session(
 
     if result.rows_affected() == 0 {
         // Distinguish "already revoked" (204) from "not found / cross-user" (404).
-        let exists: Option<(bool,)> = sqlx::query_as(
-            "SELECT true FROM sessions WHERE id = $1 AND user_id = $2",
-        )
-        .bind(session_id)
-        .bind(principal.user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+        let exists: Option<(bool,)> =
+            sqlx::query_as("SELECT true FROM sessions WHERE id = $1 AND user_id = $2")
+                .bind(session_id)
+                .bind(principal.user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| RestError::Internal(e.into()))?;
 
         tx.commit()
             .await
@@ -4035,7 +4034,10 @@ mod tests {
         };
         let v = serde_json::to_value(&s).unwrap();
         let ts = v["expires_at"].as_str().unwrap();
-        assert!(ts.ends_with('Z'), "expires_at must be UTC with Z suffix: {ts}");
+        assert!(
+            ts.ends_with('Z'),
+            "expires_at must be UTC with Z suffix: {ts}"
+        );
     }
 
     #[test]
@@ -4051,7 +4053,10 @@ mod tests {
         };
         let v = serde_json::to_value(&s).unwrap();
         let ts = v["created_at"].as_str().unwrap();
-        assert!(ts.ends_with('Z'), "created_at must be UTC with Z suffix: {ts}");
+        assert!(
+            ts.ends_with('Z'),
+            "created_at must be UTC with Z suffix: {ts}"
+        );
     }
 
     #[test]

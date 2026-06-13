@@ -715,10 +715,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/me/doc-pages", get(unconfigured_handler))
                 .route("/v1/me/sessions", get(unconfigured_handler))
-                .route(
-                    "/v1/me/sessions/{session_id}",
-                    delete(unconfigured_handler),
-                )
+                .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -1074,10 +1071,7 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/doc-page-mentions", get(unconfigured_handler))
                 .route("/v1/me/doc-pages", get(unconfigured_handler))
                 .route("/v1/me/sessions", get(unconfigured_handler))
-                .route(
-                    "/v1/me/sessions/{session_id}",
-                    delete(unconfigured_handler),
-                )
+                .route("/v1/me/sessions/{session_id}", delete(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
