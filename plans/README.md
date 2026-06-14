@@ -346,4 +346,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0335 | [GAR-876 — PATCH /v1/me/password — self-service password change](0335-gar-876-patch-me-password.md) | [GAR-876](https://linear.app/chatgpt25/issue/GAR-876) | ✅ Merged 2026-06-14 via PR #757 (`0c9a024`) |
 | 0336 | [GAR-877 — Health run 130 (2026-06-14 ~00:45 ET): all surfaces clean, priority (i)](0336-gar-877-health-run-130.md) | [GAR-877](https://linear.app/chatgpt25/issue/GAR-877) | ✅ Merged 2026-06-14 via PR #758 (`02dc199`) |
 | 0337 | [GAR-878 — Health run 131 (2026-06-14 ~00:48 ET): all surfaces clean, priority (i)](0337-gar-878-health-run-131.md) | [GAR-878](https://linear.app/chatgpt25/issue/GAR-878) | ✅ Merged 2026-06-14 via PR #760 (`e3044c29`) |
-| 0338 | [GAR-879 — Health run 132 (2026-06-14 ~02:27 ET): all surfaces clean, priority (i)](0338-gar-879-health-run-132.md) | [GAR-879](https://linear.app/chatgpt25/issue/GAR-879) | In Progress |
+| 0338 | [GAR-879 — Health run 132 (2026-06-14 ~02:27 ET): all surfaces clean, priority (i)](0338-gar-879-health-run-132.md) | [GAR-879](https://linear.app/chatgpt25/issue/GAR-879) | ✅ Merged 2026-06-14 via PR #763 (`7425541`) |
+| 0339 | [GAR-880 — Health run 133 (2026-06-14 ~08:45 ET): all surfaces clean, priority (i)](0339-gar-880-health-run-133.md) | [GAR-880](https://linear.app/chatgpt25/issue/GAR-880) | In Progress |
