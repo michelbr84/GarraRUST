@@ -46,9 +46,9 @@ docs/security/dependabot-status.md        ← update header + add run 131 sectio
 - [x] Update plans/README.md
 - [x] Update dependabot-status.md
 - [x] Create branch health/202606140448-run131-status-note
-- [ ] Push + open PR
-- [ ] CI green → merge
-- [ ] Mark GAR-878 Done
+- [x] Push + open PR
+- [x] CI green → merge (PR #760, `e3044c29`)
+- [x] Mark GAR-878 Done
 
 ## Security Scan Results
 
