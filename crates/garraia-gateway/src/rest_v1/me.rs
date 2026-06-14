@@ -68,8 +68,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use garraia_auth::{
-    Principal, WorkspaceAuditAction, audit_workspace_event, change_password,
-    PasswordChangeOutcome,
+    PasswordChangeOutcome, Principal, WorkspaceAuditAction, audit_workspace_event, change_password,
 };
 use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
@@ -3540,9 +3539,14 @@ pub async fn patch_my_password(
     let current_password = secrecy::SecretString::from(body.current_password);
     let new_password = secrecy::SecretString::from(body.new_password);
 
-    let outcome = change_password(&state.auth.login_pool, principal.user_id, &current_password, &new_password)
-        .await
-        .map_err(|e| RestError::Internal(anyhow::anyhow!("change_password: {e}")))?;
+    let outcome = change_password(
+        &state.auth.login_pool,
+        principal.user_id,
+        &current_password,
+        &new_password,
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("change_password: {e}")))?;
 
     match outcome {
         PasswordChangeOutcome::Success => {}
@@ -5256,7 +5260,11 @@ mod tests {
     #[test]
     fn patch_password_new_1024_chars_is_max_valid() {
         let ok = "a".repeat(1024);
-        assert_eq!(ok.len(), 1024, "1024-char password is at the maximum boundary");
+        assert_eq!(
+            ok.len(),
+            1024,
+            "1024-char password is at the maximum boundary"
+        );
     }
 
     #[test]
