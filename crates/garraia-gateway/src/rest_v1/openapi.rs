@@ -42,11 +42,11 @@ use super::me::{
     AcceptMyInviteResponse, ApiKeySummary, ChatMembershipSummary, CreateApiKeyRequest,
     CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, MeResponse,
     MentionSummary, MentionsListResponse, MyApiKeysResponse, MyAuditResponse,
-    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse,
-    MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse,
-    MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse,
-    PatchMyApiKeyRequest, PendingInviteSummary, PersonalAuditEventSummary, SessionSummary,
-    TaskAssignmentSummary, TasksListResponse,
+    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
+    MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
+    MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest,
+    PatchMeResponse, PatchMyApiKeyRequest, PendingInviteSummary, PersonalAuditEventSummary,
+    SessionSummary, TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,

@@ -3793,7 +3793,10 @@ pub async fn list_my_audit(
         None
     };
 
-    Ok(Json(MyAuditResponse { events, next_cursor }))
+    Ok(Json(MyAuditResponse {
+        events,
+        next_cursor,
+    }))
 }
 
 #[cfg(test)]
@@ -5565,7 +5568,10 @@ mod tests {
         assert_eq!(v["id"], "00000000-0000-0000-0000-000000000000");
         assert_eq!(v["action"], "password.changed");
         assert_eq!(v["resource_type"], "user_identities");
-        assert!(v["resource_id"].is_null(), "absent resource_id must be null");
+        assert!(
+            v["resource_id"].is_null(),
+            "absent resource_id must be null"
+        );
     }
 
     #[test]
