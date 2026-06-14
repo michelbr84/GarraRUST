@@ -633,6 +633,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `DELETE /v1/me/api-keys/{key_id}` — soft-revoke (`revoked_at = now()`), idempotent 204; `ApiKeyRevoked` audit — plan 0331 / [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) ✅
 - [x] `PATCH /v1/me/api-keys/{key_id}` — update label and/or scopes of an active API key; 409 if revoked; `ApiKeyUpdated` audit — plan 0334 / [GAR-874](https://linear.app/chatgpt25/issue/GAR-874) ✅
 - [x] `PATCH /v1/me/password` — change own password: verify current + Argon2id re-hash via `LoginPool` BYPASSRLS; dual-verify PBKDF2 legacy; anti-enumeration 403; `PasswordChanged` audit — plan 0335 / [GAR-876](https://linear.app/chatgpt25/issue/GAR-876) ✅
+- [x] `GET /v1/me/audit` — cursor-paginated personal audit trail (login, logout, signup, password.changed, api_key.*, session.* events); keyset `(created_at DESC, id DESC)`; `action` filter; no PII fields — plan 0340 / [GAR-881](https://linear.app/chatgpt25/issue/GAR-881) ✅
 
 **Chats**
 

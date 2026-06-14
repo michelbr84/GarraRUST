@@ -376,6 +376,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .delete(me::revoke_my_api_key),
                 )
                 .route("/v1/me/password", patch(me::patch_my_password))
+                // Plan 0340 (GAR-881) — GET /v1/me/audit personal audit trail.
+                .route("/v1/me/audit", get(me::list_my_audit))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -749,6 +751,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .patch(unconfigured_handler)
                         .delete(unconfigured_handler),
                 )
+                .route("/v1/me/password", patch(unconfigured_handler))
+                // Plan 0340 (GAR-881) — GET /v1/me/audit stub.
+                .route("/v1/me/audit", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -1122,6 +1127,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                         .delete(unconfigured_handler),
                 )
                 .route("/v1/me/password", patch(unconfigured_handler))
+                // Plan 0340 (GAR-881) — GET /v1/me/audit stub.
+                .route("/v1/me/audit", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",

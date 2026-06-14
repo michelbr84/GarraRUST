@@ -41,11 +41,12 @@ use super::invites::AcceptInviteResponse;
 use super::me::{
     AcceptMyInviteResponse, ApiKeySummary, ChatMembershipSummary, CreateApiKeyRequest,
     CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, MeResponse,
-    MentionSummary, MentionsListResponse, MyApiKeysResponse, MyChatsMembershipResponse,
-    MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse, MyInvitesResponse,
-    MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse, MySessionsResponse,
-    MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse, PatchMyApiKeyRequest,
-    PendingInviteSummary, SessionSummary, TaskAssignmentSummary, TasksListResponse,
+    MentionSummary, MentionsListResponse, MyApiKeysResponse, MyAuditResponse,
+    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary, MyFilesResponse,
+    MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary, MyReactionsResponse,
+    MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest, PatchMeResponse,
+    PatchMyApiKeyRequest, PendingInviteSummary, PersonalAuditEventSummary, SessionSummary,
+    TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -232,6 +233,7 @@ impl Modify for SecurityAddon {
         super::me::get_my_api_key,
         super::me::patch_my_api_key,
         super::me::revoke_my_api_key,
+        super::me::list_my_audit,
     ),
     components(schemas(
         MeResponse,
@@ -357,6 +359,8 @@ impl Modify for SecurityAddon {
         ApiKeySummary,
         MyApiKeysResponse,
         PatchMyApiKeyRequest,
+        PersonalAuditEventSummary,
+        MyAuditResponse,
     )),
     modifiers(&SecurityAddon)
 )]
