@@ -1,6 +1,6 @@
 # Plan 0340 — GAR-881 — GET /v1/me/audit — personal audit trail
 
-**Status:** In Progress  
+**Status:** Done ✅ — Merged 2026-06-14 via PR #766 (`cf20882`)  
 **Issue:** [GAR-881](https://linear.app/chatgpt25/issue/GAR-881)  
 **Branch:** `routine/202506141215-me-audit`  
 **Estimate:** 2h
@@ -86,11 +86,11 @@ plans/README.md  ← add plan row
 
 ## M1 tasks
 
-- [ ] T1 — DTOs + handler in me.rs
-- [ ] T2 — Route wiring in mod.rs (all 3 branches)
-- [ ] T3 — OpenAPI registration
-- [ ] T4 — ROADMAP + plans/README.md update
-- [ ] T5 — `cargo clippy` clean + `cargo test -p garraia-gateway`
+- [x] T1 — DTOs + handler in me.rs
+- [x] T2 — Route wiring in mod.rs (all 3 branches)
+- [x] T3 — OpenAPI registration
+- [x] T4 — ROADMAP + plans/README.md update
+- [x] T5 — `cargo clippy` clean + `cargo test -p garraia-gateway`
 
 ---
 
