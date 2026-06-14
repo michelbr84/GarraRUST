@@ -344,3 +344,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0333 | [GAR-873 — Health run 128 (2026-06-13 ~16:45 ET): all surfaces clean, priority (i)](0333-gar-873-health-run-128.md) | [GAR-873](https://linear.app/chatgpt25/issue/GAR-873) | ✅ Merged 2026-06-13 via PR #754 (`a1ce9c6`) |
 | 0334 | [GAR-874 — PATCH /v1/me/api-keys/{key_id} — update API key label/scopes](0334-gar-874-patch-me-api-key.md) | [GAR-874](https://linear.app/chatgpt25/issue/GAR-874) | ✅ Merged 2026-06-13 via PR #755 (`9e36b47`) |
 | 0336 | [GAR-877 — Health run 130 (2026-06-14 ~00:45 ET): all surfaces clean, priority (i)](0336-gar-877-health-run-130.md) | [GAR-877](https://linear.app/chatgpt25/issue/GAR-877) | ✅ Merged 2026-06-14 via PR #758 (`02dc199`) |
+| 0337 | [GAR-878 — Health run 131 (2026-06-14 ~00:48 ET): all surfaces clean, priority (i)](0337-gar-878-health-run-131.md) | [GAR-878](https://linear.app/chatgpt25/issue/GAR-878) | ⏳ In progress |
