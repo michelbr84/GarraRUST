@@ -57,5 +57,9 @@ pub use storage_redacted::RedactedStorageError;
 pub mod app_pool;
 pub use app_pool::{AppPool, AppPoolConfig};
 
+// Plan 0335 (GAR-876) — self-service password change
+pub mod password;
+pub use password::{PasswordChangeOutcome, change_password};
+
 /// Convenience `Result` alias for crate APIs.
 pub type Result<T> = std::result::Result<T, AuthError>;
