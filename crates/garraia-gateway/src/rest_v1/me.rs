@@ -3870,9 +3870,7 @@ pub async fn delete_me(
         }
         Some("deleted") => {
             // Already deleted — idempotency guard: do not re-emit the audit event.
-            return Err(RestError::Conflict(
-                "account is already deleted".into(),
-            ));
+            return Err(RestError::Conflict("account is already deleted".into()));
         }
         _ => {}
     }
