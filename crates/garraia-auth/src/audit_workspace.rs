@@ -725,6 +725,15 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "api_keys"`, `resource_id = "{key_id}"`.
     /// Metadata: `{"label_len": N}` — label length only; raw label is NOT logged.
     ApiKeyUpdated,
+
+    /// The caller's own password was changed via `PATCH /v1/me/password` (plan 0335 / GAR-876).
+    ///
+    /// Password changes are user-scoped, not group-scoped. `group_id` carries
+    /// the nil-uuid by convention (same as `SessionRevoked` / `ApiKeyCreated`).
+    ///
+    /// `resource_type = "user_identities"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{}` — no PII; old and new hashes are NEVER logged.
+    PasswordChanged,
 }
 
 impl WorkspaceAuditAction {
@@ -808,6 +817,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ApiKeyCreated => "api_key.created",
             WorkspaceAuditAction::ApiKeyRevoked => "api_key.revoked",
             WorkspaceAuditAction::ApiKeyUpdated => "api_key.updated",
+            WorkspaceAuditAction::PasswordChanged => "password.changed",
         }
     }
 }
@@ -1137,6 +1147,10 @@ mod tests {
             WorkspaceAuditAction::ApiKeyUpdated.as_str(),
             "api_key.updated"
         );
+        assert_eq!(
+            WorkspaceAuditAction::PasswordChanged.as_str(),
+            "password.changed"
+        );
     }
 
     #[test]
@@ -1214,6 +1228,7 @@ mod tests {
             WorkspaceAuditAction::ApiKeyCreated.as_str(),
             WorkspaceAuditAction::ApiKeyRevoked.as_str(),
             WorkspaceAuditAction::ApiKeyUpdated.as_str(),
+            WorkspaceAuditAction::PasswordChanged.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
