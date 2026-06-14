@@ -1,6 +1,31 @@
-> Last updated: **2026-06-14 run 134** (health routine — priority (i): all surfaces clean. run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-14 run 135** (health routine — priority (i): all surfaces clean. run 134 (GAR-882) merged PR #769; run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-14 run 135 (~20:45 ET) — priority (i): all surfaces clean
+
+Health routine ran on 2026-06-14 (~20:45 ET / 2026-06-15T00:45 UTC). Priority **(i)** — no actionable security work found.
+
+**Scan scope:** GitHub Actions CI on main (last 20+ runs all success), Dependabot PRs (0 open), security surfaces: CI Security Audit (cargo-audit), CI cargo-deny, CI CodeQL (Analyze rust + js-ts + actions), CI Secret Scan (gitleaks). All confirmed clean.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `d83f0c4` (2026-06-14T19:57Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI success — advisories ok, bans ok, licenses ok, sources ok |
+| Dependabot PRs | ✅ none open | 0 open Dependabot PRs |
+| Dependabot security alerts | ⚠️ 3 open, all upstream-blocked | rsa (RUSTSEC-2023-0071/GAR-456), glib (RUSTSEC-2024-0429/GAR-513), rand (RUSTSEC-2026-0097/GAR-513) — expiry 2026-07-31. No first_patched_version for any. |
+| Security Audit (cargo-audit) | ✅ pass | CI success on main `d83f0c4` (2026-06-14T19:57Z); 0 vulnerabilities, 0 unsound |
+| cargo-deny | ✅ pass | RUSTSEC-2023-0071 + 18 unmaintained IDs suppressed in deny.toml |
+| CodeQL | ✅ pass | Analyze (rust) + (javascript-typescript) + (actions) success on main `d83f0c4` |
+| Quality Ratchet | ✅ pass | CI success on main `d83f0c4` |
+| CI on main (`d83f0c4`) | ✅ green | All workflow checks success (2026-06-14T19:57Z) |
+| Workflow failures (last 7d) | ✅ none | No failures in 20+ consecutive main runs |
+
+**Open PRs noted:** PR #771 (`routine/202606141815-delete-me`, GAR-884 — DELETE /v1/me) is open — NOT touched (routine/ prefix, health routine scope).
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (GAR-456, expiry 2026-07-31), glib RUSTSEC-2024-0429 (GAR-513, expiry 2026-07-31), rand RUSTSEC-2026-0097 (GAR-513, expiry 2026-07-31), CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-14 run 134 (~12:45 ET) — priority (i): all surfaces clean
 
