@@ -31,22 +31,18 @@ async fn audit_workspace_event_inserts_row() -> anyhow::Result<()> {
     // Seed a user and a group via the superuser pool (bypass auth + RLS for fixture setup).
     let actor_user_id = Uuid::now_v7();
     let group_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)",
-    )
-    .bind(actor_user_id)
-    .bind(format!("audit-actor-{}@garraia.test", actor_user_id))
-    .bind("Audit Actor")
-    .execute(&admin)
-    .await?;
-    sqlx::query(
-        "INSERT INTO groups (id, name, type, created_by) VALUES ($1, $2, 'team', $3)",
-    )
-    .bind(group_id)
-    .bind(format!("audit-group-{group_id}"))
-    .bind(actor_user_id)
-    .execute(&admin)
-    .await?;
+    sqlx::query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)")
+        .bind(actor_user_id)
+        .bind(format!("audit-actor-{}@garraia.test", actor_user_id))
+        .bind("Audit Actor")
+        .execute(&admin)
+        .await?;
+    sqlx::query("INSERT INTO groups (id, name, type, created_by) VALUES ($1, $2, 'team', $3)")
+        .bind(group_id)
+        .bind(format!("audit-group-{group_id}"))
+        .bind(actor_user_id)
+        .execute(&admin)
+        .await?;
 
     // Begin a tx on app_pool (garraia_app) and satisfy the GUC contract.
     let mut tx = h.app_pool.begin().await?;

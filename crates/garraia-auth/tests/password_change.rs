@@ -16,7 +16,7 @@
 mod common;
 
 use common::harness::Harness;
-use garraia_auth::{anonymize_identity, change_password, hash_argon2id, PasswordChangeOutcome};
+use garraia_auth::{PasswordChangeOutcome, anonymize_identity, change_password, hash_argon2id};
 use password_hash::{PasswordHasher, SaltString};
 use pbkdf2::Pbkdf2;
 use secrecy::SecretString;
@@ -30,18 +30,12 @@ fn pw(s: &str) -> SecretString {
 /// Insert one user + one internal identity via the admin pool.
 /// Returns the new `user_id`. The `login` column is set to `email` so that
 /// `anonymize_identity` tests can detect the change by querying it.
-async fn seed(
-    admin: &sqlx::PgPool,
-    email: &str,
-    password_hash: &str,
-) -> anyhow::Result<Uuid> {
-    let row = sqlx::query(
-        "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(email)
-    .bind(email)
-    .fetch_one(admin)
-    .await?;
+async fn seed(admin: &sqlx::PgPool, email: &str, password_hash: &str) -> anyhow::Result<Uuid> {
+    let row = sqlx::query("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+        .bind(email)
+        .bind(email)
+        .fetch_one(admin)
+        .await?;
     let user_id: Uuid = row.try_get("id")?;
 
     sqlx::query(
