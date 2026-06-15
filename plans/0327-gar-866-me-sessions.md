@@ -1,6 +1,6 @@
 # Plan 0327 — GAR-866: GET /v1/me/sessions + DELETE /v1/me/sessions/{session_id}
 
-> **Status:** In Progress
+> **Status:** ✅ Merged 2026-06-13 via PR #742 (`fc5d996`)
 > **Linear:** [GAR-866](https://linear.app/chatgpt25/issue/GAR-866)
 > **Branch:** `routine/202606130026-me-sessions`
 > **Parent plan:** 0325
@@ -103,14 +103,14 @@ plans/README.md                                 ← row 0327 added
 ## M1 Tasks
 
 - [x] T1: Write plan + create Linear issue GAR-866
-- [ ] T2: Add `SessionRevoked` to `WorkspaceAuditAction` in `garraia-auth`
-- [ ] T3: Implement `list_my_sessions` handler in `me.rs` + 6 unit tests
-- [ ] T4: Implement `revoke_my_session` handler in `me.rs` + 6 unit tests
-- [ ] T5: Wire routes in `mod.rs` (all 3 branches) + add `delete` to imports
-- [ ] T6: Register paths in `openapi.rs`
-- [ ] T7: Commit + push + open PR
-- [ ] T8: Wait for CI green; fix any failures
-- [ ] T9: Squash-merge; mark GAR-866 Done; update ROADMAP + plans/README.md
+- [x] T2: Add `SessionRevoked` to `WorkspaceAuditAction` in `garraia-auth`
+- [x] T3: Implement `list_my_sessions` handler in `me.rs` + 6 unit tests
+- [x] T4: Implement `revoke_my_session` handler in `me.rs` + 6 unit tests
+- [x] T5: Wire routes in `mod.rs` (all 3 branches) + add `delete` to imports
+- [x] T6: Register paths in `openapi.rs`
+- [x] T7: Commit + push + open PR (#742)
+- [x] T8: Wait for CI green; fix any failures (fmt fixup commit `f831e85`)
+- [x] T9: Squash-merge (`fc5d996`); mark GAR-866 Done; update plans/README.md
 
 ## Risk register
 
