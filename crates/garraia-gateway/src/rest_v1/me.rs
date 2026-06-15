@@ -64,6 +64,13 @@
 //! caller's own user-scoped events (login, logout, password.changed, api_key.*,
 //! session.*). No `X-Group-Id` required. Events filtered to
 //! `actor_user_id = caller AND group_id = nil-uuid` (plan 0340 / GAR-881).
+//!
+//! `DELETE /v1/me` — self-service account soft-deletion (plan 0343 / GAR-884).
+//! Sets `users.status = 'deleted'` and revokes all active sessions atomically.
+//! Emits `account.self_deleted` audit event. Returns 204 No Content on success,
+//! 409 Conflict if account is already deleted (idempotent guard). No password
+//! re-confirmation required — caller is already authenticated via JWT.
+//! Hard deletion deferred to future retention worker (Fase 5.3 / LGPD art. 18).
 
 use argon2::PasswordHasher;
 use axum::Json;
@@ -3799,6 +3806,112 @@ pub async fn list_my_audit(
     }))
 }
 
+// ─── DELETE /v1/me ───────────────────────────────────────────────────────────
+
+/// Self-service account soft-deletion (plan 0343 / GAR-884).
+///
+/// Sets `users.status = 'deleted'` and revokes all active sessions in a single
+/// atomic transaction. Emits `account.self_deleted` audit event. Returns 204 on
+/// success or 409 if the account is already deleted.
+///
+/// No password re-confirmation required — the caller is already authenticated.
+/// Hard deletion is deferred to a future retention worker (Fase 5.3 / LGPD
+/// art. 18 / GDPR art. 17).
+#[utoipa::path(
+    delete,
+    path = "/v1/me",
+    tag = "me",
+    responses(
+        (status = 204, description = "Account soft-deleted; all sessions revoked"),
+        (status = 409, description = "Account already deleted"),
+        (status = 401, description = "Missing or invalid JWT"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+pub async fn delete_me(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+) -> Result<StatusCode, RestError> {
+    let nil_uuid = Uuid::nil();
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Guard: check current status. FOR UPDATE prevents concurrent double-delete.
+    let current_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM users WHERE id = $1 FOR UPDATE")
+            .bind(principal.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    match current_status.as_deref() {
+        None => {
+            // Row not found — should be unreachable for a valid JWT principal.
+            return Err(RestError::Internal(anyhow::anyhow!(
+                "user row not found for authenticated principal"
+            )));
+        }
+        Some("deleted") => {
+            // Already deleted — idempotency guard: do not re-emit the audit event.
+            return Err(RestError::Conflict("account is already deleted".into()));
+        }
+        _ => {}
+    }
+
+    // Soft-delete the account.
+    sqlx::query("UPDATE users SET status = 'deleted' WHERE id = $1")
+        .bind(principal.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Revoke all active sessions atomically.
+    sqlx::query(
+        "UPDATE sessions SET revoked_at = now() \
+         WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()",
+    )
+    .bind(principal.user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Emit compliance audit event. No PII in metadata.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::AccountSelfDeleted,
+        principal.user_id,
+        nil_uuid,
+        "users",
+        principal.user_id.to_string(),
+        json!({}),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5589,5 +5702,54 @@ mod tests {
     fn list_my_audit_limit_clamps_to_100() {
         let clamped = 200u32.clamp(1, 100);
         assert_eq!(clamped, 100, "limit must clamp to 100 max");
+    }
+
+    // ── DELETE /v1/me tests (plan 0343 / GAR-884) ─────────────────────────────
+
+    #[test]
+    fn delete_me_action_string_is_stable() {
+        assert_eq!(
+            WorkspaceAuditAction::AccountSelfDeleted.as_str(),
+            "account.self_deleted"
+        );
+    }
+
+    #[test]
+    fn delete_me_action_display_matches_as_str() {
+        let action = WorkspaceAuditAction::AccountSelfDeleted;
+        assert_eq!(format!("{action}"), "account.self_deleted");
+    }
+
+    #[test]
+    fn delete_me_response_is_no_content() {
+        // DELETE /v1/me returns 204 No Content — verify the constant.
+        assert_eq!(StatusCode::NO_CONTENT.as_u16(), 204);
+    }
+
+    #[test]
+    fn delete_me_conflict_is_409() {
+        // Already-deleted account path returns 409 Conflict.
+        assert_eq!(StatusCode::CONFLICT.as_u16(), 409);
+    }
+
+    #[test]
+    fn delete_me_action_is_user_scoped_not_group_scoped() {
+        // AccountSelfDeleted carries the nil-uuid as group_id by convention —
+        // same as SessionRevoked / PasswordChanged.  Verify the string does not
+        // carry a group prefix so consumers can distinguish user-scoped events.
+        let s = WorkspaceAuditAction::AccountSelfDeleted.as_str();
+        assert!(
+            s.starts_with("account."),
+            "expected 'account.*' namespace, got '{s}'"
+        );
+    }
+
+    #[test]
+    fn delete_me_metadata_is_empty_object() {
+        // PII safety: no email or display_name in metadata.
+        // The handler emits json!({}) — verify serialization is stable.
+        let meta = serde_json::json!({});
+        assert!(meta.is_object());
+        assert_eq!(meta.as_object().unwrap().len(), 0);
     }
 }

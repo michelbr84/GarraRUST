@@ -333,7 +333,11 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions).
                 // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id}.
                 // Plan 0335 (GAR-876) — PATCH /v1/me/password (change own password).
-                .route("/v1/me", get(me::get_me).patch(me::patch_me))
+                // Plan 0342 (GAR-884) — DELETE /v1/me (self-service account soft-deletion).
+                .route(
+                    "/v1/me",
+                    get(me::get_me).patch(me::patch_me).delete(me::delete_me),
+                )
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
                 .route("/v1/me/chats", get(me::list_my_chats))
@@ -717,7 +721,13 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0328 (GAR-869) — DELETE /v1/me/sessions (revoke all sessions) stub.
                 // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id} stub.
                 // Plan 0335 (GAR-876) — PATCH /v1/me/password stub.
-                .route("/v1/me", get(me::get_me).patch(unconfigured_handler))
+                // Plan 0342 (GAR-884) — DELETE /v1/me (self-service account soft-deletion) stub.
+                .route(
+                    "/v1/me",
+                    get(me::get_me)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
+                )
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))
                 .route("/v1/me/chats", get(unconfigured_handler))
@@ -1089,9 +1099,12 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0326 (GAR-866) — GET /v1/me/sessions + DELETE /v1/me/sessions/{id} stub.
                 // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id} stub.
                 // Plan 0335 (GAR-876) — PATCH /v1/me/password stub.
+                // Plan 0342 (GAR-884) — DELETE /v1/me (self-service account soft-deletion) stub.
                 .route(
                     "/v1/me",
-                    get(unconfigured_handler).patch(unconfigured_handler),
+                    get(unconfigured_handler)
+                        .patch(unconfigured_handler)
+                        .delete(unconfigured_handler),
                 )
                 .route("/v1/me/mentions", get(unconfigured_handler))
                 .route("/v1/me/tasks", get(unconfigured_handler))

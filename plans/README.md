@@ -351,3 +351,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0340 | [GAR-881 — GET /v1/me/audit — personal audit trail](0340-gar-881-me-audit.md) | [GAR-881](https://linear.app/chatgpt25/issue/GAR-881) | ✅ Merged 2026-06-14 via PR #766 (`cf20882`) |
 | 0341 | [GAR-882 — Health run 134 (2026-06-14 ~12:45 ET): all surfaces clean, priority (i)](0341-gar-882-health-run-134.md) | [GAR-882](https://linear.app/chatgpt25/issue/GAR-882) | ✅ Merged 2026-06-14 via PR #769 (`a88efb1`) |
 | 0342 | [GAR-883 — Health run 135 (2026-06-14 ~20:45 ET): all surfaces clean, priority (i)](0342-gar-883-health-run-135.md) | [GAR-883](https://linear.app/chatgpt25/issue/GAR-883) | ✅ Merged 2026-06-14 via PR #772 (`c7448dd`) |
+| 0343 | [GAR-884 — DELETE /v1/me — self-service account soft-deletion (LGPD/GDPR right to erasure)](0343-gar-884-delete-me.md) | [GAR-884](https://linear.app/chatgpt25/issue/GAR-884) | 🔄 In Progress |

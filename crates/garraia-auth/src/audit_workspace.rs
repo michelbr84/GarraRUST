@@ -734,6 +734,19 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "user_identities"`, `resource_id = "{user_id}"`.
     /// Metadata: `{}` — no PII; old and new hashes are NEVER logged.
     PasswordChanged,
+
+    /// The caller soft-deleted their own account via `DELETE /v1/me` (plan 0343 / GAR-884).
+    ///
+    /// Sets `users.status = 'deleted'` (tombstone). All active sessions are
+    /// revoked atomically in the same transaction. Hard deletion is deferred
+    /// to a future retention worker (Fase 5.3 / LGPD art. 18 / GDPR art. 17).
+    ///
+    /// Account deletion is user-scoped, not group-scoped. `group_id` carries
+    /// the nil-uuid by convention (same as `SessionRevoked` / `PasswordChanged`).
+    ///
+    /// `resource_type = "users"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{}` — no PII; email and display_name are NEVER logged.
+    AccountSelfDeleted,
 }
 
 impl WorkspaceAuditAction {
@@ -818,6 +831,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ApiKeyRevoked => "api_key.revoked",
             WorkspaceAuditAction::ApiKeyUpdated => "api_key.updated",
             WorkspaceAuditAction::PasswordChanged => "password.changed",
+            WorkspaceAuditAction::AccountSelfDeleted => "account.self_deleted",
         }
     }
 }
@@ -1229,6 +1243,7 @@ mod tests {
             WorkspaceAuditAction::ApiKeyRevoked.as_str(),
             WorkspaceAuditAction::ApiKeyUpdated.as_str(),
             WorkspaceAuditAction::PasswordChanged.as_str(),
+            WorkspaceAuditAction::AccountSelfDeleted.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");
