@@ -235,6 +235,7 @@ impl Modify for SecurityAddon {
         super::me::revoke_my_api_key,
         super::me::list_my_audit,
         super::me::delete_me,
+        super::me::anonymize_me,
     ),
     components(schemas(
         MeResponse,
