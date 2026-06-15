@@ -237,6 +237,7 @@ impl Modify for SecurityAddon {
         super::me::list_my_audit,
         super::me::delete_me,
         super::me::export_me,
+        super::me::anonymize_me,
     ),
     components(schemas(
         MeResponse,

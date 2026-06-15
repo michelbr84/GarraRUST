@@ -755,6 +755,17 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "users"`, `resource_id = "{user_id}"`.
     /// Metadata: `{ "sections": [...] }` — list of exported sections, no PII.
     AccountDataExported,
+
+    /// Emitted by `POST /v1/me/anonymize` (plan 0345 / GAR-888).
+    ///
+    /// The caller's `user_identities.login` was replaced with a non-identifiable
+    /// token and `users.display_name` was set to `'Usuário Anônimo'`.
+    /// Status set to `'anonymized'` (migration 030, LGPD art. 12 / GDPR art. 4(5)).
+    ///
+    /// Account-level: `group_id` is nil-uuid by convention.
+    /// `resource_type = "users"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{}` — no PII.
+    AccountAnonymized,
 }
 
 impl WorkspaceAuditAction {
@@ -841,6 +852,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::PasswordChanged => "password.changed",
             WorkspaceAuditAction::AccountSelfDeleted => "account.self_deleted",
             WorkspaceAuditAction::AccountDataExported => "account.data_exported",
+            WorkspaceAuditAction::AccountAnonymized => "account.anonymized",
         }
     }
 }
@@ -1254,6 +1266,7 @@ mod tests {
             WorkspaceAuditAction::PasswordChanged.as_str(),
             WorkspaceAuditAction::AccountSelfDeleted.as_str(),
             WorkspaceAuditAction::AccountDataExported.as_str(),
+            WorkspaceAuditAction::AccountAnonymized.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

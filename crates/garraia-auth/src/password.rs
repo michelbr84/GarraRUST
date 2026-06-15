@@ -98,6 +98,43 @@ pub async fn change_password(
     Ok(PasswordChangeOutcome::Success)
 }
 
+/// Anonymise the `user_identities` row for `user_id`.
+///
+/// Replaces `login` with a non-identifiable token (`anon-<8 hex chars>@garraanon.local`)
+/// derived from the user's UUID, making the row impossible to correlate back to a
+/// real email address.  The `password_hash` is left intact — the account status
+/// (`users.status = 'anonymized'`) is the authoritative gate for further logins;
+/// the internal provider hash is irrelevant once status is anonymized.
+///
+/// ## Why LoginPool?
+/// `user_identities` is invisible to `garraia_app` under FORCE RLS (CLAUDE.md rule 12).
+/// Only `garraia_login` (BYPASSRLS) can UPDATE this table.
+///
+/// ## Atomicity
+/// This function runs a single UPDATE — one round-trip, no transaction needed.
+/// The caller (`anonymize_me`) must commit the `users` status update via `app_pool`
+/// independently; the two operations are best-effort sequential (email first, then
+/// status).
+pub async fn anonymize_identity(login_pool: &LoginPool, user_id: Uuid) -> Result<(), AuthError> {
+    let anon_login = format!(
+        "anon-{}@garraanon.local",
+        &user_id.simple().to_string()[..8]
+    );
+    let pool = login_pool.pool();
+    sqlx::query(
+        "UPDATE user_identities \
+         SET login = $1 \
+         WHERE user_id = $2 AND provider = 'internal'",
+    )
+    .bind(&anon_login)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .map_err(AuthError::Storage)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +205,37 @@ mod tests {
             hash.starts_with("$pbkdf2-sha256$") || hash.starts_with("$pbkdf2$"),
             "pbkdf2 prefix check must match production dispatch"
         );
+    }
+
+    // ── anonymize_identity helpers ────────────────────────────────────────────
+
+    #[test]
+    fn anon_login_format_is_deterministic() {
+        let uid = uuid::Uuid::parse_str("12345678-0000-0000-0000-000000000001").unwrap();
+        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
+        assert_eq!(anon, "anon-12345678@garraanon.local");
+    }
+
+    #[test]
+    fn anon_login_is_not_valid_email_domain() {
+        let uid = uuid::Uuid::parse_str("abcdef01-0000-0000-0000-000000000001").unwrap();
+        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
+        assert!(anon.ends_with("@garraanon.local"));
+        assert!(anon.contains('@'), "must contain exactly one @");
+    }
+
+    #[test]
+    fn anon_login_prefix_is_not_identifiable() {
+        let uid = uuid::Uuid::parse_str("cafebabe-dead-beef-cafe-babe00000001").unwrap();
+        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
+        // Must start with 'anon-' prefix (not the bare UUID).
+        assert!(anon.starts_with("anon-"));
+        // Must not expose the full UUID (36-char hyphenated form) in the email.
+        assert!(
+            !anon.contains("cafebabe-dead"),
+            "must not expose full hyphenated UUID in login"
+        );
+        // The 8-char derived token is the first 8 hex chars of the simple UUID.
+        assert_eq!(&anon[5..13], "cafebabe");
     }
 }
