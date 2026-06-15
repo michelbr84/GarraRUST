@@ -1,6 +1,29 @@
-> Last updated: **2026-06-14 run 136** (health routine — priority (i): all surfaces clean. run 135 (GAR-883) merged PR #772; run 134 (GAR-882) merged PR #769; run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-15 run 144** (health routine — priority (i): 4 non-security Dependabot PRs open, all 20/20 CI-green, no CVEs. run 136 (GAR-886) priority (i); run 135 (GAR-883) merged PR #772; run 134 (GAR-882) merged PR #769; run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-15 run 144 (~12:45 ET) — priority (i): 4 non-security Dependabot PRs open
+
+Health routine ran on 2026-06-15 (~12:45 ET / 16:45 UTC). Priority **(i)** — no CVE-tagged security work found. Four non-security Dependabot maintenance PRs are open and fully CI-green.
+
+**Scan scope:** GitHub Actions CI on main (last 20+ runs), Dependabot PRs (4 open, non-security), security surfaces: CI Security Audit, CI cargo-deny, CI CodeQL, CI gitleaks.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on main `f622d9c` (2026-06-15T13:28Z) |
+| Malware (cargo/npm) | ✅ none | cargo-deny CI success |
+| Dependabot PRs | ⚠️ 4 non-security open | #781 @playwright/test 1.60→1.61, #782 uuid/chrono/regex/aws-sdk-s3/aws-smithy-types patch-minor, #783 lopdf 0.40→0.41, #784 tower-http 0.6.11→0.7.0 — all 20/20 CI-green, no CVEs |
+| Dependabot security alerts | ⚠️ 3 open, all upstream-blocked | rsa (RUSTSEC-2023-0071/GAR-456), glib (RUSTSEC-2024-0429/GAR-513), rand (RUSTSEC-2026-0097/GAR-513) — expiry 2026-07-31. No first_patched_version for any. |
+| Security Audit (cargo-audit) | ✅ pass | CI success on main `f622d9c`; 0 vulnerabilities, 0 unsound |
+| cargo-deny | ✅ pass | Suppressed in deny.toml |
+| CodeQL | ✅ pass | Analyze (rust) + (javascript-typescript) + (actions) success on main `f622d9c` |
+| CI on main (`f622d9c`) | ✅ green | All workflow checks success (2026-06-15T13:28Z) |
+
+**Open PRs noted:** PR #779 (`routine/202606151222-gar890-delete-group`, GAR-890) — NOT touched (routine/ prefix). Dependabot PRs #781–#784 all CI-green — safe to merge when owner is ready; tower-http #784 is MAJOR but use-sites (ServeDir::new + CorsLayer) are unaffected (confirmed by clippy+build+MSRV passing).
+
+**Next security backlog:** rsa RUSTSEC-2023-0071 (GAR-456, expiry 2026-07-31), glib RUSTSEC-2024-0429 (GAR-513, expiry 2026-07-31), rand RUSTSEC-2026-0097 (GAR-513, expiry 2026-07-31), CodeQL ledger re-audit due 2026-08-01 (GAR-491).
+
+---
 
 ## Confirmed 2026-06-14 run 136 (~20:45 ET) — priority (i): all surfaces clean
 
