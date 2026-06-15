@@ -4279,9 +4279,7 @@ pub async fn anonymize_me(
             ));
         }
         Some("anonymized") => {
-            return Err(RestError::Conflict(
-                "account is already anonymized".into(),
-            ));
+            return Err(RestError::Conflict("account is already anonymized".into()));
         }
         _ => {}
     }

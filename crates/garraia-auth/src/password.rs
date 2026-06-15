@@ -115,10 +115,7 @@ pub async fn change_password(
 /// The caller (`anonymize_me`) must commit the `users` status update via `app_pool`
 /// independently; the two operations are best-effort sequential (email first, then
 /// status).
-pub async fn anonymize_identity(
-    login_pool: &LoginPool,
-    user_id: Uuid,
-) -> Result<(), AuthError> {
+pub async fn anonymize_identity(login_pool: &LoginPool, user_id: Uuid) -> Result<(), AuthError> {
     let anon_login = format!(
         "anon-{}@garraanon.local",
         &user_id.simple().to_string()[..8]
