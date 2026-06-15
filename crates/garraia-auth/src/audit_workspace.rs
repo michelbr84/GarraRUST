@@ -735,7 +735,7 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{}` — no PII; old and new hashes are NEVER logged.
     PasswordChanged,
 
-    /// The caller soft-deleted their own account via `DELETE /v1/me` (plan 0342 / GAR-884).
+    /// The caller soft-deleted their own account via `DELETE /v1/me` (plan 0343 / GAR-884).
     ///
     /// Sets `users.status = 'deleted'` (tombstone). All active sessions are
     /// revoked atomically in the same transaction. Hard deletion is deferred

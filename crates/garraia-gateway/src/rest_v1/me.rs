@@ -65,7 +65,7 @@
 //! session.*). No `X-Group-Id` required. Events filtered to
 //! `actor_user_id = caller AND group_id = nil-uuid` (plan 0340 / GAR-881).
 //!
-//! `DELETE /v1/me` — self-service account soft-deletion (plan 0342 / GAR-884).
+//! `DELETE /v1/me` — self-service account soft-deletion (plan 0343 / GAR-884).
 //! Sets `users.status = 'deleted'` and revokes all active sessions atomically.
 //! Emits `account.self_deleted` audit event. Returns 204 No Content on success,
 //! 409 Conflict if account is already deleted (idempotent guard). No password
@@ -3808,7 +3808,7 @@ pub async fn list_my_audit(
 
 // ─── DELETE /v1/me ───────────────────────────────────────────────────────────
 
-/// Self-service account soft-deletion (plan 0342 / GAR-884).
+/// Self-service account soft-deletion (plan 0343 / GAR-884).
 ///
 /// Sets `users.status = 'deleted'` and revokes all active sessions in a single
 /// atomic transaction. Emits `account.self_deleted` audit event. Returns 204 on
@@ -5704,7 +5704,7 @@ mod tests {
         assert_eq!(clamped, 100, "limit must clamp to 100 max");
     }
 
-    // ── DELETE /v1/me tests (plan 0342 / GAR-884) ─────────────────────────────
+    // ── DELETE /v1/me tests (plan 0343 / GAR-884) ─────────────────────────────
 
     #[test]
     fn delete_me_action_string_is_stable() {

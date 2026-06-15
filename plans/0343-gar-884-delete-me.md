@@ -1,4 +1,4 @@
-# Plan 0342 — DELETE /v1/me — self-service account soft-deletion
+# Plan 0343 — DELETE /v1/me — self-service account soft-deletion
 
 **Issue:** [GAR-884](https://linear.app/chatgpt25/issue/GAR-884)
 **Parent epic:** [GAR-400](https://linear.app/chatgpt25/issue/GAR-400) — Endpoints de export e delete (direitos do titular)
@@ -73,8 +73,8 @@ crates/garraia-gateway/src/rest_v1/
   openapi.rs                — register path
 
 ROADMAP.md                  — mark DELETE /v1/me [x]
-plans/README.md             — add row 0342
-plans/0342-gar-884-delete-me.md  — this file
+plans/README.md             — add row 0343
+plans/0343-gar-884-delete-me.md  — this file
 ```
 
 ---
