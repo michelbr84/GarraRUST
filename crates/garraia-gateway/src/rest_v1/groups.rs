@@ -436,15 +436,14 @@ pub async fn get_group(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> =
-        sqlx::query_as(
-            "SELECT id, name, type, created_at, created_by FROM groups \
+    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
+        "SELECT id, name, type, created_at, created_by FROM groups \
              WHERE id = $1 AND archived_at IS NULL",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
 
@@ -733,13 +732,12 @@ pub async fn delete_group(
     //    Fetch including already-archived rows so we can distinguish
     //    "group doesn't exist / cross-tenant" (→ 404) from
     //    "already archived" (→ idempotent 204 without re-emitting audit).
-    let existing: Option<(bool, String)> = sqlx::query_as(
-        "SELECT archived_at IS NOT NULL, name FROM groups WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| RestError::Internal(e.into()))?;
+    let existing: Option<(bool, String)> =
+        sqlx::query_as("SELECT archived_at IS NOT NULL, name FROM groups WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     let (already_archived, name) = match existing {
         None => return Err(RestError::NotFound),
@@ -749,13 +747,11 @@ pub async fn delete_group(
     if !already_archived {
         let name_len = name.chars().count();
 
-        sqlx::query(
-            "UPDATE groups SET archived_at = now() WHERE id = $1 AND archived_at IS NULL",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| RestError::Internal(e.into()))?;
+        sqlx::query("UPDATE groups SET archived_at = now() WHERE id = $1 AND archived_at IS NULL")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
         audit_workspace_event(
             &mut tx,
@@ -2831,7 +2827,10 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["type"], "family");
-        assert!(v.get("group_type").is_none(), "group_type must be serialized as 'type'");
+        assert!(
+            v.get("group_type").is_none(),
+            "group_type must be serialized as 'type'"
+        );
     }
 
     #[test]
@@ -2887,7 +2886,10 @@ mod tests {
             joined_at: now,
         };
         let v = serde_json::to_value(&item).unwrap();
-        assert!(v.get("joined_at").is_some(), "joined_at must be present in list response");
+        assert!(
+            v.get("joined_at").is_some(),
+            "joined_at must be present in list response"
+        );
         assert_eq!(v["type"], "family");
     }
 }
