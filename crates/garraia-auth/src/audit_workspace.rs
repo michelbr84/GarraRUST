@@ -734,6 +734,14 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "user_identities"`, `resource_id = "{user_id}"`.
     /// Metadata: `{}` — no PII; old and new hashes are NEVER logged.
     PasswordChanged,
+
+    /// The caller exported their own personal data via `GET /v1/me/export`
+    /// (plan 0344 / GAR-885, LGPD art. 20 / GDPR arts. 15 & 20).
+    ///
+    /// `group_id = nil-uuid` (user-scoped, same convention as `PasswordChanged`).
+    /// `resource_type = "users"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{ "sections": [...] }` — list of exported sections, no PII.
+    AccountDataExported,
 }
 
 impl WorkspaceAuditAction {
@@ -818,6 +826,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ApiKeyRevoked => "api_key.revoked",
             WorkspaceAuditAction::ApiKeyUpdated => "api_key.updated",
             WorkspaceAuditAction::PasswordChanged => "password.changed",
+            WorkspaceAuditAction::AccountDataExported => "account.data_exported",
         }
     }
 }
@@ -1229,6 +1238,7 @@ mod tests {
             WorkspaceAuditAction::ApiKeyRevoked.as_str(),
             WorkspaceAuditAction::ApiKeyUpdated.as_str(),
             WorkspaceAuditAction::PasswordChanged.as_str(),
+            WorkspaceAuditAction::AccountDataExported.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

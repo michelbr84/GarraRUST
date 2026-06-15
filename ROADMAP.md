@@ -634,6 +634,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `PATCH /v1/me/api-keys/{key_id}` — update label and/or scopes of an active API key; 409 if revoked; `ApiKeyUpdated` audit — plan 0334 / [GAR-874](https://linear.app/chatgpt25/issue/GAR-874) ✅
 - [x] `PATCH /v1/me/password` — change own password: verify current + Argon2id re-hash via `LoginPool` BYPASSRLS; dual-verify PBKDF2 legacy; anti-enumeration 403; `PasswordChanged` audit — plan 0335 / [GAR-876](https://linear.app/chatgpt25/issue/GAR-876) ✅
 - [x] `GET /v1/me/audit` — cursor-paginated personal audit trail (login, logout, signup, password.changed, api_key.*, session.* events); keyset `(created_at DESC, id DESC)`; `action` filter; no PII fields — plan 0340 / [GAR-881](https://linear.app/chatgpt25/issue/GAR-881) ✅
+- [ ] `DELETE /v1/me` — LGPD art. 18 / GDPR art. 17 right to erasure; tombstone `users.status = 'deleted'`; atomic session revocation; `AccountSelfDeleted` audit — plan 0343 / [GAR-884](https://linear.app/chatgpt25/issue/GAR-884) 🔄 PR #771
+- [x] `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 right to data portability; JSON export of profile, sessions, api_keys (metadata only), audit_events, group_memberships; `Content-Disposition: attachment`; `AccountDataExported` audit — plan 0344 / [GAR-885](https://linear.app/chatgpt25/issue/GAR-885) ✅
 
 **Chats**
 
