@@ -382,6 +382,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/password", patch(me::patch_my_password))
                 // Plan 0340 (GAR-881) — GET /v1/me/audit personal audit trail.
                 .route("/v1/me/audit", get(me::list_my_audit))
+                // Plan 0344 (GAR-885) — GET /v1/me/export LGPD/GDPR data portability.
+                .route("/v1/me/export", get(me::export_me))
                 // Plan 0105 (GAR-580) — groups slice 3: list user's groups.
                 .route(
                     "/v1/groups",
@@ -764,6 +766,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/password", patch(unconfigured_handler))
                 // Plan 0340 (GAR-881) — GET /v1/me/audit stub.
                 .route("/v1/me/audit", get(unconfigured_handler))
+                // Plan 0344 (GAR-885) — GET /v1/me/export stub.
+                .route("/v1/me/export", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",
@@ -1142,6 +1146,8 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 .route("/v1/me/password", patch(unconfigured_handler))
                 // Plan 0340 (GAR-881) — GET /v1/me/audit stub.
                 .route("/v1/me/audit", get(unconfigured_handler))
+                // Plan 0344 (GAR-885) — GET /v1/me/export stub.
+                .route("/v1/me/export", get(unconfigured_handler))
                 .route("/v1/groups", post(unconfigured_handler))
                 .route(
                     "/v1/groups/{id}",

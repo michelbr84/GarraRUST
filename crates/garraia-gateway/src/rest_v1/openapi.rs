@@ -40,13 +40,14 @@ use super::groups::{
 use super::invites::AcceptInviteResponse;
 use super::me::{
     AcceptMyInviteResponse, ApiKeySummary, ChatMembershipSummary, CreateApiKeyRequest,
-    CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, MeResponse,
-    MentionSummary, MentionsListResponse, MyApiKeysResponse, MyAuditResponse,
-    MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse, MyFileSummary,
-    MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary, MyReactionSummary,
-    MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse, PatchMeRequest,
-    PatchMeResponse, PatchMyApiKeyRequest, PendingInviteSummary, PersonalAuditEventSummary,
-    SessionSummary, TaskAssignmentSummary, TasksListResponse,
+    CreateApiKeyResponse, DocPageMentionInboxSummary, DocPageMentionsInboxResponse, ExportMeApiKey,
+    ExportMeAuditEvent, ExportMeGroupMembership, ExportMeProfile, ExportMeResponse,
+    ExportMeSession, MeResponse, MentionSummary, MentionsListResponse, MyApiKeysResponse,
+    MyAuditResponse, MyChatsMembershipResponse, MyDocPageSummary, MyDocPagesResponse,
+    MyFileSummary, MyFilesResponse, MyInvitesResponse, MyMemoryResponse, MyMemorySummary,
+    MyReactionSummary, MyReactionsResponse, MySessionsResponse, MyThreadSummary, MyThreadsResponse,
+    PatchMeRequest, PatchMeResponse, PatchMyApiKeyRequest, PendingInviteSummary,
+    PersonalAuditEventSummary, SessionSummary, TaskAssignmentSummary, TasksListResponse,
 };
 use super::memory::{
     CreateMemoryRequest, ListMemoryResponse, MemoryItemResponse, MemoryItemSummary,
@@ -235,9 +236,16 @@ impl Modify for SecurityAddon {
         super::me::revoke_my_api_key,
         super::me::list_my_audit,
         super::me::delete_me,
+        super::me::export_me,
     ),
     components(schemas(
         MeResponse,
+        ExportMeResponse,
+        ExportMeProfile,
+        ExportMeSession,
+        ExportMeApiKey,
+        ExportMeAuditEvent,
+        ExportMeGroupMembership,
         MentionSummary,
         MentionsListResponse,
         MyChatsMembershipResponse,

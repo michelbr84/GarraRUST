@@ -3806,7 +3806,7 @@ pub async fn list_my_audit(
     }))
 }
 
-// ─── DELETE /v1/me ───────────────────────────────────────────────────────────
+// ─── DELETE /v1/me (plan 0343 / GAR-884) ────────────────────────────────────
 
 /// Self-service account soft-deletion (plan 0343 / GAR-884).
 ///
@@ -3910,6 +3910,300 @@ pub async fn delete_me(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ─── GET /v1/me/export (plan 0344 / GAR-885) ──────────────────────────────────
+
+/// Profile section of the personal data export.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeProfile {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub email: String,
+    pub status: String,
+    pub account_created_at: DateTime<Utc>,
+}
+
+/// One session entry in the personal data export.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeSession {
+    pub id: Uuid,
+    pub device_id: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One API key entry in the personal data export (key hash never returned).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeApiKey {
+    pub id: Uuid,
+    pub label: String,
+    pub scopes: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// One audit event entry in the personal data export.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeAuditEvent {
+    pub id: Uuid,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One group membership entry in the personal data export.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeGroupMembership {
+    pub group_id: Uuid,
+    pub group_name: String,
+    pub group_type: String,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
+}
+
+/// Response body for `GET /v1/me/export`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeResponse {
+    /// Timestamp when the export was generated (UTC).
+    pub exported_at: DateTime<Utc>,
+    /// Schema version for forward-compatibility. Currently `"1"`.
+    pub schema_version: String,
+    pub profile: ExportMeProfile,
+    pub sessions: Vec<ExportMeSession>,
+    pub api_keys: Vec<ExportMeApiKey>,
+    pub audit_events: Vec<ExportMeAuditEvent>,
+    pub group_memberships: Vec<ExportMeGroupMembership>,
+}
+
+/// `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 personal data export.
+///
+/// Returns a structured JSON export of the authenticated caller's account-level
+/// personal data. The response carries `Content-Disposition: attachment` so
+/// browsers download it as a file. No `X-Group-Id` header required.
+///
+/// Sections included: `profile`, `sessions`, `api_keys` (metadata only, hash
+/// never returned), `audit_events` (nil-uuid group, cap 1000), `group_memberships`.
+/// Cross-group message/file/memory/task content is deferred to slice 3.
+///
+/// Emits `AccountDataExported` audit event with metadata `{ "sections": [...] }`.
+/// Email IS returned (right-to-portability requires the data subject's own email).
+/// `password_hash` and raw API key are NEVER returned.
+#[utoipa::path(
+    get,
+    path = "/v1/me/export",
+    responses(
+        (status = 200, description = "Personal data export (JSON attachment).", body = ExportMeResponse),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = [])),
+    tag = "me",
+)]
+pub async fn export_me(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+) -> Result<axum::response::Response, RestError> {
+    let nil_uuid = Uuid::nil();
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Query 1 — profile (users is tenant-root, no FORCE RLS)
+    type ProfileRow = (Uuid, String, String, String, DateTime<Utc>);
+    let (user_id, display_name, email, status, account_created_at): ProfileRow = sqlx::query_as(
+        "SELECT id, display_name, email::text, status, created_at \
+             FROM users WHERE id = $1",
+    )
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let profile = ExportMeProfile {
+        user_id,
+        display_name,
+        email,
+        status,
+        account_created_at,
+    };
+
+    // Query 2 — sessions (tenant-root, all rows for GDPR portability)
+    type SessionRow = (Uuid, Option<String>, DateTime<Utc>, DateTime<Utc>);
+    let session_rows: Vec<SessionRow> = sqlx::query_as(
+        "SELECT id, device_id, expires_at, created_at \
+         FROM sessions WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(principal.user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let sessions: Vec<ExportMeSession> = session_rows
+        .into_iter()
+        .map(|(id, device_id, expires_at, created_at)| ExportMeSession {
+            id,
+            device_id,
+            expires_at,
+            created_at,
+        })
+        .collect();
+
+    // Query 3 — api_keys metadata (hash never selected — CLAUDE.md Rule 6)
+    type ApiKeyRow = (
+        Uuid,
+        String,
+        serde_json::Value,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+    );
+    let api_key_rows: Vec<ApiKeyRow> = sqlx::query_as(
+        "SELECT id, label, scopes, created_at, revoked_at \
+         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(principal.user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let api_keys: Vec<ExportMeApiKey> = api_key_rows
+        .into_iter()
+        .map(
+            |(id, label, scopes, created_at, revoked_at)| ExportMeApiKey {
+                id,
+                label,
+                scopes,
+                created_at,
+                revoked_at,
+            },
+        )
+        .collect();
+
+    // Query 4 — audit_events (user-scoped: actor_user_id = $1 AND group_id = nil-uuid), cap 1000
+    type AuditEventRow = (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        serde_json::Value,
+        DateTime<Utc>,
+    );
+    let audit_event_rows: Vec<AuditEventRow> = sqlx::query_as(
+        "SELECT id, action, resource_type, resource_id, metadata, created_at \
+         FROM audit_events \
+         WHERE actor_user_id = $1 AND group_id = $2 \
+         ORDER BY created_at DESC, id DESC LIMIT 1000",
+    )
+    .bind(principal.user_id)
+    .bind(nil_uuid)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let audit_events: Vec<ExportMeAuditEvent> = audit_event_rows
+        .into_iter()
+        .map(
+            |(id, action, resource_type, resource_id, metadata, created_at)| ExportMeAuditEvent {
+                id,
+                action,
+                resource_type,
+                resource_id,
+                metadata,
+                created_at,
+            },
+        )
+        .collect();
+
+    // Query 5 — group memberships (active only, JOIN groups for name+type)
+    type MembershipRow = (Uuid, String, String, String, DateTime<Utc>);
+    let membership_rows: Vec<MembershipRow> = sqlx::query_as(
+        "SELECT gm.group_id, g.name, g.type, gm.role, gm.joined_at \
+         FROM group_members gm JOIN groups g ON g.id = gm.group_id \
+         WHERE gm.user_id = $1 AND gm.status = 'active' \
+         ORDER BY gm.joined_at ASC",
+    )
+    .bind(principal.user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let group_memberships: Vec<ExportMeGroupMembership> = membership_rows
+        .into_iter()
+        .map(
+            |(group_id, group_name, group_type, role, joined_at)| ExportMeGroupMembership {
+                group_id,
+                group_name,
+                group_type,
+                role,
+                joined_at,
+            },
+        )
+        .collect();
+
+    // Emit AccountDataExported audit event. No PII in metadata.
+    let sections = [
+        "profile",
+        "sessions",
+        "api_keys",
+        "audit_events",
+        "group_memberships",
+    ];
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::AccountDataExported,
+        principal.user_id,
+        nil_uuid,
+        "users",
+        principal.user_id.to_string(),
+        json!({ "sections": sections }),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    let exported_at = Utc::now();
+    let response_body = ExportMeResponse {
+        exported_at,
+        schema_version: "1".to_string(),
+        profile,
+        sessions,
+        api_keys,
+        audit_events,
+        group_memberships,
+    };
+
+    let body_bytes =
+        serde_json::to_vec(&response_body).map_err(|e| RestError::Internal(e.into()))?;
+    let date = exported_at.format("%Y-%m-%d");
+    let filename = format!("garraia-export-{date}.json");
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(axum::body::Body::from(body_bytes))
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))
 }
 
 #[cfg(test)]
@@ -5714,6 +6008,97 @@ mod tests {
         );
     }
 
+    // ─── export_me unit tests (plan 0344 / GAR-885) ──────────────────────────
+
+    #[test]
+    fn export_me_response_serializes_all_top_level_keys() {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let resp = ExportMeResponse {
+            exported_at: now,
+            schema_version: "1".to_string(),
+            profile: ExportMeProfile {
+                user_id: Uuid::nil(),
+                display_name: "Test".to_string(),
+                email: "test@example.com".to_string(),
+                status: "active".to_string(),
+                account_created_at: now,
+            },
+            sessions: vec![],
+            api_keys: vec![],
+            audit_events: vec![],
+            group_memberships: vec![],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v.get("exported_at").is_some());
+        assert_eq!(v["schema_version"], "1");
+        assert!(v.get("profile").is_some());
+        assert!(v["sessions"].as_array().unwrap().is_empty());
+        assert!(v["api_keys"].as_array().unwrap().is_empty());
+        assert!(v["audit_events"].as_array().unwrap().is_empty());
+        assert!(v["group_memberships"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn export_me_profile_does_not_contain_password_hash_field() {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let profile = ExportMeProfile {
+            user_id: Uuid::nil(),
+            display_name: "Alice".to_string(),
+            email: "alice@example.com".to_string(),
+            status: "active".to_string(),
+            account_created_at: now,
+        };
+        let v = serde_json::to_value(&profile).unwrap();
+        assert!(
+            v.get("password_hash").is_none(),
+            "password_hash must never appear in export"
+        );
+        assert_eq!(v["email"], "alice@example.com");
+    }
+
+    #[test]
+    fn export_me_api_key_revoked_at_is_null_when_absent() {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let key = ExportMeApiKey {
+            id: Uuid::nil(),
+            label: "ci-key".to_string(),
+            scopes: serde_json::json!(["chats.read"]),
+            created_at: now,
+            revoked_at: None,
+        };
+        let v = serde_json::to_value(&key).unwrap();
+        assert!(v["revoked_at"].is_null(), "absent revoked_at must be null");
+        assert_eq!(v["label"], "ci-key");
+    }
+
+    #[test]
+    fn export_me_audit_event_resource_id_null_when_absent() {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let event = ExportMeAuditEvent {
+            id: Uuid::nil(),
+            action: "account.data_exported".to_string(),
+            resource_type: "users".to_string(),
+            resource_id: None,
+            metadata: serde_json::json!({}),
+            created_at: now,
+        };
+        let v = serde_json::to_value(&event).unwrap();
+        assert!(
+            v["resource_id"].is_null(),
+            "absent resource_id must be null"
+        );
+        assert_eq!(v["action"], "account.data_exported");
+    }
+
+    #[test]
+    fn export_me_audit_action_string_is_stable() {
+        assert_eq!(
+            WorkspaceAuditAction::AccountDataExported.as_str(),
+            "account.data_exported",
+            "action string must never change — consumers filter by this value"
+        );
+    }
+
     #[test]
     fn delete_me_action_display_matches_as_str() {
         let action = WorkspaceAuditAction::AccountSelfDeleted;
@@ -5751,5 +6136,23 @@ mod tests {
         let meta = serde_json::json!({});
         assert!(meta.is_object());
         assert_eq!(meta.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn export_me_group_membership_serializes_all_fields() {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let membership = ExportMeGroupMembership {
+            group_id: Uuid::nil(),
+            group_name: "My Team".to_string(),
+            group_type: "team".to_string(),
+            role: "member".to_string(),
+            joined_at: now,
+        };
+        let v = serde_json::to_value(&membership).unwrap();
+        assert_eq!(v["group_id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(v["group_name"], "My Team");
+        assert_eq!(v["group_type"], "team");
+        assert_eq!(v["role"], "member");
+        assert!(v.get("joined_at").is_some());
     }
 }
