@@ -748,6 +748,14 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{}` — no PII; email and display_name are NEVER logged.
     AccountSelfDeleted,
 
+    /// The caller exported their own personal data via `GET /v1/me/export`
+    /// (plan 0344 / GAR-885, LGPD art. 20 / GDPR arts. 15 & 20).
+    ///
+    /// `group_id = nil-uuid` (user-scoped, same convention as `PasswordChanged`).
+    /// `resource_type = "users"`, `resource_id = "{user_id}"`.
+    /// Metadata: `{ "sections": [...] }` — list of exported sections, no PII.
+    AccountDataExported,
+
     /// Emitted by `POST /v1/me/anonymize` (plan 0345 / GAR-888).
     ///
     /// The caller's `user_identities.login` was replaced with a non-identifiable
@@ -843,6 +851,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::ApiKeyUpdated => "api_key.updated",
             WorkspaceAuditAction::PasswordChanged => "password.changed",
             WorkspaceAuditAction::AccountSelfDeleted => "account.self_deleted",
+            WorkspaceAuditAction::AccountDataExported => "account.data_exported",
             WorkspaceAuditAction::AccountAnonymized => "account.anonymized",
         }
     }
@@ -1256,6 +1265,7 @@ mod tests {
             WorkspaceAuditAction::ApiKeyUpdated.as_str(),
             WorkspaceAuditAction::PasswordChanged.as_str(),
             WorkspaceAuditAction::AccountSelfDeleted.as_str(),
+            WorkspaceAuditAction::AccountDataExported.as_str(),
             WorkspaceAuditAction::AccountAnonymized.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
