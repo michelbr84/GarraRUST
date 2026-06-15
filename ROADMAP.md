@@ -612,6 +612,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
 - [x] `GET /v1/groups/{group_id}/invites/{invite_id}` — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
 - [x] `DELETE /v1/groups/{group_id}/invites/{invite_id}` (revoke) — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
+- [x] `DELETE /v1/groups/{group_id}` (owner-only soft-delete; sets `archived_at`; idempotent 204; `GroupArchived` audit; migration 031) — plan 0346 / [GAR-890](https://linear.app/chatgpt25/issue/GAR-890) ✅
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
 - [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) ✅

@@ -766,6 +766,19 @@ pub enum WorkspaceAuditAction {
     /// `resource_type = "users"`, `resource_id = "{user_id}"`.
     /// Metadata: `{}` — no PII.
     AccountAnonymized,
+
+    /// The group was soft-deleted (archived) via `DELETE /v1/groups/{id}`
+    /// (plan 0346 / GAR-890). Owner-only (`Action::GroupDelete`).
+    ///
+    /// Sets `groups.archived_at = now()` (migration 031). Group data is
+    /// preserved; hard deletion is deferred to Fase 5.3 retention worker.
+    /// Idempotent: emitted only on the first archival (when
+    /// `archived_at` transitions from NULL to non-NULL).
+    ///
+    /// `resource_type = "groups"`, `resource_id = "{group_id}"`.
+    /// Metadata: `{ "name_len": usize }` — structural only, no PII (group
+    /// name is user-controlled and may contain identifiable information).
+    GroupArchived,
 }
 
 impl WorkspaceAuditAction {
@@ -853,6 +866,7 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::AccountSelfDeleted => "account.self_deleted",
             WorkspaceAuditAction::AccountDataExported => "account.data_exported",
             WorkspaceAuditAction::AccountAnonymized => "account.anonymized",
+            WorkspaceAuditAction::GroupArchived => "group.archived",
         }
     }
 }

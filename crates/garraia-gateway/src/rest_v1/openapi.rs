@@ -128,6 +128,7 @@ impl Modify for SecurityAddon {
         super::groups::list_groups,
         super::groups::get_group,
         super::groups::patch_group,
+        super::groups::delete_group,
         super::groups::create_invite,
         super::groups::list_invites,
         super::groups::get_invite,
