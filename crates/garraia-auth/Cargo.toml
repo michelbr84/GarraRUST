@@ -140,3 +140,14 @@ required-features = ["test-support"]
 name = "extractor"
 path = "tests/extractor.rs"
 required-features = ["test-support"]
+
+# plan 0347 / GAR-891 (Q6.15) — kills 4 missed mutants from 2026-06-15 run
+[[test]]
+name = "password_change"
+path = "tests/password_change.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "audit_workspace_event_integration"
+path = "tests/audit_workspace_event_integration.rs"
+required-features = ["test-support"]
