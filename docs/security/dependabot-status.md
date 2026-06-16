@@ -1,6 +1,33 @@
-> Last updated: **2026-06-15 run 145** (health routine — priority (i): all surfaces clean, sqlx compat noted. run 144 (GAR-892) priority (i); run 136 (GAR-886) priority (i); run 135 (GAR-883) merged PR #772; run 134 (GAR-882) merged PR #769; run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
+> Last updated: **2026-06-16 run 146** (health routine — priority (i): RUSTSEC-2026-0182 wasmtime-wasi 45.0.0 active, fix in routine PR #787 (GAR-894); Dependabot PRs #781–#784 blocked. run 145 (GAR-893) priority (i); run 144 (GAR-892) priority (i); run 136 (GAR-886) priority (i); run 135 (GAR-883) merged PR #772; run 134 (GAR-882) merged PR #769; run 133 (GAR-880) merged PR #764; run 132 (GAR-879) merged PR #763; run 131 (GAR-878) merged PR #760; run 130 (GAR-877) merged PR #758; run 129 (GAR-875) Linear-only status note (no PR); run 128 (GAR-873) merged PR #754; run 127 (GAR-872) merged PR #752; run 126 (GAR-870) merged PR #749; run 125 (GAR-868) merged PR #746 (rebased — plan renumbered 0327→0329); run 124 (GAR-867) merged PR #744; run 123 (GAR-865) merged PR #739; run 122 (GAR-863) merged PR #736; run 121 (GAR-861) merged PR #733; run 120 (GAR-859) merged PR #732; run 119 (GAR-857) merged PR #731; run 118 (GAR-855) merged PR #727; run 117 (GAR-854) merged PR #726; run 116 (GAR-852) merged PR #724; run 115 (GAR-849) merged PR #722; run 114 (GAR-848) merged PR #721; run 113 (GAR-846) clean; run 112 (GAR-843) clean; run 111 (GAR-842) clean; run 110 (GAR-841) merged PR #713; run 109 (GAR-839) merged PR #711; run 108 (GAR-838) merged PR #710; run 107 (GAR-836) clean; run 106 (GAR-833) clean; run 105 (GAR-832) clean; run 104 (GAR-831) merged PR #698; run 103 (GAR-830) merged PR #697; run 102 (GAR-829) clean; run 101 (GAR-828) clean; run 100 (GAR-826) clean; run 99 (GAR-824) merged PR #687; run 97 (GAR-822) CI swagger-ui fix; run 96 (GAR-820) clean; run 93 (GAR-817) priority (h) fix RUSTSEC-2026-0173).
 > Source of truth: `.cargo/audit.toml` and `deny.toml` (the suppression
 > rationale lives there, this file is the alert-to-rationale index).
+
+## Confirmed 2026-06-16 run 146 (~00:45 ET) — priority (i): RUSTSEC-2026-0182 active, fix in routine PR #787
+
+Health routine ran on 2026-06-16 (~00:45 ET / 2026-06-16T04:45 UTC). Priority **(i)** — active vulnerability RUSTSEC-2026-0182 detected but already being fixed by routine PR #787 (`routine/202606160045-sqlx-feature-compat`, GAR-894). Health routine cannot touch `routine/` branches per guardrail.
+
+**RUSTSEC-2026-0182** (GHSA-3p27-qvp9-27qf): Leak in WASIp1 `fd_renumber` implementation — wasmtime-wasi 45.0.0 affected, fix: upgrade to >=45.0.2. Advisory published after run 145 completed. Routine PR #787 upgrades wasmtime family 45.0.0 → 45.0.2; its Security Audit ✅ and cargo-deny ✅ are already green.
+
+**Scan scope:** GitHub Actions CI on main (last 20+ runs), open PRs, security surfaces: CI Security Audit, CI cargo-deny, CI CodeQL, CI gitleaks.
+
+| Surface | Status | Detail |
+|---|---|---|
+| Secret scanning (gitleaks) | ✅ clean | CI success on open PRs; no alerts |
+| Malware (cargo/npm) | ✅ none | No malware advisories |
+| Code scanning (CodeQL) | ✅ clean | Analyze (rust/js-ts/actions) all success |
+| Dependabot security alerts | ⚠️ 1 active RUSTSEC | RUSTSEC-2026-0182 (wasmtime-wasi 45.0.0) — fix in routine PR #787 |
+| Dependabot PRs | ⚠️ 4 open, CI failing | #781–#784 all failing cargo-deny + Security Audit (inherited RUSTSEC-2026-0182) |
+| Security Audit (cargo-audit) | ⚠️ would fail on new push | 1 vulnerability: RUSTSEC-2026-0182. Last passing main run: `d12478e` (before advisory) |
+| cargo-deny | ⚠️ would fail on new push | RUSTSEC-2026-0182 not yet in deny.toml ignore; routine PR #787 fixes via version bump |
+| CodeQL | ✅ pass | Analyze (rust) + (js-ts) success |
+| CI on main (last run `d12478e`) | ✅ green | 2026-06-15T21:09Z success (pre-advisory) |
+| Workflow failures (main, 24h) | ✅ none | No failures in main CI gate |
+
+**Open PRs noted:** Routine PR #787 (`routine/202606160045-sqlx-feature-compat`) — NOT touched (routine/ prefix). Dependabot PRs #781–#784 blocked pending PR #787 merge.
+
+**Plan:** 0351 / **Linear:** GAR-895
+
+---
 
 ## Confirmed 2026-06-15 run 145 (~20:45 ET) — priority (i): all surfaces clean, sqlx compat noted
 
