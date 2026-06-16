@@ -38,10 +38,19 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 Both `runtime-tokio` and `tls-native-tls` exist in sqlx 0.8 (the combined feature is an alias). CI
 continues to pass. Dependabot can now auto-create sqlx upgrade PRs if a RUSTSEC advisory appears.
 
+## Security bonus: RUSTSEC-2026-0182 wasmtime-wasi
+
+Discovered during CI run: `cargo-deny` flagged `wasmtime-wasi 45.0.0` with
+RUSTSEC-2026-0182 ("Leak in WASIp1 `fd_renumber` implementation", GHSA-3p27-qvp9-27qf).
+Fix: upgrade to `>=45.0.2`. Fixed in this PR via `cargo update --precise 45.0.2 -p wasmtime`.
+The entire wasmtime/cranelift family upgrades together (wasmtime, wasmtime-wasi,
+cranelift-codegen et al.: 45.0.0 → 45.0.2, cranelift 0.132.0 → 0.132.2).
+
 ## Files changed
 
 ```
 Cargo.toml            ← line 114: runtime-tokio-native-tls → runtime-tokio + tls-native-tls
+Cargo.lock            ← wasmtime family 45.0.0 → 45.0.2 (RUSTSEC-2026-0182 fix)
 plans/
   0350-gar-894-sqlx-feature-compat.md  ← this file
   README.md                             ← 0350 row added; 0346/0347/0349 stale status fixed
