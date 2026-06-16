@@ -1,6 +1,6 @@
 # Plan 0350 — GAR-894: split sqlx runtime-tokio-native-tls → runtime-tokio + tls-native-tls
 
-> **Status:** In Progress
+> **Status:** Done
 > **Linear:** [GAR-894](https://linear.app/chatgpt25/issue/GAR-894)
 > **Branch:** `routine/202606160045-sqlx-feature-compat`
 > **Run:** 146 — 2026-06-16 ~00:28 ET / 2026-06-16T04:28 UTC
@@ -62,8 +62,8 @@ plans/
 - [x] T2 — Create plan file `plans/0350-...md`
 - [x] T3 — Edit `Cargo.toml` line 114
 - [x] T4 — Update `plans/README.md` (0350 row + fix 0346/0347/0349 stale entries)
-- [ ] T5 — Push + open PR + wait for CI green
-- [ ] T6 — Squash-merge; mark GAR-894 Done
+- [x] T5 — Push + open PR + wait for CI green
+- [x] T6 — Squash-merge; mark GAR-894 Done
 
 ## Acceptance criteria
 
