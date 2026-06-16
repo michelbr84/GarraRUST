@@ -393,7 +393,9 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 )
                 .route(
                     "/v1/groups/{id}",
-                    get(groups::get_group).patch(groups::patch_group),
+                    get(groups::get_group)
+                        .patch(groups::patch_group)
+                        .delete(groups::delete_group),
                 )
                 .route(
                     "/v1/groups/{id}/invites",

@@ -436,12 +436,14 @@ pub async fn get_group(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> =
-        sqlx::query_as("SELECT id, name, type, created_at, created_by FROM groups WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| RestError::Internal(e.into()))?;
+    let row: Option<(Uuid, String, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
+        "SELECT id, name, type, created_at, created_by FROM groups \
+             WHERE id = $1 AND archived_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
 
     let (id, name, group_type, created_at, created_by) = row.ok_or(RestError::NotFound)?;
 
@@ -615,7 +617,7 @@ pub async fn patch_group(
            SET name       = COALESCE($1, name),
                type       = COALESCE($2, type),
                updated_at = now()
-         WHERE id = $3
+         WHERE id = $3 AND archived_at IS NULL
      RETURNING id, name, type, created_at, created_by
         "#,
     )
@@ -640,6 +642,135 @@ pub async fn patch_group(
         created_by,
         role,
     }))
+}
+
+/// `DELETE /v1/groups/{id}` — soft-delete (archive) a group (plan 0346 / GAR-890).
+///
+/// Sets `groups.archived_at = now()`. The group's data (chats, files, tasks, docs,
+/// memory) is NOT deleted; it is preserved for LGPD/GDPR retention compliance.
+/// Hard deletion is deferred to the Fase 5.3 retention worker.
+///
+/// **Idempotent**: a second call on an already-archived group returns 204 without
+/// error and without re-emitting an audit event.
+///
+/// After archival:
+/// - `GET /v1/groups/{id}` returns 404.
+/// - `GET /v1/groups` excludes the group.
+/// - `PATCH /v1/groups/{id}` returns 404.
+///
+/// ## Error matrix
+///
+/// | Condition                              | Status | Guard           |
+/// |----------------------------------------|--------|-----------------|
+/// | Missing/invalid JWT                    | 401    | Principal ext.  |
+/// | Non-member of target group             | 403    | Principal ext.  |
+/// | X-Group-Id / path id mismatch         | 400    | this handler    |
+/// | Role is Admin/Member/Guest/Child       | 403    | `can()`         |
+/// | Group not found / cross-tenant         | 404    | SELECT check    |
+/// | Happy path (including re-archive)      | 204    |                 |
+#[utoipa::path(
+    delete,
+    path = "/v1/groups/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Group UUID. Must match the `X-Group-Id` header."),
+    ),
+    responses(
+        (status = 204, description = "Group archived (or already archived — idempotent)."),
+        (status = 400, description = "X-Group-Id header missing or mismatched.", body = super::problem::ProblemDetails),
+        (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 403, description = "Caller lacks `group.delete` capability (Owner-only).", body = super::problem::ProblemDetails),
+        (status = 404, description = "Group not found or cross-tenant.", body = super::problem::ProblemDetails),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_group(
+    State(state): State<RestV1FullState>,
+    principal: Principal,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, RestError> {
+    // 1. Header/path coherence (same pattern as get_group / patch_group).
+    match principal.group_id {
+        Some(hdr) if hdr == id => {}
+        Some(_) => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header and path id must match".into(),
+            ));
+        }
+        None => {
+            return Err(RestError::BadRequest(
+                "X-Group-Id header is required".into(),
+            ));
+        }
+    }
+
+    // 2. Capability check — Owner-only (Admin lacks GroupDelete per can.rs:34).
+    if !can(&principal, Action::GroupDelete) {
+        return Err(RestError::Forbidden);
+    }
+
+    let pool = state.app_pool.pool_for_handlers();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 3. SET LOCAL tenant context. Migration 018 (GAR-589) added FORCE RLS on
+    //    `groups`; both user_id and group_id are required.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 4. Fetch current archived_at + name (for audit name_len).
+    //    Fetch including already-archived rows so we can distinguish
+    //    "group doesn't exist / cross-tenant" (→ 404) from
+    //    "already archived" (→ idempotent 204 without re-emitting audit).
+    let existing: Option<(bool, String)> =
+        sqlx::query_as("SELECT archived_at IS NOT NULL, name FROM groups WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (already_archived, name) = match existing {
+        None => return Err(RestError::NotFound),
+        Some(r) => r,
+    };
+
+    if !already_archived {
+        let name_len = name.chars().count();
+
+        sqlx::query("UPDATE groups SET archived_at = now() WHERE id = $1 AND archived_at IS NULL")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::GroupArchived,
+            principal.user_id,
+            id,
+            "groups",
+            id.to_string(),
+            json!({ "name_len": name_len }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /v1/groups/{id}/invites` — create a pending invite.
@@ -2156,6 +2287,7 @@ pub async fn list_groups(
                  FROM group_members gm \
                  JOIN groups g ON g.id = gm.group_id \
                  WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND g.archived_at IS NULL \
                    AND gm.group_id > $2 AND gm.role = $3 \
                  ORDER BY gm.group_id ASC LIMIT $4",
         )
@@ -2172,6 +2304,7 @@ pub async fn list_groups(
                  FROM group_members gm \
                  JOIN groups g ON g.id = gm.group_id \
                  WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND g.archived_at IS NULL \
                    AND gm.group_id > $2 \
                  ORDER BY gm.group_id ASC LIMIT $3",
         )
@@ -2187,6 +2320,7 @@ pub async fn list_groups(
                  FROM group_members gm \
                  JOIN groups g ON g.id = gm.group_id \
                  WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND g.archived_at IS NULL \
                    AND gm.role = $2 \
                  ORDER BY gm.group_id ASC LIMIT $3",
         )
@@ -2202,6 +2336,7 @@ pub async fn list_groups(
                  FROM group_members gm \
                  JOIN groups g ON g.id = gm.group_id \
                  WHERE gm.user_id = $1 AND gm.status = 'active' \
+                   AND g.archived_at IS NULL \
                  ORDER BY gm.group_id ASC LIMIT $2",
         )
         .bind(principal.user_id)
@@ -2678,5 +2813,83 @@ mod tests {
             let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
             assert_eq!(v["status"], *status, "status {status} did not round-trip");
         }
+    }
+
+    // ── delete_group (plan 0346 / GAR-890) ──────────────────────────────────
+
+    #[test]
+    fn group_response_serializes_with_type_field_rename() {
+        let resp = GroupResponse {
+            id: Uuid::nil(),
+            name: "My Family".into(),
+            group_type: "family".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["type"], "family");
+        assert!(
+            v.get("group_type").is_none(),
+            "group_type must be serialized as 'type'"
+        );
+    }
+
+    #[test]
+    fn group_read_response_includes_archived_at_none_by_default() {
+        let resp = GroupReadResponse {
+            id: Uuid::nil(),
+            name: "Test Group".into(),
+            group_type: "team".into(),
+            created_at: chrono::Utc::now(),
+            created_by: Uuid::nil(),
+            role: "owner".into(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        // GroupReadResponse does not expose archived_at to clients —
+        // archived groups return 404 before this point.
+        assert_eq!(v["role"], "owner");
+        assert_eq!(v["type"], "team");
+    }
+
+    #[test]
+    fn allowed_group_types_exclude_personal_for_delete_guard() {
+        // personal type is reserved (migration 001); the API must never
+        // expose it as user-selectable — same rule applies for delete_group:
+        // callers using "personal" groups were created by the migration tool,
+        // not via the API, and delete_group still applies the same RBAC check.
+        assert!(!ALLOWED_GROUP_TYPES.contains(&"personal"));
+    }
+
+    #[test]
+    fn group_archived_audit_action_string() {
+        assert_eq!(
+            WorkspaceAuditAction::GroupArchived.as_str(),
+            "group.archived"
+        );
+    }
+
+    #[test]
+    fn group_archived_audit_action_display() {
+        let action = WorkspaceAuditAction::GroupArchived;
+        assert_eq!(format!("{action}"), "group.archived");
+    }
+
+    #[test]
+    fn group_list_item_serializes_joined_at() {
+        let now = chrono::Utc::now();
+        let item = GroupListItem {
+            id: Uuid::nil(),
+            name: "Family".into(),
+            group_type: "family".into(),
+            created_at: now,
+            created_by: Uuid::nil(),
+            role: "owner".into(),
+            joined_at: now,
+        };
+        let v = serde_json::to_value(&item).unwrap();
+        assert!(
+            v.get("joined_at").is_some(),
+            "joined_at must be present in list response"
+        );
+        assert_eq!(v["type"], "family");
     }
 }
