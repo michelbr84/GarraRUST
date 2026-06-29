@@ -75,7 +75,7 @@ jobs:
       - name: Cache cargo registry + target
         # Isolated prefix to avoid collision with the main `ci.yml` job
         # caches (which compile without mutation instrumentation).
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/

@@ -200,7 +200,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -224,7 +224,7 @@ jobs:
 
       - name: Cache Swagger UI zip
         id: swagger-cache-test
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/swagger-ui-cache
           key: swagger-ui-v5.17.14-${{ runner.os }}
@@ -332,7 +332,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -464,7 +464,7 @@ jobs:
       # script to the local file via SWAGGER_UI_DOWNLOAD_URL. (GAR-822)
       - name: Cache Swagger UI zip
         id: swagger-cache-msrv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /tmp/swagger-ui-cache
           key: swagger-ui-v5.17.14
@@ -547,7 +547,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -675,7 +675,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
