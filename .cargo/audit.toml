@@ -16,7 +16,7 @@
 # fix availability honestly, (5) must have an expiration date.
 #
 # SYNC NOTE — `audit.toml` vs `deny.toml` (HONEST asymmetry,
-# refreshed 2026-05-12 by health-routine / GAR-593):
+# refreshed 2026-07-27 by health-routine run 146 / GAR-895):
 #
 #   * `audit.toml` controls vulnerabilities flagged by `cargo audit`.
 #     It carries every RUSTSEC ID that would otherwise make `cargo audit`
@@ -41,10 +41,14 @@
 #     Closed history: RUSTSEC-2026-0097 (rand 0.7.3) removed from audit.toml
 #     2026-06-05 (health run 82 / GAR-789 plan 0262) — rand 0.7.3 no longer in
 #     Cargo.lock; phf_generator 0.13 switched from rand to fastrand.
-#   * The 21 unmaintained-only IDs in `deny.toml` (5 directly named +
-#     10 gtk-rs + 5 unic-*) are intentionally NOT mirrored here. Do not
-#     "fix" the asymmetry by mass-mirroring; that would change runtime
-#     behavior of `cargo audit`.
+#   * **BEHAVIOR CHANGE (cargo-audit ^0.22, detected 2026-07-27 health run 146):**
+#     `cargo audit --deny unsound` now exits 1 for `unmaintained` advisories,
+#     contrary to the prior assumption that they were "auto-classified as allowed
+#     warnings." Six IDs (5 unic-* + proc-macro-error2) already in `deny.toml`
+#     with owners GAR-430/GAR-817 (expiry 2026-07-31) are now mirrored here.
+#   * Remaining unmaintained IDs in `deny.toml` (gtk-rs family, etc.) are NOT
+#     mirrored here because they are not in Cargo.lock for server builds (only
+#     garraia-desktop pulls them, which is excluded from CI). Do not mass-mirror.
 
 [advisories]
 ignore = [
@@ -161,5 +165,37 @@ ignore = [
     # closed by plan 0053 PR-5 (GAR-451). Resolution: AVIF feature-gated
     # OFF in `crates/garraia-media/Cargo.toml`. Ignore removed.
     #
+
+
+    # =========================================================================
+    # GAR-817 + GAR-430 (unmaintained) -- mirrored from deny.toml 2026-07-27
+    # health run 146: cargo-audit ^0.22 now exits 1 for `unmaintained` under
+    # `--deny unsound`, contrary to prior behavior. All 6 IDs below are already
+    # in deny.toml with proper Linear owners and expiry dates. Mirrored here so
+    # `cargo audit --deny unsound` in CI passes.
+    # =========================================================================
+    #
+    # proc-macro-error2 2.0.1 -- unmaintained (author archived).
+    # Pulled transitively via darling -> proc-macro-error-attr2 chain (used in
+    # garraia-workspace macro derives). Zero runtime impact. Fix path: upstream
+    # darling migration to proc-macro-error2 fork or direct replacement.
+    # Tracked by: GAR-817. Expires: 2026-07-31.
+    "RUSTSEC-2026-0173",
+
+    # unic-char-range 0.9.0 -- unmaintained (UNIC project abandoned).
+    # unic-common 0.9.0 -- unmaintained (same).
+    # unic-char-property 0.9.0 -- unmaintained (same).
+    # unic-ucd-version 0.9.0 -- unmaintained (same).
+    # unic-ucd-ident 0.9.0 -- unmaintained (same).
+    # Pulled transitively via tauri-utils -> selectors -> cssparser -> unic chain
+    # (garraia-desktop / Tauri v2 build only, excluded from CI server builds).
+    # Zero runtime impact on server deployments. Fix path: Tauri upstream to
+    # replace unic-* with icu4x or similar; pending upstream decision.
+    # Tracked by: GAR-430. Expires: 2026-07-31.
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0098",
+    "RUSTSEC-2025-0100",
 
 ]
