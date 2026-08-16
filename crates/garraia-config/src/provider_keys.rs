@@ -74,8 +74,9 @@ impl KeySource {
 /// `warn!("unknown LLM provider type")` arm.
 ///
 /// Keep in lockstep with the `match llm_config.provider.as_str()` arms in
-/// `garraia-gateway/src/bootstrap/mod.rs` — `parity_with_bootstrap_arms` in the
-/// gateway's test module asserts the two agree.
+/// `garraia-gateway/src/bootstrap/mod.rs`. The gateway test
+/// `bootstrap::config::tests::provider_key_table_covers_every_arm_of_the_boot_loop`
+/// asserts the two agree, including that `ollama` and `echo` stay keyless.
 pub fn provider_key_env(provider: &str) -> Option<&'static str> {
     Some(match provider {
         "anthropic" => "ANTHROPIC_API_KEY",
