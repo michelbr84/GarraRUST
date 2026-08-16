@@ -627,7 +627,6 @@ async fn add_provider(
                 body.base_url.clone(),
             );
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("ANTHROPIC_API_KEY", key);
         }
         "openai" => {
             let Some(key) = &body.api_key else {
@@ -645,7 +644,6 @@ async fn add_provider(
                 body.base_url.clone(),
             );
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("OPENAI_API_KEY", key);
         }
         "openrouter" => {
             let Some(key) = &body.api_key else {
@@ -668,7 +666,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("openrouter");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("OPENROUTER_API_KEY", key);
         }
         "sansa" => {
             let Some(key) = &body.api_key else {
@@ -691,7 +688,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("sansa");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("SANSA_API_KEY", key);
         }
         "deepseek" => {
             let Some(key) = &body.api_key else {
@@ -714,7 +710,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("deepseek");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("DEEPSEEK_API_KEY", key);
         }
         "mistral" => {
             let Some(key) = &body.api_key else {
@@ -737,7 +732,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("mistral");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("MISTRAL_API_KEY", key);
         }
         "gemini" => {
             let Some(key) = &body.api_key else {
@@ -759,7 +753,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("gemini");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("GEMINI_API_KEY", key);
         }
         "falcon" => {
             let Some(key) = &body.api_key else {
@@ -782,7 +775,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("falcon");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("FALCON_API_KEY", key);
         }
         "jais" => {
             let Some(key) = &body.api_key else {
@@ -805,7 +797,6 @@ async fn add_provider(
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("jais");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("JAIS_API_KEY", key);
         }
         "qwen" => {
             let Some(key) = &body.api_key else {
@@ -824,7 +815,6 @@ async fn add_provider(
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("qwen");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("QWEN_API_KEY", key);
         }
         "yi" => {
             let Some(key) = &body.api_key else {
@@ -844,7 +834,6 @@ async fn add_provider(
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("yi");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("YI_API_KEY", key);
         }
         "cohere" => {
             let Some(key) = &body.api_key else {
@@ -867,7 +856,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("cohere");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("COHERE_API_KEY", key);
         }
         "minimax" => {
             let Some(key) = &body.api_key else {
@@ -890,7 +878,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("minimax");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("MINIMAX_API_KEY", key);
         }
         "moonshot" => {
             let Some(key) = &body.api_key else {
@@ -913,7 +900,6 @@ async fn add_provider(
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("moonshot");
             state.agents.register_provider(Arc::new(provider));
-            persist_api_key("MOONSHOT_API_KEY", key);
         }
         "ollama" => {
             let provider =
@@ -935,19 +921,60 @@ async fn add_provider(
         state.agents.set_default_provider_id(provider_type);
     }
 
+    // Persist once, centrally, keyed off the shared provider->env-var table.
+    // The per-arm `persist_api_key(...)` calls that used to live above threw
+    // away the return value, so a vault write that no-opped for lack of
+    // `GARRAIA_VAULT_PASSPHRASE` still produced `201 {"status":"ok"}`. The
+    // provider then worked for the rest of the process lifetime and vanished on
+    // restart — one of the two ways "I added the provider correctly" was true
+    // and the gateway still came up with no providers.
+    let persisted = match (
+        garraia_config::provider_key_env(provider_type),
+        body.api_key.as_deref(),
+    ) {
+        (Some(vault_key), Some(key)) => persist_api_key(vault_key, key),
+        // Keyless provider (ollama): nothing to persist, nothing to warn about.
+        _ => true,
+    };
+
+    let message = if persisted {
+        format!("provider '{provider_type}' activated")
+    } else {
+        tracing::warn!(
+            "provider '{provider_type}' is active in memory but its API key was NOT persisted: \
+             the credential vault needs {vault_env} to be set. The provider will be gone after \
+             the next restart. Either export {vault_env} and try again, or put the key in \
+             `llm.{provider_type}.api_key` in config.yml.",
+            vault_env = garraia_config::provider_keys::VAULT_PASSPHRASE_ENV
+        );
+        format!(
+            "provider '{provider_type}' activated for this session only — the API key could not \
+             be persisted (the credential vault requires {} to be set), so it will be lost on \
+             restart.",
+            garraia_config::provider_keys::VAULT_PASSPHRASE_ENV
+        )
+    };
+
     (
         axum::http::StatusCode::CREATED,
         axum::Json(serde_json::json!({
             "status": "ok",
-            "message": format!("provider '{provider_type}' activated"),
+            "message": message,
+            // `false` means in-memory only — the caller must persist the key
+            // another way if it should survive a restart.
+            "persisted": persisted,
         })),
     )
 }
 
-/// Best-effort: persist an API key in the vault.
-fn persist_api_key(vault_key: &str, value: &str) {
-    if let Some(vault_path) = crate::bootstrap::default_vault_path() {
-        garraia_security::try_vault_set(&vault_path, vault_key, value);
+/// Best-effort: persist an API key in the vault. Returns `false` when the write
+/// did not happen — most commonly because `GARRAIA_VAULT_PASSPHRASE` is unset,
+/// which `garraia_security::try_vault_set` reports by returning `false` without
+/// logging anything itself.
+fn persist_api_key(vault_key: &str, value: &str) -> bool {
+    match crate::bootstrap::default_vault_path() {
+        Some(vault_path) => garraia_security::try_vault_set(&vault_path, vault_key, value),
+        None => false,
     }
 }
 

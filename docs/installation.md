@@ -118,7 +118,20 @@ Skip toggles:
 
 ### 2. Configure
 
-Edit `~/.garraia/config.yml`:
+`garraia init` writes this for you. To edit it by hand, first find the file the
+gateway actually reads — the startup banner prints both the directory (`Config`)
+and the filename (`File`).
+
+The config directory is resolved in this order:
+
+1. `$GARRAIA_CONFIG_DIR`, when set — the supported way to keep everything under
+   a single directory of your choosing.
+2. `~/.config/garraia` (XDG), when it exists. **This is the default for new
+   installs.**
+3. `~/.garraia`, when it exists and the XDG path does not (legacy).
+
+Within that directory, `config.yml` wins over `config.toml`; if both exist the
+TOML file is silently ignored.
 
 ```yaml
 gateway:
@@ -129,13 +142,28 @@ llm:
   main:
     provider: openai
     model: gpt-4o
-    api_key: "sk-..."  # or use vault
+    api_key: "sk-..."
 
 channels:
   telegram:
     enabled: true
     bot_token: "YOUR_BOT_TOKEN"
 ```
+
+The API key is resolved per provider in the order **credential vault → this
+file → environment variable** (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, …). If
+none of the three yields a key, the provider is skipped at startup and the
+gateway comes up unable to answer.
+
+> **The credential vault needs a passphrase on every start.** If you store keys
+> in the vault, the gateway can only open it when `GARRAIA_VAULT_PASSPHRASE` is
+> present in *its* environment — the wizard cannot arrange that for you. Export
+> it from your shell profile or a systemd `EnvironmentFile`. This is why
+> `garraia init` now defaults to writing the key into `config.yml`, which it
+> creates with mode `0600`.
+
+Run `garraia config check` to verify: it reports which file is in force and
+fails with an explicit error for any provider whose key resolves nowhere.
 
 ### 3. Start
 

@@ -56,13 +56,47 @@ pub(crate) fn shorten_path(p: &Path) -> String {
 pub fn print_banner(host: &str, port: u16, config: &AppConfig, config_dir: &Path) {
     let version = env!("CARGO_PKG_VERSION");
 
-    // Gather info
-    let provider = config
+    // Gather info.
+    //
+    // Name the provider *and* say whether it will actually come up. The banner
+    // used to print the configured name unconditionally, so an operator whose
+    // key resolved nowhere saw a confident "Provider   main" immediately above
+    // a boot log line saying that very provider had been skipped.
+    let provider = match config
         .agent
         .default_provider
         .as_deref()
         .or_else(|| config.llm.keys().next().map(|s| s.as_str()))
-        .unwrap_or("none");
+    {
+        None => "none".to_string(),
+        Some(key) => match config.llm.get(key) {
+            None => format!("{key} ⚠ not in llm:"),
+            Some(entry) => {
+                if garraia_config::resolve_provider_key_source(
+                    &entry.provider,
+                    entry.api_key.as_deref(),
+                )
+                .is_resolved()
+                {
+                    key.to_string()
+                } else {
+                    format!("{key} ⚠ no API key")
+                }
+            }
+        },
+    };
+
+    // Which config file is actually in force. `ConfigLoader::load` prefers
+    // `config.yml` and silently ignores `config.toml` when both exist, so
+    // showing only the directory left operators editing a file the gateway
+    // never reads.
+    let config_file = if config_dir.join("config.yml").exists() {
+        "config.yml"
+    } else if config_dir.join("config.toml").exists() {
+        "config.toml"
+    } else {
+        "none (using defaults)"
+    };
 
     let channels = if config.channels.is_empty() {
         "none".to_string()
@@ -139,6 +173,7 @@ pub fn print_banner(host: &str, port: u16, config: &AppConfig, config_dir: &Path
     println!("{}", row("", &format!("MCP         {mcp}")));
     println!("{}", row("  Seu assistente pessoal", ""));
     println!("{}", row("", &format!("Config      {config_display}")));
+    println!("{}", row("", &format!("File        {config_file}")));
     println!("{}", row("", &format!("CWD         {cwd_display}")));
     println!("{}", row("", "Press Ctrl+C to stop"));
     println!("{}", row("", ""));

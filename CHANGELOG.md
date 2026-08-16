@@ -6,6 +6,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-16
+
+### Onboarding: `install.sh` → `garraia init` → `garraia start` now actually works
+
+The path the website documents was broken by construction on any fresh machine.
+`garraia init` offered "Store in encrypted vault (**recommended**)" as the
+default, encrypted the API key into `credentials/vault.json`, and left
+`llm.<name>.api_key` as `null`. `install.sh` then ran `exec garraia start` in the
+same shell, with no `GARRAIA_VAULT_PASSPHRASE` — so `try_vault_get` could not
+open the vault, no key resolved, and the gateway came up with
+`0 active / 1 configured` and `skipping openrouter provider main: no API key`.
+The key was on disk, encrypted, and unreadable by the server that needed it.
+
+#### Fixed
+- **Wizard defaults to `config.yml`** (`wizard/mod.rs`) — the storage prompt now
+  offers config first and defaults to it; the vault option's label states that
+  it requires `GARRAIA_VAULT_PASSPHRASE` on *every* start instead of calling
+  itself "recommended". When the vault is chosen, the passphrase reminder is
+  printed as a block instead of a single line that scrolled away unseen. The
+  Telegram bot token had the identical defect and got the identical fix.
+- **`garraia init` can repair a broken config** (`wizard/config_writer.rs`) —
+  `merge_update` was additive-only, so re-running the wizard over a config that
+  already had a keyless `llm.main` *added* `llm.openrouter` and left `main`
+  broken. A freshly-supplied OpenRouter key is now backfilled into pre-existing
+  `openrouter` entries that have no key. A key the operator already set is never
+  overwritten, and the local-Ollama placeholder is never leaked into a real
+  `openai` entry.
+- **`.env` was loaded after the providers were built** (`server.rs`,
+  `bootstrap/channels.rs`) — the only `dotenvy::dotenv()` in the gateway ran
+  inside `build_channels`, ~20 lines *after* `build_agent_runtime` had already
+  read every provider's API-key env var. Anything embedding `Server` directly got
+  working channels and dead providers. The load moved to the top of
+  `Server::run`.
+- **`POST /api/providers` silently discarded persistence failures**
+  (`router.rs`) — the response was `201 {"status":"ok"}` even when
+  `try_vault_set` no-opped for lack of a passphrase, so a provider added through
+  the web console worked until the next restart and then vanished. The handler
+  now reports `"persisted": bool`, says so in the message, and logs a WARN with
+  the remedy.
+
+#### Changed
+- **`config.yml` is written with mode `0600`** (`garraia_config::harden_secret_file`)
+  — it now carries `llm.*.api_key` by default, and `std::fs::write` alone left it
+  at the umask default (commonly `0644`). Applied by `ConfigLoader::save` and by
+  all three wizard write strategies.
+- **One source of truth for API-key resolution**
+  (`garraia_config::provider_keys`) — the question "does this provider have a
+  usable key?" had three different answers: the boot path walked
+  vault → config → env, `/health` checked config `||` env and ignored the vault,
+  and the admin providers list reported `has_secret` from an AES-GCM SQLite store
+  the boot path never reads. All three now share `resolve_api_key_source` and the
+  `provider_key_env` table, which also replaced fifteen hardcoded
+  `("X_API_KEY", "X_API_KEY")` pairs in `build_agent_runtime` and fourteen more in
+  the provider-activation handler. `/api/providers` gained `key_source` and
+  `has_admin_stored_secret` so the store's own state stays visible.
+- **An empty provider env var now counts as absent.** `OPENROUTER_API_KEY=""`
+  previously registered a provider with an empty credential that failed on the
+  first call with an opaque upstream 401; it now reports the actionable "no API
+  key" warning, consistent with the config tier which already ignored empty
+  strings.
+- **The "no API key" warning names all three remedies** — config, env var, *and*
+  unlocking the vault. It previously omitted the vault, which is precisely where
+  the wizard had put the key.
+- **The startup banner stops overstating readiness** (`banner.rs`) — it printed
+  the configured provider name unconditionally, directly above a log line saying
+  that provider had been skipped. It now marks the state
+  (`main ⚠ no API key`) and adds a `File` row naming the config file actually in
+  force, since `ConfigLoader::load` prefers `config.yml` and silently ignores
+  `config.toml` when both exist.
+- Workspace `version = "0.3.0"` (`Cargo.toml`,
+  `crates/garraia-desktop/src-tauri/Cargo.toml`, `tauri.conf.json`). The previous
+  release left `main` at `0.2.1`, so a binary built from `main` announced itself
+  as the released `v0.2.1` and the two were indistinguishable.
+
+#### Added
+- **`garraia config check` validates `llm:`** (`garraia-config/src/check.rs`) —
+  it had no equivalent of the channel token warning, so the failure that took the
+  whole gateway down was the one thing it would not report. It now emits an
+  **Error** for any provider whose key resolves nowhere (consulting the vault, so
+  it cannot disagree with the boot path), an Error for an unrecognized `provider`
+  type, and a Warning when `llm:` is populated but `agent.default_provider` is
+  unset — which silently disables provider auto-fallback.
+
+#### Documentation
+- `docs/installation.md` told operators to edit `~/.garraia/config.yml` while
+  `ConfigLoader::default_config_dir` prefers `~/.config/garraia` whenever it
+  exists, so readers were editing a file the gateway never read. It now documents
+  the real resolution order, the `config.yml` over `config.toml` precedence, the
+  vault passphrase requirement, and `GARRAIA_CONFIG_DIR` as the supported way to
+  consolidate everything under one directory.
+- `README.md` claimed `install.sh` verifies each binary against a per-asset
+  `<asset>.sha256`; it verifies against the aggregate `SHA256SUMS` (the per-asset
+  form is what `garraia update` uses). The `llm:` example now carries the vault
+  passphrase caveat.
+
 ## [0.2.1] - 2026-05-14
 
 ### Auto-update pipeline — fixes 404 on `garraia update`
