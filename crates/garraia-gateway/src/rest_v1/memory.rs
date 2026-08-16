@@ -154,7 +154,10 @@ impl CreateMemoryRequest {
         if !ALLOWED_SENSITIVITIES.contains(&self.sensitivity.as_str()) {
             return Err("sensitivity must be one of: public, group, private");
         }
-        let content_chars = self.content.chars().count();
+        // Validate the trimmed content — the handler stores `content.trim()`,
+        // so a whitespace-only body would otherwise pass this check and then
+        // violate the DB CHECK (length 1..10000) as a 500.
+        let content_chars = self.content.trim().chars().count();
         if content_chars == 0 {
             return Err("content must not be empty");
         }

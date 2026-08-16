@@ -301,7 +301,11 @@ async fn v1_chats_scenarios() {
     assert_eq!(items.len(), 1, "G2 archived chat must be excluded");
     assert_eq!(items[0]["name"], "general", "G2 only general remains");
 
-    // ── G3. GET 400 X-Group-Id mismatch ─────────────────────────────
+    // ── G3. GET 403 X-Group-Id names a group the caller is not a ────
+    //    member of. The Principal extractor runs the membership lookup
+    //    before any handler code, so this forbids at the extractor —
+    //    the handler's 400 mismatch path is only reachable with a
+    //    header group the caller belongs to.
     let resp = h
         .router
         .clone()
@@ -312,7 +316,7 @@ async fn v1_chats_scenarios() {
         ))
         .await
         .expect("G3 oneshot");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "G3 status");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "G3 status");
 
     // ── G4. GET 401 missing bearer ──────────────────────────────────
     let resp = h

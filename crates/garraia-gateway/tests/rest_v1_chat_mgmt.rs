@@ -54,7 +54,13 @@ fn connect_info() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
     axum::extract::ConnectInfo("127.0.0.1:1".parse().unwrap())
 }
 
-fn authed_request(method: &str, uri: &str, token: Option<&str>, body: Body) -> Request<Body> {
+fn authed_request(
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    group: Option<Uuid>,
+    body: Body,
+) -> Request<Body> {
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
@@ -66,6 +72,12 @@ fn authed_request(method: &str, uri: &str, token: Option<&str>, body: Body) -> R
         req.headers_mut().insert(
             HeaderName::from_static("authorization"),
             HeaderValue::from_str(&format!("Bearer {t}")).unwrap(),
+        );
+    }
+    if let Some(g) = group {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(&g.to_string()).unwrap(),
         );
     }
     req
@@ -134,6 +146,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{chat_a_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -160,6 +173,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{archived_chat_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -175,6 +189,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{chat_b_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -189,6 +204,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{chat_a_id}"),
             None,
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -204,6 +220,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{chat_a_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -221,6 +238,7 @@ async fn v1_chat_mgmt_scenarios() {
             "PATCH",
             &format!("/v1/chats/{chat_a_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::from(json!({"name": "renamed-channel"}).to_string()),
         ))
         .await
@@ -252,6 +270,7 @@ async fn v1_chat_mgmt_scenarios() {
             "PATCH",
             &format!("/v1/chats/{chat_a_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::from(json!({}).to_string()),
         ))
         .await
@@ -267,6 +286,7 @@ async fn v1_chat_mgmt_scenarios() {
             "DELETE",
             &format!("/v1/chats/{delete_chat_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -280,6 +300,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{delete_chat_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -303,6 +324,7 @@ async fn v1_chat_mgmt_scenarios() {
             "GET",
             &format!("/v1/chats/{chat_a_id}/members"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -334,6 +356,7 @@ async fn v1_chat_mgmt_scenarios() {
             "POST",
             &format!("/v1/chats/{chat_a_id}/members"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::from(json!({"user_id": second_user_id, "role": "member"}).to_string()),
         ))
         .await
@@ -348,7 +371,7 @@ async fn v1_chat_mgmt_scenarios() {
         .await
         .expect("M9 fetch audit");
     let add_event = events.iter().find(|(action, _, _, rid, _)| {
-        action == "chat.member.added" && rid == &chat_a_id.to_string()
+        action == "chat.member.added" && rid == &second_user_id.to_string()
     });
     assert!(add_event.is_some(), "M9 chat.member.added audit present");
 
@@ -360,6 +383,7 @@ async fn v1_chat_mgmt_scenarios() {
             "POST",
             &format!("/v1/chats/{chat_a_id}/members"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::from(json!({"user_id": second_user_id, "role": "member"}).to_string()),
         ))
         .await
@@ -374,6 +398,7 @@ async fn v1_chat_mgmt_scenarios() {
             "DELETE",
             &format!("/v1/chats/{chat_a_id}/members/{second_user_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await
@@ -385,7 +410,7 @@ async fn v1_chat_mgmt_scenarios() {
         .await
         .expect("M11 fetch audit");
     let rem_event = events.iter().find(|(action, _, _, rid, _)| {
-        action == "chat.member.removed" && rid == &chat_a_id.to_string()
+        action == "chat.member.removed" && rid == &second_user_id.to_string()
     });
     assert!(rem_event.is_some(), "M11 chat.member.removed audit present");
 
@@ -397,6 +422,7 @@ async fn v1_chat_mgmt_scenarios() {
             "DELETE",
             &format!("/v1/chats/{chat_a_id}/members/{owner_a_id}"),
             Some(&owner_a_token),
+            Some(group_a_id),
             Body::empty(),
         ))
         .await

@@ -39,6 +39,7 @@ use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use common::Harness;
 use common::fixtures::seed_user_with_group;
@@ -161,7 +162,30 @@ async fn create_memory(h: &Harness, token: &str, group_id: &str, content: &str, 
         ))
         .await
         .expect("create_memory oneshot");
-    assert_eq!(resp.status(), StatusCode::CREATED, "setup: memory 201");
+    let status = resp.status();
+    if status != StatusCode::CREATED {
+        let body = body_json(resp).await;
+        panic!("setup: memory create expected 201, got {status}: {body}");
+    }
+}
+
+/// Helper: seed a `sensitivity='secret'` group memory directly via the
+/// admin pool. `POST /v1/memory` rejects `"secret"` by design (it may
+/// only be set by trusted internal paths), so the search-exclusion
+/// fixture has to bypass the API.
+async fn seed_secret_memory(h: &Harness, group_id: Uuid, created_by: Uuid, content: &str) {
+    sqlx::query(
+        "INSERT INTO memory_items \
+             (scope_type, scope_id, group_id, created_by, created_by_label, \
+              kind, content, sensitivity) \
+         VALUES ('group', $1, $1, $2, 'search-test', 'fact', $3, 'secret')",
+    )
+    .bind(group_id)
+    .bind(created_by)
+    .bind(content)
+    .execute(&h.admin_pool)
+    .await
+    .expect("seed_secret_memory insert");
 }
 
 /// Helper: create a chat-scoped memory item.
@@ -270,13 +294,13 @@ async fn search_scenarios() {
         "group",
     )
     .await;
-    // Secret memory — must NEVER appear in search results.
-    create_memory(
+    // Secret memory — must NEVER appear in search results. Seeded via the
+    // admin pool because `POST /v1/memory` rejects `"secret"` by design.
+    seed_secret_memory(
         &h,
-        &token,
-        &group_id.to_string(),
+        group_id,
+        user_id,
         "fluffernutter classified recipe top secret",
-        "secret",
     )
     .await;
 
@@ -442,8 +466,10 @@ async fn search_scenarios() {
     assert_eq!(resp6.status(), StatusCode::BAD_REQUEST, "S6 expected 400");
 
     // ── S7. Unknown type → 400 ────────────────────────────────────────────
+    // `files` became a valid type in slice 5 (GAR-703), so the probe uses
+    // a value no slice will ever claim.
     let qs7 = format!(
-        "q=hello&scope_type=group&scope_id={}&types=messages,files",
+        "q=hello&scope_type=group&scope_id={}&types=messages,bogus",
         group_id
     );
     let resp7 = h

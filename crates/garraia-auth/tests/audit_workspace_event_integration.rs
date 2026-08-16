@@ -45,12 +45,15 @@ async fn audit_workspace_event_inserts_row() -> anyhow::Result<()> {
         .await?;
 
     // Begin a tx on app_pool (garraia_app) and satisfy the GUC contract.
+    // `SET LOCAL` is a utility statement and cannot take bind parameters
+    // over the extended protocol — use set_config(_, _, true) instead
+    // (transaction-local, same effect; canonical pattern in rls_matrix.rs).
     let mut tx = h.app_pool.begin().await?;
-    sqlx::query("SET LOCAL app.current_user_id = $1")
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
         .bind(actor_user_id.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("SET LOCAL app.current_group_id = $1")
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
         .bind(group_id.to_string())
         .execute(&mut *tx)
         .await?;

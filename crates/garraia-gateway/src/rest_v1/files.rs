@@ -556,8 +556,13 @@ pub async fn create_file(
     let object_key = format!("groups/{group_id}/files/{file_id}/v1/{version_uuid}");
 
     // ObjectStore PUT — runs before Postgres COMMIT (two-phase ordering).
+    // `version_id` is required alongside `hmac_secret`: the backend only
+    // computes `integrity_hmac` when both are present. It is server-derived
+    // so it always satisfies the `^v[0-9]+$` caller-boundary invariant of
+    // `garraia_storage::integrity::canonical_input`.
     let put_opts = PutOptions {
         content_type: Some(content_type.clone()),
+        version_id: Some("v1".to_string()),
         hmac_secret: Some(staging.hmac_secret.clone()),
         ..Default::default()
     };
@@ -1254,8 +1259,14 @@ pub async fn post_new_version(
     let object_key = format!("groups/{group_id}/files/{file_id}/v{new_version}/{version_uuid}");
 
     // ObjectStore PUT — runs before Postgres COMMIT (two-phase ordering).
+    // `version_id` is required alongside `hmac_secret`: the backend only
+    // computes `integrity_hmac` when both are present. `new_version` is a
+    // server-derived integer so `v{new_version}` always satisfies the
+    // `^v[0-9]+$` caller-boundary invariant of
+    // `garraia_storage::integrity::canonical_input`.
     let put_opts = PutOptions {
         content_type: Some(content_type.clone()),
+        version_id: Some(format!("v{new_version}")),
         hmac_secret: Some(staging.hmac_secret.clone()),
         ..Default::default()
     };
