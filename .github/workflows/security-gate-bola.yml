@@ -1,0 +1,69 @@
+name: Security Gate (BOLA)
+
+# Security Gate: Broken Object-Level Authorization & Cross-Tenant Isolation
+#
+# Runs feature-gated integration test suites (`--features test-helpers`) in
+# `garraia-gateway` against a dedicated ephemeral PostgreSQL 16 + pgvector service.
+#
+# These tests exercise strict multi-tenant isolation, RLS enforcement,
+# RBAC permission matrices, cross-group ID access rejection (404/403),
+# and session tenant scoping.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: bola-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  bola-gate:
+    name: Security Gate (BOLA & Tenant Isolation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: garraia_workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-bola-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bola-
+
+      - name: Run Gateway Authz & Multi-Tenant Tests
+        env:
+          GARRAIA_TEST_DATABASE_URL: postgres://postgres:postgrespassword@localhost:5432/garraia_workspace_test
+        run: |
+          cargo test -p garraia-gateway --features test-helpers

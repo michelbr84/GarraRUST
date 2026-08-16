@@ -360,6 +360,7 @@ benches/
 11. **SEMPRE** usar a `garraia_login` BYPASSRLS dedicated role exclusivamente em paths de credential verification (login + lazy upgrade PBKDF2→Argon2id + extractor membership lookup + refresh token verify/revoke). Acesso ao role só via `garraia-auth::LoginPool` newtype — nunca raw `PgPool`. Documentado em `docs/adr/0005-identity-provider.md` (com Amendment 2026-04-13 cobrindo Gaps A/C).
 12. **NUNCA** ler `user_identities.password_hash` no app pool role (`garraia_app`) — RLS filtra para 0 rows. Tratar 0 rows como "user not found" é anti-pattern (significa "RLS bloqueou"). Sempre usar `garraia_login` via login endpoint. Ver ADR 0005 §"Anti-patterns".
 13. **SEMPRE** usar a `garraia_signup` BYPASSRLS dedicated role exclusivamente para o signup flow (`POST /v1/auth/signup`). Acesso só via `garraia-auth::SignupPool` newtype — nunca raw `PgPool`, nunca substituível pelo `LoginPool`. O role tem `INSERT` em `users`/`user_identities` mas NENHUM acesso a `sessions`, `messages`, `chats`, `memory_*`, `tasks*`, `groups`, `group_members` ou qualquer dado de tenant. Migration 010, ADR 0005 §"Amendment 2026-04-13" Gap B.
+14. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 
 ## Framework de Desenvolvimento: Superpowers
 
