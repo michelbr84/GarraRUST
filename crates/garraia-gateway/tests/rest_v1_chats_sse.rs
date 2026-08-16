@@ -128,18 +128,25 @@ async fn v1_chats_sse_cross_tenant_isolation() {
     //
     // Same group context: chat_a is in group_a, caller is in group_a.
     // Handler finds 1 row → returns 200 text/event-stream.
-    let resp = h
+    //
+    // Held in a dedicated binding (`resp_s2`): this is the only response
+    // whose SSE body owns a `ChatStreamGuard`, and it must be dropped
+    // EXPLICITLY before S5 — Rust `let` shadowing does not drop the
+    // shadowed value (it lives until end of scope), so reusing `resp`
+    // here would keep the stream open and `chat.unsubscribed` would
+    // never be emitted during S5's poll window.
+    let resp_s2 = h
         .router
         .clone()
         .oneshot(stream_req(chat_a_id, &token_a, Some(group_a_id)))
         .await
         .expect("S2 oneshot");
     assert_eq!(
-        resp.status(),
+        resp_s2.status(),
         StatusCode::OK,
         "S2: own-group SSE must return 200"
     );
-    let ct = resp
+    let ct = resp_s2
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
@@ -187,10 +194,13 @@ async fn v1_chats_sse_cross_tenant_isolation() {
         "S4: archived chat SSE subscription must return 404"
     );
 
-    // Force the S4 response to drop now so any audit emission triggered by
-    // RAII guard cleanup from earlier scenarios is well-defined before S5.
-    // (S2 was the only scenario that actually built a guard.)
-    drop(resp);
+    // Disconnect the S2 SSE stream now (public gateway semantics: the
+    // paired `chat.unsubscribed` audit row is emitted by
+    // `ChatStreamGuard::drop` when the response body drops, i.e. on client
+    // disconnect). S2 was the only scenario that actually built a guard,
+    // so its response must be dropped explicitly — shadowed `resp`
+    // bindings from S1/S3/S4 carry no guard and may live until scope end.
+    drop(resp_s2);
 
     // ── S5. Audit-log emission (F-4 / GAR-680) ───────────────────────────
     //
@@ -203,8 +213,8 @@ async fn v1_chats_sse_cross_tenant_isolation() {
     //
     // The `chat.unsubscribed` row is emitted via `tokio::spawn` from
     // `ChatStreamGuard::drop`, so we briefly poll for it instead of asserting
-    // synchronously — Drop happens immediately when the prior `resp` is
-    // shadowed, but the spawned task runs asynchronously on the runtime.
+    // synchronously — Drop ran when `drop(resp_s2)` executed above, but the
+    // spawned task runs asynchronously on the runtime.
     let mut subscribed_seen = false;
     let mut unsubscribed_seen = false;
     for _ in 0..30 {
