@@ -18,7 +18,7 @@
 //! | Block | Handler / path                                         |
 //! | ----- | ------------------------------------------------------ |
 //! | A     | `DELETE /v1/uploads/{id}` — 6 scenarios                |
-//! | B     | `uploads_worker::run_expiration_tick` — DISABLED (#820) |
+//! | B     | `uploads_worker::run_expiration_tick` — 3 sub-asserts  |
 //! | C     | `finalize_upload` streaming via `put_stream` — 1 e2e   |
 //!
 //! Docker absence is surfaced via `Harness::get()` (pgvector startup
@@ -275,7 +275,6 @@ async fn create_in_progress_upload(
 /// Write a zero-content placeholder staging file so the worker's
 /// best-effort cleanup branch increments `staging_removed`. Real
 /// content is not necessary — the worker just calls `remove_file`.
-#[allow(dead_code)] // Block B only — disabled pending issue #820.
 async fn write_placeholder_staging(staging: &UploadStaging, upload_id: Uuid) {
     let path = staging.staging_dir.join(format!("{upload_id}.staging"));
     tokio::fs::write(&path, b"placeholder")
@@ -287,7 +286,6 @@ async fn write_placeholder_staging(staging: &UploadStaging, upload_id: Uuid) {
 /// creation path always writes `now() + 24h`; the worker only sweeps
 /// rows with `expires_at < now()`, so this is the test-only handshake
 /// that lets us validate the sweep without a 24-hour sleep.
-#[allow(dead_code)] // Block B only — disabled pending issue #820.
 async fn expire_row(h: &Harness, upload_id: Uuid) {
     sqlx::query(
         "UPDATE tus_uploads \
@@ -311,15 +309,10 @@ async fn v1_uploads_delete_worker_streaming_scenarios() {
 
     let h = Harness::get().await;
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (router, local_fs, _staging) = build_storage_router(&h, tmp.path()).await;
+    let (router, local_fs, staging) = build_storage_router(&h, tmp.path()).await;
 
     run_delete_scenarios(&h, &router).await;
-    // Block B (run_worker_scenarios) is disabled: `run_expiration_tick`
-    // sweeps on the RLS-enforced `garraia_app` pool with no tenant context,
-    // so the FORCE RLS policy on `tus_uploads` (migration 014, fail-closed
-    // NULLIF) hides every row and the tick expires nothing — here and in
-    // production. Re-enable once the worker gets a sanctioned cross-tenant
-    // sweep path. Tracked in issue #820.
+    run_worker_scenarios(&h, &router, &staging).await;
     run_streaming_scenario(&h, &router, local_fs.as_ref()).await;
 
     // Keep the staging tempdir alive for the whole test — dropping it
@@ -516,7 +509,6 @@ async fn run_delete_scenarios(h: &Arc<Harness>, router: &axum::Router) {
 
 // ─── Block B — Expiration worker tick end-to-end ────────────────────────
 
-#[allow(dead_code)] // Disabled in the orchestrator pending issue #820.
 async fn run_worker_scenarios(
     h: &Arc<Harness>,
     router: &axum::Router,

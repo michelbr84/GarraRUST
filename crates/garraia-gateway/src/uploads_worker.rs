@@ -13,17 +13,17 @@
 //! replica wins the lock runs the sweep, the others skip the tick.
 //! Failure to acquire the lock is expected and silently skipped.
 //!
-//! ## Bypass-RLS
+//! ## Bypass-RLS / Cross-Tenant Maintenance
 //!
 //! The worker needs to see rows across all `group_id` values — it runs
-//! on the `AppPool` (`garraia_app` role) BUT explicitly sets the group
-//! context to each row's own `group_id` before emitting the audit.
-//! Alternative: use a future `BYPASSRLS` worker role. For v1 we read +
-//! update via a maintenance SQL path that does not rely on
-//! `app.current_group_id` being set — the RLS policy on `tus_uploads`
-//! filters by that GUC, so we set the GUC **per-row** for the UPDATE
-//! to succeed. This is cleaner than adding another bypass role for a
-//! single maintenance path.
+//! on the `AppPool` (`garraia_app` role). Because `tus_uploads` is under
+//! FORCE RLS (`tus_uploads_group_isolation`), direct queries with no
+//! tenant GUC set return 0 rows (fail-closed).
+//! The sweep is executed via the `expire_tus_uploads_sweep(p_now, p_limit)`
+//! `SECURITY DEFINER` function (migration 032), which runs with creator
+//! privileges, bypasses RLS safely, and returns the expired records.
+//! Audit emission then sets `app.current_group_id` per-row for inserting
+//! into `audit_events`.
 //!
 //! ## Tick cadence
 //!
@@ -99,28 +99,15 @@ pub async fn run_expiration_tick(
 
     let mut report = TickReport::default();
 
-    // Sweep in one `UPDATE ... RETURNING`, limited to `batch_size`.
-    // We can't combine RETURNING with LIMIT directly — use a CTE with
-    // SELECT ... FOR UPDATE SKIP LOCKED + LIMIT to pick the batch, then
-    // UPDATE the fetched ids.
+    // Sweep in one call to the `SECURITY DEFINER` function `expire_tus_uploads_sweep`,
+    // limited to `batch_size`. This safely bypasses FORCE RLS on `tus_uploads`
+    // to perform the cross-tenant expiration sweep.
     let rows = sqlx::query(
-        "WITH victim AS (
-            SELECT id
-            FROM tus_uploads
-            WHERE status = 'in_progress' AND expires_at < now()
-            ORDER BY expires_at ASC
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
-        )
-        UPDATE tus_uploads AS t
-        SET status = 'expired', updated_at = now()
-        FROM victim
-        WHERE t.id = victim.id
-        RETURNING t.id, t.group_id, t.created_by, t.object_key,
-                  t.upload_offset, t.upload_length,
-                  EXTRACT(EPOCH FROM (now() - t.created_at))::bigint AS age_secs",
+        "SELECT id, group_id, created_by, object_key, \
+                upload_offset, upload_length, age_secs \
+         FROM expire_tus_uploads_sweep(now(), $1)",
     )
-    .bind(batch_size)
+    .bind(batch_size as i32)
     .fetch_all(pg)
     .await?;
 
