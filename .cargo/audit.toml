@@ -138,6 +138,17 @@ ignore = [
     # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-11-15.
     "RUSTSEC-2024-0429",
 
+    # =========================================================================
+    # GAR-896 — lru 0.16.4 (RUSTSEC-2026-0253, unsound pop() panic safety)
+    # =========================================================================
+    # lru 0.16.4 has potential use-after-free if key/value Drop panics in pop().
+    # Pulled transitively via aws-sdk-s3 -> aws-smithy-runtime -> lru 0.16.4.
+    # Fixed in lru 0.18.2+, but aws-sdk-s3 up to current 1.141.0 pins ^0.16.3.
+    # Zero runtime risk in production (no panicking Drop types used as LRU keys/values).
+    # Fix path: upstream aws-sdk-s3 upgrade to lru 0.18+.
+    # Tracked by: issue #812 / GAR-896. Expires: 2026-11-15.
+    "RUSTSEC-2026-0253",
+
     # NOTE: RUSTSEC-2026-0002 (lru 0.12.5 IterMut stacked-borrows violation)
     # closed by GAR-593 (2026-05-12, health routine PR health/202605121530).
     # Resolution: aws-sdk-s3 1.119→1.132 (PR #297) pulled lru 0.16.4 which
