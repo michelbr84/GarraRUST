@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-Atualizado após plan 0145 / PR #396 (2026-05-18). **22 crates ativos** no workspace + 1 PoC efêmero em `benches/`. Contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`.
+Atualizado após plan 0145 / PR #396 (2026-05-18). **22 crates ativos** no workspace, mais o harness de benchmark `benches/agent-framework-comparison/` (fora do workspace, não é crate). Contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`.
 
 ```text
 crates/
@@ -289,14 +289,21 @@ apps/
 > miner / generator / registry full / retriever / evaluator / auto-updater / versioning /
 > web UI uma issue por vez.
 
-### PoCs efêmeros
+### Benchmarks fora do workspace
 
 ```text
 benches/
-  database-poc/    — GAR-373 bench harness (Postgres vs SQLite). Crate ISOLADO, NÃO é
-                     workspace member. Deletar depois que garraia-workspace (GAR-407)
-                     estiver estabilizado. Tem [workspace] próprio no Cargo.toml.
+  agent-framework-comparison/  — harness reprodutível (shell) que valida os claims
+                     comparativos do README contra CLIs concorrentes. NÃO é crate
+                     nem workspace member: são `run.sh` + `README.md` + `results/`.
+                     Mede tamanho de binário, pico de RSS e cold start; constrói o
+                     GarraIA do checkout atual e fixa os concorrentes por ref via
+                     env var. Resultados entram versionados em `results/<data>-<host>/`.
 ```
+
+> `benches/database-poc/` (GAR-373, Postgres vs SQLite) foi removido em 2026-08-16
+> conforme o mandato original ("deletar depois que garraia-workspace estabilizar").
+> Os números que ele produziu seguem citados em ADR 0003 e nas migrations 005/007.
 
 ## Convenções de código
 

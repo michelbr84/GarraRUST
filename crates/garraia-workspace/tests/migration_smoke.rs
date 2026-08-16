@@ -603,7 +603,8 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
     // Strategy: use `SET LOCAL ROLE garraia_app` to demote the superuser
     // connection to a non-owner role, then `SET LOCAL app.current_group_id`
     // and `SET LOCAL app.current_user_id` to establish the request scope.
-    // Mirrors the B6 benchmark pattern in benches/database-poc/.
+    // Mirrors the B6 benchmark pattern from the GAR-373 database PoC
+    // (benches/database-poc, removido em 2026-08-16 após estabilização).
 
     // Helper: opens a transaction, demotes to garraia_app role, and
     // conditionally sets both app.current_group_id and app.current_user_id
