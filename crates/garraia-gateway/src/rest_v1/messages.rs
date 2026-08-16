@@ -1008,14 +1008,16 @@ pub async fn delete_message(
     let is_admin = principal.role.map(|r| r.tier() >= 80).unwrap_or(false);
 
     // 6. Soft-delete. Admin/Owner may delete any message; others only their own.
-    let row: Option<(Uuid,)> = if is_admin {
+    //    Returning sender_user_id allows determining whether this was an admin override
+    //    (deleting another user's message) vs sender deleting their own message.
+    let row: Option<(Uuid, Option<Uuid>)> = if is_admin {
         sqlx::query_as(
             "UPDATE messages \
              SET deleted_at = now() \
              WHERE id = $1 \
                AND group_id = $2 \
                AND deleted_at IS NULL \
-             RETURNING id",
+             RETURNING id, sender_user_id",
         )
         .bind(message_id)
         .bind(group_id)
@@ -1030,7 +1032,7 @@ pub async fn delete_message(
                AND group_id = $2 \
                AND sender_user_id = $3 \
                AND deleted_at IS NULL \
-             RETURNING id",
+             RETURNING id, sender_user_id",
         )
         .bind(message_id)
         .bind(group_id)
@@ -1040,9 +1042,12 @@ pub async fn delete_message(
         .map_err(|e| RestError::Internal(e.into()))?
     };
 
-    if row.is_none() {
-        return Err(RestError::NotFound);
-    }
+    let (_deleted_id, sender_user_id) = match row {
+        Some(r) => r,
+        None => return Err(RestError::NotFound),
+    };
+
+    let was_admin_override = is_admin && sender_user_id != Some(principal.user_id);
 
     // 7. Audit.
     audit_workspace_event(
@@ -1052,7 +1057,7 @@ pub async fn delete_message(
         group_id,
         "messages",
         message_id.to_string(),
-        json!({ "admin_override": is_admin }),
+        json!({ "admin_override": was_admin_override }),
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!(e)))?;
