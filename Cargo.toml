@@ -31,7 +31,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/michelbr84/GarraRUST"
 description = "A personal AI assistant platform, rewritten in Rust"
-rust-version = "1.93"
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Async runtime
@@ -82,14 +82,15 @@ rand = "0.9"
 # operational cost of the alternative `aws_lc_rs` (cmake + C toolchain).
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
-# Plugin system — bumped 28→44 in GAR-454, 44→45 in GAR-708 (health run 32).
-# GAR-708: wasmtime 45.0.0 fixes path_open(TRUNCATE) bypass of FilePerms::WRITE —
-# a WASM guest without write permission could truncate preopened files in 44.x.
+# Plugin system — bumped 28→44 in GAR-454, 44→45 in GAR-708 (health run 32),
+# 45→46 in GAR-895 (health run 146, 2026-08-16): RUSTSEC-2026-0222 wasmtime 45.x
+# "Stores can mix up type indices between engines" (GHSA-hgjw-h833-99q9).
+# Fix floor: >=46.0.2. `p1` feature and WasiCtxBuilder::build_p1 still available in 46.
 # `wasmtime-wasi` requires `features = ["p1"]` because `WasiCtxBuilder::build_p1`
 # (used by `garraia-plugins/src/runtime.rs`) became feature-gated in v44.
 # `preview1` module was renamed to `p1` in the upstream — handled in runtime.rs.
-wasmtime = "45"
-wasmtime-wasi = { version = "45", features = ["p1"] }
+wasmtime = "46"
+wasmtime-wasi = { version = "46", features = ["p1"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }

@@ -463,15 +463,15 @@ pub(super) fn redact_config_secrets(config: &mut garraia_config::AppConfig) {
         .as_ref()
         .map(|_| "***REDACTED***".to_string());
 
-    for (_, llm) in config.llm.iter_mut() {
+    for llm in config.llm.values_mut() {
         llm.api_key = llm.api_key.as_ref().map(|_| "***REDACTED***".to_string());
     }
 
-    for (_, emb) in config.embeddings.iter_mut() {
+    for emb in config.embeddings.values_mut() {
         emb.api_key = emb.api_key.as_ref().map(|_| "***REDACTED***".to_string());
     }
 
-    for (_, ch) in config.channels.iter_mut() {
+    for ch in config.channels.values_mut() {
         for (key, val) in ch.settings.iter_mut() {
             let lower = key.to_lowercase();
             if lower.contains("token")
