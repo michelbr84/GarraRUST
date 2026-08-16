@@ -41,7 +41,7 @@ tokio-stream = "0.1"
 # Web / HTTP
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "deflate", "multipart"], default-features = false }
 hyper = "1"
 
