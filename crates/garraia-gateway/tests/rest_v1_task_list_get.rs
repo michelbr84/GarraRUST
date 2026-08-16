@@ -164,7 +164,7 @@ async fn rest_v1_task_list_get_scenarios() {
     // ── TL-GET-2: member 200 ─────────────────────────────────────────────────
     {
         let (_member_id, member_token) =
-            seed_member_via_admin(&h, group_id, "member@task-list-get.test", "member")
+            seed_member_via_admin(&h, group_id, "member", "member@task-list-get.test")
                 .await
                 .expect("TL-GET-2 seed member");
         let resp = h

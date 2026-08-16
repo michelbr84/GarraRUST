@@ -13,45 +13,43 @@ Closes #<!-- número da issue relacionada, se houver -->
 - [ ] `test`: Adição ou correção de testes
 - [ ] `perf`: Melhoria de performance
 - [ ] `chore`: Manutenção (deps, CI, build)
+- [ ] `sec`: Correção ou hardening de segurança
 
-## Checklist
+## Classe de Risco
+
+- [ ] **Classe A (Baixo Risco)**: Documentação, comentários, formatação, bumps de dependências de desenvolvimento sem impacto em tempo de execução.
+- [ ] **Classe B (Médio Risco)**: Atualizações de dependências em produção, refatorações internas sem alteração de schema ou de API pública.
+- [ ] **Classe C (Alto Risco)**: Alterações em autenticação, criptografia, RLS (Row-Level Security), migrations SQL, endpoints REST públicos, autorização/RBAC.
+
+## Checklist de Segurança e Qualidade
 
 ### Obrigatório antes de abrir o PR
 
-- [ ] `cargo fmt --all` executado
-- [ ] `cargo clippy --workspace -- -D warnings` sem erros
-- [ ] `cargo test --workspace` passando
-- [ ] `cargo check -p <crate-afetada>` sem erros
+- [ ] `cargo fmt --check` executado e limpo
+- [ ] `cargo clippy --workspace --exclude garraia-desktop -- -D warnings` sem erros
+- [ ] `cargo test --workspace --exclude garraia-desktop` passando localmente
 - [ ] Nenhum `unwrap()` adicionado em código de produção
-- [ ] Nenhum secret, API key ou credencial nos arquivos
+- [ ] Nenhum segredo, API key, token ou credencial commitada
+- [ ] Nenhuma migração Postgres com operações destrutivas sem estratégia de transição forward-only
 
-### Se aplicável
+### Para alterações de Alto Risco (Classe C)
 
-- [ ] Testes adicionados para o novo comportamento
-- [ ] Documentação em `docs/src/` atualizada
-- [ ] `CHANGELOG.md` atualizado (se mudança relevante para o usuário)
-- [ ] `config.yml` de exemplo atualizado (se nova opção de configuração)
-- [ ] Endpoint documentado em `docs/src/api-reference.md` (se novo endpoint)
+- [ ] Testes de autorização cross-group/cross-tenant adicionados ou atualizados
+- [ ] Verificação de políticas RLS `USING` e `WITH CHECK`
+- [ ] Auditoria de eventos de workspace estruturada (sem PII na metadata)
 
-## Mudanças na API pública
+## Mudanças na API pública e Schema
 
-<!-- Liste quaisquer mudanças que quebram compatibilidade (breaking changes), novas rotas REST, novos campos de configuração, ou mudanças em traits públicos. -->
+<!-- Liste quaisquer quebras de compatibilidade, novas rotas REST, novos campos de configuração ou novas migrations. -->
 
 - Nenhuma mudança na API pública
 
 ## Como testar
 
-<!-- Descreva passos específicos para verificar que o PR funciona corretamente. -->
+<!-- Descreva passos específicos e comandos para validar a alteração. -->
 
-1. Configure `~/.garraia/config.yml` com...
-2. Execute `garraia start`
-3. Teste via `curl http://127.0.0.1:3888/...`
-4. Resultado esperado: ...
+1. 
 
-## Screenshots / logs (se aplicável)
+## Plano de Rollback
 
-<!-- Para mudanças visuais ou comportamentos difíceis de descrever em texto -->
-
-## Contexto adicional
-
-<!-- Decisões de design, trade-offs considerados, alternativas descartadas -->
+<!-- Descreva como reverter a mudança de forma segura se um problema for detectado em produção. -->

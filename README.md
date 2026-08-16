@@ -19,9 +19,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.92%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
-  <img src="https://img.shields.io/badge/crates-16-green" alt="Crates">
+  <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
   <img src="https://img.shields.io/badge/channels-11-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
 </p>
@@ -69,7 +69,7 @@ Nota de sincronizacao (2026-05-24): a decisao GarraMaxPower esta formalizada em 
 ## Início Rápido
 
 ```bash
-# Requer Rust 1.92+ (alinhado com MSRV declarado em Cargo.toml — GAR-441)
+# Requer Rust 1.94+ (alinhado com MSRV declarado em Cargo.toml — GAR-895)
 cargo build --release -p garraia
 
 # Configuração interativa - escolha seu provedor de LLM, armazene chaves de API em cofre criptografado

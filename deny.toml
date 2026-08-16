@@ -70,7 +70,7 @@ ignore = [
     # Pulled transitively via: aquamarine 0.6.0 → teloxide 0.17.0 → garraia-channels,
     # and validator_derive 0.20.0 → validator 0.20.0 → garraia-auth/config/telemetry/workspace.
     # Alternatives (manyhow, proc-macro2-diagnostics) require upstream crate updates.
-    # Owner: GAR-817. Expiry: 2026-07-31. Re-evaluate when teloxide/validator upgrade.
+    # Owner: GAR-817. Expiry: 2026-11-15. Re-evaluate when teloxide/validator upgrade.
     "RUSTSEC-2026-0173", # proc-macro-error2 (transitive via teloxide+validator, no fix)
     # NOTE: RUSTSEC-2025-0052 (async-std unmaintained) CLOSED 2026-06-01.
     # Resolution: opentelemetry_sdk 0.26 → 0.32 (garraia-telemetry plan 0252 / GAR-711).
@@ -93,8 +93,11 @@ ignore = [
     #
     # rsa 0.9.10 — Marvin Attack timing sidechannel. Mirror of audit.toml
     # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
-    # in PR-4 prevented runtime use). Expires 2026-07-31.
+    # in PR-4 prevented runtime use). Expires 2026-11-15.
     "RUSTSEC-2023-0071",
+    # lru 0.16.4 — pop() panic safety (RUSTSEC-2026-0253). Mirror of audit.toml
+    # under GAR-896 / issue #812. Expires 2026-11-15.
+    "RUSTSEC-2026-0253",
     # NOTE: RUSTSEC-2024-0429 (glib 0.18.5 VariantStrIter unsound) — REMOVED
     # 2026-05-23 health run 19 / GAR-513. cargo deny advisory DB no longer
     # matches glib 0.18.5 for this ID (advisory-not-detected). cargo audit
@@ -115,7 +118,7 @@ ignore = [
     # — rand 0.7.3 gone from Cargo.lock (phf_generator switched to fastrand).
     # GAR-513 glib portion remains in audit.toml. Owner: GAR-513, expiry 2026-07-31.
 
-    # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-07-31) ---
+    # --- gtk-rs unmaintained — desktop-only (10 IDs, expires 2026-11-15) ---
     # Pulled via tauri-runtime-wry → wry 0.54 → gtk 0.18 → atk/gdk/gtk3-macros
     # → garraia-desktop. CI excludes garraia-desktop (`--exclude garraia-desktop`)
     # so runtime risk on Linux server deploys is zero, but `cargo deny` walks
@@ -136,7 +139,7 @@ ignore = [
     # Pulled via tauri-utils 2.8 → urlpattern 0.3 → unic-ucd-ident → unic-*.
     # Tauri 2.x uses urlpattern for permission scope matching; replacement
     # depends on a Tauri or urlpattern crate update. Owner: GAR-430.
-    # Expires 2026-07-31.
+    # Expires 2026-11-15.
     "RUSTSEC-2025-0075", # unic-char-range
     "RUSTSEC-2025-0080", # unic-common
     "RUSTSEC-2025-0081", # unic-char-property

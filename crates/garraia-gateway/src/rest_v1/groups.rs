@@ -324,16 +324,23 @@ pub async fn create_group(
         .await
         .map_err(|e| RestError::Internal(e.into()))?;
 
-    // 4. INSERT groups, returning the generated id + timestamps.
-    let (id, created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
-        "INSERT INTO groups (name, type, created_by) \
-         VALUES ($1, $2, $3) \
-         RETURNING id, created_at",
+    // 4. INSERT groups — WITHOUT `RETURNING`. Under FORCE RLS, a
+    //    `RETURNING` clause requires the new row to pass the policy's
+    //    USING branch (SELECT visibility), and the freshly created
+    //    group has no group_members row yet, so USING fails even
+    //    though WITH CHECK (created_by branch) passes. The id is
+    //    generated client-side; created_at is read back in step 5b,
+    //    after the owner membership row makes the group visible.
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO groups (id, name, type, created_by) \
+         VALUES ($1, $2, $3, $4)",
     )
+    .bind(id)
     .bind(&trimmed_name)
     .bind(&req.group_type)
     .bind(principal.user_id)
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
@@ -347,6 +354,16 @@ pub async fn create_group(
     .execute(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
+
+    // 5b. Read back the DB-generated created_at. The SELECT passes the
+    //     groups USING policy now that the caller's active membership
+    //     row exists inside this same transaction.
+    let (created_at,): (DateTime<Utc>,) =
+        sqlx::query_as("SELECT created_at FROM groups WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
 
     // 6. Commit. On failure, both INSERTs roll back and the caller
     //    sees an Internal 500 — the creator does NOT end up with
@@ -602,6 +619,12 @@ pub async fn patch_group(
 
     sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
         .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?;

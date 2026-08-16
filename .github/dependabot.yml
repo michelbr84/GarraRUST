@@ -1,5 +1,5 @@
 # Dependabot configuration — see GAR-590.
-# Tracks: cargo workspace (root), npm test deps (tests/), and GitHub Actions.
+# Tracks: cargo workspace (root), npm test deps (tests/), GitHub Actions, Dockerfiles, and docker-compose.
 # Out of scope: pub (Flutter, no Dependabot support), pip (services/voice, deferred).
 version: 2
 updates:
@@ -23,6 +23,28 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      gh-actions-all:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
+  - package-ecosystem: "docker"
+    directory: "/deploy/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/deploy/docker"
     schedule:
       interval: "weekly"
       day: "monday"

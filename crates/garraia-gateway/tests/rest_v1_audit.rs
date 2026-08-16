@@ -39,6 +39,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 fn get_audit(
     token: Option<&str>,
     group_id: &str,
+    x_group_id: Option<&str>,
     cursor: Option<&str>,
     limit: Option<u32>,
     action: Option<&str>,
@@ -81,10 +82,12 @@ fn get_audit(
             HeaderValue::from_str(&format!("Bearer {t}")).unwrap(),
         );
     }
-    req.headers_mut().insert(
-        HeaderName::from_static("x-group-id"),
-        HeaderValue::from_str(group_id).unwrap(),
-    );
+    if let Some(g) = x_group_id {
+        req.headers_mut().insert(
+            HeaderName::from_static("x-group-id"),
+            HeaderValue::from_str(g).unwrap(),
+        );
+    }
     req
 }
 
@@ -165,6 +168,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&owner_token),
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 None,
                 None,
                 None,
@@ -204,6 +208,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&owner_token),
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 None,
                 Some(2),
                 Some("tasks.created"),
@@ -226,6 +231,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&owner_token),
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 Some(next_cursor),
                 Some(2),
                 Some("tasks.created"),
@@ -263,6 +269,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&owner_token),
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 None,
                 None,
                 Some("member.joined"),
@@ -294,6 +301,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&other_token),
                 &group_id.to_string(), // other user requests group_id (not their group)
+                Some(&other_group_id.to_string()), // caller's own group context
                 None,
                 None,
                 None,
@@ -317,6 +325,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 Some(&member_token),
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 None,
                 None,
                 None,
@@ -339,6 +348,7 @@ async fn audit_api_scenarios() {
             .oneshot(get_audit(
                 None,
                 &group_id.to_string(),
+                Some(&group_id.to_string()),
                 None,
                 None,
                 None,
