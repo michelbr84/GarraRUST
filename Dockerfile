@@ -6,7 +6,11 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Chef — prepare recipe for dependency caching
 # ---------------------------------------------------------------------------
-FROM rust:1.92-slim AS chef
+# Keep this tag >= `rust-version` in the workspace Cargo.toml. When it falls
+# behind, `cargo chef cook` aborts the Deploy image build with
+# "rustc X is not supported by the following packages" (Deploy run on the
+# v0.3.0 tag failed exactly this way with 1.92 vs rust-version 1.94).
+FROM rust:1.94-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config libssl-dev \
@@ -61,7 +65,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # ---------------------------------------------------------------------------
 # Stage 5: Runtime — minimal production image
 # ---------------------------------------------------------------------------
-# Must match the builder's glibc. `rust:1.92-slim` (chef base, line 9) is
+# Must match the builder's glibc. `rust:1.94-slim` (chef base, Stage 1) is
 # debian:trixie with glibc 2.39, so the `garra` binary is linked against
 # 2.39. Using bookworm here (glibc 2.36) made the binary fail at startup
 # with `GLIBC_2.39 not found` — discovered during the GAR-603 Runpod local

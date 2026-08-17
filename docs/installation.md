@@ -4,7 +4,7 @@ This guide covers installing GarraIA on various platforms.
 
 ## Prerequisites
 
-- **Rust 1.92+** (if building from source)
+- **Rust 1.94+** (if building from source)
 - **FFmpeg** (for voice mode)
 - **OpenSSL** (for some features)
 
@@ -25,7 +25,7 @@ Download the pre-compiled binary from [GitHub Releases](https://github.com/miche
 ### Prerequisites
 
 ```bash
-# Install Rust 1.92+
+# Install Rust 1.94+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update stable
 
@@ -192,7 +192,7 @@ docker-compose up -d
 ### Manual Docker
 
 ```dockerfile
-FROM rust:1.92-bookworm
+FROM rust:1.94-trixie
 
 RUN apt-get update && apt-get install -y ffmpeg libssl3
 
