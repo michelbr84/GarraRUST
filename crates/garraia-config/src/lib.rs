@@ -20,3 +20,10 @@ pub use provider_keys::{
     resolve_provider_key_source, vault_present_but_locked,
 };
 pub use watcher::ConfigWatcher;
+
+/// Crate-wide lock serializing unit tests that mutate process-global
+/// environment variables (`auth::tests` and `check::tests` touch the same
+/// `GARRAIA_*`/`GarraIA_*` vars inside one test binary).
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));

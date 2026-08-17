@@ -641,13 +641,16 @@ fn validate_auth(
         );
     }
 
-    // Cross-check: if GARRAIA_JWT_SECRET or GarraIA_VAULT_PASSPHRASE are
-    // present in the process env AND `[auth]` is populated in the file,
-    // emit an Info-ish Warning so operators know the file entry is
-    // non-load-bearing for the secret (secrets are env-only by design
-    // — plan 0046 §5.1). We only check presence, never values.
+    // Cross-check: if any env var able to source the JWT secret is
+    // present AND `[auth]` is populated in the file, emit an Info-ish
+    // Warning so operators know the file entry is non-load-bearing for
+    // the secret (secrets are env-only by design — plan 0046 §5.1).
+    // We only check presence, never values. Since issue #824 the
+    // canonical all-caps vault passphrase also unlocks the auth flow
+    // (last fallback in `AuthConfig::from_env`).
     let jwt_env_set = std::env::var_os("GARRAIA_JWT_SECRET").is_some()
-        || std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+        || std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some()
+        || std::env::var_os("GARRAIA_VAULT_PASSPHRASE").is_some();
     // Heuristic for "auth section is populated" — any field that
     // differs from default indicates the operator put a `[auth]` in
     // the file. Comparing against defaults avoids a false positive
@@ -665,14 +668,47 @@ fn validate_auth(
         );
     }
 
-    // Cross-check: if NEITHER env var is set, the gateway will run in
+    // Cross-check: if NO env var is set, the gateway will run in
     // fail-soft mode and /auth/* + /v1/auth/* will answer 503. Surface
     // as a warning so operators see the state clearly in `config check`.
     if !jwt_env_set {
         push_warn(
             findings,
             "auth",
-            "neither GARRAIA_JWT_SECRET nor GarraIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+            "none of GARRAIA_JWT_SECRET, GarraIA_VAULT_PASSPHRASE or GARRAIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+        );
+    }
+
+    // Issue #824: the mixed-case `GarraIA_VAULT_PASSPHRASE` spelling is
+    // deprecated. It still works everywhere (JWT fallback since plan 0046,
+    // vault fallback since #824), but the near-identical names are a trap,
+    // so nudge operators toward the canonical pair. Presence only — the
+    // value comparison below never reaches any output.
+    let legacy_set = std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+    let canonical_set = std::env::var_os("GARRAIA_VAULT_PASSPHRASE").is_some();
+    if legacy_set {
+        push_warn(
+            findings,
+            "env.GarraIA_VAULT_PASSPHRASE",
+            "mixed-case GarraIA_VAULT_PASSPHRASE is a deprecated spelling — it still works \
+             (JWT-secret fallback and credential-vault fallback), but prefer GARRAIA_JWT_SECRET \
+             for auth and GARRAIA_VAULT_PASSPHRASE for the vault"
+                .into(),
+        );
+    }
+    if legacy_set
+        && canonical_set
+        && std::env::var("GarraIA_VAULT_PASSPHRASE").ok()
+            != std::env::var("GARRAIA_VAULT_PASSPHRASE").ok()
+    {
+        push_warn(
+            findings,
+            "env.GARRAIA_VAULT_PASSPHRASE",
+            "GARRAIA_VAULT_PASSPHRASE and GarraIA_VAULT_PASSPHRASE are both set with DIFFERENT \
+             values: the credential vault prefers the all-caps spelling, while the JWT-secret \
+             fallback prefers the mixed-case one. If that split is not intentional, keep only \
+             GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
+                .into(),
         );
     }
 }
@@ -1614,6 +1650,106 @@ mod tests {
                 .any(|f| f.message.contains("does not exist")),
             "without_env should NOT fire MISSING warning: {without_env:?}"
         );
+    }
+
+    // ── Issue #824: vault-passphrase spelling findings ─────────────────────
+    //
+    // Env mutation shares the crate-wide ENV_TEST_LOCK with auth::tests —
+    // both modules touch the same GarraIA_*/GARRAIA_* variables inside one
+    // test binary.
+
+    fn passphrase_env_snapshot() -> (Option<String>, Option<String>) {
+        (
+            std::env::var("GarraIA_VAULT_PASSPHRASE").ok(),
+            std::env::var("GARRAIA_VAULT_PASSPHRASE").ok(),
+        )
+    }
+
+    fn restore_passphrase_env((legacy, canonical): (Option<String>, Option<String>)) {
+        // SAFETY: ENV_TEST_LOCK held by caller.
+        unsafe {
+            match legacy {
+                Some(v) => std::env::set_var("GarraIA_VAULT_PASSPHRASE", v),
+                None => std::env::remove_var("GarraIA_VAULT_PASSPHRASE"),
+            }
+            match canonical {
+                Some(v) => std::env::set_var("GARRAIA_VAULT_PASSPHRASE", v),
+                None => std::env::remove_var("GARRAIA_VAULT_PASSPHRASE"),
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_passphrase_spelling_yields_deprecation_warning() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "some-legacy-secret-value");
+            std::env::remove_var("GARRAIA_VAULT_PASSPHRASE");
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "env.GarraIA_VAULT_PASSPHRASE")
+            .expect("mixed-case spelling must produce a deprecation warning");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("deprecated"));
+        // Redaction invariant: presence only, never the value.
+        assert!(!hit.message.contains("some-legacy-secret-value"));
+
+        restore_passphrase_env(snapshot);
+    }
+
+    #[test]
+    fn divergent_passphrase_spellings_yield_split_warning() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "legacy-secret-value");
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "canonical-secret-value");
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "env.GARRAIA_VAULT_PASSPHRASE")
+            .expect("divergent values across the two spellings must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("DIFFERENT"));
+        assert!(!hit.message.contains("legacy-secret-value"));
+        assert!(!hit.message.contains("canonical-secret-value"));
+
+        restore_passphrase_env(snapshot);
+    }
+
+    #[test]
+    fn equal_passphrase_spellings_do_not_warn_about_divergence() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "same-secret-value");
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "same-secret-value");
+        }
+
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field == "env.GARRAIA_VAULT_PASSPHRASE"),
+            "equal values across spellings must not produce the divergence warning"
+        );
+
+        restore_passphrase_env(snapshot);
     }
 
     #[test]

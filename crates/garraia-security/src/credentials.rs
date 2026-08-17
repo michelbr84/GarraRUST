@@ -177,6 +177,38 @@ impl CredentialVault {
     }
 }
 
+/// Canonical environment variable carrying the credential-vault passphrase.
+pub const VAULT_PASSPHRASE_ENV: &str = "GARRAIA_VAULT_PASSPHRASE";
+
+/// Deprecated mixed-case spelling of [`VAULT_PASSPHRASE_ENV`]. Historically it
+/// only fed the JWT-secret fallback in `garraia-config::auth`, so exporting it
+/// with the intent of unlocking the vault failed silently (issue #824). It is
+/// now accepted here as a fallback so a casing slip no longer strands the
+/// operator, but the canonical all-caps spelling always wins.
+pub const VAULT_PASSPHRASE_ENV_LEGACY: &str = "GarraIA_VAULT_PASSPHRASE";
+
+/// Read the vault passphrase from the environment: the canonical
+/// [`VAULT_PASSPHRASE_ENV`] first, then the deprecated mixed-case
+/// [`VAULT_PASSPHRASE_ENV_LEGACY`] with a deprecation warning. Empty values
+/// count as unset on both tiers, matching the key-resolution convention in
+/// `garraia-config::provider_keys` (an empty passphrase cannot open a vault).
+pub fn vault_passphrase_from_env() -> Option<String> {
+    if let Some(v) = std::env::var(VAULT_PASSPHRASE_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        return Some(v);
+    }
+    let legacy = std::env::var(VAULT_PASSPHRASE_ENV_LEGACY)
+        .ok()
+        .filter(|v| !v.is_empty())?;
+    warn!(
+        "vault passphrase read from deprecated mixed-case {VAULT_PASSPHRASE_ENV_LEGACY}; \
+         prefer the canonical {VAULT_PASSPHRASE_ENV} spelling"
+    );
+    Some(legacy)
+}
+
 /// Try to load a credential from the vault, returning `None` if the vault
 /// doesn't exist or can't be opened (no passphrase prompt in server mode).
 pub fn try_vault_get(vault_path: &Path, key: &str) -> Option<String> {
@@ -184,8 +216,9 @@ pub fn try_vault_get(vault_path: &Path, key: &str) -> Option<String> {
         return None;
     }
     // In server mode we cannot prompt for a passphrase, so try the
-    // environment variable `GARRAIA_VAULT_PASSPHRASE` as a fallback.
-    let passphrase = std::env::var("GARRAIA_VAULT_PASSPHRASE").ok()?;
+    // environment (canonical spelling, then the deprecated mixed-case
+    // alias) as a fallback.
+    let passphrase = vault_passphrase_from_env()?;
     match CredentialVault::open(vault_path, &passphrase) {
         Ok(vault) => vault.get(key).map(|s| s.to_string()),
         Err(e) => {
@@ -200,9 +233,8 @@ pub fn try_vault_get(vault_path: &Path, key: &str) -> Option<String> {
 /// cannot be opened/created. This is intended for best-effort key persistence
 /// at runtime (e.g. when a user adds a provider via the web UI).
 pub fn try_vault_set(vault_path: &Path, key: &str, value: &str) -> bool {
-    let passphrase = match std::env::var("GARRAIA_VAULT_PASSPHRASE") {
-        Ok(p) if !p.is_empty() => p,
-        _ => return false,
+    let Some(passphrase) = vault_passphrase_from_env() else {
+        return false;
     };
 
     let mut vault = if CredentialVault::exists(vault_path) {
@@ -239,9 +271,8 @@ pub fn try_vault_set(vault_path: &Path, key: &str, value: &str) -> bool {
 /// Try to remove all vault credentials whose key starts with `prefix`.
 /// Returns the number of keys removed, or `0` on any error.
 pub fn try_vault_delete_prefix(vault_path: &Path, prefix: &str) -> usize {
-    let passphrase = match std::env::var("GARRAIA_VAULT_PASSPHRASE") {
-        Ok(p) if !p.is_empty() => p,
-        _ => return 0,
+    let Some(passphrase) = vault_passphrase_from_env() else {
+        return 0;
     };
     if !CredentialVault::exists(vault_path) {
         return 0;
@@ -363,6 +394,105 @@ mod tests {
         assert!(vault.remove("key1"));
         assert!(!vault.remove("key1")); // already removed
         assert!(vault.get("key1").is_none());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    // ── Issue #824: passphrase env-var spelling fallback ──────────────────
+    //
+    // These tests mutate the process-global environment, so they serialize
+    // on a shared lock (same pattern as garraia-config::auth::tests) and
+    // snapshot/restore both variables on exit.
+
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvSnapshot {
+        canonical: Option<String>,
+        legacy: Option<String>,
+    }
+
+    impl EnvSnapshot {
+        fn capture_and_clear() -> Self {
+            let snap = Self {
+                canonical: std::env::var(VAULT_PASSPHRASE_ENV).ok(),
+                legacy: std::env::var(VAULT_PASSPHRASE_ENV_LEGACY).ok(),
+            };
+            // SAFETY: ENV_LOCK held by caller.
+            unsafe {
+                std::env::remove_var(VAULT_PASSPHRASE_ENV);
+                std::env::remove_var(VAULT_PASSPHRASE_ENV_LEGACY);
+            }
+            snap
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK still held while the test unwinds.
+            unsafe {
+                match self.canonical.take() {
+                    Some(v) => std::env::set_var(VAULT_PASSPHRASE_ENV, v),
+                    None => std::env::remove_var(VAULT_PASSPHRASE_ENV),
+                }
+                match self.legacy.take() {
+                    Some(v) => std::env::set_var(VAULT_PASSPHRASE_ENV_LEGACY, v),
+                    None => std::env::remove_var(VAULT_PASSPHRASE_ENV_LEGACY),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn passphrase_env_prefers_canonical_and_falls_back_to_legacy() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture_and_clear();
+
+        assert_eq!(vault_passphrase_from_env(), None, "unset ⇒ None");
+
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var(VAULT_PASSPHRASE_ENV_LEGACY, "legacy-pass") };
+        assert_eq!(
+            vault_passphrase_from_env().as_deref(),
+            Some("legacy-pass"),
+            "mixed-case alias must unlock the vault when canonical is unset"
+        );
+
+        unsafe { std::env::set_var(VAULT_PASSPHRASE_ENV, "canonical-pass") };
+        assert_eq!(
+            vault_passphrase_from_env().as_deref(),
+            Some("canonical-pass"),
+            "canonical spelling must win when both are set"
+        );
+
+        // Empty values count as unset on both tiers.
+        unsafe {
+            std::env::set_var(VAULT_PASSPHRASE_ENV, "");
+            std::env::set_var(VAULT_PASSPHRASE_ENV_LEGACY, "");
+        }
+        assert_eq!(vault_passphrase_from_env(), None, "empty ⇒ None");
+    }
+
+    #[test]
+    fn try_vault_get_accepts_legacy_spelling() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture_and_clear();
+
+        let path = temp_vault_path("legacy-env");
+        let mut vault = CredentialVault::create(&path, "legacy-pass").unwrap();
+        vault.set("ANTHROPIC_API_KEY", "sk-ant-legacy");
+        vault.save().unwrap();
+
+        // The #824 trap: only the mixed-case spelling exported. Before the
+        // fix this returned None and the provider was skipped at boot.
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var(VAULT_PASSPHRASE_ENV_LEGACY, "legacy-pass") };
+        assert_eq!(
+            try_vault_get(&path, "ANTHROPIC_API_KEY").as_deref(),
+            Some("sk-ant-legacy"),
+            "mixed-case-only export must now unlock the vault"
+        );
 
         let _ = fs::remove_file(&path);
     }
