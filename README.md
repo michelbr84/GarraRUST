@@ -126,7 +126,7 @@ Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
 
 Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next steps" legados e sai com código 0 — nunca trava aguardando input.
 
-> A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica cada binário contra seu `<asset>.sha256` correspondente.
+> A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica o binário baixado contra o arquivo `SHA256SUMS` da release (um único manifesto para todos os assets, via `sha256sum -c`). O formato `<asset>.sha256` é usado pelo `garraia update`, não pelo `install.sh`.
 > Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são best-effort enquanto o cross-compile de `openssl` para ARM64 estabiliza ([release.yml](.github/workflows/release.yml)).
 
 </details>
@@ -695,6 +695,12 @@ gateway:
   session_tokens_required: false # exige token nas rotas /api/* . Padrão: false
 
 llm:
+  # ATENÇÃO sobre `api_key`: a resolução é vault > config > variável de ambiente.
+  # O tier do vault só funciona quando GARRAIA_VAULT_PASSPHRASE está presente no
+  # ambiente do gateway, a CADA start — sem ela o cofre fica ilegível e o provider
+  # é PULADO no boot (`skipping <tipo> provider <nome>: no API key`). Por isso o
+  # `garraia init` grava a chave no próprio config.yml (criado com modo 0600).
+  # Rode `garraia config check` para confirmar que cada provider resolve.
   claude:
     provider: anthropic
     model: claude-sonnet-4-5-20250929

@@ -439,6 +439,78 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // llm.*: a provider entry whose API key resolves nowhere is skipped at
+    // startup, leaving the gateway up with zero usable providers — the failure
+    // mode that made `garraia init` → `garraia start` unusable. It is an Error,
+    // not a Warning: the entry is present precisely because the operator wants
+    // that provider, and it will not work.
+    //
+    // Unlike the channel loop below, this consults the credential vault too,
+    // via the same chain `build_agent_runtime` walks, so `config check` cannot
+    // disagree with what the gateway will actually do at boot.
+    for (name, llm) in &config.llm {
+        let Some(var) = crate::provider_keys::provider_key_env(&llm.provider) else {
+            // Keyless (`ollama`) or unknown provider type — the unknown case is
+            // reported separately below.
+            continue;
+        };
+        if crate::provider_keys::resolve_provider_key_source(&llm.provider, llm.api_key.as_deref())
+            .is_resolved()
+        {
+            continue;
+        }
+        push_err(
+            &mut findings,
+            &format!("llm.{name}"),
+            format!(
+                "provider '{name}' (type={}) has no API key and will be skipped at startup. \
+                 Fix it in any one of three ways: set `llm.{name}.api_key` in config.yml, \
+                 export {var}, or export {vault} to unlock the credential vault.",
+                llm.provider,
+                vault = crate::provider_keys::VAULT_PASSPHRASE_ENV
+            ),
+        );
+    }
+
+    // An `llm:` entry whose `provider` the runtime does not recognize is
+    // silently dropped with `warn!("unknown LLM provider type")` at boot.
+    for (name, llm) in &config.llm {
+        let known = crate::provider_keys::provider_key_env(&llm.provider).is_some()
+            || matches!(llm.provider.as_str(), "ollama" | "echo");
+        if !known {
+            push_err(
+                &mut findings,
+                &format!("llm.{name}"),
+                format!(
+                    "provider '{name}' has unknown type `{}` — the runtime will skip it. \
+                     Did you mean one of: openrouter, openai, anthropic, ollama, gemini, \
+                     mistral, deepseek, qwen, cohere?",
+                    llm.provider
+                ),
+            );
+        }
+    }
+
+    // A populated `llm:` with no `agent.default_provider` silently disables the
+    // provider auto-fallback path in `build_agent_runtime`, so an unreachable or
+    // rate-limited provider has nowhere to fail over to.
+    if !config.llm.is_empty() && config.agent.default_provider.is_none() {
+        push_warn(
+            &mut findings,
+            "agent.default_provider",
+            format!(
+                "`llm:` defines {} provider(s) but agent.default_provider is unset — \
+                 provider auto-fallback is disabled. Set it to one of: {}.",
+                config.llm.len(),
+                {
+                    let mut keys: Vec<&str> = config.llm.keys().map(|k| k.as_str()).collect();
+                    keys.sort();
+                    keys.join(", ")
+                }
+            ),
+        );
+    }
+
     // mobile.persona: plan 0042 §5.3 — suspiciously short strings are
     // flagged as Warning (valid shape, unusual content). Threshold of
     // 10 chars picks up accidental "hi" / "test" without slapping
@@ -468,8 +540,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
     // operators catch the common mistake of enabling a channel without
-    // providing the secret. We only check env vars here — the vault is
-    // runtime-only and out of scope for config-check.
+    // providing the secret. Kept a Warning (not an Error like `llm.*` above)
+    // because a disabled channel degrades one surface, while a keyless LLM
+    // provider leaves the whole gateway unable to answer.
     for (name, ch) in &config.channels {
         let enabled = ch.enabled.unwrap_or(true);
         if !enabled {
@@ -814,6 +887,118 @@ mod tests {
         assert_eq!(report.file_used, None);
         assert!(report.used_defaults);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Builds the config the broken onboarding flow produced: a structurally
+    /// perfect openrouter entry named `main` with `api_key: null`.
+    fn config_with_keyless_openrouter() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "main".into(),
+            LlmProviderConfig {
+                provider: "openrouter".into(),
+                model: Some("openrouter/auto".into()),
+                api_key: None,
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("main".into());
+        cfg
+    }
+
+    /// The check that would have told the operator exactly what was wrong
+    /// instead of leaving them with a cryptic boot warning.
+    #[test]
+    fn keyless_llm_provider_is_reported_as_an_error() {
+        // SAFETY: unique-to-this-test read of a well-known var; we only remove it.
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+
+        let findings = validate(&config_with_keyless_openrouter());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "llm.main")
+            .expect("a keyless llm entry must produce a finding");
+
+        assert!(matches!(hit.severity, Severity::Error));
+        // The message must name all three remedies — the old boot warning
+        // mentioned only config and env, never the vault.
+        assert!(hit.message.contains("llm.main.api_key"));
+        assert!(hit.message.contains("OPENROUTER_API_KEY"));
+        assert!(hit.message.contains("GARRAIA_VAULT_PASSPHRASE"));
+    }
+
+    #[test]
+    fn llm_provider_with_key_in_config_produces_no_finding() {
+        let mut cfg = config_with_keyless_openrouter();
+        cfg.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "llm.main"),
+            "a provider with a key in config.yml must not be flagged"
+        );
+    }
+
+    #[test]
+    fn keyless_ollama_is_not_flagged() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "local".into(),
+            LlmProviderConfig {
+                provider: "ollama".into(),
+                model: Some("qwen3".into()),
+                api_key: None,
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("local".into());
+
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "llm.local"),
+            "ollama needs no API key and must never be reported as missing one"
+        );
+    }
+
+    #[test]
+    fn unknown_provider_type_is_reported() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "typo".into(),
+            LlmProviderConfig {
+                provider: "openrouterr".into(),
+                model: None,
+                api_key: Some("k".into()),
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("typo".into());
+
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "llm.typo")
+            .expect("an unknown provider type must be reported");
+        assert!(matches!(hit.severity, Severity::Error));
+        assert!(hit.message.contains("unknown type"));
+    }
+
+    #[test]
+    fn populated_llm_without_default_provider_warns_about_lost_fallback() {
+        let mut cfg = config_with_keyless_openrouter();
+        cfg.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+        cfg.agent.default_provider = None;
+
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "agent.default_provider")
+            .expect("an unset default_provider alongside llm entries must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("auto-fallback"));
     }
 
     #[test]

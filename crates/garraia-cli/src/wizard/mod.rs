@@ -41,6 +41,67 @@ use local_stack::{
 /// Default cloud model — matches `chat.rs` (`openrouter/auto`).
 const DEFAULT_OPENROUTER_MODEL: &str = "openrouter/auto";
 
+/// Where the wizard persists a secret it just collected.
+///
+/// The ordering of the variants is the ordering of the prompt, and
+/// [`SecretStorage::Config`] is deliberately first and default. Vaulting a
+/// secret requires `GARRAIA_VAULT_PASSPHRASE` to be present in the *gateway's*
+/// environment at every single start; the wizard cannot arrange that, so a
+/// vault default meant `garraia init` → `garraia start` produced an encrypted
+/// key the server could not open and a provider that silently never came up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretStorage {
+    /// Into `config.yml`, which [`write_config`] clamps to mode `0600`.
+    Config,
+    /// Into `credentials/vault.json`, AES-encrypted under a passphrase the
+    /// operator must re-supply out-of-band on every start.
+    Vault,
+    /// Nowhere — the operator exports the env var themselves.
+    Env,
+}
+
+/// Prompt for where to keep `what` (a human label like `"OpenRouter API key"`),
+/// naming `env_var` in the skip option so the operator knows the exact variable.
+fn prompt_secret_storage(what: &str, env_var: &str) -> Result<SecretStorage> {
+    let choices = [
+        "Store in config.yml (recommended — the file is chmod 0600)".to_string(),
+        "Store in the encrypted vault (needs GARRAIA_VAULT_PASSPHRASE on every start)".to_string(),
+        format!("Skip storing (I will export {env_var} myself)"),
+    ];
+    let picked = Select::new()
+        .with_prompt(format!("How should the {what} be stored?"))
+        .items(&choices)
+        .default(0)
+        .interact()
+        .with_context(|| format!("{what} storage choice cancelled"))?;
+    Ok(match picked {
+        0 => SecretStorage::Config,
+        1 => SecretStorage::Vault,
+        _ => SecretStorage::Env,
+    })
+}
+
+/// Tell the operator, unmissably, that a vaulted secret is inert until the
+/// passphrase reaches the gateway. Printed as a block rather than a one-line
+/// `println!` because the previous single line scrolled away behind the wizard's
+/// remaining output and the boot log, and operators never saw it.
+fn print_vault_passphrase_warning() {
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────────────────┐");
+    println!("  │  ⚠  ATENÇÃO — leia antes de iniciar o Garra                     │");
+    println!("  └─────────────────────────────────────────────────────────────────┘");
+    println!("  Seus segredos foram cifrados no cofre. O servidor NÃO consegue");
+    println!("  abri-lo sozinho: ele precisa da mesma senha, via variável de");
+    println!("  ambiente, em TODA inicialização. Sem ela o Garra sobe, mas os");
+    println!("  provedores e canais ficam desligados.");
+    println!();
+    println!("    export GARRAIA_VAULT_PASSPHRASE='<a senha que você acabou de criar>'");
+    println!();
+    println!("  Para que isso sobreviva a reboots, coloque a linha acima no seu");
+    println!("  ~/.bashrc, ou num EnvironmentFile da sua unit systemd.");
+    println!();
+}
+
 /// `GARRAIA_BOOTSTRAP_LOCAL=0` disables the GPU/local-stack prompts even
 /// when a GPU is detected. Any other value (or unset) keeps the prompts
 /// gated by [`EnvSnapshot::supports_local_stack`].
@@ -234,21 +295,13 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         let token = token.trim().to_string();
 
         if !token.is_empty() {
-            let choices = &[
-                "Store in encrypted vault (recommended)",
-                "Store as plaintext in config.yml",
-                "Skip storing (use env var)",
-            ];
-            let storage = Select::new()
-                .with_prompt("How should the Telegram bot token be stored?")
-                .items(choices)
-                .default(0)
-                .interact()
-                .context("telegram storage choice cancelled")?;
-            match storage {
-                0 => telegram_token_for_vault = Some(token.clone()),
-                1 => telegram_token_plaintext = Some(token.clone()),
-                _ => {}
+            // Same defect as the OpenRouter key: a vault default left the
+            // channel silently offline on every restart, because the gateway
+            // has no passphrase to open the vault with.
+            match prompt_secret_storage("Telegram bot token", "TELEGRAM_BOT_TOKEN")? {
+                SecretStorage::Config => telegram_token_plaintext = Some(token.clone()),
+                SecretStorage::Vault => telegram_token_for_vault = Some(token.clone()),
+                SecretStorage::Env => {}
             }
         }
     }
@@ -262,8 +315,10 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     };
 
     // --- 10. Vault (cloud key + telegram token) ---------------------------
-    let openrouter_for_vault =
-        openrouter_api_key_plaintext.filter(|_| openrouter_should_use_vault(&openrouter_choice));
+    // `collect_openrouter` / the Telegram prompt hand back a cleartext secret
+    // only when the operator explicitly chose the vault, so no further
+    // filtering is needed here.
+    let openrouter_for_vault = openrouter_api_key_plaintext;
     let needs_vault = openrouter_for_vault.is_some() || telegram_token_for_vault.is_some();
     if needs_vault {
         open_or_create_vault(
@@ -271,6 +326,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
             openrouter_for_vault.as_deref(),
             telegram_token_for_vault.as_deref(),
         )?;
+        print_vault_passphrase_warning();
     }
 
     // --- 11. Build outcome + write config ---------------------------------
@@ -371,26 +427,15 @@ fn collect_openrouter(out: &mut Option<CloudLlmChoice>) -> Result<Option<String>
         .context("OpenRouter key input cancelled")?;
     let api_key = api_key.trim().to_string();
 
-    let storage_choice = if !api_key.is_empty() {
-        let choices = &[
-            "Store in encrypted vault (recommended)",
-            "Store as plaintext in config.yml",
-            "Skip storing (use env var)",
-        ];
-        Select::new()
-            .with_prompt("How should the OpenRouter key be stored?")
-            .items(choices)
-            .default(0)
-            .interact()
-            .context("key storage choice cancelled")?
+    let storage = if api_key.is_empty() {
+        SecretStorage::Env
     } else {
-        2 // skip — env var
+        prompt_secret_storage("OpenRouter API key", "OPENROUTER_API_KEY")?
     };
 
-    let plaintext_for_config = if storage_choice == 1 && !api_key.is_empty() {
-        Some(api_key.clone())
-    } else {
-        None
+    let plaintext_for_config = match storage {
+        SecretStorage::Config => Some(api_key.clone()),
+        SecretStorage::Vault | SecretStorage::Env => None,
     };
 
     *out = Some(CloudLlmChoice {
@@ -401,18 +446,10 @@ fn collect_openrouter(out: &mut Option<CloudLlmChoice>) -> Result<Option<String>
 
     // Return the cleartext only when the user picked vault — caller
     // forwards into the vault flow.
-    if storage_choice == 0 && !api_key.is_empty() {
-        Ok(Some(api_key))
-    } else {
-        Ok(None)
+    match storage {
+        SecretStorage::Vault => Ok(Some(api_key)),
+        SecretStorage::Config | SecretStorage::Env => Ok(None),
     }
-}
-
-fn openrouter_should_use_vault(choice: &Option<CloudLlmChoice>) -> bool {
-    matches!(
-        choice,
-        Some(c) if c.api_key_plaintext.is_none()
-    )
 }
 
 fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> Result<()> {
@@ -511,8 +548,9 @@ fn open_or_create_vault(
             .context("passphrase input cancelled")?;
         match garraia_security::CredentialVault::create(&vault_path, &passphrase) {
             Ok(v) => {
+                // The passphrase reminder is printed once, as a block, by
+                // `print_vault_passphrase_warning` after this function returns.
                 println!("  Vault created.");
-                println!("  Set GARRAIA_VAULT_PASSPHRASE env var for server mode.");
                 Some(v)
             }
             Err(e) => {

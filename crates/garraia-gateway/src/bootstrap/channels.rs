@@ -2,12 +2,13 @@ use garraia_config::AppConfig;
 use tracing::{info, warn};
 
 /// Build configured channels that can be initialized before state is wrapped in Arc.
+///
+/// `.env` loading used to happen here, but `Server::run` calls
+/// `build_agent_runtime` — which reads the provider API-key env vars — *before*
+/// it calls this function. That meant `.env` provisioned channels while leaving
+/// providers dead for anyone embedding `Server` directly. The load now happens
+/// at the top of `Server::run` instead.
 pub async fn build_channels(config: &AppConfig) -> garraia_channels::ChannelRegistry {
-    // Load .env file if present (idempotent, will not overwrite existing env vars)
-    if let Err(e) = dotenvy::dotenv() {
-        tracing::debug!("no .env file loaded: {e}");
-    }
-
     let registry = garraia_channels::ChannelRegistry::new();
 
     for (name, channel_config) in &config.channels {

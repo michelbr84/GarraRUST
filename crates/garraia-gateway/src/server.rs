@@ -74,6 +74,16 @@ impl GatewayServer {
     }
 
     pub async fn run(self) -> Result<()> {
+        // Load `.env` before anything reads the environment. This must precede
+        // `build_agent_runtime`, which resolves every provider's API key from
+        // env vars: when the load lived in `build_channels` (called ~20 lines
+        // below) `.env` provisioned channels but never providers, so an
+        // embedder of `Server` got working Telegram and zero LLMs. Idempotent,
+        // and it never overwrites an already-set variable.
+        if let Err(e) = dotenvy::dotenv() {
+            tracing::debug!("no .env file loaded: {e}");
+        }
+
         let addr = format!("{}:{}", self.config.gateway.host, self.config.gateway.port);
         let tls_cert = self.config.gateway.tls_cert_path.clone();
         let tls_key = self.config.gateway.tls_key_path.clone();

@@ -132,69 +132,44 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
         let provider = llm_config.provider.clone();
         let base_url = llm_config.base_url.clone();
 
+        // One key-presence check for every provider, using the same
+        // vault -> config -> env chain the boot path uses. Previously this was
+        // duplicated per provider as `api_key.is_some() || env::var(..).is_ok()`,
+        // which ignored the credential vault entirely — so a provider the
+        // gateway had successfully loaded out of the vault was reported here as
+        // "no API key configured". Keyless providers (`ollama`) always resolve.
+        if !garraia_config::resolve_provider_key_source(&provider, llm_config.api_key.as_deref())
+            .is_resolved()
+        {
+            handles.push(tokio::spawn(async move {
+                HealthStatus {
+                    name,
+                    ok: false,
+                    latency_ms: None,
+                    error: Some("no API key configured".to_string()),
+                }
+            }));
+            continue;
+        }
+
         let check_url = match provider.as_str() {
             "ollama" => {
                 let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
                 Some(format!("{}/api/tags", base))
             }
-            "openrouter" => {
-                // Check if API key is configured first
-                let has_key =
-                    llm_config.api_key.is_some() || std::env::var("OPENROUTER_API_KEY").is_ok();
-                if has_key {
-                    Some("https://openrouter.ai/api/v1/models".to_string())
-                } else {
-                    // No API key — report as disabled, don't hit the endpoint
-                    handles.push(tokio::spawn(async move {
-                        HealthStatus {
-                            name,
-                            ok: false,
-                            latency_ms: None,
-                            error: Some("no API key configured".to_string()),
-                        }
-                    }));
-                    continue;
-                }
-            }
+            "openrouter" => Some("https://openrouter.ai/api/v1/models".to_string()),
             "openai" => {
-                let has_key =
-                    llm_config.api_key.is_some() || std::env::var("OPENAI_API_KEY").is_ok();
-                if has_key {
-                    let base = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
-                    let base = base.trim_end_matches('/');
-                    // Avoid /v1/v1/models when base_url already ends with /v1
-                    let health_url = if base.ends_with("/v1") {
-                        format!("{}/models", base)
-                    } else {
-                        format!("{}/v1/models", base)
-                    };
-                    Some(health_url)
+                let base = base_url.unwrap_or_else(|| "https://api.openai.com".to_string());
+                let base = base.trim_end_matches('/');
+                // Avoid /v1/v1/models when base_url already ends with /v1
+                let health_url = if base.ends_with("/v1") {
+                    format!("{}/models", base)
                 } else {
-                    handles.push(tokio::spawn(async move {
-                        HealthStatus {
-                            name,
-                            ok: false,
-                            latency_ms: None,
-                            error: Some("no API key configured".to_string()),
-                        }
-                    }));
-                    continue;
-                }
+                    format!("{}/v1/models", base)
+                };
+                Some(health_url)
             }
             "anthropic" => {
-                let has_key =
-                    llm_config.api_key.is_some() || std::env::var("ANTHROPIC_API_KEY").is_ok();
-                if !has_key {
-                    handles.push(tokio::spawn(async move {
-                        HealthStatus {
-                            name,
-                            ok: false,
-                            latency_ms: None,
-                            error: Some("no API key configured".to_string()),
-                        }
-                    }));
-                    continue;
-                }
                 // Anthropic doesn't have a simple health endpoint, skip HTTP check
                 handles.push(tokio::spawn(async move {
                     HealthStatus {

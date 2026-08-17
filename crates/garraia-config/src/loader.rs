@@ -142,6 +142,10 @@ impl ConfigLoader {
     }
 
     /// Save the given AppConfig to config.yml in the config directory.
+    ///
+    /// The file is written with mode `0600` on Unix — `llm.*.api_key` and
+    /// `gateway.api_key` live in here, so a umask-default `0644` would leave
+    /// provider credentials world-readable.
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         let yaml_path = self.config_dir.join("config.yml");
 
@@ -155,9 +159,38 @@ impl ConfigLoader {
             ))
         })?;
 
+        harden_secret_file(&yaml_path)?;
+
         info!("saved updated config to {}", yaml_path.display());
         Ok(())
     }
+}
+
+/// Restrict `path` to owner-only read/write (`0600`) on Unix.
+///
+/// Call this after writing any file that can hold a credential — `config.yml`
+/// carries `llm.*.api_key` since the onboarding wizard stopped defaulting to
+/// the credential vault, and `std::fs::write` alone leaves the file at whatever
+/// the process umask allows (commonly `0644`).
+///
+/// No-op on non-Unix targets, where the parent directory ACL governs access.
+pub fn harden_secret_file(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            Error::Config(format!(
+                "failed to restrict permissions on {}: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -178,6 +211,43 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    /// `config.yml` holds `llm.*.api_key` since the wizard stopped defaulting
+    /// to the credential vault. A umask-default `0644` would make provider
+    /// credentials world-readable, so `save` must clamp the mode to `0600`.
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_config_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("save-perms");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+        // Pre-create the file world-readable so we prove `save` tightens an
+        // existing loose mode, not merely that a fresh file happens to be 0600.
+        let path = dir.join("config.yml");
+        fs::write(&path, "gateway:\n  host: \"127.0.0.1\"\n").expect("failed to seed config");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("failed to loosen permissions");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        loader
+            .save(&crate::model::AppConfig::default())
+            .expect("save should succeed");
+
+        let mode = fs::metadata(&path)
+            .expect("config should exist after save")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config.yml must be owner-only; got {:o}",
+            mode & 0o777
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
