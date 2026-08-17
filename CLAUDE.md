@@ -196,6 +196,16 @@ crates/
                         SÓ em `crates/garraia-config/src/auth.rs` (oauth.rs e totp.rs
                         refactorados). `metrics_token` lido via `garraia-telemetry::config`
                         dedicado. Ver `docs/auth-config.md` para matriz de precedência.
+                        Issue #824 (2026-08-17): as duas grafias da passphrase são
+                        aceitas em TODOS os consumidores — cofre lê via
+                        `garraia_security::vault_passphrase_from_env()` (all-caps
+                        canônica > mixed-case deprecated com warning) e
+                        `AuthConfig::from_env` ganha `GARRAIA_VAULT_PASSPHRASE`
+                        como último fallback (`GARRAIA_JWT_SECRET` >
+                        `GarraIA_VAULT_PASSPHRASE` > `GARRAIA_VAULT_PASSPHRASE`).
+                        Leituras da mixed-case fora de auth.rs: presence-only em
+                        check.rs/diagnostics_handler.rs + fallback do cofre em
+                        garraia-security/credentials.rs (fonte única).
                         Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044 +
                         slice 3 plan 0047) adiciona `rest_v1::uploads` com `POST
                         /v1/uploads` (tus 1.0 Creation) + `HEAD /v1/uploads/{id}`
