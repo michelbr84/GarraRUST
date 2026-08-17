@@ -117,6 +117,9 @@ fastest path is:
 ```bash
 # Install the binary (once)
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+# If that answers HTTP 429 (pod egress IPs are shared and exhaust GitHub's
+# per-IP rate limit), use the release-CDN mirror instead:
+#   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 
 # Configure interactively
 garraia init

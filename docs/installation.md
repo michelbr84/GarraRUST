@@ -16,6 +16,18 @@ This guide covers installing GarraIA on various platforms.
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 ```
 
+The same script is published through two alternative channels, useful when
+`raw.githubusercontent.com` answers **HTTP 429** (per-IP rate limit — common on
+cloud pods whose egress IP is shared by many users):
+
+```bash
+# Official mirror — GitHub release CDN (no aggressive per-IP limits):
+curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+
+# Community CDN mirror of the repository's main branch:
+curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+```
+
 ### Windows
 
 Download the pre-compiled binary from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases).
@@ -86,8 +98,12 @@ This wizard will (plan 0126):
   - **Local-first** (Ollama on this GPU + cloud fallback) — default
     when an NVIDIA GPU is detected and `GARRAIA_BOOTSTRAP_LOCAL` is not
     set to `0`.
-  - **Cloud-first** (OpenRouter primary + Ollama fallback).
-  - **Cloud-only** (OpenRouter — default for CPU/no-GPU machines).
+  - **Cloud-first** (cloud provider primary + Ollama fallback).
+  - **Cloud-only** (default for CPU/no-GPU machines).
+- On the cloud branch, let you pick the provider — **OpenRouter**
+  (recommended default), **OpenAI**, or **Anthropic** — and prompt for
+  that provider's API key (each preset names its own env var, default
+  model, and key-creation URL).
 - On GPU machines (and only after explicit confirmation), install
   Ollama via the official upstream script and pull
   `hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M`. NVIDIA drivers and CUDA
@@ -234,6 +250,25 @@ curl http://127.0.0.1:3888/api/health
 ```
 
 ## Troubleshooting
+
+### `curl | sh` fails with HTTP 429
+
+`raw.githubusercontent.com` (which serves `install.sh`) and `api.github.com`
+enforce **per-IP** rate limits. Cloud pods (RunPod etc.) share their egress IP
+across many users, so a brand-new pod can be over the quota before you run
+anything. Retry in a few minutes, or use one of the alternative channels:
+
+```bash
+# Official mirror — GitHub release CDN:
+curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+
+# Community CDN mirror of main:
+curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+```
+
+Inside the installer itself, downloads retry automatically and the release
+tag is resolved from the `github.com` redirect (not the API), so the 429
+surface is limited to that very first fetch of the script.
 
 ### Port already in use
 
