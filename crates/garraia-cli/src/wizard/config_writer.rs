@@ -59,10 +59,10 @@ pub struct WizardOutcome {
     /// Ordered fallbacks. Empty when only one provider was configured.
     pub fallback_providers: Vec<String>,
 
-    /// OpenRouter cloud entry — populated for cloud-only or cloud-first
-    /// modes. `Some` even when the api_key field is `None` (env-var
-    /// users).
-    pub openrouter: Option<CloudLlmChoice>,
+    /// Cloud provider entry (OpenRouter, OpenAI, Anthropic, …) — populated
+    /// for cloud-only or cloud-first modes. `Some` even when the api_key
+    /// field is `None` (env-var users).
+    pub cloud: Option<CloudLlmChoice>,
 
     /// Local LLM — populated only when the user opted in (GPU detected,
     /// `GARRAIA_BOOTSTRAP_LOCAL != 0`, user confirmed).
@@ -82,9 +82,14 @@ pub struct WizardOutcome {
 
 #[derive(Debug, Clone)]
 pub struct CloudLlmChoice {
-    /// Key used in the `llm:` map. Defaults to `"openrouter"`.
+    /// Key used in the `llm:` map (e.g. `"openrouter"`, `"openai"`).
     pub key: String,
+    /// Provider type string consumed by `build_agent_runtime` — for the
+    /// wizard presets this always equals `key`.
+    pub provider: String,
     pub model: String,
+    /// `None` lets the provider client use its own default endpoint.
+    pub base_url: Option<String>,
     pub api_key_plaintext: Option<String>,
 }
 
@@ -146,7 +151,7 @@ pub fn backup_path_for_with(config_dir: &Path, when: chrono::DateTime<Utc>) -> P
 /// `FirstWrite` and `Backup` paths.
 pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
     let mut llm: HashMap<String, LlmProviderConfig> = HashMap::new();
-    if let Some(cloud) = &outcome.openrouter {
+    if let Some(cloud) = &outcome.cloud {
         llm.insert(cloud.key.clone(), cloud_llm_provider(cloud));
     }
     if let Some(local) = &outcome.local_llm {
@@ -185,10 +190,10 @@ pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
 
 fn cloud_llm_provider(cloud: &CloudLlmChoice) -> LlmProviderConfig {
     LlmProviderConfig {
-        provider: "openrouter".to_string(),
+        provider: cloud.provider.clone(),
         model: Some(cloud.model.clone()),
         api_key: cloud.api_key_plaintext.clone(),
-        base_url: Some("https://openrouter.ai/api/v1".to_string()),
+        base_url: cloud.base_url.clone(),
         extra: Default::default(),
     }
 }
@@ -251,9 +256,9 @@ pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) {
     existing.gateway.host = outcome.host.clone();
     existing.gateway.port = outcome.port;
 
-    if let Some(cloud) = &outcome.openrouter {
+    if let Some(cloud) = &outcome.cloud {
         if let Some(key) = cloud.api_key_plaintext.as_deref() {
-            backfill_missing_api_key(existing, "openrouter", key);
+            backfill_missing_api_key(existing, &cloud.provider, key);
         }
         existing
             .llm
@@ -366,9 +371,11 @@ mod tests {
             port: 3888,
             default_provider: "openrouter".into(),
             fallback_providers: vec![],
-            openrouter: Some(CloudLlmChoice {
+            cloud: Some(CloudLlmChoice {
                 key: "openrouter".into(),
+                provider: "openrouter".into(),
                 model: "deepseek/deepseek-chat-v3.5".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
                 api_key_plaintext: None,
             }),
             local_llm: None,
@@ -384,9 +391,11 @@ mod tests {
             port: 3888,
             default_provider: OLLAMA_PROVIDER_KEY.into(),
             fallback_providers: vec!["openrouter".into()],
-            openrouter: Some(CloudLlmChoice {
+            cloud: Some(CloudLlmChoice {
                 key: "openrouter".into(),
+                provider: "openrouter".into(),
                 model: "deepseek/deepseek-chat-v3.5".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
                 api_key_plaintext: None,
             }),
             local_llm: Some(LocalLlmChoice::default()),
@@ -400,9 +409,11 @@ mod tests {
     /// the operator picked `SecretStorage::Config` (the v0.3.0 default).
     fn outcome_cloud_with_key(key: &str) -> WizardOutcome {
         let mut out = outcome_cloud_only();
-        out.openrouter = Some(CloudLlmChoice {
+        out.cloud = Some(CloudLlmChoice {
             key: "openrouter".into(),
+            provider: "openrouter".into(),
             model: "openrouter/auto".into(),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
             api_key_plaintext: Some(key.into()),
         });
         out
@@ -436,6 +447,34 @@ mod tests {
             Some("test-key-abc"),
             "a key collected under SecretStorage::Config must reach llm.*.api_key"
         );
+    }
+
+    /// The wizard's cloud step is no longer OpenRouter-only: a non-OpenRouter
+    /// preset must flow through untouched — its provider type in `provider:`,
+    /// and `base_url` left absent so the client uses its own default endpoint.
+    #[test]
+    fn non_openrouter_preset_writes_generic_provider_entry() {
+        let mut out = outcome_cloud_only();
+        out.default_provider = "openai".into();
+        out.cloud = Some(CloudLlmChoice {
+            key: "openai".into(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            base_url: None,
+            api_key_plaintext: Some("sk-test".into()),
+        });
+
+        let dir = tempdir().unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let entry = cfg.llm.get("openai").unwrap();
+        assert_eq!(entry.provider, "openai");
+        assert_eq!(entry.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(
+            entry.base_url, None,
+            "no hardcoded OpenRouter base_url may leak in"
+        );
+        assert_eq!(entry.api_key.as_deref(), Some("sk-test"));
     }
 
     /// The regression that made `garraia init` unable to repair itself: a second

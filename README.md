@@ -114,6 +114,15 @@ cargo build --release -p garraia-desktop
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 ```
 
+> Se o `raw.githubusercontent.com` responder **HTTP 429** (rate limit por IP —
+> comum em pods cloud com IP de saída compartilhado), o mesmo script está
+> publicado em dois canais alternativos:
+>
+> ```bash
+> curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+> curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+> ```
+
 Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
 1. download + verificação SHA256 do binário `garraia`,
 2. `garraia init </dev/tty` (o wizard do plan 0126 — detecção de GPU/Ollama, prompts opcionais para instalar Qwen3-14B GGUF, geração de `config.yml` server-friendly),
