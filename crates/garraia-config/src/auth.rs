@@ -11,8 +11,9 @@
 //!
 //! | Variable | Required | Notes |
 //! |---|---|---|
-//! | `GARRAIA_JWT_SECRET` | yes | ≥32 bytes; **same env var as `mobile_auth.rs` legacy** so both flows share one secret in dev. When absent, `from_env` falls back to `GarraIA_VAULT_PASSPHRASE` (plan 0046 slice 3 — legacy compat). |
-//! | `GarraIA_VAULT_PASSPHRASE` | fallback | Legacy alias accepted by `from_env` when `GARRAIA_JWT_SECRET` is missing. Preserved for zero-breaking-change dev workflows (plan 0046). Prefer `GARRAIA_JWT_SECRET` for new deployments. |
+//! | `GARRAIA_JWT_SECRET` | yes | ≥32 bytes; **same env var as `mobile_auth.rs` legacy** so both flows share one secret in dev. When absent, `from_env` falls back to `GarraIA_VAULT_PASSPHRASE`, then to `GARRAIA_VAULT_PASSPHRASE` (plan 0046 slice 3 + issue #824). |
+//! | `GarraIA_VAULT_PASSPHRASE` | fallback | Legacy mixed-case alias accepted by `from_env` when `GARRAIA_JWT_SECRET` is missing. Preserved for zero-breaking-change dev workflows (plan 0046). Prefer `GARRAIA_JWT_SECRET` for new deployments. |
+//! | `GARRAIA_VAULT_PASSPHRASE` | fallback | Canonical vault passphrase (issue #824). Accepted as the last JWT-secret fallback so exporting only the all-caps spelling no longer 503s `/auth/*`. The mixed-case alias keeps precedence over it to preserve deploys that set both spellings with different values. |
 //! | `GARRAIA_REFRESH_HMAC_SECRET` | yes | ≥32 bytes; **distinct** from `GARRAIA_JWT_SECRET`. |
 //! | `GARRAIA_LOGIN_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_login` BYPASSRLS role. |
 //! | `GARRAIA_SIGNUP_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_signup` BYPASSRLS role. |
@@ -127,9 +128,16 @@ impl AuthConfig {
     /// legacy `GarraIA_VAULT_PASSPHRASE` fallback. The fallback exists
     /// solely to preserve dev workflows that predate GAR-379 —
     /// production deployments SHOULD set `GARRAIA_JWT_SECRET` explicitly.
+    ///
+    /// Issue #824: the canonical all-caps `GARRAIA_VAULT_PASSPHRASE` is
+    /// accepted as the *last* fallback so a casing slip (exporting only
+    /// the vault spelling) no longer leaves `/auth/*` answering 503. The
+    /// mixed-case alias stays ahead of it so deploys that set both
+    /// spellings with different values keep signing with the same secret.
     pub fn from_env() -> Result<Option<Self>, AuthConfigError> {
         let jwt = match std::env::var("GARRAIA_JWT_SECRET")
             .or_else(|_| std::env::var("GarraIA_VAULT_PASSPHRASE"))
+            .or_else(|_| std::env::var(garraia_security::VAULT_PASSPHRASE_ENV))
         {
             Ok(v) => v,
             Err(_) => return Ok(None),
@@ -169,11 +177,13 @@ impl AuthConfig {
     /// Strict env loader for production. Errors on missing or invalid vars.
     ///
     /// Plan 0046 slice 3: `GARRAIA_JWT_SECRET` takes precedence over the
-    /// legacy `GarraIA_VAULT_PASSPHRASE` fallback. When neither is set,
-    /// the error surfaces `GARRAIA_JWT_SECRET` as the canonical name.
+    /// legacy `GarraIA_VAULT_PASSPHRASE` fallback, which in turn precedes
+    /// the canonical `GARRAIA_VAULT_PASSPHRASE` (issue #824). When none is
+    /// set, the error surfaces `GARRAIA_JWT_SECRET` as the canonical name.
     pub fn require_from_env() -> Result<Self, AuthConfigError> {
         let jwt = std::env::var("GARRAIA_JWT_SECRET")
             .or_else(|_| std::env::var("GarraIA_VAULT_PASSPHRASE"))
+            .or_else(|_| std::env::var(garraia_security::VAULT_PASSPHRASE_ENV))
             .map_err(|_| AuthConfigError::MissingEnv("GARRAIA_JWT_SECRET"))?;
         let refresh = std::env::var("GARRAIA_REFRESH_HMAC_SECRET")
             .map_err(|_| AuthConfigError::MissingEnv("GARRAIA_REFRESH_HMAC_SECRET"))?;
@@ -261,9 +271,7 @@ mod tests {
     // lock, snapshots + clears the env vars it cares about, runs the
     // assertion, and restores the original values on exit.
 
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    use crate::ENV_TEST_LOCK as ENV_LOCK;
 
     /// Snapshot of the env vars this test module touches. Used to restore
     /// the outer environment when a test exits so concurrent non-auth
@@ -271,6 +279,7 @@ mod tests {
     struct EnvSnapshot {
         jwt: Option<String>,
         vault: Option<String>,
+        vault_canonical: Option<String>,
         refresh: Option<String>,
         login_db: Option<String>,
         signup_db: Option<String>,
@@ -282,6 +291,7 @@ mod tests {
             Self {
                 jwt: std::env::var("GARRAIA_JWT_SECRET").ok(),
                 vault: std::env::var("GarraIA_VAULT_PASSPHRASE").ok(),
+                vault_canonical: std::env::var("GARRAIA_VAULT_PASSPHRASE").ok(),
                 refresh: std::env::var("GARRAIA_REFRESH_HMAC_SECRET").ok(),
                 login_db: std::env::var("GARRAIA_LOGIN_DATABASE_URL").ok(),
                 signup_db: std::env::var("GARRAIA_SIGNUP_DATABASE_URL").ok(),
@@ -303,6 +313,7 @@ mod tests {
             unsafe {
                 set_or_clear("GARRAIA_JWT_SECRET", self.jwt);
                 set_or_clear("GarraIA_VAULT_PASSPHRASE", self.vault);
+                set_or_clear("GARRAIA_VAULT_PASSPHRASE", self.vault_canonical);
                 set_or_clear("GARRAIA_REFRESH_HMAC_SECRET", self.refresh);
                 set_or_clear("GARRAIA_LOGIN_DATABASE_URL", self.login_db);
                 set_or_clear("GARRAIA_SIGNUP_DATABASE_URL", self.signup_db);
@@ -316,6 +327,7 @@ mod tests {
         unsafe {
             std::env::remove_var("GARRAIA_JWT_SECRET");
             std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
+            std::env::remove_var("GARRAIA_VAULT_PASSPHRASE");
             std::env::remove_var("GARRAIA_REFRESH_HMAC_SECRET");
             std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
             std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
@@ -391,7 +403,53 @@ mod tests {
         let cfg = AuthConfig::from_env().expect("should parse");
         assert!(
             cfg.is_none(),
-            "absence of both env vars must return Ok(None), got Some"
+            "absence of all three env vars must return Ok(None), got Some"
+        );
+
+        snapshot.restore();
+    }
+
+    // ── Issue #824: canonical vault passphrase as last JWT fallback ───────
+
+    #[test]
+    fn from_env_accepts_canonical_vault_passphrase_as_last_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "C".repeat(32));
+        }
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env()
+            .expect("should parse")
+            .expect("all-caps vault passphrase must be accepted (issue #824)");
+        assert_eq!(cfg.jwt_secret.expose_secret(), "C".repeat(32));
+
+        snapshot.restore();
+    }
+
+    #[test]
+    fn from_env_prefers_legacy_alias_over_canonical_vault_passphrase() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "V".repeat(32));
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "C".repeat(32));
+        }
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env()
+            .expect("should parse")
+            .expect("should be Some");
+        assert_eq!(
+            cfg.jwt_secret.expose_secret(),
+            "V".repeat(32),
+            "mixed-case alias must keep precedence over the all-caps vault \
+             passphrase so pre-#824 deploys keep signing with the same secret"
         );
 
         snapshot.restore();

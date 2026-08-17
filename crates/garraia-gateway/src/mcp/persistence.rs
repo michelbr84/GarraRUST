@@ -251,10 +251,7 @@ impl McpPersistenceService {
             }
         };
 
-        if std::env::var("GARRAIA_VAULT_PASSPHRASE")
-            .unwrap_or_default()
-            .is_empty()
-        {
+        if garraia_security::vault_passphrase_from_env().is_none() {
             let has_secrets = config
                 .mcp_servers
                 .values()

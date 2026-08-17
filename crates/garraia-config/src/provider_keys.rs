@@ -25,10 +25,12 @@ use crate::loader::ConfigLoader;
 
 /// Environment variable carrying the credential-vault passphrase.
 ///
-/// Note the casing: this is **not** the same variable as the mixed-case
-/// `GarraIA_VAULT_PASSPHRASE` consulted by [`crate::auth`] as a JWT-secret
-/// fallback. The two are genuinely distinct and easy to confuse.
-pub const VAULT_PASSPHRASE_ENV: &str = "GARRAIA_VAULT_PASSPHRASE";
+/// Canonical all-caps spelling, re-exported from `garraia-security` (the
+/// single reader). Since issue #824 the deprecated mixed-case
+/// `GarraIA_VAULT_PASSPHRASE` is accepted as a fallback by every consumer
+/// of the passphrase — vault and JWT-secret alike — so a casing slip no
+/// longer fails silently; the canonical spelling always wins.
+pub const VAULT_PASSPHRASE_ENV: &str = garraia_security::VAULT_PASSPHRASE_ENV;
 
 /// Where a resolved API key came from, or why none was found.
 ///
@@ -114,9 +116,7 @@ pub fn vault_present_but_locked(vault_path: &Path) -> bool {
 }
 
 fn vault_passphrase_available() -> bool {
-    std::env::var(VAULT_PASSPHRASE_ENV)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
+    garraia_security::vault_passphrase_from_env().is_some()
 }
 
 /// Resolve an API key, reporting where it came from.

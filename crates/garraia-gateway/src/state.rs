@@ -152,16 +152,18 @@ pub struct AppState {
 /// Plan 0046 (GAR-379 slice 3): sentinel returned by
 /// [`AppState::jwt_signing_secret`] when the gateway is running in
 /// fail-soft mode (dev without `GARRAIA_JWT_SECRET` /
-/// `GarraIA_VAULT_PASSPHRASE`). Handlers convert this to
-/// `RestError::AuthUnconfigured` (`503 Service Unavailable`) — **never**
-/// to a hardcoded fallback secret (plan 0046 §5.2 closes SEC-H-2).
+/// `GarraIA_VAULT_PASSPHRASE` / `GARRAIA_VAULT_PASSPHRASE` — the all-caps
+/// vault passphrase doubles as the last JWT fallback since issue #824).
+/// Handlers convert this to `RestError::AuthUnconfigured`
+/// (`503 Service Unavailable`) — **never** to a hardcoded fallback secret
+/// (plan 0046 §5.2 closes SEC-H-2).
 #[derive(Debug, Clone, Copy)]
 pub struct AuthConfigMissing;
 
 impl std::fmt::Display for AuthConfigMissing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
-            "auth not configured: GARRAIA_JWT_SECRET / GarraIA_VAULT_PASSPHRASE absent at bootstrap",
+            "auth not configured: GARRAIA_JWT_SECRET / GarraIA_VAULT_PASSPHRASE / GARRAIA_VAULT_PASSPHRASE absent at bootstrap",
         )
     }
 }
