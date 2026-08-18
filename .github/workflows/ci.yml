@@ -462,7 +462,11 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust 1.94
-        uses: dtolnay/rust-toolchain@1.100
+        # MSRV pin — este @1.94 é o Minimum Supported Rust Version do
+        # workspace, NÃO uma versão de action a ser bumpada. Ignorado no
+        # dependabot.yml (grupo gh-actions-all) para o Dependabot não
+        # propor de novo um toolchain inexistente (ex.: @1.100, PR #819).
+        uses: dtolnay/rust-toolchain@1.94
 
       # utoipa-swagger-ui 9.0.2 build.rs uses reqwest to download the swagger-ui
       # zip, which intermittently returns a corrupt file ("InvalidArchive: Could not
