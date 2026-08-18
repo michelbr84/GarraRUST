@@ -496,6 +496,9 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    # Sem teto explícito o default é 360 min; runs pendurados de 2026-08-17
+    # seguraram runners por 6h. Verde típico ≈ 12 min; 30 cobre cache frio.
+    timeout-minutes: 30
     permissions:
       contents: read
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24):
@@ -633,6 +636,9 @@ jobs:
   playwright:
     name: Playwright E2E (MCP UI)
     runs-on: ubuntu-latest
+    # Sem teto explícito o default é 360 min; em 2026-08-17 dois runs ficaram
+    # 6h pendurados no download do Chromium. Verde típico ≈ 20 min.
+    timeout-minutes: 30
     permissions:
       contents: read
     # Plan 0050 Lote 2 (GAR-438, plan happy-finch 2026-04-24): same root cause
@@ -706,6 +712,9 @@ jobs:
           cache-dependency-path: tests/package-lock.json
 
       - name: Install Playwright
+        # npm/CDN do Chromium sem timeout de rede pode estagnar o download
+        # indefinidamente (runs de 6h em 2026-08-17 morreram aqui).
+        timeout-minutes: 10
         run: npm ci && npx playwright install chromium --with-deps
 
       - name: Write Playwright gateway config
