@@ -4210,10 +4210,13 @@ pub async fn export_me(
 // ─── POST /v1/me/anonymize ────────────────────────────────────────────────────
 
 /// `POST /v1/me/anonymize` — LGPD art. 12 / GDPR art. 4(5) personal data
-/// anonymisation (plan 0345 / GAR-888, slice 3 of GAR-400).
+/// anonymisation (plan 0345 / GAR-888, slice 3 of GAR-400; fixed in plan 0354).
 ///
-/// Replaces the caller's `user_identities.login` (email) with a non-identifiable
-/// token (`anon-<8 hex chars>@garraanon.local`) and sets `users.display_name` to
+/// Replaces the caller's email in BOTH places it lives in this schema —
+/// `user_identities.provider_sub` (the login key, via `garraia_login`) and
+/// `users.email` (in the same app-pool transaction as the status flip) —
+/// with a non-identifiable deterministic token
+/// (`anon-<32 hex>@garraanon.local`), and sets `users.display_name` to
 /// `'Usuário Anônimo'` + `users.status` to `'anonymized'`.  All active sessions
 /// are revoked atomically in the same transaction. The operation is irreversible.
 ///
@@ -4284,19 +4287,33 @@ pub async fn anonymize_me(
         _ => {}
     }
 
-    // Step 1: anonymise identity (email) via login_pool (BYPASSRLS).
-    // This runs outside the app_pool transaction — best-effort sequential.
-    anonymize_identity(&state.auth.login_pool, principal.user_id)
+    // Step 1: anonymise the login key (user_identities.provider_sub) via
+    // login_pool (BYPASSRLS — the table is invisible to garraia_app under
+    // FORCE RLS). Runs outside the app_pool transaction; a failure between
+    // the two commits heals on endpoint retry (the UPDATE is idempotent and
+    // the 409 status guard only trips after the app-side commit below).
+    // Intencional: o FOR UPDATE de `users` (acima) segue segurado durante
+    // este round-trip — é o que impede um segundo anonymize concorrente de
+    // passar pelo guard de status antes de este fluxo commitar.
+    // 0 rows = user without an internal identity (e.g. future external IdP)
+    // — not an error; users.email is anonymised regardless.
+    let _identity_rows = anonymize_identity(&state.auth.login_pool, principal.user_id)
         .await
         .map_err(|e| RestError::Internal(anyhow::anyhow!("anonymize_identity: {e}")))?;
 
-    // Step 2 (atomic): update users, revoke sessions, emit audit event.
+    // Step 2 (atomic): anonymise users.email + status + display_name, revoke
+    // sessions, emit audit event. users.email is citext UNIQUE — the token
+    // embeds the full UUID, so it cannot collide across users.
+    // users.updated_at has no trigger (caller responsibility per migration 001).
+    let anon_email = format!("anon-{}@garraanon.local", principal.user_id.simple());
     sqlx::query(
         "UPDATE users \
-         SET status = 'anonymized', display_name = 'Usuário Anônimo' \
+         SET status = 'anonymized', display_name = 'Usuário Anônimo', \
+             email = $2, updated_at = now() \
          WHERE id = $1",
     )
     .bind(principal.user_id)
+    .bind(&anon_email)
     .execute(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
