@@ -86,6 +86,10 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 # Compile-time `LoginPool: !Clone` denial — see GAR-391a security review H-1.
 # Tiny zero-dep crate used only by unit tests.
 static_assertions = "1"
+# Serializa os testes de password_change.rs: cada teste segura uma conexão do
+# LoginPool (max 5) através de hashing lento (Argon2id/PBKDF2 em debug) dentro
+# de tx — 6 testes concorrentes estouram o acquire timeout do pool (plan 0354).
+serial_test = { workspace = true }
 # Integration tests spin their own pgvector container so garraia-auth stays
 # independently testable. Shared fixture optimization deferred to GAR-391c.
 testcontainers = "0.27"

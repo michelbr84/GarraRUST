@@ -264,6 +264,51 @@ jobs:
           fi
         shell: bash
 
+  # Integração garraia-auth com test-support (plan 0354).
+  #
+  # Os 16 binários de teste de integração do garraia-auth (extractor, matriz
+  # RLS de 81 cenários, signup_flow, sessions_lifecycle, password_change, …)
+  # declaram `required-features = ["test-support"]`, que NÃO é default — o
+  # `cargo test --workspace` do job `test` os pula SILENCIOSAMENTE. Até este
+  # job existir, o único executor era o cargo-mutants semanal (mutants.yml),
+  # cujo vermelho ficou 16 semanas sem leitura e escondeu um bug de produção
+  # no POST /v1/me/anonymize. Regra 10 do CLAUDE.md exige testes de
+  # autorização cross-group no PR path — este job os executa de fato.
+  auth-integration:
+    name: Auth Integration (test-support)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-authint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-authint-
+            ${{ runner.os }}-cargo-
+
+      - name: Pre-pull Docker image for testcontainers
+        # Mesmo racional do mutants.yml: warm pull ~3-5 s por container em
+        # vez de ~60 s no cold start do pgvector/pg16.
+        run: docker pull pgvector/pgvector:pg16
+
+      - name: Run garraia-auth integration suite
+        run: cargo test -p garraia-auth --features test-support
+
   # Coverage instrumentation (GAR-435 / Q5 of EPIC GAR-430). Linux-only.
   #
   # Generates lcov.info via cargo-llvm-cov, uploads as artifact (14d retention),

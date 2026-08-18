@@ -98,13 +98,35 @@ pub async fn change_password(
     Ok(PasswordChangeOutcome::Success)
 }
 
-/// Anonymise the `user_identities` row for `user_id`.
+/// Token de anonimização determinístico para `user_id` — a ÚNICA fonte da
+/// fórmula (security review plan 0354 LOW-3: `users.email`,
+/// `user_identities.provider_sub` e `group_invites.invited_email` precisam
+/// receber o MESMO token; duplicar o format em cada sítio dessincroniza
+/// silencioso).
 ///
-/// Replaces `login` with a non-identifiable token (`anon-<8 hex chars>@garraanon.local`)
-/// derived from the user's UUID, making the row impossible to correlate back to a
-/// real email address.  The `password_hash` is left intact — the account status
-/// (`users.status = 'anonymized'`) is the authoritative gate for further logins;
-/// the internal provider hash is irrelevant once status is anonymized.
+/// UUID completo (32 hex): sob UUIDv7 um prefixo de 8 hex é compartilhado por
+/// usuários criados na mesma janela de ~65 s, e os UNIQUEs de `users.email` e
+/// `(provider, provider_sub)` transformariam a colisão em erro.
+pub fn anon_token(user_id: Uuid) -> String {
+    format!("anon-{}@garraanon.local", user_id.simple())
+}
+
+/// Anonymise the internal `user_identities` row for `user_id`.
+///
+/// Replaces `provider_sub` — which for `provider = 'internal'` carries the
+/// user's login email in THIS schema (`create_internal_user` inserts it and
+/// `verify_internal` matches `provider_sub = $email`; there is no `login`
+/// column — migration 001) — with a non-identifiable deterministic token
+/// (`anon-<32 hex>@garraanon.local`).
+///
+/// The token uses the FULL UUID: under UUIDv7 (time-ordered, production ids)
+/// an 8-hex prefix is shared by users created within the same ~65 s window,
+/// and `UNIQUE (provider, provider_sub)` would turn that collision into a
+/// hard error on the second anonymize.
+///
+/// `password_hash` is left intact — the account status
+/// (`users.status = 'anonymized'`) is the authoritative gate for further
+/// logins (`verify_internal` rejects any status != 'active').
 ///
 /// ## Why LoginPool?
 /// `user_identities` is invisible to `garraia_app` under FORCE RLS (CLAUDE.md rule 12).
@@ -112,27 +134,28 @@ pub async fn change_password(
 ///
 /// ## Atomicity
 /// This function runs a single UPDATE — one round-trip, no transaction needed.
-/// The caller (`anonymize_me`) must commit the `users` status update via `app_pool`
-/// independently; the two operations are best-effort sequential (email first, then
-/// status).
-pub async fn anonymize_identity(login_pool: &LoginPool, user_id: Uuid) -> Result<(), AuthError> {
-    let anon_login = format!(
-        "anon-{}@garraanon.local",
-        &user_id.simple().to_string()[..8]
-    );
+/// The caller (`anonymize_me`) anonymises `users.email` + status in its own
+/// `app_pool` transaction; the two commits are sequential, and a failure
+/// between them heals on retry (this UPDATE is idempotent and the status
+/// guard only trips after the app-side commit).
+///
+/// Returns the number of rows updated — 0 when the user has no internal
+/// identity (e.g. a future external-IdP-only account), which is not an error.
+pub async fn anonymize_identity(login_pool: &LoginPool, user_id: Uuid) -> Result<u64, AuthError> {
+    let anon_sub = anon_token(user_id);
     let pool = login_pool.pool();
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE user_identities \
-         SET login = $1 \
+         SET provider_sub = $1 \
          WHERE user_id = $2 AND provider = 'internal'",
     )
-    .bind(&anon_login)
+    .bind(&anon_sub)
     .bind(user_id)
     .execute(pool)
     .await
     .map_err(AuthError::Storage)?;
 
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 #[cfg(test)]
@@ -208,34 +231,47 @@ mod tests {
     }
 
     // ── anonymize_identity helpers ────────────────────────────────────────────
+    // Espelham o formato REAL do token (UUID completo, 32 hex — plan 0354).
+    // O comportamento da função contra Postgres real é coberto pelos testes
+    // de integração em `tests/password_change.rs`.
 
     #[test]
-    fn anon_login_format_is_deterministic() {
+    fn anon_token_format_is_deterministic_full_uuid() {
         let uid = uuid::Uuid::parse_str("12345678-0000-0000-0000-000000000001").unwrap();
-        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
-        assert_eq!(anon, "anon-12345678@garraanon.local");
-    }
-
-    #[test]
-    fn anon_login_is_not_valid_email_domain() {
-        let uid = uuid::Uuid::parse_str("abcdef01-0000-0000-0000-000000000001").unwrap();
-        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
-        assert!(anon.ends_with("@garraanon.local"));
-        assert!(anon.contains('@'), "must contain exactly one @");
-    }
-
-    #[test]
-    fn anon_login_prefix_is_not_identifiable() {
-        let uid = uuid::Uuid::parse_str("cafebabe-dead-beef-cafe-babe00000001").unwrap();
-        let anon = format!("anon-{}@garraanon.local", &uid.simple().to_string()[..8]);
-        // Must start with 'anon-' prefix (not the bare UUID).
-        assert!(anon.starts_with("anon-"));
-        // Must not expose the full UUID (36-char hyphenated form) in the email.
-        assert!(
-            !anon.contains("cafebabe-dead"),
-            "must not expose full hyphenated UUID in login"
+        let anon = format!("anon-{}@garraanon.local", uid.simple());
+        assert_eq!(
+            anon,
+            "anon-12345678000000000000000000000001@garraanon.local"
         );
-        // The 8-char derived token is the first 8 hex chars of the simple UUID.
-        assert_eq!(&anon[5..13], "cafebabe");
+        // local-part = "anon-" (5) + 32 hex = 37 chars antes do '@'.
+        assert_eq!(anon.find('@'), Some(37));
+    }
+
+    #[test]
+    fn anon_token_is_not_valid_email_domain() {
+        let uid = uuid::Uuid::parse_str("abcdef01-0000-0000-0000-000000000001").unwrap();
+        let anon = format!("anon-{}@garraanon.local", uid.simple());
+        assert!(anon.ends_with("@garraanon.local"));
+        assert_eq!(anon.matches('@').count(), 1, "must contain exactly one @");
+    }
+
+    #[test]
+    fn anon_token_full_uuid_avoids_v7_prefix_collision() {
+        // Sob UUIDv7 os primeiros 32 bits são timestamp — dois usuários criados
+        // na mesma janela de ~65 s compartilham o prefixo de 8 hex. O token usa
+        // o UUID COMPLETO justamente para que os tokens continuem distintos
+        // (users.email e (provider, provider_sub) são UNIQUE).
+        let a = uuid::Uuid::parse_str("cafebabe-0001-7000-8000-000000000001").unwrap();
+        let b = uuid::Uuid::parse_str("cafebabe-0001-7000-8000-000000000002").unwrap();
+        let anon_a = format!("anon-{}@garraanon.local", a.simple());
+        let anon_b = format!("anon-{}@garraanon.local", b.simple());
+        assert_eq!(
+            &anon_a[5..13],
+            &anon_b[5..13],
+            "premissa: mesmo prefixo de 8 hex"
+        );
+        assert_ne!(anon_a, anon_b, "tokens completos devem diferir");
+        // Não expõe a forma hifenizada do UUID.
+        assert!(!anon_a.contains("cafebabe-0001"));
     }
 }
