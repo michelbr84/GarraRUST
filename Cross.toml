@@ -1,0 +1,12 @@
+# Config do `cross` usada pelo job "Build Linux ARM64" do release.yml.
+#
+# O build aarch64 do v0.3.0 falhou em `openssl-sys` ("Could not find directory
+# of OpenSSL installation", exit 101): a imagem padrão do cross não traz
+# OpenSSL para o target. `native-tls` chega via reqwest (default-tls),
+# sqlx-core e tokio-tungstenite, então o link dinâmico precisa dos headers e
+# libs :arm64. Receita canônica do FAQ do cross para OpenSSL cross-compile.
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+  "dpkg --add-architecture $CROSS_DEB_ARCH",
+  "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH"
+]
