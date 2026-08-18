@@ -49,7 +49,7 @@ rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
 # Use workspace-pinned versions where available to avoid drift.
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "derive"] }
 rusqlite = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 secrecy = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 
