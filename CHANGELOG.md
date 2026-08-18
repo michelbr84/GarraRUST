@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-18
+
+### Fixed
+- **Binário Linux ARM64 de verdade desta vez** — dois defeitos empilhados:
+  (1) o cross 0.2.5 de crates.io usa imagem base Ubuntu 16.04, cujo archive só
+  tem OpenSSL 1.0.2 (abaixo do mínimo ≥ 1.1.0 do openssl-sys) — o release.yml
+  agora instala o cross da git (imagens modernas); (2) o proc-macro do sqlx
+  compilava openssl-sys para o HOST dentro do container e quebrava o
+  cross-compile — resolvido movendo o sqlx para rustls (abaixo). Validado
+  localmente: `cross build --target aarch64-unknown-linux-gnu` produz o ELF
+  aarch64. v0.3.1 saiu com 4 binários (sem regressão vs v0.3.0); esta
+  adiciona o quinto.
+
+### Changed
+- **sqlx: native-tls → rustls (`tls-rustls-ring-native-roots`)** — mantém as
+  CAs do sistema para TLS com Postgres remoto. O sqlx-macros era o único
+  consumidor de OpenSSL no lado host dos builds; reqwest/tungstenite seguem
+  em native-tls (OpenSSL só no target, via `Cross.toml`). Suites de
+  integração do garraia-auth verdes contra pgvector/pg16 real.
+
 ## [0.3.1] - 2026-08-18
 
 ### Fixed
