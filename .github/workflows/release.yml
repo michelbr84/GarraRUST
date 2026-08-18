@@ -112,7 +112,11 @@ jobs:
   # Build for macOS x86_64
   build-macos-x86_64:
     name: Build macOS x86_64
-    runs-on: macos-13
+    # macos-13 was retired by GitHub — jobs targeting it queue forever and
+    # never get a runner, which silently blocks the release job's gate (the
+    # v0.3.0 run sat queued for 10+ hours). macos-15-intel is the supported
+    # Intel image.
+    runs-on: macos-15-intel
     permissions:
       contents: read
     steps:
@@ -226,6 +230,13 @@ jobs:
             echo "::warning ::macOS aarch64 binary not built; release will ship without it."
           fi
 
+          # Ship the installer as a release asset too. Release-asset downloads
+          # go through GitHub's release CDN, which does not enforce the
+          # aggressive per-IP limits that make raw.githubusercontent.com
+          # answer 429 on shared cloud-pod egress IPs:
+          #   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+          cp install.sh release/
+
       - name: Get version
         id: version
         run: |
@@ -278,6 +289,7 @@ jobs:
             release/garraia-windows-x86_64.exe
             release/garraia-macos-x86_64
             release/garraia-macos-aarch64
+            release/install.sh
             release/SHA256SUMS
             release/*.sha256
         env:
