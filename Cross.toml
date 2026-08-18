@@ -6,6 +6,13 @@
 # sqlx-core e tokio-tungstenite, então o link dinâmico precisa dos headers e
 # libs :arm64. Receita canônica do FAQ do cross para OpenSSL cross-compile.
 [target.aarch64-unknown-linux-gnu]
+# libssl-dev do TARGET para linkar reqwest/tokio-tungstenite (native-tls).
+# O lado HOST não precisa de OpenSSL: o sqlx usa rustls (o proc-macro do
+# sqlx era o único consumidor host de openssl-sys e quebrava o cross-compile
+# — ora achando OpenSSL 1.0.2 velho demais, ora linkando a libssl aarch64
+# num .so x86). Requer imagem de cross moderna (base >= 20.04, OpenSSL >=
+# 1.1.1 no archive): instalar cross da git, não o 0.2.5 de crates.io
+# (base 16.04) — ver release.yml.
 pre-build = [
   "dpkg --add-architecture $CROSS_DEB_ARCH",
   "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH"

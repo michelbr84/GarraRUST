@@ -64,9 +64,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cross
-        run: cargo install cross
+        # Da git, NÃO de crates.io: o cross 0.2.5 (último release publicado)
+        # usa imagens base Ubuntu 16.04 cujo archive só tem OpenSSL 1.0.2 —
+        # abaixo do mínimo do openssl-sys (>= 1.1.0). As imagens da git são
+        # modernas (>= 20.04) e casam com o pre-build do Cross.toml.
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
       - name: Build with cross
+        # OpenSSL só é necessário no TARGET (reqwest/tungstenite via
+        # native-tls) — instalado pelo pre-build do Cross.toml. O lado HOST
+        # ficou livre de OpenSSL com o sqlx em rustls (proc-macros do sqlx
+        # eram o único consumidor host e quebravam o cross-compile).
         run: cross build --release --target aarch64-unknown-linux-gnu --package garraia
 
       - name: Package binary

@@ -47,7 +47,7 @@ rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
 
 # Plan 0039 — `migrate workspace` deps.
 # Use workspace-pinned versions where available to avoid drift.
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "derive"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "chrono", "derive"] }
 rusqlite = { workspace = true }
 base64 = "0.23"
 secrecy = "0.10"
@@ -68,7 +68,7 @@ tempfile = "3"
 testcontainers = "0.27"
 # Integration tests run as their own bin crates, so they need explicit
 # access to some deps from the test file. Reuse workspace pins.
-sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
 # GAR-603 — env-var precedence test for `garra start --port` mutates
 # process env, so it must serialize against any future env-mutating tests.
 serial_test = { workspace = true }
