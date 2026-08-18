@@ -80,7 +80,7 @@ rand = "0.9"
 # because the workspace already depends on `password-hash`/`argon2`/`pbkdf2`/
 # `hmac`/`sha2` (RustCrypto stack); no FIPS requirement justifies the
 # operational cost of the alternative `aws_lc_rs` (cmake + C toolchain).
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 
 # Plugin system — bumped 28→44 in GAR-454, 44→45 in GAR-708 (health run 32),
 # 45→46 in GAR-895 (health run 146, 2026-08-16): RUSTSEC-2026-0222 wasmtime 45.x
