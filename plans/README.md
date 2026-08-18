@@ -1,5 +1,7 @@
 # Plans Index
 
+> **Nota (2026-08-18):** o workspace do Linear foi descontinuado — os links `linear.app` nas linhas antigas são históricos e não resolvem mais; os IDs `GAR-xxx` permanecem como registro.
+
 Este diretório contém os planos de implementação para o projeto GarraRUST.
 
 ## Índice de Planos
@@ -359,3 +361,7 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0348 | [GAR-892 — Health run 144 (2026-06-15 ~12:45 ET): 4 non-security Dependabot PRs all CI-green, priority (i)](0348-gar-892-health-run-144.md) | [GAR-892](https://linear.app/chatgpt25/issue/GAR-892) | ✅ Merged 2026-06-15 via PR #785 (`fb7903a`) |
 | 0349 | [GAR-893 — Health run 145 (2026-06-15 ~20:45 ET): all surfaces clean, sqlx compat noted, priority (i)](0349-gar-893-health-run-145.md) | [GAR-893](https://linear.app/chatgpt25/issue/GAR-893) | ✅ Merged 2026-06-15 via PR #786 (`d12478e`) |
 | 0350 | [GAR-894 — chore(deps): split sqlx runtime-tokio-native-tls → runtime-tokio + tls-native-tls (workspace root compat)](0350-gar-894-sqlx-feature-compat.md) | [GAR-894](https://linear.app/chatgpt25/issue/GAR-894) | ✅ Merged 2026-06-16 via PR #787 (`6f8e80c`) |
+| 0351 | [Onboarding do install.sh entrega provider ativo (v0.3.0)](0351-onboarding-provider-key-resolution.md) | — | ✅ Merged 2026-08-17 via PR #823 (`009ec38`) |
+| 0352 | [Vault passphrase: aceitar ambas as grafias](0352-vault-passphrase-casing.md) | issue #824 | ✅ Merged 2026-08-17 via PR #828 (`87b4b92`) |
+| 0353 | [Installer worker Cloudflare get.garraia.cloud](0353-installer-worker.md) | issue #827 | ✅ Merged 2026-08-17 via PR #829 (`97ec887`); domínio descontinuado — issue #827 fechada *not planned* em 2026-08-18 |
+| 0354 | [Fix do POST /v1/me/anonymize — coluna fantasma + email não anonimizado](0354-anonymize-fix.md) | plan 0345 (origem) | ✅ Merged 2026-08-18 via PR #843 (`31135d5`) — releases v0.3.1/v0.3.2 |

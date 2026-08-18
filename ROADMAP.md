@@ -2,9 +2,9 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-05-24 (local America/New_York) — docs/backlog sync: `TODO.md` criado como fila operacional obrigatória, GAR-493/ADR 0011 ✅ **Done** via PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) (`95618d3`), `plans/README.md` sincronizado, e checklist GAR-603 reconciliada com evidência já presente em `Dockerfile`, `router.rs` e `docs/deployment-runpod.md`; smoke Docker/Runpod real permanece pendente. GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
+> **Última atualização:** 2026-08-18 (local America/New_York) — cleanup total do repo (0 issues, 0 PRs, só `main`): releases **v0.3.1** e **v0.3.2** (5 binários — `garraia-linux-aarch64` pela primeira vez; cross da git + sqlx→rustls, PR #846); fix crítico LGPD no `POST /v1/me/anonymize` (plan 0354, PR #843 — retornava 500 desde junho) + job CI `auth-integration` rodando a matriz RLS em todo PR; deps consolidadas incl. wasmtime 47 (PR #844); timeouts e2e/playwright + grupo dependabot wasmtime + Cross.toml (PR #842); h2 0.4.16 (RUSTSEC-2026-0258). **Linear descontinuado — planejamento interno migrou para o tracker interno; trigger de issues da garra-routine desativado.** Anterior (2026-05-24): docs/backlog sync: `TODO.md` criado como fila operacional obrigatória, GAR-493/ADR 0011 ✅ **Done** via PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) (`95618d3`), `plans/README.md` sincronizado, e checklist GAR-603 reconciliada com evidência já presente em `Dockerfile`, `router.rs` e `docs/deployment-runpod.md`; smoke Docker/Runpod real permanece pendente. GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
 > **Owner:** @michelbr84
-> **Equipe Linear:** GAR
+> **Tracking:** tracker interno desde 2026-08-18 (histórico no Linear, time `GAR` — IDs preservados neste doc)
 > **Branch base:** `main`
 
 ---
@@ -106,7 +106,7 @@ seções de fase ao longo deste documento.
 > três fecharam em 2026-05-04 (GAR-490 via PR #112, GAR-491 via PR #109,
 > umbrella GAR-486 closed) — Green Security Baseline ✅ Done.
 
-### Sprint **Green Security Baseline 2026-04-30** (umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486))
+### Sprint **Green Security Baseline 2026-04-30** (umbrella GAR-486)
 
 Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 em andamento.
 
@@ -127,12 +127,12 @@ Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 em anda
 - GitHub-native CodeQL default setup: `configured` → `not-configured` (advanced setup é canonical)
 - `continue-on-error: true` em workflows: 4 removidos no Lote 2 (PR #64, GAR-438) + 1 no Lote 4 (PR sobre Playwright `data-testid`); restante intencional (1 RUSTSEC residual)
 
-### CodeQL triage **ainda em aberto** (esta sessão)
+### CodeQL triage **ainda em aberto** (registro da sessão de triagem; GAR-490 Wave 1 pendente)
 
 Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 
-- **[GAR-491](https://linear.app/chatgpt25/issue/GAR-491) — CodeQL Wave 2 (fixtures + suppression convention)** — sub-issue 5/5, **In Progress** desde 2026-05-01, PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft. Estabelece a convenção de suppression para Rust CodeQL via REST API dismissal + ledger versionado em [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) + [`docs/security/codeql-suppressions.json`](docs/security/codeql-suppressions.json) + script [`scripts/security/codeql-reapply-dismissals.sh`](scripts/security/codeql-reapply-dismissals.sh) com fail-closed validation (rule_id/path/line). 6 alertas em escopo, 21 deferidos para `GAR-491.1`.
-- **[GAR-490](https://linear.app/chatgpt25/issue/GAR-490) — CodeQL Wave 1 (production paths)** — sub-issue 4/5, **Backlog**, bloqueada por GAR-491. 16 path-injection (`skills_handler.rs`, `skins_handler.rs`) + 8 sql-injection (`rest_v1/groups.rs`, `rest_v1/invites.rs`). Plano de ataque: helper `validate_skill_name` em handlers + integração de `garraia_storage::sanitise_key` em `skins_handler.rs` (single-segment) + experimento `SELECT set_config('app.current_user_id', $1, true)` substituindo `SET LOCAL ... format!()` antes de qualquer dismissal.
+- **GAR-491 — CodeQL Wave 2 (fixtures + suppression convention)** — sub-issue 5/5, **In Progress** desde 2026-05-01, PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft. Estabelece a convenção de suppression para Rust CodeQL via REST API dismissal + ledger versionado em [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) + [`docs/security/codeql-suppressions.json`](docs/security/codeql-suppressions.json) + script [`scripts/security/codeql-reapply-dismissals.sh`](scripts/security/codeql-reapply-dismissals.sh) com fail-closed validation (rule_id/path/line). 6 alertas em escopo, 21 deferidos para `GAR-491.1`.
+- **GAR-490 — CodeQL Wave 1 (production paths)** — sub-issue 4/5, **Backlog**, bloqueada por GAR-491. 16 path-injection (`skills_handler.rs`, `skins_handler.rs`) + 8 sql-injection (`rest_v1/groups.rs`, `rest_v1/invites.rs`). Plano de ataque: helper `validate_skill_name` em handlers + integração de `garraia_storage::sanitise_key` em `skins_handler.rs` (single-segment) + experimento `SELECT set_config('app.current_user_id', $1, true)` substituindo `SET LOCAL ... format!()` antes de qualquer dismissal.
 
 **Decisão central documentada**: Rust CodeQL ainda **não suporta** comentários inline `// codeql[rule]: ...` em 2026 ([github/codeql#21638](https://github.com/github/codeql/issues/21637) aberto). `paths-ignore` global não serve porque os testes do GarraRUST são INLINE (`#[cfg(test)] mod tests {}`) dentro de produção. Mecanismo escolhido: ledger versionado + REST dismissal por alerta + script fail-closed. **Sem fallback global**: se a empirical proof falhar, abort + nova decisão (sem `query-filters: exclude` por rule-id). Ver [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) §3-§6.
 
@@ -148,15 +148,15 @@ Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 
 - **GAR-438 (Lote 2)** ✅ (PR [#64](https://github.com/michelbr84/GarraRUST/pull/64), `1828625`) — fix `e2e` + `playwright` jobs que tentavam executar `./target/release/garraia-gateway` (binário inexistente — `garraia-gateway` é biblioteca). Substituído por `cargo build --bin garraia --release` + `services: postgres:16.8-alpine` + envs de auth via `::add-mask::`. 4 de 7 `continue-on-error: true` removidos.
 - **GAR-443 (Lote 4)** ✅ — Playwright admin specs migrados para `getByTestId(...)` ancorados em `data-testid` estáveis (`admin.html`). Convenção: especificações Playwright do admin DEVEM preferir `data-testid` em vez de `placeholder*=` ou `getByRole(button,{name})`.
-- **GitHub Actions annotations follow-up (2026-05-03)** — CI voltou a ficar verde após PR [#113](https://github.com/michelbr84/GarraRUST/pull/113), mas os jobs `Analyze (javascript-typescript)` e `Analyze (rust)` ainda emitem 2 annotations não-bloqueantes: (a) `github/codeql-action/init@v3` + `analyze@v3` rodam em Node.js 20 (forced switch 2026-06-02, removido em 2026-09-16) — escopo expandido em [GAR-482](https://linear.app/chatgpt25/issue/GAR-482) (Q6.9 third-party Node 24 readiness); (b) CodeQL Action v3 será deprecated em dezembro de 2026 — rastreado em [GAR-502](https://linear.app/chatgpt25/issue/GAR-502) (chore migrate v3 → v4). Manutenção preventiva de CI/runtime, **não** alerta CodeQL real (esses ficam em [GAR-490](https://linear.app/chatgpt25/issue/GAR-490) / [GAR-491](https://linear.app/chatgpt25/issue/GAR-491)) e **não** bloqueia o merge verde atual.
-- **CARGO_BIN_EXE_garraia removal** ([GAR-503](https://linear.app/chatgpt25/issue/GAR-503)) ✅ — fallback dead-code removido de `crates/garraia-cli/tests/migrate_workspace_integration.rs` (plan [`0060`](plans/0060-gar-503-cargo-bin-exe-cleanup.md), PR [#132](https://github.com/michelbr84/GarraRUST/pull/132) `750fb50`, 2026-05-05). `git grep CARGO_BIN_EXE_garraia` agora retorna 0 hits.
-- **Benchmark evidence run** ([GAR-504](https://linear.app/chatgpt25/issue/GAR-504)) — primeira execução real de `benches/agent-framework-comparison/run.sh --all` em droplet DigitalOcean 1 vCPU / 1 GB para repor a tabela do `README.md` (PR [#117](https://github.com/michelbr84/GarraRUST/pull/117) §"Open follow-ups"). **Bloqueado** por requerer provisionamento de infra externa.
-- **Mutation Testing 2026-05-04 missed mutants** ([GAR-505](https://linear.app/chatgpt25/issue/GAR-505)) ✅ — triagem dos 6 NEW missed mutants em `jwt.rs` / `storage_redacted.rs` / `app_pool.rs` + 3 timeouts (run [25307117776](https://github.com/michelbr84/GarraRUST/actions/runs/25307117776)) entregue via PR [#119](https://github.com/michelbr84/GarraRUST/pull/119) / PR [#120](https://github.com/michelbr84/GarraRUST/pull/120), 2026-05-04. Sub-issue de [GAR-436](https://linear.app/chatgpt25/issue/GAR-436).
-- **AI Quality Ratchet PR-1** (epic novo, plan [`0064`](plans/0064-quality-ratchet-pr1.md), 2026-05-05) — scaffold do sistema de catraca de qualidade. PR-1 entrega `.quality/{baseline,README,thresholds}`, `scripts/quality/{collect-metrics.sh, compare.py, freeze-baseline.py, parse-{llvm-cov,cargo-audit,clippy}.py + tests/}`, `.github/workflows/quality-ratchet.yml` em modo report-only via flag `compare.py --mode report-only` (zero `continue-on-error`), `.claude/commands/quality-babysit.md` em modo manual-only, e `CODEOWNERS` como camada inicial de visibilidade. **Out of scope deste PR**: duplicação (PR-3), promoção a bloqueante (PR-4 com aprovação explícita), branch protection (sempre com aprovação explícita). Plan-mãe com filosofia + 5 ajustes do owner: `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md` (não versionado). Linear issue TBD após merge.
+- **GitHub Actions annotations follow-up (2026-05-03)** — CI voltou a ficar verde após PR [#113](https://github.com/michelbr84/GarraRUST/pull/113), mas os jobs `Analyze (javascript-typescript)` e `Analyze (rust)` ainda emitem 2 annotations não-bloqueantes: (a) `github/codeql-action/init@v3` + `analyze@v3` rodam em Node.js 20 (forced switch 2026-06-02, removido em 2026-09-16) — escopo expandido em GAR-482 (Q6.9 third-party Node 24 readiness); (b) CodeQL Action v3 será deprecated em dezembro de 2026 — rastreado em GAR-502 (chore migrate v3 → v4). Manutenção preventiva de CI/runtime, **não** alerta CodeQL real (esses ficam em GAR-490 / GAR-491) e **não** bloqueia o merge verde atual.
+- **CARGO_BIN_EXE_garraia removal** (GAR-503) ✅ — fallback dead-code removido de `crates/garraia-cli/tests/migrate_workspace_integration.rs` (plan [`0060`](plans/0060-gar-503-cargo-bin-exe-cleanup.md), PR [#132](https://github.com/michelbr84/GarraRUST/pull/132) `750fb50`, 2026-05-05). `git grep CARGO_BIN_EXE_garraia` agora retorna 0 hits.
+- **Benchmark evidence run** (GAR-504) — primeira execução real de `benches/agent-framework-comparison/run.sh --all` em droplet DigitalOcean 1 vCPU / 1 GB para repor a tabela do `README.md` (PR [#117](https://github.com/michelbr84/GarraRUST/pull/117) §"Open follow-ups"). **Bloqueado** por requerer provisionamento de infra externa.
+- **Mutation Testing 2026-05-04 missed mutants** (GAR-505) ✅ — triagem dos 6 NEW missed mutants em `jwt.rs` / `storage_redacted.rs` / `app_pool.rs` + 3 timeouts (run [25307117776](https://github.com/michelbr84/GarraRUST/actions/runs/25307117776)) entregue via PR [#119](https://github.com/michelbr84/GarraRUST/pull/119) / PR [#120](https://github.com/michelbr84/GarraRUST/pull/120), 2026-05-04. Sub-issue de GAR-436.
+- **AI Quality Ratchet PR-1** (epic novo, plan [`0064`](plans/0064-quality-ratchet-pr1.md), 2026-05-05) — scaffold do sistema de catraca de qualidade. PR-1 entrega `.quality/{baseline,README,thresholds}`, `scripts/quality/{collect-metrics.sh, compare.py, freeze-baseline.py, parse-{llvm-cov,cargo-audit,clippy}.py + tests/}`, `.github/workflows/quality-ratchet.yml` em modo report-only via flag `compare.py --mode report-only` (zero `continue-on-error`), `.claude/commands/quality-babysit.md` em modo manual-only, e `CODEOWNERS` como camada inicial de visibilidade. **Out of scope deste PR**: duplicação (PR-3), promoção a bloqueante (PR-4 com aprovação explícita), branch protection (sempre com aprovação explícita). Plan-mãe com filosofia + 5 ajustes do owner: `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md` (não versionado). Issue TBD após merge (tracker interno).
 
-### Status do umbrella [GAR-486](https://linear.app/chatgpt25/issue/GAR-486)
+### Status do umbrella GAR-486
 
-✅ **Done** (2026-05-04). Fechado após [GAR-490](https://linear.app/chatgpt25/issue/GAR-490) (PR [#112](https://github.com/michelbr84/GarraRUST/pull/112), 2026-05-04) e [GAR-491](https://linear.app/chatgpt25/issue/GAR-491) (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109), 2026-05-01) mergearem.
+✅ **Done** (2026-05-04). Fechado após GAR-490 (PR [#112](https://github.com/michelbr84/GarraRUST/pull/112), 2026-05-04) e GAR-491 (PR [#109](https://github.com/michelbr84/GarraRUST/pull/109), 2026-05-01) mergearem.
 
 ### Auto-update pipeline (`garraia update`) — entrega `v0.2.1` (2026-05-14)
 
@@ -176,16 +176,16 @@ foram corrigidos no mesmo PR:
 | 2 | Sufixo ARM64 errado | `garraia-{linux,macos}-arm64` | `garraia-{linux,macos}-aarch64` (alinha com `std::env::consts::ARCH` que `update.rs:43-50` consome) |
 | 3 | Só `SHA256SUMS` agregado | Falhava no `release is missing checksum file` | `SHA256SUMS` **mais** `<asset>.sha256` per-asset (loop sha256sum + glob `release/*.sha256` no `files:` da action) |
 
-Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desktop/src-tauri/Cargo.toml` e `tauri.conf.json` para fechar o gap de versão sem reuso de tag. Linear: [GAR-619](https://linear.app/chatgpt25/issue/GAR-619) (criada nesta sessão).
+Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desktop/src-tauri/Cargo.toml` e `tauri.conf.json` para fechar o gap de versão sem reuso de tag. Linear: GAR-619 (criada nesta sessão).
 
 ### Sprint **Web Console Garra Glass** (2026-05-14) — `web_chat.html` redesenhado de ponta-a-ponta
 
-10 PRs sequenciais (#330–#341) entregando o Web Console multi-page completo com design system "Garra Glass" (ADR 0009, plan 0116). Stack: HTML + CSS custom properties `--garra-*` + JS vanilla, zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline. Páginas: Dashboard, Chat, Providers & Models, Channels, Sessions, Settings Registry (schema-driven dry-run), Diagnostics (12 checks), Logs (filter/search/export), Themes & Skins (4 presets). Novos endpoints REST (todos `/api/*`, auth-free, secret-free via `configured: bool` em vez de `value`): `/api/health` (Dashboard schema com `version`, `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`, `warnings`, back-compat `checks`), `/api/capabilities`, `/api/channels`, `POST /api/providers/test`, `PATCH /api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings` (validate + audit + dry-run; persistência TOML em plan 0121a), `/api/diagnostics`. Plans: 0116a, 0116b, 0117–0123. Issues Linear: [GAR-607](https://linear.app/chatgpt25/issue/GAR-607), [GAR-612](https://linear.app/chatgpt25/issue/GAR-612)…[GAR-618](https://linear.app/chatgpt25/issue/GAR-618), [GAR-623](https://linear.app/chatgpt25/issue/GAR-623).
+10 PRs sequenciais (#330–#341) entregando o Web Console multi-page completo com design system "Garra Glass" (ADR 0009, plan 0116). Stack: HTML + CSS custom properties `--garra-*` + JS vanilla, zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline. Páginas: Dashboard, Chat, Providers & Models, Channels, Sessions, Settings Registry (schema-driven dry-run), Diagnostics (12 checks), Logs (filter/search/export), Themes & Skins (4 presets). Novos endpoints REST (todos `/api/*`, auth-free, secret-free via `configured: bool` em vez de `value`): `/api/health` (Dashboard schema com `version`, `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`, `warnings`, back-compat `checks`), `/api/capabilities`, `/api/channels`, `POST /api/providers/test`, `PATCH /api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings` (validate + audit + dry-run; persistência TOML em plan 0121a), `/api/diagnostics`. Plans: 0116a, 0116b, 0117–0123. Issues Linear: GAR-607, GAR-612…GAR-618, GAR-623.
 
 ### Sprint **Onboarding zero-friction** (2026-05-14..15)
 
-- **PR-A — `garraia init` env-aware bootstrap** (plan 0126, PR #348 `6a2279e`, 2026-05-14): subcomando `garraia init` que detecta config existente, oferece wizard interativo + flags `--yes`/`--non-interactive` para CI, materializa `.garraia/config.toml` + `.env` placeholder. Issue Linear: TBD.
-- **PR-B — `curl \| sh` installer wizard** (plan 0127, PR #350 `bfddf78`, 2026-05-15): `install.sh` ganhou bootstrap wizard de uma linha (`curl -fsSL https://garraia.org/install.sh | sh`) que detecta plataforma, baixa binário correto, roda `garraia init --yes`, sobe `garraia start` em foreground. Cobre Linux/macOS x86_64 + aarch64. Issue Linear: TBD.
+- **PR-A — `garraia init` env-aware bootstrap** (plan 0126, PR #348 `6a2279e`, 2026-05-14): subcomando `garraia init` que detecta config existente, oferece wizard interativo + flags `--yes`/`--non-interactive` para CI, materializa `.garraia/config.toml` + `.env` placeholder. Issue: TBD (tracker interno).
+- **PR-B — `curl \| sh` installer wizard** (plan 0127, PR #350 `bfddf78`, 2026-05-15): `install.sh` ganhou bootstrap wizard de uma linha (`curl -fsSL https://garraia.org/install.sh | sh`) que detecta plataforma, baixa binário correto, roda `garraia init --yes`, sobe `garraia start` em foreground. Cobre Linux/macOS x86_64 + aarch64. Issue: TBD (tracker interno).
 
 ### Sprint **Q9 admin/handlers.rs modularização** (2026-05-15..16, 6 PRs)
 
@@ -193,48 +193,48 @@ Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desk
 
 | Slice | Plan | Issue | PR | Módulo extraído | LOC |
 |---|---|---|---|---|---|
-| Q9.b | 0128 | [GAR-470](https://linear.app/chatgpt25/issue/GAR-470) | [#349](https://github.com/michelbr84/GarraRUST/pull/349) `eacbf9b` | `admin/providers.rs` | 3240→2900 (−340) |
-| Q9.c | 0129 | [GAR-471](https://linear.app/chatgpt25/issue/GAR-471) | [#354](https://github.com/michelbr84/GarraRUST/pull/354) `17f68d0` | `admin/mcp.rs` | 2900→2550 (−350) |
-| Q9.d | 0130 | [GAR-472](https://linear.app/chatgpt25/issue/GAR-472) | [#358](https://github.com/michelbr84/GarraRUST/pull/358) `1555b70` | `admin/mcp_templates.rs` | 2550→2326 (−224) |
-| Q9.e | 0131 | [GAR-473](https://linear.app/chatgpt25/issue/GAR-473) | [#360](https://github.com/michelbr84/GarraRUST/pull/360) `b862b72` | `admin/observability.rs` | 2326→2103 (−223) |
-| Q9.g | 0132 | [GAR-474](https://linear.app/chatgpt25/issue/GAR-474) | [#362](https://github.com/michelbr84/GarraRUST/pull/362) `4c97276` | `admin/users.rs` | 2103→1738 (−365) |
-| Q9.f | 0133 | [GAR-475](https://linear.app/chatgpt25/issue/GAR-475) | [#363](https://github.com/michelbr84/GarraRUST/pull/363) `4ab6821` | `admin/secrets.rs` | 1738→~1270 (−468), `@security-auditor` approval required |
+| Q9.b | 0128 | GAR-470 | [#349](https://github.com/michelbr84/GarraRUST/pull/349) `eacbf9b` | `admin/providers.rs` | 3240→2900 (−340) |
+| Q9.c | 0129 | GAR-471 | [#354](https://github.com/michelbr84/GarraRUST/pull/354) `17f68d0` | `admin/mcp.rs` | 2900→2550 (−350) |
+| Q9.d | 0130 | GAR-472 | [#358](https://github.com/michelbr84/GarraRUST/pull/358) `1555b70` | `admin/mcp_templates.rs` | 2550→2326 (−224) |
+| Q9.e | 0131 | GAR-473 | [#360](https://github.com/michelbr84/GarraRUST/pull/360) `b862b72` | `admin/observability.rs` | 2326→2103 (−223) |
+| Q9.g | 0132 | GAR-474 | [#362](https://github.com/michelbr84/GarraRUST/pull/362) `4c97276` | `admin/users.rs` | 2103→1738 (−365) |
+| Q9.f | 0133 | GAR-475 | [#363](https://github.com/michelbr84/GarraRUST/pull/363) `4ab6821` | `admin/secrets.rs` | 1738→~1270 (−468), `@security-auditor` approval required |
 
 ### Sprint **Q11 `rest_v1/tasks` modularização** (2026-05-17, 7 PRs) ✅ COMPLETA
 
-Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.rs` (anteriormente monólito de 4236 LOC). Issue Linear: [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) ✅ Done (2026-05-17T18:47Z). `tasks/mod.rs` final: ~1537 LOC (−63% vs baseline).
+Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.rs` (anteriormente monólito de 4236 LOC). Issue Linear: GAR-635 ✅ Done (2026-05-17T18:47Z). `tasks/mod.rs` final: ~1537 LOC (−63% vs baseline).
 
 | Slice | Plan | Issue | PR | Módulo extraído |
 |---|---|---|---|---|
-| Q11.a | 0135 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#368](https://github.com/michelbr84/GarraRUST/pull/368) `c01bbd9` | `rest_v1/tasks/task_lists.rs` |
-| Q11.b | 0136 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#370](https://github.com/michelbr84/GarraRUST/pull/370) `8872026` | `rest_v1/tasks/comments.rs` |
-| Q11.c | 0137 | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#371](https://github.com/michelbr84/GarraRUST/pull/371) `efb295c` | `rest_v1/tasks/assignees.rs` |
-| Q11.d | — | [GAR-635](https://linear.app/chatgpt25/issue/GAR-635) | [#372](https://github.com/michelbr84/GarraRUST/pull/372) `62036a8` | `rest_v1/tasks/labels.rs` |
-| Q11.e | — | [GAR-653](https://linear.app/chatgpt25/issue/GAR-653) | [#376](https://github.com/michelbr84/GarraRUST/pull/376) `1be73cd` | `rest_v1/tasks/subscriptions.rs` |
-| Q11.f | — | [GAR-655](https://linear.app/chatgpt25/issue/GAR-655) | [#386](https://github.com/michelbr84/GarraRUST/pull/386) `a82ef2b` | `rest_v1/tasks/activity.rs` |
-| Q11.g | — | [GAR-658](https://linear.app/chatgpt25/issue/GAR-658) | [#388](https://github.com/michelbr84/GarraRUST/pull/388) `e04fc2c` | `rest_v1/tasks/attachments.rs` |
+| Q11.a | 0135 | GAR-635 | [#368](https://github.com/michelbr84/GarraRUST/pull/368) `c01bbd9` | `rest_v1/tasks/task_lists.rs` |
+| Q11.b | 0136 | GAR-635 | [#370](https://github.com/michelbr84/GarraRUST/pull/370) `8872026` | `rest_v1/tasks/comments.rs` |
+| Q11.c | 0137 | GAR-635 | [#371](https://github.com/michelbr84/GarraRUST/pull/371) `efb295c` | `rest_v1/tasks/assignees.rs` |
+| Q11.d | — | GAR-635 | [#372](https://github.com/michelbr84/GarraRUST/pull/372) `62036a8` | `rest_v1/tasks/labels.rs` |
+| Q11.e | — | GAR-653 | [#376](https://github.com/michelbr84/GarraRUST/pull/376) `1be73cd` | `rest_v1/tasks/subscriptions.rs` |
+| Q11.f | — | GAR-655 | [#386](https://github.com/michelbr84/GarraRUST/pull/386) `a82ef2b` | `rest_v1/tasks/activity.rs` |
+| Q11.g | — | GAR-658 | [#388](https://github.com/michelbr84/GarraRUST/pull/388) `e04fc2c` | `rest_v1/tasks/attachments.rs` |
 
 ### Security & dependency sweeps Maio 2026
 
 | Sweep | Plan | PR | Conteúdo |
 |---|---|---|---|
-| Q6.3 sessions TTL boundary mutants | 0112 | [#312](https://github.com/michelbr84/GarraRUST/pull/312) `5197581` | [GAR-465](https://linear.app/chatgpt25/issue/GAR-465) — kill 6 missed mutants em `session_store.rs` |
-| Q6.6.b Debug-redaction mutants | 0114 | [#317](https://github.com/michelbr84/GarraRUST/pull/317) `fc138f3` | [GAR-483](https://linear.app/chatgpt25/issue/GAR-483) — Debug redaction tests em `SignupPool` + `AppPool` |
-| aws-actions/configure-aws-credentials v4→v6 | 0113 | [#313](https://github.com/michelbr84/GarraRUST/pull/313) `4374623` | [GAR-601](https://linear.app/chatgpt25/issue/GAR-601) — Node 20 deprecation pre-empt |
-| `metrics` 0.24.5 (yanked) → 0.24.6 | 0124 | [#336](https://github.com/michelbr84/GarraRUST/pull/336) `adbe00a` | [GAR-620](https://linear.app/chatgpt25/issue/GAR-620) |
-| Patch-and-minor batch May 13 | 0111 | [#309](https://github.com/michelbr84/GarraRUST/pull/309) `c9196ac` | [GAR-600](https://linear.app/chatgpt25/issue/GAR-600) — 17 deps (tokio, axum, hyper, tower-http, jsonwebtoken, uuid) |
-| `lru` advisory cleanup | 0108 | [#299](https://github.com/michelbr84/GarraRUST/pull/299) `7996dc4` | [GAR-593](https://linear.app/chatgpt25/issue/GAR-593) — drop stale RUSTSEC-2026-0002 |
+| Q6.3 sessions TTL boundary mutants | 0112 | [#312](https://github.com/michelbr84/GarraRUST/pull/312) `5197581` | GAR-465 — kill 6 missed mutants em `session_store.rs` |
+| Q6.6.b Debug-redaction mutants | 0114 | [#317](https://github.com/michelbr84/GarraRUST/pull/317) `fc138f3` | GAR-483 — Debug redaction tests em `SignupPool` + `AppPool` |
+| aws-actions/configure-aws-credentials v4→v6 | 0113 | [#313](https://github.com/michelbr84/GarraRUST/pull/313) `4374623` | GAR-601 — Node 20 deprecation pre-empt |
+| `metrics` 0.24.5 (yanked) → 0.24.6 | 0124 | [#336](https://github.com/michelbr84/GarraRUST/pull/336) `adbe00a` | GAR-620 |
+| Patch-and-minor batch May 13 | 0111 | [#309](https://github.com/michelbr84/GarraRUST/pull/309) `c9196ac` | GAR-600 — 17 deps (tokio, axum, hyper, tower-http, jsonwebtoken, uuid) |
+| `lru` advisory cleanup | 0108 | [#299](https://github.com/michelbr84/GarraRUST/pull/299) `7996dc4` | GAR-593 — drop stale RUSTSEC-2026-0002 |
 | h2/rustls/zerocopy/aws-lc-rs/reqwest security sweep | n/a | [#366](https://github.com/michelbr84/GarraRUST/pull/366) `02bd9de` | 2026-05-16 |
 | RUSTSEC-2024-0384 (instant) advisory ignore drop | n/a | [#356](https://github.com/michelbr84/GarraRUST/pull/356) `8051d97` | 2026-05-15 — stale ignore removed |
-| `tokio` 1.52.3 unblock via `nix` 0.31.3 + `process-wrap` 9.1.0 | 0134 | [#367](https://github.com/michelbr84/GarraRUST/pull/367) `40ee126` | [GAR-634](https://linear.app/chatgpt25/issue/GAR-634) |
+| `tokio` 1.52.3 unblock via `nix` 0.31.3 + `process-wrap` 9.1.0 | 0134 | [#367](https://github.com/michelbr84/GarraRUST/pull/367) `40ee126` | GAR-634 |
 | `axum-server` 0.7→0.8 — closes RUSTSEC-2025-0134 | n/a | [#378](https://github.com/michelbr84/GarraRUST/pull/378) `1eb5c4b` | 2026-05-17 |
-| `daemonize` 0.5 → `nix` syscalls — closes RUSTSEC-2025-0069 | n/a | [#382](https://github.com/michelbr84/GarraRUST/pull/382) `a5daf34` | [GAR-656](https://linear.app/chatgpt25/issue/GAR-656) |
-| RLS FORCE em `groups` + `group_members` | 0106 | [#294](https://github.com/michelbr84/GarraRUST/pull/294) `36b2b72` | [GAR-589](https://linear.app/chatgpt25/issue/GAR-589) — fixes `get_group` SET LOCAL FIXME |
-| Messages PATCH/DELETE (RBAC sender-only + admin override) | 0107 | [#300](https://github.com/michelbr84/GarraRUST/pull/300) `3c843e4` | [GAR-592](https://linear.app/chatgpt25/issue/GAR-592) |
+| `daemonize` 0.5 → `nix` syscalls — closes RUSTSEC-2025-0069 | n/a | [#382](https://github.com/michelbr84/GarraRUST/pull/382) `a5daf34` | GAR-656 |
+| RLS FORCE em `groups` + `group_members` | 0106 | [#294](https://github.com/michelbr84/GarraRUST/pull/294) `36b2b72` | GAR-589 — fixes `get_group` SET LOCAL FIXME |
+| Messages PATCH/DELETE (RBAC sender-only + admin override) | 0107 | [#300](https://github.com/michelbr84/GarraRUST/pull/300) `3c843e4` | GAR-592 |
 
 ### Sprint **Garra Learning Agent — épico criado** (2026-05-17, esta sessão)
 
-Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura.
+Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear `GAR-641` com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura.
 
 ### Sprint **Garra Learning Agent — scaffold GAR-642** (2026-05-18)
 
@@ -244,7 +244,7 @@ Primeira implementação real do Learning Agent epic. Plan [0144](plans/0144-gar
 - Novo crate `crates/garraia-learning/` adicionado ao workspace (19 → 20 crates ativos).
 - `safety.rs` **funcional**: 5 SafetyDenial variants + 17 unit tests verdes (DangerousCommand, CriticalPath, ScoreTooLow, AntiFlapDeprecated, PiiDetected).
 - 8 módulos stub: miner, generator, registry, retriever, evaluator, updater, versioning, skill_override — todos retornam `Err(Error::Other("... não implementado"))`.
-- Issue: [GAR-642](https://linear.app/chatgpt25/issue/GAR-642) ✅ Done.
+- Issue: GAR-642 ✅ Done.
 
 ### `garraia update` / CLI helpers / Runpod compatibility
 
@@ -358,17 +358,17 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - **Memória/Auto Dream PII-leak:** `.garra-estado.md` versionado com prompt do usuário pode vazar dados. Mitigação: schema com allow-list de campos; nada de message bodies por padrão.
 - **CI overhead:** `garra verify` em CI pode ficar lento. Mitigação: passos paralelos + cache; budget documentado por etapa.
 
-**Issues Linear filhas do épico [GAR-492](https://linear.app/chatgpt25/issue/GAR-492):**
+**Issues Linear filhas do épico GAR-492:**
 
-- ~~`GarraMaxPower roadmap + ADR` ([GAR-493](https://linear.app/chatgpt25/issue/GAR-493)) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).~~ ✅ Done (PR #492 `95618d3`)
-- `/max-power MVP` ([GAR-494](https://linear.app/chatgpt25/issue/GAR-494)) — subcomando `garra max-power` esqueleto + roteamento + banner.
-- `Capability prompt nativo` ([GAR-495](https://linear.app/chatgpt25/issue/GAR-495)) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
-- `Repo workflow seguro` ([GAR-496](https://linear.app/chatgpt25/issue/GAR-496)) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
-- `Safety gates para bash` ([GAR-497](https://linear.app/chatgpt25/issue/GAR-497)) — `safety_gate(cmd)` + denylist + testes + integração com tools.
-- ~~`Skills MVP` ([GAR-498](https://linear.app/chatgpt25/issue/GAR-498)) — 3-5 skills nativas via registry `garraia-skills`.~~ ✅ Done (PR #488 `c65e099`)
-- ~~`Agent team MVP` ([GAR-499](https://linear.app/chatgpt25/issue/GAR-499)) — orquestrador + 2 sub-agentes, dogfooded em um bug real.~~ ✅ Done (PR #490 `7e45ec5`)
-- `Auto Dream / handoff` ([GAR-500](https://linear.app/chatgpt25/issue/GAR-500)) — schema `.garra-estado.md` + reader/writer + redaction.
-- ~~`garra verify` ([GAR-501](https://linear.app/chatgpt25/issue/GAR-501)) — pipeline local idempotente, exit-codes sysexits, relatório markdown.~~ ✅ Done (PR #441 `ca9f1fa2`)
+- ~~`GarraMaxPower roadmap + ADR` (GAR-493) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).~~ ✅ Done (PR #492 `95618d3`)
+- `/max-power MVP` (GAR-494) — subcomando `garra max-power` esqueleto + roteamento + banner.
+- `Capability prompt nativo` (GAR-495) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
+- `Repo workflow seguro` (GAR-496) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
+- `Safety gates para bash` (GAR-497) — `safety_gate(cmd)` + denylist + testes + integração com tools.
+- ~~`Skills MVP` (GAR-498) — 3-5 skills nativas via registry `garraia-skills`.~~ ✅ Done (PR #488 `c65e099`)
+- ~~`Agent team MVP` (GAR-499) — orquestrador + 2 sub-agentes, dogfooded em um bug real.~~ ✅ Done (PR #490 `7e45ec5`)
+- `Auto Dream / handoff` (GAR-500) — schema `.garra-estado.md` + reader/writer + redaction.
+- ~~`garra verify` (GAR-501) — pipeline local idempotente, exit-codes sysexits, relatório markdown.~~ ✅ Done (PR #441 `ca9f1fa2`)
 
 **Estimativa:** 3 / 5 / 8 semanas, em paralelo a 1.2 e 1.3.
 
@@ -445,18 +445,18 @@ aprendido, sem nunca promover skill não-validada.
 - Não promover skill sem human-in-the-loop em paths sensíveis.
 - Não substituir `garraia-skills` nem `garraia-workspace memory` — Learning Agent **integra**; não duplica.
 
-**Issues Linear filhas do épico [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641)** (criadas 2026-05-17, label `epic:learning-agent`) — **10/10 Done ✅ 2026-05-20**:
+**Issues Linear filhas do épico `GAR-641`** (criadas 2026-05-17, label `epic:learning-agent`) — **10/10 Done ✅ 2026-05-20**:
 
-- [`GAR-642`](https://linear.app/chatgpt25/issue/GAR-642) **Learning Agent Architecture** (High, label `adr-needed`) — ADR 0010 → Accepted + scaffold + integração com `AgentRuntime`.
-- [`GAR-643`](https://linear.app/chatgpt25/issue/GAR-643) **Skill Miner** (Medium)
-- [`GAR-644`](https://linear.app/chatgpt25/issue/GAR-644) **Skill Generator** (Medium)
-- [`GAR-645`](https://linear.app/chatgpt25/issue/GAR-645) **Skill Registry** (High)
-- [`GAR-646`](https://linear.app/chatgpt25/issue/GAR-646) **Skill Retriever** (Medium, depende de Fase 2.1)
-- [`GAR-647`](https://linear.app/chatgpt25/issue/GAR-647) **Skill Evaluator** (High)
-- [`GAR-648`](https://linear.app/chatgpt25/issue/GAR-648) **Skill Auto-Updater** (Medium)
-- [`GAR-649`](https://linear.app/chatgpt25/issue/GAR-649) **Skill Safety Gates** (Urgent — hard wall)
-- [`GAR-650`](https://linear.app/chatgpt25/issue/GAR-650) **Skill Versioning/Rollback** (Medium)
-- [`GAR-651`](https://linear.app/chatgpt25/issue/GAR-651) **Web UI for Skills and Learning Logs** (Medium, depende de ADR 0009) ✅ Done — PR #443 (`21a13f1`) 2026-05-20
+- `GAR-642` **Learning Agent Architecture** (High, label `adr-needed`) — ADR 0010 → Accepted + scaffold + integração com `AgentRuntime`.
+- `GAR-643` **Skill Miner** (Medium)
+- `GAR-644` **Skill Generator** (Medium)
+- `GAR-645` **Skill Registry** (High)
+- `GAR-646` **Skill Retriever** (Medium, depende de Fase 2.1)
+- `GAR-647` **Skill Evaluator** (High)
+- `GAR-648` **Skill Auto-Updater** (Medium)
+- `GAR-649` **Skill Safety Gates** (Urgent — hard wall)
+- `GAR-650` **Skill Versioning/Rollback** (Medium)
+- `GAR-651` **Web UI for Skills and Learning Logs** (Medium, depende de ADR 0009) ✅ Done — PR #443 (`21a13f1`) 2026-05-20
 
 **Plan-mãe:** [`plans/0138-gar-learning-agent-epic.md`](plans/0138-gar-learning-agent-epic.md)
 
@@ -468,7 +468,7 @@ aprendido, sem nunca promover skill não-validada.
 **Riscos:** Sobreposição com `garraia-skills` (mitigação: ADR 0010 §"Topologia"); skill perigosa aprendida (Safety Gate hard wall + paths críticos exigem aprovação humana); custo LLM (default `openrouter/free`, batch); PII em skills aprendidas (redaction antes do LLM); concorrência entre sessões (lock-file).
 
 **Estimativa fase 1:** 6 / 8 / 12 semanas (TurboQuant+ / Superpowers / GarraMaxPower / Config) + 4 / 7 / 12 semanas (Learning Agent, paralelo).
-**Épicos Linear sugeridos:** `GAR-TURBO-1`, `GAR-SUPERPOWERS-1`, `GAR-CONFIG-1`, [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641).
+**Épicos sugeridos:** `GAR-TURBO-1`, `GAR-SUPERPOWERS-1`, `GAR-CONFIG-1`, `GAR-641`.
 
 ---
 
@@ -502,7 +502,7 @@ aprendido, sem nunca promover skill não-validada.
 
 ### 2.3 Zero-latency streaming & Telemetria
 
-**Status:** ✅ baseline entregue em 2026-04-13 via [GAR-384](https://linear.app/chatgpt25/issue/GAR-384) (commit `84c4753`). Crate `garraia-telemetry` em produção atrás de feature flag `telemetry` (default on). Follow-ups: [GAR-411](https://linear.app/chatgpt25/issue/GAR-411) (TLS docs, cardinality, idempotência) e [GAR-412](https://linear.app/chatgpt25/issue/GAR-412) (/metrics auth não-loopback).
+**Status:** ✅ baseline entregue em 2026-04-13 via GAR-384 (commit `84c4753`). Crate `garraia-telemetry` em produção atrás de feature flag `telemetry` (default on). Follow-ups: GAR-411 (TLS docs, cardinality, idempotência) e GAR-412 (/metrics auth não-loopback).
 
 - [ ] **Tokio tuning**: buffers enxutos em WebSocket handlers; `tokio-tungstenite` com `flush_interval` configurável.
 - [x] **OpenTelemetry**: crate `garraia-telemetry` com `tracing-opentelemetry` 0.27 + `opentelemetry-otlp` 0.26 (gRPC), fail-soft init, sampler `TraceIdRatioBased`, guard RAII com shutdown em Drop. ✅
@@ -517,7 +517,7 @@ aprendido, sem nunca promover skill não-validada.
 - [x] Uma requisição de chat gera trace com spans `http.request` → `agent.run` (process_message_impl) → `db.persist` (append_message) — todos correlacionados via `x-request-id`. ✅
 
 **Estimativa fase 2:** 8 / 10 / 14 semanas.
-**Épicos Linear sugeridos:** `GAR-RAG-1`, `GAR-WASM-1`, `GAR-OTEL-1`.
+**Épicos sugeridos:** `GAR-RAG-1`, `GAR-WASM-1`, `GAR-OTEL-1`.
 
 ---
 
@@ -531,10 +531,10 @@ aprendido, sem nunca promover skill não-validada.
 
 ### 3.1 Decisões arquiteturais (ADRs obrigatórios antes de codar)
 
-- [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico no PoC `benches/database-poc/` (removido em 2026-08-16 após estabilização; números preservados no ADR 0003). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via [GAR-373](https://linear.app/chatgpt25/issue/GAR-373). ✅
-- [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. ([GAR-374](https://linear.app/chatgpt25/issue/GAR-374))
-- [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-13 via [GAR-375](https://linear.app/chatgpt25/issue/GAR-375). ✅
-- [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. ([GAR-376](https://linear.app/chatgpt25/issue/GAR-376))
+- [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico no PoC `benches/database-poc/` (removido em 2026-08-16 após estabilização; números preservados no ADR 0003). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via GAR-373. ✅
+- [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. (GAR-374)
+- [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-13 via GAR-375. ✅
+- [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. (GAR-376)
 
 ### 3.2 Domínio & Schema
 
@@ -585,7 +585,7 @@ Novo crate: `garraia-auth` (separado de `garraia-security`).
 - [x] **Capabilities (22 variants):** `files.*`, `chats.*`, `memory.*`, `tasks.*`, `docs.*`, `members.manage`, `group.{settings,delete}`, `export.{self,group}` — `Action` enum mapeado via `fn can()`. ✅
 - [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`.
 - [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — 18 tabelas com FORCE RLS + NULLIF fail-closed. Migrations 006 e 007. ✅
-- [x] **FORCE RLS em `groups` + `group_members`** — migration 018, plan 0106 / [GAR-589](https://linear.app/chatgpt25/issue/GAR-589), merged 2026-05-12 via PR #294 (`36b2b72`). `groups_member_access` + `group_members_visible` policies; fixes `get_group` FIXME (missing SET LOCAL) e `list_members` (missing `app.current_group_id`). ✅
+- [x] **FORCE RLS em `groups` + `group_members`** — migration 018, plan 0106 / GAR-589, merged 2026-05-12 via PR #294 (`36b2b72`). `groups_member_access` + `group_members_visible` policies; fixes `get_group` FIXME (missing SET LOCAL) e `list_members` (missing `app.current_group_id`). ✅
 - [x] **Identity provider decision:** [ADR 0005](docs/adr/0005-identity-provider.md) — BYPASSRLS dedicated role (`garraia_login` NOLOGIN BYPASSRLS) + Argon2id (m=64MiB, t=3, p=4) + HS256 JWT + PBKDF2→Argon2id lazy upgrade dual-verify + `IdentityProvider` trait shape congelada. ✅
 - [ ] **Guardrails Child/Dependent**: sem export, sem share externo, content filter aplicado pré-LLM.
 
@@ -600,113 +600,113 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Grupos**
 
-- [x] `GET /v1/groups` — plan 0105 / [GAR-580](https://linear.app/chatgpt25/issue/GAR-580), implementado 2026-05-12 (Florida)
+- [x] `GET /v1/groups` — plan 0105 / GAR-580, implementado 2026-05-12 (Florida)
 - [x] `POST /v1/groups` — plan 0016 M4, entregue 2026-04-14
 - [x] `GET /v1/groups/{group_id}` — plan 0016 M4, entregue 2026-04-14
 - [x] `PATCH /v1/groups/{group_id}` — plan 0017, entregue 2026-04-16
 - [x] `POST /v1/groups/{group_id}/invites` — plan 0018, entregue 2026-04-16
 - [x] `POST /v1/groups/{group_id}/members/{user_id}:setRole` — plan 0020, entregue 2026-04-20
 - [x] `DELETE /v1/groups/{group_id}/members/{user_id}` — plan 0020, entregue 2026-04-20
-- [x] `GET /v1/groups/{group_id}/members` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
-- [x] `GET /v1/groups/{group_id}/members/{user_id}` (fetch single group member) — plan 0286 / [GAR-823](https://linear.app/chatgpt25/issue/GAR-823) ✅
-- [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / [GAR-574](https://linear.app/chatgpt25/issue/GAR-574), implementado 2026-05-11 (Florida)
-- [x] `GET /v1/groups/{group_id}/invites/{invite_id}` — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
-- [x] `DELETE /v1/groups/{group_id}/invites/{invite_id}` (revoke) — plan 0257 / [GAR-780](https://linear.app/chatgpt25/issue/GAR-780) ✅
-- [x] `DELETE /v1/groups/{group_id}` (owner-only soft-delete; sets `archived_at`; idempotent 204; `GroupArchived` audit; migration 031) — plan 0346 / [GAR-890](https://linear.app/chatgpt25/issue/GAR-890) ✅
+- [x] `GET /v1/groups/{group_id}/members` — plan 0097 / GAR-574, implementado 2026-05-11 (Florida)
+- [x] `GET /v1/groups/{group_id}/members/{user_id}` (fetch single group member) — plan 0286 / GAR-823 ✅
+- [x] `GET /v1/groups/{group_id}/invites` — plan 0097 / GAR-574, implementado 2026-05-11 (Florida)
+- [x] `GET /v1/groups/{group_id}/invites/{invite_id}` — plan 0257 / GAR-780 ✅
+- [x] `DELETE /v1/groups/{group_id}/invites/{invite_id}` (revoke) — plan 0257 / GAR-780 ✅
+- [x] `DELETE /v1/groups/{group_id}` (owner-only soft-delete; sets `archived_at`; idempotent 204; `GroupArchived` audit; migration 031) — plan 0346 / GAR-890 ✅
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
-- [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
-- [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / [GAR-765](https://linear.app/chatgpt25/issue/GAR-765) ✅
-- [x] `GET /v1/me/files` — caller-scoped uploaded-files inbox (cursor-paginated, optional folder filter) — plan 0246 / [GAR-767](https://linear.app/chatgpt25/issue/GAR-767) ✅
-- [x] `GET /v1/me/memory` — caller-scoped personal memory inbox (cursor-paginated, optional kind filter) — plan 0249 / [GAR-770](https://linear.app/chatgpt25/issue/GAR-770) ✅
-- [x] `GET /v1/me/tasks` — caller-scoped task assignment inbox (cursor-paginated) — plan 0243 / [GAR-763](https://linear.app/chatgpt25/issue/GAR-763) ✅
-- [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / [GAR-764](https://linear.app/chatgpt25/issue/GAR-764) ✅
-- [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / [GAR-777](https://linear.app/chatgpt25/issue/GAR-777) ✅
-- [x] `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline; `declined_at`+`declined_by` (migration 025); `InviteDeclined` audit event; re-invite enabled — plan 0258 / [GAR-783](https://linear.app/chatgpt25/issue/GAR-783) ✅
-- [x] `POST /v1/me/invites/{invite_id}/accept` — invitee-side authenticated accept (UUID-based, no raw token); atomically sets `accepted_at`+`accepted_by`, inserts `group_members`, emits `InviteAccepted` audit event — plan 0263 / [GAR-794](https://linear.app/chatgpt25/issue/GAR-794) ✅
-- [x] `GET /v1/me/reactions` — caller-scoped emoji-reactions inbox (cursor-paginated, grouped by message with `ARRAY_AGG` emojis) — plan 0260 / [GAR-788](https://linear.app/chatgpt25/issue/GAR-788) ✅
-- [x] `GET /v1/me/threads` — caller-scoped thread participation inbox (cursor-paginated, `include_resolved` filter; creator vs participant role) — plan 0261 / [GAR-790](https://linear.app/chatgpt25/issue/GAR-790) ✅
-- [x] `GET /v1/me/sessions` — list caller's active sessions (cursor-paginated; `expires_at`, `created_at`, `user_agent`) — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
-- [x] `DELETE /v1/me/sessions/{session_id}` — revoke single session by ID — plan 0327 / [GAR-866](https://linear.app/chatgpt25/issue/GAR-866) ✅ merged PR #742 (`fc5d996`)
-- [x] `DELETE /v1/me/sessions` — bulk-revoke all active sessions ("sign out from all devices"); `SessionsAllRevoked` audit event — plan 0328 / [GAR-869](https://linear.app/chatgpt25/issue/GAR-869) ✅ merged PR #747 (`ed38d1a`)
-- [x] `POST /v1/me/api-keys` — create API key (`gai_<base64url>`, Argon2id hash stored, raw key returned once); `ApiKeyCreated` audit — plan 0331 / [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) ✅
-- [x] `GET /v1/me/api-keys` — cursor-paginated list of caller's API keys (active + revoked history; key hash never returned) — plan 0331 / [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) ✅
-- [x] `GET /v1/me/api-keys/{key_id}` — single API key metadata — plan 0331 / [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) ✅
-- [x] `DELETE /v1/me/api-keys/{key_id}` — soft-revoke (`revoked_at = now()`), idempotent 204; `ApiKeyRevoked` audit — plan 0331 / [GAR-871](https://linear.app/chatgpt25/issue/GAR-871) ✅
-- [x] `PATCH /v1/me/api-keys/{key_id}` — update label and/or scopes of an active API key; 409 if revoked; `ApiKeyUpdated` audit — plan 0334 / [GAR-874](https://linear.app/chatgpt25/issue/GAR-874) ✅
-- [x] `PATCH /v1/me/password` — change own password: verify current + Argon2id re-hash via `LoginPool` BYPASSRLS; dual-verify PBKDF2 legacy; anti-enumeration 403; `PasswordChanged` audit — plan 0335 / [GAR-876](https://linear.app/chatgpt25/issue/GAR-876) ✅
-- [x] `GET /v1/me/audit` — cursor-paginated personal audit trail (login, logout, signup, password.changed, api_key.*, session.* events); keyset `(created_at DESC, id DESC)`; `action` filter; no PII fields — plan 0340 / [GAR-881](https://linear.app/chatgpt25/issue/GAR-881) ✅
-- [x] `DELETE /v1/me` — self-service account soft-deletion (LGPD art. 18 / GDPR art. 17); sets `users.status = 'deleted'`, revokes all active sessions atomically, emits `account.self_deleted` audit event; 409 if already deleted; hard delete deferred to Fase 5.3 retention worker — plan 0343 / [GAR-884](https://linear.app/chatgpt25/issue/GAR-884) ✅
-- [x] `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 right to data portability; JSON export of profile, sessions, api_keys (metadata only), audit_events, group_memberships; `Content-Disposition: attachment`; `AccountDataExported` audit — plan 0344 / [GAR-885](https://linear.app/chatgpt25/issue/GAR-885) ✅
-- [x] `POST /v1/me/anonymize` — LGPD art. 12 / GDPR art. 4(5) right to anonymization; replaces `login` with `anon-{hex}@garraanon.local` via `LoginPool` BYPASSRLS, sets `users.status = 'anonymized'` + `display_name = 'Usuário Anônimo'`, revokes all sessions atomically; 409 if already anonymized/deleted; `AccountAnonymized` audit — plan 0345 / [GAR-888](https://linear.app/chatgpt25/issue/GAR-888) ✅
+- [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / GAR-599 ✅
+- [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765 ✅
+- [x] `GET /v1/me/files` — caller-scoped uploaded-files inbox (cursor-paginated, optional folder filter) — plan 0246 / GAR-767 ✅
+- [x] `GET /v1/me/memory` — caller-scoped personal memory inbox (cursor-paginated, optional kind filter) — plan 0249 / GAR-770 ✅
+- [x] `GET /v1/me/tasks` — caller-scoped task assignment inbox (cursor-paginated) — plan 0243 / GAR-763 ✅
+- [x] `GET /v1/me/mentions` — caller-scoped @mention inbox (cursor-paginated) — plan 0244 / GAR-764 ✅
+- [x] `GET /v1/me/invites` — caller-scoped pending group invites inbox (cursor-paginated) — plan 0255 / GAR-777 ✅
+- [x] `POST /v1/me/invites/{invite_id}/decline` — invitee-side explicit decline; `declined_at`+`declined_by` (migration 025); `InviteDeclined` audit event; re-invite enabled — plan 0258 / GAR-783 ✅
+- [x] `POST /v1/me/invites/{invite_id}/accept` — invitee-side authenticated accept (UUID-based, no raw token); atomically sets `accepted_at`+`accepted_by`, inserts `group_members`, emits `InviteAccepted` audit event — plan 0263 / GAR-794 ✅
+- [x] `GET /v1/me/reactions` — caller-scoped emoji-reactions inbox (cursor-paginated, grouped by message with `ARRAY_AGG` emojis) — plan 0260 / GAR-788 ✅
+- [x] `GET /v1/me/threads` — caller-scoped thread participation inbox (cursor-paginated, `include_resolved` filter; creator vs participant role) — plan 0261 / GAR-790 ✅
+- [x] `GET /v1/me/sessions` — list caller's active sessions (cursor-paginated; `expires_at`, `created_at`, `user_agent`) — plan 0327 / GAR-866 ✅ merged PR #742 (`fc5d996`)
+- [x] `DELETE /v1/me/sessions/{session_id}` — revoke single session by ID — plan 0327 / GAR-866 ✅ merged PR #742 (`fc5d996`)
+- [x] `DELETE /v1/me/sessions` — bulk-revoke all active sessions ("sign out from all devices"); `SessionsAllRevoked` audit event — plan 0328 / GAR-869 ✅ merged PR #747 (`ed38d1a`)
+- [x] `POST /v1/me/api-keys` — create API key (`gai_<base64url>`, Argon2id hash stored, raw key returned once); `ApiKeyCreated` audit — plan 0331 / GAR-871 ✅
+- [x] `GET /v1/me/api-keys` — cursor-paginated list of caller's API keys (active + revoked history; key hash never returned) — plan 0331 / GAR-871 ✅
+- [x] `GET /v1/me/api-keys/{key_id}` — single API key metadata — plan 0331 / GAR-871 ✅
+- [x] `DELETE /v1/me/api-keys/{key_id}` — soft-revoke (`revoked_at = now()`), idempotent 204; `ApiKeyRevoked` audit — plan 0331 / GAR-871 ✅
+- [x] `PATCH /v1/me/api-keys/{key_id}` — update label and/or scopes of an active API key; 409 if revoked; `ApiKeyUpdated` audit — plan 0334 / GAR-874 ✅
+- [x] `PATCH /v1/me/password` — change own password: verify current + Argon2id re-hash via `LoginPool` BYPASSRLS; dual-verify PBKDF2 legacy; anti-enumeration 403; `PasswordChanged` audit — plan 0335 / GAR-876 ✅
+- [x] `GET /v1/me/audit` — cursor-paginated personal audit trail (login, logout, signup, password.changed, api_key.*, session.* events); keyset `(created_at DESC, id DESC)`; `action` filter; no PII fields — plan 0340 / GAR-881 ✅
+- [x] `DELETE /v1/me` — self-service account soft-deletion (LGPD art. 18 / GDPR art. 17); sets `users.status = 'deleted'`, revokes all active sessions atomically, emits `account.self_deleted` audit event; 409 if already deleted; hard delete deferred to Fase 5.3 retention worker — plan 0343 / GAR-884 ✅
+- [x] `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 right to data portability; JSON export of profile, sessions, api_keys (metadata only), audit_events, group_memberships; `Content-Disposition: attachment`; `AccountDataExported` audit — plan 0344 / GAR-885 ✅
+- [x] `POST /v1/me/anonymize` — LGPD art. 12 / GDPR art. 4(5) right to anonymization; replaces `login` with `anon-{hex}@garraanon.local` via `LoginPool` BYPASSRLS, sets `users.status = 'anonymized'` + `display_name = 'Usuário Anônimo'`, revokes all sessions atomically; 409 if already anonymized/deleted; `AccountAnonymized` audit — plan 0345 / GAR-888 ✅
 
 **Chats**
 
-- [x] `POST /v1/groups/{group_id}/chats` — plan 0054 / [GAR-506](https://linear.app/chatgpt25/issue/GAR-506), implementado 2026-05-04 (Florida)
-- [x] `GET /v1/groups/{group_id}/chats` — plan 0054 / [GAR-506](https://linear.app/chatgpt25/issue/GAR-506), implementado 2026-05-04 (Florida)
-- [x] `POST /v1/chats/{chat_id}/messages` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
-- [x] `GET /v1/chats/{chat_id}/messages?cursor=...` — plan 0055 / [GAR-507](https://linear.app/chatgpt25/issue/GAR-507), implementado 2026-05-05 (Florida)
-- [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / [GAR-509](https://linear.app/chatgpt25/issue/GAR-509), implementado 2026-05-05 (Florida)
-- [x] `PATCH /v1/messages/{message_id}` (edit body, sender-only) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
-- [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / [GAR-592](https://linear.app/chatgpt25/issue/GAR-592), merged 2026-05-12 via PR #300 (`3c843e4`). ✅
-- [x] `GET /v1/messages/{message_id}` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
-- [x] `GET /v1/messages/{message_id}/threads` — plan 0109 / [GAR-595](https://linear.app/chatgpt25/issue/GAR-595), merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
+- [x] `POST /v1/groups/{group_id}/chats` — plan 0054 / GAR-506, implementado 2026-05-04 (Florida)
+- [x] `GET /v1/groups/{group_id}/chats` — plan 0054 / GAR-506, implementado 2026-05-04 (Florida)
+- [x] `POST /v1/chats/{chat_id}/messages` — plan 0055 / GAR-507, implementado 2026-05-05 (Florida)
+- [x] `GET /v1/chats/{chat_id}/messages?cursor=...` — plan 0055 / GAR-507, implementado 2026-05-05 (Florida)
+- [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / GAR-509, implementado 2026-05-05 (Florida)
+- [x] `PATCH /v1/messages/{message_id}` (edit body, sender-only) — plan 0107 / GAR-592, merged 2026-05-12 via PR #300 (`3c843e4`). ✅
+- [x] `DELETE /v1/messages/{message_id}` (soft-delete; admin override) — plan 0107 / GAR-592, merged 2026-05-12 via PR #300 (`3c843e4`). ✅
+- [x] `GET /v1/messages/{message_id}` — plan 0109 / GAR-595, merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
+- [x] `GET /v1/messages/{message_id}/threads` — plan 0109 / GAR-595, merged 2026-05-13 via PR #305 (`e8cc44d`). ✅
 - [x] SSE `GET /v1/chats/{chat_id}/stream` (broadcast cap-64, backpressure via `stream.lagged`) — plan 0162, merged 2026-05-21 via PR #459. Design: SSE escolhido em vez de WebSocket — canal de chat é server→client apenas; cross-tenant isolation via FORCE RLS + `WHERE group_id = $caller_group_id`.
-  - [x] **Follow-up F-3** ([GAR-679](https://linear.app/chatgpt25/issue/GAR-679)): SSE rate-limit per user/group sobre `/v1/chats/{id}/stream` — DoS hardening. `MAX_SSE_PER_USER = 5`; 6th connection → 429 + `Retry-After: 60`; `SseSlotGuard` RAII + `ChatStreamGuard` decrement. Plan 0163, merged 2026-05-21.
-  - [x] **Follow-up F-4** ([GAR-680](https://linear.app/chatgpt25/issue/GAR-680)): audit-log das subscriptions SSE (`chat.subscribed` no handler dentro da tx pré-commit + `chat.unsubscribed` via `tokio::spawn` no `Drop` do `ChatStreamGuard`); `subscriber_count` em metadata, PII-safe. Cobertura: 24 unit tests verdes (3 audit_workspace + 21 chats) + cenário S5 em `rest_v1_chats_sse.rs` (integration, CI). Merged 2026-05-21 via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) (`a972947`). ✅
-- [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅
-- [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅
-- [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / [GAR-700](https://linear.app/chatgpt25/issue/GAR-700). ✅ Done.
-- [x] `GET /v1/chats/{chat_id}/threads?after=<uuid>&limit=<n>&include_resolved=<bool>` — cursor-paginated list of threads in a chat, plan 0225 / [GAR-740](https://linear.app/chatgpt25/issue/GAR-740), 2026-05-29 (Florida).
-- [x] `GET /v1/threads/{thread_id}` — fetch single thread detail (id, chat_id, root_message_id, title, created_by, resolved_at, created_at) — plan 0265 / [GAR-798](https://linear.app/chatgpt25/issue/GAR-798) ✅
-- [x] `POST /v1/threads/{thread_id}/messages` — post a reply into an existing thread — plan 0276 / [GAR-811](https://linear.app/chatgpt25/issue/GAR-811) ✅
-- [x] `GET /v1/threads/{thread_id}/messages` — list replies in a thread directly by thread_id — plan 0279 / [GAR-814](https://linear.app/chatgpt25/issue/GAR-814) ✅
+  - [x] **Follow-up F-3** (GAR-679): SSE rate-limit per user/group sobre `/v1/chats/{id}/stream` — DoS hardening. `MAX_SSE_PER_USER = 5`; 6th connection → 429 + `Retry-After: 60`; `SseSlotGuard` RAII + `ChatStreamGuard` decrement. Plan 0163, merged 2026-05-21.
+  - [x] **Follow-up F-4** (GAR-680): audit-log das subscriptions SSE (`chat.subscribed` no handler dentro da tx pré-commit + `chat.unsubscribed` via `tokio::spawn` no `Drop` do `ChatStreamGuard`); `subscriber_count` em metadata, PII-safe. Cobertura: 24 unit tests verdes (3 audit_workspace + 21 chats) + cenário S5 em `rest_v1_chats_sse.rs` (integration, CI). Merged 2026-05-21 via PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) (`a972947`). ✅
+- [x] `POST /v1/messages/{message_id}/attachments` — attach file to message → 201, plan 0182 / GAR-700. ✅
+- [x] `GET /v1/messages/{message_id}/attachments?cursor=...` — list attachments (cursor-paginated) → 200, plan 0182 / GAR-700. ✅
+- [x] `DELETE /v1/messages/{message_id}/attachments/{file_id}` — detach file (idempotent) → 204, plan 0182 / GAR-700. ✅ Done.
+- [x] `GET /v1/chats/{chat_id}/threads?after=<uuid>&limit=<n>&include_resolved=<bool>` — cursor-paginated list of threads in a chat, plan 0225 / GAR-740, 2026-05-29 (Florida).
+- [x] `GET /v1/threads/{thread_id}` — fetch single thread detail (id, chat_id, root_message_id, title, created_by, resolved_at, created_at) — plan 0265 / GAR-798 ✅
+- [x] `POST /v1/threads/{thread_id}/messages` — post a reply into an existing thread — plan 0276 / GAR-811 ✅
+- [x] `GET /v1/threads/{thread_id}/messages` — list replies in a thread directly by thread_id — plan 0279 / GAR-814 ✅
 
 **Arquivos**
 
-- [x] `POST /v1/groups/{group_id}/files` (direct upload, v1 created atomically) — plan 0099 / [GAR-577](https://linear.app/chatgpt25/issue/GAR-577), implementado 2026-05-11 (Florida)
+- [x] `POST /v1/groups/{group_id}/files` (direct upload, v1 created atomically) — plan 0099 / GAR-577, implementado 2026-05-11 (Florida)
 - [ ] `POST /v1/groups/{group_id}/files:initUpload` (presigned URL + multipart)
 - [ ] `POST /v1/groups/{group_id}/files:completeUpload`
 - [x] `GET /v1/groups/{group_id}/files?folder_id=...` + `GET /v1/groups/{group_id}/folders` ✅ PR #235 GAR-555
-- [x] `GET /v1/groups/{group_id}/files/{file_id}` + `GET /v1/groups/{group_id}/folders/{folder_id}` (single resource read) — plan 0090 / [GAR-559](https://linear.app/chatgpt25/issue/GAR-559), implementado 2026-05-09 (Florida) ✅ PR #242 (`4adcb02`)
-- [x] `PATCH /v1/groups/{group_id}/files/{file_id}` (rename) — plan 0089 / [GAR-557](https://linear.app/chatgpt25/issue/GAR-557), implementado 2026-05-09 (Florida) ✅ PR #238 (`9255515`)
-- [x] `GET /v1/files/{file_id}/download` (streaming bytes via ObjectStore) — plan 0093 / [GAR-564](https://linear.app/chatgpt25/issue/GAR-564), implementado 2026-05-10 (Florida) ✅ PR #250 (`b2de161`)
-- [x] `POST /v1/groups/{group_id}/files/{file_id}/versions` (new content version, direct upload) — plan 0094 / [GAR-567](https://linear.app/chatgpt25/issue/GAR-567), implementado 2026-05-10 (Florida)
-- [x] `GET /v1/groups/{group_id}/files/{file_id}/versions` (list content versions, cursor-paginated) — plan 0095 / [GAR-569](https://linear.app/chatgpt25/issue/GAR-569), implementado 2026-05-10 (Florida) ✅ PR #253 (`0cc9a85`)
-- [x] `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}` (fetch single file version by number) — plan 0283 / [GAR-820](https://linear.app/chatgpt25/issue/GAR-820) ✅
+- [x] `GET /v1/groups/{group_id}/files/{file_id}` + `GET /v1/groups/{group_id}/folders/{folder_id}` (single resource read) — plan 0090 / GAR-559, implementado 2026-05-09 (Florida) ✅ PR #242 (`4adcb02`)
+- [x] `PATCH /v1/groups/{group_id}/files/{file_id}` (rename) — plan 0089 / GAR-557, implementado 2026-05-09 (Florida) ✅ PR #238 (`9255515`)
+- [x] `GET /v1/files/{file_id}/download` (streaming bytes via ObjectStore) — plan 0093 / GAR-564, implementado 2026-05-10 (Florida) ✅ PR #250 (`b2de161`)
+- [x] `POST /v1/groups/{group_id}/files/{file_id}/versions` (new content version, direct upload) — plan 0094 / GAR-567, implementado 2026-05-10 (Florida)
+- [x] `GET /v1/groups/{group_id}/files/{file_id}/versions` (list content versions, cursor-paginated) — plan 0095 / GAR-569, implementado 2026-05-10 (Florida) ✅ PR #253 (`0cc9a85`)
+- [x] `GET /v1/groups/{group_id}/files/{file_id}/versions/{version}` (fetch single file version by number) — plan 0283 / GAR-820 ✅
 - [x] `DELETE /v1/files/{file_id}` (soft delete + lixeira) ✅ PR #235 GAR-555
-- [x] Suporte a **tus** (resumable upload) como alternativa — plan 0041-0047 / [GAR-395](https://linear.app/chatgpt25/issue/GAR-395) ✅ PR #62 (`96f5c03`)
+- [x] Suporte a **tus** (resumable upload) como alternativa — plan 0041-0047 / GAR-395 ✅ PR #62 (`96f5c03`)
 
 **Memória**
 
-- [x] `GET /v1/memory?scope_type=group&scope_id=...` — plan 0062 / [GAR-514](https://linear.app/chatgpt25/issue/GAR-514), implementado 2026-05-05 (Florida)
-- [x] `POST /v1/memory` — plan 0062 / [GAR-514](https://linear.app/chatgpt25/issue/GAR-514), implementado 2026-05-05 (Florida)
-- [x] `DELETE /v1/memory/{id}` — plan 0062 / [GAR-514](https://linear.app/chatgpt25/issue/GAR-514), implementado 2026-05-05 (Florida)
-- [x] `POST /v1/memory/{id}/pin` — plan 0072 / [GAR-526](https://linear.app/chatgpt25/issue/GAR-526), implementado 2026-05-06 (Florida)
-- [x] `POST /v1/memory/{id}/unpin` — plan 0072 / [GAR-526](https://linear.app/chatgpt25/issue/GAR-526), implementado 2026-05-06 (Florida)
-- [x] `GET /v1/memory/{id}` — plan 0074 / [GAR-528](https://linear.app/chatgpt25/issue/GAR-528), implementado 2026-05-06 (Florida)
-- [x] `PATCH /v1/memory/{id}` — plan 0074 / [GAR-528](https://linear.app/chatgpt25/issue/GAR-528), implementado 2026-05-06 (Florida)
+- [x] `GET /v1/memory?scope_type=group&scope_id=...` — plan 0062 / GAR-514, implementado 2026-05-05 (Florida)
+- [x] `POST /v1/memory` — plan 0062 / GAR-514, implementado 2026-05-05 (Florida)
+- [x] `DELETE /v1/memory/{id}` — plan 0062 / GAR-514, implementado 2026-05-05 (Florida)
+- [x] `POST /v1/memory/{id}/pin` — plan 0072 / GAR-526, implementado 2026-05-06 (Florida)
+- [x] `POST /v1/memory/{id}/unpin` — plan 0072 / GAR-526, implementado 2026-05-06 (Florida)
+- [x] `GET /v1/memory/{id}` — plan 0074 / GAR-528, implementado 2026-05-06 (Florida)
+- [x] `PATCH /v1/memory/{id}` — plan 0074 / GAR-528, implementado 2026-05-06 (Florida)
 
 **Busca unificada**
 
-- [x] `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory` — plan 0084 / [GAR-549](https://linear.app/chatgpt25/issue/GAR-549), implementado 2026-05-08 (Florida). Slice 1: messages (body_tsv GIN) + memory_items (runtime tsvector). Files deferred.
-- [x] `GET /v1/search?...&scope_type=chat&scope_id=<chat_uuid>` + `scope_type=user&scope_id=<user_uuid>` — plan 0085 / [GAR-551](https://linear.app/chatgpt25/issue/GAR-551), implementado 2026-05-08 (Florida). Slice 2 lifts the slice-1 group-only restriction; user-scope rejects `types=messages` (no user-scoped messages exist).
-- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / [GAR-552](https://linear.app/chatgpt25/issue/GAR-552), implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope).
-- [x] `GET /v1/search?...&has_attachment=true|false` — plan 0179 / [GAR-697](https://linear.app/chatgpt25/issue/GAR-697), implementado 2026-05-25 (Florida). Slice 4: EXISTS-equality filter on `message_attachments` (migration 020); requires `types` to include `messages`; `None` = no filter.
-- [x] `GET /v1/search?...&types=files` — plan 0185 / [GAR-703](https://linear.app/chatgpt25/issue/GAR-703), implementado 2026-05-25 (Florida). Slice 5: `files.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only; result `type: "file"`, `excerpt` = name, `kind` = mime_type.
-- [x] `GET /v1/search?...&types=tasks` — plan 0192 / [GAR-707](https://linear.app/chatgpt25/issue/GAR-707), implementado 2026-05-26 (Florida). Slice 6: `tasks.title || ' ' || coalesce(tasks.description_md, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; deleted tasks excluded; `from_date`/`to_date`/`author_id` filters supported; result `type: "task"`, `excerpt` = title, `kind` = status.
-- [x] `GET /v1/search?...&types=task_comments` — plan 0193 / [GAR-710](https://linear.app/chatgpt25/issue/GAR-710), implementado 2026-05-26 (Florida). Slice 7: `task_comments.body_md` FTS via `to_tsvector('simple', body_md)` (no new migration); JOIN `task_comments → tasks` for `group_id`; group scope only; deleted comments excluded; `from_date`/`to_date`/`author_id` filters supported; result `type: "task_comment"`, `excerpt` = body_md, `sender_user_id` = author_user_id.
-- [x] `GET /v1/search?...&sort_by=relevance|created_at_desc|created_at_asc` — plan 0195 / [GAR-713](https://linear.app/chatgpt25/issue/GAR-713), implementado 2026-05-26 (Florida). Slice 8: optional `sort_by` parameter; `relevance` (default, `score DESC, created_at DESC, id DESC`), `created_at_desc`, `created_at_asc`; no SQL change — applied on Rust merge; no breaking change.
-- [x] `GET /v1/search?...&types=folders` — plan 0199 / [GAR-716](https://linear.app/chatgpt25/issue/GAR-716), implementado 2026-05-26 (Florida). Slice 9: `folders.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only; deleted folders excluded; result `type: "folder"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = null.
-- [x] `GET /v1/search?...&types=chats` — plan 0200 / [GAR-718](https://linear.app/chatgpt25/issue/GAR-718), implementado 2026-05-27 (Florida). Slice 10: `chats.name || ' ' || coalesce(chats.topic, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; archived chats excluded; result `type: "chat"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = type ('channel','dm','thread'), `chat_id` = null.
-- [x] `GET /v1/search?...&types=task_lists` — plan 0208 / [GAR-721](https://linear.app/chatgpt25/issue/GAR-721), implementado 2026-05-27 (Florida). Slice 11: `task_lists.name || ' ' || coalesce(task_lists.description, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; archived lists excluded; result `type: "task_list"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = type ('list'/'board'/'calendar').
-- [x] `GET /v1/search?...&types=threads` — plan 0211 / [GAR-726](https://linear.app/chatgpt25/issue/GAR-726), implementado 2026-05-28 (Florida). Slice 12: `message_threads.title` FTS via `to_tsvector('simple', title)` (no new migration); JOIN through `chats` for group_id (RLS `message_threads_through_chats`); `title IS NOT NULL` guard; group scope only; result `type: "thread"`, `excerpt` = title, `sender_user_id` = `created_by`, `chat_id` = chat_id, `kind` = null.
-- [x] `GET /v1/search?...&types=users` — plan 0214 / [GAR-730](https://linear.app/chatgpt25/issue/GAR-730), implementado 2026-05-28 (Florida). Slice 13: `users.display_name` FTS via `to_tsvector('simple', display_name)` (no new migration); JOIN through `group_members` for group isolation; `status = 'active'` guard; email excluded from FTS (PII safety); group scope only; result `type: "user"`, `excerpt` = display_name, `sender_user_id` = user's own id, `chat_id` = null, `kind` = null.
-- [x] `GET /v1/search?...&types=groups` — plan 0215 / [GAR-733](https://linear.app/chatgpt25/issue/GAR-733), implementado 2026-05-28 (Florida). Slice 14: `groups.name` FTS via `to_tsvector('simple', name)` (no new migration); user scope only (FORCE RLS migration 018 enforces membership via `app.current_user_id` — no explicit SQL filter needed); result `type: "group"`, `excerpt` = name, `group_id` = group's own id, `sender_user_id` = `created_by`, `kind` = type ('family'/'team'/'personal').
-- [x] `GET /v1/search?...&types=labels` — plan 0219 / [GAR-737](https://linear.app/chatgpt25/issue/GAR-737), implementado 2026-05-29 (Florida). Slice 15: `task_labels.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only (FORCE RLS `task_labels_group_isolation` migration 006 + explicit `AND group_id = $2`); result `type: "label"`, `excerpt` = name, `kind` = color (`#RRGGBB`), `sender_user_id` = `created_by` (nullable), `chat_id` = null.
+- [x] `GET /v1/search?q=...&scope_type=group&scope_id=<uuid>&types=messages,memory` — plan 0084 / GAR-549, implementado 2026-05-08 (Florida). Slice 1: messages (body_tsv GIN) + memory_items (runtime tsvector). Files deferred.
+- [x] `GET /v1/search?...&scope_type=chat&scope_id=<chat_uuid>` + `scope_type=user&scope_id=<user_uuid>` — plan 0085 / GAR-551, implementado 2026-05-08 (Florida). Slice 2 lifts the slice-1 group-only restriction; user-scope rejects `types=messages` (no user-scoped messages exist).
+- [x] `GET /v1/search?...&from_date=<iso8601>&to_date=<iso8601>&author_id=<uuid>` — plan 0086 / GAR-552, implementado 2026-05-09 (Florida). Slice 3: date-range filters on `created_at` (messages + memory); `author_id` filters `messages.sender_user_id` (rejected for user scope).
+- [x] `GET /v1/search?...&has_attachment=true|false` — plan 0179 / GAR-697, implementado 2026-05-25 (Florida). Slice 4: EXISTS-equality filter on `message_attachments` (migration 020); requires `types` to include `messages`; `None` = no filter.
+- [x] `GET /v1/search?...&types=files` — plan 0185 / GAR-703, implementado 2026-05-25 (Florida). Slice 5: `files.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only; result `type: "file"`, `excerpt` = name, `kind` = mime_type.
+- [x] `GET /v1/search?...&types=tasks` — plan 0192 / GAR-707, implementado 2026-05-26 (Florida). Slice 6: `tasks.title || ' ' || coalesce(tasks.description_md, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; deleted tasks excluded; `from_date`/`to_date`/`author_id` filters supported; result `type: "task"`, `excerpt` = title, `kind` = status.
+- [x] `GET /v1/search?...&types=task_comments` — plan 0193 / GAR-710, implementado 2026-05-26 (Florida). Slice 7: `task_comments.body_md` FTS via `to_tsvector('simple', body_md)` (no new migration); JOIN `task_comments → tasks` for `group_id`; group scope only; deleted comments excluded; `from_date`/`to_date`/`author_id` filters supported; result `type: "task_comment"`, `excerpt` = body_md, `sender_user_id` = author_user_id.
+- [x] `GET /v1/search?...&sort_by=relevance|created_at_desc|created_at_asc` — plan 0195 / GAR-713, implementado 2026-05-26 (Florida). Slice 8: optional `sort_by` parameter; `relevance` (default, `score DESC, created_at DESC, id DESC`), `created_at_desc`, `created_at_asc`; no SQL change — applied on Rust merge; no breaking change.
+- [x] `GET /v1/search?...&types=folders` — plan 0199 / GAR-716, implementado 2026-05-26 (Florida). Slice 9: `folders.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only; deleted folders excluded; result `type: "folder"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = null.
+- [x] `GET /v1/search?...&types=chats` — plan 0200 / GAR-718, implementado 2026-05-27 (Florida). Slice 10: `chats.name || ' ' || coalesce(chats.topic, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; archived chats excluded; result `type: "chat"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = type ('channel','dm','thread'), `chat_id` = null.
+- [x] `GET /v1/search?...&types=task_lists` — plan 0208 / GAR-721, implementado 2026-05-27 (Florida). Slice 11: `task_lists.name || ' ' || coalesce(task_lists.description, '')` FTS via `to_tsvector('simple', ...)` (no new migration); group scope only; archived lists excluded; result `type: "task_list"`, `excerpt` = name, `sender_user_id` = `created_by`, `kind` = type ('list'/'board'/'calendar').
+- [x] `GET /v1/search?...&types=threads` — plan 0211 / GAR-726, implementado 2026-05-28 (Florida). Slice 12: `message_threads.title` FTS via `to_tsvector('simple', title)` (no new migration); JOIN through `chats` for group_id (RLS `message_threads_through_chats`); `title IS NOT NULL` guard; group scope only; result `type: "thread"`, `excerpt` = title, `sender_user_id` = `created_by`, `chat_id` = chat_id, `kind` = null.
+- [x] `GET /v1/search?...&types=users` — plan 0214 / GAR-730, implementado 2026-05-28 (Florida). Slice 13: `users.display_name` FTS via `to_tsvector('simple', display_name)` (no new migration); JOIN through `group_members` for group isolation; `status = 'active'` guard; email excluded from FTS (PII safety); group scope only; result `type: "user"`, `excerpt` = display_name, `sender_user_id` = user's own id, `chat_id` = null, `kind` = null.
+- [x] `GET /v1/search?...&types=groups` — plan 0215 / GAR-733, implementado 2026-05-28 (Florida). Slice 14: `groups.name` FTS via `to_tsvector('simple', name)` (no new migration); user scope only (FORCE RLS migration 018 enforces membership via `app.current_user_id` — no explicit SQL filter needed); result `type: "group"`, `excerpt` = name, `group_id` = group's own id, `sender_user_id` = `created_by`, `kind` = type ('family'/'team'/'personal').
+- [x] `GET /v1/search?...&types=labels` — plan 0219 / GAR-737, implementado 2026-05-29 (Florida). Slice 15: `task_labels.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only (FORCE RLS `task_labels_group_isolation` migration 006 + explicit `AND group_id = $2`); result `type: "label"`, `excerpt` = name, `kind` = color (`#RRGGBB`), `sender_user_id` = `created_by` (nullable), `chat_id` = null.
 
 **Auditoria**
 
-- [x] `GET /v1/groups/{group_id}/audit?cursor=...` — plan 0070 / [GAR-522](https://linear.app/chatgpt25/issue/GAR-522), implementado 2026-05-05 (Florida)
+- [x] `GET /v1/groups/{group_id}/audit?cursor=...` — plan 0070 / GAR-522, implementado 2026-05-05 (Florida)
 
 **Erros:** todos os erros seguem **RFC 9457 Problem Details**.
 
@@ -736,7 +736,7 @@ Novo crate: `garraia-storage`.
 
 - [x] Canais por grupo + DMs intra-grupo.
 - [x] Threads (entidade dedicada, não só `parent_id`) — plan 0227 / GAR-745 — `PATCH /v1/threads/{id}` + `PATCH /v1/chats/{id}/members/{uid}` mergeados via branch `routine/202605291819-chats-slice7-thread-member-patch`.
-- [x] `GET /v1/chats/{chat_id}/members/{user_id}` (fetch single chat member) — plan 0325 / [GAR-864](https://linear.app/chatgpt25/issue/GAR-864) ✅
+- [x] `GET /v1/chats/{chat_id}/members/{user_id}` (fetch single chat member) — plan 0325 / GAR-864 ✅
 - [x] Reações — `POST/DELETE/GET /v1/messages/{id}/reactions` — plan 0231 / GAR-747.
 - [x] Typing indicator — `POST /v1/chats/{chat_id}/typing` (ephemeral SSE broadcast, no DB write) — plan 0233 / GAR-752.
 - [x] Menções (`@user`, `@channel`) — migration 022 `message_mentions` + `mentions: Vec<Uuid>` em `POST /v1/chats/{id}/messages` + `GET /v1/me/mentions` (cursor-paginated inbox) — plan 0237 / GAR-755.
@@ -792,7 +792,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 - [x] `POST /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
 - [x] `GET /v1/groups/{group_id}/task-lists` — plan 0066 / GAR-516 ✅
-- [x] `GET /v1/groups/{group_id}/task-lists/{list_id}` — plan 0110 / [GAR-599](https://linear.app/chatgpt25/issue/GAR-599) ✅
+- [x] `GET /v1/groups/{group_id}/task-lists/{list_id}` — plan 0110 / GAR-599 ✅
 - [x] `PATCH /v1/groups/{group_id}/task-lists/{list_id}` — plan 0066 / GAR-516 ✅
 - [x] `DELETE /v1/groups/{group_id}/task-lists/{list_id}` (archive, idempotente) — plan 0066 / GAR-516 ✅
 - [x] `POST /v1/groups/{group_id}/task-lists/{list_id}/tasks` — plan 0066 / GAR-516 ✅
@@ -802,30 +802,30 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}` (soft delete) — plan 0068 / GAR-518 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/comments` — plan 0069 / GAR-520 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments?cursor=...` — plan 0069 / GAR-520 ✅
-- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch single comment (no existence leak for deleted/cross-tenant) — plan 0269 / [GAR-806](https://linear.app/chatgpt25/issue/GAR-806) ✅
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — fetch single comment (no existence leak for deleted/cross-tenant) — plan 0269 / GAR-806 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` — plan 0069 / GAR-520 ✅
-- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` (edit body, sender-only) — plan 0264 / [GAR-795](https://linear.app/chatgpt25/issue/GAR-795) ✅
+- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}` (edit body, sender-only) — plan 0264 / GAR-795 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/assignees` — plan 0077 / GAR-533 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/assignees` — plan 0077 / GAR-533 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/assignees/{user_id}` — plan 0077 / GAR-533 ✅
 - [x] `POST /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
 - [x] `GET /v1/groups/{group_id}/task-labels` — plan 0078 / GAR-536 ✅
-- [x] `GET /v1/groups/{group_id}/task-labels/{label_id}` — fetch single label — plan 0267 / [GAR-802](https://linear.app/chatgpt25/issue/GAR-802) ✅
+- [x] `GET /v1/groups/{group_id}/task-labels/{label_id}` — fetch single label — plan 0267 / GAR-802 ✅
 - [x] `DELETE /v1/groups/{group_id}/task-labels/{label_id}` — plan 0078 / GAR-536 ✅
 - [x] `PATCH /v1/groups/{group_id}/task-labels/{label_id}` — plan 0266 / GAR-800 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/labels` — plan 0078 / GAR-536 ✅
-- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/labels` — list labels assigned to a task — plan 0271 / [GAR-808](https://linear.app/chatgpt25/issue/GAR-808) ✅
+- [x] `GET /v1/groups/{group_id}/tasks/{task_id}/labels` — list labels assigned to a task — plan 0271 / GAR-808 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}` — plan 0078 / GAR-536 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/subscriptions` — plan 0079 / GAR-539 ✅
-- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/subscriptions` (update muted flag) — plan 0288 / [GAR-827](https://linear.app/chatgpt25/issue/GAR-827) ✅
+- [x] `PATCH /v1/groups/{group_id}/tasks/{task_id}/subscriptions` (update muted flag) — plan 0288 / GAR-827 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/activity?cursor=...` — plan 0080 / GAR-541 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/attachments` — plan 0096 / GAR-572 ✅
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/attachments` — plan 0096 / GAR-572 ✅
 - [x] `DELETE /v1/groups/{group_id}/tasks/{task_id}/attachments/{file_id}` — plan 0096 / GAR-572 ✅
 - [x] `POST /v1/groups/{group_id}/tasks/{task_id}/move` — plan 0082 / GAR-544 ✅ (path scheme amendado de `:move` para `/move` por limitação Axum 0.8 / matchit; reordenar dentro da lista deferido — coluna `position` ainda não existe)
-- [x] `parent_task_id` em `CreateTaskRequest` — plan 0083 / [GAR-546](https://linear.app/chatgpt25/issue/GAR-546), implementado 2026-05-08 (Florida). Depth limit = 1 (grandchild → 400).
+- [x] `parent_task_id` em `CreateTaskRequest` — plan 0083 / GAR-546, implementado 2026-05-08 (Florida). Depth limit = 1 (grandchild → 400).
 - [x] `GET /v1/groups/{group_id}/tasks/{task_id}/subtasks?cursor=&limit=&status=` — plan 0083 / GAR-546, implementado 2026-05-08 (Florida)
 - [ ] WebSocket `/v1/groups/{group_id}/task-lists/{list_id}/stream` para updates em tempo real (kanban colaborativo)
 
@@ -934,7 +934,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - Tier 2: 4 / 6 / 10 semanas
 - Tier 3: 6 / 10 / 16 semanas (pós-GA)
 
-**Épicos Linear sugeridos:** `GAR-WS-TASKS` (Tier 1), `GAR-WS-DOCS` (Tier 2), `GAR-WS-DB` (Tier 3).
+**Épicos sugeridos:** `GAR-WS-TASKS` (Tier 1), `GAR-WS-DOCS` (Tier 2), `GAR-WS-DB` (Tier 3).
 
 ### 3.9 Busca unificada
 
@@ -947,7 +947,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - Query "contrato setembro" retorna mensagem + PDF + memória relevantes — todos filtrados por RBAC.
 
 **Estimativa fase 3:** 12 / 16 / 22 semanas.
-**Épicos Linear sugeridos:** `GAR-WS-SCHEMA`, `GAR-WS-AUTHZ`, `GAR-WS-API`, `GAR-WS-STORAGE`, `GAR-WS-CHAT`, `GAR-WS-MEMORY`, `GAR-WS-TASKS`, `GAR-WS-DOCS`, `GAR-WS-DB`, `GAR-WS-SEARCH`.
+**Épicos sugeridos:** `GAR-WS-SCHEMA`, `GAR-WS-AUTHZ`, `GAR-WS-API`, `GAR-WS-STORAGE`, `GAR-WS-CHAT`, `GAR-WS-MEMORY`, `GAR-WS-TASKS`, `GAR-WS-DOCS`, `GAR-WS-DB`, `GAR-WS-SEARCH`.
 
 ---
 
@@ -995,7 +995,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] Autocomplete para bash/zsh/fish/pwsh.
 
 **Estimativa fase 4:** 8 / 10 / 14 semanas.
-**Épicos Linear sugeridos:** `GAR-DESK-AAA`, `GAR-MOB-BUILD`, `GAR-MOB-WS`, `GAR-CLI-CHAT`.
+**Épicos sugeridos:** `GAR-DESK-AAA`, `GAR-MOB-BUILD`, `GAR-MOB-WS`, `GAR-CLI-CHAT`.
 
 ---
 
@@ -1003,7 +1003,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 5.1 Security & Vaults
 
-- [ ] **CredentialVault final ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410))**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`. Fecha [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (criptografia de tokens MCP, ✅ Done 2026-03-04) ampliando para todos os secrets do gateway.
+- [ ] **CredentialVault final (GAR-410)**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`. Fecha GAR-291 (criptografia de tokens MCP, ✅ Done 2026-03-04) ampliando para todos os secrets do gateway.
 - [ ] **TLS 1.3 obrigatório** em todas as superfícies públicas via `rustls`.
 - [ ] **Argon2id** para senhas de usuários (mobile_users → users).
 - [ ] **Rate limiting** por IP + por user_id via `tower-governor`.
@@ -1016,10 +1016,10 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 ### 5.2 Testes & Continuous Fuzzing
 
 - [ ] Cobertura ≥ 70% em `garraia-agents`, `garraia-db`, `garraia-security`, `garraia-auth`, `garraia-workspace`.
-- [ ] **Integration tests** com testcontainers (Postgres, MinIO) em CI.
+- [ ] **Integration tests** com testcontainers (Postgres, MinIO) em CI. *(Parcial 2026-08-18: job `auth-integration` roda os 16 binários de integração do garraia-auth — matriz RLS incluída — contra pgvector/pg16 em todo PR; MinIO segue gated por feature.)*
 - [ ] **Property tests** (`proptest`) em parsers, scopes, RBAC.
 - [ ] **Fuzzing contínuo** via `cargo-fuzz` nos parsers de MCP, config e protocolos de canais.
-- [ ] **Mutation testing** (`cargo-mutants`) mensal.
+- [ ] **Mutation testing** (`cargo-mutants`) mensal. *(Piloto semanal em garraia-auth existe desde 2026-04; baseline destravado em 2026-08-18 — o seed quebrado que o mantinha vermelho foi corrigido no plan 0354.)*
 - [ ] **Load testing**: `k6` ou `vegeta` com cenários de 1k concurrent users.
 - [ ] **Chaos testing**: matar DB/storage e validar degradação graciosa.
 
@@ -1028,7 +1028,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **DPIA** (Data Protection Impact Assessment) em `docs/compliance/dpia.md`.
 - [ ] **Privacy policy** + **Terms of Service** em PT-BR e EN.
 - [ ] **Records of Processing Activities (RoPA)** documentados.
-- [ ] **Data subject rights**: endpoints de export e delete (art. 18 LGPD / art. 15/17 GDPR).
+- [ ] **Data subject rights**: endpoints de export e delete (art. 18 LGPD / art. 15/17 GDPR). *(Export entregue — GAR-885/plan 0344; anonymize entregue e CORRIGIDO em 2026-08-18 — plan 0354, retornava 500 desde junho; delete de conta pendente.)*
 - [ ] **Retention policies** configuráveis por grupo.
 - [ ] **Incident response runbook**: fluxo de notificação ANPD (comunicado de incidente) e autoridades UE em ≤ 72h quando aplicável.
 - [ ] **Data minimization**: revisão de todos os logs para garantir que não vaze PII.
@@ -1056,7 +1056,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
       Plans: 0116a/0116b/0117-0123. PRs: #330, #331, #332, #333, #334, #335, #337, #338, #339, #340, #341.
 
 **Estimativa fase 5:** 6 / 8 / 12 semanas (paralelo).
-**Épicos Linear sugeridos:** `GAR-SEC-HARDEN`, `GAR-TEST-COV`, `GAR-COMPLIANCE`, `GAR-UX-FTUE`.
+**Épicos sugeridos:** `GAR-SEC-HARDEN`, `GAR-TEST-COV`, `GAR-COMPLIANCE`, `GAR-UX-FTUE`.
 
 ---
 
@@ -1069,7 +1069,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **docker-compose** para dev local com Postgres, MinIO, Ollama, OTel collector.
 - [ ] **Terraform modules** (`infra/terraform/`) para AWS/GCP/Hetzner (opcional).
 
-#### 6.1.1 Runpod Load Balancer Serverless compatibility ([GAR-603](https://linear.app/chatgpt25/issue/GAR-603))
+#### 6.1.1 Runpod Load Balancer Serverless compatibility (GAR-603)
 
 > **Goal:** make GarraRUST/GarraIA deployable as a Runpod **Load Balancer Serverless** HTTP worker (not the queue-based serverless model — the container must run a real HTTP server, and Runpod routes traffic only to workers whose `GET /ping` on `PORT_HEALTH` returns 200).
 >
@@ -1178,29 +1178,35 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Ba
 
 ---
 
-## 4. Mapeamento Linear (GAR)
+## 4. Mapeamento de issues (histórico Linear, GAR)
 
-**Como ler:** cada item marcado `[ ]` nas fases acima vira 1 issue Linear. Épicos agrupam por entregável do roadmap.
+> **2026-08-18:** o workspace pago do Linear foi descontinuado. O planejamento
+> interno migrou para o tracker interno; os IDs `GAR-xxx` abaixo e ao longo
+> deste roadmap permanecem como **registro histórico** de entregas (imutáveis),
+> e novos itens nascem no tracker interno. Este documento segue sendo a visão
+> pública fase a fase.
 
-### Projects ativos no Linear
+**Como ler:** cada item marcado `[ ]` nas fases acima virava 1 issue (era assim no Linear; hoje, tracker interno). Épicos agrupam por entregável do roadmap.
 
-Os 7 projects abaixo estão criados no time **GarraIA-RUST** (`GAR`) e são fonte de verdade da execução semana a semana.
+### Projects por fase (histórico)
+
+Os 7 projects abaixo existiram no time **GarraIA-RUST** (`GAR`) enquanto o Linear era a fonte de verdade da execução semana a semana (até 2026-08-18).
 
 | Fase | Project |
 |---|---|
-| 1 — Core & Inferência | [linear.app/.../fase-1-core-and-inferencia](https://linear.app/chatgpt25/project/fase-1-core-and-inferencia-dc084beb8656) |
-| 2 — Performance, RAG & MCP | [link](https://linear.app/chatgpt25/project/fase-2-performance-rag-and-mcp-75d77421bfd6) |
-| 3 — Group Workspace | [link](https://linear.app/chatgpt25/project/fase-3-group-workspace-850d2a440e35) |
-| 4 — UX Multi-Plataforma AAA | [link](https://linear.app/chatgpt25/project/fase-4-ux-multi-plataforma-aaa-b4f6bbe546c1) |
-| 5 — Qualidade, Segurança & Compliance | [link](https://linear.app/chatgpt25/project/fase-5-qualidade-seguranca-and-compliance-f174cd2c73c0) |
-| 6 — Lançamento & SRE | [link](https://linear.app/chatgpt25/project/fase-6-lancamento-and-sre-35277d8571eb) |
-| 7 — Pós-GA & Evolução | [link](https://linear.app/chatgpt25/project/fase-7-pos-ga-and-evolucao-14dc29a5f581) |
+| 1 — Core & Inferência | fase-1-core-and-inferencia |
+| 2 — Performance, RAG & MCP | fase-2-performance-rag-and-mcp |
+| 3 — Group Workspace | fase-3-group-workspace |
+| 4 — UX Multi-Plataforma AAA | fase-4-ux-multi-plataforma-aaa |
+| 5 — Qualidade, Segurança & Compliance | fase-5-qualidade-seguranca-and-compliance |
+| 6 — Lançamento & SRE | fase-6-lancamento-and-sre |
+| 7 — Pós-GA & Evolução | fase-7-pos-ga-and-evolucao |
 
 ### Bootstrap inicial de issues (2026-04-13)
 
 Foram materializadas ~40 issues críticas (`GAR-371` a `GAR-410`) cobrindo: 8 ADRs, Config reativo, CredentialVault final, schema Postgres (migrations 001-007), RLS, `garraia-auth`, suite authz, API /v1/groups, `garraia-storage` + tus, Tasks API, threat model STRIDE, DPIA, export/delete LGPD, testcontainers, fuzz, fix Android build, first-run wizard, docker-compose dev. O restante dos `[ ]` deste roadmap vira issue sob demanda, conforme cada fase esquenta.
 
-### Épicos (labels Linear)
+### Épicos (labels — histórico Linear)
 
 
 
@@ -1233,7 +1239,7 @@ Foram materializadas ~40 issues críticas (`GAR-371` a `GAR-410`) cobrindo: 8 AD
 | `GAR-INFRA-GA` | 6.1 | Helm + Terraform + Docker |
 | `GAR-OBS-GA` | 6.2 | SLOs + runbooks + DR |
 | `GAR-RELEASE-GA` | 6.3 | Beta → GA + docs |
-| [`GAR-641`](https://linear.app/chatgpt25/issue/GAR-641) | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) — **✅ 10/10 Done 2026-05-20** |
+| `GAR-641` | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) — **✅ 10/10 Done 2026-05-20** |
 
 ---
 
@@ -1306,47 +1312,47 @@ gantt
 
 Quando retomar execução, priorizar **nesta ordem**:
 
-1. ~~**Garra Learning Agent — Architecture ([GAR-642](https://linear.app/chatgpt25/issue/GAR-642))**~~ ✅ **Done** (2026-05-18, plan 0144, ADR 0010 Accepted, safety.rs funcional).
+1. ~~**Garra Learning Agent — Architecture (GAR-642)**~~ ✅ **Done** (2026-05-18, plan 0144, ADR 0010 Accepted, safety.rs funcional).
 
-1. ~~**Garra Learning Agent — Skill Miner ([GAR-643](https://linear.app/chatgpt25/issue/GAR-643), 2/10)**~~ ✅ **Done** (2026-05-18, plan 0146, PR #400 `3bb473a`).
+1. ~~**Garra Learning Agent — Skill Miner (GAR-643, 2/10)**~~ ✅ **Done** (2026-05-18, plan 0146, PR #400 `3bb473a`).
 
-1. ~~**Garra Learning Agent — Skill Generator ([GAR-644](https://linear.app/chatgpt25/issue/GAR-644), 3/10)**~~ ✅ **Done** (2026-05-18, plan 0147, PR #402 `da65c63`). `SkillDraftProvider` trait + `generate()` + 21 unit tests.
+1. ~~**Garra Learning Agent — Skill Generator (GAR-644, 3/10)**~~ ✅ **Done** (2026-05-18, plan 0147, PR #402 `da65c63`). `SkillDraftProvider` trait + `generate()` + 21 unit tests.
 
-1. ~~**Garra Learning Agent — Skill Registry ([GAR-645](https://linear.app/chatgpt25/issue/GAR-645), 4/10)**~~ ✅ **Done** (2026-05-18, plan 0148, PR #404 `b67d030`). `RegistryOptions` + lock-file + `list_skills/get_skill/promote/deprecate/list_candidates` + 18 unit tests.
+1. ~~**Garra Learning Agent — Skill Registry (GAR-645, 4/10)**~~ ✅ **Done** (2026-05-18, plan 0148, PR #404 `b67d030`). `RegistryOptions` + lock-file + `list_skills/get_skill/promote/deprecate/list_candidates` + 18 unit tests.
 
-1. ~~**Garra Learning Agent — Skill Evaluator ([GAR-647](https://linear.app/chatgpt25/issue/GAR-647), 5/10)**~~ ✅ **Done** (2026-05-18, plan 0149, PR #406 `a79321b`). `EvalSignals` + `EmaConfig` + `evaluate()` + anti-flap deprecation + 17 unit tests.
+1. ~~**Garra Learning Agent — Skill Evaluator (GAR-647, 5/10)**~~ ✅ **Done** (2026-05-18, plan 0149, PR #406 `a79321b`). `EvalSignals` + `EmaConfig` + `evaluate()` + anti-flap deprecation + 17 unit tests.
 
-1. ~~**Garra Learning Agent — Skill Auto-Updater ([GAR-648](https://linear.app/chatgpt25/issue/GAR-648), 7/10)**~~ ✅ **Done** (2026-05-18, plan 0150, PR #409 `0000c883`). `ShellRunner` trait + `propose_update_with_runner` + `auto_merge_guard()` + idempotência + 24 unit tests. _(GAR-646 Skill Retriever bloqueado por Fase 2.1 embeddings — skip para depois.)_
+1. ~~**Garra Learning Agent — Skill Auto-Updater (GAR-648, 7/10)**~~ ✅ **Done** (2026-05-18, plan 0150, PR #409 `0000c883`). `ShellRunner` trait + `propose_update_with_runner` + `auto_merge_guard()` + idempotência + 24 unit tests. _(GAR-646 Skill Retriever bloqueado por Fase 2.1 embeddings — skip para depois.)_
 
-1. ~~**Garra Learning Agent — Skill Safety Gates ([GAR-649](https://linear.app/chatgpt25/issue/GAR-649), 8/10)**~~ ✅ **Done** (2026-05-18). `SafetyIntent` + `gate_with_intent` (hard wall, ADR 0010 §"no dev-mode bypass") wirado em `registry::promote_with_intent` e `updater::propose_update_with_runner` ANTES de qualquer side-effect git/gh; denylist amplia para `DELETE..WHERE 1=1` / `chmod -R 777` / `sudo` / `.github/codeql-config.yml`; label `security-audit-passed` waiver ÚNICA para `CriticalPath` (não waive dangerous-command/score/PII/anti-flap); 132 unit tests verdes (11 novos cobrindo waiver semantics + call-sites).
+1. ~~**Garra Learning Agent — Skill Safety Gates (GAR-649, 8/10)**~~ ✅ **Done** (2026-05-18). `SafetyIntent` + `gate_with_intent` (hard wall, ADR 0010 §"no dev-mode bypass") wirado em `registry::promote_with_intent` e `updater::propose_update_with_runner` ANTES de qualquer side-effect git/gh; denylist amplia para `DELETE..WHERE 1=1` / `chmod -R 777` / `sudo` / `.github/codeql-config.yml`; label `security-audit-passed` waiver ÚNICA para `CriticalPath` (não waive dangerous-command/score/PII/anti-flap); 132 unit tests verdes (11 novos cobrindo waiver semantics + call-sites).
 
-2. ~~**Fase 1.2.1 GarraMaxPower — [GAR-494](https://linear.app/chatgpt25/issue/GAR-494) `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). Histórico: GAR-495..GAR-501, GAR-498 e GAR-499 foram fechados em slices posteriores; GAR-493/ADR 0011 fechou a decisão arquitetural.
+2. ~~**Fase 1.2.1 GarraMaxPower — GAR-494 `garra max-power` skeleton**~~ ✅ **Done** (2026-05-19). Subcomando `garra max-power` esqueleto + roteamento + banner implementado via PR #431 (`8a9a915`). Histórico: GAR-495..GAR-501, GAR-498 e GAR-499 foram fechados em slices posteriores; GAR-493/ADR 0011 fechou a decisão arquitetural.
 
-3. ~~**Fase 1.2.1 GarraMaxPower — [GAR-497](https://linear.app/chatgpt25/issue/GAR-497) Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
+3. ~~**Fase 1.2.1 GarraMaxPower — GAR-497 Bash Safety Gates**~~ ✅ **Done** (2026-05-19). `safety_gate(cmd)` central denylist em `garraia-common` + integração com `bash_tool`. Denylist: `rm -rf /`, `rm -rf ~`, fork bombs, `dd if=… of=/dev/sd*`, `mkfs.*`, `git push --force` em `main`/`release/*`, escrita em `.env`/`*credentials*`, `curl … | bash`. 17 unit tests table-driven; mensagem de erro constant-time (sem vazar comando). Plan: `plans/0154-gar-497-bash-safety-gate.md`. Merged via PR #437 (`f2ab1d9`).
 
-4. ~~**Fase 1.2.1 GarraMaxPower — [GAR-501](https://linear.app/chatgpt25/issue/GAR-501) `garra verify`**~~ ✅ **Done** (2026-05-19). Pipeline local idempotente com 5 steps: `cargo fmt --check`, `cargo clippy`, `cargo test`, `flutter analyze` (skip se ausente), `gitleaks detect` (skip se ausente). Saída `--json` com schema estável em `docs/maxpower/verify-schema.json`. Exit codes: 0 ok / 2 step-failed. 9 unit tests. Plan: `plans/0155-gar-501-garra-verify.md`. Merged via PR #441 (`ca9f1fa2`).
+4. ~~**Fase 1.2.1 GarraMaxPower — GAR-501 `garra verify`**~~ ✅ **Done** (2026-05-19). Pipeline local idempotente com 5 steps: `cargo fmt --check`, `cargo clippy`, `cargo test`, `flutter analyze` (skip se ausente), `gitleaks detect` (skip se ausente). Saída `--json` com schema estável em `docs/maxpower/verify-schema.json`. Exit codes: 0 ok / 2 step-failed. 9 unit tests. Plan: `plans/0155-gar-501-garra-verify.md`. Merged via PR #441 (`ca9f1fa2`).
 
-5. ~~**Garra Learning Agent — Web UI ([GAR-651](https://linear.app/chatgpt25/issue/GAR-651), 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **[GAR-641](https://linear.app/chatgpt25/issue/GAR-641) completo** (10/10).
+5. ~~**Garra Learning Agent — Web UI (GAR-651, 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **GAR-641 completo** (10/10).
 
-5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-500](https://linear.app/chatgpt25/issue/GAR-500) Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-500 Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
 
-5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-495](https://linear.app/chatgpt25/issue/GAR-495) Capability prompt nativo**~~ ✅ **Done** (2026-05-21). Provider-agnostic runtime capability snapshot para `garra max-power`. `build_snapshot(config)` + `render_prompt` + `render_summary`. 7 unit tests. Plan: `plans/0160-gar-495-capability-prompt.md`. Merged via PR #453 (`e5a2a08`). Sub-issue 2/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-495 Capability prompt nativo**~~ ✅ **Done** (2026-05-21). Provider-agnostic runtime capability snapshot para `garra max-power`. `build_snapshot(config)` + `render_prompt` + `render_summary`. 7 unit tests. Plan: `plans/0160-gar-495-capability-prompt.md`. Merged via PR #453 (`e5a2a08`). Sub-issue 2/N de GAR-492.
 
-5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-496](https://linear.app/chatgpt25/issue/GAR-496) Repo workflow seguro**~~ ✅ **Done** (2026-05-21). `GitRunner` trait + `ProcessRunner` + `RepoWorkflow<R>`: `current_branch`, `is_clean`, `create_branch`, `push_branch`, `open_pr`. `is_protected_branch` guards main/master/release/*. `preflight_summary()` wired into `garra max-power --goal`. `MockRunner` + 12 unit tests. Plan: `plans/0161-gar-496-repo-workflow.md`. Merged via PR #455 (`1b7f04c`). Sub-issue 3/N de [GAR-492](https://linear.app/chatgpt25/issue/GAR-492).
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-496 Repo workflow seguro**~~ ✅ **Done** (2026-05-21). `GitRunner` trait + `ProcessRunner` + `RepoWorkflow<R>`: `current_branch`, `is_clean`, `create_branch`, `push_branch`, `open_pr`. `is_protected_branch` guards main/master/release/*. `preflight_summary()` wired into `garra max-power --goal`. `MockRunner` + 12 unit tests. Plan: `plans/0161-gar-496-repo-workflow.md`. Merged via PR #455 (`1b7f04c`). Sub-issue 3/N de GAR-492.
 
-5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-498](https://linear.app/chatgpt25/issue/GAR-498) Skills MVP**~~ ✅ **Done** (2026-05-23, plan 0171, PR #488 `c65e099`). `NativeSkillRegistry` em `garraia-skills` com built-ins `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify`; comandos produzidos passam por `garraia_common::safety_gate`.
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-498 Skills MVP**~~ ✅ **Done** (2026-05-23, plan 0171, PR #488 `c65e099`). `NativeSkillRegistry` em `garraia-skills` com built-ins `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify`; comandos produzidos passam por `garraia_common::safety_gate`.
 
-5. ~~**Fase 1.2.1 GarraMaxPower — [GAR-499](https://linear.app/chatgpt25/issue/GAR-499) Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0173, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-499 Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0173, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
 
-5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 ([GAR-492](https://linear.app/chatgpt25/issue/GAR-492))** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`. Registrar follow-ups concretos em `TODO.md` até virarem issues Linear.
+5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 (GAR-492)** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`. Registrar follow-ups concretos em `TODO.md` até virarem issues Linear.
 
 5. ~~**Trilha T1 — criar `TODO.md` operacional**~~ ✅ **Done** (2026-05-24). O arquivo agora resume concluídos, parciais, adiados, decisões e próximos passos recomendados para a próxima sessão autônoma.
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
 
-7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: [GAR-374](https://linear.app/chatgpt25/issue/GAR-374).
+7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: GAR-374.
 
-8. **Fase 5.1 — CredentialVault final** ([GAR-410](https://linear.app/chatgpt25/issue/GAR-410), Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela [GAR-291](https://linear.app/chatgpt25/issue/GAR-291) (MCP tokens, ✅ Done).
+8. **Fase 5.1 — CredentialVault final** (GAR-410, Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela GAR-291 (MCP tokens, ✅ Done).
 
 Trilhas paralelas disponíveis para um segundo dev/agente:
 - **Fase 1.3 — Config reativo** (ainda não materializado).

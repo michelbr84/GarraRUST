@@ -1,19 +1,27 @@
 # `garra-routine` — autonomous next-slice routine
 
-> Read `ROADMAP.md` + Linear, pick the next step, plan it, implement it via PR + CI,
-> merge to main when green, update tracking. Designed to fire every 2 hours at
-> xH:15 (Florida local) — but can also be triggered manually or on-demand.
+> Read `ROADMAP.md` + the internal tracker, pick the next step, plan it,
+> implement it via PR + CI, merge to main when green, update tracking.
+> Designed to fire every 2 hours at xH:15 (Florida local) — but can also be
+> triggered manually or on-demand.
+
+> **Status 2026-08-18:** o workflow `garra-routine-trigger.yml` (Opção 3 —
+> tracking issues) foi **desativado** via `gh workflow disable` para manter o
+> repo público com zero issues abertas; reative com `gh workflow enable` se o
+> sinal por issue voltar a fazer sentido. O **Linear foi descontinuado** —
+> onde este doc diz "Linear", leia "tracker interno". As execuções agendadas
+> da rotina (Opções 1/2) são independentes do trigger e continuam válidas.
 
 ## Why this exists
 
 The owner asked for a recurring routine that:
 
-1. Reads `ROADMAP.md` and Linear (https://linear.app/chatgpt25/team/GAR/projects/all).
+1. Reads `ROADMAP.md` and the internal tracker (originalmente o Linear, descontinuado em 2026-08-18).
 2. Picks the best next step.
 3. Creates a plan.
 4. Implements via GitHub Actions (PR + CI green) — never directly on `main`.
 5. Verifies CI is green and merges to `main`.
-6. Updates `ROADMAP.md` and Linear.
+6. Updates `ROADMAP.md` and the internal tracker.
 7. Sleeps until the next xH:15 (every 2 hours).
 
 The orchestration logic lives entirely in the slash command
@@ -66,8 +74,8 @@ server is on UTC and you want Florida local time, either:
 - The `claude` CLI must be on `$PATH` (https://docs.claude.com/claude-code).
 - The user running cron must have:
   - `gh auth status` valid (the routine uses MCP-backed GitHub tools).
-  - Linear MCP credentials configured for the same Claude install.
-  - Network access to github.com, linear.app, anthropic.com.
+  - Credentials do tracker interno configuradas para a mesma instalação do Claude (era Linear MCP até 2026-08-18).
+  - Network access to github.com and anthropic.com.
 - The repo must be already cloned at the path the wrapper points at.
 - The working tree must be clean — the wrapper exits with code 65 (sysexits
   `EX_DATAERR`) otherwise. This is intentional: a routine triggered while
@@ -81,9 +89,11 @@ canonical "every 2h at xH:15" path.
 
 The workflow
 [`.github/workflows/garra-routine-trigger.yml`](../../.github/workflows/garra-routine-trigger.yml)
-runs every 2 hours at HH:15 **UTC** and opens a tracking issue. It does NOT
-actually run the routine — it only files a reminder that someone (or some
-other automation) can act on.
+ran every 2 hours at HH:15 **UTC** and opened a tracking issue. It did NOT
+actually run the routine — it only filed a reminder that someone (or some
+other automation) could act on. **Desativado em 2026-08-18** (`gh workflow
+disable`) para manter zero issues abertas no repo público; reversível com
+`gh workflow enable garra-routine-trigger.yml`.
 
 The issue body links back to `.claude/commands/garra-routine.md` so the
 person who picks it up has the full procedure inline.
@@ -129,8 +139,8 @@ Concrete shovel-ready candidates as of 2026-05-04 (after PR #122 merged):
   `app.current_group_id` for FORCE-RLS tables).
 - Never amend or force-push merged commits.
 - Never run `rm -rf` or destructive git ops outside the working tree.
-- Never spam Linear with duplicate issues — search first; update if a
-  candidate matches.
+- Never spam o tracker interno with duplicate issues — search first; update
+  if a candidate matches.
 
 If the routine cannot pick a productive next step (everything Done or
 blocked), it files a single status note on the team's tracker and exits
@@ -156,7 +166,7 @@ The wrapper script handles both automatically.
 - [`scripts/run-garra-routine.sh`](../../scripts/run-garra-routine.sh) — the
   cron wrapper.
 - [`.github/workflows/garra-routine-trigger.yml`](../../.github/workflows/garra-routine-trigger.yml)
-  — the GitHub Actions reminder cron.
+  — the GitHub Actions reminder cron (desativado em 2026-08-18).
 - [`ROADMAP.md`](../../ROADMAP.md) §7 — priority order the routine reads.
 - [`CLAUDE.md`](../../CLAUDE.md) — convention rules the routine inherits.
 - [`plans/0054-gar-ws-chat-slice1-chats-crud.md`](../../plans/0054-gar-ws-chat-slice1-chats-crud.md)
