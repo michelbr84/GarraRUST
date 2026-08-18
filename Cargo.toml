@@ -72,7 +72,7 @@ serial_test = "3"
 
 # Crypto / Security
 ring = "0.17"
-base64 = "0.22"
+base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
 # Plan personal-api-key-revogada-vectorized-matsumoto §Step 3 / Decisões §2:
