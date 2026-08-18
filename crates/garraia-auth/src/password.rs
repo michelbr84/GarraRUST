@@ -98,6 +98,19 @@ pub async fn change_password(
     Ok(PasswordChangeOutcome::Success)
 }
 
+/// Token de anonimização determinístico para `user_id` — a ÚNICA fonte da
+/// fórmula (security review plan 0354 LOW-3: `users.email`,
+/// `user_identities.provider_sub` e `group_invites.invited_email` precisam
+/// receber o MESMO token; duplicar o format em cada sítio dessincroniza
+/// silencioso).
+///
+/// UUID completo (32 hex): sob UUIDv7 um prefixo de 8 hex é compartilhado por
+/// usuários criados na mesma janela de ~65 s, e os UNIQUEs de `users.email` e
+/// `(provider, provider_sub)` transformariam a colisão em erro.
+pub fn anon_token(user_id: Uuid) -> String {
+    format!("anon-{}@garraanon.local", user_id.simple())
+}
+
 /// Anonymise the internal `user_identities` row for `user_id`.
 ///
 /// Replaces `provider_sub` — which for `provider = 'internal'` carries the
@@ -129,7 +142,7 @@ pub async fn change_password(
 /// Returns the number of rows updated — 0 when the user has no internal
 /// identity (e.g. a future external-IdP-only account), which is not an error.
 pub async fn anonymize_identity(login_pool: &LoginPool, user_id: Uuid) -> Result<u64, AuthError> {
-    let anon_sub = format!("anon-{}@garraanon.local", user_id.simple());
+    let anon_sub = anon_token(user_id);
     let pool = login_pool.pool();
     let result = sqlx::query(
         "UPDATE user_identities \
