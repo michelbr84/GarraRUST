@@ -10,6 +10,15 @@ updates:
       day: "monday"
     open-pull-requests-limit: 10
     groups:
+      # wasmtime e wasmtime-wasi precisam da MESMA versão major para
+      # compilar (o par bumpado separado quebrou os PRs #833/#838 em
+      # 2026-08-18). Grupo declarado ANTES de patch-and-minor porque a
+      # dep entra no primeiro grupo que casar — este casa por pattern
+      # em qualquer update-type, inclusive majors.
+      wasmtime:
+        patterns:
+          - "wasmtime"
+          - "wasmtime-wasi"
       patch-and-minor:
         update-types:
           - "patch"
