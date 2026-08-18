@@ -28,7 +28,7 @@ signing key material. Only operational, non-secret knobs live in `[auth]`.
 
 | Field | Environment variable | Config file key | Default | Fail mode when missing |
 |---|---|---|---|---|
-| `jwt_secret` | `GARRAIA_JWT_SECRET` *(preferred)* <br> `GarraIA_VAULT_PASSPHRASE` *(legacy fallback)* | ❌ **not accepted** | ❌ | `503 Service Unavailable` from `/auth/*` and `/v1/auth/*` |
+| `jwt_secret` | `GARRAIA_JWT_SECRET` *(preferred)* <br> `GarraIA_VAULT_PASSPHRASE` *(legacy fallback, deprecated)* <br> `GARRAIA_VAULT_PASSPHRASE` *(last fallback — issue #824)* | ❌ **not accepted** | ❌ | `503 Service Unavailable` from `/auth/*` and `/v1/auth/*` |
 | `refresh_hmac_secret` | `GARRAIA_REFRESH_HMAC_SECRET` | ❌ **not accepted** | ❌ | `503` from `/v1/auth/*` refresh flow |
 | `login_database_url` | `GARRAIA_LOGIN_DATABASE_URL` | ❌ **not accepted** | ❌ | `503` (fail-soft) |
 | `signup_database_url` | `GARRAIA_SIGNUP_DATABASE_URL` | ❌ **not accepted** | ❌ | `503` (fail-soft) |
@@ -91,14 +91,29 @@ callback. Must be **≥32 bytes** after UTF-8 decoding.
 openssl rand -hex 32
 ```
 
-### 3.2 `GarraIA_VAULT_PASSPHRASE` *(legacy fallback)*
+### 3.2 `GarraIA_VAULT_PASSPHRASE` *(legacy fallback, deprecated spelling)*
 
 Accepted when `GARRAIA_JWT_SECRET` is unset. Preserved for zero-breaking
 change in dev workflows that predate GAR-379. New deployments should
-prefer `GARRAIA_JWT_SECRET`.
+prefer `GARRAIA_JWT_SECRET`. `garraia config check` emits a deprecation
+warning whenever this mixed-case spelling is present.
 
-**Precedence:** if both are set, `GARRAIA_JWT_SECRET` wins (covered by
-`AuthConfig::from_env` + unit test `from_env_prefers_jwt_secret_over_vault_passphrase`).
+### 3.2.1 `GARRAIA_VAULT_PASSPHRASE` *(last fallback — issue #824)*
+
+The canonical credential-vault passphrase (all-caps) doubles as the
+**last** JWT-secret fallback. Before #824, exporting only this spelling
+left `/auth/*` answering 503 while the near-identical mixed-case alias
+above would have worked — a silent casing trap. The reverse also holds
+now: the credential vault (`garraia-security`) accepts the mixed-case
+alias as a fallback, with a deprecation warning at boot.
+
+**Precedence:** `GARRAIA_JWT_SECRET` > `GarraIA_VAULT_PASSPHRASE` >
+`GARRAIA_VAULT_PASSPHRASE`. The mixed-case alias stays ahead of the
+all-caps spelling so deploys that set both with different values keep
+signing JWTs with the same secret as before #824. Covered by unit tests
+`from_env_prefers_jwt_secret_over_vault_passphrase`,
+`from_env_accepts_canonical_vault_passphrase_as_last_fallback` and
+`from_env_prefers_legacy_alias_over_canonical_vault_passphrase`.
 
 ### 3.3 `GARRAIA_REFRESH_HMAC_SECRET`
 
@@ -165,10 +180,17 @@ verification immediately on upgrade.
 - **Error** when `access_token_ttl_secs` is outside `[60, 86400]`.
 - **Error** when `refresh_token_ttl_secs` is outside `[60, 2_592_000]`
   or smaller than `access_token_ttl_secs`.
-- **Warning** when neither `GARRAIA_JWT_SECRET` nor
-  `GarraIA_VAULT_PASSPHRASE` is set (auth flow will 503).
+- **Warning** when none of `GARRAIA_JWT_SECRET`,
+  `GarraIA_VAULT_PASSPHRASE` or `GARRAIA_VAULT_PASSPHRASE` is set
+  (auth flow will 503).
 - **Warning** when the env secret is set **and** `[auth]` overrides are
   present — non-secret overrides apply but secrets remain env-only.
+- **Warning** (deprecation) whenever the mixed-case
+  `GarraIA_VAULT_PASSPHRASE` spelling is present (issue #824).
+- **Warning** when both passphrase spellings are set with **different**
+  values — the vault prefers the all-caps one while the JWT fallback
+  prefers the mixed-case one (presence/equality only; values are never
+  emitted).
 
 The JSON output of `config check --json` never contains secret values —
 only presence flags (plan 0035 SEC-M-02).
@@ -179,8 +201,9 @@ only presence flags (plan 0035 SEC-M-02).
 
 ### `/auth/login` returns 503 "auth not configured"
 
-Cause: `GARRAIA_JWT_SECRET` and `GarraIA_VAULT_PASSPHRASE` are both
-unset. Either one will unblock the endpoint:
+Cause: `GARRAIA_JWT_SECRET`, `GarraIA_VAULT_PASSPHRASE` and
+`GARRAIA_VAULT_PASSPHRASE` are all unset. Any one will unblock the
+endpoint:
 
 ```bash
 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)

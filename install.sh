@@ -3,6 +3,12 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 #
+# If raw.githubusercontent.com answers 429 (per-IP rate limit — common on
+# cloud pods whose egress IP is shared by many users), the same script is
+# published through two alternative channels:
+#   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+#   curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+#
 # Plan 0127 (PR-B, 2026-05-14): after install_binary the installer
 # auto-runs `garraia init` and `garraia start` when a TTY is available.
 # In true non-interactive contexts (docker build, pure CI) it prints
@@ -39,6 +45,13 @@ set -eu
 
 REPO="michelbr84/GarraRUST"
 BINARY="garraia"
+
+# Every GitHub fetch goes through this wrapper. curl treats HTTP 408/429/5xx
+# as transient under --retry (curl >= 7.66), which matters on cloud pods:
+# their shared egress IPs exhaust GitHub's per-IP rate limits constantly.
+curl_gh() {
+    curl -fsSL --retry 5 --retry-delay 2 "$@"
+}
 
 main() {
     detect_platform
@@ -78,11 +91,19 @@ resolve_version() {
         return
     fi
 
-    # Try /releases/latest first (returns 404 when only prereleases exist).
-    VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases/latest" \
-        | extract_tag_name || true)"
+    # Preferred path: follow the web redirect of /releases/latest and read the
+    # tag out of the final URL. Unlike api.github.com (60 unauthenticated
+    # requests/hour per IP — exhausted immediately on shared cloud-pod egress
+    # IPs), the github.com web endpoint tolerates far more traffic.
+    VERSION="$(resolve_version_from_redirect || true)"
 
-    # Fall back to the most recent non-draft release (includes prereleases).
+    # Fallback: the REST API — /releases/latest first (404s when only
+    # prereleases exist), then the most recent non-draft release.
+    if [ -z "${VERSION}" ]; then
+        VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases/latest" \
+            | extract_tag_name || true)"
+    fi
+
     if [ -z "${VERSION}" ]; then
         VERSION="$(github_api "https://api.github.com/repos/${REPO}/releases" \
             | tr ',' '\n' \
@@ -90,15 +111,33 @@ resolve_version() {
     fi
 
     if [ -z "${VERSION}" ]; then
+        rate_limit_hint
         error "Failed to resolve latest release. Set GARRAIA_VERSION=vX.Y.Z to pin."
     fi
 
     echo "Latest version: ${VERSION}"
 }
 
+# HEAD-follow the /releases/latest redirect (no body download) and print the
+# tag embedded in the final URL. Prints nothing when the redirect does not
+# land on a /releases/tag/<tag> URL (e.g. a repo with no full release yet),
+# letting resolve_version fall back to the API.
+resolve_version_from_redirect() {
+    curl_gh -I -o /dev/null -w '%{url_effective}' \
+        "https://github.com/${REPO}/releases/latest" \
+        | extract_tag_from_release_url
+}
+
+# `…/releases/tag/v0.3.0[?query]` → `v0.3.0`; anything else → empty output.
+# Kept standalone so it can be unit-tested via GARRAIA_INSTALL_SH_LIBRARY=1
+# (see tests/install_sh/resolve_version.sh).
+extract_tag_from_release_url() {
+    sed -n 's|.*/releases/tag/\([^/?]*\).*|\1|p' | head -1
+}
+
 github_api() {
     # Surface curl error code while keeping stderr quiet in success path.
-    curl -fsSL -H "Accept: application/vnd.github+json" "$1"
+    curl_gh -H "Accept: application/vnd.github+json" "$1"
 }
 
 extract_tag_name() {
@@ -133,12 +172,14 @@ download_and_verify() {
     trap 'rm -rf -- "${GARRAIA_TMPDIR}"' EXIT INT TERM
 
     echo "Downloading ${ARTIFACT} from ${VERSION}..."
-    if ! curl -fsSL "${BASE_URL}/${ARTIFACT}" -o "${GARRAIA_TMPDIR}/${ARTIFACT}"; then
+    if ! curl_gh "${BASE_URL}/${ARTIFACT}" -o "${GARRAIA_TMPDIR}/${ARTIFACT}"; then
+        rate_limit_hint
         error "Failed to download ${ARTIFACT} from ${BASE_URL}. The release may not include this platform yet."
     fi
 
     echo "Downloading SHA256SUMS..."
-    if ! curl -fsSL "${BASE_URL}/SHA256SUMS" -o "${GARRAIA_TMPDIR}/SHA256SUMS"; then
+    if ! curl_gh "${BASE_URL}/SHA256SUMS" -o "${GARRAIA_TMPDIR}/SHA256SUMS"; then
+        rate_limit_hint
         error "Failed to download SHA256SUMS. Cannot verify binary integrity."
     fi
 
@@ -283,6 +324,21 @@ print_next_steps_legacy() {
 error() {
     echo "error: $1" >&2
     exit 1
+}
+
+# Printed when a GitHub fetch fails even after curl's retries. On shared
+# cloud pods (RunPod etc.) HTTP 429 here usually means the pod's egress IP —
+# shared by many users — exhausted GitHub's per-IP quota, not that anything
+# is wrong on this machine.
+rate_limit_hint() {
+    echo "" >&2
+    echo "If the failure above was HTTP 429 (rate limit): this machine's shared" >&2
+    echo "egress IP has exhausted GitHub's per-IP quota. You can:" >&2
+    echo "  * retry in a few minutes, or" >&2
+    echo "  * fetch the installer from the release CDN instead:" >&2
+    echo "      curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sh" >&2
+    echo "  * or from the jsDelivr mirror:" >&2
+    echo "      curl -fsSL https://cdn.jsdelivr.net/gh/${REPO}@main/install.sh | sh" >&2
 }
 
 # Library mode (plan 0127 §M1.3): when sourced by the test runner with

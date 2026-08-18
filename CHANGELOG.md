@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Vault-passphrase casing trap eliminated** (issue #824) — the two
+  near-identical env vars `GARRAIA_VAULT_PASSPHRASE` (credential vault) and
+  `GarraIA_VAULT_PASSPHRASE` (legacy JWT-secret fallback) no longer fail
+  silently when the operator picks the "wrong" one. Every consumer now accepts
+  both spellings: the credential vault (`garraia-security`) falls back to the
+  mixed-case alias with a deprecation warning at boot, and
+  `AuthConfig::from_env` accepts the all-caps spelling as its last JWT-secret
+  fallback. Precedence is backwards-compatible — `GARRAIA_JWT_SECRET` >
+  `GarraIA_VAULT_PASSPHRASE` > `GARRAIA_VAULT_PASSPHRASE` for auth, and
+  all-caps > mixed-case for the vault — so deploys that set both spellings
+  with different values keep their exact pre-fix behavior. `garraia config
+  check` gains two warnings: a deprecation notice whenever the mixed-case
+  spelling is set, and a split-values alert when both spellings are set with
+  different values (presence/equality only — values are never emitted).
+
 ## [0.3.0] - 2026-08-16
 
 ### Onboarding: `install.sh` → `garraia init` → `garraia start` now actually works
