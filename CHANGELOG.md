@@ -6,7 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-18
+
 ### Fixed
+- **`POST /v1/me/anonymize` funciona pela primeira vez** (plan 0354, PR #843) —
+  o endpoint LGPD/GDPR retornava 500 em toda chamada: o código atualizava uma
+  coluna `user_identities.login` que não existe neste schema. A anonimização
+  agora cobre os três lugares onde o email vive — `user_identities.provider_sub`
+  (chave de login), `users.email` e `group_invites.invited_email` — com token
+  determinístico `anon-<uuid-32-hex>@garraanon.local` (UUID completo: o prefixo
+  de 8 hex colidia sob UUIDv7). Revisado por security-auditor, sem blockers.
+- **Release Linux ARM64 volta ao ar** (PR #842) — o build `cross` aarch64
+  falhava por falta de OpenSSL do target e a v0.3.0 saiu sem o binário
+  linux-aarch64. `Cross.toml` novo instala `libssl-dev:$CROSS_DEB_ARCH` no
+  container de build; esta é a primeira release com os 5 binários.
+- **h2 0.4.16** (PR #842) — RUSTSEC-2026-0258.
 - **Vault-passphrase casing trap eliminated** (issue #824) — the two
   near-identical env vars `GARRAIA_VAULT_PASSPHRASE` (credential vault) and
   `GarraIA_VAULT_PASSPHRASE` (legacy JWT-secret fallback) no longer fail
@@ -21,6 +35,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check` gains two warnings: a deprecation notice whenever the mixed-case
   spelling is set, and a split-values alert when both spellings are set with
   different values (presence/equality only — values are never emitted).
+
+### Changed
+- **Dependências consolidadas** (PR #844, cleanup 2026-08-18): serial_test
+  4.0.1, base64 0.23, jsonwebtoken 11.0.0, validator 0.21, itertools 0.15,
+  uuid 1.24.1, tauri 2.11.5 e **wasmtime + wasmtime-wasi 47.0.3** — o par
+  agora também viaja junto no dependabot via grupo dedicado (PR #842).
+
+### CI
+- Jobs `e2e`/`playwright` ganham `timeout-minutes` (PR #842) — dois runs de 6h
+  em 2026-08-17, travados no download do Chromium, motivaram o teto.
+- Job novo `auth-integration` (PR #843): os 16 binários de integração do
+  garraia-auth (matriz RLS incluída) agora rodam em todo PR — antes eram
+  pulados silenciosamente pelo `cargo test --workspace` e só o cargo-mutants
+  semanal os executava.
 
 ## [0.3.0] - 2026-08-16
 
