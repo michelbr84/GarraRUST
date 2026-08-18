@@ -10,7 +10,7 @@
 # behind, `cargo chef cook` aborts the Deploy image build with
 # "rustc X is not supported by the following packages" (Deploy run on the
 # v0.3.0 tag failed exactly this way with 1.92 vs rust-version 1.94).
-FROM rust:1.94-slim AS chef
+FROM rust:1.97-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config libssl-dev \
