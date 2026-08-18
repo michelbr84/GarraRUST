@@ -1,0 +1,14 @@
+# garraia-installer — Worker que serve o install.sh em get.garraia.cloud.
+# Deploy: `wrangler deploy` a partir deste diretório (ver README.md).
+
+name = "garraia-installer"
+main = "worker.js"
+compatibility_date = "2026-08-17"
+
+# Ative a rota depois que o DNS de garraia.cloud estiver na Cloudflare
+# (pré-requisito da issue #827). Em *.workers.dev o Worker funciona, mas
+# `caches.default` é no-op — o cache de edge exige zona própria.
+#
+# routes = [
+#   { pattern = "get.garraia.cloud/*", zone_name = "garraia.cloud" },
+# ]

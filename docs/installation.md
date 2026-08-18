@@ -4,7 +4,7 @@ This guide covers installing GarraIA on various platforms.
 
 ## Prerequisites
 
-- **Rust 1.92+** (if building from source)
+- **Rust 1.94+** (if building from source)
 - **FFmpeg** (for voice mode)
 - **OpenSSL** (for some features)
 
@@ -16,6 +16,18 @@ This guide covers installing GarraIA on various platforms.
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 ```
 
+The same script is published through two alternative channels, useful when
+`raw.githubusercontent.com` answers **HTTP 429** (per-IP rate limit — common on
+cloud pods whose egress IP is shared by many users):
+
+```bash
+# Official mirror — GitHub release CDN (no aggressive per-IP limits):
+curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+
+# Community CDN mirror of the repository's main branch:
+curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+```
+
 ### Windows
 
 Download the pre-compiled binary from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases).
@@ -25,7 +37,7 @@ Download the pre-compiled binary from [GitHub Releases](https://github.com/miche
 ### Prerequisites
 
 ```bash
-# Install Rust 1.92+
+# Install Rust 1.94+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update stable
 
@@ -86,8 +98,12 @@ This wizard will (plan 0126):
   - **Local-first** (Ollama on this GPU + cloud fallback) — default
     when an NVIDIA GPU is detected and `GARRAIA_BOOTSTRAP_LOCAL` is not
     set to `0`.
-  - **Cloud-first** (OpenRouter primary + Ollama fallback).
-  - **Cloud-only** (OpenRouter — default for CPU/no-GPU machines).
+  - **Cloud-first** (cloud provider primary + Ollama fallback).
+  - **Cloud-only** (default for CPU/no-GPU machines).
+- On the cloud branch, let you pick the provider — **OpenRouter**
+  (recommended default), **OpenAI**, or **Anthropic** — and prompt for
+  that provider's API key (each preset names its own env var, default
+  model, and key-creation URL).
 - On GPU machines (and only after explicit confirmation), install
   Ollama via the official upstream script and pull
   `hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M`. NVIDIA drivers and CUDA
@@ -118,7 +134,20 @@ Skip toggles:
 
 ### 2. Configure
 
-Edit `~/.garraia/config.yml`:
+`garraia init` writes this for you. To edit it by hand, first find the file the
+gateway actually reads — the startup banner prints both the directory (`Config`)
+and the filename (`File`).
+
+The config directory is resolved in this order:
+
+1. `$GARRAIA_CONFIG_DIR`, when set — the supported way to keep everything under
+   a single directory of your choosing.
+2. `~/.config/garraia` (XDG), when it exists. **This is the default for new
+   installs.**
+3. `~/.garraia`, when it exists and the XDG path does not (legacy).
+
+Within that directory, `config.yml` wins over `config.toml`; if both exist the
+TOML file is silently ignored.
 
 ```yaml
 gateway:
@@ -129,13 +158,28 @@ llm:
   main:
     provider: openai
     model: gpt-4o
-    api_key: "sk-..."  # or use vault
+    api_key: "sk-..."
 
 channels:
   telegram:
     enabled: true
     bot_token: "YOUR_BOT_TOKEN"
 ```
+
+The API key is resolved per provider in the order **credential vault → this
+file → environment variable** (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, …). If
+none of the three yields a key, the provider is skipped at startup and the
+gateway comes up unable to answer.
+
+> **The credential vault needs a passphrase on every start.** If you store keys
+> in the vault, the gateway can only open it when `GARRAIA_VAULT_PASSPHRASE` is
+> present in *its* environment — the wizard cannot arrange that for you. Export
+> it from your shell profile or a systemd `EnvironmentFile`. This is why
+> `garraia init` now defaults to writing the key into `config.yml`, which it
+> creates with mode `0600`.
+
+Run `garraia config check` to verify: it reports which file is in force and
+fails with an explicit error for any provider whose key resolves nowhere.
 
 ### 3. Start
 
@@ -164,7 +208,7 @@ docker-compose up -d
 ### Manual Docker
 
 ```dockerfile
-FROM rust:1.92-bookworm
+FROM rust:1.94-trixie
 
 RUN apt-get update && apt-get install -y ffmpeg libssl3
 
@@ -206,6 +250,25 @@ curl http://127.0.0.1:3888/api/health
 ```
 
 ## Troubleshooting
+
+### `curl | sh` fails with HTTP 429
+
+`raw.githubusercontent.com` (which serves `install.sh`) and `api.github.com`
+enforce **per-IP** rate limits. Cloud pods (RunPod etc.) share their egress IP
+across many users, so a brand-new pod can be over the quota before you run
+anything. Retry in a few minutes, or use one of the alternative channels:
+
+```bash
+# Official mirror — GitHub release CDN:
+curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+
+# Community CDN mirror of main:
+curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+```
+
+Inside the installer itself, downloads retry automatically and the release
+tag is resolved from the `github.com` redirect (not the API), so the 429
+surface is limited to that very first fetch of the script.
 
 ### Port already in use
 

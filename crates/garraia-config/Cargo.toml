@@ -7,6 +7,10 @@ description = "Configuration loading and management for GarraIA"
 
 [dependencies]
 garraia-common = { workspace = true }
+# Needed by `provider_keys` so the vault tier of the API-key precedence chain
+# can be evaluated here rather than duplicated per consumer. No cycle:
+# garraia-security depends only on garraia-common.
+garraia-security = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

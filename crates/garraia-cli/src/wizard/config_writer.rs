@@ -8,19 +8,25 @@
 //! * `MergeUpdate` — load existing config, patch only the fields the
 //!   wizard owns:
 //!     - `gateway.host`, `gateway.port` — replaced (wizard owns).
-//!     - `llm.*` — only **adds** missing keys; never replaces an
-//!       existing user-customized provider.
+//!     - `llm.*` — **adds** missing keys; never replaces an existing
+//!       user-customized provider. One exception: when the operator supplies
+//!       a cleartext OpenRouter key, it is backfilled into pre-existing
+//!       `openrouter` entries that have **no** key, so re-running the wizard
+//!       repairs a config left keyless by the old vault-by-default flow. A
+//!       key that is already set is never overwritten.
 //!     - `agent.default_provider` — set only when currently `None`.
 //!     - `agent.fallback_providers` — set only when currently empty.
 //!     - `voice.*` — replaced when the wizard just opted into voice;
 //!       otherwise untouched.
 //!     - `channels.telegram` — only added when missing.
 //!
-//! Secret-redaction invariant: API keys never appear in the YAML written
-//! by this module unless the user chose plaintext storage (option 1 in
-//! the existing vault flow). The vault path is handled by the
-//! orchestrator (`mod.rs`); this module only knows about the cleartext
-//! key when explicitly handed one and writes it to `llm.<name>.api_key`.
+//! Secret invariant: API keys appear in the YAML written by this module only
+//! when the operator chose config storage (`SecretStorage::Config`, the
+//! default since v0.3.0). The vault path is handled by the orchestrator
+//! (`mod.rs`); this module only knows about the cleartext key when explicitly
+//! handed one, and writes it to `llm.<name>.api_key`. Because that makes
+//! `config.yml` credential-bearing, [`write_config`] clamps the file to mode
+//! `0600` via `garraia_config::harden_secret_file` on every strategy.
 
 #![allow(dead_code)] // M1.7 orchestrator wires these in.
 
@@ -53,10 +59,10 @@ pub struct WizardOutcome {
     /// Ordered fallbacks. Empty when only one provider was configured.
     pub fallback_providers: Vec<String>,
 
-    /// OpenRouter cloud entry — populated for cloud-only or cloud-first
-    /// modes. `Some` even when the api_key field is `None` (env-var
-    /// users).
-    pub openrouter: Option<CloudLlmChoice>,
+    /// Cloud provider entry (OpenRouter, OpenAI, Anthropic, …) — populated
+    /// for cloud-only or cloud-first modes. `Some` even when the api_key
+    /// field is `None` (env-var users).
+    pub cloud: Option<CloudLlmChoice>,
 
     /// Local LLM — populated only when the user opted in (GPU detected,
     /// `GARRAIA_BOOTSTRAP_LOCAL != 0`, user confirmed).
@@ -76,9 +82,14 @@ pub struct WizardOutcome {
 
 #[derive(Debug, Clone)]
 pub struct CloudLlmChoice {
-    /// Key used in the `llm:` map. Defaults to `"openrouter"`.
+    /// Key used in the `llm:` map (e.g. `"openrouter"`, `"openai"`).
     pub key: String,
+    /// Provider type string consumed by `build_agent_runtime` — for the
+    /// wizard presets this always equals `key`.
+    pub provider: String,
     pub model: String,
+    /// `None` lets the provider client use its own default endpoint.
+    pub base_url: Option<String>,
     pub api_key_plaintext: Option<String>,
 }
 
@@ -140,7 +151,7 @@ pub fn backup_path_for_with(config_dir: &Path, when: chrono::DateTime<Utc>) -> P
 /// `FirstWrite` and `Backup` paths.
 pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
     let mut llm: HashMap<String, LlmProviderConfig> = HashMap::new();
-    if let Some(cloud) = &outcome.openrouter {
+    if let Some(cloud) = &outcome.cloud {
         llm.insert(cloud.key.clone(), cloud_llm_provider(cloud));
     }
     if let Some(local) = &outcome.local_llm {
@@ -179,10 +190,10 @@ pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
 
 fn cloud_llm_provider(cloud: &CloudLlmChoice) -> LlmProviderConfig {
     LlmProviderConfig {
-        provider: "openrouter".to_string(),
+        provider: cloud.provider.clone(),
         model: Some(cloud.model.clone()),
         api_key: cloud.api_key_plaintext.clone(),
-        base_url: Some("https://openrouter.ai/api/v1".to_string()),
+        base_url: cloud.base_url.clone(),
         extra: Default::default(),
     }
 }
@@ -214,13 +225,41 @@ fn telegram_channel(tg: &TelegramChoice) -> ChannelConfig {
     }
 }
 
+/// Backfill a freshly-collected cleartext key into pre-existing `llm:` entries
+/// of the same provider type that have no key of their own.
+///
+/// Without this, `merge_update` was purely additive, and re-running
+/// `garraia init` could not repair a broken config. An operator whose config
+/// already had a keyless `llm.main` — exactly what the pre-0.3.0 wizard wrote
+/// when it defaulted to the credential vault — would get a *second* entry
+/// `llm.openrouter` while `llm.main` stayed keyless, and `build_agent_runtime`
+/// kept skipping `main` with "no API key" on every boot.
+///
+/// Only entries whose `api_key` is absent or empty are filled; a key the
+/// operator already set is never touched. Deliberately **not** applied to the
+/// local-Ollama provider, which registers under `provider: "openai"` with a
+/// placeholder key — backfilling that would overwrite a real, intentionally
+/// env-var-backed OpenAI entry with the Ollama placeholder.
+fn backfill_missing_api_key(existing: &mut AppConfig, provider_type: &str, api_key: &str) {
+    for entry in existing.llm.values_mut() {
+        if entry.provider == provider_type
+            && entry.api_key.as_deref().unwrap_or_default().is_empty()
+        {
+            entry.api_key = Some(api_key.to_string());
+        }
+    }
+}
+
 /// Patch `existing` in place with the additive `MergeUpdate` rules.
 /// See module docs for which fields are wizard-owned vs. user-owned.
 pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) {
     existing.gateway.host = outcome.host.clone();
     existing.gateway.port = outcome.port;
 
-    if let Some(cloud) = &outcome.openrouter {
+    if let Some(cloud) = &outcome.cloud {
+        if let Some(key) = cloud.api_key_plaintext.as_deref() {
+            backfill_missing_api_key(existing, &cloud.provider, key);
+        }
         existing
             .llm
             .entry(cloud.key.clone())
@@ -311,6 +350,11 @@ pub fn write_config(
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
     }
+    // The wizard now writes `llm.*.api_key` into this file by default, so it
+    // must not be left at the umask default (commonly 0644). Applies to all
+    // three strategies — they converge on the same `config_path`.
+    garraia_config::harden_secret_file(&config_path)
+        .with_context(|| format!("restrict permissions on {}", config_path.display()))?;
     Ok(config_path)
 }
 
@@ -327,9 +371,11 @@ mod tests {
             port: 3888,
             default_provider: "openrouter".into(),
             fallback_providers: vec![],
-            openrouter: Some(CloudLlmChoice {
+            cloud: Some(CloudLlmChoice {
                 key: "openrouter".into(),
+                provider: "openrouter".into(),
                 model: "deepseek/deepseek-chat-v3.5".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
                 api_key_plaintext: None,
             }),
             local_llm: None,
@@ -345,9 +391,11 @@ mod tests {
             port: 3888,
             default_provider: OLLAMA_PROVIDER_KEY.into(),
             fallback_providers: vec!["openrouter".into()],
-            openrouter: Some(CloudLlmChoice {
+            cloud: Some(CloudLlmChoice {
                 key: "openrouter".into(),
+                provider: "openrouter".into(),
                 model: "deepseek/deepseek-chat-v3.5".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
                 api_key_plaintext: None,
             }),
             local_llm: Some(LocalLlmChoice::default()),
@@ -355,6 +403,163 @@ mod tests {
             system_prompt: None,
             telegram: None,
         }
+    }
+
+    /// Same shape as `outcome_cloud_only` but carrying a cleartext key, i.e.
+    /// the operator picked `SecretStorage::Config` (the v0.3.0 default).
+    fn outcome_cloud_with_key(key: &str) -> WizardOutcome {
+        let mut out = outcome_cloud_only();
+        out.cloud = Some(CloudLlmChoice {
+            key: "openrouter".into(),
+            provider: "openrouter".into(),
+            model: "openrouter/auto".into(),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            api_key_plaintext: Some(key.into()),
+        });
+        out
+    }
+
+    /// The config the pre-0.3.0 wizard left behind when it defaulted to the
+    /// vault: a structurally perfect provider entry named `main` with no key.
+    fn legacy_keyless_main() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "main".into(),
+            LlmProviderConfig {
+                provider: "openrouter".into(),
+                model: Some("openrouter/auto".into()),
+                api_key: None,
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                extra: Default::default(),
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn config_storage_writes_api_key_into_llm_entry() {
+        let dir = tempdir().unwrap();
+        let out = outcome_cloud_with_key("test-key-abc");
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            cfg.llm.get("openrouter").unwrap().api_key.as_deref(),
+            Some("test-key-abc"),
+            "a key collected under SecretStorage::Config must reach llm.*.api_key"
+        );
+    }
+
+    /// The wizard's cloud step is no longer OpenRouter-only: a non-OpenRouter
+    /// preset must flow through untouched — its provider type in `provider:`,
+    /// and `base_url` left absent so the client uses its own default endpoint.
+    #[test]
+    fn non_openrouter_preset_writes_generic_provider_entry() {
+        let mut out = outcome_cloud_only();
+        out.default_provider = "openai".into();
+        out.cloud = Some(CloudLlmChoice {
+            key: "openai".into(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            base_url: None,
+            api_key_plaintext: Some("sk-test".into()),
+        });
+
+        let dir = tempdir().unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let entry = cfg.llm.get("openai").unwrap();
+        assert_eq!(entry.provider, "openai");
+        assert_eq!(entry.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(
+            entry.base_url, None,
+            "no hardcoded OpenRouter base_url may leak in"
+        );
+        assert_eq!(entry.api_key.as_deref(), Some("sk-test"));
+    }
+
+    /// The regression that made `garraia init` unable to repair itself: a second
+    /// run added `llm.openrouter` and left `llm.main` keyless, so the gateway
+    /// kept logging `skipping openrouter provider main: no API key`.
+    #[test]
+    fn merge_update_backfills_key_into_existing_keyless_entry() {
+        let mut existing = legacy_keyless_main();
+        merge_update(&mut existing, &outcome_cloud_with_key("recovered-key"));
+
+        assert_eq!(
+            existing.llm.get("main").unwrap().api_key.as_deref(),
+            Some("recovered-key"),
+            "the pre-existing keyless `main` entry must be repaired, not orphaned"
+        );
+    }
+
+    #[test]
+    fn merge_update_never_overwrites_a_key_the_operator_already_set() {
+        let mut existing = legacy_keyless_main();
+        existing.llm.get_mut("main").unwrap().api_key = Some("operator-owned".into());
+
+        merge_update(&mut existing, &outcome_cloud_with_key("wizard-key"));
+
+        assert_eq!(
+            existing.llm.get("main").unwrap().api_key.as_deref(),
+            Some("operator-owned"),
+            "an already-configured key is user-owned and must survive the wizard"
+        );
+    }
+
+    /// When the operator chose vault or env storage there is no cleartext to
+    /// backfill, so the old additive behaviour must be preserved exactly.
+    #[test]
+    fn merge_update_without_cleartext_leaves_existing_entry_keyless() {
+        let mut existing = legacy_keyless_main();
+        merge_update(&mut existing, &outcome_cloud_only());
+
+        assert!(
+            existing.llm.get("main").unwrap().api_key.is_none(),
+            "no cleartext was collected, so nothing may be invented"
+        );
+    }
+
+    /// The local-Ollama provider registers as `provider: "openai"` with a
+    /// placeholder key. Backfill must not leak that placeholder into a real,
+    /// intentionally env-var-backed OpenAI entry.
+    #[test]
+    fn merge_update_does_not_touch_unrelated_provider_types() {
+        let mut existing = legacy_keyless_main();
+        existing.llm.insert(
+            "my-openai".into(),
+            LlmProviderConfig {
+                provider: "openai".into(),
+                model: Some("gpt-4o".into()),
+                api_key: None,
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+
+        merge_update(&mut existing, &outcome_cloud_with_key("openrouter-only"));
+
+        assert!(
+            existing.llm.get("my-openai").unwrap().api_key.is_none(),
+            "an openai entry must not receive the openrouter key"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_config_clamps_permissions_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let out = outcome_cloud_with_key("secret-in-file");
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config.yml now carries the API key; got {:o}",
+            mode & 0o777
+        );
     }
 
     #[test]

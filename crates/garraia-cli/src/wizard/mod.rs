@@ -41,6 +41,118 @@ use local_stack::{
 /// Default cloud model — matches `chat.rs` (`openrouter/auto`).
 const DEFAULT_OPENROUTER_MODEL: &str = "openrouter/auto";
 
+/// One cloud provider the wizard can configure end-to-end.
+///
+/// `key` doubles as the `llm:` map key **and** the `provider:` type string
+/// consumed by `build_agent_runtime`; `env_var` doubles as the
+/// credential-vault entry name — the gateway resolves both under the same
+/// identifier (see `garraia-gateway/src/bootstrap/config.rs`).
+struct CloudProviderPreset {
+    key: &'static str,
+    name: &'static str,
+    label: &'static str,
+    env_var: &'static str,
+    default_model: &'static str,
+    /// `None` lets the provider client use its own default endpoint.
+    base_url: Option<&'static str>,
+    key_url: &'static str,
+}
+
+/// Presets offered by the "Which cloud AI provider?" select, in display
+/// order. OpenRouter stays first (and default): one key fronts many models.
+/// Default models mirror the provider crates' own defaults
+/// (`garraia-agents/src/{openai,anthropic}.rs`).
+const CLOUD_PROVIDER_PRESETS: &[CloudProviderPreset] = &[
+    CloudProviderPreset {
+        key: "openrouter",
+        name: "OpenRouter",
+        label: "OpenRouter (recommended — one key, many models)",
+        env_var: "OPENROUTER_API_KEY",
+        default_model: DEFAULT_OPENROUTER_MODEL,
+        base_url: Some("https://openrouter.ai/api/v1"),
+        key_url: "https://openrouter.ai/keys",
+    },
+    CloudProviderPreset {
+        key: "openai",
+        name: "OpenAI",
+        label: "OpenAI (GPT models)",
+        env_var: "OPENAI_API_KEY",
+        default_model: "gpt-4o",
+        base_url: None,
+        key_url: "https://platform.openai.com/api-keys",
+    },
+    CloudProviderPreset {
+        key: "anthropic",
+        name: "Anthropic",
+        label: "Anthropic (Claude models)",
+        env_var: "ANTHROPIC_API_KEY",
+        default_model: "claude-sonnet-4-5-20250929",
+        base_url: None,
+        key_url: "https://console.anthropic.com/settings/keys",
+    },
+];
+
+/// Where the wizard persists a secret it just collected.
+///
+/// The ordering of the variants is the ordering of the prompt, and
+/// [`SecretStorage::Config`] is deliberately first and default. Vaulting a
+/// secret requires `GARRAIA_VAULT_PASSPHRASE` to be present in the *gateway's*
+/// environment at every single start; the wizard cannot arrange that, so a
+/// vault default meant `garraia init` → `garraia start` produced an encrypted
+/// key the server could not open and a provider that silently never came up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretStorage {
+    /// Into `config.yml`, which [`write_config`] clamps to mode `0600`.
+    Config,
+    /// Into `credentials/vault.json`, AES-encrypted under a passphrase the
+    /// operator must re-supply out-of-band on every start.
+    Vault,
+    /// Nowhere — the operator exports the env var themselves.
+    Env,
+}
+
+/// Prompt for where to keep `what` (a human label like `"OpenRouter API key"`),
+/// naming `env_var` in the skip option so the operator knows the exact variable.
+fn prompt_secret_storage(what: &str, env_var: &str) -> Result<SecretStorage> {
+    let choices = [
+        "Store in config.yml (recommended — the file is chmod 0600)".to_string(),
+        "Store in the encrypted vault (needs GARRAIA_VAULT_PASSPHRASE on every start)".to_string(),
+        format!("Skip storing (I will export {env_var} myself)"),
+    ];
+    let picked = Select::new()
+        .with_prompt(format!("How should the {what} be stored?"))
+        .items(&choices)
+        .default(0)
+        .interact()
+        .with_context(|| format!("{what} storage choice cancelled"))?;
+    Ok(match picked {
+        0 => SecretStorage::Config,
+        1 => SecretStorage::Vault,
+        _ => SecretStorage::Env,
+    })
+}
+
+/// Tell the operator, unmissably, that a vaulted secret is inert until the
+/// passphrase reaches the gateway. Printed as a block rather than a one-line
+/// `println!` because the previous single line scrolled away behind the wizard's
+/// remaining output and the boot log, and operators never saw it.
+fn print_vault_passphrase_warning() {
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────────────────┐");
+    println!("  │  ⚠  ATENÇÃO — leia antes de iniciar o Garra                     │");
+    println!("  └─────────────────────────────────────────────────────────────────┘");
+    println!("  Seus segredos foram cifrados no cofre. O servidor NÃO consegue");
+    println!("  abri-lo sozinho: ele precisa da mesma senha, via variável de");
+    println!("  ambiente, em TODA inicialização. Sem ela o Garra sobe, mas os");
+    println!("  provedores e canais ficam desligados.");
+    println!();
+    println!("    export GARRAIA_VAULT_PASSPHRASE='<a senha que você acabou de criar>'");
+    println!();
+    println!("  Para que isso sobreviva a reboots, coloque a linha acima no seu");
+    println!("  ~/.bashrc, ou num EnvironmentFile da sua unit systemd.");
+    println!();
+}
+
 /// `GARRAIA_BOOTSTRAP_LOCAL=0` disables the GPU/local-stack prompts even
 /// when a GPU is detected. Any other value (or unset) keeps the prompts
 /// gated by [`EnvSnapshot::supports_local_stack`].
@@ -107,8 +219,8 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
                 .with_prompt("Which LLM mode?")
                 .items([
                     "Local-first (Ollama on this GPU + cloud fallback)",
-                    "Cloud-first (OpenRouter primary + Ollama fallback)",
-                    "Cloud-only (OpenRouter — no local stack)",
+                    "Cloud-first (cloud provider primary + Ollama fallback)",
+                    "Cloud-only (OpenRouter / OpenAI / Anthropic — no local stack)",
                 ])
                 .default(0)
                 .interact()
@@ -125,14 +237,14 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     };
     let _ = mode_default;
 
-    let mut openrouter_choice: Option<CloudLlmChoice> = None;
+    let mut cloud_choice: Option<CloudLlmChoice> = None;
     let mut local_choice: Option<LocalLlmChoice> = None;
     let mut fallback_providers: Vec<String> = Vec::new();
 
     // --- 4. Cloud branch ---------------------------------------------------
     let want_cloud = matches!(mode_idx, 0..=2);
-    let openrouter_api_key_plaintext = if want_cloud {
-        collect_openrouter(&mut openrouter_choice)?
+    let cloud_secret_for_vault = if want_cloud {
+        collect_cloud_provider(&mut cloud_choice)?
     } else {
         None
     };
@@ -143,17 +255,17 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     }
 
     // --- 6. Resolve default / fallback ordering ----------------------------
-    let default_provider: String = match (local_choice.as_ref(), openrouter_choice.as_ref()) {
-        (Some(_), Some(_)) if mode_idx == 0 => {
-            fallback_providers = vec!["openrouter".to_string()];
+    let default_provider: String = match (local_choice.as_ref(), cloud_choice.as_ref()) {
+        (Some(_), Some(cloud)) if mode_idx == 0 => {
+            fallback_providers = vec![cloud.key.clone()];
             OLLAMA_PROVIDER_KEY.to_string()
         }
-        (Some(_), Some(_)) if mode_idx == 1 => {
+        (Some(_), Some(cloud)) if mode_idx == 1 => {
             fallback_providers = vec![OLLAMA_PROVIDER_KEY.to_string()];
-            "openrouter".to_string()
+            cloud.key.clone()
         }
         (Some(_), None) => OLLAMA_PROVIDER_KEY.to_string(),
-        (None, Some(_)) => "openrouter".to_string(),
+        (None, Some(cloud)) => cloud.key.clone(),
         _ => {
             // Neither selected — emit a placeholder so the wizard
             // produces a valid `agent.default_provider`. The user can
@@ -234,21 +346,13 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         let token = token.trim().to_string();
 
         if !token.is_empty() {
-            let choices = &[
-                "Store in encrypted vault (recommended)",
-                "Store as plaintext in config.yml",
-                "Skip storing (use env var)",
-            ];
-            let storage = Select::new()
-                .with_prompt("How should the Telegram bot token be stored?")
-                .items(choices)
-                .default(0)
-                .interact()
-                .context("telegram storage choice cancelled")?;
-            match storage {
-                0 => telegram_token_for_vault = Some(token.clone()),
-                1 => telegram_token_plaintext = Some(token.clone()),
-                _ => {}
+            // Same defect as the OpenRouter key: a vault default left the
+            // channel silently offline on every restart, because the gateway
+            // has no passphrase to open the vault with.
+            match prompt_secret_storage("Telegram bot token", "TELEGRAM_BOT_TOKEN")? {
+                SecretStorage::Config => telegram_token_plaintext = Some(token.clone()),
+                SecretStorage::Vault => telegram_token_for_vault = Some(token.clone()),
+                SecretStorage::Env => {}
             }
         }
     }
@@ -262,15 +366,19 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     };
 
     // --- 10. Vault (cloud key + telegram token) ---------------------------
-    let openrouter_for_vault =
-        openrouter_api_key_plaintext.filter(|_| openrouter_should_use_vault(&openrouter_choice));
-    let needs_vault = openrouter_for_vault.is_some() || telegram_token_for_vault.is_some();
+    // `collect_cloud_provider` / the Telegram prompt hand back a cleartext
+    // secret only when the operator explicitly chose the vault, so no further
+    // filtering is needed here.
+    let needs_vault = cloud_secret_for_vault.is_some() || telegram_token_for_vault.is_some();
     if needs_vault {
         open_or_create_vault(
             config_dir,
-            openrouter_for_vault.as_deref(),
+            cloud_secret_for_vault
+                .as_ref()
+                .map(|(entry, key)| (entry.as_str(), key.as_str())),
             telegram_token_for_vault.as_deref(),
         )?;
+        print_vault_passphrase_warning();
     }
 
     // --- 11. Build outcome + write config ---------------------------------
@@ -280,7 +388,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         port,
         default_provider,
         fallback_providers,
-        openrouter: openrouter_choice,
+        cloud: cloud_choice,
         local_llm: local_choice,
         voice_enabled,
         system_prompt,
@@ -361,58 +469,56 @@ fn print_env_summary(env: &EnvSnapshot) {
     println!();
 }
 
-fn collect_openrouter(out: &mut Option<CloudLlmChoice>) -> Result<Option<String>> {
+/// Cloud branch: pick one of [`CLOUD_PROVIDER_PRESETS`], then collect and
+/// route its API key. Returns `Some((vault_entry_name, cleartext))` only when
+/// the operator explicitly chose the vault — the caller forwards that pair
+/// into the vault flow.
+fn collect_cloud_provider(out: &mut Option<CloudLlmChoice>) -> Result<Option<(String, String)>> {
+    let labels: Vec<&str> = CLOUD_PROVIDER_PRESETS.iter().map(|p| p.label).collect();
+    let picked = Select::new()
+        .with_prompt("Which cloud AI provider?")
+        .items(&labels)
+        .default(0)
+        .interact()
+        .context("cloud provider choice cancelled")?;
+    let preset = &CLOUD_PROVIDER_PRESETS[picked];
+
+    println!("  No key yet? Create one at {}", preset.key_url);
     let api_key: String = Password::new()
-        .with_prompt(
-            "Enter your OpenRouter API key (or leave blank to use OPENROUTER_API_KEY env var)",
-        )
+        .with_prompt(format!(
+            "Enter your {} API key (or leave blank to use the {} env var)",
+            preset.name, preset.env_var
+        ))
         .allow_empty_password(true)
         .interact()
-        .context("OpenRouter key input cancelled")?;
+        .with_context(|| format!("{} key input cancelled", preset.name))?;
     let api_key = api_key.trim().to_string();
 
-    let storage_choice = if !api_key.is_empty() {
-        let choices = &[
-            "Store in encrypted vault (recommended)",
-            "Store as plaintext in config.yml",
-            "Skip storing (use env var)",
-        ];
-        Select::new()
-            .with_prompt("How should the OpenRouter key be stored?")
-            .items(choices)
-            .default(0)
-            .interact()
-            .context("key storage choice cancelled")?
+    let storage = if api_key.is_empty() {
+        SecretStorage::Env
     } else {
-        2 // skip — env var
+        prompt_secret_storage(&format!("{} API key", preset.name), preset.env_var)?
     };
 
-    let plaintext_for_config = if storage_choice == 1 && !api_key.is_empty() {
-        Some(api_key.clone())
-    } else {
-        None
+    let plaintext_for_config = match storage {
+        SecretStorage::Config => Some(api_key.clone()),
+        SecretStorage::Vault | SecretStorage::Env => None,
     };
 
     *out = Some(CloudLlmChoice {
-        key: "openrouter".to_string(),
-        model: DEFAULT_OPENROUTER_MODEL.to_string(),
+        key: preset.key.to_string(),
+        provider: preset.key.to_string(),
+        model: preset.default_model.to_string(),
+        base_url: preset.base_url.map(str::to_string),
         api_key_plaintext: plaintext_for_config,
     });
 
     // Return the cleartext only when the user picked vault — caller
     // forwards into the vault flow.
-    if storage_choice == 0 && !api_key.is_empty() {
-        Ok(Some(api_key))
-    } else {
-        Ok(None)
+    match storage {
+        SecretStorage::Vault => Ok(Some((preset.env_var.to_string(), api_key))),
+        SecretStorage::Config | SecretStorage::Env => Ok(None),
     }
-}
-
-fn openrouter_should_use_vault(choice: &Option<CloudLlmChoice>) -> bool {
-    matches!(
-        choice,
-        Some(c) if c.api_key_plaintext.is_none()
-    )
 }
 
 fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> Result<()> {
@@ -485,7 +591,10 @@ fn pick_host_port(env: &EnvSnapshot) -> (String, u16) {
 
 fn open_or_create_vault(
     config_dir: &Path,
-    openrouter_key: Option<&str>,
+    // `(vault entry name, cleartext)` — the entry name is the provider's
+    // env-var identifier, which is also what the gateway looks the secret
+    // up under at boot.
+    cloud_secret: Option<(&str, &str)>,
     telegram_token: Option<&str>,
 ) -> Result<()> {
     let vault_path = config_dir.join("credentials").join("vault.json");
@@ -511,8 +620,9 @@ fn open_or_create_vault(
             .context("passphrase input cancelled")?;
         match garraia_security::CredentialVault::create(&vault_path, &passphrase) {
             Ok(v) => {
+                // The passphrase reminder is printed once, as a block, by
+                // `print_vault_passphrase_warning` after this function returns.
                 println!("  Vault created.");
-                println!("  Set GARRAIA_VAULT_PASSPHRASE env var for server mode.");
                 Some(v)
             }
             Err(e) => {
@@ -525,9 +635,9 @@ fn open_or_create_vault(
     };
 
     if let Some(vault) = vault_opt.as_mut() {
-        if let Some(key) = openrouter_key {
-            vault.set("OPENROUTER_API_KEY", key);
-            println!("  OpenRouter API key encrypted in vault.");
+        if let Some((entry, key)) = cloud_secret {
+            vault.set(entry, key);
+            println!("  Cloud provider API key encrypted in vault (entry {entry}).");
         }
         if let Some(tg) = telegram_token {
             vault.set("TELEGRAM_BOT_TOKEN", tg);

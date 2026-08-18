@@ -226,9 +226,12 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: None,
     });
 
-    // 8. JWT secret configured (presence only).
+    // 8. JWT secret configured (presence only). Issue #824: the canonical
+    // all-caps vault passphrase is the last fallback in AuthConfig::from_env,
+    // so its presence also unlocks the auth flow.
     let jwt_configured = std::env::var("GARRAIA_JWT_SECRET").is_ok()
-        || std::env::var("GarraIA_VAULT_PASSPHRASE").is_ok();
+        || std::env::var("GarraIA_VAULT_PASSPHRASE").is_ok()
+        || std::env::var("GARRAIA_VAULT_PASSPHRASE").is_ok();
     checks.push(DiagnosticCheck {
         id: "secrets.jwt",
         label: "JWT signing secret",

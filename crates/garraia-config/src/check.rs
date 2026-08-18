@@ -439,6 +439,78 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // llm.*: a provider entry whose API key resolves nowhere is skipped at
+    // startup, leaving the gateway up with zero usable providers — the failure
+    // mode that made `garraia init` → `garraia start` unusable. It is an Error,
+    // not a Warning: the entry is present precisely because the operator wants
+    // that provider, and it will not work.
+    //
+    // Unlike the channel loop below, this consults the credential vault too,
+    // via the same chain `build_agent_runtime` walks, so `config check` cannot
+    // disagree with what the gateway will actually do at boot.
+    for (name, llm) in &config.llm {
+        let Some(var) = crate::provider_keys::provider_key_env(&llm.provider) else {
+            // Keyless (`ollama`) or unknown provider type — the unknown case is
+            // reported separately below.
+            continue;
+        };
+        if crate::provider_keys::resolve_provider_key_source(&llm.provider, llm.api_key.as_deref())
+            .is_resolved()
+        {
+            continue;
+        }
+        push_err(
+            &mut findings,
+            &format!("llm.{name}"),
+            format!(
+                "provider '{name}' (type={}) has no API key and will be skipped at startup. \
+                 Fix it in any one of three ways: set `llm.{name}.api_key` in config.yml, \
+                 export {var}, or export {vault} to unlock the credential vault.",
+                llm.provider,
+                vault = crate::provider_keys::VAULT_PASSPHRASE_ENV
+            ),
+        );
+    }
+
+    // An `llm:` entry whose `provider` the runtime does not recognize is
+    // silently dropped with `warn!("unknown LLM provider type")` at boot.
+    for (name, llm) in &config.llm {
+        let known = crate::provider_keys::provider_key_env(&llm.provider).is_some()
+            || matches!(llm.provider.as_str(), "ollama" | "echo");
+        if !known {
+            push_err(
+                &mut findings,
+                &format!("llm.{name}"),
+                format!(
+                    "provider '{name}' has unknown type `{}` — the runtime will skip it. \
+                     Did you mean one of: openrouter, openai, anthropic, ollama, gemini, \
+                     mistral, deepseek, qwen, cohere?",
+                    llm.provider
+                ),
+            );
+        }
+    }
+
+    // A populated `llm:` with no `agent.default_provider` silently disables the
+    // provider auto-fallback path in `build_agent_runtime`, so an unreachable or
+    // rate-limited provider has nowhere to fail over to.
+    if !config.llm.is_empty() && config.agent.default_provider.is_none() {
+        push_warn(
+            &mut findings,
+            "agent.default_provider",
+            format!(
+                "`llm:` defines {} provider(s) but agent.default_provider is unset — \
+                 provider auto-fallback is disabled. Set it to one of: {}.",
+                config.llm.len(),
+                {
+                    let mut keys: Vec<&str> = config.llm.keys().map(|k| k.as_str()).collect();
+                    keys.sort();
+                    keys.join(", ")
+                }
+            ),
+        );
+    }
+
     // mobile.persona: plan 0042 §5.3 — suspiciously short strings are
     // flagged as Warning (valid shape, unusual content). Threshold of
     // 10 chars picks up accidental "hi" / "test" without slapping
@@ -468,8 +540,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
     // operators catch the common mistake of enabling a channel without
-    // providing the secret. We only check env vars here — the vault is
-    // runtime-only and out of scope for config-check.
+    // providing the secret. Kept a Warning (not an Error like `llm.*` above)
+    // because a disabled channel degrades one surface, while a keyless LLM
+    // provider leaves the whole gateway unable to answer.
     for (name, ch) in &config.channels {
         let enabled = ch.enabled.unwrap_or(true);
         if !enabled {
@@ -568,13 +641,16 @@ fn validate_auth(
         );
     }
 
-    // Cross-check: if GARRAIA_JWT_SECRET or GarraIA_VAULT_PASSPHRASE are
-    // present in the process env AND `[auth]` is populated in the file,
-    // emit an Info-ish Warning so operators know the file entry is
-    // non-load-bearing for the secret (secrets are env-only by design
-    // — plan 0046 §5.1). We only check presence, never values.
+    // Cross-check: if any env var able to source the JWT secret is
+    // present AND `[auth]` is populated in the file, emit an Info-ish
+    // Warning so operators know the file entry is non-load-bearing for
+    // the secret (secrets are env-only by design — plan 0046 §5.1).
+    // We only check presence, never values. Since issue #824 the
+    // canonical all-caps vault passphrase also unlocks the auth flow
+    // (last fallback in `AuthConfig::from_env`).
     let jwt_env_set = std::env::var_os("GARRAIA_JWT_SECRET").is_some()
-        || std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+        || std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some()
+        || std::env::var_os("GARRAIA_VAULT_PASSPHRASE").is_some();
     // Heuristic for "auth section is populated" — any field that
     // differs from default indicates the operator put a `[auth]` in
     // the file. Comparing against defaults avoids a false positive
@@ -592,14 +668,47 @@ fn validate_auth(
         );
     }
 
-    // Cross-check: if NEITHER env var is set, the gateway will run in
+    // Cross-check: if NO env var is set, the gateway will run in
     // fail-soft mode and /auth/* + /v1/auth/* will answer 503. Surface
     // as a warning so operators see the state clearly in `config check`.
     if !jwt_env_set {
         push_warn(
             findings,
             "auth",
-            "neither GARRAIA_JWT_SECRET nor GarraIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+            "none of GARRAIA_JWT_SECRET, GarraIA_VAULT_PASSPHRASE or GARRAIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+        );
+    }
+
+    // Issue #824: the mixed-case `GarraIA_VAULT_PASSPHRASE` spelling is
+    // deprecated. It still works everywhere (JWT fallback since plan 0046,
+    // vault fallback since #824), but the near-identical names are a trap,
+    // so nudge operators toward the canonical pair. Presence only — the
+    // value comparison below never reaches any output.
+    let legacy_set = std::env::var_os("GarraIA_VAULT_PASSPHRASE").is_some();
+    let canonical_set = std::env::var_os("GARRAIA_VAULT_PASSPHRASE").is_some();
+    if legacy_set {
+        push_warn(
+            findings,
+            "env.GarraIA_VAULT_PASSPHRASE",
+            "mixed-case GarraIA_VAULT_PASSPHRASE is a deprecated spelling — it still works \
+             (JWT-secret fallback and credential-vault fallback), but prefer GARRAIA_JWT_SECRET \
+             for auth and GARRAIA_VAULT_PASSPHRASE for the vault"
+                .into(),
+        );
+    }
+    if legacy_set
+        && canonical_set
+        && std::env::var("GarraIA_VAULT_PASSPHRASE").ok()
+            != std::env::var("GARRAIA_VAULT_PASSPHRASE").ok()
+    {
+        push_warn(
+            findings,
+            "env.GARRAIA_VAULT_PASSPHRASE",
+            "GARRAIA_VAULT_PASSPHRASE and GarraIA_VAULT_PASSPHRASE are both set with DIFFERENT \
+             values: the credential vault prefers the all-caps spelling, while the JWT-secret \
+             fallback prefers the mixed-case one. If that split is not intentional, keep only \
+             GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
+                .into(),
         );
     }
 }
@@ -814,6 +923,118 @@ mod tests {
         assert_eq!(report.file_used, None);
         assert!(report.used_defaults);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Builds the config the broken onboarding flow produced: a structurally
+    /// perfect openrouter entry named `main` with `api_key: null`.
+    fn config_with_keyless_openrouter() -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "main".into(),
+            LlmProviderConfig {
+                provider: "openrouter".into(),
+                model: Some("openrouter/auto".into()),
+                api_key: None,
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("main".into());
+        cfg
+    }
+
+    /// The check that would have told the operator exactly what was wrong
+    /// instead of leaving them with a cryptic boot warning.
+    #[test]
+    fn keyless_llm_provider_is_reported_as_an_error() {
+        // SAFETY: unique-to-this-test read of a well-known var; we only remove it.
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+
+        let findings = validate(&config_with_keyless_openrouter());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "llm.main")
+            .expect("a keyless llm entry must produce a finding");
+
+        assert!(matches!(hit.severity, Severity::Error));
+        // The message must name all three remedies — the old boot warning
+        // mentioned only config and env, never the vault.
+        assert!(hit.message.contains("llm.main.api_key"));
+        assert!(hit.message.contains("OPENROUTER_API_KEY"));
+        assert!(hit.message.contains("GARRAIA_VAULT_PASSPHRASE"));
+    }
+
+    #[test]
+    fn llm_provider_with_key_in_config_produces_no_finding() {
+        let mut cfg = config_with_keyless_openrouter();
+        cfg.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "llm.main"),
+            "a provider with a key in config.yml must not be flagged"
+        );
+    }
+
+    #[test]
+    fn keyless_ollama_is_not_flagged() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "local".into(),
+            LlmProviderConfig {
+                provider: "ollama".into(),
+                model: Some("qwen3".into()),
+                api_key: None,
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("local".into());
+
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "llm.local"),
+            "ollama needs no API key and must never be reported as missing one"
+        );
+    }
+
+    #[test]
+    fn unknown_provider_type_is_reported() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "typo".into(),
+            LlmProviderConfig {
+                provider: "openrouterr".into(),
+                model: None,
+                api_key: Some("k".into()),
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("typo".into());
+
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "llm.typo")
+            .expect("an unknown provider type must be reported");
+        assert!(matches!(hit.severity, Severity::Error));
+        assert!(hit.message.contains("unknown type"));
+    }
+
+    #[test]
+    fn populated_llm_without_default_provider_warns_about_lost_fallback() {
+        let mut cfg = config_with_keyless_openrouter();
+        cfg.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+        cfg.agent.default_provider = None;
+
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "agent.default_provider")
+            .expect("an unset default_provider alongside llm entries must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("auto-fallback"));
     }
 
     #[test]
@@ -1429,6 +1650,106 @@ mod tests {
                 .any(|f| f.message.contains("does not exist")),
             "without_env should NOT fire MISSING warning: {without_env:?}"
         );
+    }
+
+    // ── Issue #824: vault-passphrase spelling findings ─────────────────────
+    //
+    // Env mutation shares the crate-wide ENV_TEST_LOCK with auth::tests —
+    // both modules touch the same GarraIA_*/GARRAIA_* variables inside one
+    // test binary.
+
+    fn passphrase_env_snapshot() -> (Option<String>, Option<String>) {
+        (
+            std::env::var("GarraIA_VAULT_PASSPHRASE").ok(),
+            std::env::var("GARRAIA_VAULT_PASSPHRASE").ok(),
+        )
+    }
+
+    fn restore_passphrase_env((legacy, canonical): (Option<String>, Option<String>)) {
+        // SAFETY: ENV_TEST_LOCK held by caller.
+        unsafe {
+            match legacy {
+                Some(v) => std::env::set_var("GarraIA_VAULT_PASSPHRASE", v),
+                None => std::env::remove_var("GarraIA_VAULT_PASSPHRASE"),
+            }
+            match canonical {
+                Some(v) => std::env::set_var("GARRAIA_VAULT_PASSPHRASE", v),
+                None => std::env::remove_var("GARRAIA_VAULT_PASSPHRASE"),
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_passphrase_spelling_yields_deprecation_warning() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "some-legacy-secret-value");
+            std::env::remove_var("GARRAIA_VAULT_PASSPHRASE");
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "env.GarraIA_VAULT_PASSPHRASE")
+            .expect("mixed-case spelling must produce a deprecation warning");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("deprecated"));
+        // Redaction invariant: presence only, never the value.
+        assert!(!hit.message.contains("some-legacy-secret-value"));
+
+        restore_passphrase_env(snapshot);
+    }
+
+    #[test]
+    fn divergent_passphrase_spellings_yield_split_warning() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "legacy-secret-value");
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "canonical-secret-value");
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "env.GARRAIA_VAULT_PASSPHRASE")
+            .expect("divergent values across the two spellings must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("DIFFERENT"));
+        assert!(!hit.message.contains("legacy-secret-value"));
+        assert!(!hit.message.contains("canonical-secret-value"));
+
+        restore_passphrase_env(snapshot);
+    }
+
+    #[test]
+    fn equal_passphrase_spellings_do_not_warn_about_divergence() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = passphrase_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GarraIA_VAULT_PASSPHRASE", "same-secret-value");
+            std::env::set_var("GARRAIA_VAULT_PASSPHRASE", "same-secret-value");
+        }
+
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field == "env.GARRAIA_VAULT_PASSPHRASE"),
+            "equal values across spellings must not produce the divergence warning"
+        );
+
+        restore_passphrase_env(snapshot);
     }
 
     #[test]

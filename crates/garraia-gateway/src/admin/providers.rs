@@ -57,7 +57,23 @@ pub async fn admin_list_providers(
         let active = active_ids.contains(&id.to_string());
         let mut model = None;
         let mut models = Vec::new();
-        let has_secret = {
+        let config_entry = config.llm.get(*id);
+
+        // `has_secret` drives the "Set"/"Missing" badge in the admin UI, so it
+        // must mean "the gateway can actually obtain a key for this provider" —
+        // the same vault -> config -> env chain `build_agent_runtime` walks.
+        // It previously reported the presence of a row in the admin AES-GCM
+        // secrets store, which the boot path never reads, so the console could
+        // show "Set" for a provider guaranteed to be skipped at startup.
+        let key_source = garraia_config::resolve_provider_key_source(
+            id,
+            config_entry.and_then(|c| c.api_key.as_deref()),
+        );
+        let has_secret = *needs_key && key_source.is_resolved();
+
+        // The admin store's own state stays visible under its own name, so no
+        // information is lost — it just no longer masquerades as boot readiness.
+        let has_admin_stored_secret = {
             let guard = state.store.lock().await;
             guard.get_secret_meta("default", id, "api_key").is_some()
         };
@@ -72,8 +88,6 @@ pub async fn admin_list_providers(
             }
         }
 
-        let config_entry = config.llm.get(*id);
-
         providers.push(serde_json::json!({
             "id": id,
             "display_name": display,
@@ -81,6 +95,11 @@ pub async fn admin_list_providers(
             "is_default": default_id.as_deref() == Some(*id),
             "needs_api_key": *needs_key,
             "has_secret": has_secret,
+            // Where the key came from ("config.yml", "credential vault",
+            // "environment variable", "not configured") — lets an operator see
+            // *why* a provider is or isn't ready, not just that it isn't.
+            "key_source": key_source.label(),
+            "has_admin_stored_secret": has_admin_stored_secret,
             "model": model,
             "models": models,
             "base_url": config_entry.and_then(|c| c.base_url.clone()),

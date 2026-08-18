@@ -6,7 +6,7 @@ use garraia_agents::{
     FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider,
     OpenAiProvider, WebFetchTool, WebSearchTool,
 };
-use garraia_config::AppConfig;
+use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
 use tracing::{info, warn};
 
@@ -62,86 +62,94 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
     // --- LLM Providers ---
     for (name, llm_config) in &config.llm {
-        match llm_config.provider.as_str() {
-            "anthropic" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "ANTHROPIC_API_KEY",
-                    "ANTHROPIC_API_KEY",
-                );
+        let provider_type = llm_config.provider.as_str();
 
-                if let Some(key) = api_key {
-                    let provider = AnthropicProvider::new(
-                        key,
-                        llm_config.model.clone(),
-                        llm_config.base_url.clone(),
-                    )
-                    .with_client(llm_client.clone());
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured anthropic provider: {name}");
-                } else {
-                    warn!(
-                        "skipping anthropic provider {name}: no API key (set api_key in config or ANTHROPIC_API_KEY env var)"
-                    );
-                }
+        // One table lookup and one precedence walk for every provider, rather
+        // than the same three lines duplicated into fifteen match arms. The
+        // table itself lives in `garraia_config::provider_keys` so that
+        // `garraia config check` and `/health` answer "does this provider have
+        // a key?" exactly the way the boot path does.
+        let key_env = provider_key_env(provider_type);
+        let resolved =
+            key_env.and_then(|var| resolve_api_key(llm_config.api_key.as_deref(), var, var));
+
+        // Central fail-fast. The old per-arm message said only "set api_key in
+        // config or <VAR> env var", which omitted the vault — the very place
+        // `garraia init` used to put the key by default, leaving operators
+        // staring at "no API key" while the key sat encrypted on disk.
+        if let Some(var) = key_env
+            && resolved.is_none()
+        {
+            warn!(
+                "skipping {provider_type} provider {name}: no API key. Fix it in any one of \
+                 three ways — set `llm.{name}.api_key` in config.yml, export {var}, or \
+                 unlock the credential vault by exporting {vault_env}.",
+                vault_env = garraia_config::provider_keys::VAULT_PASSPHRASE_ENV
+            );
+            continue;
+        }
+
+        // Past the guard, keyed providers are guaranteed to have resolved a
+        // key; keyless ones (`ollama`, `echo`) never had one to resolve, and
+        // ignore this binding.
+        let api_key = resolved.unwrap_or_default();
+
+        match provider_type {
+            "anthropic" => {
+                let provider = AnthropicProvider::new(
+                    api_key,
+                    llm_config.model.clone(),
+                    llm_config.base_url.clone(),
+                )
+                .with_client(llm_client.clone());
+                runtime.register_provider(Arc::new(provider));
+                info!("configured anthropic provider: {name}");
             }
             "openai" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "OPENAI_API_KEY",
-                    "OPENAI_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    // Health check for local OpenAI-compatible providers (LM Studio, vLLM, etc.)
-                    if let Some(ref base_url) = llm_config.base_url
-                        && (base_url.contains("localhost") || base_url.contains("127.0.0.1"))
-                    {
-                        let addr = base_url
-                            .trim_start_matches("http://")
-                            .trim_start_matches("https://")
-                            .split('/')
-                            .next()
-                            .unwrap_or("localhost:1234");
-                        let sock_addr = if addr.contains(':') {
-                            addr.to_string()
-                        } else {
-                            format!("{}:1234", addr)
-                        };
-                        match std::net::TcpStream::connect_timeout(
-                            &sock_addr.parse().unwrap_or_else(|_| {
-                                std::net::SocketAddr::from(([127, 0, 0, 1], 1234))
-                            }),
-                            std::time::Duration::from_secs(2),
-                        ) {
-                            Ok(_) => {
-                                info!("Local OpenAI provider '{name}' reachable at {base_url}");
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Local OpenAI provider '{name}' not reachable at {base_url} \
-                                     ({}). Provider registered but may fail. \
-                                     Start the local server or switch default_provider in config.",
-                                    e
-                                );
-                                unreachable_local_providers.push(name.clone());
-                            }
+                // Health check for local OpenAI-compatible providers (LM Studio, vLLM, etc.)
+                if let Some(ref base_url) = llm_config.base_url
+                    && (base_url.contains("localhost") || base_url.contains("127.0.0.1"))
+                {
+                    let addr = base_url
+                        .trim_start_matches("http://")
+                        .trim_start_matches("https://")
+                        .split('/')
+                        .next()
+                        .unwrap_or("localhost:1234");
+                    let sock_addr = if addr.contains(':') {
+                        addr.to_string()
+                    } else {
+                        format!("{}:1234", addr)
+                    };
+                    match std::net::TcpStream::connect_timeout(
+                        &sock_addr
+                            .parse()
+                            .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 1234))),
+                        std::time::Duration::from_secs(2),
+                    ) {
+                        Ok(_) => {
+                            info!("Local OpenAI provider '{name}' reachable at {base_url}");
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Local OpenAI provider '{name}' not reachable at {base_url} \
+                                 ({}). Provider registered but may fail. \
+                                 Start the local server or switch default_provider in config.",
+                                e
+                            );
+                            unreachable_local_providers.push(name.clone());
                         }
                     }
-
-                    let provider = OpenAiProvider::new(
-                        key,
-                        llm_config.model.clone(),
-                        llm_config.base_url.clone(),
-                    )
-                    .with_client(llm_client.clone());
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured openai provider: {name}");
-                } else {
-                    warn!(
-                        "skipping openai provider {name}: no API key (set api_key in config or OPENAI_API_KEY env var)"
-                    );
                 }
+
+                let provider = OpenAiProvider::new(
+                    api_key,
+                    llm_config.model.clone(),
+                    llm_config.base_url.clone(),
+                )
+                .with_client(llm_client.clone());
+                runtime.register_provider(Arc::new(provider));
+                info!("configured openai provider: {name}");
             }
             "ollama" => {
                 let base_url = llm_config
@@ -187,323 +195,182 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 info!("configured ollama provider: {name}");
             }
             "sansa" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "SANSA_API_KEY",
-                    "SANSA_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.sansaml.com".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("sansa-auto".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("sansa");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured sansa provider: {name}");
-                } else {
-                    warn!(
-                        "skipping sansa provider {name}: no API key (set api_key in config or SANSA_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.sansaml.com".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("sansa-auto".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("sansa");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured sansa provider: {name}");
             }
             "deepseek" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "DEEPSEEK_API_KEY",
-                    "DEEPSEEK_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.deepseek.com".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("deepseek-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("deepseek");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured deepseek provider: {name}");
-                } else {
-                    warn!(
-                        "skipping deepseek provider {name}: no API key (set api_key in config or DEEPSEEK_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.deepseek.com".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("deepseek-chat".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("deepseek");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured deepseek provider: {name}");
             }
             "mistral" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "MISTRAL_API_KEY",
-                    "MISTRAL_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.mistral.ai".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("mistral-large-latest".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("mistral");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured mistral provider: {name}");
-                } else {
-                    warn!(
-                        "skipping mistral provider {name}: no API key (set api_key in config or MISTRAL_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.mistral.ai".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("mistral-large-latest".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("mistral");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured mistral provider: {name}");
             }
             "gemini" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "GEMINI_API_KEY",
-                    "GEMINI_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config.base_url.clone().or_else(|| {
-                        Some("https://generativelanguage.googleapis.com/v1beta/openai/".to_string())
-                    });
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("gemini-2.5-flash".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("gemini");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured gemini provider: {name}");
-                } else {
-                    warn!(
-                        "skipping gemini provider {name}: no API key (set api_key in config or GEMINI_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config.base_url.clone().or_else(|| {
+                    Some("https://generativelanguage.googleapis.com/v1beta/openai/".to_string())
+                });
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("gemini-2.5-flash".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("gemini");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured gemini provider: {name}");
             }
             "falcon" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "FALCON_API_KEY",
-                    "FALCON_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.ai71.ai/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("falcon");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured falcon provider: {name}");
-                } else {
-                    warn!(
-                        "skipping falcon provider {name}: no API key (set api_key in config or FALCON_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.ai71.ai/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("falcon");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured falcon provider: {name}");
             }
             "jais" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "JAIS_API_KEY",
-                    "JAIS_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.core42.ai/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("jais-adapted-70b-chat".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("jais");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured jais provider: {name}");
-                } else {
-                    warn!(
-                        "skipping jais provider {name}: no API key (set api_key in config or JAIS_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.core42.ai/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("jais-adapted-70b-chat".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("jais");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured jais provider: {name}");
             }
             "qwen" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "QWEN_API_KEY",
-                    "QWEN_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config.base_url.clone().or_else(|| {
-                        Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1".to_string())
-                    });
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("qwen-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("qwen");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured qwen provider: {name}");
-                } else {
-                    warn!(
-                        "skipping qwen provider {name}: no API key (set api_key in config or QWEN_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config.base_url.clone().or_else(|| {
+                    Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1".to_string())
+                });
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("qwen-plus".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("qwen");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured qwen provider: {name}");
             }
             "yi" => {
-                let api_key =
-                    resolve_api_key(llm_config.api_key.as_deref(), "YI_API_KEY", "YI_API_KEY");
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.lingyiwanwu.com/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("yi-large".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("yi");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured yi provider: {name}");
-                } else {
-                    warn!(
-                        "skipping yi provider {name}: no API key (set api_key in config or YI_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.lingyiwanwu.com/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("yi-large".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("yi");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured yi provider: {name}");
             }
             "cohere" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "COHERE_API_KEY",
-                    "COHERE_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.cohere.com/compatibility/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("command-r-plus".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("cohere");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured cohere provider: {name}");
-                } else {
-                    warn!(
-                        "skipping cohere provider {name}: no API key (set api_key in config or COHERE_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.cohere.com/compatibility/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("command-r-plus".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("cohere");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured cohere provider: {name}");
             }
             "minimax" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "MINIMAX_API_KEY",
-                    "MINIMAX_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.minimaxi.chat/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("MiniMax-Text-01".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("minimax");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured minimax provider: {name}");
-                } else {
-                    warn!(
-                        "skipping minimax provider {name}: no API key (set api_key in config or MINIMAX_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.minimaxi.chat/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("MiniMax-Text-01".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("minimax");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured minimax provider: {name}");
             }
             "moonshot" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "MOONSHOT_API_KEY",
-                    "MOONSHOT_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://api.moonshot.cn/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("kimi-k2-0711-preview".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("moonshot");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured moonshot provider: {name}");
-                } else {
-                    warn!(
-                        "skipping moonshot provider {name}: no API key (set api_key in config or MOONSHOT_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://api.moonshot.cn/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("kimi-k2-0711-preview".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("moonshot");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured moonshot provider: {name}");
             }
             "openrouter" => {
-                let api_key = resolve_api_key(
-                    llm_config.api_key.as_deref(),
-                    "OPENROUTER_API_KEY",
-                    "OPENROUTER_API_KEY",
-                );
-
-                if let Some(key) = api_key {
-                    let base_url = llm_config
-                        .base_url
-                        .clone()
-                        .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
-                    let model = llm_config
-                        .model
-                        .clone()
-                        .or_else(|| Some("openai/gpt-4o".to_string()));
-                    let provider = OpenAiProvider::new(key, model, base_url)
-                        .with_client(llm_client.clone())
-                        .with_name("openrouter");
-                    runtime.register_provider(Arc::new(provider));
-                    info!("configured openrouter provider: {name}");
-                } else {
-                    warn!(
-                        "skipping openrouter provider {name}: no API key (set api_key in config or OPENROUTER_API_KEY env var)"
-                    );
-                }
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
+                let model = llm_config
+                    .model
+                    .clone()
+                    .or_else(|| Some("openai/gpt-4o".to_string()));
+                let provider = OpenAiProvider::new(api_key, model, base_url)
+                    .with_client(llm_client.clone())
+                    .with_name("openrouter");
+                runtime.register_provider(Arc::new(provider));
+                info!("configured openrouter provider: {name}");
             }
             // Plan 0051 (GAR-444): deterministic echo provider for dev + CI
             // smoke tests. Gated by `dev-echo-provider` feature on

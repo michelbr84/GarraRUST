@@ -7,6 +7,8 @@ A forma mais rápida de começar é utilizando o script de instalação:
 ```bash
 # Instalar (Linux, macOS)
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+# Alternativa se o comando acima responder HTTP 429 (rate limit por IP):
+#   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 
 # Configuração interativa — escolha seu provedor de LLM e armazene suas chaves de API em um cofre criptografado
 garraia init
