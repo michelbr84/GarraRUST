@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-18
+
+### Fixed
+- **Binário Linux x86_64 roda em Ubuntu 22.04+ de novo** — o job
+  `build-linux-x86_64` usava `runs-on: ubuntu-latest`, que passou a mapear
+  para Ubuntu 24.04 (glibc 2.39); o binário da v0.3.2 abortava com
+  ``version `GLIBC_2.39' not found`` em qualquer sistema com glibc mais
+  antiga (ex.: containers Ubuntu 22.04). O runner agora é pinado em
+  `ubuntu-22.04`, estabelecendo a baseline suportada: **glibc ≥ 2.35**
+  (Ubuntu 22.04+, Debian 12+).
+- **`install.sh` checa a glibc antes de baixar** — novo preflight
+  `check_glibc` (`MIN_GLIBC=2.35`) falha cedo com mensagem acionável
+  (atualizar a distro ou `cargo install --git`) em vez do erro críptico do
+  loader depois da instalação. Detecta musl (Alpine) e aponta para build
+  from source. Coberto por `tests/install_sh/check_glibc.sh`.
+
+### Changed
+- **OpenSSL agora é vendored/estático** (`native-tls/vendored` via
+  garraia-channels, feature discord) — o binário de release não linka mais
+  `libssl.so.x` do sistema em nenhuma plataforma, e o `pre-build` de
+  `libssl-dev` no `Cross.toml` foi removido (receita canônica do FAQ do
+  cross). Nota: migrar o serenity para `rustls_backend` está bloqueado — o
+  0.12.5 mapeia a feature para `reqwest/rustls-tls`, removida no reqwest
+  0.13, que o tauri ^0.13 prende no lock; reavaliar quando o serenity
+  suportar reqwest 0.13.
+
 ## [0.3.2] - 2026-08-18
 
 ### Fixed
