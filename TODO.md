@@ -5,9 +5,41 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-06-10 (America/New_York)
+**Atualizado:** 2026-08-18 (America/New_York)
 
-## Concluído nesta sessão
+## Concluído nesta sessão (2026-08-18 — cleanup total + v0.3.1/v0.3.2)
+
+- **Repo zerado e verificado**: 0 issues abertas, 0 PRs abertos, só a branch
+  `main`. Trigger `garra-routine-trigger.yml` **desativado** (`gh workflow
+  disable`, reversível) — era ele que mantinha 1 issue de tracking rolante.
+- **Linear descontinuado**: planejamento interno migrou para o tracker interno.
+  README/ROADMAP/CLAUDE.md/docs atualizados (links mortos removidos; IDs
+  `GAR-xxx` preservados como histórico).
+- **Fix crítico LGPD** (plan 0354, PR #843): `POST /v1/me/anonymize` retornava
+  **500 em toda chamada** desde junho (coluna fantasma `user_identities.login`
+  portada do repo interno sem o schema — regra 14). Agora anonimiza
+  `provider_sub` + `users.email` + `group_invites.invited_email` com token
+  determinístico de UUID completo. Revisado por security-auditor +
+  code-reviewer. Era a causa do cargo-mutants vermelho desde 2026-04-28.
+- **Gap estrutural de CI fechado** (PR #843): job `auth-integration` roda os 16
+  binários de integração do garraia-auth (matriz RLS 81 cenários) em todo PR —
+  antes o `cargo test --workspace` os pulava silenciosamente
+  (`required-features`). Promover a required check: tracker interno #164.
+- **Deps consolidadas** (PR #844): jsonwebtoken 11, validator 0.21, base64
+  0.23, serial_test 4, itertools 0.15, uuid/tauri, e **wasmtime 47 em par**
+  (grupo dependabot novo evita o par quebrado). lopdf/rmcp adiados com
+  `@dependabot ignore` → tracker interno #163. h2 0.4.16 (RUSTSEC-2026-0258).
+- **CI higiene** (PR #842): `timeout-minutes` em e2e/playwright (2 runs de 6h
+  presos no download do Chromium em 2026-08-17), `Cross.toml` para o build
+  ARM64.
+- **Releases**: **v0.3.1** (fix LGPD + deps, 4 binários) e **v0.3.2** (PR #846:
+  cross da git + **sqlx native-tls → rustls** `tls-rustls-ring-native-roots`) —
+  **primeira release com `garraia-linux-aarch64`** (5 binários).
+- Issue #827 (domínio `get.garraia.cloud`) fechada *not planned* — 429 mitigado
+  por release asset + jsDelivr (#826); RUSTSEC do `lru` migrado para o tracker
+  interno #162 (re-triage ≤ 2026-11-14).
+
+## Concluído em 2026-06-10
 
 - GAR-835 / plan 0297 — Docs Tier 2 scaffold: migration 026 + POST/GET /v1/groups/{group_id}/doc-pages:
   - Migration `026_doc_pages.sql`: `doc_pages` table with FORCE RLS, NULLIF fail-closed group
@@ -219,7 +251,17 @@ curtos para a próxima sessão autônoma.
 
 ## Próximos passos recomendados
 
-1. Rodar smoke Docker GAR-603:
+1. Conferir o cargo-mutants no próximo agendamento semanal (esperado **verde
+   pela primeira vez** após o fix do baseline no plan 0354).
+2. Promover `Auth Integration (test-support)` a required check do ruleset após
+   ~1 semana sem flakes (tracker interno #164).
+3. Retomar upgrades adiados quando houver janela: lopdf 0.44 (garraia-media) e
+   rmcp 1.7→3.x (tracker interno #163).
+4. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14
+   (tracker interno #162).
+5. Ajustar a skill `garra-routine` (`.claude/commands/garra-routine.md`), que
+   ainda instrui consultar o Linear.
+6. Rodar smoke Docker GAR-603:
    `docker build -t garraia:local .`,
    `docker run --rm -p 3888:3888 garraia:local`,
    `curl -fsS http://localhost:3888/ping`,

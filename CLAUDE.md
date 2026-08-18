@@ -8,7 +8,7 @@
 - **Nome:** GarraIA (GarraRUST)
 - **Stack:** Rust (Axum 0.8) + Flutter + Tauri v2
 - **Repo:** michelbr84/GarraRUST
-- **Equipe Linear:** GAR
+- **Tracking:** tracker interno desde 2026-08-18 (Linear descontinuado; IDs `GAR-xxx` neste doc são registro histórico)
 
 ## Protocolo de início de sessão
 
@@ -453,4 +453,4 @@ python3 -m pytest scripts/quality/tests/
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
 - @imports `docs/adr/` — decisões arquiteturais. **Accepted:** 0003 (Postgres para Group Workspace). **Proposed/blocked:** 0001, 0002, 0004-0008. Ver `docs/adr/README.md` para o índice.
-- Linear: [time GarraIA-RUST (GAR)](https://linear.app/chatgpt25/team/GAR/projects) — execução semana a semana
+- Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)
