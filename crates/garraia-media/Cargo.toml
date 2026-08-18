@@ -32,10 +32,10 @@ lopdf = "0.42"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 # Base64 encoding for image data
-base64 = "0.22"
+base64 = "0.23"
 
 # Iterator utilities
-itertools = "0.14"
+itertools = "0.15"
 
 [dev-dependencies]
 tempfile = "3"
