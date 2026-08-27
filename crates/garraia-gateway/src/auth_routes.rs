@@ -187,6 +187,10 @@ fn duplicate_email() -> Response {
 
 /// Issue a fresh access + refresh pair for a verified `user_id`. Used by
 /// login + refresh + signup happy paths.
+// `Response` como Err é o padrão axum destes handlers (consumido com `?`);
+// boxear os ~128 bytes espalharia deref por todos os call sites sem ganho
+// real fora de hot path (lint novo do clippy 1.98).
+#[allow(clippy::result_large_err)]
 async fn issue_token_pair(
     state: &AppState,
     user_id: Uuid,
