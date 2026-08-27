@@ -773,8 +773,10 @@ fn row_to_template(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectTemplate>
 // ============================================================================
 
 fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    blob.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
