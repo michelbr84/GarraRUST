@@ -1,0 +1,48 @@
+# Publica a pasta wiki/ no GitHub Wiki (GarraRUST.wiki).
+#
+# Por quê: o wiki passa a ser versionado e revisável por PR neste repo;
+# este workflow é o único caminho de escrita (edições manuais no wiki
+# seriam sobrescritas no próximo sync — edite wiki/ via PR).
+#
+# O GITHUB_TOKEN com contents:write tem acesso de push ao repo .wiki.
+name: Wiki sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish wiki
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" /tmp/wiki
+          # --delete: wiki/ é a fonte de verdade completa (todas as páginas
+          # existentes estão versionadas aqui, changelogs incluídos).
+          rsync -a --delete --exclude .git wiki/ /tmp/wiki/
+          cd /tmp/wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki já está em dia — nada a publicar."
+            exit 0
+          fi
+          git commit -m "docs(wiki): sync de ${GITHUB_SHA::7}"
+          git push
