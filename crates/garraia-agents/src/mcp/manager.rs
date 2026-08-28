@@ -413,7 +413,7 @@ impl McpManager {
 
         conn.tools
             .iter()
-            .filter(|t| conn.allowed_tools.is_empty() || conn.allowed_tools.contains(&t.name))
+            .filter(|t| is_tool_allowed(&conn.allowed_tools, &t.name))
             .map(|t| {
                 Box::new(McpTool::new(
                     &conn.server_name,
@@ -637,6 +637,16 @@ impl McpManager {
             }
         };
 
+        // GAR-190: the allowlist must bind this path too — `take_tools`
+        // filters what the LLM sees, but call_tool (admin API / slash
+        // commands) used to dispatch any discovered tool regardless.
+        if !is_tool_allowed(&conn.allowed_tools, &tool_info.name) {
+            return Err(format!(
+                "Tool '{}' on server '{}' is blocked by the allowed_tools allowlist",
+                tool_info.name, server_name
+            ));
+        }
+
         // Create a peer reference
         let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
 
@@ -785,6 +795,13 @@ impl McpManager {
     }
 }
 
+/// GAR-190: single source of truth for the `allowed_tools` allowlist,
+/// shared by `take_tools` (LLM registration) and `call_tool` (admin API /
+/// slash commands). Empty allowlist = every discovered tool is allowed.
+fn is_tool_allowed(allowed: &[String], tool_name: &str) -> bool {
+    allowed.is_empty() || allowed.iter().any(|t| t == tool_name)
+}
+
 /// GAR-293: Apply a virtual-memory limit to a child process (Unix only).
 ///
 /// Uses `setrlimit(RLIMIT_AS, limit_mb * 1024 * 1024)` before exec.
@@ -804,5 +821,25 @@ fn apply_memory_limit(cmd: &mut Command, limit_mb: u64) {
             let _ = libc::setrlimit(libc::RLIMIT_AS, &rlim);
             Ok(())
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_tool_allowed;
+
+    #[test]
+    fn empty_allowlist_allows_everything() {
+        assert!(is_tool_allowed(&[], "read_file"));
+        assert!(is_tool_allowed(&[], "anything"));
+    }
+
+    #[test]
+    fn allowlist_matches_bare_tool_name_only() {
+        let allowed = vec!["read_file".to_string()];
+        assert!(is_tool_allowed(&allowed, "read_file"));
+        assert!(!is_tool_allowed(&allowed, "write_file"));
+        // Namespaced form is not what the allowlist stores.
+        assert!(!is_tool_allowed(&allowed, "filesystem.read_file"));
     }
 }
