@@ -173,6 +173,11 @@ enum Commands {
         /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
         #[arg(long, short = 'u')]
         url: Option<String>,
+
+        /// Per-turn LLM call timeout in seconds. Default 120, range [1, 600].
+        /// On timeout the turn is discarded and the REPL keeps running.
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=600))]
+        timeout_secs: u64,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -1305,8 +1310,12 @@ async fn async_main(
             provider,
             model,
             url,
+            timeout_secs,
         } => {
-            chat::run_chat(config, provider, model, url).await?;
+            // Without a tracing subscriber, --debug/RUST_LOG silently produce
+            // nothing in chat mode (logs go to file + stderr, like Ask).
+            init_tracing(&effective_level);
+            chat::run_chat(config, provider, model, url, timeout_secs).await?;
         }
         Commands::Ask {
             message,
