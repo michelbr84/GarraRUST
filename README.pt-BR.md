@@ -116,15 +116,16 @@ cargo build --release -p garraia-desktop
 <summary>Instalar via script (Linux, macOS) — usa binários publicados no release</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+curl -fsSL https://garraia.org/install.sh | sh
 ```
 
-> Se o `raw.githubusercontent.com` responder **HTTP 429** (rate limit por IP —
-> comum em pods cloud com IP de saída compartilhado), o mesmo script está
-> publicado em dois canais alternativos:
+> O mesmo script (sincronizado automaticamente) está publicado em canais
+> alternativos — o release CDN é o mais robusto contra rate limit por IP
+> (429 em pods cloud com IP de saída compartilhado):
 >
 > ```bash
 > curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+> curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 > curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 > ```
 
