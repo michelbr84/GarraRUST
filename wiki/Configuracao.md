@@ -6,7 +6,7 @@ Duas fontes: o arquivo **`config.yml`** (`~/.garraia/config.yml`, com hot-reload
 - [`.env.example`](https://github.com/michelbr84/GarraRUST/blob/main/.env.example) — todas as variáveis, comentadas, em 18 seções
 - [`docs/auth-config.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/auth-config.md) — **matriz de precedência de auth** (leia antes de configurar JWT)
 - [`mcp.json.example`](https://github.com/michelbr84/GarraRUST/blob/main/mcp.json.example) — servidores MCP
-- [`.garraignore`](https://github.com/michelbr84/GarraRUST/blob/main/README.md#configura%C3%A7%C3%A3o) — padrões de exclusão de arquivos
+- [`.garraignore`](https://github.com/michelbr84/GarraRUST/blob/main/README.pt-BR.md#configura%C3%A7%C3%A3o) — padrões de exclusão de arquivos
 
 ## Mapa rápido do `.env.example`
 

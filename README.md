@@ -1,5 +1,7 @@
 <!-- markdownlint-disable MD033 MD041 MD060 -->
 
+<p align="right"><strong>🇺🇸 English</strong> · <a href="README.pt-BR.md">🇧🇷 Português</a></p>
+
 <p align="center">
   <img src="assets/logo.png" alt="GarraIA" width="280" />
 </p>
@@ -7,729 +9,386 @@
 <h1 align="center">GarraIA</h1>
 
 <p align="center">
-  <strong>O framework seguro e leve de código aberto para agentes de IA.</strong>
+  <strong>The secure, lightweight open-source framework for AI agents — written in Rust, born in Brazil.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/michelbr84/GarraRUST/actions"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/michelbr84/GarraRUST/actions/workflows/codeql.yml"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
   <a href="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml/badge.svg?branch=main" alt="Security Audit"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Licença: MIT"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/stargazers"><img src="https://img.shields.io/github/stars/michelbr84/GarraRUST" alt="Estrelas"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/issues"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST" alt="Issues"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Boas Primeiras Issues"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/stargazers"><img src="https://img.shields.io/github/stars/michelbr84/GarraRUST" alt="Stars"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="Rust">
-  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
-  <img src="https://img.shields.io/badge/channels-11-purple" alt="Channels">
+  <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
 </p>
 
 <p align="center">
-  <a href="#início-rápido">Início Rápido</a> &middot;
-  <a href="#por-que-garraia">Por que GarraIA?</a> &middot;
-  <a href="#recursos">Recursos</a> &middot;
-  <a href="#memória-e-auto-aprendizado">Memória</a> &middot;
-  <a href="#segurança">Segurança</a> &middot;
-  <a href="#arquitetura">Arquitetura</a> &middot;
-  <a href="#migrando-do-openclaw">Migrar do OpenClaw</a> &middot;
-  <a href="#contribuindo">Contribuindo</a>
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#why-garraia">Why GarraIA?</a> &middot;
+  <a href="#features">Features</a> &middot;
+  <a href="#memory-and-self-learning">Memory</a> &middot;
+  <a href="#security">Security</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="#migrating-from-openclaw">Migrate from OpenClaw</a> &middot;
+  <a href="#contributing">Contributing</a>
 </p>
 
 ---
 
-**O assistente de IA brasileiro que funciona 100% no seu computador.** Um único binário de 16 MB que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com armazenamento de credenciais criptografadas, recarregamento de configuração a quente, sistema completo de memória e apenas 13 MB de RAM em modo de espera. Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
+**A personal AI assistant that runs on your machine.** One self-contained
+native binary runs your agents on Telegram, Discord, Slack, WhatsApp and
+iMessage — with an AES-256-GCM encrypted credential vault, hot config
+reload, a full memory system with local embeddings, and a warm Brazilian
+Portuguese persona as the default voice (fully configurable, including a
+neutral English mode).
 
-**100% Local** — Todos os seus dados, conversas e configurações ficam exclusivamente no seu computador. Nenhum dado é enviado para servidores externos.
+Every performance and comparison number in this README is **measured, not
+asserted**: the reproducible harness, the scenario definitions, and the
+raw evidence live in
+[`benches/agent-framework-comparison/`](benches/agent-framework-comparison/).
+If a number has no committed measurement behind it, it does not appear here.
 
-<!-- TODO: Adicionar GIF de demonstração do terminal VHS aqui (#103) -->
+**Local-first.** All state — conversations, memory, config, credentials —
+is stored on your machine, and there is no telemetry or analytics
+phone-home. Your prompts go only to the LLM provider you configure; run
+[Ollama](https://ollama.com) for a fully offline, zero-egress setup.
 
-## 🐾 Conheça o Garra
+## 🐾 Meet Garra
 
-O **Garra** não é só um endpoint de API — ele é o seu assistente pessoal, e fala
-como um. Desde o primeiro `garra start`, ele se apresenta com nome, conversa em
-português do Brasil na primeira pessoa e mantém um tom caloroso, direto e honesto
-(sem bajulação). Quando algo dá errado, ele explica o que aconteceu e qual é o
-próximo passo — nada de despejar códigos de erro crus.
+Garra is not just an API endpoint — it is a personal assistant with a
+personality. From the first `garra start` it introduces itself by name and
+speaks warm, direct, first-person Brazilian Portuguese (no sycophancy).
+When something breaks, it explains what happened and what to do next
+instead of dumping raw error codes.
 
-> _"Oi! 👋 Eu sou o Garra, seu assistente pessoal. Pode falar comigo como você
-> falaria com um amigo."_
+> _"Oi! 👋 Eu sou o Garra, seu assistente pessoal. Pode falar comigo como
+> você falaria com um amigo."_
 
-Essa personalidade é **o padrão**, mas você manda: defina `agent.system_prompt`
-para dar a ele uma personalidade própria, ou `agent.persona = "neutral"` para um
-tom totalmente neutro. Veja [ADR 0012](docs/adr/0012-garra-persona.md).
+The persona is **the default, not a cage**: set `agent.system_prompt` for
+a custom personality or `agent.persona = "neutral"` for a fully neutral
+tone in any language. See [ADR 0012](docs/adr/0012-garra-persona.md).
 
-## 🗺️ Roadmap AAA
-
-O desenvolvimento do GarraRUST segue um plano ambicioso de evolução para o tier AAA em 7 fases, consolidado no [ROADMAP.md](ROADMAP.md). Inclui GarraMaxPower nativo (`garra max-power`, registry de skills e Agent Team MVP), Superpowers, TurboQuant+ (KV cache), RAG local (lancedb), MCP + plugins WASM, zero-latency streaming (OpenTelemetry), e a nova direção **Group Workspace** — espaço compartilhado família/equipe multi-tenant com arquivos, chats, memória IA e módulo tipo-Notion (tasks + docs + databases), desenhado em [`deep-research-report.md`](deep-research-report.md). Planejamento interno migrado do Linear para o tracker interno em 2026-08-18; o acompanhamento fase a fase vive em [ROADMAP.md](ROADMAP.md).
-
-Nota de sincronizacao (2026-05-24): a decisao GarraMaxPower esta formalizada em [ADR 0011](docs/adr/0011-garra-max-power.md), e o backlog operacional curto agora vive em [`TODO.md`](TODO.md) para pendencias seguras do `ROADMAP.md` (planejamento interno no tracker interno desde 2026-08-18).
-
-## Início Rápido
+## Quick Start
 
 ```bash
-# Requer Rust 1.94+ (alinhado com MSRV declarado em Cargo.toml — GAR-895)
+# Requires Rust 1.94+ (matches the MSRV declared in Cargo.toml)
 cargo build --release -p garraia
 
-# Configuração interativa - escolha seu provedor de LLM, armazene chaves de API em cofre criptografado
+# Interactive setup — pick your LLM provider; optionally store API keys
+# in the encrypted vault (the wizard's default is config.yml, mode 0600)
 ./target/release/garra init
 
-# Iniciar
+# Start
 ./target/release/garra start
 
-# Conversa rápida não-interativa (GAR-579) — ideal para Claude Code, CI, scripts
+# One-shot non-interactive ask — great for scripts and CI
 ./target/release/garra ask --provider openrouter --model openrouter/free \
-  --json --timeout-secs 30 "Responda apenas: GAR-ASK-OK"
+  --json --timeout-secs 30 "Reply with exactly: OK"
 
-# MCP server stdio (GAR-583) — expõe `garra_ask` para Claude Desktop / Claude Code
-./target/release/garra mcp-server   # ver docs/cli-mcp-server.md
-
-# Opcional: incluir suporte a plugins WASM
-cargo build --release -p garraia --features plugins
+# MCP server over stdio — exposes `garra_ask` to Claude Desktop / Claude Code
+./target/release/garra mcp-server
 ```
 
 <details>
-<summary>Compilar o app desktop (Tauri)</summary>
-
-O app desktop requer que o binário CLI já esteja compilado como sidecar:
+<summary>Install via script (Linux, macOS) — uses published release binaries</summary>
 
 ```bash
-# 1. Compilar o CLI primeiro
+curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the binary for your platform, verifies it against
+the release's `SHA256SUMS`, then chains into init and start. Note: the
+installer names the binary `garraia`, while a cargo build produces
+`garra` — the commands are otherwise identical. Env toggles:
+`GARRAIA_SKIP_INIT=1`, `GARRAIA_SKIP_START=1`,
+`GARRAIA_BOOTSTRAP_LOCAL=0`. In TTY-less contexts (Docker build, CI) it
+prints next steps and exits 0 instead of blocking.
+
+Releases ship 5 prebuilt CLI binaries: Linux x86_64/aarch64,
+macOS x86_64/aarch64, Windows x86_64.
+
+</details>
+
+<details>
+<summary>Update an existing install — <code>garra update</code></summary>
+
+```bash
+garra update          # interactive
+garra update --yes    # non-interactive (CI)
+garra rollback        # restore the previous binary if anything goes wrong
+```
+
+Self-update downloads the platform binary, verifies it against the
+release's per-asset SHA-256 checksum (aborts on mismatch or missing
+checksum), and swaps the executable atomically.
+
+</details>
+
+<details>
+<summary>Build the desktop app (Tauri)</summary>
+
+```bash
 cargo build --release -p garraia
-
-# 2. Copiar para o diretório de sidecar esperado pelo Tauri
 cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garra-$(rustc -vV | grep host | cut -d' ' -f2)
-
-# 3. Compilar o desktop
 cargo build --release -p garraia-desktop
 ```
 
 </details>
 
-<details>
-<summary>Instalar via script (Linux, macOS) — usa binários publicados no release</summary>
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-```
-
-> Se o `raw.githubusercontent.com` responder **HTTP 429** (rate limit por IP —
-> comum em pods cloud com IP de saída compartilhado), o mesmo script está
-> publicado em dois canais alternativos:
->
-> ```bash
-> curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
-> curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
-> ```
-
-Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
-1. download + verificação SHA256 do binário `garraia`,
-2. `garraia init </dev/tty` (o wizard do plan 0126 — detecção de GPU/Ollama, prompts opcionais para instalar Qwen3-14B GGUF, geração de `config.yml` server-friendly),
-3. `garraia start </dev/tty` em foreground.
-
-**Toggles** (env vars, todos opt-out):
-- `GARRAIA_SKIP_INIT=1` — pula o wizard.
-- `GARRAIA_SKIP_START=1` — pula o `garraia start` final.
-- `GARRAIA_BOOTSTRAP_LOCAL=0` — suprime os prompts de GPU/Ollama dentro do wizard, mesmo com `nvidia-smi` disponível.
-
-Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next steps" legados e sai com código 0 — nunca trava aguardando input.
-
-> A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica o binário baixado contra o arquivo `SHA256SUMS` da release (um único manifesto para todos os assets, via `sha256sum -c`). O formato `<asset>.sha256` é usado pelo `garraia update`, não pelo `install.sh`.
-> Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são publicados normalmente desde a **v0.3.2** (2026-08-18) — o cross-compile ARM64 foi resolvido com `cross` moderno + sqlx em rustls ([release.yml](.github/workflows/release.yml)).
-
-</details>
-
-<details>
-<summary>Atualizar uma instalação existente — <code>garraia update</code></summary>
-
-```bash
-# Verifica a release mais recente, baixa o binário da sua plataforma,
-# confere SHA-256 contra <asset>.sha256 e troca o executável atomicamente.
-garraia update          # interativo
-garraia update --yes    # não interativo (CI)
-
-# Volta para o binário anterior se algo der errado:
-garraia rollback
-```
-
-> `garraia update` falava com **404** em todas as versões anteriores a `v0.2.1` porque toda release publicada era marcada como prerelease (e o endpoint `releases/latest` ignora prereleases). Detalhamento em [`CHANGELOG.md`](CHANGELOG.md#021---2026-05-14).
-
-</details>
-
-As releases atuais (v0.3.x) publicam os 5 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows `.exe`); instaladores desktop (Windows `.msi`) e mobile (Android `.apk`) foram publicados até a v0.2.1, nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
-
-## Por que GarraIA?
-
-### vs OpenClaw, ZeroClaw e outros frameworks de agentes de IA
-
-| | | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
-|---|---|---|---|---|
-| | **Tamanho do binário** | Em medição | Em medição | Em medição |
-| | **Pico de RSS (`--help`)** | Em medição | Em medição | Em medição |
-| | **Início a frio (`--help`)** | Em medição | Em medição | Em medição |
-| | **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
-| | **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
-| | **Agendamento** | Cron, intervalo, único | Sim | Não |
-| | **Roteamento multi-agente** | Sim (Priority Router) | Sim (agentId) | Não |
-| | **Orquestração de sessões** | Sim (Session Continuity) | Sim | Não |
-| | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
-| | **Canais** | 11 | 6+ | 4 |
-| | **Provedores de LLM** | 100+ | 10+ | 22+ |
-| | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
-| | **Recarregamento de config a quente** | Sim | Não | Não |
-| | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
-| | **Arquitetura 100% local** | ✅ Sim | Não | Não |
-| | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
-| | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
-
-*Benchmarks em reconstrução. A metodologia reproduzível está em [benches/agent-framework-comparison](benches/agent-framework-comparison/). Resultados reais serão publicados em `results/YYYY-MM-DD-<host>/` após execução versionada.*
-
-## Recursos
-
-### Provedores de LLM
-
-**Provedores nativos:**
-
-- **Anthropic Claude** - streaming (SSE), uso de ferramentas
-- **OpenAI** - GPT-4o, Azure, qualquer endpoint compatível com OpenAI via `base_url`
-- **Ollama** - modelos locais com streaming, embeddings locais
-
-**Provedores compatíveis com OpenAI:**
-
-- **Sansa** - LLM regional via [sansaml.com](https://sansaml.com)
-- **DeepSeek** - DeepSeek Chat
-- **Mistral** - Mistral Large
-- **Gemini** - Google Gemini via API compatível com OpenAI
-- **Falcon** - TII Falcon 180B (AI71)
-- **Jais** - Core42 Jais 70B
-- **Qwen** - Alibaba Qwen Plus
-- **Yi** - 01.AI Yi Large
-- **Cohere** - Command R Plus
-- **MiniMax** - MiniMax Text 01
-- **Moonshot** - Kimi K2
-- **OpenRouter** - Acesso a +100 LLMs (Anthropic, OpenAI, Meta, etc.) via [openrouter.ai](https://openrouter.ai)
-
-### Canais
-
-- **Telegram** - respostas streaming, MarkdownV2, comandos do bot, indicadores de digitação, lista de permissões de usuários com códigos de pareamento
-- **Discord** - comandos slash, tratamento de mensagens orientado a eventos, gerenciamento de sessões
-- **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
-- **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
-- **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
-- **Google Chat** - integração via API do Google Workspace
-- **Microsoft Teams** - bot via Bot Framework / Graph API
-- **Matrix** - protocolo federado, suporte a rooms e E2EE
-- **LINE** - Messaging API com webhooks
-- **IRC** - cliente IRC com suporte a múltiplos canais e redes
-- **Signal** - mensagens seguras via signal-cli
-- **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
-
-### Comandos e Aliases (Slash Commands)
-
-O GarraIA possui um sistema unificado de comandos interativos disponíveis no chat (integrado nativamente ao menu do Telegram):
-
-- `/help` - Exibe os comandos disponíveis dinamicamente
-- `/clear` - Limpa o histórico da conversa atual
-- `/model [nome]` - Visualiza ou altera o modelo LLM em uso
-- `/pair` - Gera um código de convite para pareamento
-- `/users` - Lista os usuários permitidos no sistema
-- `/voz` (ou `/voice`) - Alterna o envio de respostas em áudio na sessão
-- `/health` - Exibe o status de saúde dos serviços (LLMs, TTS, BD, MCP)
-- `/providers` - Lista os provedores LLM configurados
-- `/stats` - Exibe métricas de uso e uptime do servidor
-- `/config` - Gerencia definições em runtime (apenas administradores)
-- `/mcp` - Gerencia servidores e recursos MCP acoplados
-
-Além dos comandos embutidos, qualquer servidor MCP que exponha **prompts** via `prompts/list` aparece automaticamente como slash command. Por exemplo, um servidor de automação com prompt `n8n-deploy` fica disponível como `/n8n-deploy [args]`. O endpoint `GET /api/slash-commands` retorna a lista completa (built-ins + MCP dinâmicos).
-
-### Voice Mode (STT/TTS) com Múltiplos Providers
-
-- **STT Providers** - Whisper local (whisper.cpp) e OpenAI Whisper API com dual-endpoint
-- **TTS Providers** - Chatterbox (GPU, multilíngue), Hibiki, ElevenLabs, Kokoro, OpenAI TTS API
-- **Síntese multilíngue** - pt, en, es, fr, de, it, hi via GPU local
-- **Endpoint REST** - `POST /api/tts` para síntese sob demanda
-- **Ativação** - `garra start --with-voice` habilita o modo de voz
-- **Health check automático** - verificação HTTP do Chatterbox no boot
-- **Integração Telegram** - resposta por áudio automática no pipeline voice
-- **Conversão de formato** - via ffmpeg, streaming de áudio em tempo real
-
-### VS Code Integration (API OpenAI-Compatible)
-
-O GarraIA agora oferece uma **API OpenAI-compatible** que permite integração com o VS Code e outras ferramentas que suportam endpoints estilo OpenAI.
-
-#### Endpoints Disponíveis
-
-| Endpoint | Método | Descrição |
-|----------|--------|----------|
-| `/v1/chat/completions` | POST | Enviar mensagens e receber respostas do agente |
-| `/v1/models` | GET | Listar modelos disponíveis |
-
-#### Cabeçalhos Personalizados
-
-| Cabeçalho | Descrição |
-|-----------|-----------|
-| `X-Session-Id` | ID de sessão para continuidade de conversa |
-| `Authorization` | Chave de API (Bearer token) |
-| `X-Source` | Fonte da requisição (ex: "vscode", "telegram") |
-
-#### Exemplo de Uso
-
-```bash
-# Listar modelos disponíveis
-curl -X GET http://127.0.0.1:3888/v1/models \
-  -H "Authorization: Bearer sua-api-key"
-
-# Enviar mensagem (sem sessão - cria nova)
-curl -X POST http://127.0.0.1:3888/v1/chat/completions \
-  -H "Authorization: Bearer sua-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      {"role": "user", "content": "Olá, como você está?"}
-    ]
-  }'
-
-# Enviar mensagem (com sessão existente)
-curl -X POST http://127.0.0.1:3888/v1/chat/completions \
-  -H "Authorization: Bearer sua-api-key" \
-  -H "X-Session-Id: sessao-123-abc" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [
-      {"role": "user", "content": "Continue a conversa anterior"}
-    ]
-  }'
-```
-
-#### Configuração no VS Code
-
-Use extensões como **Continue** ou **Watt** que suportam endpoints OpenAI customizados:
-
-```json
-// settings.json do VS Code (exemplo para Continue)
-{
-  "continue.serverEndpoint": "http://127.0.0.1:3888/v1",
-  "continue.apiKey": "sua-api-key",
-  "continue.selectedModel": "gpt-4o"
-}
-```
-
-Consulte o [guia completo de configuração para VS Code](docs/vscode/setup.md) para instruções passo a passo com a extensão Continue.
-
-#### Continuidade de Conversa
-
-O GarraIA mantém **histórico unificado** entre todos os canais:
-
-- **Mesma sessão** = mesmo histórico, mesma memória
-- Telegram ↔ VS Code ↔ Web Chat compartilham o contexto
-- Sessões são persistidas em SQLite automaticamente
-
-#### Session ID Strategy
-
-| Método | Descrição |
-|--------|-----------|
-| `X-Session-Id` header | Recomendado: passe o ID de sessão explicitamente |
-| Gerar novo | Se nenhum ID for fornecido, uma nova sessão é criada |
-| Recuperação | Use `/v1/models` para verificar a conexão, depois inicie com `X-Session-Id` vazio para nova sessão |
-
-#### Segurança Api
-
-- Requer autenticação via `Authorization: Bearer <api_key>`
-- O endpoint é binding em `127.0.0.1` por padrão (local only)
-- Para produção, configure TLS/reverse proxy
-- Use o sistema de whitelist do GarraIA para controlar acesso
-
-### MCP (Protocolo de Contexto de Modelo)
-
-- Conecte qualquer servidor compatível com MCP (sistema de arquivos, GitHub, bancos de dados, busca na web)
-- Ferramentas aparecem como ferramentas nativas do agente com nomes namespaced (`server.tool`)
-- Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop)
-- CLI: `garra mcp list`, `garra mcp inspect <name>`
-
-### Modos de Execução (Agent Modes)
-
-O GarraIA possui um sistema avançado de **Modos de Execução** que permite selecionar diferentes estratégias de comportamento do agente:
-
-| Modo | Descrição | Políticas de Ferramentas |
-|------|-----------|--------------------------|
-| **Auto** | Roteamento inteligente automático baseado no conteúdo da mensagem | Herda do modo resolvido |
-| **Ask** | Modo de pergunta/resposta, foco em explicações | Leitura apenas |
-| **Search** | Busca e inspeção de código sem modificar arquivos | `repo_search`, `list_dir`, `file_read` |
-| **Architect** | Design e planejamento de arquitetura | Ferramentas de leitura |
-| **Code** | Implementação e refatoração de código | `file_read`, `file_write`, `bash` |
-| **Debug** | Análise de erros e troubleshooting | `repo_search`, `file_read`, `bash` (read-only) |
-| **Orchestrator** | Execução multi-etapas com validação | Todas com guardrails |
-| **Review** | Revisão de código e análise de diffs | `git_diff`, `file_read` |
-| **Edit** | Edição direcionada de arquivos | `file_read`, `file_write` |
-| **Custom** | Modos criados pelo usuário | Herda do base_mode com overrides |
-
-#### Precedência de Modo
-
-O modo é resolvido nesta ordem:
-
-1. **Header** `X-Agent-Mode` (maior prioridade)
-2. **Comando** `/mode <nome>` no chat
-3. **Preferência por canal** (Telegram = `ask`, Web/API = `auto`)
-4. **Preferência por usuário**
-5. **Default** do sistema
-
-#### Comandos de Modo
-
-- `/mode` - Mostra o modo atual
-- `/mode <nome>` - Altera o modo (ex: `/mode code`)
-- `/modes` - Lista todos os modos disponíveis
-
-#### Modos Customizados
-
-Crie seus próprios modos baseados em um modo existente:
-
-```bash
-# Via API
-curl -X POST http://127.0.0.1:3888/api/modes/custom \
-  -H "Authorization: Bearer sua-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Rust Strict",
-    "description": "Modo rigoroso para Rust",
-    "base_mode": "code",
-    "prompt_override": "Você é um especialista em Rust...",
-    "tool_policy_overrides": {
-      "allow": ["file_read", "file_write", "bash"],
-      "deny": ["web_fetch"]
-    },
-    "defaults": {
-      "temperature": 0.3,
-      "max_tokens": 8192
-    }
-  }'
-```
-
-Ou use a UI WebChat para criar/editar modos via interface visual.
-
-#### Ferramentas do Modo Orchestrator
-
-O modo Orchestrator executa tarefas multi-etapas com:
-
-- **Planejamento** - Gera lista de steps automaticamente
-- **Validação** - Verifica resultado de cada step
-- **Retry** - Tenta novamente em caso de falha (máx 2x)
-- **Segurança** - Checklist de comandos bash perigosos bloqueados
-- **Limites** - max_loops: 10, timeout: 30s por step
-
-#### Auto Mode Router
-
-O modo `auto` usa heurísticas determinísticas para selecionar o modo correto:
-
-- Contém caminho de arquivo (`C:\`, `G:\`, `/home/`) → `search` ou `debug`
-- "refatorar", "implementar", "criar arquivo" → `code`
-- "explique", "o que é", "conceito" → `ask`
-- "erro", "stacktrace", "panic", "log" → `debug`
-- "roadmap", "design", "arquitetura" → `architect`
-- "faça review", "analise diff" → `review`
-
-#### Integração com Continue/VS Code
-
-Configure o Continue para usar o GarraIA com o modo desejado:
-
-```json
-// settings.json do VS Code
-{
-  "continue.serverEndpoint": "http://127.0.0.1:3888/v1",
-  "continue.apiKey": "sua-api-key",
-  "continue.selectedModel": "gpt-4o"
-}
-```
-
-Para usar modo específico, adicione o header `X-Agent-Mode` na requisição ou use o comando `/mode` no chat.
-
-##### Headers Suportados
-
-| Header | Descrição |
-|--------|-----------|
-| `X-Agent-Mode` | Override de modo (auto, code, debug, ask, etc.) |
-| `X-Request-Id` | ID de request para tracing |
-| `X-Session-Id` | ID de sessão para continuidade |
-| `X-User-Id` | ID do usuário |
-
-##### Modo Prefix (Fallback)
-
-Se o header não for suportado, use prefix no início da mensagem:
-
-- `mode: debug` → muda para modo debug
-- `/mode ask` → muda para modo ask
-
-Consulte a [documentação completa de integração com Continue](docs/continue-modes.md).
-
-#### API de Modos
-
-| Endpoint | Método | Descrição |
-|----------|--------|----------|
-| `/api/modes` | GET | Lista todos os modos disponíveis |
-| `/api/mode/select` | POST | Seleciona modo para sessão |
-| `/api/mode/current` | GET | Retorna modo atual da sessão |
-| `/api/modes/custom` | GET/POST | Lista/cria modos customizados |
-| `/api/modes/custom/:id` | PATCH/DELETE | Edita/remove modo custom |
-
-### Runtime do Agente
-
-- Loop de execução de ferramentas - bash, file_read, file_write, web_fetch, web_search, repo_search, list_dir, git_diff, schedule_heartbeat (até 10 iterações)
-- Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
-- **Janela de contexto deslizante** - `max_history_messages` limita quantos turnos são enviados ao LLM sem afetar o armazenamento; `trim_messages_to_budget` apara pelo orçamento de tokens
-- **Sumarização automática de contexto** - quando o número de turnos desde o último resumo atinge `summarize_threshold`, um job background chama um modelo barato para gerar um resumo. O resumo é injetado como mensagem System no início do histórico hidratado — o LLM sempre tem contexto de sessões longas sem estourar a janela
-- Tarefas agendadas - agendamento cron, intervalo e único
-
-### Skills
-
-- Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
-- Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
-- CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
-
-### MCP Tool Integration com Marketplace
-
-- Conecte qualquer servidor compatível com MCP (filesystem, GitHub, bancos de dados, busca na web)
-- **Marketplace de ferramentas** - descubra e instale servidores MCP via `garra mcp install`
-- Ferramentas aparecem como ferramentas nativas com nomes namespaced (`server.tool`)
-- Prompts MCP viram slash commands automaticamente
-- Admin API para adicionar/remover servidores sem reiniciar
-
-### Sistema de Plugins WASM
-
-- Sandbox WebAssembly via wasmtime com acesso controlado ao host
-- Compile com `--features plugins` para habilitar
-- Isolamento de memória e CPU por plugin
-- API host para acesso a ferramentas e estado do agente
-
-### Skills Editor com CRUD
-
-- Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
-- Auto-descoberta de `~/.garraia/skills/`
-- **Editor visual** na WebChat UI para criar/editar skills
-- CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
-- CRUD completo via API REST (`GET/POST/PATCH/DELETE /api/skills`)
-
-### Autenticacao OAuth2/OIDC + TOTP 2FA
-
-- **OAuth2/OIDC** - suporte a provedores externos de identidade
-- **TOTP 2FA** - autenticacao de dois fatores via aplicativo (Google Authenticator, Authy)
-- **JWT** - tokens de sessao com 30 dias de validade, refresh automatico
-- **PBKDF2-HMAC-SHA256** - 600k iteracoes para hash de senhas
-- **Pareamento por codigo** - whitelist de usuarios por canal
-
-### EU AI Act Compliance
-
-- **Headers X-AI-Model** - todas as respostas incluem o modelo usado (`X-AI-Model`, `X-AI-Provider`)
-- **Transparencia** - identificacao clara de conteudo gerado por IA
-- **Logging auditavel** - registros estruturados de todas as interacoes com LLMs
-
-### TLS/HTTPS Nativo
-
-- **Suporte TLS nativo** - configure certificados SSL diretamente no GarraIA
-- **Let's Encrypt** - renovacao automatica de certificados
-- **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
-
-### Health Checks Centralizados
-
-- **Boot** - tabela visual no terminal com ✅/❌ e latência por provider
-- **Endpoint** - `GET /api/health` retorna JSON com status de todos os providers
-- **Background** - verificação periódica (60s) com detecção de mudança de status
-- **Providers** - Ollama, OpenRouter, OpenAI, Anthropic, Chatterbox TTS
-- **Cache** - resultados cacheados para respostas instantâneas no endpoint
-
-### Infraestrutura
-
-- **Recarregamento de config a quente** - edite `config.yml`, as alterações são aplicadas sem reiniciar
-- **Daemonização** - `garra start --daemon` com gerenciamento de PID
-- **Auto-atualização** - `garraia update` baixa a versão mais recente com verificação SHA-256, `garraia rollback` para reverter
-- **Reinicialização** - `garra restart` para graciosamente parar e iniciar o daemon
-- **Troca de provedor em runtime** - adicione ou troque provedores de LLM via interface webchat ou API REST sem reiniciar
-- **Fallback automático de providers** - em caso de erro 429/5xx, tenta automaticamente o próximo provider configurado em `fallback_providers` com backoff exponencial e circuit breaker
-- **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
-- **Rate limiting por IP** - proteção automática configurável (`per_second`, `burst_size`) via `config.yml`
-- **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
-- **Ferramenta de migração** - `garra migrate openclaw` importa skills, canais e credenciais
-- **Configuração interativa** - `garra init` wizard para configuração de provedor e chave de API
-
-## Web Console "Garra Glass"
-
-Servido em `GET /` pelo binário `garraia start`, o Web Console é uma SPA sem build step (HTML + CSS custom properties + JS vanilla) com identidade visual "Garra Glass" — glassmorphism com `backdrop-filter: blur(18px)`, gradiente multi-radial ouro/cyan/roxo, acentos `#ffd400` (gold) para CTAs e `#16d9ff` (cyan) para foco. **Zero dependência CDN** — todos os ícones inline SVG, fontes via Google Fonts (cacheável offline). Dual `data-theme` + `data-bs-theme` (compatível com migrações futuras estilo AdminLTE).
-
-**9 páginas** roteadas por hash (`#/dashboard`, `#/chat`, ...), todas consumindo dados reais do gateway:
-
-| Página | Endpoint principal | Recursos |
-| --- | --- | --- |
-| **Dashboard** | `/api/health` + `/api/capabilities` | Hero card + MetricCards (port, providers, channels, sessions, secrets=0) + Health checklist |
-| **Chat** | `/ws` + `/api/sessions/*` | Conversa em tempo real — superfície original, redesign Garra Glass com avatares cyan/ouro e gold send button |
-| **Providers & Models** | `/api/providers` + `POST /api/providers/test` + `PATCH /api/providers/default` | Cards por provider com Test/Set-default, sem expor API keys |
-| **Channels** | `/api/channels` | 10 canais (web/api/telegram/discord/slack/whatsapp/imessage/openclaw/mcp/cli) com status pill |
-| **Sessions** | `/api/sessions` + `/api/sessions/{id}/history` | Tabela com Open/Export (blob)/Delete |
-| **Settings Registry** | `/api/settings/schema` + `/api/settings/effective` + `PATCH /api/settings` | Editor schema-driven, **secrets write-only** (`configured: true\|false`), dry-run |
-| **Diagnostics** | `/api/diagnostics` | 12 checks (gateway/port/config/.env/provider/canais/secrets/bind/TLS/sessions) + copy report |
-| **Logs** | `/api/logs` | Filtro por nível + search + auto-scroll + Export blob |
-| **Themes & Skins** | localStorage (server-side em plan 0121a) | 4 skins (Garra Blue / Aurora Admin / Editorial / Cyber Garra) |
-
-**Segurança invariantes:**
-
-- Nenhum secret (API key, JWT secret, refresh HMAC) **jamais** é retornado por qualquer endpoint `/api/*` — apenas `configured: true\|false`.
-- `PATCH /api/settings` valida cada campo contra o schema, rejeita ids desconhecidos, registra audit log estruturado sem o valor, e é **dry-run** até plan 0121a (zero risco de corromper `garraia.toml`).
-- Sidebar dark intencional (`linear-gradient(#031126 → #061b3d)`) em ambos os temas para reforçar a identidade.
-
-Decisões de design em [ADR 0009](docs/adr/0009-web-console-design-system.md). Plans `0116a`, `0116b`, `0117`-`0123` em [`plans/`](plans/).
-
-## Memória e Auto-Aprendizado
-
-O GarraIA possui um sistema completo de memória que permite ao agente aprender e lembrar informações entre conversas.
-
-### Sistema de Memória Completo
+## Why GarraIA?
+
+### Measured, reproducible numbers
+
+Measured with the versioned harness in
+[`benches/agent-framework-comparison/`](benches/agent-framework-comparison/)
+(scenarios [001](benches/agent-framework-comparison/scenarios/001-binary-size.md),
+[002](benches/agent-framework-comparison/scenarios/002-peak-rss.md),
+[003](benches/agent-framework-comparison/scenarios/003-cold-start.md);
+raw logs committed under
+[`results/`](benches/agent-framework-comparison/results/)).
+Performance was measured on `openclaw@2026.7.1-2` (npm `latest` at run
+time) and a fresh ZeroClaw `master` clone (`d355e3b`); hardware and
+versions recorded in `environment.txt`. The security-audit scenarios
+below use separate commit-pinned inspection checkouts.
+
+| Metric | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
+|---|---|---|---|
+| Installed footprint | 47 MiB single binary (LTO, stripped) | 370 MiB `node_modules` + Node.js ≥ 22.22.3 runtime | 40 MiB binary (default lean-bundle build) |
+| Peak RSS, `--help` | **8.6 MiB** (8,756 KiB) | 49.2 MiB (50,388 KiB) | 15.3 MiB (15,704 KiB) |
+| Cold start, `--help` (mean of 20) | **4.1 ms** | 46.2 ms | 8.5 ms |
+
+Yes, ZeroClaw's default binary is 7 MiB smaller than ours — the table
+reports what the harness measured, including where we lose.
+
+> These are CLI-floor measurements, not idle-server memory — the harness
+> says exactly what it measures and what it does not. Numbers above are
+> from `results/2026-08-28-vm/` (x86_64 Linux container); the dedicated
+> 1 vCPU / 1 GB droplet run is the reference target and lands in a
+> follow-up results directory.
+
+### Audited security posture — all three frameworks, pinned commits
+
+Verified by mechanical inspection of pinned checkouts (OpenClaw
+`343252a`, ZeroClaw `d5617f1`) — every row has a
+reproducible check in scenarios
+[004](benches/agent-framework-comparison/scenarios/004-credentials-at-rest.md)
+and [005](benches/agent-framework-comparison/scenarios/005-attack-surface.md),
+with per-claim evidence in `results/`:
+
+| | **GarraIA** | **OpenClaw** | **ZeroClaw** |
+|---|---|---|---|
+| Credentials at rest | AES-256-GCM vault (PBKDF2, 600k iters) available; **opt-in** — the init wizard's default is `config.yml` at mode 0600. MCP secrets auto-move to the vault when a passphrase is set | Not encrypted at rest (their docs' own words) — POSIX 0600/0700 perms; SecretRefs + 1Password/Vault are opt-in | ChaCha20-Poly1305 **by default** — the only default-encrypted posture of the three. Caveats: master key sits on the same filesystem; 1Password refs opt-in |
+| Default bind | 127.0.0.1 | loopback | 127.0.0.1 |
+| Gateway auth default | Messaging channels are deny-by-default (pairing codes). Local API is open on loopback; token/session auth is opt-in | Token required out of the box; **fails closed** without one | Pairing required by default; public bind is warn-only |
+| Dependency tree | 1,061 crates (Cargo.lock) | 66 direct prod npm deps; `npm install -g` resolved 300 packages on the measured run | 1,265 crates (Cargo.lock) |
+| Plugin isolation | WASM sandbox (wasmtime): memory caps + execution deadlines, opt-in feature | In-process, plugins are trusted code (their threat model says so) | WASM component model; Ed25519 signing exists but defaults to disabled |
+
+### Feature comparison
+
+| | **GarraIA** | **OpenClaw** | **ZeroClaw** |
+|---|---|---|---|
+| Chat channels | 5 wired end-to-end (Telegram, Discord, Slack, WhatsApp, iMessage·macOS) + web chat + OpenAI-compatible API; 6 more implemented in-crate, not yet wired | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
+| LLM providers | 15 built-in (Anthropic, OpenAI, Ollama native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
+| MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
+| Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
+| Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
+| Scheduling | one-shot scheduled tasks (persisted heartbeats, up to 30 days); cron-style recurrence is on the roadmap | full cron + automations | cron + SOP engine |
+| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 37 tables across 32 migrations with FORCE Row-Level Security on tenant data ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
+| Native PT-BR assistant persona | yes — first-class, default | no | no |
+| Prebuilt binaries + self-update | 5 targets, SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
+
+**Where the others win, honestly:** OpenClaw has the broadest channel and
+plugin ecosystem (27 channels, 150+ extensions) plus a mature cron system,
+and its gateway requires auth out of the box — GarraIA's local API auth is
+still opt-in. ZeroClaw encrypts secrets by default, ships 10 prebuilt
+targets with SLSA provenance, and has OS-level exec sandboxing. We compare
+against their strengths on purpose: if this table ever reads like
+marketing, [open an issue](https://github.com/michelbr84/GarraRUST/issues)
+with the scenario ID and we will fix the table, not the finding.
+
+## Features
+
+### LLM providers
+
+3 native providers — **Anthropic Claude** (SSE streaming, tool use),
+**OpenAI** (GPT-4o, Azure, any compatible endpoint via `base_url`),
+**Ollama** (local models + local embeddings) — plus 12 OpenAI-compatible
+presets: OpenRouter (100+ models), DeepSeek, Mistral, Gemini, Qwen, Yi,
+Cohere, MiniMax, Moonshot, Falcon, Jais, Sansa. Automatic provider
+fallback on 429/5xx with exponential backoff and a circuit breaker.
+
+### Channels
+
+Wired end-to-end today: **Telegram** (streaming, MarkdownV2, bot
+commands, pairing), **Discord** (slash commands, sessions), **Slack**
+(Socket Mode), **WhatsApp** (Meta Cloud API webhooks), **iMessage**
+(macOS, chat.db polling + AppleScript). Also: web chat console and an
+**OpenAI-compatible API** (`/v1/chat/completions`) for VS Code
+(Continue et al.) sharing the same session history. Six more channel
+implementations (Google Chat, Teams, Matrix, LINE, IRC, Signal) exist in
+`garraia-channels` and await gateway wiring — tracked on the
+[roadmap](ROADMAP.md).
+
+### Agent runtime
+
+Tool-execution loop (bash, file read/write, web fetch/search, repo
+search, git diff, scheduling) with per-task tool-call budget; sliding
+context window plus automatic background summarization for long sessions;
+**execution modes** (ask / code / debug / architect / review / orchestrator
+/ custom) with per-mode tool policies, selected via `/mode`, header, or
+deterministic auto-routing.
+
+### Voice
+
+STT via Whisper (local whisper.cpp or OpenAI API); TTS via Chatterbox
+(GPU, multilingual), Hibiki, ElevenLabs, Kokoro, or OpenAI TTS;
+`garra start --with-voice`; automatic audio replies on Telegram; format
+conversion via ffmpeg.
+
+### MCP (Model Context Protocol)
+
+Connect any MCP server: stdio for local processes (default build), plus
+Streamable HTTP for remote ones behind the `mcp-http` feature (config
+accepts `http`/`sse`/`streamable-http` values — all served by the
+Streamable HTTP client; legacy SSE-only servers are not supported, and
+the prebuilt binaries currently ship stdio-only). Tools appear
+namespaced (`server.tool`); MCP prompts become slash commands
+automatically; marketplace with one-click install via the web console
+(`/api/mcp/marketplace`); admin API adds/removes servers without
+restart; CLI: `garra mcp list|inspect|resources|prompts`. Config in
+`config.yml` or `~/.garraia/mcp.json` (Claude Desktop-compatible).
+
+### Skills & plugins
+
+Markdown skills (`SKILL.md` + YAML frontmatter) auto-discovered from
+`~/.garraia/skills/`, with a visual editor and full CRUD API. Optional
+WASM plugin sandbox (wasmtime, `--features plugins`) with per-plugin
+memory caps and execution deadlines.
+
+### Web console "Garra Glass"
+
+A no-build-step SPA served at `GET /` — dashboard, chat, providers,
+channels, sessions, settings, diagnostics, logs. Security invariant: no
+secret is ever returned by any `/api/*` endpoint (write-only settings
+report `configured: true|false`). Design system in
+[ADR 0009](docs/adr/0009-web-console-design-system.md).
+
+### Infrastructure
+
+Hot config reload (watched `config.yml`), daemonization with PID
+management, `garra restart`, runtime provider switching, structured logs
+(`request_id`, `session_id`, JSON via `GARRAIA_LOG_FORMAT=json`),
+configurable timeouts per subsystem, per-IP rate limiting, health checks
+(`GET /api/health` + boot table + background probes), AI-transparency
+headers (`X-AI-Model`, `X-AI-Provider`) on every response.
+
+## Memory and self-learning
 
 ```text
 ~/.garraia/
-├── memoria/
-│   ├── fatos.json          # Facts extraídos pelo LLM
-│   └── embeddings/         # Embeddings vetoriais locais
-├── data/
-│   ├── memory.db           # Memória SQLite com vetores
-│   └── sessions.db         # Sessões de conversa
-└── credentials/
-    └── vault.json          # Credenciais criptografadas
+├── memoria/fatos.json      # LLM-extracted facts
+├── data/memory.db          # SQLite + vector search (sqlite-vec)
+├── data/sessions.db        # persistent conversation sessions
+└── credentials/vault.json  # AES-256-GCM encrypted credentials
 ```
 
-### Componentes da Memória
-
-| Componente | Descrição |
-|------------|-----------|
-| **facts.json** | Fatos importantes extraídos automaticamente das conversas pelo extrator LLM |
-| **memory.db** | Banco SQLite com histórico de conversas e busca vetorial (sqlite-vec) |
-| **sessions.db** | Gerenciamento de sessões de conversa persistentes |
-| **embeddings/** | Vetores de embedding armazenados localmente para busca semântica |
-
-### Auto-Learning com Extrator LLM
-
-O GarraIA aprende automaticamente das conversas usando um extrator LLM dedicado:
-
-- **Extração automática** - Após cada conversa, o extrator analisa as mensagens e identifica fatos importantes
-- **Fatos estruturados** - Informações são salvas em `fatos.json` com contexto e data
-- **Busca semântica** - Use embeddings locais (Ollama) para buscar fatos relevantes
-- **Integração com o prompt** - Facts são automaticamente incluídos no contexto do agente
+After conversations, a dedicated LLM extractor identifies durable facts
+and stores them with context and date; local embeddings (Ollama —
+nomic-embed-text, mxbai-embed-large, …) power semantic search; relevant
+facts are injected into the agent's context automatically. Memory is
+managed through the web console and the gateway API (a `garra memory`
+CLI is on the roadmap).
 
 ```yaml
 memory:
   enabled: true
-  auto_extract: true        # Extrai fatos automaticamente
-  extraction_interval: 5    # Intervalo em minutos
-  max_facts: 100           # Máximo de fatos armazenados
-  
-embeddings:
-  provider: ollama          # ou "openai", "cohere"
-  model: nomic-embed-text  # Modelo de embedding local
-  base_url: "http://localhost:11434"
-```
-
-### Embeddings Locais com Ollama
-
-Execute embeddings 100% no seu computador usando Ollama:
-
-- **Modelos suportados**: nomic-embed-text, mxbai-embed-large, all-minilm, etc.
-- **Busca semântica** - Encontre informações relevantes por significado, não apenas palavras
-- **Privacidade total** - Nenhum dado sai do seu computador
-- **Performance** - Rápido e eficiente com modelos locais
-
-```yaml
+  auto_extract: true
 embeddings:
   provider: ollama
   model: nomic-embed-text
   base_url: "http://localhost:11434"
-  dimension: 768
 ```
 
-### API de Memória
+## Security
 
-| Comando | Descrição |
-|---------|-----------|
-| `garra memory list` | Listar todos os fatos |
-| `garra memory search <query>` | Buscar fatos por相似idade |
-| `garra memory add <fato>` | Adicionar um fato manualmente |
-| `garra memory clear` | Limpar todos os fatos |
-| `garra memory export` | Exportar fatos para JSON |
+Built for the requirements of always-on agents that touch private data.
+Wording below matches what the code does — audited claim by claim (see
+the comparison section above for the evidence trail).
 
-## Segurança
+- **Encrypted credential vault (opt-in)** — AES-256-GCM at
+  `~/.garraia/credentials/vault.json`, key derived via
+  PBKDF2-HMAC-SHA256 (600k iterations) from `GARRAIA_VAULT_PASSPHRASE`.
+  Stated plainly: the `garra init` wizard's recommended default stores
+  provider keys in `config.yml` (mode 0600, plaintext); choose the vault
+  option and export the passphrase on every start to get encryption at
+  rest. Making the vault the default is a roadmap item.
+- **MCP secrets vault-protected** — sensitive env vars of MCP servers are
+  auto-moved to the vault on save; `mcp.json` keeps only
+  `vault:mcp.<server>.<key>` references. No passphrase → plaintext with a
+  loud warning, never a broken boot.
+- **Channels are deny-by-default** — per-channel allowlists; unknown
+  users must present a pairing code; unauthorized messages are dropped.
+- **Local API binds 127.0.0.1 by default** — enable `gateway.api_key`
+  and/or `session_tokens_required: true` to require auth on it
+  (opt-in today; hardening this default is tracked on the roadmap).
+  The `HOST` env var can override the bind — mind your container config.
+- **256-bit session tokens** — HttpOnly, SameSite=Strict cookie (or
+  Bearer/`X-Session-Key`), rotated on resume, TTL + idle timeout.
+- **Two auth stacks, stated plainly** — Auth v1 (`/v1/auth/*`): 15-minute
+  HS256 access tokens + opaque HMAC-signed refresh tokens, Argon2id
+  hashing with PBKDF2 lazy upgrade. Legacy mobile endpoints (`/auth/*`):
+  30-day JWTs, PBKDF2 — being migrated to v1.
+- **Risky-command confirmation** — opt-in `tool_confirmation_enabled`
+  pauses before destructive bash (`rm -r`, `git reset --hard`, …).
+- **MCP process resource limits** — optional per-server virtual-memory
+  cap (setrlimit, Unix), startup timeout, auto-restart with exponential
+  backoff. These are resource limits, not a sandbox: MCP processes keep
+  filesystem/network access.
+- **WASM plugin sandbox** — optional (`--features plugins`): per-plugin
+  memory caps and execution deadlines via wasmtime.
+- **Heuristic input filtering** — control-character sanitization plus a
+  keyword screen for common prompt-injection phrases on chat channels and
+  the WebSocket. It is a heuristic, not a guarantee — treat prompt
+  injection as unsolved, like every framework should.
+- **TLS (source builds)** — compile with `--features tls` and point
+  `tls_cert_path`/`tls_key_path` at your certs (e.g. issued via
+  certbot/Let's Encrypt). No built-in ACME client. Honest caveats: the
+  prebuilt release binaries do **not** include the TLS feature today, and
+  with certs configured but the feature absent the gateway logs a warning
+  and serves plain HTTP — both are open hardening items on the roadmap.
+  For production, a TLS-terminating reverse proxy in front of the
+  loopback bind is the recommended setup.
 
-O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que ficam sempre ativos, acessam dados privados e se comunicam externamente.
-
-- **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
-- **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
-- **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
-- **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
-- **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
-- **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
-- **Confirmação de comandos arriscados** - `tool_confirmation_enabled: true` pausa o agente antes de executar comandos bash destrutivos (`rm -r`, `git reset --hard`, `drop database`, etc.) e aguarda aprovação do usuário ("sim"/"yes"). Default: `false` (opt-in).
-- **Sandboxing de processos MCP** - Limites de memória virtual por processo (Unix, via `setrlimit`), timeout de inicialização configurável e restart automático com backoff exponencial (base × 2ⁿ, cap 300s). Após `max_restarts` tentativas, o servidor fica offline até restart manual via API admin.
-- **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
-- **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
-
-### Arquitetura Local e Sob Controle do Usuário
-
-O GarraIA foi projetado para funcionar 100% no seu computador:
-
-- **Sem dependência de nuvem** - Execute tudo localmente
-- **Seus dados são seus** - Conversas, facts e configurações ficam no seu PC
-- **Sem telemetria** - Nenhum dado é enviado para servidores externos
-- **Controle total** - Você decide onde e como executar
-- **Offline capable** - Funciona com modelos locais Ollama sem internet
-
-## Migrando do OpenClaw?
-
-Um comando importa suas skills, configurações de canais e credenciais (criptografadas no cofre):
+## Migrating from OpenClaw?
 
 ```bash
-garra migrate openclaw
+garra migrate openclaw            # --dry-run to preview, --source <dir> for custom paths
 ```
 
-Use `--dry-run` para visualizar as alterações antes de confirmar. Use `--source /caminho/para/openclaw` para especificar um diretório de configuração personalizado do OpenClaw.
+Imports your skills and channel configurations. Credential files are
+detected and listed but **not copied** — re-enter API keys via
+`garra init` so they land in the encrypted vault.
 
-## Configuração
+## Configuration
 
-O GarraIA procura configuração em `~/.garraia/config.yml`:
+GarraIA reads `~/.garraia/config.yml`:
 
 ```yaml
 gateway:
   host: "127.0.0.1"
   port: 3888
-  # GAR-202: tokens de sessão — TTL, idle timeout e exigência de autenticação
-  session_ttl_secs: 86400       # validade do token (1 dia). Padrão: 86400
-  session_idle_secs: 3600       # timeout por inatividade (1h). Padrão: 3600
-  session_tokens_required: false # exige token nas rotas /api/* . Padrão: false
 
 llm:
-  # ATENÇÃO sobre `api_key`: a resolução é vault > config > variável de ambiente.
-  # O tier do vault só funciona quando GARRAIA_VAULT_PASSPHRASE está presente no
-  # ambiente do gateway, a CADA start — sem ela o cofre fica ilegível e o provider
-  # é PULADO no boot (`skipping <tipo> provider <nome>: no API key`). Por isso o
-  # `garraia init` grava a chave no próprio config.yml (criado com modo 0600).
-  # Rode `garraia config check` para confirmar que cada provider resolve.
   claude:
     provider: anthropic
-    model: claude-sonnet-4-5-20250929
-    # api_key resolvido de: vault > config > variável de ambiente ANTHROPIC_API_KEY
-
-  openai:
-    provider: openai
-    model: gpt-4o
-    # api_key resolvido de: vault > config > variável de ambiente OPENAI_API_KEY
-
-  # OpenRouter - acesso a +100 modelos diferentes
-  openrouter:
-    provider: openrouter
-    model: openai/gpt-4o  # modelos: openai/gpt-4o, anthropic/claude-3.5-sonnet, meta-llama/llama-3.1-70b-instruct, etc.
-    # api_key resolvido de: vault > config > variável de ambiente OPENROUTER_API_KEY
-    # O GarraIA envia automaticamente os headers HTTP-Referer e X-Title para o OpenRouter
-    # Isso faz o app aparecer como "GarraIA" no dashboard do OpenRouter (não "Unknown")
-
+    model: claude-sonnet-4-5
+    # api_key resolution: vault > config > ANTHROPIC_API_KEY env var
   ollama-local:
     provider: ollama
     model: llama3.1
@@ -739,286 +398,71 @@ channels:
   telegram:
     type: telegram
     enabled: true
-    bot_token: "seu-bot-token"  # ou variável de ambiente TELEGRAM_BOT_TOKEN
+    bot_token: "your-bot-token"   # or TELEGRAM_BOT_TOKEN
 
 agent:
-  system_prompt: "Você é um assistente útil."
   max_tokens: 4096
-  max_context_tokens: 100000
-  max_tool_calls: 50        # limite de tool calls por tarefa (padrão: 50)
-  # GAR-210: fallback automático quando o provider primário retorna 429/5xx
-  fallback_providers:
-    - openrouter
-    - ollama-local
-  # GAR-187: confirmação humana antes de comandos bash destrutivos (opt-in)
-  tool_confirmation_enabled: false
-  # GAR-208: janela deslizante de contexto — só os últimos N turnos vão ao LLM
+  fallback_providers: [openrouter, ollama-local]
   max_history_messages: 20
-  # GAR-208: sumarização automática — gera resumo a cada N novos turnos desde o último
   summarize_threshold: 40
-  summarizer_model: "openrouter/mistral-7b-instruct"  # modelo barato para sumarização
 
 memory:
   enabled: true
   auto_extract: true
-  extraction_interval: 5
-
-embeddings:
-  provider: ollama
-  model: nomic-embed-text
-  base_url: "http://localhost:11434"
-
-# Servidores MCP para ferramentas externas
-mcp:
-  filesystem:
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    # GAR-293: limites de recursos e política de restart
-    memory_limit_mb: 512      # máximo de memória virtual (Unix). Padrão: sem limite
-    max_restarts: 5           # tentativas de restart automático após crash. Padrão: 5
-    restart_delay_secs: 5     # delay base do backoff exponencial (máx 300s). Padrão: 5
-
-# Voice mode (TTS)
-voice:
-  enabled: true
-  tts_endpoint: "http://127.0.0.1:7860"
-  language: "pt"
-
-# GAR-261: glob e ignore para ferramentas de busca de arquivos
-fs:
-  glob:
-    mode: picomatch   # picomatch (padrão) | bash
-    dot: false        # se true, * e ? casam dotfiles (.hidden)
-  ignore:
-    use_gitignore: true  # respeita .gitignore durante varredura
-
-# Timeouts configuráveis por tipo (valores em segundos)
-timeouts:
-  llm:
-    default_secs: 120   # modelos grandes podem demorar; 30s era curto demais
-  tts:
-    default_secs: 120
-  mcp:
-    default_secs: 60
-  health:
-    default_secs: 5
 ```
 
-Consulte a [referência completa de configuração](docs/) para todas as opções, incluindo Discord, Slack, WhatsApp, iMessage, voice mode, embeddings e configuração de servidor MCP.
+Run `garra config check` to validate the effective configuration with
+precedence reporting. Full reference — including Discord, Slack,
+WhatsApp, iMessage, voice, embeddings, MCP, timeouts, rate limiting and
+`.garraignore` — in [docs/](docs/) and the
+[Portuguese README](README.pt-BR.md#configuração).
 
-### .garraignore
+## Architecture
 
-Crie um `.garraignore` na raiz do projeto para controlar quais arquivos o agente ignora durante buscas (`file_read`, `repo_search`, `list_dir`). Sintaxe idêntica ao `.gitignore`, com suporte adicional a extglob (`!(*.txt)`, `*(src)`, etc.):
-
-```gitignore
-# .garraignore — não afeta o git, apenas o scanner do agente
-target/
-Cargo.lock
-*.db
-*.ps1
-.env*
-credentials/
-```
-
-## Arquitetura
-
-GarraIA é um workspace Rust com **22 crates** de alta qualidade, cada um com responsabilidade única:
+A Rust workspace of **22 crates**, each with a single responsibility:
 
 ```text
 crates/
-├── garraia-cli/        # CLI, assistente de init, gerenciamento de daemon
-├── garraia-gateway/    # Gateway WebSocket, API HTTP, admin console
-├── garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
-├── garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
-├── garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
-├── garraia-auth/       # ✅ verify path real + extractor + endpoints + RLS matrix (GAR-391a/b/c + GAR-392) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). GAR-392 RLS matrix ✅ (plan 0013 path C, 81 cenários × 3 dedicated roles × 10 FORCE RLS tables). GAR-391d (app-layer cross-group matrix via HTTP) deferido ao plan 0014 — aguarda endpoints REST /v1/{chats,messages,memory,tasks,groups,me} da Fase 3.4; epic GAR-391 permanece aberto.
-├── garraia-voice/      # Pipeline de voz: Whisper STT → LLM → Chatterbox/Hibiki TTS
-├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
-├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
-├── garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec), sessões
-├── garraia-glob/       # Glob pattern matching (picomatch + bash extglob), .garraignore, scanner de arquivos
-├── garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
-├── garraia-media/      # Processamento de mídia: PDF, imagens
-├── garraia-security/   # Cofre de credenciais, listas de permissões, pareamento, validação
-├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
-├── garraia-common/     # Tipos compartilhados, erros, utilitários
-├── garraia-telemetry/  # ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema completo (25 tabelas em 8 migrations: 001/002/004/005/006/007/008/009)
-└── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay transparente, hotkey Alt+G, sprite animado
-```
-
-Além dos crates Rust, o repositório inclui o app mobile:
-
-```text
+├── garraia-cli/        # CLI, init wizard, daemon management, self-update
+├── garraia-gateway/    # WebSocket gateway, HTTP API, web console, REST v1
+├── garraia-agents/     # LLM providers, tools, MCP client, agent runtime
+├── garraia-channels/   # Telegram, Discord, Slack, WhatsApp, iMessage (+6 pending wiring)
+├── garraia-auth/       # Auth v1: Argon2id, JWT HS256, RBAC, RLS-backed identity
+├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (FORCE RLS, 29 tables)
+├── garraia-security/   # Credential vault, allowlists, pairing, validation
+├── garraia-db/         # SQLite memory, vector search, sessions
+├── garraia-config/     # YAML/TOML config, hot reload, `config check`
+├── garraia-voice/      # Whisper STT → LLM → Chatterbox/Hibiki TTS
+├── garraia-plugins/    # WASM plugin sandbox (wasmtime)
+├── garraia-embeddings/ # EmbeddingProvider / VectorStore traits
+├── garraia-learning/   # Self-improving skills (mining, safety gate, versioning)
+└── ...                 # telemetry, media, skills, storage, tools, runtime, common, glob, desktop
 apps/
-└── garraia-mobile/     # Cliente Android/iOS Flutter — Garra Cloud Alpha
-    ├── lib/
-    │   ├── router/     # GoRouter com redirect JWT
-    │   ├── services/   # Dio + interceptor Bearer
-    │   ├── providers/  # Riverpod: AuthState, ChatMessages, MascotState
-    │   ├── screens/    # Splash, Login, Register, Chat
-    │   └── widgets/    # MascotWidget (4 estados), ChatBubble
-    └── android/ ios/ web/
+└── garraia-mobile/     # Flutter client (Riverpod, go_router) — Garra Cloud Alpha
 ```
 
-**Endpoints mobile (GAR-334/335/339):**
+Deep dives: [runtime flow & voice pipeline](README.pt-BR.md#arquitetura),
+[ADRs](docs/adr/), [wiki](https://github.com/michelbr84/GarraRUST/wiki).
 
-| Endpoint | Método | Descrição |
-|----------|--------|-----------|
-| `/auth/register` | POST | Criar conta — PBKDF2-HMAC-SHA256 (600k iter) |
-| `/auth/login` | POST | Autenticar, retorna JWT 30 dias |
-| `/me` | GET | Dados do usuário autenticado |
-| `/chat` | POST | Conversa com Garra (personalidade PT-BR) |
-| `/chat/history` | GET | Histórico dos últimos 50 turnos |
+## Roadmap
 
-### Fluxo de Execução do Runtime
+Development follows a 7-phase plan in [ROADMAP.md](ROADMAP.md) — currently
+deep in **Phase 3: Group Workspace**, a multi-tenant family/team space
+(files, chats, AI memory, Notion-like tasks) on Postgres 16 + pgvector
+with FORCE Row-Level Security. Recent milestones: auth v1 (Argon2id +
+15-min JWTs + refresh tokens), the 37-table RLS schema, tus resumable
+uploads, object storage (local + S3), OpenTelemetry baseline, the Garra
+Learning agent, and this benchmark harness.
 
-O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vida completo da execução do agente:
+## Contributing
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    GARRAIA RUNTIME FLOW                          │
-├─────────────────────────────────────────────────────────────────┤
-│  1. STATE MACHINE                                               │
-│     ┌──────────┐    ┌──────────┐    ┌──────────┐             │
-│     │  IDLE    │───▶│ RUNNING  │───▶│  DONE    │             │
-│     └──────────┘    └──────────┘    └──────────┘             │
-│         ▲               │                │                      │
-│         └───────────────┴────────────────┘                      │
-│                                                                 │
-│  2. TURN EXECUTION                                              │
-│     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│     │  RECEIVE    │─▶│   EXECUTE   │─▶│   RESPOND   │        │
-│     │  MESSAGE    │  │   TOOLS     │  │   STREAM    │        │
-│     └─────────────┘  └─────────────┘  └─────────────┘        │
-│                                                                 │
-│  3. META CONTROLLER                                             │
-│     - Gerenciamento de estado com history                       │
-│     - Budget de execução (max_turns, timeouts)                  │
-│     - Retry com backoff exponencial                             │
-└─────────────────────────────────────────────────────────────────┘
-```
+GarraIA is MIT-licensed open source. Join the
+[Discord](https://discord.gg/aEXGq5cS), check
+[CONTRIBUTING.md](CONTRIBUTING.md), and filter by
+[`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen).
+Support channels are listed in [SUPPORT.md](SUPPORT.md); security reports
+go through [SECURITY.md](SECURITY.md).
 
-### Pipeline de Voz (STT → LLM → TTS)
-
-O [`garraia-voice`](crates/garraia-voice/src/lib.rs) implementa o pipeline de voz end-to-end:
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    VOICE PIPELINE                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐   │
-│  │  AUDIO  │───▶│   STT   │───▶│   LLM   │───▶│   TTS   │   │
-│  │  INPUT  │    │ Whisper │    │ Provider│    │Chatterbox│   │
-│  └─────────┘    └─────────┘    └─────────┘    │  Hibiki  │   │
-│                                                └─────────┘   │
-│                                                                 │
-│  STT Providers:          TTS Providers:                        │
-│  - Whisper (local)       - Chatterbox (GPU, multilíngue)       │
-│  - OpenAI Whisper API    - Hibiki (GPU)                        │
-│                          - OpenAI TTS API                       │
-│                                                                 │
-│  Features:                                                      │
-│  - Conversão de formato via ffmpeg                             │
-│  - Streaming de áudio em tempo real                            │
-│  - Suporte multilíngue (pt, en, es, fr, de, it, hi)           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Arquitetura Multi-Agente
-
-O GarraIA suporta múltiplos agentes com roteamento inteligente:
-
-| Recurso | Descrição |
-|---------|-----------|
-| **Agent Registry** | Múltiplos agentes nomeados com configurações independentes |
-| **Priority Router** | Roteamento baseado em prioridade (1-100) |
-| **Session Continuity** | Sessões persistentes entre canais |
-| **A2A Protocol** | Comunicação agent-to-agent via JSON-RPC 2.0 |
-| **Agent Cards** | Auto-descoberta via `/.well-known/agent.json` |
-
-### Suporte MCP (Model Context Protocol)
-
-O GarraIA implementa o protocolo MCP com:
-
-- **Transporte stdio** - Servidores MCP locais (processo filho)
-- **Transporte HTTP / SSE / StreamableHttp** - Servidores MCP remotos (`mcp-http` feature)
-- **Tool Bridging** - Ferramentas aparecem como `server.tool` namespaced
-- **Resource API** - Arquivos, prompts, e custom resources
-- **Health Monitor** - Auto-reconexão com verificação periódica (30s)
-- **Admin API** - `GET /admin/api/mcp` lista servidores com status em tempo real; `POST /admin/api/mcp` adiciona novos servidores sem reiniciar
-- **Diagnostic API** - `GET /api/mcp/tools` lista todas as tools ativas no AgentRuntime (built-ins + MCP); `GET /api/mcp/health` retorna status por servidor com contagem de tools e indicador `all_connected | partial | all_disconnected`
-- **CLI Commands** - `garraia mcp list`, `mcp inspect`, `mcp resources`, `mcp prompts`
-
-Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.
-
-| Componente | Status |
-|-----------|--------|
-| Gateway (WebSocket, HTTP, admin console) | ✅ Funcionando |
-| Telegram (streaming, comandos, pareamento) | ✅ Funcionando |
-| Discord (comandos slash, sessões) | ✅ Funcionando |
-| Slack (Socket Mode, streaming) | ✅ Funcionando |
-| WhatsApp (webhooks) | ✅ Funcionando |
-| iMessage (macOS, grupos) | ✅ Funcionando |
-| Google Chat (Google Workspace) | ✅ Funcionando |
-| Microsoft Teams (Bot Framework) | ✅ Funcionando |
-| Matrix (federado, E2EE) | ✅ Funcionando |
-| LINE (Messaging API) | ✅ Funcionando |
-| IRC (multi-canal, multi-rede) | ✅ Funcionando |
-| Signal (signal-cli) | ✅ Funcionando |
-| Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
-| Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
-| Cliente MCP (stdio, HTTP/SSE/StreamableHttp, bridge de ferramentas, admin API) | ✅ Funcionando |
-| Skills (SKILL.md, auto-descoberta) | ✅ Funcionando |
-| Configuração (YAML/TOML, hot-reload) | ✅ Funcionando |
-| Memória (SQLite, busca vetorial, facts.json) | ✅ Funcionando |
-| Auto-learning (extrator LLM) | ✅ Funcionando |
-| Embeddings locais (Ollama) | ✅ Funcionando |
-| Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
-| Agendamento (cron, intervalo, único) | ✅ Funcionando |
-| Voice Mode (Chatterbox TTS, Hibiki TTS, Whisper STT) | ✅ Funcionando |
-| Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
-| Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
-| CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
-| Sistema de plugins (Sandbox WASM) | ✅ Funcionando |
-| MCP Marketplace (install, discover) | ✅ Funcionando |
-| Skills Editor CRUD (API + WebChat UI) | ✅ Funcionando |
-| OAuth2/OIDC + TOTP 2FA | ✅ Funcionando |
-| EU AI Act Compliance (X-AI-Model headers) | ✅ Funcionando |
-| TLS/HTTPS nativo | ✅ Funcionando |
-| Processamento de mídia (PDF, imagens) | ✅ Funcionando |
-| Garra Cloud Alpha — app mobile Flutter (Android/iOS) | ✅ Funcionando |
-| Mobile Auth (register/login/me, JWT, PBKDF2) | ✅ Funcionando |
-| Mobile Chat (`/chat`, `/chat/history`, persona PT-BR) | ✅ Funcionando |
-
-## Testes Automatizados
-
-O GarraIA utiliza o **TestSprite MCP** para geração e execução automatizada de testes da API do backend.
-Os testes validam os contratos REST e o comportamento do sistema de forma contínua, garantindo estabilidade durante refatorações.
-
-## Contribuindo
-
-O GarraIA é código aberto sob licença MIT. Junte-se ao [Discord](https://discord.gg/aEXGq5cS) para conversar com contribuidores, fazer perguntas ou compartilhar o que você está construindo. Consulte [CONTRIBUTING.md](CONTRIBUTING.md) para instruções de configuração, diretrizes de código e visão geral dos crates.
-
-### Roteiro de Desenvolvimento (Roadmap)
-
-Acompanhe as próximas entregas em [`ROADMAP.md`](ROADMAP.md) — o planejamento interno migrou do Linear para o tracker interno em 2026-08-18. O plano completo está distribuído em 7 fases:
-
-1. **Fase 1 — Core & Inferência** — TurboQuant+ (KV cache, PagedAttention, quantização), GarraMaxPower nativo (skills registry + agent team MVP), Superpowers workflow, config reativo.
-2. **Fase 2 — Performance, RAG & MCP** — Embeddings locais, vector store, plugins WASM sandboxed, OpenTelemetry.
-3. **Fase 3 — Group Workspace** — Multi-tenant família/equipe: arquivos, chats, memória IA, tasks, docs, RBAC com RLS Postgres. **Caminho crítico.**
-4. **Fase 4 — UX Multi-Plataforma AAA** — Desktop Tauri AAA, Mobile Android/iOS, CLI interativa.
-5. **Fase 5 — Qualidade, Segurança & Compliance** — Security hardening, fuzz, LGPD/GDPR, first-run wizard.
-6. **Fase 6 — Lançamento & SRE** — Helm, Terraform, SLOs, runbooks, beta → GA.
-7. **Fase 7 — Pós-GA & Evolução** — Multi-região, federation, marketplace, voice, vision, enterprise.
-
-Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345), bootstrap dos 7 projects AAA (GAR-371..410), **GAR-384 — OpenTelemetry + Prometheus baseline** via o novo crate `garraia-telemetry` (Jaeger + Prometheus + Grafana via `ops/compose.otel.yml`, feature flag opt-out, PII redaction by design), **GAR-373 — ADR 0003 Database para Group Workspace** que fixa **PostgreSQL 16 + pgvector + pg_trgm** como backend multi-tenant da Fase 3 (benchmark empírico no PoC `benches/database-poc/` — removido em 2026-08-16 após estabilização, números preservados no ADR 0003 — provando 124x vantagem em ANN HNSW e validando RLS cross-group com FORCE ROW LEVEL SECURITY), **GAR-407 — garraia-workspace bootstrap** que materializa a migration 001 (users, user_identities, sessions, api_keys, groups, group_members, group_invites + pgcrypto/citext) com smoke test testcontainers verde em ~7s e `Workspace` handle PII-safe, **GAR-386 — Migration 002 RBAC + audit_events** que adiciona 5 roles × 22 permissions × 63 role_permissions seedados estaticamente, `audit_events` sem FK (sobrevive CASCADE para LGPD erasure demonstrável) e partial unique index `group_members_single_owner_idx`, **GAR-388 — Migration 004 chats + messages + FTS** que adiciona `chats`, `chat_members`, `messages` (com `body_tsv tsvector GENERATED STORED` + GIN index + compound FK `(chat_id, group_id)` contra cross-group drift) e `message_threads`, e o **schema set completo da Fase 3** através de **GAR-389** (memory_items + memory_embeddings com pgvector HNSW cosseno), **GAR-408** (Row-Level Security FORCE em 10 tabelas com NULLIF fail-closed + prova empírica de FORCE via ownership transfer scopeguard-safe + hard blocker documentado para GAR-391 login flow) e **GAR-390** (8 tabelas do módulo Tasks Tier 1 Notion-like — listas/tasks/subtasks/assignees/labels/comments/subscriptions/activity — com RLS FORCE embutido na própria migration e erasure survival via `created_by_label`/`author_label`/`actor_label` cached). **Atualização 2026-04-13:** GAR-391c shipped — Axum `Principal` extractor + `RequirePermission(Action)` + `Role`/`Action` enums + `fn can()` central com 110-case table-driven test + endpoints `/v1/auth/{login,refresh,logout,signup}` wired no `AppState` real (feature flag `auth-v1` removida) + `garraia_signup NOLOGIN BYPASSRLS` role + `SignupPool` newtype + `RedactedStorageError` wrapper + `AuthConfig` em `garraia-config` + métricas Prometheus baseline + **migration 010** com `GRANT SELECT ON sessions TO garraia_login` (Gap A), `GRANT SELECT ON group_members TO garraia_login` (Gap C), e role `garraia_signup` separado (Gap B). Próximo: GAR-392 / 391d (suite cross-group authz ≥100 cenários) fecha o epic GAR-391.
-
-A Fase 3.3 destravou em 2026-04-13 com **GAR-375 — ADR 0005 Identity Provider** (BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT + lazy upgrade dual-verify PBKDF2→Argon2id, trait `IdentityProvider` shape congelada) e **GAR-391a — `garraia-auth` skeleton** (crate skeleton + migration 008 criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005 + `LoginPool` newtype com `current_user` validation + `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + smoke tests integration). Migration 009 (prereq estrutural de GAR-391b) adicionou `user_identities.hash_upgraded_at` para o lazy upgrade transacional. Próximo: **GAR-391b** (`verify_credential` real impl + audit + JWT issuance + endpoint `/v1/auth/login` sob feature flag).
-
-Filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
-
-## Licença
+## License
 
 MIT

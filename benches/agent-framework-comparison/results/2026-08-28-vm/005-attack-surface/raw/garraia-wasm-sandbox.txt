@@ -1,0 +1,4 @@
+9:use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
+35:    limits: StoreLimits,
+51:        config.epoch_interruption(true);
+234:        let limits = StoreLimitsBuilder::new()

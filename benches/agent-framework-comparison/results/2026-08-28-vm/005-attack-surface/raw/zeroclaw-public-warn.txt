@@ -1,0 +1,10 @@
+6976:    pub allow_public_bind: bool,
+7160:            allow_public_bind: false,
+30384:            !g.allow_public_bind,
+30414:            !c.gateway.allow_public_bind,
+30425:            allow_public_bind: false,
+30452:        assert!(!parsed.allow_public_bind);
+30479:            !parsed.gateway.allow_public_bind,
+30480:            "Missing [gateway] must default to allow_public_bind=false"
+32650:        assert!(!g.allow_public_bind);
+35647:allow_public_bind = true

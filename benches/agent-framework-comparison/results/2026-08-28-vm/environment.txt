@@ -1,0 +1,60 @@
+# run started (UTC)
+2026-08-28T06:46:36Z
+# run started (America/New_York)
+2026-08-28T02:46:36-0400
+
+# uname
+Linux vm 6.18.44-fc-v22 #1 SMP PREEMPT_DYNAMIC @0 x86_64 x86_64 x86_64 GNU/Linux
+
+# /proc/cpuinfo (head)
+processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 207
+model name	: Intel(R) Xeon(R) Processor @ 2.10GHz
+stepping	: 2
+microcode	: 0x1
+cpu MHz		: 2100.000
+cache size	: 266240 KB
+physical id	: 0
+siblings	: 4
+core id		: 0
+cpu cores	: 4
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 31
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 wbnoinvd arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid cldemote movdiri movdir64b fsrm md_clear serialize tsxldtrk amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+bugs		: spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb bhi ibpb_no_ret spectre_v2_user
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 52 bits physical, 57 bits virtual
+
+# /proc/meminfo (head)
+MemTotal:       16461068 kB
+MemFree:        10915080 kB
+MemAvailable:   15595320 kB
+
+# versions
+GARRAIA_REF=f34cbfa140d5e36f393e9ed8f7b5ae6e4d1c658a  # checkout atual
+OPENCLAW_REF=latest
+ZEROCLAW_REF=<default branch>
+rustc=rustc 1.98.0 (88d9e12ae 2026-08-18)
+cargo=cargo 1.98.0 (797e8a9bc 2026-08-05)
+node=v22.22.2
+npm=10.9.7
+hyperfine=hyperfine 1.18.0
+# pinned checkouts (005-attack-surface)
+GARRAIA=f34cbfa140d5e36f393e9ed8f7b5ae6e4d1c658a
+OPENCLAW=343252af827ee4a527b3ccad9d859b95362eb47c
+ZEROCLAW=d5617f14998b5215dfd2b3f334a5aeaf311f7415
+
+# measured refs (performance scenarios 001-003) — addendum
+# OpenClaw npm package actually installed (see raw/openclaw-install.log):
+OPENCLAW_MEASURED=openclaw@2026.7.1-2
+# ZeroClaw commit actually cloned+built (see raw/zeroclaw-clone.log):
+ZEROCLAW_MEASURED=d355e3bd6a8712dc37d541c3572f9eb4227cae02
+# node used for OpenClaw measurements: v24.15.0 (isolated; host had v22.22.2)

@@ -1,0 +1,4 @@
+Benchmark 1: ../../target/release/garra --help
+  Time (mean ± σ):       4.1 ms ±   0.6 ms    [User: 1.7 ms, System: 2.7 ms]
+  Range (min … max):     3.2 ms …   5.1 ms    20 runs
+ 

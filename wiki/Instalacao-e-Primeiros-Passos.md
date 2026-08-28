@@ -50,4 +50,4 @@ cargo build --release -p garraia          # requer Rust 1.94+
 cargo build --release -p garraia --features plugins   # com suporte a plugins WASM
 ```
 
-Para o app desktop (Tauri, Windows MSI) e detalhes por plataforma, veja o guia completo: [docs/installation.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md) · [Início Rápido do README](https://github.com/michelbr84/GarraRUST/blob/main/README.md#in%C3%ADcio-r%C3%A1pido) · [Deploy com Docker](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment.md).
+Para o app desktop (Tauri, Windows MSI) e detalhes por plataforma, veja o guia completo: [docs/installation.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md) · [Início Rápido do README](https://github.com/michelbr84/GarraRUST/blob/main/README.pt-BR.md#in%C3%ADcio-r%C3%A1pido) · [Deploy com Docker](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment.md).

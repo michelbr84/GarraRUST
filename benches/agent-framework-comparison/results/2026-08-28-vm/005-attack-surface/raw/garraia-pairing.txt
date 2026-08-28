@@ -1,0 +1,8 @@
+41:    pub fn restricted(users: impl IntoIterator<Item = String>) -> Self {
+50:    /// Load an allowlist from disk, or create a new restricted one if the file doesn't exist.
+81:        let mut list = Self::restricted(Vec::<String>::new());
+145:                AllowlistMode::Restricted => "restricted".to_string(),
+181:    fn restricted_mode_allows_only_known_users() {
+182:        let allowlist = Allowlist::restricted(vec!["alice".to_string(), "bob".to_string()]);
+190:        let mut allowlist = Allowlist::restricted(Vec::<String>::new());
+203:        let mut allowlist = Allowlist::restricted(Vec::<String>::new());

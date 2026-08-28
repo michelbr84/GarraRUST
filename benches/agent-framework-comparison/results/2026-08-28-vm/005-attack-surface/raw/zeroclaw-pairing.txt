@@ -1,0 +1,10 @@
+6973:    pub require_pairing: bool,
+6981:    /// pairing authentication — which requires `require_pairing = true`; with
+7159:            require_pairing: true,
+30377:        assert!(g.require_pairing, "Pairing must be required by default");
+30410:            c.gateway.require_pairing,
+30424:            require_pairing: true,
+30449:        assert!(parsed.require_pairing);
+30475:            parsed.gateway.require_pairing,
+30476:            "Missing [gateway] must default to require_pairing=true"
+32649:        assert!(g.require_pairing);

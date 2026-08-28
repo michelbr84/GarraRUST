@@ -1,0 +1,2 @@
+12:const PBKDF2_ITERATIONS: u32 = 600_000;
+310:    let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
