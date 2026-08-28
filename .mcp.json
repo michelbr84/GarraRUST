@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "garraia": {
+      "command": "./target/release/garra",
+      "args": ["mcp-server"]
+    }
+  }
+}
