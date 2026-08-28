@@ -1,0 +1,4 @@
+Benchmark 1: openclaw --help
+  Time (mean ± σ):      46.2 ms ±   4.2 ms    [User: 33.6 ms, System: 15.3 ms]
+  Range (min … max):    40.4 ms …  58.7 ms    20 runs
+ 
