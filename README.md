@@ -12,6 +12,8 @@
 
 <p align="center">
   <a href="https://github.com/michelbr84/GarraRUST/actions"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/actions/workflows/codeql.yml"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml/badge.svg?branch=main" alt="Security Audit"></a>
   <a href="https://github.com/michelbr84/GarraRUST/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Licença: MIT"></a>
   <a href="https://github.com/michelbr84/GarraRUST/stargazers"><img src="https://img.shields.io/github/stars/michelbr84/GarraRUST" alt="Estrelas"></a>
   <a href="https://github.com/michelbr84/GarraRUST/issues"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST" alt="Issues"></a>

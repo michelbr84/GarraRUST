@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-27
+
+### Added
+- **Wiki versionado e publicado automaticamente** (#855) — a fonte de verdade do
+  GitHub Wiki agora vive em `wiki/` neste repo (Home + 7 páginas: Instalação,
+  Referência da CLI, Configuração, Guias de Integração, Arquitetura+ADRs,
+  Segurança+Operação, Contribuir/Roadmap/FAQ), revisável por PR; o workflow
+  `wiki-sync.yml` publica no `GarraRUST.wiki` via `GITHUB_TOKEN` a cada push
+  no `main`.
+
+### Fixed
+- **Clippy do stable 1.98 destravado** (#854) — o lint novo
+  `clippy::chunks_exact_to_as_chunks` derrubava o job Clippy no `main` e em
+  todos os PRs do dependabot. Migrados os 3 usos de `chunks_exact(4)` para
+  `as_chunks::<4>()` (garraia-db ×2, garraia-embeddings ×1 — este último
+  eliminando um `try_into().expect()`), mais `allow` pontual documentado de
+  `result_large_err` no padrão axum de `issue_token_pair`.
+
+### Changed
+- Imagem base Docker atualizada para `rust:1.98-slim` (#849).
+- `aws-smithy-runtime-api` 1.14.0 → 1.15.0 (#850).
+- Documentação (README/ROADMAP/TODO) sincronizada com o cleanup de 2026-08-18 (#847).
+
 ## [0.3.2] - 2026-08-18
 
 ### Fixed

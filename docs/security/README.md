@@ -7,6 +7,12 @@ Documentação técnica de segurança do GarraIA.
 | Arquivo | Descrição | Status |
 |---|---|---|
 | [`threat-model.md`](threat-model.md) | STRIDE threat model por componente (Gateway, auth, storage, plugins, channels, mobile) | Draft v1 (next review trimestral) |
+| [`codeql-setup.md`](codeql-setup.md) | Setup avançado do CodeQL (3 linguagens, config, toggle do default setup) | Ativo desde 2026-04-30 |
+| [`codeql-suppressions.md`](codeql-suppressions.md) (+ [`.json`](codeql-suppressions.json)) | Ledger versionado de supressões (dismissal via API + script de reapply) — 22 entradas | ⚠️ Re-audit de 90 dias vencido em 2026-08-01 |
+| [`secret-scanning-runbook.md`](secret-scanning-runbook.md) | Resposta a segredos vazados em commits | Ativo |
+| [`protect-main-ruleset.md`](protect-main-ruleset.md) (+ [`.json`](protect-main-ruleset.json)) | Ruleset do `main` (PR obrigatório, 4 checks, zero bypass) — fonte de verdade versionada | Ativo |
+| [`hardening-decisions.md`](hardening-decisions.md) | Decisões de postura de segurança | Ativo |
+| [`codeql-suppressions.json`](codeql-suppressions.json) → script: [`scripts/security/codeql-reapply-dismissals.sh`](../../scripts/security/codeql-reapply-dismissals.sh) | Reaplicação idempotente dos dismissals | Manual (agenda em GAR-491.2) |
 
 ## Ver também
 
