@@ -61,7 +61,10 @@ telemetry = ["garraia-gateway/telemetry"]
 # dependency chain (garraia-cli → garraia-gateway → garraia-agents).
 # Enables `cargo build --bin garraia --features dev-echo-provider` in CI
 # (see .github/workflows/ci.yml e2e job). Default OFF.
-dev-echo-provider = ["garraia-gateway/dev-echo-provider"]
+dev-echo-provider = [
+    "garraia-gateway/dev-echo-provider",
+    "garraia-agents/dev-echo-provider",
+]
 
 [dev-dependencies]
 tempfile = "3"

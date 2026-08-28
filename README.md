@@ -99,8 +99,13 @@ cargo build --release -p garraia
 <summary>Install via script (Linux, macOS) — uses published release binaries</summary>
 
 ```bash
-curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
+curl -fsSL https://garraia.org/install.sh | sh
 ```
+
+Mirrors (same script, auto-synced): GitHub release CDN
+`https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh`
+(most robust against IP rate limits) and
+`https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh`.
 
 The installer downloads the binary for your platform, verifies it against
 the release's `SHA256SUMS`, then chains into init and start. Note: the

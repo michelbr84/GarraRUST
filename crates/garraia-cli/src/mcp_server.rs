@@ -161,6 +161,20 @@ pub(crate) fn garra_ask_tool() -> Tool {
         "required": ["message"],
         "additionalProperties": false
     });
+    // Dev/CI only: com a feature `dev-echo-provider`, o enum ganha "echo" —
+    // provider keyless que permite testar o garra_ask fim-a-fim sem chave.
+    // Nunca aparece em builds de produção (feature default OFF).
+    #[cfg(feature = "dev-echo-provider")]
+    let schema_value = {
+        let mut v = schema_value;
+        if let Some(e) = v
+            .pointer_mut("/properties/provider/enum")
+            .and_then(|e| e.as_array_mut())
+        {
+            e.push(json!("echo"));
+        }
+        v
+    };
     // serde_json::Value::Object guaranteed by the literal above.
     let schema_map: JsonMap<String, JsonValue> = match schema_value {
         JsonValue::Object(map) => map,
@@ -311,6 +325,22 @@ mod tests {
         let desc = t.description.expect("description present");
         assert!(desc.contains("GarraIA"));
         assert!(desc.contains("garra.ask.v1"));
+    }
+
+    /// O provider keyless `echo` só entra no enum com a feature
+    /// `dev-echo-provider` — jamais em builds default/produção.
+    #[test]
+    fn tool_descriptor_provider_enum_gates_echo_by_feature() {
+        let t = garra_ask_tool();
+        let schema = (*t.input_schema).clone();
+        let has_echo = schema
+            .get("properties")
+            .and_then(|p| p.get("provider"))
+            .and_then(|p| p.get("enum"))
+            .and_then(|e| e.as_array())
+            .map(|e| e.iter().any(|v| v.as_str() == Some("echo")))
+            .expect("provider enum present");
+        assert_eq!(has_echo, cfg!(feature = "dev-echo-provider"));
     }
 
     #[test]
