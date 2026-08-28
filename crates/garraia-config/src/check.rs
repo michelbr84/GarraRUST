@@ -322,7 +322,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // `garra start --host` / the HOST env var overwrite this file value at
     // runtime, so this reflects the config file, not necessarily the live
     // process.
-    let bind_all_interfaces = config.gateway.host == "0.0.0.0" || config.gateway.host == "::";
+    let bind_all_interfaces = config.gateway.host == "0.0.0.0"
+        || config.gateway.host == "::"
+        || config.gateway.host == "[::]";
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
     if bind_all_interfaces && (config.gateway.api_key.is_none() || !tls_enabled) {
@@ -717,13 +719,15 @@ fn validate_auth(
     // BOTH /v1/auth/* and the legacy /auth/* answer 503 — previously this
     // state passed `config check` clean. Presence only, never values.
     if jwt_env_set {
+        // Empty counts as missing: `validate_secrets` rejects it anyway
+        // (≥32-byte / postgres:// checks), so an empty var still means 503.
         let missing: Vec<&str> = [
             "GARRAIA_REFRESH_HMAC_SECRET",
             "GARRAIA_LOGIN_DATABASE_URL",
             "GARRAIA_SIGNUP_DATABASE_URL",
         ]
         .iter()
-        .filter(|name| std::env::var_os(name).is_none())
+        .filter(|name| std::env::var_os(name).map(|v| v.is_empty()).unwrap_or(true))
         .copied()
         .collect();
         if !missing.is_empty() {
@@ -731,10 +735,9 @@ fn validate_auth(
                 findings,
                 "auth",
                 format!(
-                    "a JWT secret env var is set but {} missing; AuthConfig::from_env is \
-                     all-or-nothing, so /auth/* and /v1/auth/* will still respond 503 until \
-                     GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL and \
-                     GARRAIA_SIGNUP_DATABASE_URL are all provided",
+                    "a JWT secret env var is set but {} unset; AuthConfig::from_env is \
+                     all-or-nothing, so /auth/* and /v1/auth/* still respond 503 until \
+                     all four required auth env vars are provided",
                     missing.join(", ")
                 ),
             );
@@ -1870,7 +1873,8 @@ mod tests {
         // SAFETY: ENV_TEST_LOCK held.
         unsafe {
             std::env::set_var("GARRAIA_JWT_SECRET", "jwt-test-secret-at-least-32-bytes!!");
-            std::env::remove_var("GARRAIA_REFRESH_HMAC_SECRET");
+            // Empty string must count as missing (validate_secrets rejects it).
+            std::env::set_var("GARRAIA_REFRESH_HMAC_SECRET", "");
             std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
             std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
             std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
@@ -1953,13 +1957,15 @@ mod tests {
 
     #[test]
     fn bind_all_interfaces_ipv6_warns() {
-        let mut cfg = AppConfig::default();
-        cfg.gateway.host = "::".into();
-        let findings = validate(&cfg);
-        assert!(
-            findings.iter().any(|f| f.field == "gateway.host"),
-            ":: bind must fire the exposure warning: {findings:?}"
-        );
+        for host in ["::", "[::]"] {
+            let mut cfg = AppConfig::default();
+            cfg.gateway.host = host.into();
+            let findings = validate(&cfg);
+            assert!(
+                findings.iter().any(|f| f.field == "gateway.host"),
+                "{host} bind must fire the exposure warning: {findings:?}"
+            );
+        }
     }
 
     #[test]

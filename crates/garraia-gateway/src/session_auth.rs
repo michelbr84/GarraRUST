@@ -61,6 +61,10 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
 /// both set, mirroring `use_tls` in `server.rs`), OR `gateway.api_key`
 /// present — the pre-fix heuristic, kept so no existing deployment gets a
 /// *less* strict cookie than before.
+///
+/// TODO(deprecation): drop the `api_key` clause after a deprecation cycle —
+/// an api_key-only plain-HTTP deploy gets a Secure cookie that browsers
+/// refuse to send over HTTP (pre-existing behavior, preserved on purpose).
 pub fn session_cookie_secure(gateway: &garraia_config::GatewayConfig) -> bool {
     (gateway.tls_cert_path.is_some() && gateway.tls_key_path.is_some()) || gateway.api_key.is_some()
 }
