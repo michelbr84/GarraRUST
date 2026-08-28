@@ -169,6 +169,22 @@ used `"garraia-insecure-default-jwt-secret-change-me"` as a dev fallback —
 that string is gone from the codebase. Tokens signed with it will fail
 verification immediately on upgrade.
 
+**The legacy `/auth/*` surface is gated by the same wiring — there is no
+SQLite-only auth mode.** `mobile_auth` reaches the signing secret
+exclusively through `AppState::jwt_signing_secret()`, and that field is
+populated only after **both** Postgres pools (`garraia_login` +
+`garraia_signup`) connect and pass their role guard (`server.rs`,
+all-`Ok` arm). Consequences:
+
+- Setting only `GARRAIA_JWT_SECRET` unlocks **nothing** — `/auth/*` and
+  `/v1/auth/*` keep answering 503.
+- A reachable Postgres with the wrong role in the DSN (e.g. a superuser
+  URL) fails the `SELECT current_user` guard, the gateway logs
+  `garraia-auth wiring partially failed; /v1/auth/* will return 503`,
+  and the legacy `/auth/*` stays down with it.
+- Dev deployments that don't want Postgres must simply accept the 503s
+  as the (correct, fail-closed) steady state.
+
 ---
 
 ## 5. `config check` integration
@@ -183,6 +199,15 @@ verification immediately on upgrade.
 - **Warning** when none of `GARRAIA_JWT_SECRET`,
   `GarraIA_VAULT_PASSPHRASE` or `GARRAIA_VAULT_PASSPHRASE` is set
   (auth flow will 503).
+- **Warning** when a JWT secret env var **is** set but any of
+  `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_LOGIN_DATABASE_URL`,
+  `GARRAIA_SIGNUP_DATABASE_URL` is missing — `AuthConfig::from_env` is
+  all-or-nothing, so `/auth/*` and `/v1/auth/*` still answer 503
+  (previously this partial state passed `config check` clean).
+- **Warning** (network section, field `gateway.host`) when the config
+  file binds `0.0.0.0`/`::` with no `gateway.api_key` or TLS disabled.
+  Note `garra start --host` / the `HOST` env var can override the file
+  value at runtime — the finding reflects the file, not the live process.
 - **Warning** when the env secret is set **and** `[auth]` overrides are
   present — non-secret overrides apply but secrets remain env-only.
 - **Warning** (deprecation) whenever the mixed-case
@@ -201,15 +226,20 @@ only presence flags (plan 0035 SEC-M-02).
 
 ### `/auth/login` returns 503 "auth not configured"
 
-Cause: `GARRAIA_JWT_SECRET`, `GarraIA_VAULT_PASSPHRASE` and
-`GARRAIA_VAULT_PASSPHRASE` are all unset. Any one will unblock the
-endpoint:
+Cause: the auth wiring never came up. That takes **all four** required
+env vars (`GARRAIA_JWT_SECRET` or a vault-passphrase fallback,
+`GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_LOGIN_DATABASE_URL`,
+`GARRAIA_SIGNUP_DATABASE_URL`) *and* both Postgres pools connecting as
+their exact roles (§4, §7). Start with the secrets:
 
 ```bash
 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)
+export GARRAIA_REFRESH_HMAC_SECRET=$(openssl rand -hex 32)
 ```
 
-Run `garraia config check` to confirm the gateway now sees the variable.
+then provision the database per §7. Run `garraia config check` to
+confirm which variables the gateway sees, and look for
+`garraia-auth wired (login + signup pools + jwt)` in the boot log.
 
 ### `/v1/auth/login` still returns 503 after setting `GARRAIA_JWT_SECRET`
 
@@ -232,7 +262,101 @@ always come from env regardless of the file.
 
 ---
 
-## 7. Cross-references
+## 7. Provisioning the Postgres roles
+
+End-to-end runbook to take a gateway from "all auth vars absent" to a
+working `/v1/auth/*` + `/auth/*`. Until now this sequence only existed in
+the test harness (`crates/garraia-auth/tests/common/harness.rs`) and as
+prose in ADR 0005 §Production.
+
+### 7.1 Generate the secrets
+
+```bash
+export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)            # ≥32 bytes
+export GARRAIA_REFRESH_HMAC_SECRET=$(openssl rand -hex 32)   # distinct from the JWT secret
+export GARRAIA_UPLOAD_HMAC_SECRET=$(openssl rand -hex 32)    # tus commit integrity (optional in dev)
+export GARRAIA_VAULT_PASSPHRASE=$(openssl rand -hex 32)      # credential vault
+LOGIN_PW=$(openssl rand -hex 24); SIGNUP_PW=$(openssl rand -hex 24); APP_PW=$(openssl rand -hex 24)
+```
+
+Hex output is deliberate: it is ≥32 ASCII bytes and safe to embed in a
+DSN without URL-encoding. `scripts/gen-auth-secrets.sh` prints this whole
+block ready to paste. See also the top-level [`.env.example`](../.env.example).
+
+### 7.2 Postgres with pgvector
+
+The migrations require the `pgcrypto`, `citext` and `vector` extensions
+(superuser to create). Plain `postgres:16-alpine` does **not** ship
+pgvector and fails migration 005 — use the pgvector image:
+
+```bash
+docker run -d --name garraia-pg -p 127.0.0.1:5432:5432 \
+  -e POSTGRES_PASSWORD=<superuser-pw> -e POSTGRES_DB=garraia_workspace \
+  -v garraia_pg:/var/lib/postgresql/data pgvector/pgvector:pg16
+```
+
+### 7.3 Run the workspace migrations
+
+There is no `garra db migrate`; run them out-of-band as a privileged
+role (sqlx-cli, or `psql -f` on each file in lexicographic order):
+
+```bash
+cargo install sqlx-cli --no-default-features --features postgres,rustls
+DATABASE_URL=postgres://postgres:<superuser-pw>@127.0.0.1:5432/garraia_workspace \
+  sqlx migrate run --source crates/garraia-workspace/migrations
+```
+
+### 7.4 Promote the NOLOGIN roles
+
+The migrations create `garraia_login` (BYPASSRLS, migration 008),
+`garraia_signup` (BYPASSRLS, migration 010) and `garraia_app`
+(RLS-enforced, migration 007) as NOLOGIN. Promote each with its own
+password from your secret store (ADR 0005 §Production; `pg_hba.conf`
+must use `scram-sha-256`, never `trust`):
+
+```sql
+ALTER ROLE garraia_login  WITH LOGIN PASSWORD '<LOGIN_PW>';
+ALTER ROLE garraia_signup WITH LOGIN PASSWORD '<SIGNUP_PW>';
+ALTER ROLE garraia_app    WITH LOGIN PASSWORD '<APP_PW>';
+```
+
+### 7.5 Build the DSNs
+
+Each pool runs `SELECT current_user` at connect time and refuses any
+other role — the DSN must authenticate **as** the role itself (a
+superuser URL fails with `WrongRole`; `SET ROLE` is not supported):
+
+```bash
+export GARRAIA_LOGIN_DATABASE_URL="postgres://garraia_login:${LOGIN_PW}@127.0.0.1:5432/garraia_workspace"
+export GARRAIA_SIGNUP_DATABASE_URL="postgres://garraia_signup:${SIGNUP_PW}@127.0.0.1:5432/garraia_workspace"
+export GARRAIA_APP_DATABASE_URL="postgres://garraia_app:${APP_PW}@127.0.0.1:5432/garraia_workspace"
+```
+
+### 7.6 Persist and verify
+
+For the systemd unit, write the variables to `/etc/garraia/env`
+(`chown root:garraia` + `chmod 640` — the unit already loads it via
+`EnvironmentFile`). Never commit a `.env`. Then restart and verify — a green `/health` proves
+nothing about auth:
+
+```bash
+garraia config check --strict                      # expect exit 0
+# journal/log: "garraia-auth wired (login + signup pools + jwt)"
+curl -si -X POST http://127.0.0.1:3888/v1/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"op@example.com","password":"<strong password>"}'   # 201/409, NOT 503
+curl -si -X POST http://127.0.0.1:3888/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"op@example.com","password":"<strong password>"}'   # 200/401, NOT 503
+```
+
+Keep the gateway bound to `127.0.0.1` and terminate TLS at a reverse
+proxy for any external exposure (`docs/src/production-runbook.md` §2 —
+release binaries do not carry the `tls` cargo feature).
+
+---
+
+## 8. Cross-references
 
 - ADR 0005 — identity provider architecture (BYPASSRLS roles).
 - Plan 0010 — v1/auth/* endpoints.

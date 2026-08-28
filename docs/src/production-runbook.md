@@ -186,8 +186,11 @@ Variáveis obrigatórias (pelo menos uma chave LLM):
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
 GARRAIA_VAULT_PASSPHRASE=<openssl rand -hex 32>
-GARRAIA_API_KEY=<bearer token para proteger a API>
 ```
+
+> **Nota:** não existe env var `GARRAIA_API_KEY` — o gateway não a lê.
+> O bearer token é a chave `gateway.api_key` no `config.yml` (chmod 600).
+> Para a autenticação completa (`/v1/auth/*`), veja `docs/auth-config.md` §7.
 
 Variáveis opcionais mas recomendadas em produção:
 

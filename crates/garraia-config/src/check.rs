@@ -131,6 +131,7 @@ const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
     "GARRAIA_REFRESH_HMAC_SECRET",
     "GARRAIA_SIGNUP_DATABASE_URL",
     "GARRAIA_TRUSTED_PROXIES",
+    "GARRAIA_UPLOAD_HMAC_SECRET",
     "GARRAIA_VAULT_PASSPHRASE",
     // Plan 0046 slice 3: legacy mixed-case alias accepted by
     // `AuthConfig::from_env` as a fallback for `GARRAIA_JWT_SECRET`.
@@ -313,6 +314,40 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "gateway.tls_key_path is set but gateway.tls_cert_path is missing".into(),
         ),
         _ => {}
+    }
+
+    // Bind exposure: 0.0.0.0/:: listens on every interface, and the bulk of
+    // the /api/* + /ws surface has no credential gate of its own, so only
+    // an api_key + TLS deployment (or network topology) protects it.
+    // `garra start --host` / the HOST env var overwrite this file value at
+    // runtime, so this reflects the config file, not necessarily the live
+    // process.
+    let bind_all_interfaces = config.gateway.host == "0.0.0.0"
+        || config.gateway.host == "::"
+        || config.gateway.host == "[::]";
+    let tls_enabled =
+        config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
+    if bind_all_interfaces && (config.gateway.api_key.is_none() || !tls_enabled) {
+        let mut unguarded: Vec<&str> = Vec::new();
+        if config.gateway.api_key.is_none() {
+            unguarded.push("gateway.api_key is not set");
+        }
+        if !tls_enabled {
+            unguarded.push("TLS is disabled");
+        }
+        push_warn(
+            &mut findings,
+            "gateway.host",
+            format!(
+                "gateway.host=`{}` binds all interfaces while {} — make sure a firewall or \
+                 TLS-terminating reverse proxy protects port {}, or switch to 127.0.0.1. \
+                 Note: `garra start --host` / the HOST env var can override this file value \
+                 at runtime",
+                config.gateway.host,
+                unguarded.join(" and "),
+                config.gateway.port
+            ),
+        );
     }
 
     // Timeouts: 0 means "no timeout" for reqwest/tokio — warn (user probably meant something else).
@@ -677,6 +712,36 @@ fn validate_auth(
             "auth",
             "none of GARRAIA_JWT_SECRET, GarraIA_VAULT_PASSPHRASE or GARRAIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
         );
+    }
+
+    // Cross-check: `AuthConfig::from_env` is all-or-nothing over four env
+    // vars. With only the JWT secret set the gateway still fail-softs and
+    // BOTH /v1/auth/* and the legacy /auth/* answer 503 — previously this
+    // state passed `config check` clean. Presence only, never values.
+    if jwt_env_set {
+        // Empty counts as missing: `validate_secrets` rejects it anyway
+        // (≥32-byte / postgres:// checks), so an empty var still means 503.
+        let missing: Vec<&str> = [
+            "GARRAIA_REFRESH_HMAC_SECRET",
+            "GARRAIA_LOGIN_DATABASE_URL",
+            "GARRAIA_SIGNUP_DATABASE_URL",
+        ]
+        .iter()
+        .filter(|name| std::env::var_os(name).map(|v| v.is_empty()).unwrap_or(true))
+        .copied()
+        .collect();
+        if !missing.is_empty() {
+            push_warn(
+                findings,
+                "auth",
+                format!(
+                    "a JWT secret env var is set but {} unset; AuthConfig::from_env is \
+                     all-or-nothing, so /auth/* and /v1/auth/* still respond 503 until \
+                     all four required auth env vars are provided",
+                    missing.join(", ")
+                ),
+            );
+        }
     }
 
     // Issue #824: the mixed-case `GarraIA_VAULT_PASSPHRASE` spelling is
@@ -1763,6 +1828,167 @@ mod tests {
         assert!(
             findings.is_empty(),
             "real existing path should produce no findings: {findings:?}"
+        );
+    }
+
+    // ── Auth env all-or-nothing finding ────────────────────────────────────
+    //
+    // Env mutation shares the crate-wide ENV_TEST_LOCK with auth::tests and
+    // the vault-spelling tests above — same variables, same test binary.
+
+    const AUTH_ENV_TEST_VARS: &[&str] = &[
+        "GARRAIA_JWT_SECRET",
+        "GARRAIA_REFRESH_HMAC_SECRET",
+        "GARRAIA_LOGIN_DATABASE_URL",
+        "GARRAIA_SIGNUP_DATABASE_URL",
+        "GarraIA_VAULT_PASSPHRASE",
+        "GARRAIA_VAULT_PASSPHRASE",
+    ];
+
+    fn auth_env_snapshot() -> Vec<(&'static str, Option<String>)> {
+        AUTH_ENV_TEST_VARS
+            .iter()
+            .map(|name| (*name, std::env::var(name).ok()))
+            .collect()
+    }
+
+    fn restore_auth_env(snapshot: Vec<(&'static str, Option<String>)>) {
+        // SAFETY: ENV_TEST_LOCK held by caller.
+        unsafe {
+            for (name, value) in snapshot {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_auth_env_yields_all_or_nothing_warning() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = auth_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GARRAIA_JWT_SECRET", "jwt-test-secret-at-least-32-bytes!!");
+            // Empty string must count as missing (validate_secrets rejects it).
+            std::env::set_var("GARRAIA_REFRESH_HMAC_SECRET", "");
+            std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
+            std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
+            std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
+            std::env::remove_var("GARRAIA_VAULT_PASSPHRASE");
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "auth" && f.message.contains("all-or-nothing"))
+            .expect("JWT-only env set must warn that auth stays 503");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("GARRAIA_REFRESH_HMAC_SECRET"));
+        assert!(hit.message.contains("GARRAIA_LOGIN_DATABASE_URL"));
+        assert!(hit.message.contains("GARRAIA_SIGNUP_DATABASE_URL"));
+        // Redaction invariant: presence only, never the value.
+        assert!(!hit.message.contains("jwt-test-secret"));
+        // The "none of ... is set" warning must not fire alongside it.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.message.contains("none of GARRAIA_JWT_SECRET")),
+            "findings = {findings:?}"
+        );
+
+        restore_auth_env(snapshot);
+    }
+
+    #[test]
+    fn complete_auth_env_does_not_warn_all_or_nothing() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = auth_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("GARRAIA_JWT_SECRET", "jwt-test-secret-at-least-32-bytes!!");
+            std::env::set_var(
+                "GARRAIA_REFRESH_HMAC_SECRET",
+                "refresh-test-secret-min-32-bytes!!",
+            );
+            std::env::set_var(
+                "GARRAIA_LOGIN_DATABASE_URL",
+                "postgres://garraia_login:pw@localhost:5432/garraia",
+            );
+            std::env::set_var(
+                "GARRAIA_SIGNUP_DATABASE_URL",
+                "postgres://garraia_signup:pw@localhost:5432/garraia",
+            );
+            std::env::remove_var("GarraIA_VAULT_PASSPHRASE");
+            std::env::remove_var("GARRAIA_VAULT_PASSPHRASE");
+        }
+
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.message.contains("all-or-nothing")),
+            "complete auth env set must not fire the partial-set warning: {findings:?}"
+        );
+
+        restore_auth_env(snapshot);
+    }
+
+    // ── Bind-exposure finding (gateway.host) ───────────────────────────────
+
+    #[test]
+    fn bind_all_interfaces_without_credentials_warns() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "gateway.host")
+            .expect("0.0.0.0 with no api_key and no TLS must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("gateway.api_key is not set"));
+        assert!(hit.message.contains("TLS is disabled"));
+    }
+
+    #[test]
+    fn bind_all_interfaces_ipv6_warns() {
+        for host in ["::", "[::]"] {
+            let mut cfg = AppConfig::default();
+            cfg.gateway.host = host.into();
+            let findings = validate(&cfg);
+            assert!(
+                findings.iter().any(|f| f.field == "gateway.host"),
+                "{host} bind must fire the exposure warning: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bind_loopback_does_not_warn_about_exposure() {
+        // AppConfig::default() binds 127.0.0.1.
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings.iter().any(|f| f.field == "gateway.host"),
+            "loopback bind must not fire the exposure warning: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn bind_all_interfaces_with_api_key_and_tls_does_not_warn() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        cfg.gateway.api_key = Some("test-gateway-bearer".into());
+        cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
+        cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "gateway.host"),
+            "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
         );
     }
 }
