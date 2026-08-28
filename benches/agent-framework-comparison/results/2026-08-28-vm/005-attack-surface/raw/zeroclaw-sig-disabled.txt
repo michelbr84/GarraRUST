@@ -1,0 +1,7 @@
+18:    Disabled,
+189:    if mode == SignatureMode::Disabled {
+208:                SignatureMode::Disabled => Ok(VerificationResult::Unsigned),
+227:                    SignatureMode::Disabled => Ok(result),
+238:                    SignatureMode::Disabled => Ok(result),
+441:            SignatureMode::Disabled,
+527:        assert_eq!(SignatureMode::default(), SignatureMode::Disabled);

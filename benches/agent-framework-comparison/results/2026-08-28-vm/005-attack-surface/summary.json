@@ -1,6 +1,6 @@
 {
   "scenario": "005-attack-surface",
-  "run_at_utc": "2026-08-28T06:05:06Z",
+  "run_at_utc": "2026-08-28T06:46:36Z",
   "host": "vm",
   "status": "pass",
   "skipped": 0,
@@ -64,6 +64,24 @@
       "name": "Resolved crates in Cargo.lock",
       "ok": "pass",
       "detail": "1265"
+    },
+    {
+      "target": "garraia",
+      "name": "WASM plugin sandbox: memory caps + execution deadlines (wasmtime, opt-in feature)",
+      "ok": "pass",
+      "detail": "9:use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};"
+    },
+    {
+      "target": "openclaw",
+      "name": "Plugins load in-process as trusted code (their own threat model)",
+      "ok": "pass",
+      "detail": "257:Plugins/extensions are loaded **in-process** with the Gateway and are treated as trusted code."
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Plugin Ed25519 signing exists but defaults to Disabled",
+      "ok": "pass",
+      "detail": "18:    Disabled,"
     }
   ]
 }

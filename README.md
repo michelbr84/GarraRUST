@@ -80,7 +80,8 @@ tone in any language. See [ADR 0012](docs/adr/0012-garra-persona.md).
 # Requires Rust 1.94+ (matches the MSRV declared in Cargo.toml)
 cargo build --release -p garraia
 
-# Interactive setup — pick your LLM provider, store API keys in the encrypted vault
+# Interactive setup — pick your LLM provider; optionally store API keys
+# in the encrypted vault (the wizard's default is config.yml, mode 0600)
 ./target/release/garra init
 
 # Start
@@ -102,8 +103,10 @@ curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/inst
 ```
 
 The installer downloads the binary for your platform, verifies it against
-the release's `SHA256SUMS`, then chains into `garra init` and
-`garra start`. Env toggles: `GARRAIA_SKIP_INIT=1`, `GARRAIA_SKIP_START=1`,
+the release's `SHA256SUMS`, then chains into init and start. Note: the
+installer names the binary `garraia`, while a cargo build produces
+`garra` — the commands are otherwise identical. Env toggles:
+`GARRAIA_SKIP_INIT=1`, `GARRAIA_SKIP_START=1`,
 `GARRAIA_BOOTSTRAP_LOCAL=0`. In TTY-less contexts (Docker build, CI) it
 prints next steps and exits 0 instead of blocking.
 
@@ -149,15 +152,18 @@ Measured with the versioned harness in
 [003](benches/agent-framework-comparison/scenarios/003-cold-start.md);
 raw logs committed under
 [`results/`](benches/agent-framework-comparison/results/)).
-Competitors pinned by commit; hardware recorded in `environment.txt`.
+Performance was measured on `openclaw@2026.7.1-2` (npm `latest` at run
+time) and a fresh ZeroClaw `master` clone (`d355e3b`); hardware and
+versions recorded in `environment.txt`. The security-audit scenarios
+below use separate commit-pinned inspection checkouts.
 
 | Metric | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
 |---|---|---|---|
-| Installed footprint | 47 MB single binary (LTO, stripped) | 370 MB `node_modules` + Node.js ≥ 22.22.3 runtime | 40 MB binary (default lean-bundle build) |
-| Peak RSS, `--help` | **8.8 MB** | 50.4 MB | 15.7 MB |
+| Installed footprint | 47 MiB single binary (LTO, stripped) | 370 MiB `node_modules` + Node.js ≥ 22.22.3 runtime | 40 MiB binary (default lean-bundle build) |
+| Peak RSS, `--help` | **8.6 MiB** (8,756 KiB) | 49.2 MiB (50,388 KiB) | 15.3 MiB (15,704 KiB) |
 | Cold start, `--help` (mean of 20) | **4.1 ms** | 46.2 ms | 8.5 ms |
 
-Yes, ZeroClaw's default binary is 7 MB smaller than ours — the table
+Yes, ZeroClaw's default binary is 7 MiB smaller than ours — the table
 reports what the harness measured, including where we lose.
 
 > These are CLI-floor measurements, not idle-server memory — the harness
@@ -169,7 +175,7 @@ reports what the harness measured, including where we lose.
 ### Audited security posture — all three frameworks, pinned commits
 
 Verified by mechanical inspection of pinned checkouts (OpenClaw
-`343252a`, ZeroClaw `d5617f1`, both 2026-08-27) — every row has a
+`343252a`, ZeroClaw `d5617f1`) — every row has a
 reproducible check in scenarios
 [004](benches/agent-framework-comparison/scenarios/004-credentials-at-rest.md)
 and [005](benches/agent-framework-comparison/scenarios/005-attack-surface.md),
@@ -177,10 +183,10 @@ with per-claim evidence in `results/`:
 
 | | **GarraIA** | **OpenClaw** | **ZeroClaw** |
 |---|---|---|---|
-| Credentials at rest | AES-256-GCM vault (PBKDF2, 600k iters); MCP secrets auto-moved to vault. Caveat: falls back to plaintext-with-warning when no vault passphrase is set | **Not encrypted at rest** (their docs' own words) — POSIX 0600/0700 perms; SecretRefs + 1Password/Vault are opt-in | ChaCha20-Poly1305 **by default**. Caveat: master key sits on the same filesystem |
+| Credentials at rest | AES-256-GCM vault (PBKDF2, 600k iters) available; **opt-in** — the init wizard's default is `config.yml` at mode 0600. MCP secrets auto-move to the vault when a passphrase is set | Not encrypted at rest (their docs' own words) — POSIX 0600/0700 perms; SecretRefs + 1Password/Vault are opt-in | ChaCha20-Poly1305 **by default** — the only default-encrypted posture of the three. Caveats: master key sits on the same filesystem; 1Password refs opt-in |
 | Default bind | 127.0.0.1 | loopback | 127.0.0.1 |
 | Gateway auth default | Messaging channels are deny-by-default (pairing codes). Local API is open on loopback; token/session auth is opt-in | Token required out of the box; **fails closed** without one | Pairing required by default; public bind is warn-only |
-| Dependency tree | 1,061 crates (Cargo.lock) | 66 direct prod npm deps (~377 prod closure) | 1,265 crates (Cargo.lock) |
+| Dependency tree | 1,061 crates (Cargo.lock) | 66 direct prod npm deps; `npm install -g` resolved 300 packages on the measured run | 1,265 crates (Cargo.lock) |
 | Plugin isolation | WASM sandbox (wasmtime): memory caps + execution deadlines, opt-in feature | In-process, plugins are trusted code (their threat model says so) | WASM component model; Ed25519 signing exists but defaults to disabled |
 
 ### Feature comparison
@@ -189,11 +195,11 @@ with per-claim evidence in `results/`:
 |---|---|---|---|
 | Chat channels | 5 wired end-to-end (Telegram, Discord, Slack, WhatsApp, iMessage·macOS) + web chat + OpenAI-compatible API; 6 more implemented in-crate, not yet wired | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
 | LLM providers | 15 built-in (Anthropic, OpenAI, Ollama native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
-| MCP | client: stdio + Streamable HTTP | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
+| MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
 | Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
 | Scheduling | one-shot scheduled tasks (persisted heartbeats, up to 30 days); cron-style recurrence is on the roadmap | full cron + automations | cron + SOP engine |
-| Multi-tenant group workspace | in active development — Postgres 16 + pgvector with FORCE Row-Level Security, 29 tables ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
+| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 37 tables across 32 migrations with FORCE Row-Level Security on tenant data ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
 | Native PT-BR assistant persona | yes — first-class, default | no | no |
 | Prebuilt binaries + self-update | 5 targets, SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
 
@@ -247,13 +253,16 @@ conversion via ffmpeg.
 
 ### MCP (Model Context Protocol)
 
-Connect any MCP server: stdio for local processes, Streamable HTTP for
-remote ones (config accepts `http`/`sse`/`streamable-http` values — all
-served by the Streamable HTTP client; legacy SSE-only servers are not
-supported). Tools appear namespaced (`server.tool`); MCP prompts become
-slash commands automatically; marketplace via `garra mcp install`; admin
-API adds/removes servers without restart. Config in `config.yml` or
-`~/.garraia/mcp.json` (Claude Desktop-compatible).
+Connect any MCP server: stdio for local processes (default build), plus
+Streamable HTTP for remote ones behind the `mcp-http` feature (config
+accepts `http`/`sse`/`streamable-http` values — all served by the
+Streamable HTTP client; legacy SSE-only servers are not supported, and
+the prebuilt binaries currently ship stdio-only). Tools appear
+namespaced (`server.tool`); MCP prompts become slash commands
+automatically; marketplace with one-click install via the web console
+(`/api/mcp/marketplace`); admin API adds/removes servers without
+restart; CLI: `garra mcp list|inspect|resources|prompts`. Config in
+`config.yml` or `~/.garraia/mcp.json` (Claude Desktop-compatible).
 
 ### Skills & plugins
 
@@ -292,8 +301,9 @@ headers (`X-AI-Model`, `X-AI-Provider`) on every response.
 After conversations, a dedicated LLM extractor identifies durable facts
 and stores them with context and date; local embeddings (Ollama —
 nomic-embed-text, mxbai-embed-large, …) power semantic search; relevant
-facts are injected into the agent's context automatically. CLI:
-`garra memory list|search|add|clear|export`.
+facts are injected into the agent's context automatically. Memory is
+managed through the web console and the gateway API (a `garra memory`
+CLI is on the roadmap).
 
 ```yaml
 memory:
@@ -311,11 +321,13 @@ Built for the requirements of always-on agents that touch private data.
 Wording below matches what the code does — audited claim by claim (see
 the comparison section above for the evidence trail).
 
-- **Encrypted credential vault** — API keys live in
-  `~/.garraia/credentials/vault.json`, AES-256-GCM, key derived via
+- **Encrypted credential vault (opt-in)** — AES-256-GCM at
+  `~/.garraia/credentials/vault.json`, key derived via
   PBKDF2-HMAC-SHA256 (600k iterations) from `GARRAIA_VAULT_PASSPHRASE`.
-  Without a passphrase, `garra init` writes keys to `config.yml`
-  (mode 0600) instead — set the passphrase to get encryption at rest.
+  Stated plainly: the `garra init` wizard's recommended default stores
+  provider keys in `config.yml` (mode 0600, plaintext); choose the vault
+  option and export the passphrase on every start to get encryption at
+  rest. Making the vault the default is a roadmap item.
 - **MCP secrets vault-protected** — sensitive env vars of MCP servers are
   auto-moved to the vault on save; `mcp.json` keeps only
   `vault:mcp.<server>.<key>` references. No passphrase → plaintext with a
@@ -344,8 +356,14 @@ the comparison section above for the evidence trail).
   keyword screen for common prompt-injection phrases on chat channels and
   the WebSocket. It is a heuristic, not a guarantee — treat prompt
   injection as unsolved, like every framework should.
-- **Native TLS** — point `tls_cert_path`/`tls_key_path` at your certs
-  (e.g. issued via certbot/Let's Encrypt). No built-in ACME client.
+- **TLS (source builds)** — compile with `--features tls` and point
+  `tls_cert_path`/`tls_key_path` at your certs (e.g. issued via
+  certbot/Let's Encrypt). No built-in ACME client. Honest caveats: the
+  prebuilt release binaries do **not** include the TLS feature today, and
+  with certs configured but the feature absent the gateway logs a warning
+  and serves plain HTTP — both are open hardening items on the roadmap.
+  For production, a TLS-terminating reverse proxy in front of the
+  loopback bind is the recommended setup.
 
 ## Migrating from OpenClaw?
 
@@ -418,7 +436,7 @@ crates/
 ├── garraia-plugins/    # WASM plugin sandbox (wasmtime)
 ├── garraia-embeddings/ # EmbeddingProvider / VectorStore traits
 ├── garraia-learning/   # Self-improving skills (mining, safety gate, versioning)
-└── ...                 # telemetry, media, skills, storage, runtime, common, glob, desktop
+└── ...                 # telemetry, media, skills, storage, tools, runtime, common, glob, desktop
 apps/
 └── garraia-mobile/     # Flutter client (Riverpod, go_router) — Garra Cloud Alpha
 ```
@@ -432,7 +450,7 @@ Development follows a 7-phase plan in [ROADMAP.md](ROADMAP.md) — currently
 deep in **Phase 3: Group Workspace**, a multi-tenant family/team space
 (files, chats, AI memory, Notion-like tasks) on Postgres 16 + pgvector
 with FORCE Row-Level Security. Recent milestones: auth v1 (Argon2id +
-15-min JWTs + refresh tokens), 29-table RLS schema, tus resumable
+15-min JWTs + refresh tokens), the 37-table RLS schema, tus resumable
 uploads, object storage (local + S3), OpenTelemetry baseline, the Garra
 Learning agent, and this benchmark harness.
 

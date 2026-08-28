@@ -278,6 +278,15 @@ run_scenario_005() {
   claim zeroclaw "${ZEROCLAW_CHECKOUT:-}" number zeroclaw-lock-crates \
     "Resolved crates in Cargo.lock" \
     "grep -c '^name = ' Cargo.lock"
+  claim garraia  "$GARRAIA_ROOT" present garraia-wasm-sandbox \
+    "WASM plugin sandbox: memory caps + execution deadlines (wasmtime, opt-in feature)" \
+    "grep -n 'StoreLimits\\|epoch_interruption' crates/garraia-plugins/src/runtime.rs"
+  claim openclaw "${OPENCLAW_CHECKOUT:-}" present openclaw-plugins-inprocess \
+    "Plugins load in-process as trusted code (their own threat model)" \
+    "grep -n 'in-process' SECURITY.md"
+  claim zeroclaw "${ZEROCLAW_CHECKOUT:-}" present zeroclaw-sig-disabled \
+    "Plugin Ed25519 signing exists but defaults to Disabled" \
+    "grep -n 'Disabled' crates/zeroclaw-plugins/src/signature.rs"
   finish_scenario "005-attack-surface"
 }
 

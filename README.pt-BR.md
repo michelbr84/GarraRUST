@@ -43,7 +43,7 @@
 
 ---
 
-**O assistente de IA brasileiro que roda na sua máquina.** Um único binário nativo (47 MB medidos, LTO + strip) que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com cofre de credenciais AES-256-GCM, recarregamento de configuração a quente, sistema completo de memória e pico de 8,8 MB de RAM na invocação do CLI ([medições versionadas](benches/agent-framework-comparison/results/)). Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
+**O assistente de IA brasileiro que roda na sua máquina.** Um único binário nativo (47 MiB medidos, LTO + strip) que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com cofre de credenciais AES-256-GCM opcional, recarregamento de configuração a quente, sistema completo de memória e pico de 8,6 MiB de RAM na invocação do CLI ([medições versionadas](benches/agent-framework-comparison/results/)). Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
 
 **Local-first** — Todo o estado (conversas, memória, config, credenciais) fica na sua máquina, sem telemetria. Seus prompts vão apenas para o provedor de LLM que você configurar — use Ollama para um setup 100% offline, sem egress.
 
@@ -76,7 +76,8 @@ Nota de sincronizacao (2026-05-24): a decisao GarraMaxPower esta formalizada em 
 # Requer Rust 1.94+ (alinhado com MSRV declarado em Cargo.toml — GAR-895)
 cargo build --release -p garraia
 
-# Configuração interativa - escolha seu provedor de LLM, armazene chaves de API em cofre criptografado
+# Configuração interativa - escolha seu provedor de LLM; opcionalmente
+# armazene chaves no cofre criptografado (default do wizard: config.yml 0600)
 ./target/release/garra init
 
 # Iniciar
@@ -169,16 +170,19 @@ As releases atuais (v0.3.x) publicam os 5 binários CLI (Linux x86_64/aarch64, m
 
 Números **medidos** (não afirmados) pelo harness versionado em
 [benches/agent-framework-comparison](benches/agent-framework-comparison/) —
-cenários 001–005, concorrentes pinados por commit (OpenClaw `343252a`,
-ZeroClaw `d5617f1`), evidência bruta em
-[`results/2026-08-28-vm/`](benches/agent-framework-comparison/results/2026-08-28-vm/):
+cenários 001–005, evidência bruta em
+[`results/2026-08-28-vm/`](benches/agent-framework-comparison/results/2026-08-28-vm/).
+Performance medida em `openclaw@2026.7.1-2` (npm `latest` na run) e num
+clone fresco do `master` do ZeroClaw (`d355e3b`); a auditoria de
+segurança usa checkouts de inspeção pinados por commit (OpenClaw
+`343252a`, ZeroClaw `d5617f1`):
 
 | | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
 |---|---|---|---|
-| **Footprint instalado** | 47 MB (binário único) | 370 MB `node_modules` + runtime Node ≥22.22.3 | 40 MB (binário, build default) |
-| **Pico de RSS (`--help`)** | **8,8 MB** | 50,4 MB | 15,7 MB |
+| **Footprint instalado** | 47 MiB (binário único) | 370 MiB `node_modules` + runtime Node ≥22.22.3 | 40 MiB (binário, build default) |
+| **Pico de RSS (`--help`)** | **8,6 MiB** | 49,2 MiB | 15,3 MiB |
 | **Início a frio (`--help`)** | **4,1 ms** | 46,2 ms | 8,5 ms |
-| **Credenciais em repouso** | Cofre AES-256-GCM (PBKDF2 600k); fallback plaintext com aviso sem passphrase | **Sem criptografia em repouso** (docs deles) — permissões POSIX; SecretRefs/1Password opt-in | ChaCha20-Poly1305 por default; chave no mesmo disco |
+| **Credenciais em repouso** | Cofre AES-256-GCM disponível, **opt-in** — default do wizard é `config.yml` (0600) | Sem criptografia em repouso (docs deles) — permissões POSIX; SecretRefs/1Password opt-in | ChaCha20-Poly1305 **por default** (única postura cifrada por default das três); chave no mesmo disco; refs 1Password opt-in |
 | **Auth default do gateway** | Canais deny-by-default (pareamento); API local aberta no loopback, token opt-in | Token exigido out-of-the-box (fail-closed) | Pareamento exigido por default; bind público só avisa |
 | **Bind default** | 127.0.0.1 | loopback | 127.0.0.1 |
 | **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (~377 no fechamento) | 1.265 crates (Cargo.lock) |
@@ -229,7 +233,7 @@ cenário — corrigimos a tabela, não o resultado.
 - **Discord** - comandos slash, tratamento de mensagens orientado a eventos, gerenciamento de sessões
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
-- **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
+- **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/src/channels/imessage.md))
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 
 Implementados no crate `garraia-channels`, **aguardando wiring no
@@ -472,7 +476,7 @@ Se o header não for suportado, use prefix no início da mensagem:
 - `mode: debug` → muda para modo debug
 - `/mode ask` → muda para modo ask
 
-Consulte a [documentação completa de integração com Continue](docs/continue-modes.md).
+Consulte a [documentação completa de integração com Continue](docs/src/continue-modes.md).
 
 #### API de Modos
 
@@ -501,7 +505,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 ### MCP Tool Integration com Marketplace
 
 - Conecte qualquer servidor compatível com MCP (filesystem, GitHub, bancos de dados, busca na web)
-- **Marketplace de ferramentas** - descubra e instale servidores MCP via `garra mcp install`
+- **Marketplace de ferramentas** - descubra e instale servidores MCP pelo Web Console (`/api/mcp/marketplace`) ou pela API admin; CLI: `garra mcp list|inspect|resources|prompts`
 - Ferramentas aparecem como ferramentas nativas com nomes namespaced (`server.tool`)
 - Prompts MCP viram slash commands automaticamente
 - Admin API para adicionar/remover servidores sem reiniciar
@@ -535,9 +539,9 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - **Transparencia** - identificacao clara de conteudo gerado por IA
 - **Logging auditavel** - registros estruturados de todas as interacoes com LLMs
 
-### TLS/HTTPS Nativo
+### TLS/HTTPS (builds de fonte)
 
-- **Suporte TLS nativo** - aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido — a renovação fica com a sua ferramenta de certificados.
+- **Suporte TLS** - compile com `--features tls` e aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido. Caveats honestos: os binários release atuais **não** incluem a feature TLS, e com certs configurados mas sem a feature o gateway loga warning e serve HTTP puro — ambos itens de hardening no roadmap. Para produção, recomenda-se reverse proxy com TLS na frente do bind loopback.
 - **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
 
 ### Health Checks Centralizados
@@ -654,21 +658,17 @@ embeddings:
   dimension: 768
 ```
 
-### API de Memória
+### Gerenciando a memória
 
-| Comando | Descrição |
-|---------|-----------|
-| `garra memory list` | Listar todos os fatos |
-| `garra memory search <query>` | Buscar fatos por相似idade |
-| `garra memory add <fato>` | Adicionar um fato manualmente |
-| `garra memory clear` | Limpar todos os fatos |
-| `garra memory export` | Exportar fatos para JSON |
+A memória é gerenciada pelo Web Console e pela API do gateway (listar,
+buscar por similaridade, adicionar, limpar e exportar fatos). Um
+subcomando `garra memory` na CLI está no roadmap.
 
 ## Segurança
 
 O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que ficam sempre ativos, acessam dados privados e se comunicam externamente.
 
-- **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
+- **Cofre de credenciais criptografadas (opt-in)** - AES-256-GCM em `~/.garraia/credentials/vault.json`, chave derivada via PBKDF2-HMAC-SHA256 (600k iterações) de `GARRAIA_VAULT_PASSPHRASE`. Dito com clareza: o default recomendado do wizard `garra init` grava as chaves de provider em `config.yml` (modo 0600, texto puro); escolha a opção do cofre e exporte a passphrase a cada start para ter criptografia em repouso. Tornar o cofre o default está no roadmap.
 - **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
 - **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
 - **Canais deny-by-default** - Usuários desconhecidos nos canais de mensageria precisam apresentar código de pareamento. A API local (WS/HTTP) faz bind em `127.0.0.1` e é aberta por default — habilite `gateway.api_key` e/ou `session_tokens_required: true` para exigir auth nela (endurecer esse default está no roadmap).
@@ -850,7 +850,10 @@ crates/
 ├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
 ├── garraia-common/     # Tipos compartilhados, erros, utilitários
 ├── garraia-telemetry/  # ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema completo (25 tabelas em 8 migrations: 001/002/004/005/006/007/008/009)
+├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 (37 tabelas em 32 migrations, FORCE RLS nos dados de tenant)
+├── garraia-embeddings/ # Traits EmbeddingProvider/VectorStore + DeterministicProvider (Fase 2.1)
+├── garraia-learning/   # Garra Learning Agent — miner/generator/safety gate/versioning (Fase 1.4)
+├── garraia-storage/    # ObjectStore: LocalFs + S3 (SSE-S3, HMAC integrity, presigned URLs)
 └── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay transparente, hotkey Alt+G, sprite animado
 ```
 
@@ -987,13 +990,13 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Voice Mode (Chatterbox TTS, Hibiki TTS, Whisper STT) | ✅ Funcionando |
 | Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
 | Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
-| CLI (init, start/stop/restart, update, migrate, mcp, skills, memory) | ✅ Funcionando |
+| CLI (init, start/stop/restart, update, migrate, mcp, skills, ask, chat, config) | ✅ Funcionando |
 | Sistema de plugins (Sandbox WASM) | ✅ Funcionando |
-| MCP Marketplace (install, discover) | ✅ Funcionando |
+| MCP Marketplace (discover + install via Web Console/API) | ✅ Funcionando |
 | Skills Editor CRUD (API + WebChat UI) | ✅ Funcionando |
 | OAuth2/OIDC + TOTP 2FA | ✅ Funcionando |
 | EU AI Act Compliance (X-AI-Model headers) | ✅ Funcionando |
-| TLS/HTTPS nativo | ✅ Funcionando |
+| TLS/HTTPS (`--features tls`; fora dos binários release atuais) | ✅ Funcionando |
 | Processamento de mídia (PDF, imagens) | ✅ Funcionando |
 | Garra Cloud Alpha — app mobile Flutter (Android/iOS) | ✅ Funcionando |
 | Mobile Auth (register/login/me, JWT, PBKDF2) | ✅ Funcionando |

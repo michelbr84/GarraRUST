@@ -44,6 +44,9 @@ OPENCLAW_CHECKOUT=/path/to/openclaw ZEROCLAW_CHECKOUT=/path/to/zeroclaw \
 | 8 | ZeroClaw | Default bind is 127.0.0.1 and pairing is required by default | `grep -n 'require_pairing' crates/zeroclaw-config/src/schema.rs` |
 | 9 | ZeroClaw | Honest caveat: public bind is warn-only, not refused | `grep -n 'allow_public_bind' crates/zeroclaw-config/src/schema.rs` |
 | 10 | ZeroClaw | Resolved crates in Cargo.lock | `grep -c '^name = ' Cargo.lock` |
+| 11 | GarraIA | WASM plugin sandbox: per-plugin memory caps + execution deadlines (wasmtime, opt-in feature) | `grep -n 'StoreLimits\|epoch_interruption' crates/garraia-plugins/src/runtime.rs` |
+| 12 | OpenClaw | Plugins load in-process as trusted code (their own threat model) | `grep -n 'in-process' SECURITY.md` |
+| 13 | ZeroClaw | Plugin Ed25519 signing exists but defaults to Disabled | `grep -n 'Disabled' crates/zeroclaw-plugins/src/signature.rs` |
 
 ## Expected result
 
