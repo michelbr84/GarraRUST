@@ -62,20 +62,27 @@ async fn harness_boots_and_router_responds_to_openapi_json() {
 /// single-owner slot. Migration 012 amends the predicate so the
 /// DB constraint matches the app-layer last-owner invariant.
 ///
-/// Uses `admin_pool` because `pg_indexes` is a catalog view — visible
-/// regardless of RLS, but requires read access that `garraia_app`
-/// may not have on `pg_indexes` rows for non-public schemas. The
-/// harness's admin pool is the consistent choice for schema
-/// introspection (same pattern as fixture setup).
+/// Uses a superuser connection because `pg_indexes` is a catalog
+/// view — visible regardless of RLS, but requires read access that
+/// `garraia_app` may not have on `pg_indexes` rows for non-public
+/// schemas.
+///
+/// Uses `Harness::admin_conn()` (a fresh dedicated connection) rather
+/// than the shared `admin_pool`: this test flaked intermittently in CI
+/// with `Io(Custom { .. "A Tokio 1.x context was found, but it is
+/// being shutdown." })` when it reused a pooled connection whose
+/// creating `#[tokio::test]` runtime had already shut down. A fresh
+/// connection is bound to THIS test's live runtime by construction.
 #[tokio::test]
 async fn migration_012_single_owner_idx_predicate_filters_active() {
     let h = Harness::get().await;
+    let mut conn = h.admin_conn().await;
 
     let (indexdef,): (String,) = sqlx::query_as(
         "SELECT indexdef FROM pg_indexes \
          WHERE indexname = 'group_members_single_owner_idx'",
     )
-    .fetch_one(&h.admin_pool)
+    .fetch_one(&mut conn)
     .await
     .expect("group_members_single_owner_idx must exist after migration 012");
 
