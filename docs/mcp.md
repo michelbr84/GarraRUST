@@ -169,3 +169,10 @@ timeouts:
   mcp:
     default_secs: 60  # Increase from default
 ```
+
+## See also
+
+- [`docs/cli-mcp-server.md`](cli-mcp-server.md) — the reverse direction:
+  GarraIA as MCP **server** exposing `garra_ask` to other hosts.
+- [`docs/hermes-integration.md`](hermes-integration.md) — pairing
+  GarraIA with another agent in both directions (loop topology, policy).

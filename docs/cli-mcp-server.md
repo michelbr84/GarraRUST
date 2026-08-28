@@ -257,6 +257,10 @@ Schema validation rejected the call. Check:
 
 ## See also
 
+- [`docs/mcp.md`](mcp.md) — the reverse direction: GarraIA as MCP
+  **client** consuming external servers.
+- [`docs/hermes-integration.md`](hermes-integration.md) — pairing
+  GarraIA with another agent in both directions (loop topology, policy).
 - [`docs/cli-ask.md`](cli-ask.md) — `garra ask` reference.
 - [`docs/configuration.md`](configuration.md) — provider/model resolution.
 - `plans/0102-gar-583-mcp-server-stdio.md` — this PR's plan.
