@@ -1,0 +1,51 @@
+{
+  "scenario": "004-credentials-at-rest",
+  "run_at_utc": "2026-08-28T06:05:05Z",
+  "host": "vm",
+  "status": "pass",
+  "skipped": 0,
+  "claims": [
+    {
+      "target": "garraia",
+      "name": "Credential vault uses AES-256-GCM",
+      "ok": "pass",
+      "detail": "3:use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};"
+    },
+    {
+      "target": "garraia",
+      "name": "Vault key derived with PBKDF2 600k iterations",
+      "ok": "pass",
+      "detail": "12:const PBKDF2_ITERATIONS: u32 = 600_000;"
+    },
+    {
+      "target": "garraia",
+      "name": "Honest caveat: MCP secrets fall back to plaintext with warning when vault passphrase is absent",
+      "ok": "pass",
+      "detail": "32:/// vault references are resolved back to their plaintext values for use at"
+    },
+    {
+      "target": "openclaw",
+      "name": "Docs state secret store is not encrypted at rest (POSIX perms only)",
+      "ok": "pass",
+      "detail": "310:Store values are not encrypted at rest. They are stored unencrypted in the shared state SQLite database (`state/openclaw.sqlite`), protected by the same `0600` file and `0700` directory permission"
+    },
+    {
+      "target": "openclaw",
+      "name": "Fairness: SecretRefs + 1Password/Vault integrations exist as opt-in",
+      "ok": "pass",
+      "detail": "4:  - Configuring SecretRefs for provider credentials and SQLite auth-profile refs"
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Secrets encrypted at rest by default (ChaCha20-Poly1305)",
+      "ok": "pass",
+      "detail": "3:// Secrets are encrypted using ChaCha20-Poly1305 AEAD with a random key stored"
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Honest caveat: no OS keyring crate — master key on same filesystem as ciphertext",
+      "ok": "pass",
+      "detail": "0"
+    }
+  ]
+}

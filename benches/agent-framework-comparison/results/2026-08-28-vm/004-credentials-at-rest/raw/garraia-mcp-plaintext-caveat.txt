@@ -1,0 +1,10 @@
+32:/// vault references are resolved back to their plaintext values for use at
+33:/// runtime. If the vault is unavailable, plaintext values are used as-is.
+38:    /// When `None`, env vars are saved as plaintext (with a warning).
+157:    /// are resolved to their plaintext secrets before the registry is built.
+179:    /// `vault:<key>` references. If the vault is unavailable, plaintext is
+206:    /// Values that are already plaintext (no prefix) are left untouched.
+232:    /// Move sensitive plaintext env values into the vault and replace them
+247:                        "mcp: vault not configured — saving sensitive env vars as plaintext; set GARRAIA_VAULT_PASSPHRASE to enable encryption"
+261:                    "mcp: GARRAIA_VAULT_PASSPHRASE not set — sensitive env vars saved as plaintext"
+288:                        "mcp: failed to store credential in vault — saving as plaintext"

@@ -1,0 +1,22 @@
+62:/** Detect forwarded/proxy headers that make loopback requests ineligible for direct-local auth. */
+78:/** Return whether a request is a clean loopback request without forwarded identity headers. */
+113: * Returns true if the IP belongs to a private or loopback network range.
+114: * Private ranges: RFC1918, link-local, ULA IPv6, and CGNAT (100.64/10), plus loopback.
+269: * - loopback: always 127.0.0.1
+271: * - tailnet: Tailnet IPv4 if available, else loopback
+272: * - auto: 0.0.0.0 inside containers (Docker/Podman/K8s); loopback otherwise
+281:  const mode = bind ?? "loopback";
+283:  if (mode === "loopback") {
+316:    // Inside a container, loopback is unreachable from the host network
+334: * / VM hosts the default remains `"loopback"`.
+337: * returns `"loopback"` because Tailscale serve/funnel architecturally requires
+338: * a loopback bind — container auto-detection must never override this.
+346:    return "loopback";
+348:  return isContainerEnvironment() ? "auto" : "loopback";
+399:  // Same-host clients use the canonical loopback URL even when external access is
+417: * Note: 0.0.0.0 and :: are NOT loopback - they bind to all interfaces.
+432: * - loopback hosts (localhost/127.x/::1 and mapped forms)
+444: * Check if a hostname or IP refers to a private or loopback address.
+462:  // they are not private/loopback unicast endpoints. (Multicast is UDP-only
+501: * - ws:// is secure for loopback, private IP literals, .local, and Tailnet hosts
+521:  // Treat those aliases the same way here so loopback cron announce delivery

@@ -1,4 +1,5 @@
-# Logs raw e build outputs grandes — opcional commitar.
-# Sumários (results/*/README.md, results/*/environment.txt, results/*/raw/*.json)
-# DEVEM ser commitados como evidência reproduzível.
-results/*/raw/*.log
+# Evidência é pequena (< 50 KiB por arquivo) e DEVE ser commitada:
+# results/*/README.md, environment.txt, */summary.json, raw/* (logs incluídos).
+# Só ignore artefatos realmente grandes que um run futuro venha a criar:
+results/*/raw/*.bin
+results/*/raw/*.tar*

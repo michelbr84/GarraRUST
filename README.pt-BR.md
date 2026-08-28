@@ -26,7 +26,7 @@
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
-  <img src="https://img.shields.io/badge/channels-11-purple" alt="Channels">
+  <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
 </p>
 
@@ -43,9 +43,9 @@
 
 ---
 
-**O assistente de IA brasileiro que funciona 100% no seu computador.** Um único binário de 16 MB que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com armazenamento de credenciais criptografadas, recarregamento de configuração a quente, sistema completo de memória e apenas 13 MB de RAM em modo de espera. Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
+**O assistente de IA brasileiro que roda na sua máquina.** Um único binário nativo (47 MB medidos, LTO + strip) que executa seus agentes de IA no Telegram, Discord, Slack, WhatsApp e iMessage — com cofre de credenciais AES-256-GCM, recarregamento de configuração a quente, sistema completo de memória e pico de 8,8 MB de RAM na invocação do CLI ([medições versionadas](benches/agent-framework-comparison/results/)). Desenvolvido em Rust para a segurança e confiabilidade que os agentes de IA exigem.
 
-**100% Local** — Todos os seus dados, conversas e configurações ficam exclusivamente no seu computador. Nenhum dado é enviado para servidores externos.
+**Local-first** — Todo o estado (conversas, memória, config, credenciais) fica na sua máquina, sem telemetria. Seus prompts vão apenas para o provedor de LLM que você configurar — use Ollama para um setup 100% offline, sem egress.
 
 <!-- TODO: Adicionar GIF de demonstração do terminal VHS aqui (#103) -->
 
@@ -167,28 +167,36 @@ As releases atuais (v0.3.x) publicam os 5 binários CLI (Linux x86_64/aarch64, m
 
 ### vs OpenClaw, ZeroClaw e outros frameworks de agentes de IA
 
-| | | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
-|---|---|---|---|---|
-| | **Tamanho do binário** | Em medição | Em medição | Em medição |
-| | **Pico de RSS (`--help`)** | Em medição | Em medição | Em medição |
-| | **Início a frio (`--help`)** | Em medição | Em medição | Em medição |
-| | **Armazenamento de credenciais** | Cofre criptografado AES-256-GCM | Arquivo de configuração em texto puro | Arquivo de configuração em texto puro |
-| | **Autenticação padrão** | Habilitada (pareamento WebSocket) | Desabilitada por padrão | Desabilitada por padrão |
-| | **Agendamento** | Cron, intervalo, único | Sim | Não |
-| | **Roteamento multi-agente** | Sim (Priority Router) | Sim (agentId) | Não |
-| | **Orquestração de sessões** | Sim (Session Continuity) | Sim | Não |
-| | **Suporte MCP** | Stdio, HTTP, SSE, StreamableHttp | Stdio + HTTP | Stdio |
-| | **Canais** | 11 | 6+ | 4 |
-| | **Provedores de LLM** | 100+ | 10+ | 22+ |
-| | **Binários pré-compilados** | Sim | N/A (Node.js) | Compilar a partir do código-fonte |
-| | **Recarregamento de config a quente** | Sim | Não | Não |
-| | **Sistema de plugins WASM** | Opcional (sandbox) | Não | Não |
-| | **Auto-atualização** | Sim (`garraia update`) | npm | Compilar a partir do código-fonte |
-| | **Arquitetura 100% local** | ✅ Sim | Não | Não |
-| | **Sistema de memória completo** | ✅ Sim (facts, sessions, vetorial) | Não | Não |
-| | **Auto-learning (extrator LLM)** | ✅ Sim | Não | Não |
+Números **medidos** (não afirmados) pelo harness versionado em
+[benches/agent-framework-comparison](benches/agent-framework-comparison/) —
+cenários 001–005, concorrentes pinados por commit (OpenClaw `343252a`,
+ZeroClaw `d5617f1`), evidência bruta em
+[`results/2026-08-28-vm/`](benches/agent-framework-comparison/results/2026-08-28-vm/):
 
-*Benchmarks em reconstrução. A metodologia reproduzível está em [benches/agent-framework-comparison](benches/agent-framework-comparison/). Resultados reais serão publicados em `results/YYYY-MM-DD-<host>/` após execução versionada.*
+| | **GarraIA** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) |
+|---|---|---|---|
+| **Footprint instalado** | 47 MB (binário único) | 370 MB `node_modules` + runtime Node ≥22.22.3 | 40 MB (binário, build default) |
+| **Pico de RSS (`--help`)** | **8,8 MB** | 50,4 MB | 15,7 MB |
+| **Início a frio (`--help`)** | **4,1 ms** | 46,2 ms | 8,5 ms |
+| **Credenciais em repouso** | Cofre AES-256-GCM (PBKDF2 600k); fallback plaintext com aviso sem passphrase | **Sem criptografia em repouso** (docs deles) — permissões POSIX; SecretRefs/1Password opt-in | ChaCha20-Poly1305 por default; chave no mesmo disco |
+| **Auth default do gateway** | Canais deny-by-default (pareamento); API local aberta no loopback, token opt-in | Token exigido out-of-the-box (fail-closed) | Pareamento exigido por default; bind público só avisa |
+| **Bind default** | 127.0.0.1 | loopback | 127.0.0.1 |
+| **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (~377 no fechamento) | 1.265 crates (Cargo.lock) |
+| **Canais** | 5 ligados fim-a-fim (+6 implementados no crate, sem wiring) | 27 plugins bundled | ~40 adapters (6 no build default) |
+| **Provedores de LLM** | 15 built-in (100+ modelos via OpenRouter) | via plugins | vários, feature-gated |
+| **Agendamento** | Tarefas one-shot persistidas (cron no roadmap) | Cron/automations completo | Cron + SOP engine |
+| **Suporte MCP** | Stdio + Streamable HTTP | Stdio/SSE/StreamableHttp + modo servidor | Stdio/http/sse, escopo fail-closed por agente |
+| **Recarregamento de config a quente** | Sim (file watch) | Sim (modo híbrido) | Só endpoint explícito |
+| **Plugins WASM (sandbox)** | Opcional (wasmtime) | Não (in-process, confiável) | Sim (component model; assinatura default off) |
+| **Workspace multi-tenant (Postgres RLS)** | Em desenvolvimento (Fase 3) | Não-objetivo declarado | Não |
+| **Persona nativa PT-BR** | ✅ Sim | Não | Não |
+
+**Onde os outros ganham, honestamente:** OpenClaw tem o maior ecossistema
+(27 canais, 150+ extensões, cron maduro) e exige auth no gateway
+out-of-the-box; ZeroClaw cifra secrets por default, publica 10 targets
+pré-compilados com proveniência SLSA e tem sandbox de exec a nível de SO.
+Se esta tabela algum dia parecer marketing, abra uma issue citando o
+cenário — corrigimos a tabela, não o resultado.
 
 ## Recursos
 
@@ -222,13 +230,11 @@ As releases atuais (v0.3.x) publicam os 5 binários CLI (Linux x86_64/aarch64, m
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/imessage-setup.md))
-- **Google Chat** - integração via API do Google Workspace
-- **Microsoft Teams** - bot via Bot Framework / Graph API
-- **Matrix** - protocolo federado, suporte a rooms e E2EE
-- **LINE** - Messaging API com webhooks
-- **IRC** - cliente IRC com suporte a múltiplos canais e redes
-- **Signal** - mensagens seguras via signal-cli
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
+
+Implementados no crate `garraia-channels`, **aguardando wiring no
+gateway** (acompanhe no [ROADMAP](ROADMAP.md)): Google Chat, Microsoft
+Teams, Matrix (com E2EE), LINE, IRC e Signal.
 
 ### Comandos e Aliases (Slash Commands)
 
@@ -484,7 +490,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
 - **Janela de contexto deslizante** - `max_history_messages` limita quantos turnos são enviados ao LLM sem afetar o armazenamento; `trim_messages_to_budget` apara pelo orçamento de tokens
 - **Sumarização automática de contexto** - quando o número de turnos desde o último resumo atinge `summarize_threshold`, um job background chama um modelo barato para gerar um resumo. O resumo é injetado como mensagem System no início do histórico hidratado — o LLM sempre tem contexto de sessões longas sem estourar a janela
-- Tarefas agendadas - agendamento cron, intervalo e único
+- Tarefas agendadas - one-shot persistidas em SQLite (heartbeats de até 30 dias; recorrência cron no roadmap)
 
 ### Skills
 
@@ -519,7 +525,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 - **OAuth2/OIDC** - suporte a provedores externos de identidade
 - **TOTP 2FA** - autenticacao de dois fatores via aplicativo (Google Authenticator, Authy)
-- **JWT** - tokens de sessao com 30 dias de validade, refresh automatico
+- **JWT** - dois stacks, sem confusão: Auth v1 (`/v1/auth/*`) usa access tokens HS256 de 15 minutos + refresh token opaco com HMAC; os endpoints mobile legados (`/auth/*`) ainda emitem JWT de 30 dias e estão sendo migrados para o v1
 - **PBKDF2-HMAC-SHA256** - 600k iteracoes para hash de senhas
 - **Pareamento por codigo** - whitelist de usuarios por canal
 
@@ -531,8 +537,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 
 ### TLS/HTTPS Nativo
 
-- **Suporte TLS nativo** - configure certificados SSL diretamente no GarraIA
-- **Let's Encrypt** - renovacao automatica de certificados
+- **Suporte TLS nativo** - aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido — a renovação fica com a sua ferramenta de certificados.
 - **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
 
 ### Health Checks Centralizados
@@ -554,7 +559,7 @@ Consulte a [documentação completa de integração com Continue](docs/continue-
 - **Timeouts configuráveis** - timeouts por tipo (LLM: 30s, TTS: 120s, MCP: 60s, Health: 5s) via `config.yml`
 - **Rate limiting por IP** - proteção automática configurável (`per_second`, `burst_size`) via `config.yml`
 - **Logs estruturados** - campos rastreáveis (`request_id`, `session_id`, `source`, `model`, `latency_ms`); JSON format via `GARRAIA_LOG_FORMAT=json`
-- **Ferramenta de migração** - `garra migrate openclaw` importa skills, canais e credenciais
+- **Ferramenta de migração** - `garra migrate openclaw` importa skills e canais (credenciais são reinseridas via `garra init`)
 - **Configuração interativa** - `garra init` wizard para configuração de provedor e chave de API
 
 ## Web Console "Garra Glass"
@@ -666,11 +671,11 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Cofre de credenciais criptografadas** - Chaves de API e tokens armazenados com criptografia AES-256-GCM em `~/.garraia/credentials/vault.json`. Nunca em texto puro no disco.
 - **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
 - **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
-- **Autenticação por padrão** - Gateway WebSocket requer códigos de pareamento. Sem acesso não autenticado fora da caixa.
+- **Canais deny-by-default** - Usuários desconhecidos nos canais de mensageria precisam apresentar código de pareamento. A API local (WS/HTTP) faz bind em `127.0.0.1` e é aberta por default — habilite `gateway.api_key` e/ou `session_tokens_required: true` para exigir auth nela (endurecer esse default está no roadmap).
 - **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
-- **Detecção de injeção de prompt** - Validação e saneamento de entrada antes do conteúdo chegar ao LLM.
+- **Filtragem heurística de entrada** - Saneamento de caracteres de controle + triagem por palavras-chave de frases comuns de prompt injection nos canais de chat e no WebSocket. É heurística, não garantia — trate prompt injection como problema em aberto, como todo framework deveria.
 - **Confirmação de comandos arriscados** - `tool_confirmation_enabled: true` pausa o agente antes de executar comandos bash destrutivos (`rm -r`, `git reset --hard`, `drop database`, etc.) e aguarda aprovação do usuário ("sim"/"yes"). Default: `false` (opt-in).
-- **Sandboxing de processos MCP** - Limites de memória virtual por processo (Unix, via `setrlimit`), timeout de inicialização configurável e restart automático com backoff exponencial (base × 2ⁿ, cap 300s). Após `max_restarts` tentativas, o servidor fica offline até restart manual via API admin.
+- **Limites de recursos para processos MCP** - Cap opcional de memória virtual por servidor (Unix, via `setrlimit`; desligado por default), timeout de inicialização e restart automático com backoff exponencial (base × 2ⁿ, cap 300s). São limites de recursos, não sandbox: processos MCP mantêm acesso a filesystem/rede.
 - **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
 - **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
 
@@ -680,19 +685,19 @@ O GarraIA foi projetado para funcionar 100% no seu computador:
 
 - **Sem dependência de nuvem** - Execute tudo localmente
 - **Seus dados são seus** - Conversas, facts e configurações ficam no seu PC
-- **Sem telemetria** - Nenhum dado é enviado para servidores externos
+- **Sem telemetria** - Nenhum phone-home de analytics; seus prompts vão apenas para o provedor de LLM configurado (Ollama = zero egress)
 - **Controle total** - Você decide onde e como executar
 - **Offline capable** - Funciona com modelos locais Ollama sem internet
 
 ## Migrando do OpenClaw?
 
-Um comando importa suas skills, configurações de canais e credenciais (criptografadas no cofre):
+Um comando importa suas skills e configurações de canais:
 
 ```bash
 garra migrate openclaw
 ```
 
-Use `--dry-run` para visualizar as alterações antes de confirmar. Use `--source /caminho/para/openclaw` para especificar um diretório de configuração personalizado do OpenClaw.
+Use `--dry-run` para visualizar as alterações antes de confirmar. Use `--source /caminho/para/openclaw` para especificar um diretório de configuração personalizado do OpenClaw. Arquivos de credenciais são detectados e listados, mas **não copiados** — reinsira as chaves de API via `garra init` para que entrem no cofre criptografado.
 
 ## Configuração
 
@@ -945,7 +950,7 @@ O GarraIA suporta múltiplos agentes com roteamento inteligente:
 O GarraIA implementa o protocolo MCP com:
 
 - **Transporte stdio** - Servidores MCP locais (processo filho)
-- **Transporte HTTP / SSE / StreamableHttp** - Servidores MCP remotos (`mcp-http` feature)
+- **Transporte Streamable HTTP** - Servidores MCP remotos (`mcp-http` feature). A config aceita `http`/`sse`/`streamable-http` como valores, todos servidos pelo cliente Streamable HTTP — servidores legados SSE-only não são suportados
 - **Tool Bridging** - Ferramentas aparecem como `server.tool` namespaced
 - **Resource API** - Arquivos, prompts, e custom resources
 - **Health Monitor** - Auto-reconexão com verificação periódica (30s)
@@ -963,22 +968,22 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Slack (Socket Mode, streaming) | ✅ Funcionando |
 | WhatsApp (webhooks) | ✅ Funcionando |
 | iMessage (macOS, grupos) | ✅ Funcionando |
-| Google Chat (Google Workspace) | ✅ Funcionando |
-| Microsoft Teams (Bot Framework) | ✅ Funcionando |
-| Matrix (federado, E2EE) | ✅ Funcionando |
-| LINE (Messaging API) | ✅ Funcionando |
-| IRC (multi-canal, multi-rede) | ✅ Funcionando |
-| Signal (signal-cli) | ✅ Funcionando |
+| Google Chat (Google Workspace) | 🧩 Implementado no crate — wiring no gateway pendente |
+| Microsoft Teams (Bot Framework) | 🧩 Implementado no crate — wiring no gateway pendente |
+| Matrix (federado, E2EE) | 🧩 Implementado no crate — wiring no gateway pendente |
+| LINE (Messaging API) | 🧩 Implementado no crate — wiring no gateway pendente |
+| IRC (multi-canal, multi-rede) | 🧩 Implementado no crate — wiring no gateway pendente |
+| Signal (signal-cli) | 🧩 Implementado no crate — wiring no gateway pendente |
 | Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
 | Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
-| Cliente MCP (stdio, HTTP/SSE/StreamableHttp, bridge de ferramentas, admin API) | ✅ Funcionando |
+| Cliente MCP (stdio + Streamable HTTP, bridge de ferramentas, admin API) | ✅ Funcionando |
 | Skills (SKILL.md, auto-descoberta) | ✅ Funcionando |
 | Configuração (YAML/TOML, hot-reload) | ✅ Funcionando |
 | Memória (SQLite, busca vetorial, facts.json) | ✅ Funcionando |
 | Auto-learning (extrator LLM) | ✅ Funcionando |
 | Embeddings locais (Ollama) | ✅ Funcionando |
 | Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
-| Agendamento (cron, intervalo, único) | ✅ Funcionando |
+| Agendamento (tarefas one-shot persistidas; cron no roadmap) | ✅ Funcionando |
 | Voice Mode (Chatterbox TTS, Hibiki TTS, Whisper STT) | ✅ Funcionando |
 | Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
 | Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |
