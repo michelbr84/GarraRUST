@@ -83,13 +83,16 @@ write_environment() {
 
 run_garraia() {
   precheck_garraia
-  ( cd ../.. && cargo build --release --bin garraia )
-  ls -lh ../../target/release/garraia | tee "$RAW/garraia-binsize.log"
+  # O pacote é `garraia`, mas o binário que ele produz chama-se `garra`
+  # ([[bin]] name em crates/garraia-cli/Cargo.toml) — `--bin garraia` não
+  # existe e `target/release/garraia` nunca é gerado.
+  ( cd ../.. && cargo build --release -p garraia )
+  ls -lh ../../target/release/garra | tee "$RAW/garraia-binsize.log"
   hyperfine --warmup 3 --runs 20 \
     --export-json "$RAW/garraia-hyperfine.json" \
-    '../../target/release/garraia --help' \
+    '../../target/release/garra --help' \
     | tee "$RAW/garraia-hyperfine.log"
-  /usr/bin/time -v ../../target/release/garraia --help \
+  /usr/bin/time -v ../../target/release/garra --help \
     2> "$RAW/garraia-time.log" || true
 }
 
