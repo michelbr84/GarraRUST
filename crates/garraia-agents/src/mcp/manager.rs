@@ -217,11 +217,17 @@ impl McpManager {
             })?
             .map_err(|e| Error::Mcp(format!("MCP server '{name}' handshake failed: {e}")))?;
 
-        // Discover tools
-        let mcp_tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
+        // Discover tools. Timeout mirrors the handshake above: a child that
+        // spawns but never answers tools/list must not block gateway startup.
+        let mcp_tools =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools())
+                .await
+                .map_err(|_| {
+                    Error::Mcp(format!(
+                        "MCP server '{name}' tools/list timed out after {timeout_secs}s"
+                    ))
+                })?
+                .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
 
         let tools: Vec<McpToolInfo> = mcp_tools
             .into_iter()
@@ -310,10 +316,16 @@ impl McpManager {
             })?
             .map_err(|e| Error::Mcp(format!("MCP server '{name}' HTTP handshake failed: {e}")))?;
 
-        let mcp_tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
+        // Same tools/list timeout as the stdio path above.
+        let mcp_tools =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools())
+                .await
+                .map_err(|_| {
+                    Error::Mcp(format!(
+                        "MCP server '{name}' tools/list timed out after {timeout_secs}s"
+                    ))
+                })?
+                .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
 
         let tools: Vec<McpToolInfo> = mcp_tools
             .into_iter()
