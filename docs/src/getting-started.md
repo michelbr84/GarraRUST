@@ -60,12 +60,12 @@ garraia init
 
 O assistente vai:
 
-1. Criar o diretório `~/.garraia/`
+1. Criar o diretório de configuração (`~/.config/garraia` por padrão; `$GARRAIA_CONFIG_DIR` quando definido)
 2. Solicitar a senha do cofre de credenciais (AES-256-GCM)
 3. Perguntar qual provedor LLM você deseja usar
 4. Armazenar a chave de API de forma segura no cofre
 
-Alternativamente, crie o arquivo de configuração manualmente em `~/.garraia/config.yml`:
+Alternativamente, crie o arquivo de configuração manualmente em `~/.config/garraia/config.yml` (instalações antigas podem usar `~/.garraia/config.yml`; confirme o diretório ativo com `garraia config check`):
 
 ```yaml
 gateway:

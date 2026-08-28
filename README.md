@@ -262,12 +262,15 @@ namespaced (`server.tool`); MCP prompts become slash commands
 automatically; marketplace with one-click install via the web console
 (`/api/mcp/marketplace`); admin API adds/removes servers without
 restart; CLI: `garra mcp list|inspect|resources|prompts`. Config in
-`config.yml` or `~/.garraia/mcp.json` (Claude Desktop-compatible).
+`config.yml` or `mcp.json`, both in the active config directory —
+`~/.config/garraia` by default; see
+[Configuration](#configuration) (`mcp.json` is Claude
+Desktop-compatible).
 
 ### Skills & plugins
 
 Markdown skills (`SKILL.md` + YAML frontmatter) auto-discovered from
-`~/.garraia/skills/`, with a visual editor and full CRUD API. Optional
+`<config-dir>/skills/`, with a visual editor and full CRUD API. Optional
 WASM plugin sandbox (wasmtime, `--features plugins`) with per-plugin
 memory caps and execution deadlines.
 
@@ -291,7 +294,7 @@ headers (`X-AI-Model`, `X-AI-Provider`) on every response.
 ## Memory and self-learning
 
 ```text
-~/.garraia/
+<config-dir>/                # ~/.config/garraia by default (see Configuration)
 ├── memoria/fatos.json      # LLM-extracted facts
 ├── data/memory.db          # SQLite + vector search (sqlite-vec)
 ├── data/sessions.db        # persistent conversation sessions
@@ -322,7 +325,7 @@ Wording below matches what the code does — audited claim by claim (see
 the comparison section above for the evidence trail).
 
 - **Encrypted credential vault (opt-in)** — AES-256-GCM at
-  `~/.garraia/credentials/vault.json`, key derived via
+  `<config-dir>/credentials/vault.json`, key derived via
   PBKDF2-HMAC-SHA256 (600k iterations) from `GARRAIA_VAULT_PASSPHRASE`.
   Stated plainly: the `garra init` wizard's recommended default stores
   provider keys in `config.yml` (mode 0600, plaintext); choose the vault
@@ -377,7 +380,11 @@ detected and listed but **not copied** — re-enter API keys via
 
 ## Configuration
 
-GarraIA reads `~/.garraia/config.yml`:
+GarraIA reads `config.yml` from its config directory, resolved as
+`$GARRAIA_CONFIG_DIR` → `~/.config/garraia` (the default on new
+installs) → `~/.garraia` (legacy, only when the XDG dir does not
+exist). Run `garraia config check` to see which directory and file are
+active. Details in [docs/installation.md](docs/installation.md):
 
 ```yaml
 gateway:
