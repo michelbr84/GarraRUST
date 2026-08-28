@@ -1069,7 +1069,12 @@ async fn async_main(
                 McpCommands::List => {
                     println!("Configured MCP servers:");
                     if mcp_configs.is_empty() {
-                        println!("  (none — add servers to config.yml or ~/.garraia/mcp.json)");
+                        // Name the ACTIVE dir: pointing at ~/.garraia here sent
+                        // users editing files the loader never reads.
+                        println!(
+                            "  (none — add servers to {dir}/config.yml [mcp:] or {dir}/mcp.json)",
+                            dir = loader.config_dir().display()
+                        );
                     }
                     for (name, server) in &mcp_configs {
                         let enabled = server.enabled.unwrap_or(true);
