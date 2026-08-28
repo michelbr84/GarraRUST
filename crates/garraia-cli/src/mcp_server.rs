@@ -126,7 +126,14 @@ pub(crate) fn validate_policy(
     model: &str,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    if !PROVIDER_ENUM.contains(&provider) && !config.llm.contains_key(provider) {
+    // Dev/CI only: mirrors the feature-gated "echo" entry the schema enum
+    // gains under `dev-echo-provider` (PR #859) — never in default builds.
+    #[cfg(feature = "dev-echo-provider")]
+    let feature_gated_ok = provider == "echo";
+    #[cfg(not(feature = "dev-echo-provider"))]
+    let feature_gated_ok = false;
+    if !PROVIDER_ENUM.contains(&provider) && !feature_gated_ok && !config.llm.contains_key(provider)
+    {
         return Err(format!(
             "provider '{provider}' not accepted (schema enum {PROVIDER_ENUM:?} or an alias \
              configured under llm: in config.yml)"
@@ -255,6 +262,20 @@ pub(crate) fn garra_ask_tool() -> Tool {
         "required": ["message"],
         "additionalProperties": false
     });
+    // Dev/CI only: com a feature `dev-echo-provider`, o enum ganha "echo" —
+    // provider keyless que permite testar o garra_ask fim-a-fim sem chave.
+    // Nunca aparece em builds de produção (feature default OFF).
+    #[cfg(feature = "dev-echo-provider")]
+    let schema_value = {
+        let mut v = schema_value;
+        if let Some(e) = v
+            .pointer_mut("/properties/provider/enum")
+            .and_then(|e| e.as_array_mut())
+        {
+            e.push(json!("echo"));
+        }
+        v
+    };
     // serde_json::Value::Object guaranteed by the literal above.
     let schema_map: JsonMap<String, JsonValue> = match schema_value {
         JsonValue::Object(map) => map,
@@ -428,6 +449,22 @@ mod tests {
         let desc = t.description.expect("description present");
         assert!(desc.contains("GarraIA"));
         assert!(desc.contains("garra.ask.v1"));
+    }
+
+    /// O provider keyless `echo` só entra no enum com a feature
+    /// `dev-echo-provider` — jamais em builds default/produção.
+    #[test]
+    fn tool_descriptor_provider_enum_gates_echo_by_feature() {
+        let t = garra_ask_tool();
+        let schema = (*t.input_schema).clone();
+        let has_echo = schema
+            .get("properties")
+            .and_then(|p| p.get("provider"))
+            .and_then(|p| p.get("enum"))
+            .and_then(|e| e.as_array())
+            .map(|e| e.iter().any(|v| v.as_str() == Some("echo")))
+            .expect("provider enum present");
+        assert_eq!(has_echo, cfg!(feature = "dev-echo-provider"));
     }
 
     #[test]
@@ -806,6 +843,16 @@ mod tests {
         assert_eq!(policy.max_timeout_secs, Some(600));
         let unparsable = ServerPolicy::from_values(None, Some("banana"));
         assert_eq!(unparsable.max_timeout_secs, None);
+    }
+
+    #[test]
+    fn policy_gates_echo_provider_by_feature() {
+        // Runtime enforcement must mirror the schema enum: "echo" passes
+        // only when dev-echo-provider is compiled in (PR #859).
+        let policy = ServerPolicy::default();
+        let cfg = AppConfig::default();
+        let ok = validate_policy(&cfg, &policy, "echo", "echo", 60).is_ok();
+        assert_eq!(ok, cfg!(feature = "dev-echo-provider"));
     }
 
     #[test]

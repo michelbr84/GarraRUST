@@ -61,7 +61,10 @@ telemetry = ["garraia-gateway/telemetry"]
 # dependency chain (garraia-cli → garraia-gateway → garraia-agents).
 # Enables `cargo build --bin garraia --features dev-echo-provider` in CI
 # (see .github/workflows/ci.yml e2e job). Default OFF.
-dev-echo-provider = ["garraia-gateway/dev-echo-provider"]
+dev-echo-provider = [
+    "garraia-gateway/dev-echo-provider",
+    "garraia-agents/dev-echo-provider",
+]
 # Forwards the Streamable HTTP MCP client transport down the chain.
 # Without this passthrough it was impossible to build the `garra` binary
 # with HTTP MCP client support (`transport: http` in mcp config was
