@@ -90,8 +90,14 @@ impl GatewayServer {
 
         let mut agents = build_agent_runtime(&self.config);
 
+        // Provision the default mcp.json BEFORE building tools. This used to
+        // happen only inside AppState::new (below), i.e. after build_mcp_tools
+        // had already read an absent file — so the very first boot always
+        // came up with zero MCP tools.
+        crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing();
+
         // Connect MCP servers and register their tools
-        let (mcp_manager, mcp_tools) = build_mcp_tools(&self.config).await;
+        let (mcp_manager, mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
         let mcp_tool_count = mcp_tools.len();
         let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name().to_string()).collect();
         for tool in mcp_tools {
@@ -110,13 +116,30 @@ impl GatewayServer {
         let channels = build_channels(&self.config).await;
         let agents = Arc::new(agents);
         let mut state = AppState::new(self.config, agents, channels);
-        state.mcp_manager = Some(mcp_manager);
+
+        // Arc the manager NOW: register_mcp_tools() reads mcp_manager_arc and
+        // used to be a silent no-op because the Arc was only created ~300
+        // lines further down — MCP slash commands never registered.
+        let mcp_manager_arc = Arc::new(mcp_manager);
+        state.mcp_manager_arc = Some(Arc::clone(&mcp_manager_arc));
 
         // Sync MCP registry with live manager state (populates Running/Stopped statuses).
-        state
-            .mcp_registry
-            .sync_from_manager(state.mcp_manager.as_ref().unwrap())
-            .await;
+        state.mcp_registry.sync_from_manager(&mcp_manager_arc).await;
+
+        // Surface connect failures in the registry so `mcp list` / admin UI
+        // show the actual error instead of a generic Stopped.
+        for (name, message) in &mcp_failures {
+            state
+                .mcp_registry
+                .set_status(
+                    name,
+                    crate::mcp::McpStatus::Error {
+                        message: message.clone(),
+                    },
+                    0,
+                )
+                .await;
+        }
 
         // Register MCP tools as slash commands (must be done before Arc-wrapping)
         state.register_mcp_tools().await;
@@ -399,12 +422,6 @@ impl GatewayServer {
             }
         }
 
-        // Wrap MCP manager in Arc for health monitor before moving into state
-        let mcp_manager_arc = state.mcp_manager.take().map(Arc::new);
-        if let Some(ref arc) = mcp_manager_arc {
-            state.mcp_manager_arc = Some(Arc::clone(arc));
-        }
-
         // Plan 0024 (GAR-412): build the metrics auth config from the
         // TelemetryConfig the CLI already loaded (single snapshot —
         // no second `from_env()` call here per code-review MEDIUM) and
@@ -491,9 +508,7 @@ impl GatewayServer {
         }
 
         // Spawn MCP health monitor for auto-reconnect
-        if let Some(ref arc) = mcp_manager_arc {
-            arc.spawn_health_monitor();
-        }
+        mcp_manager_arc.spawn_health_monitor();
 
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();
@@ -542,11 +557,6 @@ impl GatewayServer {
                 }
             }
         });
-
-        // Spawn MCP health monitor for auto-reconnect
-        if let Some(ref arc) = mcp_manager_arc {
-            arc.spawn_health_monitor();
-        }
 
         // Start configured Discord channels
         let discord_channels = build_discord_channels(&state.config, &state);

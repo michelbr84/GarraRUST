@@ -34,9 +34,9 @@ pub struct AppState {
     pub channel_models: DashMap<String, String>,
     /// In-flight A2A tasks keyed by task ID.
     pub a2a_tasks: DashMap<String, garraia_agents::a2a::A2ATask>,
-    /// MCP server connection manager (legacy, for backward compat).
-    pub mcp_manager: Option<garraia_agents::McpManager>,
-    /// MCP manager wrapped in Arc for health monitoring.
+    /// MCP manager wrapped in Arc for health monitoring, slash commands and
+    /// the admin API. Populated by `GatewayServer::run` right after
+    /// `AppState::new` — before `register_mcp_tools()` reads it.
     pub mcp_manager_arc: Option<Arc<garraia_agents::McpManager>>,
     /// Live registry of MCP server configs and statuses (source of truth for admin API).
     pub mcp_registry: crate::mcp::McpRuntimeRegistry,
@@ -211,7 +211,6 @@ impl AppState {
             sessions: DashMap::new(),
             channel_models: DashMap::new(),
             a2a_tasks: DashMap::new(),
-            mcp_manager: None,
             mcp_manager_arc: None,
             mcp_registry: {
                 // GAR-291: attach vault so sensitive env vars are resolved on load.
