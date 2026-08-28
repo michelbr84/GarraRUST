@@ -13,18 +13,19 @@ This guide covers installing GarraIA on various platforms.
 ### Linux/macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+curl -fsSL https://garraia.org/install.sh | sh
 ```
 
-The same script is published through two alternative channels, useful when
-`raw.githubusercontent.com` answers **HTTP 429** (per-IP rate limit — common on
-cloud pods whose egress IP is shared by many users):
+The same script (auto-synced) is published through alternative channels —
+the release CDN is the most robust against per-IP rate limits (**HTTP 429**
+is common on cloud pods whose egress IP is shared by many users):
 
 ```bash
 # Official mirror — GitHub release CDN (no aggressive per-IP limits):
 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 
-# Community CDN mirror of the repository's main branch:
+# Repository main branch (raw) and community CDN mirror:
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 ```
 
