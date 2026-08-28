@@ -4,7 +4,8 @@
 # Prints to STDOUT ONLY — it never writes a file (secrets are env-only:
 # CLAUDE.md rule #1, docs/auth-config.md §7). Redirect the output yourself
 # if you want it persisted, e.g.:
-#   sudo sh -c './scripts/gen-auth-secrets.sh > /etc/garraia/env && chmod 640 /etc/garraia/env'
+#   sudo sh -c './scripts/gen-auth-secrets.sh > /etc/garraia/env \
+#     && chown root:garraia /etc/garraia/env && chmod 640 /etc/garraia/env'
 #
 # Postgres endpoint defaults can be overridden via env:
 #   GARRAIA_PG_HOST (127.0.0.1) / GARRAIA_PG_PORT (5432) / GARRAIA_PG_DB (garraia_workspace)
@@ -17,13 +18,22 @@ fi
 
 jwt=$(openssl rand -hex 32)
 refresh=$(openssl rand -hex 32)
-# The two signing secrets must be distinct (docs/auth-config.md §3.3).
-while [ "$refresh" = "$jwt" ]; do refresh=$(openssl rand -hex 32); done
 upload=$(openssl rand -hex 32)
 vault=$(openssl rand -hex 32)
 login_pw=$(openssl rand -hex 24)
 signup_pw=$(openssl rand -hex 24)
 app_pw=$(openssl rand -hex 24)
+
+# Every value must be pairwise distinct (docs/auth-config.md §3.3 for
+# jwt/refresh; same policy for the role passwords). Collision at these
+# entropy sizes is theoretical — the check exists for policy audit, so
+# failing closed beats retry loops. The message never echoes a value.
+dups=$(printf '%s\n' "$jwt" "$refresh" "$upload" "$vault" \
+  "$login_pw" "$signup_pw" "$app_pw" | sort | uniq -d)
+if [ -n "$dups" ]; then
+  echo "error: generated values collided; run the script again" >&2
+  exit 1
+fi
 
 pg_host="${GARRAIA_PG_HOST:-127.0.0.1}"
 pg_port="${GARRAIA_PG_PORT:-5432}"

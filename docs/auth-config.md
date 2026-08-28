@@ -335,8 +335,8 @@ export GARRAIA_APP_DATABASE_URL="postgres://garraia_app:${APP_PW}@127.0.0.1:5432
 ### 7.6 Persist and verify
 
 For the systemd unit, write the variables to `/etc/garraia/env`
-(`chmod 640` — the unit already loads it via `EnvironmentFile`). Never
-commit a `.env`. Then restart and verify — a green `/health` proves
+(`chown root:garraia` + `chmod 640` — the unit already loads it via
+`EnvironmentFile`). Never commit a `.env`. Then restart and verify — a green `/health` proves
 nothing about auth:
 
 ```bash
