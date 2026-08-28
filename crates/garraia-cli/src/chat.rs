@@ -409,6 +409,20 @@ pub(crate) fn select_explicit_provider(
                 Arc::new(op) as Arc<dyn LlmProvider>,
             ))
         }
+        // Dev/CI only: o EchoProvider keyless (feature `dev-echo-provider`)
+        // fica acessível também por `ask`/`mcp-server`, não só pelo gateway —
+        // é o que permite smoke-testar o pipeline `garra_ask` sem API key.
+        #[cfg(feature = "dev-echo-provider")]
+        "echo" => {
+            let model = resolve_provider_model(config, "echo", model_override)
+                .unwrap_or_else(|| "echo-stub".to_string());
+            let echo = garraia_agents::EchoProvider::new(Some(model.clone()));
+            Ok((
+                "echo".to_string(),
+                model,
+                Arc::new(echo) as Arc<dyn LlmProvider>,
+            ))
+        }
         other => anyhow::bail!(
             "Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter"
         ),
@@ -848,6 +862,28 @@ mod tests {
             ..AgentConfig::default()
         };
         cfg
+    }
+
+    // ─── select_explicit_provider: echo (dev-echo-provider) ────────────
+
+    /// Com a feature, `--provider echo` seleciona o EchoProvider keyless.
+    #[cfg(feature = "dev-echo-provider")]
+    #[test]
+    fn select_explicit_provider_echo_needs_no_key() {
+        let cfg = AppConfig::default();
+        let (name, model, _provider) = select_explicit_provider(&cfg, "echo", None)
+            .expect("echo deve ser selecionável com a feature dev-echo-provider");
+        assert_eq!(name, "echo");
+        assert_eq!(model, "echo-stub");
+    }
+
+    /// Sem a feature, `echo` continua sendo provider desconhecido —
+    /// builds de produção não ganham o caminho keyless.
+    #[cfg(not(feature = "dev-echo-provider"))]
+    #[test]
+    fn select_explicit_provider_echo_rejected_without_feature() {
+        let cfg = AppConfig::default();
+        assert!(select_explicit_provider(&cfg, "echo", None).is_err());
     }
 
     // ─── resolve_provider_model ────────────────────────────────────────
