@@ -282,6 +282,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
+          # Sem tag_name explícito, o softprops usa github.ref — que num
+          # workflow_dispatch a partir de main seria "main", criando release
+          # com tag errada. Com tag_name, o dispatch com input `version`
+          # cria o tag vX.Y.Z no commit do run e a release correta.
+          tag_name: ${{ steps.version.outputs.VERSION }}
           name: Release ${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}
