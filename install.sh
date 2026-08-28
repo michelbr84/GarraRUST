@@ -308,6 +308,7 @@ bootstrap_phase() {
         echo ""
         echo "Starting GarraIA in the foreground. Press Ctrl+C to stop."
         echo "  To run later in background: garraia start -d"
+        echo "  Either way, 'garraia status' and 'garraia stop' manage the process."
         exec "${INSTALL_PATH}" start </dev/tty
     fi
 
