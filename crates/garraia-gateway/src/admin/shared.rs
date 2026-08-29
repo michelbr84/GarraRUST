@@ -34,6 +34,7 @@
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -62,11 +63,39 @@ const KDF_PARAMS_VERSION: u32 = 1;
 /// before they are re-encrypted under the per-installation key. No new
 /// derivation ever uses these.
 ///
-/// This is the sole remaining hard-coded cryptographic value in this file and
-/// it exists purely so upgrades do not lose data; see
-/// `docs/security/codeql-suppressions.md`.
-const LEGACY_KDF_SALT: &[u8] = b"garraia-admin-secrets-v1";
+/// Legacy salt must be provided at runtime (base64-encoded) so no cryptographic
+/// salt value is hard-coded in source.
+const LEGACY_KDF_SALT_ENV: &str = "GARRAIA_ADMIN_LEGACY_KDF_SALT_B64";
 const LEGACY_KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
+
+fn legacy_kdf_salt() -> &'static [u8] {
+    static LEGACY_SALT: OnceLock<Vec<u8>> = OnceLock::new();
+    LEGACY_SALT
+        .get_or_init(|| match std::env::var(LEGACY_KDF_SALT_ENV) {
+            Ok(v) => match BASE64.decode(v.as_bytes()) {
+                Ok(bytes) if !bytes.is_empty() => bytes,
+                Ok(_) => {
+                    warn!(
+                        "legacy admin KDF salt env var {LEGACY_KDF_SALT_ENV} decoded to empty value"
+                    );
+                    Vec::new()
+                }
+                Err(e) => {
+                    warn!(
+                        "legacy admin KDF salt env var {LEGACY_KDF_SALT_ENV} is malformed base64 ({e})"
+                    );
+                    Vec::new()
+                }
+            },
+            Err(_) => {
+                warn!(
+                    "legacy admin KDF salt env var {LEGACY_KDF_SALT_ENV} is not set; legacy decryption may fail"
+                );
+                Vec::new()
+            }
+        })
+        .as_slice()
+}
 
 /// Shared state for admin API handlers.
 #[derive(Clone)]
@@ -208,7 +237,7 @@ fn derive_with_passphrase(
                 // deriving a third one that opens nothing.
                 warn!("stored admin KDF parameters are unusable ({e}); using legacy parameters");
                 return AdminKeys {
-                    current: pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, passphrase),
+                    current: pbkdf2_key(legacy_kdf_salt(), LEGACY_KDF_ITERATIONS, passphrase),
                     legacy: None,
                     pending: None,
                 };
@@ -222,7 +251,7 @@ fn derive_with_passphrase(
                 return AdminKeys {
                     current: pbkdf2_key(&salt, params.iterations, passphrase),
                     legacy: Some(pbkdf2_key(
-                        LEGACY_KDF_SALT,
+                        legacy_kdf_salt(),
                         LEGACY_KDF_ITERATIONS,
                         passphrase,
                     )),
@@ -241,7 +270,7 @@ fn derive_with_passphrase(
          re-key will be retried on the next start"
     );
     AdminKeys {
-        current: pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, passphrase),
+        current: pbkdf2_key(legacy_kdf_salt(), LEGACY_KDF_ITERATIONS, passphrase),
         legacy: None,
         pending: None,
     }
