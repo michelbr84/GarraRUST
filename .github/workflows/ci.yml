@@ -493,12 +493,16 @@ jobs:
   # GAR-895: wasmtime 46.0.2 (via wiggle-macro) declara rust-version =
   # "1.94.0" — piso elevado de 1.93 → 1.94 junto com o fix do
   # RUSTSEC-2026-0222 (mesmo padrão do bump anterior).
+  # 2026-08-29 (PR #848): wasmtime 48.0.1 declara rust-version = "1.95.0",
+  # junto com ~60 crates transitivos (cranelift-*, pulley-*, wiggle-*) —
+  # piso elevado de 1.94 → 1.95. Mesmo padrão dos três bumps anteriores:
+  # o piso real é ditado pela árvore do wasmtime, não pelas demais deps.
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
   # mesmos motivos do clippy/build (GTK + sidecar Windows ausentes em
   # runners GHA).
   msrv:
-    name: MSRV check (1.94)
+    name: MSRV check (1.95)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -506,12 +510,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust 1.94
-        # MSRV pin — este @1.94 é o Minimum Supported Rust Version do
+      - name: Install Rust 1.95
+        # MSRV pin — este @1.95 é o Minimum Supported Rust Version do
         # workspace, NÃO uma versão de action a ser bumpada. Ignorado no
         # dependabot.yml (grupo gh-actions-all) para o Dependabot não
         # propor de novo um toolchain inexistente (ex.: @1.100, PR #819).
-        uses: dtolnay/rust-toolchain@1.94
+        uses: dtolnay/rust-toolchain@1.95
 
       # utoipa-swagger-ui 9.0.2 build.rs uses reqwest to download the swagger-ui
       # zip, which intermittently returns a corrupt file ("InvalidArchive: Could not
@@ -532,10 +536,10 @@ jobs:
             -o /tmp/swagger-ui-cache/v5.17.14.zip \
             https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip
 
-      - name: cargo +1.94 check
+      - name: cargo +1.95 check
         env:
           SWAGGER_UI_DOWNLOAD_URL: file:///tmp/swagger-ui-cache/v5.17.14.zip
-        run: cargo +1.94 check --workspace --exclude garraia-desktop --locked
+        run: cargo +1.95 check --workspace --exclude garraia-desktop --locked
 
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:

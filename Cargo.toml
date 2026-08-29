@@ -31,7 +31,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/michelbr84/GarraRUST"
 description = "A personal AI assistant platform, rewritten in Rust"
-rust-version = "1.94"
+rust-version = "1.95"
 
 [workspace.dependencies]
 # Async runtime
@@ -89,8 +89,14 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # `wasmtime-wasi` requires `features = ["p1"]` because `WasiCtxBuilder::build_p1`
 # (used by `garraia-plugins/src/runtime.rs`) became feature-gated in v44.
 # `preview1` module was renamed to `p1` in the upstream — handled in runtime.rs.
-wasmtime = "47"
-wasmtime-wasi = { version = "47", features = ["p1"] }
+# 47→48 (PR #848, 2026-08-29): breaking API change — `DirPerms`/`FilePerms`
+# collapsed into `FsPerms`, `preopened_dir` lost an argument, and the
+# `SocketAddrUse` variants were reshaped (`UdpConnect`/`UdpOutgoingDatagram`
+# out, `UdpSend`/`UdpReceive`/`TcpListen`/`TcpAccept` in). Migrated in
+# runtime.rs. This bump is ALSO what forces `rust-version = "1.95"` above:
+# wasmtime 48 and its cranelift/pulley/wiggle tree declare rustc 1.95.0.
+wasmtime = "48"
+wasmtime-wasi = { version = "48", features = ["p1"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }
