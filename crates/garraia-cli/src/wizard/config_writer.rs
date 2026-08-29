@@ -40,7 +40,7 @@ use garraia_config::{
 };
 
 use super::local_stack::{
-    OLLAMA_API_KEY, OLLAMA_OPENAI_BASE_URL, OLLAMA_PROVIDER_KEY, QWEN3_MODEL_TAG,
+    DEFAULT_OLLAMA_MODEL_TAG, OLLAMA_API_KEY, OLLAMA_OPENAI_BASE_URL, OLLAMA_PROVIDER_KEY,
 };
 
 // ---------- Public types -----------------------------------------------------
@@ -106,7 +106,7 @@ impl Default for LocalLlmChoice {
         Self {
             key: OLLAMA_PROVIDER_KEY.to_string(),
             base_url: OLLAMA_OPENAI_BASE_URL.to_string(),
-            model: QWEN3_MODEL_TAG.to_string(),
+            model: DEFAULT_OLLAMA_MODEL_TAG.to_string(),
         }
     }
 }
@@ -575,7 +575,9 @@ mod tests {
         assert!(raw.contains("default_provider: ollama-qwen3"));
         assert!(raw.contains("fallback_providers"));
         assert!(raw.contains("enabled: true")); // voice
-        assert!(raw.contains("hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M"));
+        // The wizard's local entry carries whatever tag the picker produced;
+        // `LocalLlmChoice::default()` is the `qwen3.8:latest` row.
+        assert!(raw.contains(DEFAULT_OLLAMA_MODEL_TAG));
     }
 
     #[test]

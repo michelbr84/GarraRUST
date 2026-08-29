@@ -31,6 +31,14 @@ use super::env_detect::EnvSnapshot;
 /// local stack. Spec-locked (plan 0126 §Decisions).
 pub const QWEN3_MODEL_TAG: &str = "hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M";
 
+/// Default Ollama tag offered by the wizard. `qwen3.8:latest` resolves to
+/// `qwen3.8:27b` (Q4_K_M, ~18 GB, 262 144-token context, vision + tools).
+///
+/// Kept byte-identical to `garraia_agents::ollama::DEFAULT_MODEL` and to
+/// `chat::hardcoded_default_model("ollama")` — a test in each of those two
+/// modules pins its own copy, and `wizard::config_writer` pins this one.
+pub const DEFAULT_OLLAMA_MODEL_TAG: &str = "qwen3.8:latest";
+
 /// Identifier the wizard writes into `agent.default_provider` /
 /// `agent.fallback_providers` for the local Ollama-backed LLM.
 pub const OLLAMA_PROVIDER_KEY: &str = "ollama-qwen3";
@@ -75,23 +83,79 @@ pub fn install_ollama() -> Result<()> {
     Ok(())
 }
 
-/// Run `ollama pull <QWEN3_MODEL_TAG>`. Requires Ollama on `$PATH` and
-/// the daemon running. The user confirms before this is invoked.
-pub fn pull_qwen3() -> Result<()> {
-    println!("Pulling {QWEN3_MODEL_TAG} (≈9 GiB — once)…");
+/// Run `ollama pull <tag>`. Requires Ollama on `$PATH` and the daemon
+/// running. The user confirms (and picks the tag) before this is invoked.
+///
+/// Shelling out rather than using `POST /api/pull` is deliberate *here*:
+/// the wizard has just installed and started a local daemon, `ollama` is on
+/// `$PATH` by construction, and the upstream CLI's progress bar is nicer than
+/// anything we would reimplement. The `chat`/`ask` path has different
+/// constraints and uses the HTTP API instead — see
+/// `garraia_agents::OllamaProvider::pull_model`.
+pub fn pull_model(tag: &str) -> Result<()> {
+    println!("Pulling {tag} (once)…");
     let status = Command::new("ollama")
         .arg("pull")
-        .arg(QWEN3_MODEL_TAG)
+        .arg(tag)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .status()
         .context("failed to spawn `ollama pull`")?;
     if !status.success() {
-        anyhow::bail!("`ollama pull {QWEN3_MODEL_TAG}` exited with {status}");
+        anyhow::bail!("`ollama pull {tag}` exited with {status}");
     }
     Ok(())
 }
+
+/// Back-compat wrapper for the plan-0126 default. Prefer [`pull_model`].
+pub fn pull_qwen3() -> Result<()> {
+    pull_model(QWEN3_MODEL_TAG)
+}
+
+/// One entry in the wizard's local-model picker.
+pub struct ModelChoice {
+    /// Ollama tag to pull, or `None` for the "type your own" / "skip" rows.
+    pub tag: Option<&'static str>,
+    /// Label shown in the `Select`.
+    pub label: &'static str,
+}
+
+/// Curated local models offered by `garraia init`, best default first.
+///
+/// The user can always bypass this list entirely via the "outro modelo" row,
+/// which accepts any Ollama tag (including `hf.co/…` registry refs).
+pub const MODEL_CHOICES: &[ModelChoice] = &[
+    ModelChoice {
+        tag: Some(DEFAULT_OLLAMA_MODEL_TAG),
+        label: "Qwen 3.8 27B — padrao (~18 GB, 256K de contexto, visao + tools)",
+    },
+    ModelChoice {
+        tag: Some("qwen3:8b"),
+        label: "Qwen 3 8B — leve (~5 GB, roda em GPU modesta)",
+    },
+    ModelChoice {
+        tag: Some(QWEN3_MODEL_TAG),
+        label: "Qwen 3 14B GGUF — o padrao anterior (~9 GB)",
+    },
+    ModelChoice {
+        tag: Some("llama3.1"),
+        label: "Llama 3.1 8B (~4.7 GB)",
+    },
+    ModelChoice {
+        tag: None,
+        label: "Outro — digitar a tag do Ollama",
+    },
+    ModelChoice {
+        tag: None,
+        label: "Pular o download por enquanto",
+    },
+];
+
+/// Index of the "type your own tag" row in [`MODEL_CHOICES`].
+pub const MODEL_CHOICE_CUSTOM: usize = 4;
+/// Index of the "skip the download" row in [`MODEL_CHOICES`].
+pub const MODEL_CHOICE_SKIP: usize = 5;
 
 /// Start `ollama serve` so the OpenAI-compatible endpoint at
 /// `http://127.0.0.1:11434/v1` accepts requests.
@@ -271,5 +335,35 @@ mod tests {
         assert_eq!(OLLAMA_PROVIDER_KEY, "ollama-qwen3");
         assert_eq!(OLLAMA_OPENAI_BASE_URL, "http://127.0.0.1:11434/v1");
         assert_eq!(OLLAMA_API_KEY, "ollama");
+    }
+
+    #[test]
+    fn default_tag_matches_the_rest_of_the_codebase() {
+        // Three modules carry this string; each pins its own copy so a
+        // one-sided edit fails loudly instead of drifting.
+        use garraia_agents::LlmProvider as _;
+        assert_eq!(DEFAULT_OLLAMA_MODEL_TAG, "qwen3.8:latest");
+        assert_eq!(
+            garraia_agents::OllamaProvider::new(None, None).configured_model(),
+            Some(DEFAULT_OLLAMA_MODEL_TAG)
+        );
+    }
+
+    #[test]
+    fn model_choices_are_well_formed() {
+        // The default must be offered first — `Select::default(0)` picks it.
+        assert_eq!(MODEL_CHOICES[0].tag, Some(DEFAULT_OLLAMA_MODEL_TAG));
+        // The two special rows carry no tag, and their indices are what
+        // `collect_local_stack` branches on.
+        assert!(MODEL_CHOICES[MODEL_CHOICE_CUSTOM].tag.is_none());
+        assert!(MODEL_CHOICES[MODEL_CHOICE_SKIP].tag.is_none());
+        assert_eq!(MODEL_CHOICES.len(), MODEL_CHOICE_SKIP + 1);
+        // Every other row must be a pullable tag.
+        for (i, c) in MODEL_CHOICES.iter().enumerate() {
+            if i != MODEL_CHOICE_CUSTOM && i != MODEL_CHOICE_SKIP {
+                assert!(c.tag.is_some(), "row {i} ({}) needs a tag", c.label);
+            }
+            assert!(!c.label.is_empty());
+        }
     }
 }

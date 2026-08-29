@@ -33,9 +33,10 @@ use config_writer::{
     backup_path_for, build_app_config, write_config,
 };
 use env_detect::{EnvSnapshot, OllamaState};
+use garraia_agents::normalize_ollama_tag;
 use local_stack::{
     OLLAMA_PROVIDER_KEY, StdoutHints, install_ollama, print_stt_install_hints,
-    print_tts_install_hints, pull_qwen3, start_ollama_systemd_or_nohup, voice_endpoints_summary,
+    print_tts_install_hints, pull_model, start_ollama_systemd_or_nohup, voice_endpoints_summary,
 };
 
 /// Default cloud model — matches `chat.rs` (`openrouter/auto`).
@@ -541,22 +542,54 @@ fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> R
         }
     }
 
-    // Pull Qwen3 ------------------------------------------------------------
-    let pull = Confirm::new()
-        .with_prompt(format!(
-            "Pull the Qwen3-14B GGUF model ({})? (≈9 GiB, one-time)",
-            local_stack::QWEN3_MODEL_TAG
-        ))
-        .default(true)
+    // Pick + pull the local model -------------------------------------------
+    let mut choice = LocalLlmChoice::default();
+    let labels: Vec<&str> = local_stack::MODEL_CHOICES.iter().map(|c| c.label).collect();
+    let picked = Select::new()
+        .with_prompt("Qual modelo local o Garra deve usar?")
+        .items(&labels)
+        .default(0)
         .interact()
-        .context("qwen3 pull prompt cancelled")?;
-    if pull {
-        pull_qwen3()?;
+        .context("local model selection cancelled")?;
+
+    let tag: Option<String> = if picked == local_stack::MODEL_CHOICE_SKIP {
+        None
+    } else if picked == local_stack::MODEL_CHOICE_CUSTOM {
+        // Free-form: any Ollama tag, including `hf.co/…` registry refs.
+        let typed: String = Input::new()
+            .with_prompt("Tag do Ollama (ex.: qwen3.8:latest, llama3.1, hf.co/user/repo:Q4_K_M)")
+            .interact_text()
+            .context("custom model tag prompt cancelled")?;
+        match normalize_ollama_tag(&typed) {
+            Some(t) => Some(t),
+            None => {
+                println!("  '{typed}' nao parece uma tag do Ollama — pulando o download.");
+                None
+            }
+        }
     } else {
-        println!(
-            "  Skipping model pull — run `ollama pull {}` later if you change your mind.",
-            local_stack::QWEN3_MODEL_TAG
-        );
+        local_stack::MODEL_CHOICES[picked]
+            .tag
+            .map(|t| t.to_string())
+    };
+
+    match tag {
+        Some(tag) => {
+            // The picked tag is what lands in config.yml, whether or not the
+            // pull succeeds — a failed download is recoverable with a later
+            // `ollama pull`, but a config pointing at the wrong model is not
+            // something the user would think to check.
+            choice.model = tag.clone();
+            if pull_model(&tag).is_err() {
+                println!("  Download falhou — rode `ollama pull {tag}` depois para concluir.");
+            }
+        }
+        None => {
+            println!(
+                "  Sem download agora. O config vai apontar para {} — rode `ollama pull {}` quando quiser.",
+                choice.model, choice.model
+            );
+        }
     }
 
     // Start Ollama (if not already running) ---------------------------------
@@ -572,7 +605,7 @@ fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> R
         }
     }
 
-    *out = Some(LocalLlmChoice::default());
+    *out = Some(choice);
     Ok(())
 }
 

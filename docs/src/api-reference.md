@@ -243,7 +243,7 @@ Retorna o estado atual do runtime do agente.
   },
   "providers": {
     "anthropic": {"status": "available", "model": "claude-sonnet-4-5-20250929"},
-    "ollama": {"status": "available", "model": "llama3.1"}
+    "ollama": {"status": "available", "model": "qwen3.8:latest"}
   },
   "uptime_seconds": 3600
 }

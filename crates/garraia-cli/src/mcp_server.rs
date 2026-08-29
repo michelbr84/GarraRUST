@@ -377,6 +377,11 @@ impl ServerHandler for GarraToolHandler {
             url_override: None,
             timeout_secs,
             system_prompt_override: args.system_prompt,
+            // An MCP tool call must never trigger a multi-GB model download
+            // on the operator's box. `provider_override` is always set here,
+            // so the Ollama probe is bypassed anyway — this is belt and
+            // braces.
+            assume_yes: false,
         };
         let outcome = ask::ask_oneshot(&self.config, opts).await;
 

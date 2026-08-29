@@ -742,7 +742,7 @@ llm:
 
   ollama-local:
     provider: ollama
-    model: llama3.1
+    model: qwen3.8:latest
     base_url: "http://localhost:11434"
 
 channels:

@@ -87,6 +87,11 @@ cargo build --release -p garraia
 # Start
 ./target/release/garra start
 
+# Open the chat REPL straight onto a local Ollama model. Bare `garra` does
+# the same with the configured default (qwen3.8:latest). A tag that is not
+# pulled yet prompts to download it; `-y` downloads without asking.
+./target/release/garra --model qwen3.8
+
 # One-shot non-interactive ask — great for scripts and CI
 ./target/release/garra ask --provider openrouter --model openrouter/free \
   --json --timeout-secs 30 "Reply with exactly: OK"
@@ -110,10 +115,22 @@ Mirrors (same script, auto-synced): GitHub release CDN
 The installer downloads the binary for your platform, verifies it against
 the release's `SHA256SUMS`, then chains into init and start. Note: the
 installer names the binary `garraia`, while a cargo build produces
-`garra` — the commands are otherwise identical. Env toggles:
-`GARRAIA_SKIP_INIT=1`, `GARRAIA_SKIP_START=1`,
-`GARRAIA_BOOTSTRAP_LOCAL=0`. In TTY-less contexts (Docker build, CI) it
-prints next steps and exits 0 instead of blocking.
+`garra` — the commands are otherwise identical.
+
+Flags (usable through the pipe with `sh -s --`) and their equivalent env
+toggles: `--skip-setup` (`GARRAIA_SKIP_INIT=1` + `GARRAIA_SKIP_START=1`),
+`--skip-init`, `--skip-start`, `--no-local` (`GARRAIA_BOOTSTRAP_LOCAL=0`),
+`--version <tag>`, `--install-dir <dir>`, `--help`. An env var set by the
+caller wins over the matching flag. For a fully unattended install:
+
+```bash
+curl -fsSL https://garraia.org/install.sh | sh -s -- --skip-setup
+garraia config set-model --model qwen3.8:latest
+garraia start
+```
+
+In TTY-less contexts (Docker build, CI) the installer prints next steps
+and exits 0 instead of blocking.
 
 Releases ship 5 prebuilt CLI binaries: Linux x86_64/aarch64,
 macOS x86_64/aarch64, Windows x86_64. The Linux binaries are built
@@ -406,7 +423,7 @@ llm:
     # api_key resolution: vault > config > ANTHROPIC_API_KEY env var
   ollama-local:
     provider: ollama
-    model: llama3.1
+    model: qwen3.8:latest
     base_url: "http://localhost:11434"
 
 channels:

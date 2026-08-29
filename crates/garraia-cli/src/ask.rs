@@ -201,6 +201,10 @@ pub(crate) struct AskOptions {
     pub url_override: Option<String>,
     pub timeout_secs: u64,
     pub system_prompt_override: Option<String>,
+    /// Pull a missing Ollama model without asking. `ask` is non-interactive
+    /// by contract, so without this a missing model is a clean error plus an
+    /// `ollama pull` hint on stderr — never a blocking prompt.
+    pub assume_yes: bool,
 }
 
 /// GAR-583 — Pure outcome of [`ask_oneshot`].
@@ -290,7 +294,13 @@ pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutc
     } else {
         // detect_provider also handles url_override + autodetect chain
         // (see chat::detect_provider for the precedence rules — GAR-576).
-        chat::detect_provider(config, opts.url_override.as_deref()).await
+        chat::detect_provider(
+            config,
+            opts.url_override.as_deref(),
+            opts.model_override.as_deref(),
+            opts.assume_yes,
+        )
+        .await
     };
 
     // 2. Build a minimal AgentRuntime — LLM only. NO tool registration.
@@ -364,6 +374,7 @@ pub async fn run_ask(
     json: bool,
     timeout_secs: u64,
     system_prompt_override: Option<String>,
+    assume_yes: bool,
 ) -> Result<i32> {
     // 1. Resolve message — read stdin only if arg absent.
     let stdin_bytes: Vec<u8> = if message_arg.is_none() {
@@ -392,6 +403,7 @@ pub async fn run_ask(
         url_override,
         timeout_secs,
         system_prompt_override,
+        assume_yes,
     };
     let outcome = ask_oneshot(&config, opts).await;
 
