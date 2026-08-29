@@ -778,6 +778,41 @@ fn parse_role(role: &str) -> ChatRole {
     }
 }
 
+/// Fingerprint não-reversível de um bearer token, para correlação em log.
+///
+/// Neste path o token **é** o `user_id`, então logá-lo verbatim escrevia a
+/// credencial em todo sink de log — incluindo o `file_appender`, que o
+/// `RedactingWriter` não embrulha (ele só cobre o stderr, ver
+/// `garraia-cli/src/main.rs`). O regex de redaction também não ajudaria: ele
+/// conhece prefixos de vendor (`sk-`, `xoxb-`, …), não tokens próprios do
+/// GarraIA.
+///
+/// 12 hex chars de SHA-256 bastam para correlacionar duas requisições do mesmo
+/// chamador e são pouco demais para replay.
+fn token_fingerprint(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    hex::encode(&digest[..6])
+}
+
+/// Mapeia um bearer que não é `garra-local` para o `user_id`.
+///
+/// Separado de [`resolve_user_id`] porque não depende de `SharedState` — é o
+/// que torna o path testável sem subir o gateway inteiro, e é onde vive o
+/// invariante "o token não sai no log" (ver `token_fingerprint`).
+fn resolve_token_user_id(token: &str) -> Option<String> {
+    if token.is_empty() {
+        return None;
+    }
+    // NUNCA logar `token`: ele é a credencial, e neste path também é o
+    // user_id. Só o fingerprint sai no log.
+    info!(
+        token_fp = %token_fingerprint(token),
+        "Resolved user_id from API token"
+    );
+    Some(token.to_string())
+}
+
 /// Resolve user identity from Authorization header.
 /// Maps API key to user_id for authenticated access.
 fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
@@ -803,9 +838,8 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
 
             // For other tokens, use the token itself as user_id
             // This allows custom API keys to identify users
-            if !token.is_empty() {
-                info!("Resolved user_id={} from API token", token);
-                return Some(token.to_string());
+            if let Some(user_id) = resolve_token_user_id(token) {
+                return Some(user_id);
             }
         }
     }
@@ -863,6 +897,55 @@ pub async fn list_models() -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guard de regressão do vazamento corrigido em 2026-08-29: até então
+    /// `resolve_user_id` fazia `info!("Resolved user_id={} from API token",
+    /// token)`, escrevendo o bearer literal em **toda** requisição
+    /// autenticada. O `RedactingWriter` não salvava: ele embrulha só o stderr,
+    /// não o `file_appender`, e o regex dele conhece prefixos de vendor, não
+    /// tokens do GarraIA.
+    #[tracing_test::traced_test]
+    #[test]
+    fn api_token_never_reaches_the_log() {
+        const SECRET: &str = "garra-tok-9f3c1d7ab24e0058";
+
+        let resolved = resolve_token_user_id(SECRET);
+
+        // O token continua sendo o user_id — o comportamento não mudou.
+        assert_eq!(resolved.as_deref(), Some(SECRET));
+
+        // …mas ele não pode aparecer no log.
+        assert!(
+            !logs_contain(SECRET),
+            "bearer token vazou para o tracing — `resolve_token_user_id` deve \
+             logar apenas `token_fingerprint(token)`"
+        );
+
+        // E o fingerprint precisa estar lá, senão o log perde a correlação
+        // que justificava logar qualquer coisa.
+        assert!(
+            logs_contain(&token_fingerprint(SECRET)),
+            "o fingerprint deveria estar no log para correlação"
+        );
+    }
+
+    #[test]
+    fn token_fingerprint_is_stable_short_and_not_the_token() {
+        let fp = token_fingerprint("garra-tok-9f3c1d7ab24e0058");
+
+        // Determinístico: duas requisições do mesmo chamador correlacionam.
+        assert_eq!(fp, token_fingerprint("garra-tok-9f3c1d7ab24e0058"));
+        // 6 bytes de SHA-256 em hex.
+        assert_eq!(fp.len(), 12);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+        // Tokens distintos não colidem trivialmente.
+        assert_ne!(fp, token_fingerprint("garra-tok-9f3c1d7ab24e0059"));
+    }
+
+    #[test]
+    fn empty_token_resolves_to_none() {
+        assert_eq!(resolve_token_user_id(""), None);
+    }
 
     #[test]
     fn test_parse_role() {

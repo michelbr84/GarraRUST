@@ -36,6 +36,36 @@ impl<'a> MakeWriter<'a> for RedactingWriter<std::io::Stderr> {
     }
 }
 
+/// Adapta **qualquer** [`MakeWriter`] para aplicar [`redact_secrets`] na saída.
+///
+/// Existe porque [`RedactingWriter::stderr`] só cobria o stderr. O
+/// `garraia-cli` compõe `file_appender.and(RedactingWriter::stderr())`, e a
+/// metade do arquivo saía **crua** — ou seja, `~/.garraia/logs/garraia.log`
+/// recebia em claro exatamente os segredos que o stderr redigia. Quem lê o log
+/// de arquivo é justamente quem está depurando um incidente.
+///
+/// Envolva o appender: `RedactingMakeWriter::new(file_appender)`.
+pub struct RedactingMakeWriter<M>(M);
+
+impl<M> RedactingMakeWriter<M> {
+    pub fn new(inner: M) -> Self {
+        Self(inner)
+    }
+}
+
+impl<'a, M> MakeWriter<'a> for RedactingMakeWriter<M>
+where
+    M: MakeWriter<'a>,
+{
+    type Writer = RedactingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingWriter {
+            inner: self.0.make_writer(),
+        }
+    }
+}
+
 /// Replace known API key patterns with `[REDACTED]`.
 pub fn redact_secrets(input: &str) -> String {
     // Patterns: Anthropic, OpenAI, Slack bot/app tokens, generic sk- prefixed keys
@@ -82,5 +112,53 @@ mod tests {
     fn leaves_normal_text_unchanged() {
         let input = "hello world";
         assert_eq!(redact_secrets(input), "hello world");
+    }
+
+    /// Guard do bug corrigido em 2026-08-29: `RedactingMakeWriter` precisa
+    /// redigir a saída de um `MakeWriter` arbitrário, não só do stderr. Antes
+    /// disso o `garraia-cli` compunha `file_appender.and(RedactingWriter::
+    /// stderr())` e a metade do arquivo saía crua.
+    #[test]
+    fn make_writer_adapter_redacts_an_arbitrary_sink() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        /// Sink em memória que grava tudo que recebe, para inspeção.
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for Buf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("buf lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for Buf {
+            type Writer = Buf;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let sink = Buf::default();
+        let adapter = RedactingMakeWriter::new(sink.clone());
+
+        let mut w = adapter.make_writer();
+        w.write_all(b"authorization: sk-ant-api03-deadbeefcafe1234\n")
+            .expect("write");
+
+        let written = String::from_utf8(sink.0.lock().expect("buf lock").clone()).expect("utf8");
+        assert!(
+            !written.contains("sk-ant-api03-deadbeefcafe1234"),
+            "segredo chegou cru ao sink: {written:?}"
+        );
+        assert!(
+            written.contains("[REDACTED]"),
+            "esperava marcador: {written:?}"
+        );
     }
 }

@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use garraia_security::RedactingWriter;
+use garraia_security::{RedactingMakeWriter, RedactingWriter};
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -714,7 +714,10 @@ fn main() -> Result<()> {
             eprintln!("Warning: failed to create log directory: {}", e);
         });
 
-        let file_appender = rolling::never(&log_dir, "garraia.log");
+        // O appender vai embrulhado: até 2026-08-29 só a metade do stderr era
+        // redigida, e `garraia.log` recebia os segredos em claro — o inverso do
+        // útil, já que é o arquivo que se lê depurando incidente.
+        let file_appender = RedactingMakeWriter::new(rolling::never(&log_dir, "garraia.log"));
 
         // Support granular log levels via RUST_LOG env var (GAR-138)
         // Examples:
