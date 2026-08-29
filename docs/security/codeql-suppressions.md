@@ -291,6 +291,72 @@ metade mecânica do re-audit de 90 dias exigido por §3 regra 4 — não a metad
 julgamento (a justificativa continua fazendo sentido?), que segue pendente. Ver
 o aviso de expiração no topo deste arquivo.
 
+### §5.3 — Os 16 `path-injection` foram RENUMERADOS, não reabertos (2026-08-29)
+
+Medido pelo `codeql-triage.yml` em `ba6d86b`
+([run 33263640687](https://github.com/michelbr84/GarraRUST/actions/runs/33263640687)),
+`severity=high, state=open`: **24 alertas**, e 16 deles são
+`rust/path-injection` nos mesmos arquivos e linhas que este ledger já dispensa.
+
+Não é regressão nem o dismissal falhando. §5.2 provou que #67–#82 continuam
+`dismissed`. O que aconteceu é que a re-análise pós-upgrade do bundle
+(2.26.3 → 2.26.4) emitiu um **segundo conjunto de alertas** para os mesmos
+achados, com números novos. O mapeamento é um-para-um por `rule_id` + `path` +
+`linha`:
+
+| Ledger (dismissed) | Live (open) | Arquivo:linha |
+|---|---|---|
+| #67 | #149 | `skins_handler.rs:84` |
+| #68 | #147 | `skins_handler.rs:111` |
+| #69 | #148 | `skins_handler.rs:141` |
+| #76 | #161 | `skins_handler.rs:104` |
+| #77 | #162 | `skins_handler.rs:134` |
+| #70 | #150 | `skills_handler.rs:177` |
+| #71 | #153 | `skills_handler.rs:269` |
+| #72 | #154 | `skills_handler.rs:344` |
+| #73 | #151 | `skills_handler.rs:533` |
+| #74 | #152 | `skills_handler.rs:590` |
+| #75 | #155 | `skills_handler.rs:632` |
+| #78 | #156 | `skills_handler.rs:167` |
+| #79 | #157 | `skills_handler.rs:227` |
+| #80 | #158 | `skills_handler.rs:312` |
+| #81 | #159 | `skills_handler.rs:523` |
+| #82 | #160 | `skills_handler.rs:579` |
+
+**Por que o `alert_number` NÃO foi atualizado agora.** Duas razões, nenhuma
+delas burocrática:
+
+1. As linhas vão mudar de novo. O merge de
+   [#874](https://github.com/michelbr84/GarraRUST/pull/874) (Copilot Autofix
+   para o #161) inseriu ~25 linhas em `skins_handler.rs::get_skin`, e as linhas
+   dos sinks pinados já se moveram no fonte: `:104 → :136`, `:134 → :159`,
+   `:141 → :166`, `:111 → :117`. Só `:84` (#67/#149) não mexeu. Renumerar antes
+   da próxima análise do CodeQL sobre `ba6d86b` produziria um ledger que nasce
+   stale.
+2. O autofix pode ter **resolvido** #161 de verdade — ele adicionou
+   `canonicalize` + checagem de prefixo em `get_skin`, que é exatamente o que o
+   CodeQL queria. Se resolveu, a entrada correspondente sai do ledger em vez de
+   ser renumerada.
+
+**Próximo passo, na ordem certa:** esperar a análise CodeQL de `ba6d86b`
+concluir → rodar `codeql-apply-dismissals.yml` com `apply:false` **sem escopo**
+→ ler o `exit 2`/`exit 3` que ele der → reconciliar `.json` **e** `.md` num PR
+revisável. §3 regra 5 é explícita: divergência não se auto-corrige.
+
+**Os outros 8 High**, todos verificados no fonte e todos falso-positivo ou
+material de ledger, nenhum exigindo código:
+
+| Regra | # | Local | Leitura |
+|---|---|---|---|
+| `rust/cleartext-logging` | #111, #112 | `config_cmd.rs:210,233` | Imprime `"set"`/`"not set"` e a **lista de nomes** de provider com chave — nunca o valor. É o invariante de redaction do plan 0046. |
+| `rust/cleartext-logging` | #113 | `wizard/mod.rs:640` | Imprime o **nome da entrada** do cofre; o `key` vai só para `vault.set(entry, key)`. |
+| `rust/cleartext-transmission` | #143–#146 | `signal/mod.rs:143,203`, `whatsapp/api.rs:48,79` | Ainda não auditados linha a linha. |
+| `rust/cleartext-storage-database` | #115 | `session_store.rs:1261` | Ainda não auditado. |
+
+Correção de escopo: o plano anterior falava em "33 sites de `non-https-url`".
+Essa regra **não aparece** entre os alertas abertos. A onda High real é
+16 + 4 + 3 + 1 = 24.
+
 ## §6. Failure handling (no global filter fallback)
 
 Se a empirical proof §5 falhar (`state` reverte para `open` após CodeQL
