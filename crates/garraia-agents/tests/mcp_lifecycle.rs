@@ -49,7 +49,7 @@ fn ctx() -> ToolContext {
     }
 }
 
-async fn call_echo(tool: &Box<dyn garraia_agents::tools::Tool>) -> ToolOutput {
+async fn call_echo(tool: &dyn garraia_agents::tools::Tool) -> ToolOutput {
     tool.execute(&ctx(), serde_json::json!({}))
         .await
         .expect("echo tool call should succeed")
@@ -66,7 +66,7 @@ async fn detects_dead_child_and_reconnects() {
         assert!(manager.is_connected("fake").await, "should start connected");
 
         let tools = manager.take_tools("fake", Duration::from_secs(10)).await;
-        let _ = call_echo(&tools[0]).await; // triggers the crash
+        let _ = call_echo(tools[0].as_ref()).await; // triggers the crash
 
         // Give the serve loop a moment to observe the closed pipe.
         for _ in 0..40 {
@@ -103,7 +103,7 @@ async fn tool_survives_reconnect() {
 
         // Registered once, exactly like the gateway does at boot.
         let tools = manager.take_tools("fake", Duration::from_secs(10)).await;
-        let tool = &tools[0];
+        let tool = tools[0].as_ref();
 
         let first = call_echo(tool).await; // crashes the child
         assert!(first.content.contains("pong"));

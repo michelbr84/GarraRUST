@@ -378,7 +378,7 @@ The key was on disk, encrypted, and unreadable by the server that needed it.
 - **Security documentation** - Architecture overview, vendor-neutral audit checklist, AI agent attack surfaces guide (#113)
 - **Install script** - `curl -fsSL` one-liner with OS/arch detection, SHA-256 verification, smart install directory (#109)
 - **Release matrix** - Linux aarch64 (via `cross`) and Windows x86_64 CI targets (#110)
-- **Scheduling hardening** - Recursive self-scheduling guard, delay cap (24h), per-session pending limit (5), failing task retry with backoff (#107)
+- **Scheduling hardening** - Recursive self-scheduling guard, delay cap (30 days), per-session pending limit (5) (#107)
 - **Built-in skills** - 6 starter skills: summarize, translate, code-review, explain, rewrite, brainstorm (#106)
 - **README overhaul** - Competitive positioning, benchmark numbers, updated Quick Start (#103)
 - **iMessage channel** - macOS-native iMessage adapter with group chats, attachments, reconnect backoff, deployment docs (#100, #101)

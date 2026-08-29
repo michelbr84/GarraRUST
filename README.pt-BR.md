@@ -189,7 +189,7 @@ segurança usa checkouts de inspeção pinados por commit (OpenClaw
 | **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (~377 no fechamento) | 1.265 crates (Cargo.lock) |
 | **Canais** | 5 ligados fim-a-fim (+6 implementados no crate, sem wiring) | 27 plugins bundled | ~40 adapters (6 no build default) |
 | **Provedores de LLM** | 15 built-in (100+ modelos via OpenRouter) | via plugins | vários, feature-gated |
-| **Agendamento** | Tarefas one-shot persistidas (cron no roadmap) | Cron/automations completo | Cron + SOP engine |
+| **Agendamento** | Tarefas one-shot persistidas **e** recorrência cron com timezone IANA | Cron/automations completo | Cron + SOP engine |
 | **Suporte MCP** | Stdio + Streamable HTTP | Stdio/SSE/StreamableHttp + modo servidor | Stdio/http/sse, escopo fail-closed por agente |
 | **Recarregamento de config a quente** | Sim (file watch) | Sim (modo híbrido) | Só endpoint explícito |
 | **Plugins WASM (sandbox)** | Opcional (wasmtime) | Não (in-process, confiável) | Sim (component model; assinatura default off) |
@@ -495,7 +495,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 - Memória de conversa com suporte a SQLite com busca vetorial (sqlite-vec + embeddings Cohere)
 - **Janela de contexto deslizante** - `max_history_messages` limita quantos turnos são enviados ao LLM sem afetar o armazenamento; `trim_messages_to_budget` apara pelo orçamento de tokens
 - **Sumarização automática de contexto** - quando o número de turnos desde o último resumo atinge `summarize_threshold`, um job background chama um modelo barato para gerar um resumo. O resumo é injetado como mensagem System no início do histórico hidratado — o LLM sempre tem contexto de sessões longas sem estourar a janela
-- Tarefas agendadas - one-shot persistidas em SQLite (heartbeats de até 30 dias; recorrência cron no roadmap)
+- Tarefas agendadas - one-shot persistidas em SQLite (heartbeats de até 30 dias) e recorrentes por expressão cron com timezone IANA, entregues no canal de origem
 
 ### Skills
 
@@ -987,7 +987,7 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Auto-learning (extrator LLM) | ✅ Funcionando |
 | Embeddings locais (Ollama) | ✅ Funcionando |
 | Segurança (cofre, lista de permissões, pareamento) | ✅ Funcionando |
-| Agendamento (tarefas one-shot persistidas; cron no roadmap) | ✅ Funcionando |
+| Agendamento (one-shot persistidas + recorrência cron) | ✅ Funcionando |
 | Voice Mode (Chatterbox TTS, Hibiki TTS, Whisper STT) | ✅ Funcionando |
 | Health checks centralizados (`/api/health`, boot table, background) | ✅ Funcionando |
 | Timeouts configuráveis (LLM, TTS, MCP, Health) | ✅ Funcionando |

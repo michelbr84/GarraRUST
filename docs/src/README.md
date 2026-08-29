@@ -17,7 +17,7 @@ Comparação com OpenClaw, ZeroClaw e outros frameworks de agentes de IA:
 | Inicialização (cold start)     | 3 ms                            | 13.9 s                     | ~50 ms                |
 | Armazenamento de credenciais   | Vault criptografado AES-256-GCM | Arquivo plaintext          | Arquivo plaintext     |
 | Autenticação padrão            | Ativada (pareamento WebSocket)  | Desativada por padrão      | Desativada por padrão |
-| Agendamento                    | Cron, intervalo, execução única | Sim                        | Não                   |
+| Agendamento                    | Cron recorrente + execução única | Sim                        | Não                   |
 | Roteamento multi-agente        | Planejado (#108)                | Sim (agentId)              | Não                   |
 | Orquestração de sessões        | Planejado (#108)                | Sim                        | Não                   |
 | Suporte a MCP                  | Stdio                           | Stdio + HTTP               | Stdio                 |
