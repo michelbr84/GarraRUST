@@ -26,7 +26,20 @@ jobs:
   bola-gate:
     name: Security Gate (BOLA & Tenant Isolation)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 25 -> 30 em 2026-08-29. O teto de 25 estava em cima da duracao real: em
+    # tres execucoes no mesmo dia o job levou 25.2 min (cancelled), 17.1 min
+    # (ok) e 25.4 min (cancelled). A variacao vem de quanto do `target/`
+    # restaurado sobrevive — um PR que toca crate de baixo nivel (garraia-common,
+    # garraia-security) invalida quase o workspace inteiro e cai na ponta alta.
+    #
+    # Isto NAO afrouxa o gate: `continue-on-error` segue proibido e nenhum teste
+    # foi pulado. Um job que estoura o timeout nao entrega sinal NENHUM — dar
+    # orcamento e o oposto de mascarar. 30 min e o valor que todo job do ci.yml
+    # ja usa (linhas 288, 359, 558, 698); este era o unico fora do padrao.
+    #
+    # Se voltar a chegar perto de 30, o problema deixou de ser orcamento: root-
+    # causar (cache frio? teste novo lento?) em vez de subir o numero de novo.
+    timeout-minutes: 30
 
     services:
       postgres:

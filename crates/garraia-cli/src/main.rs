@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
-use garraia_security::RedactingWriter;
+use garraia_security::{RedactingMakeWriter, RedactingWriter};
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -789,7 +789,10 @@ fn main() -> Result<()> {
             eprintln!("Warning: failed to create log directory: {}", e);
         });
 
-        let file_appender = rolling::never(&log_dir, "garraia.log");
+        // O appender vai embrulhado: até 2026-08-29 só a metade do stderr era
+        // redigida, e `garraia.log` recebia os segredos em claro — o inverso do
+        // útil, já que é o arquivo que se lê depurando incidente.
+        let file_appender = RedactingMakeWriter::new(rolling::never(&log_dir, "garraia.log"));
 
         // Support granular log levels via RUST_LOG env var (GAR-138)
         // Examples:
@@ -1625,8 +1628,18 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
     }
 
     // We are now in the daemon process. Re-init tracing to write to the log file.
+    //
+    // O appender vai embrulhado no `RedactingMakeWriter`, igual ao caminho
+    // foreground. Este site ficou de fora quando a redaction do arquivo foi
+    // introduzida, e era o pior lugar para esquecer: aqui o `dup2` acima ja
+    // mandou stdout E stderr para este mesmo arquivo, entao nao sobrava nem a
+    // metade redigida que o foreground tinha. E `start -d` e o modo que o
+    // install.sh usa.
+    //
+    // Cobre o que passa pelo `tracing`. O `println!`/`eprintln!` que cai no
+    // arquivo via `dup2` nao passa por `MakeWriter` e continua cru.
     let log_dir = garraia_dir();
-    let file_appender = rolling::never(&log_dir, "garraia.log");
+    let file_appender = RedactingMakeWriter::new(rolling::never(&log_dir, "garraia.log"));
 
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(

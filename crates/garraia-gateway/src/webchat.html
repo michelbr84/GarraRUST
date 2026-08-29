@@ -4092,11 +4092,16 @@ function appendErrorMsg(text) {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+// A segunda declaração de `escapeHtml` foi removida em 2026-08-29.
+//
+// Havia duas `function escapeHtml` neste mesmo bloco `<script>` — esta (via
+// `textContent`/`innerHTML`) e a de cima. Como declarações de função no mesmo
+// escopo, ambas são içadas e a ÚLTIMA vence: valia esta, que escapa `&<>` mas
+// **não** escapa `"` nem `'`. Com 19 dos 74 call sites em contexto de atributo
+// (`="...${escapeHtml(x)}..."`), uma aspa dupla no valor escapava do atributo.
+//
+// A de cima escapa os cinco caracteres, então é estritamente mais forte; basta
+// esta sumir para ela passar a valer.
 
 function escapeAttr(s) {
   return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

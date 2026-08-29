@@ -350,19 +350,45 @@ async function loadSkills() {
     const locked = s.locked ? '<span class="badge badge-warning">🔒 Locked</span>' : '';
     const depr = s.deprecated ? '<span class="badge badge-muted">Deprecated</span>' : '';
     const status = locked || depr || '<span class="badge badge-success">Active</span>';
-    const scope = `<span class="badge badge-accent">${s.scope}</span>`;
+    // `s.scope` vem da API e ia cru para o innerHTML — injeção de HTML direta.
+    const scope = `<span class="badge badge-accent">${esc(s.scope)}</span>`;
     return `<tr>
-      <td><button class="btn btn-accent btn-sm" onclick="showDetail('${esc(s.name)}')">${esc(s.name)}</button></td>
+      <td><button class="btn btn-accent btn-sm" data-act="detail" data-skill="${esc(s.name)}">${esc(s.name)}</button></td>
       <td>${scope}</td>
       <td>${scoreBar(s.score)}</td>
       <td>${status}</td>
       <td>
-        <button class="btn btn-primary btn-sm" onclick="doApprove('${esc(s.name)}')">Approve</button>
-        <button class="btn btn-muted btn-sm" onclick="doLock('${esc(s.name)}')">Lock</button>
-        <button class="btn btn-danger btn-sm" onclick="doReject('${esc(s.name)}')">Reject</button>
+        <button class="btn btn-primary btn-sm" data-act="approve" data-skill="${esc(s.name)}">Approve</button>
+        <button class="btn btn-muted btn-sm" data-act="lock" data-skill="${esc(s.name)}">Lock</button>
+        <button class="btn btn-danger btn-sm" data-act="reject" data-skill="${esc(s.name)}">Reject</button>
       </td>
     </tr>`;
   }).join('');
+}
+
+// Delegação em vez de `onclick` montado por string.
+//
+// O padrão antigo era `onclick="doApprove('${esc(s.name)}')"`, com o nome
+// interpolado dentro de um literal JS de aspas simples. `esc()` não escapava
+// `'`, então um nome com aspa simples escapava do literal.
+//
+// Escapar `'` como `&#39;` **não** teria resolvido: o parser de HTML decodifica
+// entidades no valor do atributo ANTES de o JS ser compilado, então `&#39;`
+// vira `'` de novo e a fuga acontece igual. A correção real é não construir
+// código JS por concatenação — o nome vira `data-skill`, que é lido com
+// `dataset` e nunca é interpretado como código.
+const SKILL_ACTIONS = {
+  detail: (name) => showDetail(name),
+  approve: (name) => doApprove(name),
+  lock: (name) => doLock(name),
+  reject: (name) => doReject(name),
+};
+
+function onSkillAction(event) {
+  const btn = event.target.closest('[data-act]');
+  if (!btn || !this.contains(btn)) return;
+  const handler = SKILL_ACTIONS[btn.dataset.act];
+  if (handler) handler(btn.dataset.skill);
 }
 
 // ── Skill detail modal ────────────────────────────────────────────────────────
@@ -389,12 +415,24 @@ async function showDetail(name) {
   `;
 
   const rollbackSha = (data.history || [])[0]?.sha || '';
-  document.getElementById('detail-actions').innerHTML = `
-    <button class="btn btn-primary" onclick="doApprove('${esc(name)}')">Approve</button>
-    <button class="btn btn-muted" onclick="doLock('${esc(name)}')">Lock</button>
-    <button class="btn btn-danger" onclick="doRollback('${esc(name)}','${esc(rollbackSha)}')">Rollback</button>
-    <button class="btn btn-muted" onclick="closeModal('detail-modal')">Close</button>
+  const actions = document.getElementById('detail-actions');
+  actions.innerHTML = `
+    <button class="btn btn-primary" data-act="approve" data-skill="${esc(name)}">Approve</button>
+    <button class="btn btn-muted" data-act="lock" data-skill="${esc(name)}">Lock</button>
+    <button class="btn btn-danger" data-act="rollback" data-skill="${esc(name)}" data-sha="${esc(rollbackSha)}">Rollback</button>
+    <button class="btn btn-muted" data-act="close-detail">Close</button>
   `;
+}
+
+function onDetailAction(event) {
+  const btn = event.target.closest('[data-act]');
+  if (!btn || !this.contains(btn)) return;
+  switch (btn.dataset.act) {
+    case 'approve': doApprove(btn.dataset.skill); break;
+    case 'lock': doLock(btn.dataset.skill); break;
+    case 'rollback': doRollback(btn.dataset.skill, btn.dataset.sha); break;
+    case 'close-detail': closeModal('detail-modal'); break;
+  }
 }
 
 // ── Skill actions ─────────────────────────────────────────────────────────────
@@ -451,11 +489,22 @@ async function loadLogs() {
 }
 
 // ── Escape HTML ───────────────────────────────────────────────────────────────
+// Escapa `'` além de `&<>"`: os valores caem em atributos, e um atributo pode
+// vir delimitado por aspas simples. Isto NÃO é o que impede fuga de literal JS
+// — ver o comentário em `onSkillAction` sobre por que entidade HTML não serve
+// para esse caso. Aqui é o escape de contexto HTML, e nesse contexto está certo.
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '')
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById('skills-tbody').addEventListener('click', onSkillAction);
+document.getElementById('detail-actions').addEventListener('click', onDetailAction);
 loadSkills();
 </script>
 </body>
