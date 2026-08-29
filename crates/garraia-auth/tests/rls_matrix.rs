@@ -22,7 +22,7 @@ use common::harness::Harness;
 use common::matrix::RLS_MATRIX;
 use common::oracle::{classify_count, classify_pg_error, matches_expected};
 use common::tenants::Tenant;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 // ─── Runner ────────────────────────────────────────────────────────────────
@@ -228,8 +228,13 @@ async fn execute_select(
     conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
     table: &str,
 ) -> RlsExpected {
+    // AssertSqlSafe: sqlx 0.9 only accepts `&'static str`, and Postgres does
+    // not allow a bind parameter in identifier position. `table` is
+    // `RlsCase.table`, typed `&'static str` in `common::cases` and populated
+    // exclusively by literals in `common::matrix::RLS_MATRIX` — a closed set,
+    // with no user input reaching this string. Audited 2026-08-29.
     let sql = format!("SELECT count(*) FROM {table}");
-    match sqlx::query_scalar::<_, i64>(&sql)
+    match sqlx::query_scalar::<_, i64>(AssertSqlSafe(sql))
         .fetch_one(&mut **conn)
         .await
     {

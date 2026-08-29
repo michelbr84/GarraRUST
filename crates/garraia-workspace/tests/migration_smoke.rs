@@ -10,6 +10,7 @@
 //!      `citext` unique constraint.
 
 use garraia_workspace::{Workspace, WorkspaceConfig};
+use sqlx::AssertSqlSafe;
 use testcontainers::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres as PgImage;
@@ -619,17 +620,22 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
         sqlx::query("SET LOCAL ROLE garraia_app")
             .execute(&mut *tx)
             .await?;
+        // `SET LOCAL <guc> = <value>` cannot take a bind parameter, but the
+        // equivalent `set_config(name, value, is_local => true)` can — so the
+        // SQL stays a static literal and the uuid travels as a bound value.
+        // Same pattern the gateway already uses in production (see
+        // `rest_v1/chats.rs`, `uploads_worker.rs`, `tasks_recurrence_worker.rs`).
         if let Some(gid) = group_id {
-            // Dynamic SET LOCAL via format! is intentional: SET LOCAL does
-            // not support parameter binding, and the value is a typed
-            // uuid::Uuid that sqlx already validated — no user input flows
-            // through this path. Safe by construction.
-            let stmt = format!("SET LOCAL app.current_group_id = '{gid}'");
-            sqlx::query(&stmt).execute(&mut *tx).await?;
+            sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+                .bind(gid.to_string())
+                .execute(&mut *tx)
+                .await?;
         }
         if let Some(uid) = user_id {
-            let stmt = format!("SET LOCAL app.current_user_id = '{uid}'");
-            sqlx::query(&stmt).execute(&mut *tx).await?;
+            sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+                .bind(uid.to_string())
+                .execute(&mut *tx)
+                .await?;
         }
         Ok(tx)
     }
@@ -880,8 +886,15 @@ async fn migration_001_applies_and_schema_is_sane() -> anyhow::Result<()> {
             "files",
             "file_versions",
         ] {
+            // AssertSqlSafe: sqlx 0.9 only accepts `&'static str`, and Postgres
+            // does not allow a bind parameter in identifier position. `table`
+            // comes from the hardcoded compile-time `&[&str]` immediately above
+            // — a closed set of literals, with no user input reaching this
+            // string. Audited 2026-08-29.
             let sql = format!("SELECT count(*) FROM {table}");
-            let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut *tx).await?;
+            let count: i64 = sqlx::query_scalar(AssertSqlSafe(sql))
+                .fetch_one(&mut *tx)
+                .await?;
             assert_eq!(
                 count, 0,
                 "cenário 3: unset settings must yield 0 rows on `{table}` (fail-closed)"
