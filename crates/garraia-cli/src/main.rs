@@ -1628,8 +1628,18 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
     }
 
     // We are now in the daemon process. Re-init tracing to write to the log file.
+    //
+    // O appender vai embrulhado no `RedactingMakeWriter`, igual ao caminho
+    // foreground. Este site ficou de fora quando a redaction do arquivo foi
+    // introduzida, e era o pior lugar para esquecer: aqui o `dup2` acima ja
+    // mandou stdout E stderr para este mesmo arquivo, entao nao sobrava nem a
+    // metade redigida que o foreground tinha. E `start -d` e o modo que o
+    // install.sh usa.
+    //
+    // Cobre o que passa pelo `tracing`. O `println!`/`eprintln!` que cai no
+    // arquivo via `dup2` nao passa por `MakeWriter` e continua cru.
     let log_dir = garraia_dir();
-    let file_appender = rolling::never(&log_dir, "garraia.log");
+    let file_appender = RedactingMakeWriter::new(rolling::never(&log_dir, "garraia.log"));
 
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(
