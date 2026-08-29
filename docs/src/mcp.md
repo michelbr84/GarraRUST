@@ -275,6 +275,6 @@ McpTool
 
 ## Estado atual e melhorias
 
-A partir desta versão, o MCP oferece suporte completo ao transporte HTTP nativo (o recurso `mcp-http` está habilitado por padrão). As operações de recursos e prompts foram integradas ao MCP, permitindo que ferramentas, recursos e prompts sejam expostos como ferramentas nativas pelo agente. Além disso, o gerenciador tenta reconectar automaticamente aos servidores MCP após falhas, garantindo maior resiliência.
+O transporte HTTP nativo (Streamable HTTP) existe atrás da feature de compilação `mcp-http`, que está **desabilitada por padrão** — os binários de release suportam apenas stdio como cliente MCP; `transport: http` na configuração é ignorado com um warning. Para HTTP, compile da fonte com `cargo build --release -p garraia --features mcp-http`, ou use uma ponte stdio→HTTP (ver `mcp.json.example`). As operações de recursos e prompts foram integradas ao MCP, permitindo que ferramentas, recursos e prompts sejam expostos como ferramentas nativas pelo agente. Além disso, o gerenciador tenta reconectar automaticamente aos servidores MCP após falhas, garantindo maior resiliência.
 
 Atualmente não há issues abertas relacionadas a essas funcionalidades. Novas melhorias serão avaliadas conforme o feedback da comunidade.

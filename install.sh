@@ -68,9 +68,9 @@ main() {
 MIN_GLIBC="2.35"
 
 # Fail fast with an actionable message instead of the loader's cryptic
-# "version `GLIBC_2.39' not found" after the download (the v0.3.2 failure
-# mode: binaries were built on ubuntu-latest/24.04). Silently skipped when
-# the local libc version cannot be determined.
+# "version `GLIBC_2.39' not found" after the download (the v0.3.2/v0.3.3
+# failure mode: binaries were built on ubuntu-latest/24.04). Silently
+# skipped when the local libc version cannot be determined.
 check_glibc() {
     [ "${OS_NAME}" = "linux" ] || return 0
 
@@ -338,6 +338,7 @@ bootstrap_phase() {
         echo ""
         echo "Starting GarraIA in the foreground. Press Ctrl+C to stop."
         echo "  To run later in background: garraia start -d"
+        echo "  Either way, 'garraia status' and 'garraia stop' manage the process."
         exec "${INSTALL_PATH}" start </dev/tty
     fi
 

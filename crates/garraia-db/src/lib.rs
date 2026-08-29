@@ -3,6 +3,7 @@ pub mod db_trait;
 pub mod memory_store;
 pub mod migrations;
 pub mod project_store;
+pub mod recurrence;
 pub mod session_store;
 pub mod sqlite_db;
 pub mod vector_store;

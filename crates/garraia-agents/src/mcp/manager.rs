@@ -64,6 +64,21 @@ enum ConnectionParams {
     Http { url: String, timeout_secs: u64 },
 }
 
+/// How long a connection must stay alive before its restart counter is
+/// cleared. Without this, resetting on every successful handshake let a
+/// crash-looping server restart forever.
+const STABILITY_WINDOW: Duration = Duration::from_secs(60);
+
+impl ConnectionParams {
+    fn timeout_secs(&self) -> u64 {
+        match self {
+            ConnectionParams::Stdio { timeout_secs, .. } => *timeout_secs,
+            #[cfg(feature = "mcp-http")]
+            ConnectionParams::Http { timeout_secs, .. } => *timeout_secs,
+        }
+    }
+}
+
 /// GAR-293: Tracks auto-restart history for one MCP server.
 #[derive(Clone, Debug)]
 struct RestartState {
@@ -130,6 +145,24 @@ struct McpConnection {
     params: ConnectionParams,
     /// GAR-190: tool allowlist — empty means all tools are permitted.
     allowed_tools: Vec<String>,
+    /// When this connection was established. Used to decide whether it lived
+    /// long enough to count as stable (see `STABILITY_WINDOW`).
+    connected_at: Instant,
+}
+
+impl McpConnection {
+    /// Liveness of the child/transport.
+    ///
+    /// `RunningService::is_closed()` is NOT usable here: rmcp only flips it in
+    /// `close()`/`cancel()`/`waiting()`, so it stays `false` forever when the
+    /// child process dies on its own (the serve loop exits with
+    /// `QuitReason::Closed` without cancelling the token). That made
+    /// `check_and_reconnect` a no-op and reported dead servers as `Running`.
+    /// The peer's transport channel is the signal that actually closes when
+    /// the serve loop ends.
+    fn is_alive(&self) -> bool {
+        !self.service.peer().is_transport_closed()
+    }
 }
 
 /// Manages the lifecycle of MCP server connections.
@@ -137,6 +170,20 @@ pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     /// GAR-293: per-server restart state (survives connection removal).
     restart_states: Arc<RwLock<HashMap<String, RestartState>>>,
+    /// Servers that failed to connect at boot. They never entered
+    /// `connections`, so `check_and_reconnect` (which iterates connections)
+    /// could never see them and only a manual admin restart recovered them.
+    pending: Arc<RwLock<HashMap<String, PendingServer>>>,
+}
+
+/// `(name, params, allowed_tools)` for one server needing a (re)connect.
+type ReconnectTarget = (String, ConnectionParams, Vec<String>);
+
+/// A configured-but-not-connected server awaiting a retry.
+#[derive(Clone)]
+struct PendingServer {
+    params: ConnectionParams,
+    allowed_tools: Vec<String>,
 }
 
 impl Default for McpManager {
@@ -150,7 +197,48 @@ impl McpManager {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             restart_states: Arc::new(RwLock::new(HashMap::new())),
+            pending: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Record a stdio server that failed to connect at boot so the health
+    /// monitor retries it with the same backoff as a crashed connection.
+    ///
+    /// Note: a server that never completed a handshake has no tool schemas,
+    /// so a later successful retry restores slash-commands and the admin API
+    /// but not the LLM tool list — `AgentRuntime` is immutable after boot.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_pending_stdio(
+        &self,
+        name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        timeout_secs: u64,
+        allowed_tools: Vec<String>,
+        memory_limit_mb: Option<u64>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
+    ) {
+        self.pending.write().await.insert(
+            name.to_string(),
+            PendingServer {
+                params: ConnectionParams::Stdio {
+                    command: command.to_string(),
+                    args: args.to_vec(),
+                    env: env.clone(),
+                    timeout_secs,
+                    memory_limit_mb,
+                },
+                allowed_tools,
+            },
+        );
+        // The retry loop reads max_restarts/backoff from here.
+        self.restart_states
+            .write()
+            .await
+            .entry(name.to_string())
+            .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
     }
 
     /// Connect to an MCP server by spawning a child process.
@@ -205,6 +293,10 @@ impl McpManager {
             apply_memory_limit(&mut cmd, limit_mb);
         }
 
+        // Containment: children must not outlive an abruptly-killed gateway.
+        #[cfg(target_os = "linux")]
+        apply_parent_death_signal(&mut cmd);
+
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| Error::Mcp(format!("failed to spawn MCP server '{name}': {e}")))?;
 
@@ -217,11 +309,17 @@ impl McpManager {
             })?
             .map_err(|e| Error::Mcp(format!("MCP server '{name}' handshake failed: {e}")))?;
 
-        // Discover tools
-        let mcp_tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
+        // Discover tools. Timeout mirrors the handshake above: a child that
+        // spawns but never answers tools/list must not block gateway startup.
+        let mcp_tools =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools())
+                .await
+                .map_err(|_| {
+                    Error::Mcp(format!(
+                        "MCP server '{name}' tools/list timed out after {timeout_secs}s"
+                    ))
+                })?
+                .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
 
         let tools: Vec<McpToolInfo> = mcp_tools
             .into_iter()
@@ -268,19 +366,24 @@ impl McpManager {
                 memory_limit_mb,
             },
             allowed_tools,
+            connected_at: Instant::now(),
         };
 
         self.connections
             .write()
             .await
             .insert(name.to_string(), conn);
+        self.pending.write().await.remove(name);
 
-        // GAR-293: reset restart state on successful connect.
+        // GAR-293: the restart counter is NOT reset on successful connect. A server
+        // that handshakes and then dies seconds later would clear it every
+        // cycle, making `max_restarts` unreachable and the crash loop
+        // infinite. The reset happens in `check_and_reconnect` once the
+        // connection survives `STABILITY_WINDOW`.
         self.restart_states
             .write()
             .await
             .entry(name.to_string())
-            .and_modify(|s| s.reset())
             .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
 
         Ok(())
@@ -310,10 +413,16 @@ impl McpManager {
             })?
             .map_err(|e| Error::Mcp(format!("MCP server '{name}' HTTP handshake failed: {e}")))?;
 
-        let mcp_tools = service
-            .list_all_tools()
-            .await
-            .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
+        // Same tools/list timeout as the stdio path above.
+        let mcp_tools =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools())
+                .await
+                .map_err(|_| {
+                    Error::Mcp(format!(
+                        "MCP server '{name}' tools/list timed out after {timeout_secs}s"
+                    ))
+                })?
+                .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
 
         let tools: Vec<McpToolInfo> = mcp_tools
             .into_iter()
@@ -338,19 +447,24 @@ impl McpManager {
                 timeout_secs,
             },
             allowed_tools,
+            connected_at: Instant::now(),
         };
 
         self.connections
             .write()
             .await
             .insert(name.to_string(), conn);
+        self.pending.write().await.remove(name);
 
-        // GAR-293: reset restart state on successful HTTP connect.
+        // GAR-293: the restart counter is NOT reset on successful HTTP connect. A server
+        // that handshakes and then dies seconds later would clear it every
+        // cycle, making `max_restarts` unreachable and the crash loop
+        // infinite. The reset happens in `check_and_reconnect` once the
+        // connection survives `STABILITY_WINDOW`.
         self.restart_states
             .write()
             .await
             .entry(name.to_string())
-            .and_modify(|s| s.reset())
             .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
 
         Ok(())
@@ -374,16 +488,52 @@ impl McpManager {
         }
     }
 
-    /// Disconnect all MCP servers.
+    /// Disconnect all MCP servers, concurrently.
+    ///
+    /// Sequential cancellation made shutdown cost the sum of every server's
+    /// drain time; one slow server delayed all the others. The caller is
+    /// still expected to bound this with a timeout.
     pub async fn disconnect_all(&self) {
         let conns: HashMap<String, McpConnection> =
             std::mem::take(&mut *self.connections.write().await);
-        for (name, conn) in conns {
+        self.pending.write().await.clear();
+        let cancels = conns.into_iter().map(|(name, conn)| async move {
             info!("disconnecting MCP server '{name}'");
             if let Err(e) = conn.service.cancel().await {
                 warn!("error cancelling MCP server '{name}': {e}");
             }
+        });
+        futures::future::join_all(cancels).await;
+    }
+
+    /// Clone the current peer for a server, releasing the connections lock
+    /// before the caller awaits anything on it.
+    ///
+    /// Every RPC path must resolve the peer through here: a reconnect swaps
+    /// the whole `McpConnection`, so any `Peer` captured earlier talks to a
+    /// dead transport.
+    pub(crate) async fn peer_for(&self, name: &str) -> Option<Peer<RoleClient>> {
+        let conns = self.connections.read().await;
+        let conn = conns.get(name)?;
+        if !conn.is_alive() {
+            return None;
         }
+        Some(conn.service.peer().clone())
+    }
+
+    /// Like [`Self::peer_for`], but also returns the server's configured
+    /// timeout and reports "not connected" as an error. Used by the
+    /// resource/prompt RPCs, which previously awaited with no timeout at all
+    /// while holding the connections read lock.
+    async fn peer_and_timeout(&self, name: &str) -> Result<(Peer<RoleClient>, Duration)> {
+        let conns = self.connections.read().await;
+        let conn = conns
+            .get(name)
+            .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
+        Ok((
+            conn.service.peer().clone(),
+            Duration::from_secs(conn.params.timeout_secs()),
+        ))
     }
 
     /// Create `Tool` trait objects for all tools from a specific server.
@@ -391,24 +541,22 @@ impl McpManager {
     /// GAR-190: If the connection has a non-empty `allowed_tools` list, only tools
     /// whose names appear in that list are returned. Unknown names in the allowlist
     /// are silently ignored (the tool simply wasn't discovered by this server).
-    pub async fn take_tools(&self, name: &str, timeout: Duration) -> Vec<Box<dyn Tool>> {
+    pub async fn take_tools(self: &Arc<Self>, name: &str, timeout: Duration) -> Vec<Box<dyn Tool>> {
         let conns = self.connections.read().await;
         let Some(conn) = conns.get(name) else {
             return Vec::new();
         };
 
-        let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
-
         conn.tools
             .iter()
-            .filter(|t| conn.allowed_tools.is_empty() || conn.allowed_tools.contains(&t.name))
+            .filter(|t| is_tool_allowed(&conn.allowed_tools, &t.name))
             .map(|t| {
                 Box::new(McpTool::new(
+                    Arc::clone(self),
                     &conn.server_name,
                     t.name.clone(),
                     t.description.clone(),
                     t.input_schema.clone(),
-                    Arc::clone(&peer),
                     timeout,
                 )) as Box<dyn Tool>
             })
@@ -420,7 +568,7 @@ impl McpManager {
         let conns = self.connections.read().await;
         conns
             .iter()
-            .map(|(name, conn)| (name.clone(), conn.tools.len(), !conn.service.is_closed()))
+            .map(|(name, conn)| (name.clone(), conn.tools.len(), conn.is_alive()))
             .collect()
     }
 
@@ -432,15 +580,15 @@ impl McpManager {
 
     /// List resources from a specific MCP server.
     pub async fn list_resources(&self, name: &str) -> Result<Vec<McpResourceInfo>> {
-        let conns = self.connections.read().await;
-        let conn = conns
-            .get(name)
-            .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
+        let (peer, timeout) = self.peer_and_timeout(name).await?;
 
-        let resources = conn
-            .service
-            .list_all_resources()
+        let resources = tokio::time::timeout(timeout, peer.list_all_resources())
             .await
+            .map_err(|_| {
+                Error::Mcp(format!(
+                    "MCP server '{name}' resources/list timed out after {timeout:?}"
+                ))
+            })?
             .map_err(|e| Error::Mcp(format!("failed to list resources from '{name}': {e}")))?;
 
         Ok(resources
@@ -456,18 +604,22 @@ impl McpManager {
 
     /// Read a specific resource from an MCP server.
     pub async fn read_resource(&self, name: &str, uri: &str) -> Result<String> {
-        let conns = self.connections.read().await;
-        let conn = conns
-            .get(name)
-            .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
+        let (peer, timeout) = self.peer_and_timeout(name).await?;
 
         let params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
 
-        let result = conn.service.read_resource(params).await.map_err(|e| {
-            Error::Mcp(format!(
-                "failed to read resource '{uri}' from '{name}': {e}"
-            ))
-        })?;
+        let result = tokio::time::timeout(timeout, peer.read_resource(params))
+            .await
+            .map_err(|_| {
+                Error::Mcp(format!(
+                    "MCP server '{name}' resources/read timed out after {timeout:?}"
+                ))
+            })?
+            .map_err(|e| {
+                Error::Mcp(format!(
+                    "failed to read resource '{uri}' from '{name}': {e}"
+                ))
+            })?;
 
         let text_parts: Vec<String> = result
             .contents
@@ -483,15 +635,15 @@ impl McpManager {
 
     /// List prompts from a specific MCP server.
     pub async fn list_prompts(&self, name: &str) -> Result<Vec<McpPromptInfo>> {
-        let conns = self.connections.read().await;
-        let conn = conns
-            .get(name)
-            .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
+        let (peer, timeout) = self.peer_and_timeout(name).await?;
 
-        let prompts = conn
-            .service
-            .list_all_prompts()
+        let prompts = tokio::time::timeout(timeout, peer.list_all_prompts())
             .await
+            .map_err(|_| {
+                Error::Mcp(format!(
+                    "MCP server '{name}' prompts/list timed out after {timeout:?}"
+                ))
+            })?
             .map_err(|e| Error::Mcp(format!("failed to list prompts from '{name}': {e}")))?;
 
         Ok(prompts
@@ -520,21 +672,25 @@ impl McpManager {
         prompt_name: &str,
         args: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<Vec<String>> {
-        let conns = self.connections.read().await;
-        let conn = conns
-            .get(name)
-            .ok_or_else(|| Error::Mcp(format!("MCP server '{name}' not connected")))?;
+        let (peer, timeout) = self.peer_and_timeout(name).await?;
 
         let mut params = rmcp::model::GetPromptRequestParams::new(prompt_name.to_string());
         if let Some(a) = args {
             params = params.with_arguments(a);
         }
 
-        let result = conn.service.get_prompt(params).await.map_err(|e| {
-            Error::Mcp(format!(
-                "failed to get prompt '{prompt_name}' from '{name}': {e}"
-            ))
-        })?;
+        let result = tokio::time::timeout(timeout, peer.get_prompt(params))
+            .await
+            .map_err(|_| {
+                Error::Mcp(format!(
+                    "MCP server '{name}' prompts/get timed out after {timeout:?}"
+                ))
+            })?
+            .map_err(|e| {
+                Error::Mcp(format!(
+                    "failed to get prompt '{prompt_name}' from '{name}': {e}"
+                ))
+            })?;
 
         let messages: Vec<String> = result
             .messages
@@ -575,11 +731,16 @@ impl McpManager {
         result
     }
 
-    /// Spawn a background health monitor that pings servers and reconnects on failure.
+    /// Spawn a background health monitor that detects dead transports and
+    /// reconnects with exponential backoff. It does not send MCP `ping`s —
+    /// liveness comes from `McpConnection::is_alive`.
     pub fn spawn_health_monitor(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
+            // Default Burst would fire catch-up ticks back-to-back if one
+            // check ever ran long; we want steady spacing.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
                 manager.check_and_reconnect().await;
@@ -597,45 +758,59 @@ impl McpManager {
     /// # Returns
     /// The tool's output as a string, or an error
     pub async fn call_tool(
-        &self,
+        self: &Arc<Self>,
         server_name: &str,
         tool_name: &str,
         arguments: std::collections::HashMap<String, serde_json::Value>,
     ) -> std::result::Result<String, String> {
         use crate::tools::{Tool, ToolContext};
 
-        let conns = self.connections.read().await;
-        let conn = match conns.get(server_name) {
-            Some(c) => c,
-            None => return Err(format!("MCP server '{}' not found", server_name)),
-        };
+        // Resolve everything we need under the guard, then DROP it: the
+        // execution below awaits an RPC, and holding `connections.read()`
+        // across it lets one slow server block the write-fair lock for the
+        // whole subsystem (reconnects included).
+        let (tool_info, timeout_secs) = {
+            let conns = self.connections.read().await;
+            let conn = match conns.get(server_name) {
+                Some(c) => c,
+                None => return Err(format!("MCP server '{}' not found", server_name)),
+            };
 
-        // Find the tool in the connection's tool list
-        let tool_info = match conn
-            .tools
-            .iter()
-            .find(|t| t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name))
-        {
-            Some(t) => t,
-            None => {
+            // Find the tool in the connection's tool list
+            let tool_info =
+                match conn.tools.iter().find(|t| {
+                    t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name)
+                }) {
+                    Some(t) => t.clone(),
+                    None => {
+                        return Err(format!(
+                            "Tool '{}' not found on server '{}'",
+                            tool_name, server_name
+                        ));
+                    }
+                };
+
+            // GAR-190: the allowlist must bind this path too — `take_tools`
+            // filters what the LLM sees, but call_tool (admin API / slash
+            // commands) used to dispatch any discovered tool regardless.
+            if !is_tool_allowed(&conn.allowed_tools, &tool_info.name) {
                 return Err(format!(
-                    "Tool '{}' not found on server '{}'",
-                    tool_name, server_name
+                    "Tool '{}' on server '{}' is blocked by the allowed_tools allowlist",
+                    tool_info.name, server_name
                 ));
             }
+
+            (tool_info, conn.params.timeout_secs())
         };
 
-        // Create a peer reference
-        let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
-
-        // Create the tool
+        // The tool resolves the current peer itself at execution time.
         let tool = McpTool::new(
+            Arc::clone(self),
             server_name,
             tool_info.name.clone(),
             tool_info.description.clone(),
             tool_info.input_schema.clone(),
-            peer,
-            Duration::from_secs(60),
+            Duration::from_secs(timeout_secs),
         );
 
         // Execute the tool
@@ -657,13 +832,31 @@ impl McpManager {
         Ok(output.content)
     }
 
+    /// Run one health-monitor pass immediately.
+    ///
+    /// Exposed so lifecycle tests can drive the sweep deterministically
+    /// instead of sleeping through the 30s interval.
+    pub async fn health_tick(&self) {
+        self.check_and_reconnect().await;
+    }
+
+    /// Whether a server currently has a live transport.
+    pub async fn is_connected(&self, name: &str) -> bool {
+        self.connections
+            .read()
+            .await
+            .get(name)
+            .map(|c| c.is_alive())
+            .unwrap_or(false)
+    }
+
     /// GAR-293: Check all connections and attempt reconnect with exponential backoff.
     async fn check_and_reconnect(&self) {
-        let to_reconnect: Vec<(String, ConnectionParams, Vec<String>)> = {
+        let (to_reconnect, stable): (Vec<ReconnectTarget>, Vec<String>) = {
             let conns = self.connections.read().await;
-            conns
+            let dead = conns
                 .iter()
-                .filter(|(_, conn)| conn.service.is_closed())
+                .filter(|(_, conn)| !conn.is_alive())
                 .map(|(name, conn)| {
                     (
                         name.clone(),
@@ -671,8 +864,41 @@ impl McpManager {
                         conn.allowed_tools.clone(),
                     )
                 })
-                .collect()
+                .collect();
+            let stable = conns
+                .iter()
+                .filter(|(_, conn)| {
+                    conn.is_alive() && conn.connected_at.elapsed() >= STABILITY_WINDOW
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            (dead, stable)
         };
+
+        // Boot failures live in `pending`, never in `connections`.
+        let mut to_reconnect: Vec<ReconnectTarget> = to_reconnect;
+        {
+            let pending = self.pending.read().await;
+            for (name, p) in pending.iter() {
+                to_reconnect.push((name.clone(), p.params.clone(), p.allowed_tools.clone()));
+            }
+        }
+
+        // Only a connection that actually stayed up counts as a recovery.
+        if !stable.is_empty() {
+            let mut states = self.restart_states.write().await;
+            for name in stable {
+                if let Some(state) = states.get_mut(&name)
+                    && state.count > 0
+                {
+                    info!(
+                        "MCP server '{name}' stable for {}s — restart counter reset",
+                        STABILITY_WINDOW.as_secs()
+                    );
+                    state.reset();
+                }
+            }
+        }
 
         for (name, params, allowed_tools) in to_reconnect {
             // Check restart state before attempting reconnect.
@@ -763,13 +989,38 @@ impl McpManager {
             match result {
                 Ok(()) => {
                     info!("MCP server '{name}' reconnected successfully (attempt {attempt_num})");
-                    // reset() is called inside connect() on success.
+                    // The counter is cleared only after STABILITY_WINDOW, at
+                    // the top of a later tick — a handshake alone is not
+                    // evidence that the server stopped crash-looping.
                 }
                 Err(e) => {
                     warn!("MCP server '{name}' reconnect attempt {attempt_num} failed: {e}");
                 }
             }
         }
+    }
+}
+
+/// GAR-190: single source of truth for the `allowed_tools` allowlist,
+/// shared by `take_tools` (LLM registration) and `call_tool` (admin API /
+/// slash commands). Empty allowlist = every discovered tool is allowed.
+fn is_tool_allowed(allowed: &[String], tool_name: &str) -> bool {
+    allowed.is_empty() || allowed.iter().any(|t| t == tool_name)
+}
+
+/// Ask the kernel to signal the child when its parent (the gateway) dies.
+///
+/// Without this, `kill -9` on the gateway — or any exit that skips the
+/// graceful shutdown path — leaves every MCP child running with no parent to
+/// reap it. Linux-only; other platforms rely on the shutdown path.
+#[cfg(target_os = "linux")]
+fn apply_parent_death_signal(cmd: &mut Command) {
+    // SAFETY: `prctl` is async-signal-safe and only affects the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
     }
 }
 
@@ -792,5 +1043,68 @@ fn apply_memory_limit(cmd: &mut Command, limit_mb: u64) {
             let _ = libc::setrlimit(libc::RLIMIT_AS, &rlim);
             Ok(())
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RestartState, is_tool_allowed};
+
+    #[test]
+    fn empty_allowlist_allows_everything() {
+        assert!(is_tool_allowed(&[], "read_file"));
+        assert!(is_tool_allowed(&[], "anything"));
+    }
+
+    #[test]
+    fn restart_backoff_doubles_and_caps_at_300s() {
+        let mut st = RestartState::new(10, 5);
+        assert_eq!(st.current_delay_secs(), 5);
+        st.record_attempt();
+        assert_eq!(st.current_delay_secs(), 10);
+        st.record_attempt();
+        assert_eq!(st.current_delay_secs(), 20);
+        for _ in 0..8 {
+            st.record_attempt();
+        }
+        assert_eq!(st.current_delay_secs(), 300, "delay must saturate at 300s");
+    }
+
+    #[test]
+    fn restart_state_exhausts_after_max_restarts() {
+        let mut st = RestartState::new(3, 1);
+        assert!(st.should_retry_now(), "first attempt is immediate");
+        for _ in 0..3 {
+            st.record_attempt();
+        }
+        assert!(st.is_exhausted());
+        assert!(
+            !st.should_retry_now(),
+            "an exhausted server must not be retried automatically"
+        );
+    }
+
+    /// The counter is only cleared explicitly (after STABILITY_WINDOW), never
+    /// by a bare handshake — otherwise a server that connects and dies two
+    /// seconds later restarts forever without ever reaching max_restarts.
+    #[test]
+    fn reset_clears_counter_so_flapping_needs_a_stability_window() {
+        let mut st = RestartState::new(3, 1);
+        st.record_attempt();
+        st.record_attempt();
+        assert_eq!(st.count, 2);
+        st.reset();
+        assert_eq!(st.count, 0);
+        assert!(!st.is_exhausted());
+        assert!(st.should_retry_now());
+    }
+
+    #[test]
+    fn allowlist_matches_bare_tool_name_only() {
+        let allowed = vec!["read_file".to_string()];
+        assert!(is_tool_allowed(&allowed, "read_file"));
+        assert!(!is_tool_allowed(&allowed, "write_file"));
+        // Namespaced form is not what the allowlist stores.
+        assert!(!is_tool_allowed(&allowed, "filesystem.read_file"));
     }
 }

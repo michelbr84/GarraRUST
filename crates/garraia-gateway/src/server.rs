@@ -90,8 +90,14 @@ impl GatewayServer {
 
         let mut agents = build_agent_runtime(&self.config);
 
+        // Provision the default mcp.json BEFORE building tools. This used to
+        // happen only inside AppState::new (below), i.e. after build_mcp_tools
+        // had already read an absent file — so the very first boot always
+        // came up with zero MCP tools.
+        crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing();
+
         // Connect MCP servers and register their tools
-        let (mcp_manager, mcp_tools) = build_mcp_tools(&self.config).await;
+        let (mcp_manager, mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
         let mcp_tool_count = mcp_tools.len();
         let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name().to_string()).collect();
         for tool in mcp_tools {
@@ -110,13 +116,31 @@ impl GatewayServer {
         let channels = build_channels(&self.config).await;
         let agents = Arc::new(agents);
         let mut state = AppState::new(self.config, agents, channels);
-        state.mcp_manager = Some(mcp_manager);
+
+        // `build_mcp_tools` already returns the Arc: the bridged tools hold it
+        // so they can resolve the CURRENT peer on every call (surviving
+        // reconnects). register_mcp_tools() also reads mcp_manager_arc, and
+        // used to be a silent no-op when the Arc was created ~300 lines below.
+        let mcp_manager_arc = mcp_manager;
+        state.mcp_manager_arc = Some(Arc::clone(&mcp_manager_arc));
 
         // Sync MCP registry with live manager state (populates Running/Stopped statuses).
-        state
-            .mcp_registry
-            .sync_from_manager(state.mcp_manager.as_ref().unwrap())
-            .await;
+        state.mcp_registry.sync_from_manager(&mcp_manager_arc).await;
+
+        // Surface connect failures in the registry so `mcp list` / admin UI
+        // show the actual error instead of a generic Stopped.
+        for (name, message) in &mcp_failures {
+            state
+                .mcp_registry
+                .set_status(
+                    name,
+                    crate::mcp::McpStatus::Error {
+                        message: message.clone(),
+                    },
+                    0,
+                )
+                .await;
+        }
 
         // Register MCP tools as slash commands (must be done before Arc-wrapping)
         state.register_mcp_tools().await;
@@ -226,9 +250,12 @@ impl GatewayServer {
                 // Arc::get_mut is safe here: agents has rc=1 (AppState not yet
                 // wrapped in Arc<AppState> and no RestV1FullState clone exists).
                 if let Some(a) = Arc::get_mut(&mut state.agents) {
-                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));
+                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
+                        Arc::clone(&store),
+                    )));
+                    a.register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
                 } else {
-                    warn!("ScheduleHeartbeat tool not registered: agents Arc has multiple owners");
+                    warn!("schedule tools not registered: agents Arc has multiple owners");
                 }
                 info!("session store opened at {}", sessions_db.display());
             }
@@ -365,6 +392,14 @@ impl GatewayServer {
         // worker is skipped silently — the next slice of GAR-429 will
         // surface this via a readiness probe.
         if let Some(app_pool) = state.app_pool.clone() {
+            // Task recurrence: materialises the next occurrence of completed
+            // recurring tasks. `tasks.recurrence_rrule` existed since
+            // migration 006 with no engine behind it.
+            crate::tasks_recurrence_worker::spawn_task_recurrence_worker(
+                Arc::clone(&app_pool),
+                crate::tasks_recurrence_worker::TaskRecurrenceWorkerConfig::default(),
+            );
+
             let staging_dir = upload_staging_opt.as_ref().map(|s| s.staging_dir.clone());
             let handle = crate::uploads_worker::spawn_uploads_expiration_worker(
                 app_pool,
@@ -397,12 +432,6 @@ impl GatewayServer {
                     warn!("config watcher failed to start: {e}");
                 }
             }
-        }
-
-        // Wrap MCP manager in Arc for health monitor before moving into state
-        let mcp_manager_arc = state.mcp_manager.take().map(Arc::new);
-        if let Some(ref arc) = mcp_manager_arc {
-            state.mcp_manager_arc = Some(Arc::clone(arc));
         }
 
         // Plan 0024 (GAR-412): build the metrics auth config from the
@@ -491,9 +520,7 @@ impl GatewayServer {
         }
 
         // Spawn MCP health monitor for auto-reconnect
-        if let Some(ref arc) = mcp_manager_arc {
-            arc.spawn_health_monitor();
-        }
+        mcp_manager_arc.spawn_health_monitor();
 
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();
@@ -542,11 +569,6 @@ impl GatewayServer {
                 }
             }
         });
-
-        // Spawn MCP health monitor for auto-reconnect
-        if let Some(ref arc) = mcp_manager_arc {
-            arc.spawn_health_monitor();
-        }
 
         // Start configured Discord channels
         let discord_channels = build_discord_channels(&state.config, &state);
@@ -653,58 +675,43 @@ impl GatewayServer {
         // use axum-server with rustls. Otherwise, plain HTTP.
         let use_tls = tls_cert.is_some() && tls_key.is_some();
 
-        if use_tls {
+        // Each branch yields a Result instead of `?`-ing out: the MCP/channel
+        // cleanup below must run even when serving fails, otherwise the child
+        // processes spawned above are orphaned.
+        let serve_result: Result<()> = if use_tls {
             #[cfg(feature = "tls")]
             {
-                let cert_path = tls_cert.as_ref().unwrap();
-                let key_path = tls_key.as_ref().unwrap();
-                info!("TLS enabled: cert={}, key={}", cert_path, key_path);
-                let tls_config =
-                    axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-                        .await
-                        .map_err(|e| {
-                            garraia_common::Error::Gateway(format!("TLS config error: {e}"))
-                        })?;
-                let sock_addr: std::net::SocketAddr = addr
-                    .parse()
-                    .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
-                info!("GarraIA gateway listening on https://{}", sock_addr);
-                axum_server::bind_rustls(sock_addr, tls_config)
-                    .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                    .await
-                    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+                serve_tls(&addr, tls_cert.as_deref(), tls_key.as_deref(), app).await
             }
             #[cfg(not(feature = "tls"))]
             {
                 warn!(
                     "TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP"
                 );
-                let listener = TcpListener::bind(&addr).await?;
-                info!("GarraIA gateway listening on http://{}", addr);
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                )
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+                serve_plain(&addr, app).await
             }
         } else {
-            let listener = TcpListener::bind(&addr).await?;
-            info!("GarraIA gateway listening on http://{}", addr);
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
-        }
+            serve_plain(&addr, app).await
+        };
 
-        // Disconnect MCP servers on shutdown
+        // Cleanup runs even when the listener errored out: this block used to
+        // sit after a `?`, so any serve error skipped it and orphaned every
+        // MCP child process. The serve result is propagated at the end.
+        //
+        // Bounded: `disconnect_all` cancels each service, and a server that
+        // ignores stdin EOF can take up to its own drain time; unbounded and
+        // sequential, N bad servers could hang shutdown indefinitely.
         if let Some(ref manager) = state_for_shutdown.mcp_manager_arc {
             info!("disconnecting MCP servers...");
-            manager.disconnect_all().await;
+            if tokio::time::timeout(MCP_SHUTDOWN_TIMEOUT, manager.disconnect_all())
+                .await
+                .is_err()
+            {
+                warn!(
+                    "MCP disconnect exceeded {:?}; continuing shutdown (children are killed on drop)",
+                    MCP_SHUTDOWN_TIMEOUT
+                );
+            }
         }
 
         info!("disconnecting channels...");
@@ -715,6 +722,8 @@ impl GatewayServer {
             .disconnect_all()
             .await
             .ok();
+
+        serve_result?;
 
         info!("gateway shut down gracefully");
         Ok(())
@@ -806,6 +815,51 @@ pub async fn build_router_for_test_with_storage(
     build_router(state, whatsapp_state, admin_store)
 }
 
+/// Upper bound for cancelling MCP services at shutdown. A server that ignores
+/// stdin EOF must not hold the gateway open forever; children are killed when
+/// their transport is dropped regardless.
+const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serve plain HTTP until the shutdown signal.
+async fn serve_plain(addr: &str, app: axum::Router) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    info!("GarraIA gateway listening on http://{}", addr);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
+}
+
+/// Serve HTTPS (rustls) until the process is signalled.
+#[cfg(feature = "tls")]
+async fn serve_tls(
+    addr: &str,
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+    app: axum::Router,
+) -> Result<()> {
+    let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
+        return Err(garraia_common::Error::Gateway(
+            "TLS requested without cert/key paths".to_string(),
+        ));
+    };
+    info!("TLS enabled: cert={}, key={}", cert_path, key_path);
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+        .await
+        .map_err(|e| garraia_common::Error::Gateway(format!("TLS config error: {e}")))?;
+    let sock_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
+    info!("GarraIA gateway listening on https://{}", sock_addr);
+    axum_server::bind_rustls(sock_addr, tls_config)
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await
+        .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -829,6 +883,9 @@ async fn shutdown_signal() {
         () = terminate => info!("received SIGTERM, shutting down"),
     }
 }
+/// How many times one occurrence is retried before being given up on.
+const MAX_TASK_ATTEMPTS: i64 = 3;
+
 async fn run_scheduler(state: &AppState) -> Result<()> {
     let store_mutex = match &state.session_store {
         Some(s) => s,
@@ -848,10 +905,23 @@ async fn run_scheduler(state: &AppState) -> Result<()> {
 
     for task in tasks {
         if let Err(e) = execute_scheduled_task(state, store_mutex, &task).await {
-            tracing::error!("Scheduled task {} failed: {e} — marking as failed", task.id);
+            // A failure used to be terminal: one transient provider error
+            // silently killed the task (and, with recurrence, the whole
+            // schedule). Retry with quadratic backoff first.
             let store = store_mutex.lock().await;
-            if let Err(fe) = store.fail_task(&task.id) {
-                tracing::error!("Failed to mark task {} as failed: {fe}", task.id);
+            match store.retry_or_fail_task(&task, MAX_TASK_ATTEMPTS, chrono::Utc::now()) {
+                Ok(Some(retry_at)) => tracing::warn!(
+                    task = %task.id,
+                    retry_at = %retry_at.to_rfc3339(),
+                    "scheduled task failed: {e} — will retry"
+                ),
+                Ok(None) => tracing::error!(
+                    task = %task.id,
+                    "scheduled task failed after {MAX_TASK_ATTEMPTS} attempts: {e} — giving up"
+                ),
+                Err(fe) => {
+                    tracing::error!("Failed to record failure for task {}: {fe}", task.id)
+                }
             }
         }
     }
@@ -948,10 +1018,21 @@ async fn execute_scheduled_task(
         );
     }
 
-    // 5. Complete task
+    // 5. Complete the task — or arm the next occurrence when recurring.
     {
         let store = store_mutex.lock().await;
-        store.complete_task(&task.id)?;
+        if task.is_recurring() {
+            match store.complete_recurring_run(task, chrono::Utc::now())? {
+                Some(next) => info!(
+                    task = %task.id,
+                    next_run = %next.to_rfc3339(),
+                    "recurring task rescheduled"
+                ),
+                None => info!(task = %task.id, "recurring task reached max_runs — completed"),
+            }
+        } else {
+            store.complete_task(&task.id)?;
+        }
     }
 
     Ok(())

@@ -132,6 +132,23 @@ This shape gives Claude direct visibility into `provider`, `model`,
 This mirrors the [`garra ask`](cli-ask.md) policy locked-in by user
 2026-05-11.
 
+## Operator limits (env vars, opt-in)
+
+By default the server accepts any model and any `timeout_secs` up to the
+schema max — the historic behavior. When exposing `garra_ask` to another
+agent (Hermes, Claude Desktop, a CI bot), the operator can restrict it
+at startup via env vars, read once when `garra mcp-server` boots:
+
+| Env var | Effect |
+|---------|--------|
+| `GARRAIA_MCP_MODEL_ALLOWLIST` | Comma-separated model names. When set, a call whose (explicit or defaulted) `model` is not in the list is rejected with `invalid_params`. The operator's way to keep `openrouter/auto` unreachable: `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`. |
+| `GARRAIA_MCP_MAX_TIMEOUT_SECS` | Cap on `timeout_secs` (clamped to the schema max 600). Calls above the cap are rejected; a call omitting `timeout_secs` gets `min(60, cap)`. |
+
+The `provider` enum advertised in the JSON schema
+(`ollama|anthropic|openai|openrouter`) is enforced at runtime — plus any
+provider alias configured under `llm:` in `config.yml`. The active
+policy is logged to stderr at startup.
+
 ## Stdio invariants
 
 | Stream | Owner             | Content                                            |
@@ -220,6 +237,11 @@ Schema validation rejected the call. Check:
   HTTPS endpoint; it doesn't call MCP servers back.
 - **Provider errors sanitized** before reaching the response or
   stderr (regex-based redaction of `sk-…`/`sk-or-v1-…` fingerprints).
+- **Operator limits** — see "Operator limits" above for the
+  `GARRAIA_MCP_MODEL_ALLOWLIST` / `GARRAIA_MCP_MAX_TIMEOUT_SECS` knobs.
+  There is still no per-caller authentication or rate limiting: the
+  trust boundary is process-level (whoever can spawn the binary can
+  call `garra_ask` within the configured policy).
 
 ## Out of scope (separate follow-ups)
 
@@ -235,6 +257,10 @@ Schema validation rejected the call. Check:
 
 ## See also
 
+- [`docs/mcp.md`](mcp.md) — the reverse direction: GarraIA as MCP
+  **client** consuming external servers.
+- [`docs/hermes-integration.md`](hermes-integration.md) — pairing
+  GarraIA with another agent in both directions (loop topology, policy).
 - [`docs/cli-ask.md`](cli-ask.md) — `garra ask` reference.
 - [`docs/configuration.md`](configuration.md) — provider/model resolution.
 - `plans/0102-gar-583-mcp-server-stdio.md` — this PR's plan.

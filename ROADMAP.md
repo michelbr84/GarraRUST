@@ -840,7 +840,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] Agente Garra é tratável como *assignee* (user virtual por grupo): `POST /v1/tasks/{id}:delegateToAgent`.
 - [ ] Comentário `@garra faça X` no task dispara execução do agente com scope `Chat(task_thread)`.
 - [ ] Memória de grupo indexa tasks abertos para responder "o que está pendente da família?".
-- [ ] Recorrência: `recurrence_rrule` (RFC 5545) em `task_lists.settings_jsonb`.
+- [x] Recorrência: `recurrence_rrule` (RFC 5545) — motor em `garraia-workspace::recurrence` + `tasks_recurrence_worker` (migration 033, plan 0355). Nota: a coluna vive em `tasks`, não em `task_lists.settings_jsonb` como este item dizia.
 
 **Notificações:**
 

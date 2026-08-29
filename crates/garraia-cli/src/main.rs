@@ -173,6 +173,11 @@ enum Commands {
         /// Custom LLM endpoint URL (for LM Studio, vLLM, etc.)
         #[arg(long, short = 'u')]
         url: Option<String>,
+
+        /// Per-turn LLM call timeout in seconds. Default 120, range [1, 600].
+        /// On timeout the turn is discarded and the REPL keeps running.
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=600))]
+        timeout_secs: u64,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -513,26 +518,27 @@ fn is_process_running(_pid: u32) -> bool {
 }
 
 /// Find the PID of a process listening on the given port.
+/// `-sTCP:LISTEN` restricts the match to the actual listener — a plain
+/// `lsof -ti :PORT` also returns connected clients (browser, curl), and the
+/// stop fallback would SIGTERM whichever came first.
 #[cfg(unix)]
 fn find_pid_on_port(port: u16) -> Option<u32> {
     let output = std::process::Command::new("lsof")
-        .args(["-ti", &format!(":{port}")])
+        .args([&format!("-tiTCP:{port}"), "-sTCP:LISTEN"])
         .output()
         .ok()?;
     let own_pid = std::process::id();
-    // lsof may return multiple PIDs (e.g. browser clients connected to the port).
-    // Filter out our own PID and return all candidates so the caller can kill them.
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| line.trim().parse::<u32>().ok())
         .find(|&pid| pid != own_pid)
 }
 
-/// Find all PIDs listening on / connected to the given port (excluding our own).
+/// Find all PIDs listening on the given port (excluding our own).
 #[cfg(unix)]
 fn find_pids_on_port(port: u16) -> Vec<u32> {
     let Ok(output) = std::process::Command::new("lsof")
-        .args(["-ti", &format!(":{port}")])
+        .args([&format!("-tiTCP:{port}"), "-sTCP:LISTEN"])
         .output()
     else {
         return vec![];
@@ -580,13 +586,86 @@ fn find_pids_on_port(port: u16) -> Vec<u32> {
         .collect()
 }
 
-/// Send SIGTERM and wait up to 5s for the process to exit. Returns true if it exited.
+#[cfg(not(any(unix, windows)))]
+fn find_pid_on_port(_port: u16) -> Option<u32> {
+    None
+}
+
+/// RAII guard for the PID file. Writes the current PID on creation and
+/// removes the file on Drop — which the gateway's graceful-shutdown path
+/// reaches on Ctrl+C/SIGTERM too. A SIGKILL leaves a stale file behind;
+/// `status` already detects and cleans that case.
+///
+/// The daemon path (`start -d`) manages its own PID file in `start_daemon`
+/// and never constructs this guard.
+struct PidFileGuard {
+    path: PathBuf,
+}
+
+impl PidFileGuard {
+    /// Best-effort: a write failure is reported but never blocks the gateway.
+    fn write() -> Option<Self> {
+        let path = pid_file_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(&path, std::process::id().to_string()) {
+            Ok(()) => Some(Self { path }),
+            Err(e) => {
+                tracing::warn!("could not write PID file {}: {e}", path.display());
+                None
+            }
+        }
+    }
+}
+
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Terminate the gateway and everything it spawned.
+///
+/// The daemon path double-forks + `setsid`, so the gateway is a process-group
+/// leader and its MCP children share that group. Signalling only the single
+/// PID left those children running; we signal the whole group when the target
+/// leads one (never our own group), then escalate to SIGKILL if it is still
+/// alive after the grace period.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
+    let target = pid as libc::pid_t;
+    // SAFETY: getpgid/kill on a pid we were handed; failures are reported via
+    // the return value and handled below.
+    let group = unsafe { libc::getpgid(target) };
+    let own_group = unsafe { libc::getpgid(0) };
+    let signal_group = group > 0 && group == target && group != own_group;
+
     unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        if signal_group {
+            libc::kill(-group, libc::SIGTERM);
+        } else {
+            libc::kill(target, libc::SIGTERM);
+        }
     }
+
     for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !is_process_running(pid) {
+            return true;
+        }
+    }
+
+    // Grace period spent: stop asking.
+    println!("Process {pid} did not exit after SIGTERM; sending SIGKILL...");
+    unsafe {
+        if signal_group {
+            libc::kill(-group, libc::SIGKILL);
+        } else {
+            libc::kill(target, libc::SIGKILL);
+        }
+    }
+    for _ in 0..8 {
         std::thread::sleep(std::time::Duration::from_millis(250));
         if !is_process_running(pid) {
             return true;
@@ -769,6 +848,10 @@ async fn async_main(
                 config_loader.config_dir(),
             );
             update::spawn_background_check();
+            // Foreground start also registers a PID file (install.sh runs
+            // `garraia start` without -d): without it, `status` reported
+            // "No daemon PID file found." while the gateway answered HTTP.
+            let _pid_guard = PidFileGuard::write();
             let server = garraia_gateway::GatewayServer::new(config);
             // Plan 0024 (GAR-412): pipe the PrometheusHandle and
             // TelemetryConfig into the server. One consistent snapshot
@@ -806,6 +889,8 @@ async fn async_main(
                 config_loader.config_dir(),
             );
             update::spawn_background_check();
+            // Same PID-file registration as the foreground Start arm.
+            let _pid_guard = PidFileGuard::write();
             let server = garraia_gateway::GatewayServer::new(config);
             // Plan 0024 (GAR-412): pipe the PrometheusHandle + TelemetryConfig
             // into the server for the dedicated /metrics listener (restart path).
@@ -819,22 +904,21 @@ async fn async_main(
             init_tracing(&effective_level);
 
             // Check PID file first
+            let mut managed_pid: Option<u32> = None;
             if let Some(pid) = read_pid() {
                 if is_process_running(pid) {
-                    println!("GarraIA daemon is running (PID {})", pid);
+                    println!("GarraIA is running (PID {})", pid);
+                    managed_pid = Some(pid);
                 } else {
-                    println!(
-                        "GarraIA daemon is not running (stale PID file for PID {})",
-                        pid
-                    );
+                    println!("GarraIA is not running (stale PID file for PID {})", pid);
                     // Clean up stale PID file
                     let _ = std::fs::remove_file(pid_file_path());
                 }
-            } else {
-                println!("No daemon PID file found.");
             }
 
-            // Also try the HTTP status endpoint
+            // Also try the HTTP status endpoint, and reconcile it with the
+            // PID probe: both used to be printed independently, yielding the
+            // contradictory "No daemon PID file found." + "status": "running".
             println!();
             println!("Gateway status:");
             let client = reqwest::Client::new();
@@ -847,11 +931,35 @@ async fn async_main(
                 .await
             {
                 Ok(resp) => {
+                    if managed_pid.is_none() {
+                        match find_pid_on_port(config.gateway.port) {
+                            Some(pid) => println!(
+                                "Gateway is responding on port {} (PID {pid}, not started by \
+                                 'garraia start' from this config dir — 'garraia stop' will \
+                                 use the port lookup)",
+                                config.gateway.port
+                            ),
+                            None => println!(
+                                "Gateway is responding on port {} but no local process was \
+                                 found (remote host, container, or 'lsof' unavailable)",
+                                config.gateway.port
+                            ),
+                        }
+                    }
                     let body = resp.json::<serde_json::Value>().await?;
                     println!("{}", serde_json::to_string_pretty(&body)?);
                 }
                 Err(_) => {
-                    println!("Gateway is not responding.");
+                    if let Some(pid) = managed_pid {
+                        println!(
+                            "PID {pid} is alive but the gateway is not responding on \
+                             http://{}:{} — it may still be starting, or is bound to a \
+                             different host/port than the config says.",
+                            config.gateway.host, config.gateway.port
+                        );
+                    } else {
+                        println!("Gateway is not responding.");
+                    }
                 }
             }
         }
@@ -1064,7 +1172,12 @@ async fn async_main(
                 McpCommands::List => {
                     println!("Configured MCP servers:");
                     if mcp_configs.is_empty() {
-                        println!("  (none — add servers to config.yml or ~/.garraia/mcp.json)");
+                        // Name the ACTIVE dir: pointing at ~/.garraia here sent
+                        // users editing files the loader never reads.
+                        println!(
+                            "  (none — add servers to {dir}/config.yml [mcp:] or {dir}/mcp.json)",
+                            dir = loader.config_dir().display()
+                        );
                     }
                     for (name, server) in &mcp_configs {
                         let enabled = server.enabled.unwrap_or(true);
@@ -1305,8 +1418,12 @@ async fn async_main(
             provider,
             model,
             url,
+            timeout_secs,
         } => {
-            chat::run_chat(config, provider, model, url).await?;
+            // Without a tracing subscriber, --debug/RUST_LOG silently produce
+            // nothing in chat mode (logs go to file + stderr, like Ask).
+            init_tracing(&effective_level);
+            chat::run_chat(config, provider, model, url, timeout_secs).await?;
         }
         Commands::Ask {
             message,
@@ -1525,7 +1642,8 @@ fn stop_daemon(port: u16) -> Result<()> {
     let pid = match pid {
         Some(p) => p,
         None => find_pid_on_port(port).context(format!(
-            "no running GarraIA process found (no PID file at {}, nothing on port {port})",
+            "no running GarraIA process found (no PID file at {}, nothing listening on \
+             port {port} — note: the port lookup requires 'lsof' to be installed)",
             pid_path.display()
         ))?,
     };
@@ -1535,7 +1653,9 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} did not exit within 5s. It may still be shutting down.");
+        println!(
+            "Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent."
+        );
     }
 
     Ok(())
@@ -1570,7 +1690,9 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} did not exit within 5s. It may still be shutting down.");
+        println!(
+            "Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent."
+        );
     }
 
     Ok(())

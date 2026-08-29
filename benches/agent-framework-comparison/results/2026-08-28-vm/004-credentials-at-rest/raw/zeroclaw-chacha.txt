@@ -1,0 +1,9 @@
+3:// Secrets are encrypted using ChaCha20-Poly1305 AEAD with a random key stored
+21:// produce `enc2:` (ChaCha20-Poly1305).
+38:/// ChaCha20-Poly1305 nonce length in bytes.
+254:                    "ChaCha20-Poly1305 encryption failed"
+269:    /// - `enc2:` prefix → ChaCha20-Poly1305 (current format)
+300:            // Legacy XOR cipher — decrypt and re-encrypt with ChaCha20-Poly1305
+307:                 The secret will be automatically migrated to enc2: (ChaCha20-Poly1305)."
+326:    /// Decrypt using ChaCha20-Poly1305 (current secure format).
+2795:        // Pre-computed ciphertext: ChaCha20-Poly1305 with the frozen key

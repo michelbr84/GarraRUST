@@ -27,9 +27,9 @@ jobs:
     name: Build Linux x86_64
     # Pinado em 22.04, NÃO ubuntu-latest: o binário linka a glibc do runner, e
     # ubuntu-latest (24.04, glibc 2.39) gerou o erro "version `GLIBC_2.39' not
-    # found" da v0.3.2 em qualquer sistema mais antigo. Baseline suportada:
-    # glibc >= 2.35 (Ubuntu 22.04+, Debian 12+) — manter em sincronia com o
-    # preflight MIN_GLIBC do install.sh e docs/installation.md.
+    # found" das v0.3.2 e v0.3.3 em qualquer sistema mais antigo. Baseline
+    # suportada: glibc >= 2.35 (Ubuntu 22.04+, Debian 12+) — manter em
+    # sincronia com o preflight MIN_GLIBC do install.sh e docs/installation.md.
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -75,9 +75,10 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
       - name: Build with cross
-        # OpenSSL é vendored/estático desde a v0.3.3 (native-tls/vendored via
-        # garraia-channels) — nada de libssl-dev no target: o pre-build do
-        # Cross.toml foi removido (ver Cross.toml).
+        # OpenSSL é vendored/estático desde a v0.3.4 (native-tls/vendored via
+        # garraia-channels) — nada de libssl-dev no target; o pre-build do
+        # Cross.toml agora só garante o perl+make que o openssl-src exige
+        # (ver Cross.toml).
         run: cross build --release --target aarch64-unknown-linux-gnu --package garraia
 
       - name: Package binary
@@ -285,6 +286,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
+          # Sem tag_name explícito, o softprops usa github.ref — que num
+          # workflow_dispatch a partir de main seria "main", criando release
+          # com tag errada. Com tag_name, o dispatch com input `version`
+          # cria o tag vX.Y.Z no commit do run e a release correta.
+          tag_name: ${{ steps.version.outputs.VERSION }}
           name: Release ${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}

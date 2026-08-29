@@ -6,31 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.3.3] - 2026-08-18
+## [0.3.4] - 2026-08-29
 
 ### Fixed
 - **Binário Linux x86_64 roda em Ubuntu 22.04+ de novo** — o job
   `build-linux-x86_64` usava `runs-on: ubuntu-latest`, que passou a mapear
-  para Ubuntu 24.04 (glibc 2.39); o binário da v0.3.2 abortava com
-  ``version `GLIBC_2.39' not found`` em qualquer sistema com glibc mais
-  antiga (ex.: containers Ubuntu 22.04). O runner agora é pinado em
-  `ubuntu-22.04`, estabelecendo a baseline suportada: **glibc ≥ 2.35**
-  (Ubuntu 22.04+, Debian 12+).
+  para Ubuntu 24.04 (glibc 2.39); os binários da v0.3.2 **e da v0.3.3**
+  abortavam com ``version `GLIBC_2.39' not found`` em qualquer sistema com
+  glibc mais antiga (ex.: containers Ubuntu 22.04, Debian 12). O runner
+  agora é pinado em `ubuntu-22.04`, estabelecendo a baseline suportada:
+  **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+).
 - **`install.sh` checa a glibc antes de baixar** — novo preflight
   `check_glibc` (`MIN_GLIBC=2.35`) falha cedo com mensagem acionável
   (atualizar a distro ou `cargo install --git`) em vez do erro críptico do
   loader depois da instalação. Detecta musl (Alpine) e aponta para build
-  from source. Coberto por `tests/install_sh/check_glibc.sh`.
+  from source. Coberto por `tests/install_sh/check_glibc.sh`, registrado no
+  job `installer-shellcheck` do `ci.yml` (sem isso a suíte nunca rodaria: o
+  job lista cada arquivo de teste explicitamente).
 
 ### Changed
 - **OpenSSL agora é vendored/estático** (`native-tls/vendored` via
   garraia-channels, feature discord) — o binário de release não linka mais
-  `libssl.so.x` do sistema em nenhuma plataforma, e o `pre-build` de
-  `libssl-dev` no `Cross.toml` foi removido (receita canônica do FAQ do
-  cross). Nota: migrar o serenity para `rustls_backend` está bloqueado — o
-  0.12.5 mapeia a feature para `reqwest/rustls-tls`, removida no reqwest
-  0.13, que o tauri ^0.13 prende no lock; reavaliar quando o serenity
-  suportar reqwest 0.13.
+  `libssl.so.x` do sistema, e o `pre-build` do `Cross.toml` deixou de
+  instalar `libssl-dev:$CROSS_DEB_ARCH` (receita canônica do FAQ do cross).
+  Em contrapartida o `openssl-src` compila o OpenSSL do zero, o que exige
+  `perl` + `make` no ambiente de build: adicionados ao `Cross.toml` e ao
+  `Dockerfile` (que roda em `rust:1.98-slim`, sem nenhum dos dois). O
+  `native-tls` só usa OpenSSL em Linux — Windows (schannel) e macOS
+  (Security.framework) não são afetados. Nota: migrar o serenity para
+  `rustls_backend` está bloqueado — o 0.12.5 mapeia a feature para
+  `reqwest/rustls-tls`, removida no reqwest 0.13, que o tauri ^0.13 prende
+  no lock; reavaliar quando o serenity suportar reqwest 0.13.
+
+## [0.3.3] - 2026-08-27
+
+### Added
+- **Wiki versionado e publicado automaticamente** (#855) — a fonte de verdade do
+  GitHub Wiki agora vive em `wiki/` neste repo (Home + 7 páginas: Instalação,
+  Referência da CLI, Configuração, Guias de Integração, Arquitetura+ADRs,
+  Segurança+Operação, Contribuir/Roadmap/FAQ), revisável por PR; o workflow
+  `wiki-sync.yml` publica no `GarraRUST.wiki` via `GITHUB_TOKEN` a cada push
+  no `main`.
+
+### Fixed
+- **Clippy do stable 1.98 destravado** (#854) — o lint novo
+  `clippy::chunks_exact_to_as_chunks` derrubava o job Clippy no `main` e em
+  todos os PRs do dependabot. Migrados os 3 usos de `chunks_exact(4)` para
+  `as_chunks::<4>()` (garraia-db ×2, garraia-embeddings ×1 — este último
+  eliminando um `try_into().expect()`), mais `allow` pontual documentado de
+  `result_large_err` no padrão axum de `issue_token_pair`.
+
+### Changed
+- Imagem base Docker atualizada para `rust:1.98-slim` (#849).
+- `aws-smithy-runtime-api` 1.14.0 → 1.15.0 (#850).
+- Documentação (README/ROADMAP/TODO) sincronizada com o cleanup de 2026-08-18 (#847).
 
 ## [0.3.2] - 2026-08-18
 
@@ -381,7 +410,7 @@ The key was on disk, encrypted, and unreadable by the server that needed it.
 - **Security documentation** - Architecture overview, vendor-neutral audit checklist, AI agent attack surfaces guide (#113)
 - **Install script** - `curl -fsSL` one-liner with OS/arch detection, SHA-256 verification, smart install directory (#109)
 - **Release matrix** - Linux aarch64 (via `cross`) and Windows x86_64 CI targets (#110)
-- **Scheduling hardening** - Recursive self-scheduling guard, delay cap (24h), per-session pending limit (5), failing task retry with backoff (#107)
+- **Scheduling hardening** - Recursive self-scheduling guard, delay cap (30 days), per-session pending limit (5) (#107)
 - **Built-in skills** - 6 starter skills: summarize, translate, code-review, explain, rewrite, brainstorm (#106)
 - **README overhaul** - Competitive positioning, benchmark numbers, updated Quick Start (#103)
 - **iMessage channel** - macOS-native iMessage adapter with group chats, attachments, reconnect backoff, deployment docs (#100, #101)

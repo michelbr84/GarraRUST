@@ -8,7 +8,7 @@ This guide covers installing GarraIA on various platforms.
 - **FFmpeg** (for voice mode)
 - **Linux (prebuilt binaries):** glibc ≥ 2.35 — Ubuntu 22.04+, Debian 12+.
   Older distros and musl-based systems (Alpine) must build from source.
-  (Since v0.3.3 OpenSSL is statically vendored into the binaries: no system
+  (Since v0.3.4 OpenSSL is statically vendored into the binaries: no system
   `libssl` required.)
 
 ## Quick Install
@@ -16,7 +16,7 @@ This guide covers installing GarraIA on various platforms.
 ### Linux/macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+curl -fsSL https://garraia.org/install.sh | sh
 ```
 
 > **Minimum glibc (Linux):** the release binaries are built on Ubuntu 22.04 and
@@ -26,15 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.s
 > `build-linux-x86_64` runner in `.github/workflows/release.yml` and
 > `MIN_GLIBC` in `install.sh`.
 
-The same script is published through two alternative channels, useful when
-`raw.githubusercontent.com` answers **HTTP 429** (per-IP rate limit — common on
-cloud pods whose egress IP is shared by many users):
+The same script (auto-synced) is published through alternative channels —
+the release CDN is the most robust against per-IP rate limits (**HTTP 429**
+is common on cloud pods whose egress IP is shared by many users):
 
 ```bash
 # Official mirror — GitHub release CDN (no aggressive per-IP limits):
 curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
 
-# Community CDN mirror of the repository's main branch:
+# Repository main branch (raw) and community CDN mirror:
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 ```
 
@@ -220,7 +221,7 @@ docker-compose up -d
 ```dockerfile
 FROM rust:1.94-trixie
 
-RUN apt-get update && apt-get install -y ffmpeg libssl3
+RUN apt-get update && apt-get install -y ffmpeg
 
 # Build and copy binary
 COPY target/release/garra /usr/local/bin/

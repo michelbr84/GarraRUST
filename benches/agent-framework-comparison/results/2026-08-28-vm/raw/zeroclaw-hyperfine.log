@@ -1,0 +1,4 @@
+Benchmark 1: /tmp/tmp.9EvBeHR7eC/zeroclaw/target/release/zeroclaw --help
+  Time (mean ± σ):       8.5 ms ±   0.8 ms    [User: 5.4 ms, System: 3.6 ms]
+  Range (min … max):     7.3 ms …  10.0 ms    20 runs
+ 

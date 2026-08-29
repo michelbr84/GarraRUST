@@ -1,0 +1,87 @@
+{
+  "scenario": "005-attack-surface",
+  "run_at_utc": "2026-08-28T06:46:36Z",
+  "host": "vm",
+  "status": "pass",
+  "skipped": 0,
+  "claims": [
+    {
+      "target": "garraia",
+      "name": "Default bind is 127.0.0.1",
+      "ok": "pass",
+      "detail": "381:    \"127.0.0.1\".to_string()"
+    },
+    {
+      "target": "garraia",
+      "name": "Honest caveat: local API auth is opt-in (session_tokens_required default false)",
+      "ok": "pass",
+      "detail": "314:    pub session_tokens_required: bool,"
+    },
+    {
+      "target": "garraia",
+      "name": "Messaging channels are deny-by-default (restricted allowlist + pairing)",
+      "ok": "pass",
+      "detail": "41:    pub fn restricted(users: impl IntoIterator<Item = String>) -> Self {"
+    },
+    {
+      "target": "garraia",
+      "name": "Resolved crates in Cargo.lock",
+      "ok": "pass",
+      "detail": "1061"
+    },
+    {
+      "target": "openclaw",
+      "name": "Default bind mode is loopback",
+      "ok": "pass",
+      "detail": "62:/** Detect forwarded/proxy headers that make loopback requests ineligible for direct-local auth. */"
+    },
+    {
+      "target": "openclaw",
+      "name": "Gateway auth defaults to token mode and fails closed without a token",
+      "ok": "pass",
+      "detail": "163:      `gateway auth mode is token, but no token was configured (set gateway.auth.token or OPENCLAW_GATEWAY_TOKEN).${LEGACY_OPENCLAW_ENV_NOTE}`,"
+    },
+    {
+      "target": "openclaw",
+      "name": "Direct production dependencies in package.json",
+      "ok": "pass",
+      "detail": "66"
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Pairing required by default (require_pairing: true)",
+      "ok": "pass",
+      "detail": "6973:    pub require_pairing: bool,"
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Honest caveat: public bind is warn-only (allow_public_bind), not refused",
+      "ok": "pass",
+      "detail": "6976:    pub allow_public_bind: bool,"
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Resolved crates in Cargo.lock",
+      "ok": "pass",
+      "detail": "1265"
+    },
+    {
+      "target": "garraia",
+      "name": "WASM plugin sandbox: memory caps + execution deadlines (wasmtime, opt-in feature)",
+      "ok": "pass",
+      "detail": "9:use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};"
+    },
+    {
+      "target": "openclaw",
+      "name": "Plugins load in-process as trusted code (their own threat model)",
+      "ok": "pass",
+      "detail": "257:Plugins/extensions are loaded **in-process** with the Gateway and are treated as trusted code."
+    },
+    {
+      "target": "zeroclaw",
+      "name": "Plugin Ed25519 signing exists but defaults to Disabled",
+      "ok": "pass",
+      "detail": "18:    Disabled,"
+    }
+  ]
+}

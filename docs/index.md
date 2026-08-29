@@ -9,9 +9,11 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 - [Configuration Reference](./configuration.md)
 - [Channel Integrations](./channels.md)
 - [MCP Setup](./mcp.md)
+- [Hermes ↔ GarraIA Interop (MCP + A2A)](./integrations/hermes-mcp.md)
 - [Voice Mode](./voice.md)
 - [Memory System](./memory.md)
 - [Security](./security.md)
+- [Gateway Hardening & Execution Tools](./hardening-gateway.md)
 - [Continue Integration](./src/continue-modes.md)
 
 ## Features
@@ -30,7 +32,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 
 - **Runtime state machine** - Turn-based execution with retry
 - **Skills system** - Markdown-based agent skills
-- **Scheduling** - Cron, interval, one-time tasks
+- **Scheduling** - one-shot tasks and cron-style recurring tasks (timezone-aware)
 - **Plugins** - WASM sandbox for extensions
 - **Media processing** - PDF and image handling
 - **Admin console** - Web-based management UI

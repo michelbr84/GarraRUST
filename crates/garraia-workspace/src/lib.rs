@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod recurrence;
 pub mod store;
 
 pub use config::WorkspaceConfig;

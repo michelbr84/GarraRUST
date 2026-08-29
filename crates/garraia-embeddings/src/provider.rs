@@ -89,13 +89,12 @@ mod deterministic {
                 hasher.update(seed.to_le_bytes());
                 hasher.update(text.as_bytes());
                 let digest = hasher.finalize();
-                for chunk in digest.chunks_exact(4) {
+                for chunk in digest.as_chunks::<4>().0 {
                     if out.len() == EMBEDDING_DIM {
                         break;
                     }
-                    let bytes: [u8; 4] = chunk.try_into().expect("chunks_exact(4) yields [u8;4]");
                     // Map u32 to (-1.0, 1.0).
-                    let n = u32::from_le_bytes(bytes);
+                    let n = u32::from_le_bytes(*chunk);
                     let f = (n as f64 / u32::MAX as f64) * 2.0 - 1.0;
                     out.push(f as f32);
                 }

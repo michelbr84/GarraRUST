@@ -1,0 +1,1 @@
+257:Plugins/extensions are loaded **in-process** with the Gateway and are treated as trusted code.

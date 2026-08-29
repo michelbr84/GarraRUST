@@ -24,6 +24,8 @@ garraia-telemetry = { path = "../garraia-telemetry", optional = true }
 # AppState carries Option<Arc<...>> fields that are None when AuthConfig
 # env vars are missing (fail-soft mode).
 garraia-auth = { workspace = true }
+# Recurrence engine (RRULE expansion) for the task recurrence worker.
+garraia-workspace = { path = "../garraia-workspace" }
 # Plan 0044 (GAR-395 slice 2): ObjectStore trait + LocalFs + S3 backends.
 # Default features only — the tus PATCH commit path consumes the trait
 # surface from `garraia-storage`. S3 backend is opt-in via the
