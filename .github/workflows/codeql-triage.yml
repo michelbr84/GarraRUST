@@ -73,6 +73,10 @@ jobs:
             --json-out codeql-alerts.json \
             --md-out codeql-alerts.md
           cat codeql-alerts.md >> "$GITHUB_STEP_SUMMARY"
+          # Tambem para stdout: o job log e a superficie mais acessivel do
+          # relatorio. O artifact vive num blob de storage que redes com egress
+          # restrito nao alcancam, e o step summary so e legivel pela UI.
+          cat codeql-alerts.md
 
       - name: Publicar JSON e markdown
         if: always() && hashFiles('codeql-alerts.json') != ''

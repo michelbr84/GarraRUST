@@ -1,0 +1,118 @@
+name: CodeQL Apply Dismissals
+
+# Aplica os dismissals de code scanning a partir do ledger versionado
+# `docs/security/codeql-suppressions.json`, rodando o script fail-closed
+# `scripts/security/codeql-reapply-dismissals.sh`.
+#
+# Este workflow fecha o item que o próprio script deixou em aberto no header:
+#
+#   "Per amendment A8: there is intentionally NO schedule wiring here. (…)
+#    A future sub-issue (GAR-491.2) decides if/when to wire it into a workflow."
+#
+# É esse sub-issue. Até 2026-08-29 o `PATCH /code-scanning/alerts/{n}` só podia
+# sair de uma máquina com um PAT de escopo `security_events` — foi assim que os
+# 22 alertas de GAR-490/GAR-491 foram dispensados (prova empírica em
+# docs/security/codeql-suppressions.md §5). O `GITHUB_TOKEN` de um job com
+# `permissions: security-events: write` tem o mesmo alcance, sem PAT nenhum.
+#
+# SEPARADO do codeql-triage.yml de propósito: aquele só lê e fica com
+# `security-events: read`. Menor privilégio — um relatório não precisa carregar
+# permissão de escrita sobre alertas de segurança.
+#
+# O que este workflow NÃO é: supressão em massa. Ele não decide nada. Só executa
+# o que o ledger já diz, uma entrada por alerta com justificativa revisada em PR,
+# e o script aborta (exit 2) se o alerta vivo divergir do ledger em
+# rule_id/path/line. A política está em docs/security/codeql-suppressions.md §3.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Escrever de verdade. Desmarcado = dry-run (nada é alterado).'
+        required: false
+        default: false
+        type: boolean
+      alert:
+        description: 'Restringe a um alerta só (ex.: 165). Vazio = todas as entradas do ledger.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Nunca dois PATCH concorrentes sobre os mesmos alertas. Sem
+  # cancel-in-progress: cancelar no meio deixaria parte do ledger aplicada.
+  group: codeql-apply-dismissals
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Aplicar dismissals do ledger
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # O motivo deste workflow existir: PATCH em code-scanning alerts.
+      # Precedente de `write` no repo: codeql.yml (upload de SARIF).
+      security-events: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        # Mesma versão pinada em ci.yml / codeql.yml / codeql-triage.yml.
+        uses: actions/checkout@v7
+
+      - name: Validar sincronia do ledger (.md vs .json)
+        # Primeiro, e sem token: se o ledger estiver dessincronizado, aborta
+        # antes de tocar na API. `--check-md` não precisa de `gh` (amendment
+        # 2026-08-29), só de `jq`, que já vem no runner.
+        run: |
+          set -euo pipefail
+          bash scripts/security/codeql-reapply-dismissals.sh --check-md
+
+      - name: Executar o script
+        # Os inputs vão por `env:` e são lidos como variáveis de shell entre
+        # aspas — nunca interpolados em `run:`. Padrão do repo, ver
+        # branch-cleanup.yml e garra-routine-trigger.yml.
+        #
+        # Sem `continue-on-error`: o valor deste script é falhar fechado, e o
+        # CLAUDE.md proíbe mascarar exit code em workflow. Exit 2 (ledger
+        # divergente) e exit 3 (alerta sumiu) SÃO o resultado útil quando
+        # acontecem — significam "reaudite à mão", não "tente de novo".
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_APPLY: ${{ inputs.apply }}
+          IN_ALERT: ${{ inputs.alert }}
+        run: |
+          set -euo pipefail
+
+          args=()
+          if [[ "$IN_APPLY" == "true" ]]; then
+            args+=(--apply)
+          else
+            args+=(--dry-run)
+          fi
+          if [[ -n "$IN_ALERT" ]]; then
+            args+=(--alert "$IN_ALERT")
+          fi
+
+          echo "## CodeQL — aplicação de dismissals" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$IN_APPLY" == "true" ]]; then
+            echo "**Modo:** \`--apply\` (escrevendo)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Modo:** \`--dry-run\` (nada foi alterado)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "**Escopo:** ${IN_ALERT:-todas as entradas do ledger}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          # `tee` para o summary preservando o exit code do script — o `set -o
+          # pipefail` acima garante que um exit != 0 não seja engolido pelo pipe.
+          bash scripts/security/codeql-reapply-dismissals.sh "${args[@]}" \
+            2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Fechar o bloco do summary
+        if: always()
+        run: echo '```' >> "$GITHUB_STEP_SUMMARY"
