@@ -40,7 +40,15 @@ Thumbs.db
 # locally by /max-power tooling; bodies drift from the canonical tracked
 # skills/*.md flat layout. Promotion to canonical layout pending a per-skill
 # diff review (rastreado em Linear, vide CLAUDE.md §Skills disponíveis).
-.claude/skills/
+# Nota: usa `/*` em vez de `/` porque o git não reinclui nada dentro de um
+# diretório excluído — sem isso a negação abaixo é silenciosamente ignorada.
+.claude/skills/*
+# Exceção: `steward/` é escrito à mão, NÃO gerado pelo /max-power — a razão da
+# ignora acima (corpos divergindo do canônico `skills/*.md`) não se aplica a
+# ele, porque não existe contraparte plana. Precisa ser versionado porque o
+# harness que dirige PR lê essa guia de `.claude/skills/steward/SKILL.md` na
+# branch remota; num arquivo ignorado, nenhuma outra sessão a enxerga.
+!.claude/skills/steward/
 # .claude/settings.json, hooks/, agents/ SÃO commitados (config do projeto)
 
 # Git worktrees — isolated workspaces used by parallel agent execution
