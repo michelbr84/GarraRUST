@@ -184,12 +184,25 @@ inline e 10 em `crates/*/tests/`.
 
 ### A correção: escopo, não supressão
 
-`.github/workflows/codeql.yml`, passo **Initialize CodeQL**:
+`.github/workflows/codeql.yml`, no **nível do job** `analyze`:
 
 ```yaml
-env:
-  CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"
+jobs:
+  analyze:
+    env:
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"
 ```
+
+> **O nível importa, e essa foi a primeira tentativa errada.** Colocar a env no
+> step `Initialize CodeQL` **não funciona**. Com `build-mode: none` a extração
+> acontece dentro de `Perform CodeQL analysis` — 811 s no run
+> [`33233416706`](https://github.com/michelbr84/GarraRUST/actions/runs/33233416706),
+> contra 10 s do init — então uma env no escopo do init nunca chega ao
+> extractor. O sintoma foi um alerta apontando para um `assert!` dentro de um
+> `#[cfg(test)]` no run
+> [`33239057983`](https://github.com/michelbr84/GarraRUST/actions/runs/33239057983),
+> com o log mostrando 339 arquivos extraídos: os 85 de `crates/*/tests/` tinham
+> sumido (o `paths-ignore` funcionou) mas os módulos inline continuavam lá.
 
 Opção oficial, documentada em `rust/codeql-extractor.yml` do `github/codeql`:
 *"Comma-separated list of cfg settings to enable, or disable if prefixed with
