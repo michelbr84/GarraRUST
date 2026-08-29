@@ -250,9 +250,12 @@ impl GatewayServer {
                 // Arc::get_mut is safe here: agents has rc=1 (AppState not yet
                 // wrapped in Arc<AppState> and no RestV1FullState clone exists).
                 if let Some(a) = Arc::get_mut(&mut state.agents) {
-                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(store)));
+                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
+                        Arc::clone(&store),
+                    )));
+                    a.register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
                 } else {
-                    warn!("ScheduleHeartbeat tool not registered: agents Arc has multiple owners");
+                    warn!("schedule tools not registered: agents Arc has multiple owners");
                 }
                 info!("session store opened at {}", sessions_db.display());
             }
@@ -872,6 +875,9 @@ async fn shutdown_signal() {
         () = terminate => info!("received SIGTERM, shutting down"),
     }
 }
+/// How many times one occurrence is retried before being given up on.
+const MAX_TASK_ATTEMPTS: i64 = 3;
+
 async fn run_scheduler(state: &AppState) -> Result<()> {
     let store_mutex = match &state.session_store {
         Some(s) => s,
@@ -891,10 +897,23 @@ async fn run_scheduler(state: &AppState) -> Result<()> {
 
     for task in tasks {
         if let Err(e) = execute_scheduled_task(state, store_mutex, &task).await {
-            tracing::error!("Scheduled task {} failed: {e} — marking as failed", task.id);
+            // A failure used to be terminal: one transient provider error
+            // silently killed the task (and, with recurrence, the whole
+            // schedule). Retry with quadratic backoff first.
             let store = store_mutex.lock().await;
-            if let Err(fe) = store.fail_task(&task.id) {
-                tracing::error!("Failed to mark task {} as failed: {fe}", task.id);
+            match store.retry_or_fail_task(&task, MAX_TASK_ATTEMPTS, chrono::Utc::now()) {
+                Ok(Some(retry_at)) => tracing::warn!(
+                    task = %task.id,
+                    retry_at = %retry_at.to_rfc3339(),
+                    "scheduled task failed: {e} — will retry"
+                ),
+                Ok(None) => tracing::error!(
+                    task = %task.id,
+                    "scheduled task failed after {MAX_TASK_ATTEMPTS} attempts: {e} — giving up"
+                ),
+                Err(fe) => {
+                    tracing::error!("Failed to record failure for task {}: {fe}", task.id)
+                }
             }
         }
     }
@@ -991,10 +1010,21 @@ async fn execute_scheduled_task(
         );
     }
 
-    // 5. Complete task
+    // 5. Complete the task — or arm the next occurrence when recurring.
     {
         let store = store_mutex.lock().await;
-        store.complete_task(&task.id)?;
+        if task.is_recurring() {
+            match store.complete_recurring_run(task, chrono::Utc::now())? {
+                Some(next) => info!(
+                    task = %task.id,
+                    next_run = %next.to_rfc3339(),
+                    "recurring task rescheduled"
+                ),
+                None => info!(task = %task.id, "recurring task reached max_runs — completed"),
+            }
+        } else {
+            store.complete_task(&task.id)?;
+        }
     }
 
     Ok(())

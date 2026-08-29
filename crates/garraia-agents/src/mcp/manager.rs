@@ -176,6 +176,9 @@ pub struct McpManager {
     pending: Arc<RwLock<HashMap<String, PendingServer>>>,
 }
 
+/// `(name, params, allowed_tools)` for one server needing a (re)connect.
+type ReconnectTarget = (String, ConnectionParams, Vec<String>);
+
 /// A configured-but-not-connected server awaiting a retry.
 #[derive(Clone)]
 struct PendingServer {
@@ -850,7 +853,7 @@ impl McpManager {
 
     /// GAR-293: Check all connections and attempt reconnect with exponential backoff.
     async fn check_and_reconnect(&self) {
-        let (to_reconnect, stable): (Vec<(String, ConnectionParams, Vec<String>)>, Vec<String>) = {
+        let (to_reconnect, stable): (Vec<ReconnectTarget>, Vec<String>) = {
             let conns = self.connections.read().await;
             let dead = conns
                 .iter()
@@ -874,7 +877,7 @@ impl McpManager {
         };
 
         // Boot failures live in `pending`, never in `connections`.
-        let mut to_reconnect = to_reconnect;
+        let mut to_reconnect: Vec<ReconnectTarget> = to_reconnect;
         {
             let pending = self.pending.read().await;
             for (name, p) in pending.iter() {
