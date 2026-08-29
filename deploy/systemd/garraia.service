@@ -16,10 +16,19 @@ Type=exec
 User=garraia
 Group=garraia
 
-# Binary location
-ExecStart=/usr/local/bin/garraia start --host 0.0.0.0
+# Binary location.
+# Loopback by default — the bulk of the /api/* + /ws surface has no
+# credential gate of its own, so expose the port only behind a firewall
+# or a TLS-terminating reverse proxy (docs/src/production-runbook.md §2).
+# Switch to --host 0.0.0.0 only once one of those is in place.
+ExecStart=/usr/local/bin/garraia start --host 127.0.0.1
 
-# Environment
+# Environment.
+# Auth/secret env vars belong in /etc/garraia/env (chmod 640, root:garraia):
+# GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL,
+# GARRAIA_SIGNUP_DATABASE_URL, GARRAIA_APP_DATABASE_URL,
+# GARRAIA_UPLOAD_HMAC_SECRET, GARRAIA_VAULT_PASSPHRASE.
+# Generate the block with scripts/gen-auth-secrets.sh (docs/auth-config.md §7).
 EnvironmentFile=-/etc/garraia/env
 Environment=RUST_LOG=info
 Environment=GARRAIA_LOG_LEVEL=info

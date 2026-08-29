@@ -102,7 +102,7 @@ pub async fn create_session(
             )
             .await
         {
-            let secure = cfg.gateway.api_key.is_some(); // use Secure only if TLS implied
+            let secure = crate::session_auth::session_cookie_secure(&cfg.gateway);
             let cookie =
                 crate::session_auth::session_cookie(&token, cfg.gateway.session_ttl_secs, secure);
             if let Ok(val) = HeaderValue::from_str(&cookie) {

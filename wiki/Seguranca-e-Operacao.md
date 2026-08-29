@@ -7,6 +7,7 @@
 ## Modelo de segurança
 
 - [Visão geral](https://github.com/michelbr84/GarraRUST/blob/main/docs/security.md) — cofre AES-256-GCM, allowlists por canal, pareamento, bind em localhost por padrão
+- [Hardening do gateway + ferramentas de execução](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardening-gateway.md) — perfis loopback/exposto, confirmação de comandos (safety_gate), modos/ToolPolicy, MCP com política ([receitas](https://github.com/michelbr84/GarraRUST/blob/main/docs/integrations/mcp-capacidades.md)) e [config de referência](https://github.com/michelbr84/GarraRUST/blob/main/config.hardened.example.yml)
 - [Arquitetura security-first](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/security/architecture.md) · [Superfícies de ataque de agentes de IA](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/security/attack-surfaces.md) · [Checklist prático](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/security/checklist.md)
 - [Threat model STRIDE](https://github.com/michelbr84/GarraRUST/blob/main/docs/security/threat-model.md) · [Decisões de hardening](https://github.com/michelbr84/GarraRUST/blob/main/docs/security/hardening-decisions.md)
 

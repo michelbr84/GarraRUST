@@ -55,6 +55,20 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Whether the `garraia_session` cookie should carry the `Secure` flag.
+///
+/// Derived from the transport actually configured: native TLS (cert + key
+/// both set, mirroring `use_tls` in `server.rs`), OR `gateway.api_key`
+/// present — the pre-fix heuristic, kept so no existing deployment gets a
+/// *less* strict cookie than before.
+///
+/// TODO(deprecation): drop the `api_key` clause after a deprecation cycle —
+/// an api_key-only plain-HTTP deploy gets a Secure cookie that browsers
+/// refuse to send over HTTP (pre-existing behavior, preserved on purpose).
+pub fn session_cookie_secure(gateway: &garraia_config::GatewayConfig) -> bool {
+    (gateway.tls_cert_path.is_some() && gateway.tls_key_path.is_some()) || gateway.api_key.is_some()
+}
+
 /// Build a `Set-Cookie` header value for the session token.
 pub fn session_cookie(token: &str, ttl_secs: i64, secure: bool) -> String {
     let secure_flag = if secure { "; Secure" } else { "" };
@@ -109,4 +123,47 @@ pub async fn require_session_auth(
     }
 
     Ok(next.run(request).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garraia_config::GatewayConfig;
+
+    #[test]
+    fn cookie_secure_derives_from_tls_or_api_key() {
+        // Neither TLS nor api_key: plain-HTTP dev deployment, no Secure flag.
+        let plain = GatewayConfig::default();
+        assert!(!session_cookie_secure(&plain));
+
+        // Native TLS configured (cert + key), no api_key: must be Secure —
+        // the pre-fix heuristic (api_key.is_some()) missed exactly this case.
+        let tls = GatewayConfig {
+            tls_cert_path: Some("/etc/garraia/tls/cert.pem".into()),
+            tls_key_path: Some("/etc/garraia/tls/key.pem".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(session_cookie_secure(&tls));
+
+        // Cert without key: not a working TLS setup (`use_tls` in server.rs
+        // requires both), so it alone must not flip the flag.
+        let half_tls = GatewayConfig {
+            tls_cert_path: Some("/etc/garraia/tls/cert.pem".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(!session_cookie_secure(&half_tls));
+
+        // api_key only: pre-fix behavior preserved.
+        let keyed = GatewayConfig {
+            api_key: Some("test-gateway-bearer".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(session_cookie_secure(&keyed));
+    }
+
+    #[test]
+    fn session_cookie_renders_secure_flag() {
+        assert!(session_cookie("tok", 60, true).contains("; Secure"));
+        assert!(!session_cookie("tok", 60, false).contains("; Secure"));
+    }
 }

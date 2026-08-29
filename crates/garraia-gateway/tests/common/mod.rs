@@ -116,6 +116,23 @@ impl Harness {
             .clone()
     }
 
+    /// Open a FRESH dedicated superuser connection, bound to the
+    /// caller's own runtime.
+    ///
+    /// Use this instead of `admin_pool` in tests that must be immune
+    /// to the cross-runtime teardown race described on `admin_pool`'s
+    /// `test_before_acquire` comment: a connection opened here has its
+    /// socket registered with the calling test's live IO driver, so it
+    /// can never be a stale handle from an already-shut-down runtime.
+    /// Prefer `admin_pool` for fixture inserts (connection reuse);
+    /// prefer this for one-shot schema introspection.
+    pub async fn admin_conn(&self) -> sqlx::PgConnection {
+        use sqlx::Connection;
+        sqlx::PgConnection::connect(&self.admin_url)
+            .await
+            .expect("fresh admin connection to the harness container")
+    }
+
     async fn boot() -> anyhow::Result<Self> {
         // 1. Divert GARRAIA_CONFIG_DIR to a tempdir BEFORE anything
         //    in the gateway touches `default_config_dir()`. This
@@ -161,8 +178,21 @@ impl Harness {
         //    rationale.
         // admin_pool: sized at 16 for safe headroom when fixtures
         // run concurrently. Acquire timeout kept at sqlx default.
+        //
+        // test_before_acquire: each `#[tokio::test]` runs on its own
+        // runtime, but this pool is shared process-wide — a pooled
+        // connection created inside one test's runtime has its socket
+        // registered with THAT runtime's IO driver. Once that runtime
+        // shuts down, reusing the idle connection from another test
+        // fails with `Io(Custom { .. "A Tokio 1.x context was found,
+        // but it is being shutdown." })` (observed intermittently on
+        // `migration_012_single_owner_idx_predicate_filters_active`).
+        // The pre-acquire ping makes sqlx detect the dead connection,
+        // discard it and open a fresh one on the live runtime instead
+        // of surfacing the teardown error to the test.
         let admin_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(16)
+            .test_before_acquire(true)
             .connect(&admin_url)
             .await?;
         sqlx::query("ALTER ROLE garraia_app    WITH LOGIN PASSWORD 'app-pw'")

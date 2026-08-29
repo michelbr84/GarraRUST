@@ -1,0 +1,71 @@
+# GarraIA — config de referência ENDURECIDO
+# Guia completo: docs/hardening-gateway.md
+# Valide após copiar/editar:  garra config check
+#
+# Copie para ~/.garraia/config.yml (ou $XDG_CONFIG_HOME/garraia/config.yml)
+# e proteja o arquivo:  chmod 0600 config.yml
+
+gateway:
+  # Perfil A (recomendado): só a própria máquina alcança o gateway.
+  # Para expor na rede (Perfil B), veja docs/hardening-gateway.md §1 —
+  # api_key + session_tokens_required + allowed_origins são OBRIGATÓRIOS.
+  host: "127.0.0.1"
+  port: 3888
+
+  # Auth do gateway (opt-in hoje; ligue mesmo em loopback se a máquina é
+  # compartilhada). Valor LITERAL — gere com: openssl rand -hex 32
+  # api_key: "TROQUE-POR-TOKEN-FORTE"
+  session_tokens_required: true
+  session_ttl_secs: 86400      # validade do token de sessão (1 dia)
+  session_idle_secs: 3600      # corte por inatividade (1h)
+
+  # CORS: vazio = allow-all (dev). Em produção, liste as origens.
+  allowed_origins: []
+
+  rate_limit:
+    per_second: 1
+    burst_size: 60
+
+  # TLS embutido exige build com --features tls (fora dos binários
+  # release atuais) — em produção prefira reverse proxy com TLS.
+  # tls_cert_path: "/etc/garraia/cert.pem"
+  # tls_key_path: "/etc/garraia/key.pem"
+
+llm:
+  # Provider local sem chave (troque pelo seu; chaves de cloud provider:
+  # prefira o cofre via `garra init` + GARRAIA_VAULT_PASSPHRASE).
+  ollama-local:
+    provider: ollama
+    model: llama3.1
+    base_url: "http://localhost:11434"
+
+agent:
+  default_provider: ollama-local
+  # Tier "arriscado" do safety_gate passa a exigir confirmação humana
+  # (o tier "perigoso" é bloqueado SEMPRE, com ou sem esta flag):
+  tool_confirmation_enabled: true
+  max_tool_calls: 50
+
+# Servidores MCP com política (escopo mínimo + limites + allowlist).
+# Receitas completas: docs/integrations/mcp-capacidades.md
+mcp:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/caminho/restrito"]
+    memory_limit_mb: 512
+    max_restarts: 5
+    restart_delay_secs: 5
+    # Só leitura — corte as tools de escrita do servidor:
+    allowed_tools:
+      - read_file
+      - read_multiple_files
+      - list_directory
+      - search_files
+      - get_file_info
+      - directory_tree
+
+# Lembretes de ambiente (ver .env.example):
+#   GARRAIA_VAULT_PASSPHRASE  — sem ela, secrets de MCP caem em plaintext
+#   GARRAIA_JWT_SECRET        — obrigatório para auth v1 em produção
+#   GARRAIA_METRICS_BIND=127.0.0.1:9464 (+ TOKEN/ALLOW se expor métricas)
+#   HOST                      — CUIDADO: sobrescreve gateway.host (containers)
