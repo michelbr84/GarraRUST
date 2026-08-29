@@ -830,6 +830,24 @@ impl McpManager {
         Ok(output.content)
     }
 
+    /// Run one health-monitor pass immediately.
+    ///
+    /// Exposed so lifecycle tests can drive the sweep deterministically
+    /// instead of sleeping through the 30s interval.
+    pub async fn health_tick(&self) {
+        self.check_and_reconnect().await;
+    }
+
+    /// Whether a server currently has a live transport.
+    pub async fn is_connected(&self, name: &str) -> bool {
+        self.connections
+            .read()
+            .await
+            .get(name)
+            .map(|c| c.is_alive())
+            .unwrap_or(false)
+    }
+
     /// GAR-293: Check all connections and attempt reconnect with exponential backoff.
     async fn check_and_reconnect(&self) {
         let (to_reconnect, stable): (Vec<(String, ConnectionParams, Vec<String>)>, Vec<String>) = {
@@ -1028,12 +1046,55 @@ fn apply_memory_limit(cmd: &mut Command, limit_mb: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_tool_allowed;
+    use super::{RestartState, is_tool_allowed};
 
     #[test]
     fn empty_allowlist_allows_everything() {
         assert!(is_tool_allowed(&[], "read_file"));
         assert!(is_tool_allowed(&[], "anything"));
+    }
+
+    #[test]
+    fn restart_backoff_doubles_and_caps_at_300s() {
+        let mut st = RestartState::new(10, 5);
+        assert_eq!(st.current_delay_secs(), 5);
+        st.record_attempt();
+        assert_eq!(st.current_delay_secs(), 10);
+        st.record_attempt();
+        assert_eq!(st.current_delay_secs(), 20);
+        for _ in 0..8 {
+            st.record_attempt();
+        }
+        assert_eq!(st.current_delay_secs(), 300, "delay must saturate at 300s");
+    }
+
+    #[test]
+    fn restart_state_exhausts_after_max_restarts() {
+        let mut st = RestartState::new(3, 1);
+        assert!(st.should_retry_now(), "first attempt is immediate");
+        for _ in 0..3 {
+            st.record_attempt();
+        }
+        assert!(st.is_exhausted());
+        assert!(
+            !st.should_retry_now(),
+            "an exhausted server must not be retried automatically"
+        );
+    }
+
+    /// The counter is only cleared explicitly (after STABILITY_WINDOW), never
+    /// by a bare handshake — otherwise a server that connects and dies two
+    /// seconds later restarts forever without ever reaching max_restarts.
+    #[test]
+    fn reset_clears_counter_so_flapping_needs_a_stability_window() {
+        let mut st = RestartState::new(3, 1);
+        st.record_attempt();
+        st.record_attempt();
+        assert_eq!(st.count, 2);
+        st.reset();
+        assert_eq!(st.count, 0);
+        assert!(!st.is_exhausted());
+        assert!(st.should_retry_now());
     }
 
     #[test]
