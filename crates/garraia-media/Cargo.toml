@@ -14,8 +14,29 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 reqwest = { workspace = true }
 
-# PDF processing
-lopdf = "0.42"
+# PDF processing — the `time` feature is disabled ON PURPOSE.
+#
+# From 0.43.0 on, lopdf's `src/datetime.rs` has a `time_impl` module calling
+# `BorrowedFormatItem::StringLiteral` with a strftime pattern. That variant
+# only exists in `time` >= 0.3.49 (we lock 0.3.47), so the build dies with
+# `error[E0599]`; and even where it compiles the impl is wrong — it emits the
+# literal text `D:%Y%m%d%H%M%SZ` instead of a date. Upstream bug
+# J-F-Liu/lopdf#518, fixed on master in 1efa2702 (2026-07-16) but NOT in any
+# published release: 0.44.0 (2026-07-10) still ships the broken module.
+#
+# The module is entirely `#[cfg(feature = "time")]`-gated and garraia-media
+# does zero date/time interop with lopdf — `CreationDate`/`ModDate` are read
+# as raw bytes in src/pdf.rs — so turning `time` off is behaviour-preserving.
+# `chrono`, `jiff` and `rayon` are kept: same set as the 0.42 defaults minus
+# the broken one, and `rayon` is lopdf's parallel object-stream parse path.
+#
+# 0.44 also moved `ttf-parser` behind the new non-default `font_embedding`
+# feature. We use neither `FontData` nor `add_font`, so ttf-parser 0.25.1
+# leaves the lockfile and RUSTSEC-2026-0192 is closed structurally (its
+# deny.toml ignore was removed with this change).
+#
+# Drop `default-features = false` once a lopdf release > 0.44.0 ships the fix.
+lopdf = { version = "0.44", default-features = false, features = ["chrono", "jiff", "rayon"] }
 
 # Image processing — AVIF feature-gated OFF intentionally (plan 0053 PR-5,
 # GAR-451) to drop the rav1e → ravif → bitstream-io → core2 (yanked)

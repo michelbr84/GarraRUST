@@ -37,6 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tests/install_sh/parse_args.sh` (18 casos) ligada ao CI.
 - Nova página `docs/integrations/ollama-launch.md` cobrindo o modelo padrão,
   a resolução do `--model` e o que falta para `ollama launch garraia`.
+- Teste `test_lopdf_roundtrip_smoke` no `garraia-media` — os 4 testes reais de PDF
+  estão `#[ignore]`d desde abril, então até agora o `cargo test` só provava que o
+  crate compila contra o lopdf. O novo teste escreve um PDF de uma página com o
+  writer do lopdf e o lê de volta por `extract_text_from_bytes`, exercendo
+  writer → reader → xref → content stream → extração. Verde na 0.42 e na 0.44.
 
 ### Changed
 - **Modelo Ollama padrão passa a ser `qwen3.8:latest`** (resolve para
@@ -52,6 +57,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A tabela de modelos padrão vive num único lugar
   (`chat::hardcoded_default_model`); as 11 cópias inline dos literais foram
   removidas.
+- **lopdf 0.42 → 0.44 com a feature `time` desligada** — a partir da 0.43 o
+  `time_impl` do lopdf chama `BorrowedFormatItem::StringLiteral` com um padrão
+  estilo strftime; a variante só existe no `time` >= 0.3.49 (fixamos 0.3.47), então
+  o build morria com `error[E0599]` em 7 jobs de CI. Upstream J-F-Liu/lopdf#518,
+  corrigido no master em `1efa2702` mas ainda sem release. O módulo é inteiramente
+  `#[cfg(feature = "time")]` e o `garraia-media` não faz nenhuma interop de data/hora
+  com o lopdf — `CreationDate`/`ModDate` saem como bytes crus — então
+  `default-features = false` + `features = ["chrono", "jiff", "rayon"]` destrava o
+  bump sem mudança de comportamento e sem alterar código de produção.
 
 ### Fixed
 - **`--model` sem `--provider` não trocava o provider.** `run_chat` só
@@ -60,6 +74,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   para `garraia chat` e `garraia ask`.
 - `/model <nome>` no REPL agora normaliza a tag quando o provider é Ollama e
   avisa quando o nome não aparece em `/models`.
+
+### Security
+- **RUSTSEC-2026-0192 fechado estruturalmente** — na 0.44 o `ttf-parser` passou a ser
+  opcional atrás da feature `font_embedding`, que não usamos (nem `FontData` nem
+  `add_font`). O `ttf-parser 0.25.1` (não mantido, sem upgrade seguro) saiu do
+  `Cargo.lock` e o ignore correspondente foi removido do `deny.toml`.
 
 ## [0.3.4] - 2026-08-29
 

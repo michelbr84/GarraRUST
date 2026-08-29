@@ -1,4 +1,4 @@
-# Plan 0356 — Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`
+# Plan 0357 — Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`
 
 **Origem:** pedido direto do operador (2026-08-29), sem issue no tracker.
 **Branch:** `claude/garraia-ollama-defaults-11te9j`

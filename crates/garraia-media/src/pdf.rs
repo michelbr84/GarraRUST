@@ -260,6 +260,92 @@ startxref
         pdf_path
     }
 
+    /// Build a minimal, structurally valid single-page PDF using lopdf's own
+    /// writer.
+    ///
+    /// Deliberately NOT reusing `create_test_pdf`: those are hand-written bytes
+    /// whose `xref` offsets are stale, which is exactly why the four tests
+    /// below are `#[ignore]`d. Generating the fixture through the writer keeps
+    /// it correct for whatever lopdf version is pinned, so it can guard the
+    /// parse path across dependency bumps.
+    fn build_minimal_pdf() -> Vec<u8> {
+        use lopdf::content::{Content, Operation};
+        use lopdf::{Object, Stream, dictionary};
+
+        let mut doc = lopdf::Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 12.into()]),
+                Operation::new("Td", vec![100.into(), 700.into()]),
+                Operation::new("Tj", vec![Object::string_literal("Garra smoke")]),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            content.encode().expect("content stream must encode"),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf)
+            .expect("lopdf must serialize the document");
+        buf
+    }
+
+    /// Runtime guard for lopdf dependency bumps.
+    ///
+    /// The four PDF tests below are `#[ignore]`d, so `cargo test` otherwise
+    /// proves only that garraia-media *compiles* against lopdf. This one
+    /// round-trips a document through `Document::save_to` -> `load_mem` ->
+    /// `extract_text`, which is the surface a parser bump can silently break.
+    /// Added with the 0.42 -> 0.44 bump (plan 0356).
+    #[test]
+    fn test_lopdf_roundtrip_smoke() {
+        let bytes = build_minimal_pdf();
+        assert!(bytes.starts_with(b"%PDF-"), "writer produced non-PDF bytes");
+
+        let parsed = PdfProcessor::new()
+            .extract_text_from_bytes(&bytes)
+            .expect("lopdf must be able to parse a document it just wrote");
+
+        assert_eq!(parsed.page_count, 1);
+        assert!(
+            parsed.text.contains("Garra smoke"),
+            "extracted text was {:?}",
+            parsed.text
+        );
+    }
+
     #[test]
     fn test_pdf_processor_new() {
         let processor = PdfProcessor::new();
