@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-29
+
+### Fixed
+- **Binário Linux x86_64 roda em Ubuntu 22.04+ de novo** — o job
+  `build-linux-x86_64` usava `runs-on: ubuntu-latest`, que passou a mapear
+  para Ubuntu 24.04 (glibc 2.39); os binários da v0.3.2 **e da v0.3.3**
+  abortavam com ``version `GLIBC_2.39' not found`` em qualquer sistema com
+  glibc mais antiga (ex.: containers Ubuntu 22.04, Debian 12). O runner
+  agora é pinado em `ubuntu-22.04`, estabelecendo a baseline suportada:
+  **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+).
+- **`install.sh` checa a glibc antes de baixar** — novo preflight
+  `check_glibc` (`MIN_GLIBC=2.35`) falha cedo com mensagem acionável
+  (atualizar a distro ou `cargo install --git`) em vez do erro críptico do
+  loader depois da instalação. Detecta musl (Alpine) e aponta para build
+  from source. Coberto por `tests/install_sh/check_glibc.sh`, registrado no
+  job `installer-shellcheck` do `ci.yml` (sem isso a suíte nunca rodaria: o
+  job lista cada arquivo de teste explicitamente).
+
+### Changed
+- **OpenSSL agora é vendored/estático** (`native-tls/vendored` via
+  garraia-channels, feature discord) — o binário de release não linka mais
+  `libssl.so.x` do sistema, e o `pre-build` do `Cross.toml` deixou de
+  instalar `libssl-dev:$CROSS_DEB_ARCH` (receita canônica do FAQ do cross).
+  Em contrapartida o `openssl-src` compila o OpenSSL do zero, o que exige
+  `perl` + `make` no ambiente de build: adicionados ao `Cross.toml` e ao
+  `Dockerfile` (que roda em `rust:1.98-slim`, sem nenhum dos dois). O
+  `security-gate-bola.yml` — único job que restaura `target/` do cache —
+  ganhou o mesmo passo de liberação de disco que o job `coverage` do
+  `ci.yml` já usava: com o OpenSSL dentro de `target/`, o cache restaurado
+  estourava os ~14 GB do runner e o matava sem logs. O
+  `native-tls` só usa OpenSSL em Linux — Windows (schannel) e macOS
+  (Security.framework) não são afetados. Nota: migrar o serenity para
+  `rustls_backend` está bloqueado — o 0.12.5 mapeia a feature para
+  `reqwest/rustls-tls`, removida no reqwest 0.13, que o tauri ^0.13 prende
+  no lock; reavaliar quando o serenity suportar reqwest 0.13.
+
 ## [0.3.3] - 2026-08-27
 
 ### Added

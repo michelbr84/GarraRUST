@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/michelbr84/GarraRUST"
@@ -99,7 +99,27 @@ wasmtime = "48"
 wasmtime-wasi = { version = "48", features = ["p1"] }
 
 # Discord
+# Segue em native_tls_backend, com OpenSSL VENDORED (estático) via o dep
+# `native-tls`/`vendored` do garraia-channels (feature discord): o serenity é
+# o último consumidor de native-tls no grafo do binário (todo o resto é
+# rustls), mas trocar para `rustls_backend` é impossível hoje — o serenity
+# 0.12.5 mapeia essa feature para `reqwest/rustls-tls`, que foi REMOVIDA no
+# reqwest 0.13 (virou `rustls`), e o tauri ^0.13 (garraia-desktop) prende o
+# edge do serenity no reqwest 0.13.4 do lock. Com vendored, o binário de
+# release não linka `libssl.so.x` do sistema (portabilidade: v0.3.4, junto
+# com o pin ubuntu-22.04 no release.yml que corrige o `GLIBC_2.39 not found`
+# das v0.3.2/v0.3.3). Reavaliar rustls_backend quando o serenity suportar
+# reqwest 0.13.
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }
+# Ativa `openssl-src` (build estático do OpenSSL) para TODO native-tls do
+# grafo por unificação de features — é a receita canônica do FAQ do cross
+# para cross-compile sem libssl-dev do target. Consumido só pelo
+# garraia-channels (feature discord), único caminho que ainda usa native-tls.
+# Só afeta Linux: o native-tls usa schannel no Windows e Security.framework
+# no macOS, onde nem entra no grafo do openssl-sys. Em compensação, todo
+# ambiente que builda para Linux precisa de `perl` + `make` para o
+# openssl-src rodar o ./Configure — ver Cross.toml e Dockerfile.
+native-tls = { version = "0.2", features = ["vendored"] }
 # poise 0.6.x: default feature includes `serenity/rustls_backend` which would re-union the rustls
 # chain into serenity's feature set even though we use `native_tls_backend` above. Disable defaults
 # and keep only what we actually need (no poise:: code is referenced in garraia-channels today,

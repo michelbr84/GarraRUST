@@ -12,8 +12,13 @@
 # v0.3.0 tag failed exactly this way with 1.92 vs rust-version 1.94).
 FROM rust:1.98-slim AS chef
 
+# `perl` + `make` NÃO são cosméticos: desde a v0.3.4 o OpenSSL é vendored
+# (`native-tls/vendored`, ver Cargo.toml raiz) e o openssl-src compila o
+# OpenSSL do zero rodando `./Configure` (perl) + `make`. A imagem oficial
+# `rust:*-slim` instala só ca-certificates/gcc/libc6-dev/wget — nenhum dos
+# dois. Em troca `libssl-dev` saiu: nada mais linka a libssl do sistema.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        pkg-config libssl-dev \
+        pkg-config perl make \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install cargo-chef --locked
