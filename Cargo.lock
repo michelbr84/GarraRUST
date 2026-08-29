@@ -3329,6 +3329,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "garraia-common",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

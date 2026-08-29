@@ -14,10 +14,7 @@ use super::secrets::redact_config_secrets;
 // `resolve_admin_encryption_key`, which derives once *and* runs the
 // forward-only re-key — deriving separately in two places is a correctness bug
 // when `kdf.json` is absent, because each derivation mints a fresh random salt.
-pub use super::shared::{
-    AdminKeys, AdminState, derive_admin_keys, migrate_admin_secrets_kdf,
-    resolve_admin_encryption_key,
-};
+pub use super::shared::{AdminState, resolve_admin_encryption_key};
 
 // Slice 9.b (GAR-470): provider console handlers extracted to `admin::providers`.
 // Re-exported so `routes.rs` paths (`handlers::admin_list_providers`, etc.) keep resolving.

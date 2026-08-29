@@ -24,13 +24,12 @@
 //!
 //! The salt is now random per installation and the iteration count matches the
 //! rest of the repo (600 000, as in `admin/store.rs`, `garraia-security`'s
-//! `credentials.rs` and `mobile_auth.rs`). Parameters are persisted next to the
-//! key material in `<config_dir>/admin/kdf.json` so they survive restarts, and
-//! existing installations are migrated forward-only by
-//! [`migrate_admin_secrets_kdf`]: it re-encrypts every stored secret under the
-//! new key inside one SQLite transaction and only then writes `kdf.json`. If
-//! anything fails, nothing is written and the deployment keeps working on the
-//! legacy parameters.
+//! `credentials.rs` and `mobile_auth.rs`). The parameters are persisted in the
+//! admin store's own `kdf_params` table — same medium as the ciphertexts they
+//! describe — and existing installations are migrated forward-only by
+//! `migrate_admin_secrets_kdf`, which re-encrypts every stored secret and
+//! records the parameters in **one** transaction. If anything fails, nothing is
+//! written and the deployment keeps working on the legacy parameters.
 
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -42,7 +41,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use super::store::AdminStore;
+use super::store::{AdminStore, StoredKdfParams};
 use crate::state::SharedState;
 
 /// AES-256-GCM key length. Also the PBKDF2 output length.
@@ -50,12 +49,12 @@ const MASTER_KEY_LEN: usize = 32;
 /// PBKDF2 salt length for newly initialised installations.
 const KDF_SALT_LEN: usize = 32;
 /// Matches `admin/store.rs`, `garraia-security/src/credentials.rs` and
-/// `garraia-gateway/src/mobile_auth.rs`.
-const KDF_ITERATIONS: u32 = 600_000;
-/// Sidecar recording the parameters an installation's master key was derived
-/// with. Lives beside `master.key` in `<config_dir>/admin/`.
-const KDF_PARAMS_FILE: &str = "kdf.json";
-/// Schema version of [`KdfParams`]. Bump when the derivation changes shape.
+/// `garraia-gateway/src/mobile_auth.rs`. `NonZeroU32` in a `const` context, so
+/// a zero would be a compile error rather than a runtime panic — the repo
+/// forbids `unwrap()`/`expect()` in production code.
+const KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(600_000).unwrap();
+/// Schema version of the stored KDF parameters. Bump when the derivation
+/// changes shape.
 const KDF_PARAMS_VERSION: u32 = 1;
 
 /// Parameters used before 2026-08-29. Referenced **only** by the forward-only
@@ -67,7 +66,7 @@ const KDF_PARAMS_VERSION: u32 = 1;
 /// it exists purely so upgrades do not lose data; see
 /// `docs/security/codeql-suppressions.md`.
 const LEGACY_KDF_SALT: &[u8] = b"garraia-admin-secrets-v1";
-const LEGACY_KDF_ITERATIONS: u32 = 100_000;
+const LEGACY_KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(100_000).unwrap();
 
 /// Shared state for admin API handlers.
 #[derive(Clone)]
@@ -84,7 +83,7 @@ struct KdfParams {
     version: u32,
     /// Base64 (standard alphabet) of the raw salt bytes.
     salt: String,
-    iterations: u32,
+    iterations: NonZeroU32,
 }
 
 impl KdfParams {
@@ -114,9 +113,9 @@ pub struct AdminKeys {
     /// pending. `None` once the installation is already on per-installation
     /// parameters, or when no passphrase-derived key is in play at all.
     legacy: Option<Vec<u8>>,
-    /// Parameters to persist **after** a successful re-key. `None` when there
-    /// is nothing to commit.
-    pending: Option<(PathBuf, KdfParams)>,
+    /// Parameters to record **in the same transaction as** a successful re-key.
+    /// `None` when there is nothing to commit.
+    pending: Option<KdfParams>,
 }
 
 impl AdminKeys {
@@ -126,9 +125,9 @@ impl AdminKeys {
     }
 }
 
-fn pbkdf2_key(salt: &[u8], iterations: u32, passphrase: &str) -> Result<Vec<u8>, String> {
-    let iterations = NonZeroU32::new(iterations)
-        .ok_or_else(|| "PBKDF2 iteration count must be non-zero".to_string())?;
+/// Infallible by construction: the iteration count is already proven non-zero
+/// by its type, so there is no error arm and no `expect()` in the callers.
+fn pbkdf2_key(salt: &[u8], iterations: NonZeroU32, passphrase: &str) -> Vec<u8> {
     let mut key = vec![0u8; MASTER_KEY_LEN];
     ring::pbkdf2::derive(
         ring::pbkdf2::PBKDF2_HMAC_SHA256,
@@ -137,7 +136,15 @@ fn pbkdf2_key(salt: &[u8], iterations: u32, passphrase: &str) -> Result<Vec<u8>,
         passphrase.as_bytes(),
         &mut key,
     );
-    Ok(key)
+    key
+}
+
+/// The one derivation that can fail: iteration counts read back from the store
+/// are plain integers and a corrupted row could carry a zero.
+fn pbkdf2_key_checked(salt: &[u8], iterations: u32, passphrase: &str) -> Result<Vec<u8>, String> {
+    let iterations = NonZeroU32::new(iterations)
+        .ok_or_else(|| "stored PBKDF2 iteration count is zero".to_string())?;
+    Ok(pbkdf2_key(salt, iterations, passphrase))
 }
 
 fn admin_dir() -> PathBuf {
@@ -152,119 +159,99 @@ fn admin_passphrase() -> Option<String> {
         .or_else(|| std::env::var("GARRAIA_VAULT_PASSPHRASE").ok())
 }
 
-fn load_kdf_params(dir: &Path) -> Option<KdfParams> {
-    let raw = std::fs::read_to_string(dir.join(KDF_PARAMS_FILE)).ok()?;
-    match serde_json::from_str::<KdfParams>(&raw) {
-        Ok(params) if params.iterations > 0 && !params.salt.is_empty() => Some(params),
-        Ok(_) => {
-            warn!("admin kdf.json is present but has empty/zero parameters; ignoring");
-            None
-        }
-        Err(e) => {
-            warn!("admin kdf.json is unreadable ({e}); ignoring");
-            None
-        }
-    }
-}
-
-fn store_kdf_params(dir: &Path, params: &KdfParams) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
-    let json = serde_json::to_string_pretty(params)
-        .map_err(|e| format!("failed to serialize kdf params: {e}"))?;
-    // Write-then-rename so a crash mid-write cannot leave a truncated file that
-    // would make every stored secret undecryptable.
-    let tmp = dir.join(format!("{KDF_PARAMS_FILE}.tmp"));
-    std::fs::write(&tmp, json).map_err(|e| format!("failed to write kdf params: {e}"))?;
-    std::fs::rename(&tmp, dir.join(KDF_PARAMS_FILE))
-        .map_err(|e| format!("failed to commit kdf params: {e}"))
-}
-
 /// Resolve the admin master key, reporting whether a re-key is still pending.
 ///
-/// Three paths, in order:
+/// `stored` is the installation's recorded KDF parameters, read from the admin
+/// store by [`resolve_admin_encryption_key`]. Three paths:
 ///
-/// 1. A passphrase is configured and `kdf.json` exists → derive with the
-///    recorded per-installation parameters. Steady state, nothing pending.
-/// 2. A passphrase is configured and `kdf.json` does **not** exist → this is
-///    either a fresh install or one still on the legacy constant salt. Generate
+/// 1. A passphrase is configured and parameters exist -> derive with them.
+///    Steady state, nothing pending.
+/// 2. A passphrase is configured and no parameters exist -> either a fresh
+///    install or one still on the legacy constant salt. Generate
 ///    per-installation parameters, derive both the new and the legacy key, and
-///    report the migration as pending. `kdf.json` is written only after
-///    [`migrate_admin_secrets_kdf`] succeeds.
-/// 3. No passphrase → the pre-existing random `master.key` file path, which was
-///    never affected by the constant-salt problem. Unchanged.
-pub fn derive_admin_keys() -> AdminKeys {
+///    report the migration as pending. The parameters are recorded only when
+///    [`migrate_admin_secrets_kdf`] commits, in the same transaction as the
+///    re-encrypted ciphertexts.
+/// 3. No passphrase -> the pre-existing random `master.key` file, which was
+///    never affected by the constant-salt problem.
+fn derive_admin_keys(stored: Option<StoredKdfParams>) -> AdminKeys {
     let rng = SystemRandom::new();
-    let dir = admin_dir();
+    match admin_passphrase() {
+        Some(passphrase) => derive_with_passphrase(stored, &passphrase, &rng),
+        None => master_key_file_keys(&rng),
+    }
+}
 
-    if let Some(passphrase) = admin_passphrase() {
-        if let Some(params) = load_kdf_params(&dir) {
-            match params
-                .salt_bytes()
-                .and_then(|salt| pbkdf2_key(&salt, params.iterations, &passphrase))
-            {
-                Ok(current) => {
-                    return AdminKeys {
-                        current,
-                        legacy: None,
-                        pending: None,
-                    };
-                }
-                Err(e) => {
-                    // Fail loudly rather than silently deriving a different key
-                    // and making every stored secret look corrupt.
-                    warn!("admin kdf.json is unusable ({e}); falling back to legacy parameters");
-                    let current = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, &passphrase)
-                        .expect("legacy iteration count is a non-zero constant");
-                    return AdminKeys {
-                        current,
-                        legacy: None,
-                        pending: None,
-                    };
-                }
+/// The passphrase-derived half of [`derive_admin_keys`], with the passphrase
+/// passed in rather than read from the environment so it can be driven
+/// deterministically from tests.
+fn derive_with_passphrase(
+    stored: Option<StoredKdfParams>,
+    passphrase: &str,
+    rng: &SystemRandom,
+) -> AdminKeys {
+    if let Some((_, salt_b64, iterations)) = stored {
+        match BASE64
+            .decode(&salt_b64)
+            .map_err(|e| format!("stored KDF salt is malformed: {e}"))
+            .and_then(|salt| pbkdf2_key_checked(&salt, iterations, passphrase))
+        {
+            Ok(current) => {
+                return AdminKeys {
+                    current,
+                    legacy: None,
+                    pending: None,
+                };
+            }
+            Err(e) => {
+                // Loud, and stay on the legacy key rather than silently
+                // deriving a third one that opens nothing.
+                warn!("stored admin KDF parameters are unusable ({e}); using legacy parameters");
+                return AdminKeys {
+                    current: pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, passphrase),
+                    legacy: None,
+                    pending: None,
+                };
             }
         }
-
-        match KdfParams::generate(&rng) {
-            Ok(params) => {
-                let derived = params
-                    .salt_bytes()
-                    .and_then(|salt| pbkdf2_key(&salt, params.iterations, &passphrase));
-                match derived {
-                    Ok(current) => {
-                        let legacy =
-                            pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, &passphrase)
-                                .expect("legacy iteration count is a non-zero constant");
-                        return AdminKeys {
-                            current,
-                            legacy: Some(legacy),
-                            pending: Some((dir, params)),
-                        };
-                    }
-                    Err(e) => warn!("failed to derive per-installation admin key ({e})"),
-                }
-            }
-            Err(e) => warn!("failed to generate per-installation KDF salt ({e})"),
-        }
-
-        // Entropy or filesystem trouble. Keep the deployment working on the
-        // legacy parameters rather than refusing to boot; the next start
-        // retries the migration.
-        warn!(
-            "admin master key still derived with the legacy shared salt — \
-             re-key will be retried on the next start"
-        );
-        let current = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, &passphrase)
-            .expect("legacy iteration count is a non-zero constant");
-        return AdminKeys {
-            current,
-            legacy: None,
-            pending: None,
-        };
     }
 
-    // No passphrase: random 32-byte key persisted at <config_dir>/admin/master.key.
-    // This path never used a salt, so it needs no migration.
-    let key_path = dir.join("master.key");
+    match KdfParams::generate(rng) {
+        Ok(params) => match params.salt_bytes() {
+            Ok(salt) => {
+                return AdminKeys {
+                    current: pbkdf2_key(&salt, params.iterations, passphrase),
+                    legacy: Some(pbkdf2_key(
+                        LEGACY_KDF_SALT,
+                        LEGACY_KDF_ITERATIONS,
+                        passphrase,
+                    )),
+                    pending: Some(params),
+                };
+            }
+            Err(e) => warn!("failed to decode freshly generated KDF salt ({e})"),
+        },
+        Err(e) => warn!("failed to generate per-installation KDF salt ({e})"),
+    }
+
+    // Entropy trouble. Keep the deployment working on the legacy parameters
+    // rather than refusing to boot; the next start retries the migration.
+    warn!(
+        "admin master key still derived with the legacy shared salt — \
+         re-key will be retried on the next start"
+    );
+    AdminKeys {
+        current: pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, passphrase),
+        legacy: None,
+        pending: None,
+    }
+}
+
+/// No passphrase configured: a random 32-byte key persisted at
+/// `<config_dir>/admin/master.key`. This path never used a salt, so it needs no
+/// migration.
+fn master_key_file_keys(rng: &SystemRandom) -> AdminKeys {
+    let key_path = admin_dir().join("master.key");
 
     if let Ok(data) = std::fs::read(&key_path)
         && data.len() == MASTER_KEY_LEN
@@ -282,7 +269,12 @@ pub fn derive_admin_keys() -> AdminKeys {
     if let Some(parent) = key_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&key_path, &key);
+    if std::fs::write(&key_path, &key).is_ok() {
+        // This file *is* the AES-256-GCM master key. Under the usual 0o022
+        // umask `fs::write` would leave it 0o644 — readable by every local
+        // user. Narrow it immediately.
+        restrict_to_owner(&key_path);
+    }
 
     AdminKeys {
         current: key,
@@ -291,23 +283,38 @@ pub fn derive_admin_keys() -> AdminKeys {
     }
 }
 
+/// Best-effort `chmod 0600`. Non-Unix targets have no equivalent and are left
+/// to the platform's own ACL defaults.
+fn restrict_to_owner(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            warn!("could not restrict {} to owner-only: {e}", path.display());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Resolve the master encryption key for the admin secrets store, running the
 /// forward-only re-key first when one is pending.
 ///
 /// **This is the only entry point callers should use.** Deriving separately in
-/// two places would be a correctness bug, not just waste: when `kdf.json` is
-/// absent, [`derive_admin_keys`] generates a *fresh random salt* on every call,
-/// so a second, independent derivation yields a different key. If the re-key
-/// then fails, the process would be holding a key that opens nothing.
+/// two places would be a correctness bug, not just waste: with no parameters
+/// recorded yet, [`derive_admin_keys`] generates a *fresh random salt* on every
+/// call, so a second, independent derivation yields a different key.
 ///
 /// On a failed migration this returns the **legacy** key — the one the stored
 /// ciphertexts are actually under — so the deployment keeps working and the
 /// next boot retries.
 pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Vec<u8> {
-    let keys = derive_admin_keys();
-    if !keys.migration_pending() {
+    let keys = derive_admin_keys(store.kdf_params());
+    let (Some(legacy), Some(_)) = (keys.legacy.as_ref(), keys.pending.as_ref()) else {
         return keys.current;
-    }
+    };
+    let legacy = legacy.clone();
+
     match migrate_admin_secrets_kdf(store, &keys) {
         Ok(_) => keys.current,
         Err(e) => {
@@ -315,8 +322,7 @@ pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Vec<u8> {
                 "admin master-key re-key deferred ({e}); staying on the legacy \
                  shared salt, will retry on next start"
             );
-            keys.legacy
-                .expect("migration_pending() implies a legacy key is present")
+            legacy
         }
     }
 }
@@ -337,11 +343,8 @@ pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Vec<u8> {
 /// Returns the number of rows re-encrypted, or `Ok(0)` when there is nothing to
 /// do. Errors are reported to the caller, which logs and carries on with the
 /// legacy key rather than refusing to boot.
-pub fn migrate_admin_secrets_kdf(
-    store: &mut AdminStore,
-    keys: &AdminKeys,
-) -> Result<usize, String> {
-    let (Some(legacy), Some((dir, params))) = (keys.legacy.as_ref(), keys.pending.as_ref()) else {
+fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result<usize, String> {
+    let (Some(legacy), Some(params)) = (keys.legacy.as_ref(), keys.pending.as_ref()) else {
         return Ok(0);
     };
 
@@ -367,8 +370,15 @@ pub fn migrate_admin_secrets_kdf(
         new_versions.push((*id, re_encrypted, new_nonce));
     }
 
-    let rekeyed = store.apply_secret_rekey(&new_secrets, &new_versions)?;
-    store_kdf_params(dir, params)?;
+    // Ciphertexts and the parameters that describe them land together or not at
+    // all. An earlier revision committed the SQL and then wrote a `kdf.json`;
+    // a crash or a failed write in between left the data under a key nothing
+    // recorded, and the next boot would mint a third salt and open nothing.
+    let rekeyed = store.apply_secret_rekey(
+        &new_secrets,
+        &new_versions,
+        &(params.version, params.salt.clone(), params.iterations.get()),
+    )?;
 
     if rekeyed > 0 {
         info!(
@@ -385,20 +395,11 @@ pub fn migrate_admin_secrets_kdf(
 mod tests {
     use super::*;
 
-    #[test]
-    fn kdf_params_roundtrip_through_disk() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let rng = SystemRandom::new();
-        let params = KdfParams::generate(&rng).expect("generate");
+    const PASS: &str = "correct horse battery staple";
 
-        assert!(load_kdf_params(dir.path()).is_none());
-        store_kdf_params(dir.path(), &params).expect("store");
-
-        let loaded = load_kdf_params(dir.path()).expect("load");
-        assert_eq!(loaded.version, KDF_PARAMS_VERSION);
-        assert_eq!(loaded.iterations, KDF_ITERATIONS);
-        assert_eq!(loaded.salt, params.salt);
-        assert_eq!(loaded.salt_bytes().expect("decode").len(), KDF_SALT_LEN);
+    fn params_of(keys: &AdminKeys) -> StoredKdfParams {
+        let p = keys.pending.as_ref().expect("pending params");
+        (p.version, p.salt.clone(), p.iterations.get())
     }
 
     #[test]
@@ -406,70 +407,75 @@ mod tests {
         let rng = SystemRandom::new();
         let a = KdfParams::generate(&rng).expect("a");
         let b = KdfParams::generate(&rng).expect("b");
-        assert_ne!(
-            a.salt, b.salt,
-            "two installations must not share a PBKDF2 salt"
-        );
+        assert_ne!(a.salt, b.salt, "two installations must not share a salt");
+        assert_eq!(a.salt_bytes().expect("decode").len(), KDF_SALT_LEN);
 
         // The regression this whole change exists for: same passphrase, two
         // installations, two different master keys.
-        let key_a = pbkdf2_key(&a.salt_bytes().unwrap(), 1, "same-passphrase").unwrap();
-        let key_b = pbkdf2_key(&b.salt_bytes().unwrap(), 1, "same-passphrase").unwrap();
+        let key_a = pbkdf2_key(&a.salt_bytes().unwrap(), a.iterations, PASS);
+        let key_b = pbkdf2_key(&b.salt_bytes().unwrap(), b.iterations, PASS);
         assert_ne!(key_a, key_b);
     }
 
     #[test]
     fn new_parameters_differ_from_legacy() {
-        // Compile-time so a future edit that weakens the parameters fails the
-        // build rather than the test run.
-        const _: () = assert!(KDF_ITERATIONS >= 600_000);
-        const _: () = assert!(KDF_ITERATIONS != LEGACY_KDF_ITERATIONS);
+        // Compile-time, so weakening them fails the build rather than a test.
+        const _: () = assert!(KDF_ITERATIONS.get() >= 600_000);
+        const _: () = assert!(KDF_ITERATIONS.get() != LEGACY_KDF_ITERATIONS.get());
         const _: () = assert!(KDF_SALT_LEN == 32);
-        // Keep a runtime assertion too, so the test has an observable body.
         assert_ne!(KDF_ITERATIONS, LEGACY_KDF_ITERATIONS);
     }
 
     #[test]
-    fn malformed_kdf_json_is_ignored_not_trusted() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join(KDF_PARAMS_FILE), "{not json").expect("write");
-        assert!(load_kdf_params(dir.path()).is_none());
+    fn stored_params_reproduce_the_same_key_every_boot() {
+        // The bug the single-resolution-point design exists to prevent: with no
+        // params recorded, each derivation mints a fresh salt. Once they ARE
+        // recorded, every later boot must land on the exact same key.
+        let rng = SystemRandom::new();
+        let first = derive_with_passphrase(None, PASS, &rng);
+        assert!(first.migration_pending());
+        let recorded = params_of(&first);
 
-        std::fs::write(
-            dir.path().join(KDF_PARAMS_FILE),
-            r#"{"version":1,"salt":"","iterations":0}"#,
-        )
-        .expect("write");
-        assert!(load_kdf_params(dir.path()).is_none());
+        let second = derive_with_passphrase(Some(recorded.clone()), PASS, &rng);
+        let third = derive_with_passphrase(Some(recorded), PASS, &rng);
+        assert_eq!(first.current, second.current);
+        assert_eq!(second.current, third.current);
+        assert!(!second.migration_pending(), "nothing left to migrate");
+    }
+
+    #[test]
+    fn unusable_stored_params_fall_back_to_legacy_not_to_a_third_key() {
+        let rng = SystemRandom::new();
+        let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
+
+        for bad in [
+            (1u32, "!!!not base64!!!".to_string(), 600_000u32),
+            (1, BASE64.encode([7u8; 32]), 0), // zero iterations
+        ] {
+            let keys = derive_with_passphrase(Some(bad), PASS, &rng);
+            assert_eq!(
+                keys.current, legacy,
+                "must stay on the key the ciphertexts are under"
+            );
+            assert!(!keys.migration_pending());
+        }
     }
 
     // ── Forward-only re-key migration ────────────────────────────────────
 
-    /// Build an `AdminKeys` describing a pending migration, exactly as
-    /// `derive_admin_keys` does on an installation that has never written
-    /// `kdf.json`.
-    fn pending_keys(dir: &Path, passphrase: &str) -> AdminKeys {
-        let rng = SystemRandom::new();
-        let params = KdfParams::generate(&rng).expect("params");
-        let current =
-            pbkdf2_key(&params.salt_bytes().unwrap(), params.iterations, passphrase).unwrap();
-        let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, passphrase).unwrap();
-        AdminKeys {
-            current,
-            legacy: Some(legacy),
-            pending: Some((dir.to_path_buf(), params)),
-        }
+    fn pending_keys(passphrase: &str) -> AdminKeys {
+        derive_with_passphrase(None, passphrase, &SystemRandom::new())
     }
 
     #[test]
-    fn migration_reencrypts_secrets_and_commits_params() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn migration_reencrypts_secrets_and_records_params_atomically() {
         let mut store = AdminStore::in_memory().expect("in-memory store");
-        let keys = pending_keys(dir.path(), "correct horse battery staple");
+        let keys = pending_keys(PASS);
         assert!(keys.migration_pending());
+        assert!(store.kdf_params().is_none(), "nothing recorded yet");
 
-        // A secret as it exists on a legacy install: encrypted with the key
-        // derived from the shared constant salt.
+        // A secret as it exists on a legacy install: under the key derived from
+        // the shared constant salt.
         let legacy = keys.legacy.clone().expect("legacy key");
         let (ciphertext, nonce) =
             super::super::secrets::encrypt_value(b"sk-live-do-not-leak", &legacy).expect("encrypt");
@@ -480,8 +486,6 @@ mod tests {
         let rekeyed = migrate_admin_secrets_kdf(&mut store, &keys).expect("migration");
         assert_eq!(rekeyed, 1, "one live secret, no archived versions yet");
 
-        // The stored ciphertext now opens with the per-installation key and no
-        // longer opens with the legacy one.
         let (stored, stored_nonce) = store
             .get_secret_raw("default", "openai", "api_key")
             .expect("secret still present");
@@ -493,40 +497,12 @@ mod tests {
             "the legacy key must no longer open the secret"
         );
 
-        // Params are committed only after the re-key, so the next boot derives
-        // the same key instead of retrying the migration.
-        let committed = load_kdf_params(dir.path()).expect("kdf.json written");
-        assert_eq!(committed.iterations, KDF_ITERATIONS);
-        let rederived = pbkdf2_key(
-            &committed.salt_bytes().unwrap(),
-            committed.iterations,
-            "correct horse battery staple",
-        )
-        .unwrap();
-        assert_eq!(rederived, keys.current);
-    }
-
-    #[test]
-    fn resolve_returns_the_legacy_key_when_the_migration_fails() {
-        // The bug this guards against: `derive_admin_keys` mints a fresh random
-        // salt whenever kdf.json is absent, so resolving twice would produce two
-        // different keys. Resolution therefore happens once, and a failed re-key
-        // must hand back the key the ciphertexts are actually under.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut store = AdminStore::in_memory().expect("in-memory store");
-        let keys = pending_keys(dir.path(), "passphrase");
-        let legacy = keys.legacy.clone().expect("legacy");
-
-        let foreign = vec![9u8; MASTER_KEY_LEN];
-        let (ciphertext, nonce) =
-            super::super::secrets::encrypt_value(b"x", &foreign).expect("encrypt");
-        store
-            .set_secret("default", "acme", "token", &ciphertext, &nonce, None)
-            .expect("seed");
-
-        assert!(migrate_admin_secrets_kdf(&mut store, &keys).is_err());
-        // Same decision `resolve_admin_encryption_key` makes on the error arm.
-        assert_ne!(keys.current, legacy);
+        // Params landed in the SAME transaction, so the next boot rederives the
+        // very key the ciphertexts are now under.
+        let recorded = store.kdf_params().expect("params recorded");
+        let next_boot = derive_with_passphrase(Some(recorded), PASS, &SystemRandom::new());
+        assert_eq!(next_boot.current, keys.current);
+        assert!(!next_boot.migration_pending());
     }
 
     #[test]
@@ -539,17 +515,17 @@ mod tests {
         };
         assert!(!keys.migration_pending());
         assert_eq!(migrate_admin_secrets_kdf(&mut store, &keys).unwrap(), 0);
+        assert!(store.kdf_params().is_none());
     }
 
     #[test]
-    fn migration_leaves_the_store_untouched_when_a_secret_does_not_decrypt() {
+    fn failed_migration_writes_nothing_at_all() {
         // Fail-closed: a ciphertext that does not open with the legacy key means
-        // our assumption about this installation is wrong. Nothing may be
-        // written — not the rows, and not kdf.json, or the next boot would
-        // derive a key that opens nothing.
-        let dir = tempfile::tempdir().expect("tempdir");
+        // our assumption about this installation is wrong. Neither the rows nor
+        // the params may be written — recording params for a key that opens
+        // nothing is exactly the data-loss window this design removes.
         let mut store = AdminStore::in_memory().expect("in-memory store");
-        let keys = pending_keys(dir.path(), "passphrase");
+        let keys = pending_keys("passphrase");
 
         let unrelated = vec![3u8; MASTER_KEY_LEN];
         let (ciphertext, nonce) =
@@ -567,13 +543,27 @@ mod tests {
         assert_eq!(stored, ciphertext, "ciphertext must be byte-identical");
         assert_eq!(stored_nonce, nonce);
         assert!(
-            load_kdf_params(dir.path()).is_none(),
-            "kdf.json must not be committed on a failed migration"
+            store.kdf_params().is_none(),
+            "params must not be recorded when the re-key failed"
         );
     }
 
     #[test]
-    fn pbkdf2_key_rejects_zero_iterations() {
-        assert!(pbkdf2_key(b"salt", 0, "pw").is_err());
+    fn resolve_falls_back_to_the_legacy_key_when_the_migration_fails() {
+        let mut store = AdminStore::in_memory().expect("in-memory store");
+        let keys = pending_keys(PASS);
+        let legacy = keys.legacy.clone().expect("legacy");
+
+        let unrelated = vec![9u8; MASTER_KEY_LEN];
+        let (ciphertext, nonce) =
+            super::super::secrets::encrypt_value(b"x", &unrelated).expect("encrypt");
+        store
+            .set_secret("default", "acme", "token", &ciphertext, &nonce, None)
+            .expect("seed");
+
+        assert!(migrate_admin_secrets_kdf(&mut store, &keys).is_err());
+        // resolve_admin_encryption_key takes the same error arm and must hand
+        // back the key the data is actually under, never `keys.current`.
+        assert_ne!(keys.current, legacy);
     }
 }

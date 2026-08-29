@@ -24,16 +24,48 @@ use crate::tools::Tool;
 /// part that is never a legitimate MCP endpoint — every non-HTTP scheme
 /// (`file:`, `gopher:`), link-local (`169.254.169.254`, cloud instance
 /// metadata), CGNAT, multicast and the unspecified address.
-// Always compiled, so the tests below run in the default feature set even
-// though the only production caller is behind `mcp-http`.
-#[cfg_attr(not(feature = "mcp-http"), allow(dead_code))]
-pub fn validate_mcp_url(url: &str) -> std::result::Result<(), garraia_common::ssrf::SsrfRejection> {
-    let policy = garraia_common::ssrf::UrlPolicy::http_public(
+/// Fetch policy for an MCP server URL.
+///
+/// `AllowPrivate` is deliberate and load-bearing: MCP servers are routinely
+/// self-hosted on `http://127.0.0.1:3000` or on the LAN, so blocking private
+/// ranges would break the ordinary case. What it does remove is what is never a
+/// legitimate MCP endpoint — every non-HTTP scheme (`file:`, `gopher:`),
+/// link-local (`169.254.169.254`, cloud instance metadata), NAT64-embedded
+/// versions of those, CGNAT, multicast and the unspecified address.
+///
+fn mcp_url_policy() -> garraia_common::ssrf::UrlPolicy {
+    garraia_common::ssrf::UrlPolicy::http_public(
         Duration::from_secs(30),
         concat!("GarraIA/", env!("CARGO_PKG_VERSION"), " mcp-client"),
     )
-    .with_ip_scope(garraia_common::ssrf::IpScope::AllowPrivate);
-    garraia_common::ssrf::vet_url(url, &policy).map(|_| ())
+    .with_ip_scope(garraia_common::ssrf::IpScope::AllowPrivate)
+}
+
+/// Vet an MCP server URL.
+///
+/// # Known gap: no DNS pinning here
+///
+/// Every other call site of the shared guard connects through
+/// [`garraia_common::ssrf::pinned_client`], which fixes the vetted addresses
+/// into the client so `.send()` cannot re-resolve the host — closing the
+/// DNS-rebinding window. This one cannot, today: `rmcp` resolves to
+/// **reqwest 0.13** while the workspace is on **0.12**, so the two
+/// `reqwest::Client` types are unrelated and `StreamableHttpClientTransport::
+/// with_client` will not accept ours. The scheme gate and the IP block below
+/// still apply; what remains open is an attacker who controls the resolver for
+/// a registered MCP host and can flip the answer between this check and the
+/// transport\'s own connect.
+///
+/// Registering an MCP server is an operator action behind admin auth, so the
+/// practical exposure is small — but the asymmetry is real and should close
+/// when the workspace moves to reqwest 0.13.
+// Always compiled, so the tests below run in the default feature set even
+// though the only production caller is behind `mcp-http`.
+#[cfg_attr(not(feature = "mcp-http"), allow(dead_code))]
+pub fn validate_mcp_url(
+    url: &str,
+) -> std::result::Result<garraia_common::ssrf::VettedUrl, garraia_common::ssrf::SsrfRejection> {
+    garraia_common::ssrf::vet_url(url, &mcp_url_policy())
 }
 
 /// Cached info about a tool discovered from an MCP server.
@@ -430,10 +462,12 @@ impl McpManager {
     ) -> Result<()> {
         use rmcp::transport::StreamableHttpClientTransport;
 
-        validate_mcp_url(url)
+        // Scheme gate + IP block. NOT pinned — see `validate_mcp_url` for why
+        // the reqwest version split prevents it here.
+        let vetted = validate_mcp_url(url)
             .map_err(|e| Error::Mcp(format!("MCP server '{name}' has an unusable url: {e}")))?;
 
-        let transport = StreamableHttpClientTransport::from_uri(url);
+        let transport = StreamableHttpClientTransport::from_uri(vetted.url.as_str());
 
         let service = tokio::time::timeout(Duration::from_secs(timeout_secs), ().serve(transport))
             .await
@@ -1105,6 +1139,9 @@ mod tests {
             "file:///etc/passwd",
             "gopher://evil.test/_x",
             "not a url",
+            // NAT64-embedded metadata: only blocked once the guard knows the
+            // 64:ff9b::/96 prefix.
+            "http://[64:ff9b::169.254.169.254]/mcp",
         ] {
             assert!(validate_mcp_url(url).is_err(), "{url} should be rejected");
         }

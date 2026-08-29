@@ -475,10 +475,14 @@ fn manifest_url_policy() -> garraia_common::ssrf::UrlPolicy {
 /// the status split the pre-existing tests assert on: malformed input is a
 /// 400, a policy refusal is a 403, our own client failure is an upstream error.
 fn ssrf_to_install_error(rejection: garraia_common::ssrf::SsrfRejection) -> InstallError {
-    match rejection.status_hint() {
-        403 => InstallError::forbidden(rejection.to_string()),
-        502 => InstallError::upstream(rejection.to_string()),
-        _ => InstallError::bad_request(rejection.to_string()),
+    use garraia_common::ssrf::SsrfCategory;
+    // Match on the category, not on the status code: a new `SsrfRejection`
+    // variant then forces this mapping to be revisited instead of silently
+    // landing in a catch-all arm.
+    match rejection.category() {
+        SsrfCategory::Forbidden => InstallError::forbidden(rejection.to_string()),
+        SsrfCategory::Upstream => InstallError::upstream(rejection.to_string()),
+        SsrfCategory::BadRequest => InstallError::bad_request(rejection.to_string()),
     }
 }
 
@@ -506,7 +510,7 @@ async fn read_capped(response: reqwest::Response, cap: usize) -> Result<Vec<u8>,
         .map_err(ssrf_to_install_error)
 }
 
-// ── SSRF helpers (kept defensive duplicates; see crate docstring) ──────────
+// ── SSRF adapters (thin delegates to `garraia_common::ssrf`) ──────────────
 
 // ── Manifest helpers (unchanged from pre-PR-A) ──────────────────────────────
 
