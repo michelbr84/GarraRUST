@@ -777,19 +777,18 @@ impl McpManager {
             };
 
             // Find the tool in the connection's tool list
-            let tool_info = match conn
-                .tools
-                .iter()
-                .find(|t| t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name))
-            {
-                Some(t) => t.clone(),
-                None => {
-                    return Err(format!(
-                        "Tool '{}' not found on server '{}'",
-                        tool_name, server_name
-                    ));
-                }
-            };
+            let tool_info =
+                match conn.tools.iter().find(|t| {
+                    t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name)
+                }) {
+                    Some(t) => t.clone(),
+                    None => {
+                        return Err(format!(
+                            "Tool '{}' not found on server '{}'",
+                            tool_name, server_name
+                        ));
+                    }
+                };
 
             // GAR-190: the allowlist must bind this path too — `take_tools`
             // filters what the LLM sees, but call_tool (admin API / slash

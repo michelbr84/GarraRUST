@@ -1653,7 +1653,9 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent.");
+        println!(
+            "Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent."
+        );
     }
 
     Ok(())
@@ -1688,7 +1690,9 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent.");
+        println!(
+            "Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent."
+        );
     }
 
     Ok(())

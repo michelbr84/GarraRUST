@@ -6,9 +6,9 @@
 //! semantics (DST, UNTIL/COUNT exhaustion, catch-up after downtime) are
 //! unit-testable without a database.
 
+use crate::error::{Result, WorkspaceError};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use crate::error::{Result, WorkspaceError};
 use rrule::{RRuleSet, Tz as RruleTz};
 
 /// Default timezone when a task does not pin one. Matches the project's
@@ -80,7 +80,11 @@ pub fn next_after_run(
     now: DateTime<Utc>,
     scheduled_for: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>> {
-    let anchor = if scheduled_for > now { scheduled_for } else { now };
+    let anchor = if scheduled_for > now {
+        scheduled_for
+    } else {
+        now
+    };
     next_occurrence(rrule, tz, dtstart, anchor)
 }
 
@@ -144,7 +148,9 @@ mod tests {
         // Start in EST (UTC-5): 09:00 local == 14:00 UTC.
         let start = utc(2026, 3, 6, 14, 0);
         assert_eq!(
-            next_occurrence("FREQ=DAILY", tz, start, start).unwrap().unwrap(),
+            next_occurrence("FREQ=DAILY", tz, start, start)
+                .unwrap()
+                .unwrap(),
             utc(2026, 3, 7, 14, 0),
             "still EST the next day"
         );

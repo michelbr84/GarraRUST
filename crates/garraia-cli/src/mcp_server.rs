@@ -102,7 +102,9 @@ impl ServerPolicy {
     pub(crate) fn from_env() -> Self {
         Self::from_values(
             std::env::var("GARRAIA_MCP_MODEL_ALLOWLIST").ok().as_deref(),
-            std::env::var("GARRAIA_MCP_MAX_TIMEOUT_SECS").ok().as_deref(),
+            std::env::var("GARRAIA_MCP_MAX_TIMEOUT_SECS")
+                .ok()
+                .as_deref(),
         )
     }
 

@@ -1453,8 +1453,8 @@ fn parse_timestamp(value: &str) -> chrono::DateTime<chrono::Utc> {
 #[cfg(test)]
 mod tests {
     use super::SessionStore;
-    use rusqlite::params;
     use chrono::Duration;
+    use rusqlite::params;
 
     #[test]
     fn upsert_and_load_recent_messages_round_trip() {
@@ -1582,14 +1582,20 @@ mod tests {
         let (task_id, first) = store
             .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
             .expect("valid cron should be accepted");
-        assert!(first > chrono::Utc::now(), "first run must be in the future");
+        assert!(
+            first > chrono::Utc::now(),
+            "first run must be in the future"
+        );
 
         // Force it due, then poll it like the scheduler would.
         store
             .conn
             .execute(
                 "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
-                params![task_id, (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()],
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
             )
             .unwrap();
         let due = store.poll_due_tasks().unwrap();
@@ -1623,7 +1629,10 @@ mod tests {
             .conn
             .execute(
                 "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
-                params![task_id, (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()],
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
             )
             .unwrap();
 
@@ -1695,7 +1704,10 @@ mod tests {
             .conn
             .execute(
                 "UPDATE scheduled_tasks SET execute_at = ?2, attempts = 2 WHERE id = ?1",
-                params![task_id, (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()],
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
             )
             .unwrap();
 

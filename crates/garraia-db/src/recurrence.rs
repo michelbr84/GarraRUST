@@ -8,8 +8,8 @@
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
-use std::str::FromStr;
 use garraia_common::{Error, Result};
+use std::str::FromStr;
 
 /// Default timezone for recurring tasks. Matches the project's narrative
 /// timezone convention (America/New_York), so "every day at 08:00" means
@@ -51,7 +51,11 @@ pub fn next_after_run(
     now: DateTime<Utc>,
     scheduled_for: DateTime<Utc>,
 ) -> Result<DateTime<Utc>> {
-    let anchor = if scheduled_for > now { scheduled_for } else { now };
+    let anchor = if scheduled_for > now {
+        scheduled_for
+    } else {
+        now
+    };
     next_occurrence(expr, tz, anchor)
 }
 

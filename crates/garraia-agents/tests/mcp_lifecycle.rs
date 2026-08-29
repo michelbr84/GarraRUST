@@ -15,7 +15,10 @@ use garraia_agents::McpManager;
 use garraia_agents::tools::{ToolContext, ToolOutput};
 
 fn fixture_args(extra: &[&str]) -> Vec<String> {
-    let script = format!("{}/tests/fixtures/fake_mcp_server.py", env!("CARGO_MANIFEST_DIR"));
+    let script = format!(
+        "{}/tests/fixtures/fake_mcp_server.py",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let mut args = vec![script];
     args.extend(extra.iter().map(|s| s.to_string()));
     args
@@ -115,7 +118,10 @@ async fn tool_survives_reconnect() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         manager.health_tick().await;
-        assert!(manager.is_connected("fake").await, "should have reconnected");
+        assert!(
+            manager.is_connected("fake").await,
+            "should have reconnected"
+        );
 
         // The same tool object must reach the NEW peer.
         let second = call_echo(tool).await;
