@@ -25,7 +25,12 @@ jobs:
   # Build for Linux x86_64
   build-linux-x86_64:
     name: Build Linux x86_64
-    runs-on: ubuntu-latest
+    # Pinado em 22.04, NÃO ubuntu-latest: o binário linka a glibc do runner, e
+    # ubuntu-latest (24.04, glibc 2.39) gerou o erro "version `GLIBC_2.39' not
+    # found" das v0.3.2 e v0.3.3 em qualquer sistema mais antigo. Baseline
+    # suportada: glibc >= 2.35 (Ubuntu 22.04+, Debian 12+) — manter em
+    # sincronia com o preflight MIN_GLIBC do install.sh e docs/installation.md.
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
     steps:
@@ -65,16 +70,15 @@ jobs:
 
       - name: Install cross
         # Da git, NÃO de crates.io: o cross 0.2.5 (último release publicado)
-        # usa imagens base Ubuntu 16.04 cujo archive só tem OpenSSL 1.0.2 —
-        # abaixo do mínimo do openssl-sys (>= 1.1.0). As imagens da git são
-        # modernas (>= 20.04) e casam com o pre-build do Cross.toml.
+        # usa imagens base Ubuntu 16.04, velhas demais para o toolchain atual.
+        # As imagens da git são modernas (>= 20.04).
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
       - name: Build with cross
-        # OpenSSL só é necessário no TARGET (reqwest/tungstenite via
-        # native-tls) — instalado pelo pre-build do Cross.toml. O lado HOST
-        # ficou livre de OpenSSL com o sqlx em rustls (proc-macros do sqlx
-        # eram o único consumidor host e quebravam o cross-compile).
+        # OpenSSL é vendored/estático desde a v0.3.4 (native-tls/vendored via
+        # garraia-channels) — nada de libssl-dev no target; o pre-build do
+        # Cross.toml agora só garante o perl+make que o openssl-src exige
+        # (ver Cross.toml).
         run: cross build --release --target aarch64-unknown-linux-gnu --package garraia
 
       - name: Package binary

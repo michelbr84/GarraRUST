@@ -116,7 +116,10 @@ installer names the binary `garraia`, while a cargo build produces
 prints next steps and exits 0 instead of blocking.
 
 Releases ship 5 prebuilt CLI binaries: Linux x86_64/aarch64,
-macOS x86_64/aarch64, Windows x86_64.
+macOS x86_64/aarch64, Windows x86_64. The Linux binaries are built
+against glibc 2.35, so they need Ubuntu 22.04+ / Debian 12+; older
+distros and musl-based systems (Alpine) have to build from source.
+The installer checks this before downloading.
 
 </details>
 

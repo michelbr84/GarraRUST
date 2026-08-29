@@ -25,6 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.s
 
 **Windows:** baixe o binário na [página de releases](https://github.com/michelbr84/GarraRUST/releases). Binários pré-compilados: Linux (x86_64 e ARM64 a partir da v0.3.2), macOS e Windows.
 
+**Requisito mínimo (Linux):** os binários publicados exigem **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+) — o `install.sh` verifica isso antes de baixar e aborta com instruções se a distro for mais antiga. Em musl (Alpine) ou glibc anterior, compile do source. Detalhes em [`docs/installation.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md).
+
 ## Primeiros passos
 
 ```bash

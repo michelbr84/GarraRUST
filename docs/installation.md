@@ -6,7 +6,10 @@ This guide covers installing GarraIA on various platforms.
 
 - **Rust 1.94+** (if building from source)
 - **FFmpeg** (for voice mode)
-- **OpenSSL** (for some features)
+- **Linux (prebuilt binaries):** glibc ≥ 2.35 — Ubuntu 22.04+, Debian 12+.
+  Older distros and musl-based systems (Alpine) must build from source.
+  (Since v0.3.4 OpenSSL is statically vendored into the binaries: no system
+  `libssl` required.)
 
 ## Quick Install
 
@@ -15,6 +18,13 @@ This guide covers installing GarraIA on various platforms.
 ```bash
 curl -fsSL https://garraia.org/install.sh | sh
 ```
+
+> **Minimum glibc (Linux):** the release binaries are built on Ubuntu 22.04 and
+> require glibc ≥ 2.35. The installer probes `ldd --version` and aborts early
+> with instructions if the system is older (the raw loader error would be
+> ``version `GLIBC_2.xx' not found``). Keep this note in sync with the
+> `build-linux-x86_64` runner in `.github/workflows/release.yml` and
+> `MIN_GLIBC` in `install.sh`.
 
 The same script (auto-synced) is published through alternative channels —
 the release CDN is the most robust against per-IP rate limits (**HTTP 429**
@@ -211,7 +221,7 @@ docker-compose up -d
 ```dockerfile
 FROM rust:1.94-trixie
 
-RUN apt-get update && apt-get install -y ffmpeg libssl3
+RUN apt-get update && apt-get install -y ffmpeg
 
 # Build and copy binary
 COPY target/release/garra /usr/local/bin/

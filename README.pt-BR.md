@@ -141,6 +141,8 @@ Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
 
 Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next steps" legados e sai com código 0 — nunca trava aguardando input.
 
+> **Requisito mínimo (Linux):** os binários publicados exigem **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+). Desde a v0.3.4 o build x86_64 é pinado em `ubuntu-22.04` no CI — as v0.3.2 e v0.3.3, buildadas em `ubuntu-latest`/24.04, falhavam com ``version `GLIBC_2.39' not found`` em sistemas mais antigos — e o `install.sh` checa a glibc local antes de baixar. Distros mais antigas ou musl (Alpine): compile do source (`cargo install --git https://github.com/michelbr84/GarraRUST garraia`).
+
 > A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica o binário baixado contra o arquivo `SHA256SUMS` da release (um único manifesto para todos os assets, via `sha256sum -c`). O formato `<asset>.sha256` é usado pelo `garraia update`, não pelo `install.sh`.
 > Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são publicados normalmente desde a **v0.3.2** (2026-08-18) — o cross-compile ARM64 foi resolvido com `cross` moderno + sqlx em rustls ([release.yml](.github/workflows/release.yml)).
 

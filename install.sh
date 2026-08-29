@@ -55,10 +55,40 @@ curl_gh() {
 
 main() {
     detect_platform
+    check_glibc
     resolve_version
     download_and_verify
     install_binary
     bootstrap_phase
+}
+
+# Minimum glibc the prebuilt Linux binaries link against. Must stay in sync
+# with the `runs-on` of build-linux-x86_64 in .github/workflows/release.yml
+# (ubuntu-22.04 => glibc 2.35) and the note in docs/installation.md.
+MIN_GLIBC="2.35"
+
+# Fail fast with an actionable message instead of the loader's cryptic
+# "version `GLIBC_2.39' not found" after the download (the v0.3.2/v0.3.3
+# failure mode: binaries were built on ubuntu-latest/24.04). Silently
+# skipped when the local libc version cannot be determined.
+check_glibc() {
+    [ "${OS_NAME}" = "linux" ] || return 0
+
+    if [ -e "/lib/ld-musl-${ARCH}.so.1" ]; then
+        error "musl libc detected (Alpine?). Prebuilt GarraIA binaries require glibc >= ${MIN_GLIBC}. Build from source instead: cargo install --git https://github.com/${REPO} garraia"
+    fi
+
+    # glibc's ldd prints "ldd (<vendor blurb>) X.YY" on line 1.
+    GLIBC_VERSION="$(ldd --version 2>/dev/null | sed -n '1s/.* //p')" || true
+    case "${GLIBC_VERSION}" in
+        [0-9]*.[0-9]*) ;;
+        *) return 0 ;;
+    esac
+
+    LOWEST="$(printf '%s\n%s\n' "${MIN_GLIBC}" "${GLIBC_VERSION}" | sort -V | head -n1)"
+    if [ "${LOWEST}" != "${MIN_GLIBC}" ]; then
+        error "GarraIA prebuilt binaries require glibc >= ${MIN_GLIBC} (Ubuntu 22.04+, Debian 12+); this system has glibc ${GLIBC_VERSION}. Upgrade the distro or build from source: cargo install --git https://github.com/${REPO} garraia"
+    fi
 }
 
 detect_platform() {

@@ -1,19 +1,23 @@
 # Config do `cross` usada pelo job "Build Linux ARM64" do release.yml.
 #
-# O build aarch64 do v0.3.0 falhou em `openssl-sys` ("Could not find directory
-# of OpenSSL installation", exit 101): a imagem padrão do cross não traz
-# OpenSSL para o target. `native-tls` chega via reqwest (default-tls),
-# sqlx-core e tokio-tungstenite, então o link dinâmico precisa dos headers e
-# libs :arm64. Receita canônica do FAQ do cross para OpenSSL cross-compile.
+# Desde a v0.3.4 o OpenSSL é VENDORED (feature `native-tls/vendored` via
+# garraia-channels, ver Cargo.toml raiz): o openssl-src compila um OpenSSL
+# estático com o toolchain do target, então o pre-build deixou de instalar
+# `libssl-dev:$CROSS_DEB_ARCH` (workaround do build aarch64 do v0.3.0) — é
+# exatamente a solução recomendada pelo FAQ do cross para OpenSSL em
+# cross-compile. Bônus: o binário não linka libssl.so do sistema (a receita
+# antiga está no git log deste arquivo).
+#
+# O que o pre-build ainda faz: garantir `perl` + `make` na imagem. O
+# openssl-src roda `./Configure` (perl) + `make` no host do container, e uma
+# falha aqui seria silenciosa na prática — o job `release` do release.yml não
+# exige o ARM64 no seu `if:`, então a release sairia sem os assets aarch64.
+# As imagens do cross trazem build-essential (→ make, e perl via dpkg-dev),
+# mas isso não é contrato: uma linha de seguro elimina a classe de falha.
+#
+# Seguimos instalando o cross da git, não o 0.2.5 de crates.io (base 16.04) —
+# ver comentário no release.yml.
 [target.aarch64-unknown-linux-gnu]
-# libssl-dev do TARGET para linkar reqwest/tokio-tungstenite (native-tls).
-# O lado HOST não precisa de OpenSSL: o sqlx usa rustls (o proc-macro do
-# sqlx era o único consumidor host de openssl-sys e quebrava o cross-compile
-# — ora achando OpenSSL 1.0.2 velho demais, ora linkando a libssl aarch64
-# num .so x86). Requer imagem de cross moderna (base >= 20.04, OpenSSL >=
-# 1.1.1 no archive): instalar cross da git, não o 0.2.5 de crates.io
-# (base 16.04) — ver release.yml.
 pre-build = [
-  "dpkg --add-architecture $CROSS_DEB_ARCH",
-  "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH"
+  "apt-get update && apt-get install --assume-yes --no-install-recommends perl make"
 ]

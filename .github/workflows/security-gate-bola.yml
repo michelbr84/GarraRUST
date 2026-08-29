@@ -47,6 +47,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Este é o único job que restaura `target/` do cache (o ci.yml cacheia
+      # só `~/.cargo/registry`), e o runner ubuntu-latest tem ~14 GB livres.
+      # Desde a v0.3.4 o OpenSSL é vendored (`native-tls/vendored`, ver
+      # Cargo.toml raiz), então o openssl-src compila o OpenSSL dentro de
+      # `target/` e engorda o cache: o primeiro run com a mudança passou e
+      # salvou o cache maior, e os dois seguintes morreram ~4 min dentro do
+      # `cargo test` — sem logs, sem post-steps, assinatura de runner morto
+      # por disco. Mesmo bloco (e mesma causa) do job `coverage` do ci.yml,
+      # que documenta o `No space left on device` verificado no PR #90.
+      # Inline `rm -rf` em vez de action externa para manter a superfície de
+      # supply-chain em zero, igual ao ci.yml. O `docker image prune` não
+      # toca a imagem do serviço postgres: ela está em uso por um container
+      # rodando, e o docker não remove imagem referenciada.
+      - name: Free up disk space (GHA runner default ~14 GB → ~26 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
