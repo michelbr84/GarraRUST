@@ -392,6 +392,14 @@ impl GatewayServer {
         // worker is skipped silently — the next slice of GAR-429 will
         // surface this via a readiness probe.
         if let Some(app_pool) = state.app_pool.clone() {
+            // Task recurrence: materialises the next occurrence of completed
+            // recurring tasks. `tasks.recurrence_rrule` existed since
+            // migration 006 with no engine behind it.
+            crate::tasks_recurrence_worker::spawn_task_recurrence_worker(
+                Arc::clone(&app_pool),
+                crate::tasks_recurrence_worker::TaskRecurrenceWorkerConfig::default(),
+            );
+
             let staging_dir = upload_staging_opt.as_ref().map(|s| s.staging_dir.clone());
             let handle = crate::uploads_worker::spawn_uploads_expiration_worker(
                 app_pool,
