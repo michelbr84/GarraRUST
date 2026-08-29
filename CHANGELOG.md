@@ -32,6 +32,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Em contrapartida o `openssl-src` compila o OpenSSL do zero, o que exige
   `perl` + `make` no ambiente de build: adicionados ao `Cross.toml` e ao
   `Dockerfile` (que roda em `rust:1.98-slim`, sem nenhum dos dois). O
+  `security-gate-bola.yml` — único job que restaura `target/` do cache —
+  ganhou o mesmo passo de liberação de disco que o job `coverage` do
+  `ci.yml` já usava: com o OpenSSL dentro de `target/`, o cache restaurado
+  estourava os ~14 GB do runner e o matava sem logs. O
   `native-tls` só usa OpenSSL em Linux — Windows (schannel) e macOS
   (Security.framework) não são afetados. Nota: migrar o serenity para
   `rustls_backend` está bloqueado — o 0.12.5 mapeia a feature para
