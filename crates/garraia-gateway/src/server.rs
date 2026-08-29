@@ -638,19 +638,26 @@ impl GatewayServer {
 
         // Initialize admin store for the web admin console
         let admin_db_path = data_dir.join("admin.db");
-        let admin_store = match admin::store::AdminStore::open(&admin_db_path) {
+        let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
             Ok(store) => {
                 info!("admin store opened at {}", admin_db_path.display());
-                Arc::new(Mutex::new(store))
+                store
             }
             Err(e) => {
                 warn!("failed to open admin store, using in-memory: {e}");
-                Arc::new(Mutex::new(
-                    admin::store::AdminStore::in_memory()
-                        .expect("in-memory admin store should work"),
-                ))
+                admin::store::AdminStore::in_memory().expect("in-memory admin store should work")
             }
         };
+
+        // Resolve the admin master key exactly once, here, while we still hold
+        // the store exclusively. This also runs the forward-only re-key: until
+        // 2026-08-29 the key was derived with a constant PBKDF2 salt shared by
+        // every installation. Fail-soft — on error the deployment stays on the
+        // legacy key and the next boot retries. See admin/shared.rs.
+        let admin_encryption_key = Arc::new(admin::handlers::resolve_admin_encryption_key(
+            &mut admin_store_owned,
+        ));
+        let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
         // Spawn periodic cleanup of expired admin sessions
         {
@@ -669,7 +676,7 @@ impl GatewayServer {
         }
 
         let state_for_shutdown = Arc::clone(&state);
-        let app = build_router(state, whatsapp_state, admin_store);
+        let app = build_router(state, whatsapp_state, admin_store, admin_encryption_key);
 
         // TLS support: if cert + key paths are configured and tls feature is enabled,
         // use axum-server with rustls. Otherwise, plain HTTP.
@@ -808,11 +815,14 @@ pub async fn build_router_for_test_with_storage(
 
     // Minimal collaborators expected by the production router.
     let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState = Arc::new(Vec::new());
-    let admin_store = Arc::new(Mutex::new(
-        admin::store::AdminStore::in_memory().expect("in-memory admin store should work"),
+    let mut admin_store_owned =
+        admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
+    let admin_encryption_key = Arc::new(admin::handlers::resolve_admin_encryption_key(
+        &mut admin_store_owned,
     ));
+    let admin_store = Arc::new(Mutex::new(admin_store_owned));
 
-    build_router(state, whatsapp_state, admin_store)
+    build_router(state, whatsapp_state, admin_store, admin_encryption_key)
 }
 
 /// Upper bound for cancelling MCP services at shutdown. A server that ignores

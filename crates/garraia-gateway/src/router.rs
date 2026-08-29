@@ -45,6 +45,7 @@ pub fn build_router(
     state: SharedState,
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
+    admin_encryption_key: Arc<Vec<u8>>,
 ) -> Router {
     // Per-IP rate limit from config (default: 1 req/sec, burst 60).
     let rl = &state.config.gateway.rate_limit;
@@ -389,7 +390,7 @@ pub fn build_router(
         ))
         .nest(
             "/admin",
-            admin::routes::build_admin_router(state, admin_store),
+            admin::routes::build_admin_router(state, admin_store, admin_encryption_key),
         )
         .layer(governor_layer)
         .layer(cors_layer)
@@ -579,11 +580,57 @@ struct AddProviderRequest {
     set_default: Option<bool>,
 }
 
+/// Fetch policy for a caller-supplied provider `base_url`.
+///
+/// `IpScope::AllowPrivate` is deliberate: a local Ollama on
+/// `http://127.0.0.1:11434` and a LAN LM Studio are the product's offline story,
+/// so loopback and RFC 1918 have to stay reachable. What the guard removes is
+/// the part that is never legitimate for an LLM endpoint — link-local
+/// (`169.254.169.254`, cloud instance metadata), CGNAT, multicast, the
+/// unspecified address — plus every non-HTTP scheme.
+///
+/// Before 2026-08-29 `body.base_url` went straight into the provider
+/// constructor and out to `reqwest`, so a single request could point the
+/// gateway at instance metadata; `POST /api/providers/test` then fired it and
+/// returned the latency, and `PATCH /api/providers/default` routed all chat
+/// traffic (and the API key) through it. CodeQL: `rust/request-forgery`, 9.1.
+fn provider_base_url_policy() -> garraia_common::ssrf::UrlPolicy {
+    garraia_common::ssrf::UrlPolicy::http_public(
+        std::time::Duration::from_secs(30),
+        concat!("GarraIA/", env!("CARGO_PKG_VERSION")),
+    )
+    .with_ip_scope(garraia_common::ssrf::IpScope::AllowPrivate)
+}
+
+/// Vet a caller-supplied `base_url`, if one was sent. `Ok(())` when absent —
+/// omitting it means "use the provider's built-in default", which is a
+/// compile-time constant and needs no check.
+fn validate_provider_base_url(base_url: Option<&String>) -> Result<(), String> {
+    let Some(raw) = base_url else {
+        return Ok(());
+    };
+    garraia_common::ssrf::vet_url(raw, &provider_base_url_policy())
+        .map(|_| ())
+        .map_err(|e| format!("base_url rejected: {e}"))
+}
+
 /// POST /api/providers — add a new LLM provider at runtime.
 async fn add_provider(
     axum::extract::State(state): axum::extract::State<SharedState>,
     axum::Json(body): axum::Json<AddProviderRequest>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    // SSRF gate, ahead of every provider branch so none can be forgotten.
+    if let Err(message) = validate_provider_base_url(body.base_url.as_ref()) {
+        tracing::warn!(provider_type = %body.provider_type, "{message}");
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "status": "error",
+                "message": message,
+            })),
+        );
+    }
+
     let provider_type = body.provider_type.as_str();
 
     // Check if this provider type already exists

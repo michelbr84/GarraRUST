@@ -7,11 +7,14 @@ use super::middleware::{AuthenticatedAdmin, build_clear_cookie, build_session_co
 use super::rbac::{Action, Resource, Role, check_permission};
 use super::secrets::redact_config_secrets;
 
-// Slice 9.a (GAR-439): `AdminState` and `derive_encryption_key` extracted to
+// Slice 9.a (GAR-439): `AdminState` and the master-key derivation extracted to
 // `admin::shared`. Re-exported here so external paths
-// `super::handlers::AdminState` and `super::handlers::derive_encryption_key`
-// (consumed by `admin/routes.rs`) keep resolving without changes.
-pub use super::shared::{AdminState, derive_encryption_key};
+// (`super::handlers::AdminState`, consumed by `admin/routes.rs`) keep resolving
+// without changes. 2026-08-29: `derive_encryption_key` was replaced by
+// `resolve_admin_encryption_key`, which derives once *and* runs the
+// forward-only re-key — deriving separately in two places is a correctness bug
+// when `kdf.json` is absent, because each derivation mints a fresh random salt.
+pub use super::shared::{AdminState, resolve_admin_encryption_key};
 
 // Slice 9.b (GAR-470): provider console handlers extracted to `admin::providers`.
 // Re-exported so `routes.rs` paths (`handlers::admin_list_providers`, etc.) keep resolving.

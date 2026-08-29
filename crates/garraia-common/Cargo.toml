@@ -15,6 +15,25 @@ tracing = { workspace = true }
 url = { workspace = true }
 async-trait = { workspace = true }
 toml = { workspace = true }
+# SSRF guard (src/ssrf.rs): the vetted-address pinning and the capped body
+# reader need an HTTP client. garraia-common is the one crate that
+# garraia-gateway, garraia-agents and garraia-skills all depend on, so the guard
+# lives here instead of being copied three times.
+#
+# Optional and OFF by default: this crate is otherwise just types and errors,
+# and garraia-db / garraia-config / garraia-security depend on it without ever
+# making an HTTP request. They must not inherit reqwest's dependency graph.
+reqwest = { workspace = true, features = ["stream"], optional = true }
+futures = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enables `garraia_common::ssrf`. Turned on by the three crates that make
+# outbound HTTP requests with remotely-influenced URLs.
+ssrf = ["dep:reqwest", "dep:futures"]
 
 [dev-dependencies]
+# Self dev-dependency so `cargo test -p garraia-common` exercises tests/ssrf.rs
+# instead of silently compiling it away.
+garraia-common = { path = ".", features = ["ssrf"] }
 tempfile = "3"

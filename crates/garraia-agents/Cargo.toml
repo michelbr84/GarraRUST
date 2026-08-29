@@ -6,7 +6,7 @@ license.workspace = true
 description = "LLM agent runtime and orchestration for GarraIA"
 
 [dependencies]
-garraia-common = { workspace = true }
+garraia-common = { workspace = true, features = ["ssrf"] }
 garraia-db = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

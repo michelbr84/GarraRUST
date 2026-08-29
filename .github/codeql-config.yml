@@ -21,3 +21,16 @@ paths-ignore:
   # Playwright E2E tests are TypeScript test fixtures, scanned by their
   # own Playwright runner. CodeQL JS/TS coverage focuses on the admin UI.
   - 'tests/playwright/**'
+  # Rust integration-test targets. Complement to the
+  # `CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"` set on the
+  # Initialize CodeQL step in .github/workflows/codeql.yml: that env var drops
+  # inline `#[cfg(test)] mod tests {}` bodies, but integration tests live in
+  # their own files under `crates/*/tests/` and are not gated by `cfg(test)`,
+  # so they need a path exclusion too.
+  #
+  # Both were added on 2026-08-29 after the CodeQL bundle went 2.26.3 -> 2.26.4
+  # and the Rust extractor jumped from 118 to 422 files extracted without error
+  # (of 425), surfacing ~69 test-fixture hits of
+  # rust/hard-coded-cryptographic-value (9.8 = Critical) in one wave. This is
+  # analysis scope, not suppression — see docs/security/codeql-setup.md.
+  - 'crates/*/tests/**'

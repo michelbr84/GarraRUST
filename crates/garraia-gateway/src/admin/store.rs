@@ -50,6 +50,16 @@ pub struct AuditEntry {
     pub outcome: String,
 }
 
+/// PBKDF2 parameters the admin master key was derived with, as stored in the
+/// single row of `kdf_params`: `(version, salt_base64, iterations)`.
+pub type StoredKdfParams = (u32, String, u32);
+
+/// One `secrets` row for the master-key re-key: `(id, encrypted_value, nonce)`.
+pub type SecretCiphertext = (String, Vec<u8>, Vec<u8>);
+/// One `secret_versions` row: `(id, encrypted_value, nonce)`. Keyed by an
+/// autoincrement integer rather than a uuid, hence the separate alias.
+pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
+
 pub struct AdminStore {
     conn: Connection,
 }
@@ -149,6 +159,14 @@ impl AdminStore {
                     nonce BLOB NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     created_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS kdf_params (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    version INTEGER NOT NULL,
+                    salt TEXT NOT NULL,
+                    iterations INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
                 CREATE TABLE IF NOT EXISTS config_versions (
@@ -515,6 +533,133 @@ impl AdminStore {
     }
 
     // ── Secrets store ────────────────────────────────────────────────
+
+    /// One row of the re-key scan: primary key, ciphertext, nonce.
+    ///
+    /// `secrets` is keyed by a uuid string, `secret_versions` by an autoincrement
+    /// integer, hence the two aliases.
+    /// Every live ciphertext, as `(secrets.id, encrypted_value, nonce)`.
+    ///
+    /// Used only by the master-key re-key migration in
+    /// [`super::shared::migrate_admin_secrets_kdf`]. Archived history lives in
+    /// `secret_versions` and is fetched by [`Self::secret_version_ciphertexts`].
+    pub fn secret_ciphertexts(&self) -> Result<Vec<SecretCiphertext>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, encrypted_value, nonce FROM secrets")
+            .map_err(|e| format!("failed to prepare secrets scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("failed to scan secrets: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read secrets row: {e}"))
+    }
+
+    /// Archived ciphertexts, as `(secret_versions.id, encrypted_value, nonce)`.
+    pub fn secret_version_ciphertexts(&self) -> Result<Vec<SecretVersionCiphertext>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, encrypted_value, nonce FROM secret_versions")
+            .map_err(|e| format!("failed to prepare secret_versions scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("failed to scan secret_versions: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read secret_versions row: {e}"))
+    }
+
+    /// The PBKDF2 parameters the master key was derived with, if this
+    /// installation has already been through the re-key.
+    pub fn kdf_params(&self) -> Option<StoredKdfParams> {
+        self.conn
+            .query_row(
+                "SELECT version, salt, iterations FROM kdf_params WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as u32,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? as u32,
+                    ))
+                },
+            )
+            .ok()
+            .filter(|(_, salt, iterations)| !salt.is_empty() && *iterations > 0)
+    }
+
+    /// Overwrite every secret ciphertext **and** record the KDF parameters that
+    /// the new ciphertexts are under, in ONE transaction.
+    ///
+    /// The parameters live in this table rather than in a sidecar file on
+    /// purpose. An earlier revision committed the SQL first and wrote a
+    /// `kdf.json` afterwards; if that second write failed (disk full, bad
+    /// permissions on the config dir) the ciphertexts were already under the
+    /// new key while nothing recorded which key that was, and the next boot
+    /// would mint a *third* salt and be unable to decrypt anything. Same
+    /// medium, same transaction, no window.
+    ///
+    /// Fail-closed by construction: the caller decrypts with the old key and
+    /// re-encrypts with the new one *before* calling this, so a failed re-key
+    /// leaves the store byte-identical (the transaction rolls back on any error
+    /// and on drop). Called once, at boot, by
+    /// [`super::shared::migrate_admin_secrets_kdf`].
+    ///
+    /// Returns the number of rows the UPDATEs actually modified — not the
+    /// number scanned, which can differ if a secret is deleted between the scan
+    /// and the re-key.
+    pub fn apply_secret_rekey(
+        &mut self,
+        secrets: &[SecretCiphertext],
+        versions: &[SecretVersionCiphertext],
+        kdf: &StoredKdfParams,
+    ) -> Result<usize, String> {
+        let (version, salt, iterations) = kdf;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| format!("failed to open rekey transaction: {e}"))?;
+
+        let mut changed = 0usize;
+        for (id, encrypted, nonce) in secrets {
+            changed += tx
+                .execute(
+                    "UPDATE secrets SET encrypted_value = ?1, nonce = ?2 WHERE id = ?3",
+                    params![encrypted, nonce, id],
+                )
+                .map_err(|e| format!("failed to rekey secret {id}: {e}"))?;
+        }
+        for (id, encrypted, nonce) in versions {
+            changed += tx
+                .execute(
+                    "UPDATE secret_versions SET encrypted_value = ?1, nonce = ?2 WHERE id = ?3",
+                    params![encrypted, nonce, id],
+                )
+                .map_err(|e| format!("failed to rekey secret version {id}: {e}"))?;
+        }
+
+        tx.execute(
+            "INSERT INTO kdf_params (id, version, salt, iterations) VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET version = ?1, salt = ?2, iterations = ?3",
+            params![*version as i64, salt, *iterations as i64],
+        )
+        .map_err(|e| format!("failed to record kdf params: {e}"))?;
+
+        tx.commit()
+            .map_err(|e| format!("failed to commit rekey transaction: {e}"))?;
+        Ok(changed)
+    }
 
     pub fn set_secret(
         &self,

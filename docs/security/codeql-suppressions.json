@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/base.json",
   "schema_version": "1.0.0",
   "repo": "michelbr84/GarraRUST",
-  "last_updated": "2026-05-01",
+  "last_updated": "2026-08-29",
   "audit_expiration": "2026-08-01",
   "policy": "no-bulk-suppression",
   "linear_owner": "GAR-491",
@@ -249,6 +249,17 @@
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-82"
+    },
+    {
+      "alert_number": 165,
+      "rule_id": "rust/hard-coded-cryptographic-value",
+      "path": "crates/garraia-gateway/src/admin/shared.rs",
+      "line": 68,
+      "disposition": "dismissed-wont-fix",
+      "dismissed_reason": "wont_fix",
+      "justification": "LEGACY_KDF_SALT. Nao e falso-positivo nem fixture: o CodeQL esta certo, e um salt PBKDF2 constante. Ele permanece no fonte deliberadamente porque a migracao forward-only introduzida no PR #869 precisa dele para decifrar UMA ULTIMA VEZ os segredos gravados por instalacoes anteriores a 2026-08-29, antes de re-cifra-los sob a chave derivada do salt aleatorio por instalacao. Nenhuma chave nova e derivada dele: derive_with_passphrase so o usa no arm de migracao pendente e no fallback quando os parametros gravados estao ilegiveis. Os parametros novos vivem na tabela kdf_params do admin.db, gravados na mesma transacao que re-cifra os segredos. A constante so pode sair quando nao houver mais instalacoes por migrar, o que este projeto nao tem como afirmar. Verificar o numero do alerta apos o merge: 165 foi atribuido na analise da branch do PR.",
+      "gar_ref": "PR-869",
+      "ledger_md_anchor": "alert-165"
     }
   ]
 }

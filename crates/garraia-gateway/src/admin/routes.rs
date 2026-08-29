@@ -12,9 +12,16 @@ use super::store::AdminStore;
 use crate::state::SharedState;
 
 /// Build the admin sub-router mounted at `/admin`.
-pub fn build_admin_router(app_state: SharedState, admin_store: Arc<Mutex<AdminStore>>) -> Router {
-    let encryption_key = Arc::new(handlers::derive_encryption_key());
-
+///
+/// `encryption_key` is resolved once by the caller via
+/// [`handlers::resolve_admin_encryption_key`] and threaded in, rather than
+/// derived here: with `kdf.json` absent, each derivation mints a fresh random
+/// salt, so a second independent one would produce a different key.
+pub fn build_admin_router(
+    app_state: SharedState,
+    admin_store: Arc<Mutex<AdminStore>>,
+    encryption_key: Arc<Vec<u8>>,
+) -> Router {
     let admin_state = AdminState {
         store: Arc::clone(&admin_store),
         app_state,

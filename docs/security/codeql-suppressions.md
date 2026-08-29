@@ -37,6 +37,56 @@ Tres alternativas avaliadas para suprimi-los:
 A solução adotada: **REST API dismissal + este ledger versionado** + script
 de reaplicação (`scripts/security/codeql-reapply-dismissals.sh`).
 
+### Amendment 2026-08-29 — fixture de teste sai por escopo, não por ledger
+
+A tabela acima descartou `paths-ignore` porque *"testes do GarraRUST são INLINE
+(`#[cfg(test)] mod tests {}`) dentro de produção; ignorar `mobile_auth.rs`
+esconde alertas reais"*. Isso continua verdade para `paths-ignore` — mas existe
+um mecanismo que resolve o problema pela raiz e que não estava em uso em
+2026-05: o extractor Rust do CodeQL liga `cfg(test)` incondicionalmente
+(`rust/extractor/src/config.rs::to_cfg_overrides`) e expõe a opção oficial
+`cargo_cfg_overrides` para desligá-lo.
+
+Desde 2026-08-29, `.github/workflows/codeql.yml` passa
+`CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"` no passo
+**Initialize CodeQL**. Consequência para este ledger:
+
+- **Fixture de teste não entra mais aqui.** Se um alerta está dentro de um
+  `#[cfg(test)]` ou em `crates/*/tests/`, ele deixa de existir por escopo de
+  análise — não se dismissa, não se justifica linha a linha.
+- **O ledger fica só para falso-positivo em código de produção**, que é onde a
+  justificativa por linha realmente agrega (ex.: `credentials.rs:49`, um
+  `vec![0u8; SALT_LEN]` sobrescrito por `SystemRandom::fill` na linha seguinte).
+- As 5 entradas de `rust/hard-coded-cryptographic-value` que são fixture
+  (`mobile_auth.rs`, `validation.rs`) devem ficar **stale** (`exit 3` no script
+  de reapply) assim que o `-test` estiver em `main`. Limpar depois de confirmar
+  com o relatório de `.github/workflows/codeql-triage.yml`. `credentials.rs:49`
+  é produção e permanece.
+- As 16 entradas de `rust/path-injection` são High e não são afetadas.
+
+Contexto completo da onda que motivou a mudança (bundle 2.26.3 → 2.26.4,
+cobertura de extração de 118 para 422 arquivos):
+[`codeql-setup.md`](codeql-setup.md) §"A onda de 2026-08-28".
+
+**A entrada nova desta leva já está registrada**: alerta
+[#165](#alert-165), o salt PBKDF2 legado em
+`crates/garraia-gateway/src/admin/shared.rs:68` (`LEGACY_KDF_SALT`). O salt
+constante deixou de ser usado para derivar qualquer chave nova — agora é
+aleatório por instalação, com 600k iterações — mas a constante permanece no
+fonte porque a migração forward-only precisa dela para decifrar os segredos já
+gravados uma última vez antes de re-cifrá-los.
+
+Ela estreia a disposição **`dismissed-wont-fix`** neste ledger, e a distinção
+importa: as 22 entradas anteriores são `false_positive` (o CodeQL errou) ou
+`used_in_tests` (não é superfície de produção). Esta é a primeira em que o
+CodeQL está **certo** e mesmo assim mantemos o código — o valor é de fato um
+salt constante, e a alternativa seria perder os segredos de toda instalação
+existente. Registrar isso como falso-positivo seria mentir para o ledger.
+
+**Efeito medido do `-test`** (PR #869, head `7a9b5fc`): os alertas Critical
+novos do PR caíram de 3 para 1, e o que apontava para um `assert!` dentro de
+`#[cfg(test)]` passou a `outdated`. Sobrou exatamente o #165, que é produção.
+
 ## §2. Mechanism
 
 Cada alerta dismissed via:
@@ -99,6 +149,7 @@ os números de alerta listados em §4 batem com `entries[].alert_number` do JSON
 | <a id="alert-80"></a>[#80](https://github.com/michelbr84/GarraRUST/security/code-scanning/80) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:312` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `update_skill` double-guards URL `name` + `body.name` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at lines 300 and 307 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::update_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-81"></a>[#81](https://github.com/michelbr84/GarraRUST/security/code-scanning/81) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:523` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `export_skill` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 519 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::export_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-82"></a>[#82](https://github.com/michelbr84/GarraRUST/security/code-scanning/82) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:579` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `set_skill_triggers` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 574 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name`. | GAR-490 |
+| <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ⚠️ Reconferir o número após o merge: 165 foi atribuído na análise da branch do PR. | PR-869 |
 
 **Total**: 22 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A).
 Bulk-dismissal proibido — cada linha foi revisada individualmente, com

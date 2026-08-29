@@ -3312,6 +3312,9 @@ version = "0.3.4"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
+ "garraia-common",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -3567,6 +3570,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tracing",
 ]

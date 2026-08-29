@@ -1,0 +1,85 @@
+name: CodeQL Triage
+
+# Lê os alertas de code scanning de dentro do repositório e publica um relatório
+# agregado por regra, separando produção de código de teste.
+#
+# Existe porque `GET /repos/{owner}/{repo}/code-scanning/alerts` exige o escopo
+# `security_events`, que tokens de PAT/integração normalmente não têm — mas o
+# `GITHUB_TOKEN` de um job com `permissions: security-events: read` tem.
+#
+# Motivação concreta: em 2026-08-28 o bundle do CodeQL nos runners subiu de
+# 2.26.3 para 2.26.4 e o extractor Rust saiu de 118 arquivos extraídos sem erro
+# para 422 (de 425), abrindo uma onda de alertas de uma vez. Diagnosticar isso
+# exigia clicar no Security tab alerta a alerta. Ver
+# docs/security/codeql-setup.md, seção "Triagem programática".
+
+on:
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Severidade (critical|high|medium|low|warning|note|error). Vazio = todas.'
+        required: false
+        default: 'critical'
+        type: string
+      state:
+        description: 'Estado do alerta (open|closed|dismissed|fixed). Vazio = todos.'
+        required: false
+        default: 'open'
+        type: string
+      tool:
+        description: 'Nome da ferramenta (ex.: CodeQL). Vazio = todas.'
+        required: false
+        default: 'CodeQL'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-triage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: Agregar alertas de code scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # O escopo que falta em tokens externos — é o motivo deste workflow existir.
+      security-events: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        # Mesma versão pinada em ci.yml / codeql.yml.
+        uses: actions/checkout@v7
+
+      - name: Gerar relatório
+        # Os inputs vão por `env:` e são lidos como argumentos posicionais do
+        # script — nunca interpolados no shell. Padrão já usado em
+        # branch-cleanup.yml e garra-routine-trigger.yml.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          IN_SEVERITY: ${{ inputs.severity }}
+          IN_STATE: ${{ inputs.state }}
+          IN_TOOL: ${{ inputs.tool }}
+        run: |
+          set -euo pipefail
+          python3 scripts/security/codeql-alert-report.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --severity "$IN_SEVERITY" \
+            --state "$IN_STATE" \
+            --tool "$IN_TOOL" \
+            --json-out codeql-alerts.json \
+            --md-out codeql-alerts.md
+          cat codeql-alerts.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar JSON e markdown
+        if: always() && hashFiles('codeql-alerts.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: codeql-alerts
+          path: |
+            codeql-alerts.json
+            codeql-alerts.md
+          retention-days: 30
