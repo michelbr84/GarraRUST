@@ -1001,6 +1001,25 @@ pub async fn build_mcp_tools(
             Err(e) => {
                 warn!("failed to connect MCP server '{name}': {e}");
                 failures.push((name.clone(), e.to_string()));
+                // Boot failures used to be terminal: the server never entered
+                // `connections`, so the health monitor could not see it and
+                // only a manual admin restart recovered it. Queue it for the
+                // same backoff-driven retry as a crashed connection.
+                if server_config.transport == "stdio" {
+                    manager
+                        .register_pending_stdio(
+                            name,
+                            &server_config.command,
+                            &server_config.args,
+                            &server_config.env,
+                            timeout_secs,
+                            server_config.allowed_tools.clone(),
+                            memory_limit_mb,
+                            max_restarts,
+                            restart_delay_secs,
+                        )
+                        .await;
+                }
             }
         }
     }
