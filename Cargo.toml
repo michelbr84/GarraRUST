@@ -89,8 +89,8 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # `wasmtime-wasi` requires `features = ["p1"]` because `WasiCtxBuilder::build_p1`
 # (used by `garraia-plugins/src/runtime.rs`) became feature-gated in v44.
 # `preview1` module was renamed to `p1` in the upstream — handled in runtime.rs.
-wasmtime = "47"
-wasmtime-wasi = { version = "47", features = ["p1"] }
+wasmtime = "48"
+wasmtime-wasi = { version = "48", features = ["p1"] }
 
 # Discord
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "native_tls_backend"] }
