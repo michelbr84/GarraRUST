@@ -3328,6 +3328,8 @@ version = "0.3.3"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -3583,6 +3585,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tracing",
 ]

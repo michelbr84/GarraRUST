@@ -37,6 +37,45 @@ Tres alternativas avaliadas para suprimi-los:
 A solução adotada: **REST API dismissal + este ledger versionado** + script
 de reaplicação (`scripts/security/codeql-reapply-dismissals.sh`).
 
+### Amendment 2026-08-29 — fixture de teste sai por escopo, não por ledger
+
+A tabela acima descartou `paths-ignore` porque *"testes do GarraRUST são INLINE
+(`#[cfg(test)] mod tests {}`) dentro de produção; ignorar `mobile_auth.rs`
+esconde alertas reais"*. Isso continua verdade para `paths-ignore` — mas existe
+um mecanismo que resolve o problema pela raiz e que não estava em uso em
+2026-05: o extractor Rust do CodeQL liga `cfg(test)` incondicionalmente
+(`rust/extractor/src/config.rs::to_cfg_overrides`) e expõe a opção oficial
+`cargo_cfg_overrides` para desligá-lo.
+
+Desde 2026-08-29, `.github/workflows/codeql.yml` passa
+`CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"` no passo
+**Initialize CodeQL**. Consequência para este ledger:
+
+- **Fixture de teste não entra mais aqui.** Se um alerta está dentro de um
+  `#[cfg(test)]` ou em `crates/*/tests/`, ele deixa de existir por escopo de
+  análise — não se dismissa, não se justifica linha a linha.
+- **O ledger fica só para falso-positivo em código de produção**, que é onde a
+  justificativa por linha realmente agrega (ex.: `credentials.rs:49`, um
+  `vec![0u8; SALT_LEN]` sobrescrito por `SystemRandom::fill` na linha seguinte).
+- As 5 entradas de `rust/hard-coded-cryptographic-value` que são fixture
+  (`mobile_auth.rs`, `validation.rs`) devem ficar **stale** (`exit 3` no script
+  de reapply) assim que o `-test` estiver em `main`. Limpar depois de confirmar
+  com o relatório de `.github/workflows/codeql-triage.yml`. `credentials.rs:49`
+  é produção e permanece.
+- As 16 entradas de `rust/path-injection` são High e não são afetadas.
+
+Contexto completo da onda que motivou a mudança (bundle 2.26.3 → 2.26.4,
+cobertura de extração de 118 para 422 arquivos):
+[`codeql-setup.md`](codeql-setup.md) §"A onda de 2026-08-28".
+
+**Uma entrada nova é esperada nesta leva**: o salt PBKDF2 legado em
+`crates/garraia-gateway/src/admin/shared.rs` (`LEGACY_KDF_SALT`). O salt
+constante deixou de ser usado para derivar qualquer chave nova — agora é
+aleatório por instalação, com 600k iterações — mas a constante permanece no
+fonte porque a migração forward-only precisa dela para decifrar os segredos já
+gravados uma última vez antes de re-cifrá-los. É `used-in-migration`, não
+fixture, e a justificativa vai por linha quando o número do alerta for conhecido.
+
 ## §2. Mechanism
 
 Cada alerta dismissed via:

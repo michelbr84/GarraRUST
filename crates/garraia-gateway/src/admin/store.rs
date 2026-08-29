@@ -50,6 +50,12 @@ pub struct AuditEntry {
     pub outcome: String,
 }
 
+/// One `secrets` row for the master-key re-key: `(id, encrypted_value, nonce)`.
+pub type SecretCiphertext = (String, Vec<u8>, Vec<u8>);
+/// One `secret_versions` row: `(id, encrypted_value, nonce)`. Keyed by an
+/// autoincrement integer rather than a uuid, hence the separate alias.
+pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
+
 pub struct AdminStore {
     conn: Connection,
 }
@@ -515,6 +521,89 @@ impl AdminStore {
     }
 
     // ── Secrets store ────────────────────────────────────────────────
+
+    /// One row of the re-key scan: primary key, ciphertext, nonce.
+    ///
+    /// `secrets` is keyed by a uuid string, `secret_versions` by an autoincrement
+    /// integer, hence the two aliases.
+    /// Every live ciphertext, as `(secrets.id, encrypted_value, nonce)`.
+    ///
+    /// Used only by the master-key re-key migration in
+    /// [`super::shared::migrate_admin_secrets_kdf`]. Archived history lives in
+    /// `secret_versions` and is fetched by [`Self::secret_version_ciphertexts`].
+    pub fn secret_ciphertexts(&self) -> Result<Vec<SecretCiphertext>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, encrypted_value, nonce FROM secrets")
+            .map_err(|e| format!("failed to prepare secrets scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("failed to scan secrets: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read secrets row: {e}"))
+    }
+
+    /// Archived ciphertexts, as `(secret_versions.id, encrypted_value, nonce)`.
+    pub fn secret_version_ciphertexts(&self) -> Result<Vec<SecretVersionCiphertext>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, encrypted_value, nonce FROM secret_versions")
+            .map_err(|e| format!("failed to prepare secret_versions scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("failed to scan secret_versions: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read secret_versions row: {e}"))
+    }
+
+    /// Overwrite every secret ciphertext in ONE transaction.
+    ///
+    /// Fail-closed by construction: the caller decrypts with the old key and
+    /// re-encrypts with the new one *before* calling this, so a failed re-key
+    /// leaves the store byte-identical (the transaction rolls back on any
+    /// error and on drop). Called once, at boot, by
+    /// [`super::shared::migrate_admin_secrets_kdf`].
+    pub fn apply_secret_rekey(
+        &mut self,
+        secrets: &[SecretCiphertext],
+        versions: &[SecretVersionCiphertext],
+    ) -> Result<usize, String> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| format!("failed to open rekey transaction: {e}"))?;
+
+        for (id, encrypted, nonce) in secrets {
+            tx.execute(
+                "UPDATE secrets SET encrypted_value = ?1, nonce = ?2 WHERE id = ?3",
+                params![encrypted, nonce, id],
+            )
+            .map_err(|e| format!("failed to rekey secret {id}: {e}"))?;
+        }
+        for (id, encrypted, nonce) in versions {
+            tx.execute(
+                "UPDATE secret_versions SET encrypted_value = ?1, nonce = ?2 WHERE id = ?3",
+                params![encrypted, nonce, id],
+            )
+            .map_err(|e| format!("failed to rekey secret version {id}: {e}"))?;
+        }
+
+        tx.commit()
+            .map_err(|e| format!("failed to commit rekey transaction: {e}"))?;
+        Ok(secrets.len() + versions.len())
+    }
 
     pub fn set_secret(
         &self,
