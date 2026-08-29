@@ -81,6 +81,20 @@ pub fn build_snapshot(config: &AppConfig) -> CapabilitySnapshot {
     }
 }
 
+/// Like [`build_snapshot`], but the MCP server list reflects the merged view
+/// (config.yml `mcp:` + `<config_dir>/mcp.json`) — the same set the gateway
+/// actually connects at boot. Does file I/O; falls back to the config-only
+/// list when the loader is unavailable.
+pub fn build_snapshot_merged(config: &AppConfig) -> CapabilitySnapshot {
+    let mut snap = build_snapshot(config);
+    if let Ok(loader) = garraia_config::ConfigLoader::new() {
+        let mut names: Vec<String> = loader.merged_mcp_config(config).into_keys().collect();
+        names.sort();
+        snap.mcp_servers = names;
+    }
+    snap
+}
+
 /// Render the snapshot into a provider-agnostic, human-readable prompt string.
 pub fn render_prompt(snap: &CapabilitySnapshot) -> String {
     let mut out = String::new();

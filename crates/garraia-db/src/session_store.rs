@@ -53,6 +53,9 @@ pub struct CustomMode {
     pub updated_at: String,
 }
 
+/// Default number of due tasks drained per scheduler tick.
+pub const DEFAULT_POLL_LIMIT: i64 = 10;
+
 impl SessionStore {
     pub fn open(db_path: &Path) -> Result<Self> {
         info!("opening session store at {}", db_path.display());
@@ -144,7 +147,14 @@ impl SessionStore {
                     execute_at TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
-                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    -- Recurrence (NULL cron_expr = classic one-shot task).
+                    cron_expr TEXT,
+                    timezone TEXT,
+                    last_run_at TEXT,
+                    run_count INTEGER NOT NULL DEFAULT 0,
+                    max_runs INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_execute_at
@@ -286,6 +296,21 @@ impl SessionStore {
                     ON data_retention(expires_at) WHERE deleted_at IS NULL;",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
+
+        // Recurrence: additive columns on scheduled_tasks. Existing installs
+        // get them via ALTER (errors ignored when the column already exists),
+        // new installs via the CREATE TABLE above. `cron_expr IS NULL` keeps
+        // the historic one-shot semantics untouched.
+        for stmt in [
+            "ALTER TABLE scheduled_tasks ADD COLUMN cron_expr TEXT;",
+            "ALTER TABLE scheduled_tasks ADD COLUMN timezone TEXT;",
+            "ALTER TABLE scheduled_tasks ADD COLUMN last_run_at TEXT;",
+            "ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE scheduled_tasks ADD COLUMN max_runs INTEGER;",
+            "ALTER TABLE scheduled_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+        ] {
+            let _ = self.conn.execute_batch(stmt);
+        }
 
         // Phase 2.1: add project_id column to sessions (nullable FK)
         let _ = self.conn.execute_batch(
@@ -638,21 +663,30 @@ impl SessionStore {
     }
 
     /// Poll for pending tasks that are due for execution.
+    ///
+    /// Uses [`DEFAULT_POLL_LIMIT`]; see [`Self::poll_due_tasks_limit`] when a
+    /// caller needs to drain a bigger backlog (e.g. after downtime).
     pub fn poll_due_tasks(&self) -> Result<Vec<ScheduledTask>> {
+        self.poll_due_tasks_limit(DEFAULT_POLL_LIMIT)
+    }
+
+    /// Poll at most `limit` due tasks.
+    pub fn poll_due_tasks_limit(&self, limit: i64) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload, s.metadata
+                "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
+                        s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs, t.attempts
                  FROM scheduled_tasks t
                  JOIN sessions s ON t.session_id = s.id
                  WHERE t.status = 'pending' AND datetime(t.execute_at) <= datetime('now')
                  ORDER BY t.execute_at ASC
-                 LIMIT 10",
+                 LIMIT ?1",
             )
             .map_err(|e| Error::Database(format!("failed to prepare poll query: {e}")))?;
 
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![limit], |row| {
                 let execute_at_raw: String = row.get(4)?;
                 let metadata_raw: String = row.get(6)?;
                 Ok(ScheduledTask {
@@ -664,6 +698,11 @@ impl SessionStore {
                     payload: row.get(5)?,
                     session_metadata: serde_json::from_str(&metadata_raw)
                         .unwrap_or(serde_json::Value::Null),
+                    cron_expr: row.get(7)?,
+                    timezone: row.get(8)?,
+                    run_count: row.get(9)?,
+                    max_runs: row.get(10)?,
+                    attempts: row.get(11)?,
                 })
             })
             .map_err(|e| Error::Database(format!("failed to poll tasks: {e}")))?;
@@ -695,6 +734,140 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(format!("failed to mark task as failed: {e}")))?;
         Ok(())
+    }
+
+    /// Schedule a recurring task from a cron expression.
+    ///
+    /// The expression and timezone are validated here so an invalid schedule
+    /// is rejected at creation time rather than silently never firing.
+    pub fn schedule_recurring_task(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        cron_expr: &str,
+        timezone: Option<&str>,
+        payload: &str,
+        max_runs: Option<i64>,
+    ) -> Result<(String, chrono::DateTime<chrono::Utc>)> {
+        let tz = crate::recurrence::parse_timezone(timezone)?;
+        let first = crate::recurrence::next_occurrence(cron_expr, tz, chrono::Utc::now())?;
+        let task_id = uuid::Uuid::new_v4().to_string();
+        self.conn
+            .execute(
+                "INSERT INTO scheduled_tasks
+                    (id, session_id, user_id, execute_at, payload, status, cron_expr, timezone, max_runs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+                params![
+                    task_id,
+                    session_id,
+                    user_id,
+                    first.to_rfc3339(),
+                    payload,
+                    cron_expr,
+                    tz.name(),
+                    max_runs
+                ],
+            )
+            .map_err(|e| Error::Database(format!("failed to schedule recurring task: {e}")))?;
+        Ok((task_id, first))
+    }
+
+    /// Record a successful run of a recurring task and arm the next occurrence.
+    ///
+    /// Returns the next run time, or `None` when the task is finished (its
+    /// `max_runs` cap was reached) — in which case it is marked completed.
+    pub fn complete_recurring_run(
+        &self,
+        task: &ScheduledTask,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let Some(ref expr) = task.cron_expr else {
+            self.complete_task(&task.id)?;
+            return Ok(None);
+        };
+
+        let runs = task.run_count + 1;
+        if let Some(max) = task.max_runs
+            && runs >= max
+        {
+            self.conn
+                .execute(
+                    "UPDATE scheduled_tasks
+                     SET status = 'completed', run_count = ?2, last_run_at = ?3, attempts = 0
+                     WHERE id = ?1",
+                    params![task.id, runs, now.to_rfc3339()],
+                )
+                .map_err(|e| Error::Database(format!("failed to finish recurring task: {e}")))?;
+            return Ok(None);
+        }
+
+        let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
+        let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+        self.conn
+            .execute(
+                "UPDATE scheduled_tasks
+                 SET execute_at = ?2, last_run_at = ?3, run_count = ?4, attempts = 0,
+                     status = 'pending'
+                 WHERE id = ?1",
+                params![task.id, next.to_rfc3339(), now.to_rfc3339(), runs],
+            )
+            .map_err(|e| Error::Database(format!("failed to reschedule task: {e}")))?;
+        Ok(Some(next))
+    }
+
+    /// Record a failed attempt.
+    ///
+    /// Retries with quadratic backoff up to `max_attempts`; past that the task
+    /// is marked failed (for a recurring task, the *occurrence* is skipped and
+    /// the next one is armed, so one bad run does not kill the schedule).
+    pub fn retry_or_fail_task(
+        &self,
+        task: &ScheduledTask,
+        max_attempts: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let attempts = task.attempts + 1;
+        if attempts < max_attempts {
+            let delay = crate::recurrence::retry_delay_secs(attempts as u32);
+            let retry_at = now + chrono::Duration::seconds(delay);
+            self.conn
+                .execute(
+                    "UPDATE scheduled_tasks SET execute_at = ?2, attempts = ?3 WHERE id = ?1",
+                    params![task.id, retry_at.to_rfc3339(), attempts],
+                )
+                .map_err(|e| Error::Database(format!("failed to schedule retry: {e}")))?;
+            return Ok(Some(retry_at));
+        }
+
+        if task.is_recurring() {
+            // Skip this occurrence, keep the schedule alive.
+            let expr = task.cron_expr.as_deref().unwrap_or_default();
+            let tz = crate::recurrence::parse_timezone(task.timezone.as_deref())?;
+            let next = crate::recurrence::next_after_run(expr, tz, now, task.execute_at)?;
+            self.conn
+                .execute(
+                    "UPDATE scheduled_tasks
+                     SET execute_at = ?2, attempts = 0, last_run_at = ?3 WHERE id = ?1",
+                    params![task.id, next.to_rfc3339(), now.to_rfc3339()],
+                )
+                .map_err(|e| Error::Database(format!("failed to skip occurrence: {e}")))?;
+            return Ok(Some(next));
+        }
+
+        self.fail_task(&task.id)?;
+        Ok(None)
+    }
+
+    /// Count pending recurring tasks for a session.
+    pub fn count_recurring_tasks_for_session(&self, session_id: &str) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM scheduled_tasks
+                 WHERE session_id = ?1 AND status = 'pending' AND cron_expr IS NOT NULL",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("failed to count recurring tasks: {e}")))
     }
 
     /// Count pending scheduled tasks for a given session.
@@ -1002,6 +1175,23 @@ pub struct ScheduledTask {
     pub execute_at: chrono::DateTime<chrono::Utc>,
     pub payload: String,
     pub session_metadata: serde_json::Value,
+    /// `Some` for recurring tasks; `None` keeps the classic one-shot path.
+    pub cron_expr: Option<String>,
+    /// IANA timezone the cron expression is evaluated in.
+    pub timezone: Option<String>,
+    /// Successful runs so far (recurring tasks only).
+    pub run_count: i64,
+    /// Optional cap on total runs.
+    pub max_runs: Option<i64>,
+    /// Consecutive failed attempts of the current occurrence.
+    pub attempts: i64,
+}
+
+impl ScheduledTask {
+    /// Whether this task repeats.
+    pub fn is_recurring(&self) -> bool {
+        self.cron_expr.is_some()
+    }
 }
 
 // ── GAR-202: Session token CRUD ───────────────────────────────────────────────
@@ -1264,6 +1454,7 @@ fn parse_timestamp(value: &str) -> chrono::DateTime<chrono::Utc> {
 mod tests {
     use super::SessionStore;
     use chrono::Duration;
+    use rusqlite::params;
 
     #[test]
     fn upsert_and_load_recent_messages_round_trip() {
@@ -1377,6 +1568,156 @@ mod tests {
 
         let due_after = store.poll_due_tasks().unwrap();
         assert_eq!(due_after.len(), 0);
+    }
+
+    // ── Recurrence ───────────────────────────────────────────────────
+
+    #[test]
+    fn recurring_task_reschedules_itself_after_a_run() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+
+        let (task_id, first) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
+            .expect("valid cron should be accepted");
+        assert!(
+            first > chrono::Utc::now(),
+            "first run must be in the future"
+        );
+
+        // Force it due, then poll it like the scheduler would.
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+        let due = store.poll_due_tasks().unwrap();
+        assert_eq!(due.len(), 1);
+        let task = &due[0];
+        assert!(task.is_recurring());
+        assert_eq!(task.run_count, 0);
+
+        let next = store
+            .complete_recurring_run(task, chrono::Utc::now())
+            .unwrap()
+            .expect("a task with no max_runs keeps going");
+        assert!(next > chrono::Utc::now());
+
+        // Still pending (not completed) and no longer due.
+        assert_eq!(store.poll_due_tasks().unwrap().len(), 0);
+        assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 1);
+    }
+
+    #[test]
+    fn recurring_task_stops_at_max_runs() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+
+        let (task_id, _) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", Some(1))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+
+        let task = store.poll_due_tasks().unwrap().remove(0);
+        let next = store
+            .complete_recurring_run(&task, chrono::Utc::now())
+            .unwrap();
+        assert!(next.is_none(), "max_runs=1 must finish after one run");
+        assert_eq!(store.poll_due_tasks().unwrap().len(), 0);
+        assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 0);
+    }
+
+    #[test]
+    fn invalid_cron_or_timezone_is_rejected_at_creation() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        assert!(
+            store
+                .schedule_recurring_task("s1", "u1", "not a cron", None, "x", None)
+                .is_err()
+        );
+        assert!(
+            store
+                .schedule_recurring_task("s1", "u1", "0 8 * * *", Some("Mars/Olympus"), "x", None)
+                .is_err()
+        );
+        assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 0);
+    }
+
+    #[test]
+    fn failed_one_shot_retries_then_gives_up() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let due_time = chrono::Utc::now() - Duration::minutes(1);
+        store.schedule_task("s1", "u1", due_time, "boom").unwrap();
+
+        let mut task = store.poll_due_tasks().unwrap().remove(0);
+        // Attempt 1 and 2 reschedule with growing backoff.
+        for expected_attempt in 1..3 {
+            let retry_at = store
+                .retry_or_fail_task(&task, 3, chrono::Utc::now())
+                .unwrap()
+                .expect("should retry");
+            assert!(retry_at > chrono::Utc::now());
+            task.attempts = expected_attempt;
+        }
+        // Third failure exhausts the budget.
+        let gone = store
+            .retry_or_fail_task(&task, 3, chrono::Utc::now())
+            .unwrap();
+        assert!(gone.is_none(), "one-shot task must be failed for good");
+        assert_eq!(store.poll_due_tasks().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn failed_recurring_occurrence_is_skipped_not_killed() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let (task_id, _) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET execute_at = ?2, attempts = 2 WHERE id = ?1",
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+
+        let task = store.poll_due_tasks().unwrap().remove(0);
+        let next = store
+            .retry_or_fail_task(&task, 3, chrono::Utc::now())
+            .unwrap()
+            .expect("recurring schedule must survive a bad occurrence");
+        assert!(next > chrono::Utc::now());
+        assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 1);
     }
 
     #[test]

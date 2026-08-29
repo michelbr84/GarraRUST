@@ -188,7 +188,10 @@ fn source_report(loader: &ConfigLoader) -> SourceReport {
     }
 }
 
-fn summarise(config: &AppConfig) -> ConfigSummary {
+/// `mcp_servers_count` comes from the caller so it can reflect the merged
+/// view (config.yml `mcp:` + mcp.json) — counting only `config.mcp` reported
+/// 0 even when mcp.json had working servers.
+fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
     let mut llm_providers: Vec<String> = config.llm.keys().cloned().collect();
     llm_providers.sort();
 
@@ -215,7 +218,7 @@ fn summarise(config: &AppConfig) -> ConfigSummary {
         llm_providers,
         llm_providers_api_key_set,
         embeddings_providers,
-        mcp_servers_count: config.mcp.len(),
+        mcp_servers_count,
         log_level: config.log_level.clone(),
     }
 }
@@ -932,7 +935,7 @@ pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
     ConfigCheck {
         source: source_report(loader),
         findings,
-        summary: summarise(config),
+        summary: summarise(config, loader.merged_mcp_config(config).len()),
     }
 }
 
@@ -1279,7 +1282,7 @@ mod tests {
                 extra: HashMap::new(),
             },
         );
-        let summary = summarise(&cfg);
+        let summary = summarise(&cfg, cfg.mcp.len());
         assert!(summary.gateway_api_key_set);
         assert_eq!(summary.llm_providers, vec!["openrouter".to_string()]);
         assert_eq!(

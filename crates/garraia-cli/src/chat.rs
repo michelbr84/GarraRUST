@@ -3,6 +3,7 @@
 //! `garraia chat` or just `garra` opens a local-first AI assistant
 //! that streams responses from Ollama (offline) or cloud providers (online).
 
+use std::future::Future;
 use std::io::{self, BufRead, Write as _};
 use std::sync::Arc;
 
@@ -569,12 +570,57 @@ pub async fn detect_provider(
     )
 }
 
+/// Await the streaming LLM call while concurrently draining `rx`, writing
+/// each delta to `out` as it arrives. The runtime pushes deltas through a
+/// bounded channel with `send().await` (runtime.rs), so the receiver MUST be
+/// polled during the call — draining only after completion deadlocks the
+/// producer once the buffer fills (the original `garra chat` hang).
+///
+/// Returns `None` on timeout. In every path the call future is dropped
+/// before the final drain, which closes the sender side so the drain
+/// terminates once buffered deltas are consumed.
+async fn stream_turn<F, T, E>(
+    call: F,
+    mut rx: mpsc::Receiver<String>,
+    timeout: std::time::Duration,
+    out: &mut (impl io::Write + ?Sized),
+) -> Option<std::result::Result<T, E>>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    let mut call = Box::pin(tokio::time::timeout(timeout, call));
+    let mut rx_open = true;
+    let result = loop {
+        tokio::select! {
+            r = &mut call => break r,
+            maybe = rx.recv(), if rx_open => match maybe {
+                Some(delta) => {
+                    let _ = write!(out, "{delta}");
+                    let _ = out.flush();
+                }
+                None => rx_open = false,
+            },
+        }
+    };
+    // Box::pin so the future (and its sender) can be dropped here even after
+    // a timeout — tokio::pin! would keep it alive and hang the drain below.
+    drop(call);
+    if rx_open {
+        while let Some(delta) = rx.recv().await {
+            let _ = write!(out, "{delta}");
+            let _ = out.flush();
+        }
+    }
+    result.ok()
+}
+
 /// Run the interactive chat REPL.
 pub async fn run_chat(
     config: AppConfig,
     provider_override: Option<String>,
     model_override: Option<String>,
     url_override: Option<String>,
+    timeout_secs: u64,
 ) -> Result<()> {
     // Detect or use specified provider
     let (mut provider_name, mut model_name, mut provider) =
@@ -752,56 +798,57 @@ pub async fn run_chat(
             _ => {}
         }
 
-        // Add user message to history
-        history.push(ChatMessage {
-            role: ChatRole::User,
-            content: MessagePart::Text(input.clone()),
-        });
-
         // Stream response
         print!("{CYAN}{BOLD}garra >{RESET} ");
         io::stdout().flush()?;
 
-        let (tx, mut rx) = mpsc::channel::<String>(100);
+        let (tx, rx) = mpsc::channel::<String>(100);
 
+        // The runtime appends the user message on top of the given history
+        // (runtime.rs), so `history` must NOT contain it yet — it is pushed
+        // below only after a successful turn.
         let history_clone = history.clone();
         let session_clone = session_id.clone();
         let model_clone = model_name.clone();
-        let runtime_ref = &runtime;
 
-        // Spawn streaming task
-        let result = tokio::select! {
-            result = runtime_ref.process_message_streaming(
-                &session_clone,
-                &input,
-                &history_clone,
-                tx,
-                Some(&model_clone),
-            ) => result,
-        };
+        let call = runtime.process_message_streaming(
+            &session_clone,
+            &input,
+            &history_clone,
+            tx,
+            Some(&model_clone),
+        );
+        let mut stdout = io::stdout();
+        let outcome = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(timeout_secs),
+            &mut stdout,
+        )
+        .await;
 
-        // Drain any remaining deltas from the channel
-        while let Ok(delta) = rx.try_recv() {
-            print!("{delta}");
-            io::stdout().flush()?;
-        }
-
-        match result {
-            Ok(full_response) => {
-                // Print any remaining text not sent via streaming
+        match outcome {
+            None => {
+                println!(
+                    "\n{YELLOW}Tempo esgotado apos {timeout_secs}s. A resposta foi descartada; \
+                     tente de novo ou aumente com --timeout-secs.{RESET}"
+                );
+            }
+            Some(Ok(full_response)) => {
+                // Deltas were already printed live during streaming
                 println!();
 
-                // Add assistant response to history
+                history.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(input.clone()),
+                });
                 history.push(ChatMessage {
                     role: ChatRole::Assistant,
                     content: MessagePart::Text(full_response),
                 });
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 println!("\n{YELLOW}Erro: {e}{RESET}");
-
-                // Remove the failed user message
-                history.pop();
 
                 // Hint for common errors
                 let err_str = format!("{e}");
@@ -1095,5 +1142,79 @@ mod tests {
             }
             other => panic!("expected UseDefault with hardcoded model, got {other:?}"),
         }
+    }
+
+    // ─── stream_turn (regression: bounded-channel deadlock, GAR chat hang) ─
+
+    /// A producer that pushes far more deltas than the channel capacity used
+    /// to deadlock forever: the old REPL only drained AFTER the call
+    /// completed, so `send().await` wedged once the buffer filled. The
+    /// 5s outer timeout turns a regression into a failure instead of a hang.
+    #[tokio::test]
+    async fn stream_turn_drains_concurrently_without_deadlock() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(2);
+        let call = async move {
+            for i in 0..300 {
+                tx.send(format!("d{i} "))
+                    .await
+                    .map_err(|_| "receiver dropped")?;
+            }
+            Ok::<String, &'static str>("full".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(call, rx, std::time::Duration::from_secs(30), &mut out),
+        )
+        .await
+        .expect("stream_turn must not deadlock with >capacity deltas");
+
+        assert_eq!(outcome, Some(Ok("full".to_string())));
+        let printed = String::from_utf8(out).expect("utf8");
+        assert!(printed.starts_with("d0 "));
+        assert!(printed.ends_with("d299 "));
+        assert_eq!(printed.matches(' ').count(), 300);
+    }
+
+    /// On timeout the call future must be dropped (closing the sender) and
+    /// already-buffered deltas must still be flushed before returning None.
+    #[tokio::test]
+    async fn stream_turn_times_out_and_flushes_buffered_deltas() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            tx.send("partial ".to_string())
+                .await
+                .map_err(|_| "receiver dropped")?;
+            // Never completes: simulates a stalled provider/SSE stream.
+            std::future::pending::<()>().await;
+            Ok::<String, &'static str>("unreachable".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(call, rx, std::time::Duration::from_millis(50), &mut out),
+        )
+        .await
+        .expect("timeout path must not hang");
+
+        assert_eq!(outcome, None);
+        assert_eq!(String::from_utf8(out).expect("utf8"), "partial ");
+    }
+
+    /// Errors from the call are passed through untouched.
+    #[tokio::test]
+    async fn stream_turn_propagates_call_error() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            drop(tx);
+            Err::<String, &'static str>("provider exploded")
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = stream_turn(call, rx, std::time::Duration::from_secs(5), &mut out).await;
+        assert_eq!(outcome, Some(Err("provider exploded")));
+        assert!(out.is_empty());
     }
 }

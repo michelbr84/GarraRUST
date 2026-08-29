@@ -52,6 +52,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0010](0010-garra-learning-agent.md) | Garra Learning Agent / Self-Improving Operations Manual | ✅ accepted | 2026-05-17 | [GAR-641](https://linear.app/chatgpt25/issue/GAR-641) |
 | [0011](0011-garra-max-power.md) | GarraMaxPower — Native Agent-Advanced Mode (`garra max-power`) | ✅ accepted | 2026-05-24 | [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) |
 | [0012](0012-garra-persona.md) | Persona Amistosa do Garra — tom de voz padrão (inspirado em OpenHuman) | ✅ accepted | 2026-06-01 | GAR-771 |
+| [0013](0013-scheduling-two-tier-recurrence.md) | Recorrência de agendamento em duas camadas (cron no SQLite pessoal + RRULE no workspace) | ✅ accepted | 2026-08-29 | plan 0355 |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

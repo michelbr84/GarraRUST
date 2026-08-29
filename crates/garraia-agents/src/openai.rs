@@ -35,8 +35,14 @@ impl OpenAiProvider {
     ) -> Self {
         let base_url_str = base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let is_openrouter = base_url_str.contains("openrouter.ai");
+        // connect_timeout only: responses stream for minutes, but a dead
+        // host must fail fast instead of hanging the caller indefinitely.
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             api_key: api_key.into(),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             base_url: base_url_str,

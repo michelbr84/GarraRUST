@@ -56,6 +56,7 @@ impl ConfigLoader {
     }
 
     pub fn load(&self) -> Result<AppConfig> {
+        self.warn_if_legacy_dir_shadowed();
         let yaml_path = self.config_dir.join("config.yml");
         let toml_path = self.config_dir.join("config.toml");
 
@@ -75,7 +76,34 @@ impl ConfigLoader {
         }
     }
 
-    /// Load MCP server configs from `~/.garraia/mcp.json` (Claude Desktop compatible format).
+    /// Warn when config files exist in the legacy `~/.garraia` dir while the
+    /// active dir is another one (normally `~/.config/garraia`, which
+    /// `ensure_dirs` creates on every run). Historic docs pointed users at
+    /// `~/.garraia`, so files edited there were silently ignored.
+    fn warn_if_legacy_dir_shadowed(&self) {
+        let Some(legacy) = dirs::home_dir().map(|h| h.join(".garraia")) else {
+            return;
+        };
+        if legacy == self.config_dir {
+            return;
+        }
+        let shadowed: Vec<&str> = ["config.yml", "config.toml", "mcp.json"]
+            .into_iter()
+            .filter(|f| legacy.join(f).exists())
+            .collect();
+        if !shadowed.is_empty() {
+            tracing::warn!(
+                "ignoring {:?} in legacy dir {} — the active config dir is {} \
+                 (move the files there, or set GARRAIA_CONFIG_DIR={})",
+                shadowed,
+                legacy.display(),
+                self.config_dir.display(),
+                legacy.display()
+            );
+        }
+    }
+
+    /// Load MCP server configs from `<config_dir>/mcp.json` (Claude Desktop compatible format).
     /// Returns an empty map if the file does not exist.
     pub fn load_mcp_json(&self) -> HashMap<String, McpServerConfig> {
         let mcp_path = self.config_dir.join("mcp.json");
@@ -91,25 +119,41 @@ impl ConfigLoader {
             }
         };
 
+        // Per-entry deserialization: one malformed server (e.g. a URL-only
+        // entry written by the admin UI, whose schema differs) must not drop
+        // every other server in the file.
         #[derive(serde::Deserialize)]
         struct McpJsonFile {
             #[serde(default, rename = "mcpServers")]
-            mcp_servers: HashMap<String, McpServerConfig>,
+            mcp_servers: HashMap<String, serde_json::Value>,
         }
 
-        match serde_json::from_str::<McpJsonFile>(&contents) {
-            Ok(file) => {
-                info!(
-                    "loaded {} MCP server(s) from mcp.json",
-                    file.mcp_servers.len()
-                );
-                file.mcp_servers
-            }
+        let raw = match serde_json::from_str::<McpJsonFile>(&contents) {
+            Ok(file) => file.mcp_servers,
             Err(e) => {
                 tracing::warn!("failed to parse mcp.json: {e}");
-                HashMap::new()
+                return HashMap::new();
+            }
+        };
+
+        let total = raw.len();
+        let mut servers = HashMap::new();
+        for (name, value) in raw {
+            match serde_json::from_value::<McpServerConfig>(value) {
+                Ok(cfg) => {
+                    servers.insert(name, cfg);
+                }
+                Err(e) => {
+                    tracing::warn!("mcp.json entry '{name}' is invalid, skipping: {e}");
+                }
             }
         }
+        info!(
+            "loaded {} of {} MCP server(s) from mcp.json",
+            servers.len(),
+            total
+        );
+        servers
     }
 
     /// Merge MCP configs from mcp.json and config.yml. Config.yml entries win on conflict.
@@ -369,6 +413,48 @@ mod tests {
         assert_eq!(merged.get("server1").unwrap().command, "from-config-yml");
         // server2 should still come from mcp.json
         assert_eq!(merged.get("server2").unwrap().command, "only-in-json");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_mcp_json_skips_invalid_entries_and_keeps_valid_ones() {
+        let dir = temp_dir("mcp-tolerant");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+        // "broken" lacks the required `command` (e.g. a URL-only entry
+        // written by the gateway admin UI). It must not drop "filesystem".
+        let mcp_json = r#"{
+            "mcpServers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/root"]
+                },
+                "broken": {
+                    "url": "http://localhost:9999/mcp"
+                }
+            }
+        }"#;
+        fs::write(dir.join("mcp.json"), mcp_json).expect("failed to write mcp.json");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        let mcp = loader.load_mcp_json();
+
+        assert_eq!(mcp.len(), 1);
+        assert_eq!(mcp.get("filesystem").unwrap().command, "npx");
+        assert!(!mcp.contains_key("broken"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_mcp_json_malformed_top_level_returns_empty_without_panic() {
+        let dir = temp_dir("mcp-malformed");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("mcp.json"), "{ not json").expect("failed to write mcp.json");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        assert!(loader.load_mcp_json().is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }

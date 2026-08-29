@@ -65,6 +65,11 @@ dev-echo-provider = [
     "garraia-gateway/dev-echo-provider",
     "garraia-agents/dev-echo-provider",
 ]
+# Forwards the Streamable HTTP MCP client transport down the chain.
+# Without this passthrough it was impossible to build the `garra` binary
+# with HTTP MCP client support (`transport: http` in mcp config was
+# silently skipped). Default OFF — release binaries stay stdio-only.
+mcp-http = ["garraia-gateway/mcp-http", "garraia-agents/mcp-http"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -15,6 +15,10 @@ const MAX_DELAY_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// Máximo de heartbeats pendentes por sessão.
 const MAX_PENDING_PER_SESSION: i64 = 5;
 
+/// Máximo de tarefas recorrentes por sessão. Cap próprio: uma recorrente
+/// consome uma vaga para sempre, ao contrário de um heartbeat one-shot.
+const MAX_RECURRING_PER_SESSION: i64 = 3;
+
 // ── Phase 5.4: Webhook & Event Trigger Support ──────────────────────────
 
 /// Event types that can trigger agent execution
@@ -357,6 +361,110 @@ impl Tool for ScheduleHeartbeat {
             "Heartbeat agendado para {} (em {} segundos). ID da tarefa: {}",
             execute_at.to_rfc3339(),
             delay,
+            task_id
+        )))
+    }
+}
+
+/// Ferramenta para agendar uma tarefa recorrente por expressão cron.
+pub struct ScheduleRecurring {
+    store: Arc<Mutex<SessionStore>>,
+}
+
+impl ScheduleRecurring {
+    pub fn new(store: Arc<Mutex<SessionStore>>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl Tool for ScheduleRecurring {
+    fn name(&self) -> &'static str {
+        "schedule_recurring"
+    }
+
+    fn description(&self) -> &'static str {
+        "Agenda uma tarefa RECORRENTE por expressão cron (ex: todo dia às 8h).          Use quando o usuário pedir algo repetido; para um único despertar use schedule_heartbeat."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "cron_expr": {
+                    "type": "string",
+                    "description": "Expressão cron de 5 campos (min hora dia mês dia-da-semana). Ex: '0 8 * * *' = todo dia às 8h; '*/15 * * * *' = a cada 15 min."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo/contexto da execução (ex: 'Resumo diário das tarefas')"
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "Timezone IANA para interpretar o horário (padrão: America/New_York)"
+                },
+                "max_runs": {
+                    "type": "integer",
+                    "description": "Opcional: encerra a recorrência após N execuções"
+                }
+            },
+            "required": ["cron_expr", "reason"]
+        })
+    }
+
+    async fn execute(&self, context: &ToolContext, args: serde_json::Value) -> Result<ToolOutput> {
+        // Mesmo guard anti-recursão do heartbeat: uma execução agendada não
+        // pode criar novos agendamentos.
+        if context.is_heartbeat {
+            return Err(Error::Agent(
+                "não é possível agendar uma recorrência durante a execução de uma tarefa agendada"
+                    .to_string(),
+            ));
+        }
+
+        let cron_expr = args["cron_expr"]
+            .as_str()
+            .ok_or_else(|| Error::Agent("argumento 'cron_expr' ausente ou inválido".to_string()))?;
+        let reason = args["reason"]
+            .as_str()
+            .ok_or_else(|| Error::Agent("argumento 'reason' ausente ou inválido".to_string()))?;
+        let timezone = args["timezone"].as_str();
+        let max_runs = args["max_runs"].as_i64();
+
+        if let Some(max) = max_runs
+            && max <= 0
+        {
+            return Err(Error::Agent("max_runs deve ser positivo".to_string()));
+        }
+
+        let user_id = context
+            .user_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let store = self.store.lock().await;
+
+        let recurring = store.count_recurring_tasks_for_session(&context.session_id)?;
+        if recurring >= MAX_RECURRING_PER_SESSION {
+            return Err(Error::Agent(format!(
+                "a sessão já possui {} tarefas recorrentes (máximo {})",
+                recurring, MAX_RECURRING_PER_SESSION
+            )));
+        }
+
+        let (task_id, first_run) = store.schedule_recurring_task(
+            &context.session_id,
+            &user_id,
+            cron_expr,
+            timezone,
+            reason,
+            max_runs,
+        )?;
+
+        Ok(ToolOutput::success(format!(
+            "Tarefa recorrente agendada ('{}'). Primeira execução: {}. ID: {}",
+            cron_expr,
+            first_run.to_rfc3339(),
             task_id
         )))
     }

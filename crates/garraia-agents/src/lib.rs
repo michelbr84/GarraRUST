@@ -59,8 +59,8 @@ pub use providers::{
 pub use runtime::AgentRuntime;
 pub use tools::{
     BashTool, CodeReviewTool, EventTrigger, EventType, FileReadTool, FileWriteTool, ListDirTool,
-    RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduledTask, TaskStatus, Tool, ToolContext,
-    ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
+    RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus,
+    Tool, ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
 };
 
 #[cfg(feature = "mcp")]

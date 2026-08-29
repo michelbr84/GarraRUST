@@ -903,23 +903,36 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
 /// Build MCP tools from merged config (config.yml + mcp.json).
 ///
-/// Returns the manager and a flat list of bridged tools ready for registration.
-pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Tool>>) {
+/// Returns the manager, a flat list of bridged tools ready for registration,
+/// and the servers that failed to connect as `(name, error)` pairs so the
+/// caller can surface them (registry status, admin UI) instead of the
+/// failures living only in a warn! line.
+pub async fn build_mcp_tools(
+    config: &AppConfig,
+) -> (Arc<McpManager>, Vec<Box<dyn Tool>>, Vec<(String, String)>) {
     let loader = match garraia_config::ConfigLoader::new() {
         Ok(l) => l,
         Err(e) => {
             warn!("failed to create config loader for MCP: {e}");
-            return (McpManager::new(), Vec::new());
+            return (Arc::new(McpManager::new()), Vec::new(), Vec::new());
         }
     };
 
     let mcp_configs = loader.merged_mcp_config(config);
     if mcp_configs.is_empty() {
-        return (McpManager::new(), Vec::new());
+        // Explicit log: "nothing configured" used to be indistinguishable
+        // from "config file in another directory was silently ignored".
+        info!(
+            config_dir = %loader.config_dir().display(),
+            config_yml_mcp = config.mcp.len(),
+            "no MCP servers configured (checked mcp.json and the 'mcp:' section of config.yml in this directory)"
+        );
+        return (Arc::new(McpManager::new()), Vec::new(), Vec::new());
     }
 
-    let manager = McpManager::new();
+    let manager = Arc::new(McpManager::new());
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
 
     for (name, server_config) in &mcp_configs {
         let enabled = server_config.enabled.unwrap_or(true);
@@ -987,11 +1000,31 @@ pub async fn build_mcp_tools(config: &AppConfig) -> (McpManager, Vec<Box<dyn Too
             }
             Err(e) => {
                 warn!("failed to connect MCP server '{name}': {e}");
+                failures.push((name.clone(), e.to_string()));
+                // Boot failures used to be terminal: the server never entered
+                // `connections`, so the health monitor could not see it and
+                // only a manual admin restart recovered it. Queue it for the
+                // same backoff-driven retry as a crashed connection.
+                if server_config.transport == "stdio" {
+                    manager
+                        .register_pending_stdio(
+                            name,
+                            &server_config.command,
+                            &server_config.args,
+                            &server_config.env,
+                            timeout_secs,
+                            server_config.allowed_tools.clone(),
+                            memory_limit_mb,
+                            max_restarts,
+                            restart_delay_secs,
+                        )
+                        .await;
+                }
             }
         }
     }
 
-    (manager, all_tools)
+    (manager, all_tools, failures)
 }
 
 /// Build a voice handler for Telegram that processes voice messages.

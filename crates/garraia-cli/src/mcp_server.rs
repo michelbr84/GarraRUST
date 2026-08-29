@@ -53,6 +53,109 @@ const PROVIDER_DEFAULT: &str = "openrouter";
 /// passed explicitly by the caller).
 const MODEL_DEFAULT: &str = "openrouter/free";
 
+/// Providers accepted at runtime. Mirrors the `enum` advertised in the
+/// `garra_ask` JSON schema — which MCP hosts treat as advisory, so it must
+/// be enforced here. Provider aliases defined in the user's `config.yml`
+/// `llm:` section are additionally accepted (see `validate_policy`).
+const PROVIDER_ENUM: [&str; 4] = ["ollama", "anthropic", "openai", "openrouter"];
+
+/// Runtime limits for `garra_ask`, resolved once at server startup.
+///
+/// Both knobs are opt-in via env vars; when absent, behavior is unchanged
+/// (any model accepted, caller timeout honored up to the schema max).
+/// This is the operator-side "policy" hook for pairing GarraIA with other
+/// agents (e.g. Hermes) without handing them an unbounded spend button.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ServerPolicy {
+    /// From `GARRAIA_MCP_MODEL_ALLOWLIST` (comma-separated). Empty = any
+    /// model. When set, a caller-supplied (or defaulted) model outside the
+    /// list is rejected with `invalid_params` — the operator's way to keep
+    /// e.g. `openrouter/auto` unreachable from MCP callers.
+    model_allowlist: Vec<String>,
+    /// From `GARRAIA_MCP_MAX_TIMEOUT_SECS`, clamped to the schema max.
+    /// `None` = schema max (600) applies.
+    max_timeout_secs: Option<u64>,
+}
+
+impl ServerPolicy {
+    /// Pure constructor so tests never mutate process env (module
+    /// invariant: zero env-mutation in these tests).
+    pub(crate) fn from_values(allowlist: Option<&str>, max_timeout: Option<&str>) -> Self {
+        let model_allowlist = allowlist
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let max_timeout_secs = max_timeout
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .map(|v| v.clamp(ARG_TIMEOUT_SECS_MIN, ARG_TIMEOUT_SECS_MAX));
+        Self {
+            model_allowlist,
+            max_timeout_secs,
+        }
+    }
+
+    pub(crate) fn from_env() -> Self {
+        Self::from_values(
+            std::env::var("GARRAIA_MCP_MODEL_ALLOWLIST").ok().as_deref(),
+            std::env::var("GARRAIA_MCP_MAX_TIMEOUT_SECS")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    /// Effective timeout when the caller omits `timeout_secs`: the schema
+    /// default, never above the operator cap.
+    pub(crate) fn default_timeout_secs(&self) -> u64 {
+        self.max_timeout_secs
+            .map_or(ARG_TIMEOUT_SECS_DEFAULT, |cap| {
+                cap.min(ARG_TIMEOUT_SECS_DEFAULT)
+            })
+    }
+}
+
+/// Enforce the runtime policy over the already-bounds-checked args.
+/// `config` supplies the accepted provider set: the schema enum plus any
+/// alias the operator defined under `llm:` in config.yml.
+pub(crate) fn validate_policy(
+    config: &AppConfig,
+    policy: &ServerPolicy,
+    provider: &str,
+    model: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    // Dev/CI only: mirrors the feature-gated "echo" entry the schema enum
+    // gains under `dev-echo-provider` (PR #859) — never in default builds.
+    #[cfg(feature = "dev-echo-provider")]
+    let feature_gated_ok = provider == "echo";
+    #[cfg(not(feature = "dev-echo-provider"))]
+    let feature_gated_ok = false;
+    if !PROVIDER_ENUM.contains(&provider) && !feature_gated_ok && !config.llm.contains_key(provider)
+    {
+        return Err(format!(
+            "provider '{provider}' not accepted (schema enum {PROVIDER_ENUM:?} or an alias \
+             configured under llm: in config.yml)"
+        ));
+    }
+    if !policy.model_allowlist.is_empty() && !policy.model_allowlist.iter().any(|m| m == model) {
+        return Err(format!(
+            "model '{model}' blocked by GARRAIA_MCP_MODEL_ALLOWLIST"
+        ));
+    }
+    if let Some(cap) = policy.max_timeout_secs
+        && timeout_secs > cap
+    {
+        return Err(format!(
+            "timeout_secs {timeout_secs} exceeds operator cap GARRAIA_MCP_MAX_TIMEOUT_SECS={cap}"
+        ));
+    }
+    Ok(())
+}
+
 /// GAR-583 — Argument shape for the `garra_ask` MCP tool.
 ///
 /// Deserialized from `CallToolRequestParam.arguments`. `deny_unknown_fields`
@@ -193,11 +296,12 @@ pub(crate) fn garra_ask_tool() -> Tool {
 #[derive(Clone)]
 pub(crate) struct GarraToolHandler {
     config: Arc<AppConfig>,
+    policy: ServerPolicy,
 }
 
 impl GarraToolHandler {
-    pub(crate) fn new(config: Arc<AppConfig>) -> Self {
-        Self { config }
+    pub(crate) fn with_policy(config: Arc<AppConfig>, policy: ServerPolicy) -> Self {
+        Self { config, policy }
     }
 }
 
@@ -257,12 +361,21 @@ impl ServerHandler for GarraToolHandler {
         // `default` values but MCP hosts do not synthesize them, so the
         // handler honors the contract explicitly.
         let (provider, model) = resolve_overrides(args.provider, args.model);
+        let timeout_secs = args
+            .timeout_secs
+            .unwrap_or_else(|| self.policy.default_timeout_secs());
+        // Runtime policy: provider enum (advisory in the schema, binding
+        // here) + operator model allowlist + operator timeout cap.
+        if let Err(e) = validate_policy(&self.config, &self.policy, &provider, &model, timeout_secs)
+        {
+            return Err(McpError::invalid_params(e, None));
+        }
         let opts = AskOptions {
             message: args.message,
             provider_override: Some(provider),
             model_override: Some(model),
             url_override: None,
-            timeout_secs: args.timeout_secs.unwrap_or(ARG_TIMEOUT_SECS_DEFAULT),
+            timeout_secs,
             system_prompt_override: args.system_prompt,
         };
         let outcome = ask::ask_oneshot(&self.config, opts).await;
@@ -293,7 +406,20 @@ impl ServerHandler for GarraToolHandler {
 /// JSON-RPC channel.
 pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
     tracing::info!("MCP server starting on stdio (GAR-583)");
-    let handler = GarraToolHandler::new(Arc::new(config));
+    let policy = ServerPolicy::from_env();
+    if policy.model_allowlist.is_empty() && policy.max_timeout_secs.is_none() {
+        tracing::info!(
+            "garra_ask policy: no operator limits (set GARRAIA_MCP_MODEL_ALLOWLIST / \
+             GARRAIA_MCP_MAX_TIMEOUT_SECS to restrict MCP callers)"
+        );
+    } else {
+        tracing::info!(
+            model_allowlist = ?policy.model_allowlist,
+            max_timeout_secs = ?policy.max_timeout_secs,
+            "garra_ask policy: operator limits active"
+        );
+    }
+    let handler = GarraToolHandler::with_policy(Arc::new(config), policy);
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = handler.serve((stdin, stdout)).await?;
     tracing::info!("MCP server ready; waiting for client requests");
@@ -612,7 +738,7 @@ mod tests {
     #[test]
     fn get_info_advertises_tools_capability() {
         let cfg = std::sync::Arc::new(garraia_config::AppConfig::default());
-        let handler = GarraToolHandler::new(cfg);
+        let handler = GarraToolHandler::with_policy(cfg, ServerPolicy::default());
         let info = ServerHandler::get_info(&handler);
         assert!(
             info.capabilities.tools.is_some(),
@@ -627,7 +753,7 @@ mod tests {
     #[test]
     fn get_info_advertises_only_tools_capability() {
         let cfg = std::sync::Arc::new(garraia_config::AppConfig::default());
-        let handler = GarraToolHandler::new(cfg);
+        let handler = GarraToolHandler::with_policy(cfg, ServerPolicy::default());
         let info = ServerHandler::get_info(&handler);
         let caps = &info.capabilities;
         assert!(caps.experimental.is_none(), "experimental must stay off");
@@ -662,5 +788,87 @@ mod tests {
                 "mcp_server.rs production code must not contain `{needle}` (GAR-583 safety invariant)"
             );
         }
+    }
+
+    // ─── ServerPolicy (operator limits; pure — no env mutation) ────────
+
+    fn cfg_with_llm_alias(alias: &str) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            alias.to_string(),
+            garraia_config::LlmProviderConfig {
+                provider: "openai".to_string(),
+                model: None,
+                api_key: Some("k".to_string()),
+                base_url: Some("http://localhost:1234/v1".to_string()),
+                extra: std::collections::HashMap::new(),
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn policy_default_is_unrestricted_and_preserves_historic_behavior() {
+        let policy = ServerPolicy::from_values(None, None);
+        let cfg = AppConfig::default();
+        // Any model — including openrouter/auto — passes without an allowlist.
+        assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/auto", 600).is_ok());
+        assert_eq!(policy.default_timeout_secs(), 60);
+    }
+
+    #[test]
+    fn policy_parses_allowlist_trimming_and_skipping_empties() {
+        let policy = ServerPolicy::from_values(Some(" openrouter/free, ,gpt-5-mini "), None);
+        let cfg = AppConfig::default();
+        assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 60).is_ok());
+        assert!(validate_policy(&cfg, &policy, "openai", "gpt-5-mini", 60).is_ok());
+        let err = validate_policy(&cfg, &policy, "openrouter", "openrouter/auto", 60)
+            .expect_err("auto must be blocked when allowlist is set");
+        assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+    }
+
+    #[test]
+    fn policy_timeout_cap_rejects_above_and_lowers_default() {
+        let policy = ServerPolicy::from_values(None, Some("30"));
+        let cfg = AppConfig::default();
+        assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 30).is_ok());
+        let err = validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 31)
+            .expect_err("above cap must be rejected");
+        assert!(err.contains("GARRAIA_MCP_MAX_TIMEOUT_SECS=30"), "{err}");
+        // Caller omitting timeout_secs gets a default that respects the cap.
+        assert_eq!(policy.default_timeout_secs(), 30);
+    }
+
+    #[test]
+    fn policy_timeout_cap_is_clamped_to_schema_range() {
+        let policy = ServerPolicy::from_values(None, Some("9999"));
+        assert_eq!(policy.max_timeout_secs, Some(600));
+        let unparsable = ServerPolicy::from_values(None, Some("banana"));
+        assert_eq!(unparsable.max_timeout_secs, None);
+    }
+
+    #[test]
+    fn policy_gates_echo_provider_by_feature() {
+        // Runtime enforcement must mirror the schema enum: "echo" passes
+        // only when dev-echo-provider is compiled in (PR #859).
+        let policy = ServerPolicy::default();
+        let cfg = AppConfig::default();
+        let ok = validate_policy(&cfg, &policy, "echo", "echo", 60).is_ok();
+        assert_eq!(ok, cfg!(feature = "dev-echo-provider"));
+    }
+
+    #[test]
+    fn policy_provider_enum_is_enforced_but_config_aliases_pass() {
+        let policy = ServerPolicy::default();
+        let cfg = cfg_with_llm_alias("sansa");
+        // Schema enum members always pass.
+        for p in ["ollama", "anthropic", "openai", "openrouter"] {
+            assert!(validate_policy(&cfg, &policy, p, "any-model", 60).is_ok());
+        }
+        // Alias configured under llm: passes; an unknown provider does not.
+        assert!(validate_policy(&cfg, &policy, "sansa", "any-model", 60).is_ok());
+        let err = validate_policy(&cfg, &policy, "evil-provider", "any-model", 60)
+            .expect_err("unknown provider must be rejected");
+        assert!(err.contains("not accepted"), "{err}");
     }
 }

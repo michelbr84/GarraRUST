@@ -112,6 +112,11 @@ libc = "0.2"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+# Recurring schedules: cron expression parsing + next-occurrence search.
+croner = "3"
+# RFC 5545 RRULE expansion for workspace task recurrence.
+rrule = "0.14"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "chrono"] }
 dotenvy = "0.15"
 url = "2"

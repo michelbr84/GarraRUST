@@ -4,6 +4,12 @@ GarraIA supports the Model Context Protocol for connecting to external tools and
 
 ## Setup
 
+Both `config.yml` and `mcp.json` live in the **active config directory**:
+`$GARRAIA_CONFIG_DIR` if set, else `~/.config/garraia` (the default on
+new installs), else legacy `~/.garraia`. Run `garraia config check` to
+confirm which directory the gateway actually reads — files edited in the
+wrong one are silently ignored.
+
 ### Stdio Transport
 
 Configure MCP servers in `config.yml`:
@@ -104,7 +110,8 @@ mcp:
 
 GarraIA is compatible with Claude Desktop MCP configuration.
 
-Create `~/.garraia/mcp.json`:
+Create `mcp.json` in the active config directory (default
+`~/.config/garraia/mcp.json`):
 
 ```json
 {
@@ -162,3 +169,10 @@ timeouts:
   mcp:
     default_secs: 60  # Increase from default
 ```
+
+## See also
+
+- [`docs/cli-mcp-server.md`](cli-mcp-server.md) — the reverse direction:
+  GarraIA as MCP **server** exposing `garra_ask` to other hosts.
+- [`docs/hermes-integration.md`](hermes-integration.md) — pairing
+  GarraIA with another agent in both directions (loop topology, policy).

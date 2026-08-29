@@ -131,7 +131,7 @@ fn print_handoff_summary() {
 }
 
 fn print_capability_summary(config: &garraia_config::AppConfig) {
-    let snap = capability_prompt::build_snapshot(config);
+    let snap = capability_prompt::build_snapshot_merged(config);
     println!(
         "  [capabilities] {}",
         capability_prompt::render_summary(&snap)
@@ -140,7 +140,7 @@ fn print_capability_summary(config: &garraia_config::AppConfig) {
 }
 
 fn print_menu_with_capabilities(config: &garraia_config::AppConfig) {
-    let snap = capability_prompt::build_snapshot(config);
+    let snap = capability_prompt::build_snapshot_merged(config);
     println!();
     println!("  ╔══════════════════════════════════════════╗");
     println!("  ║          G A R R A  M A X  P O W E R    ║");
