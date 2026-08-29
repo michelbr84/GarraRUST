@@ -177,6 +177,18 @@ agent:
   default_provider: ollama-launch
 ```
 
+### O patch já está escrito e validado
+
+O código Go da integração está versionado neste repositório em
+[`contrib/ollama-launch/`](../../contrib/ollama-launch/) — `garraia.go`,
+`garraia_test.go` e o patch do `registry.go`, mais o passo a passo para
+abrir o PR. Ele foi escrito contra o `ollama/ollama` real e validado lá
+dentro: `gofmt` limpo, `go vet` limpo, `go build ./...` ok e a **suíte
+`./cmd/launch/` inteira verde**, incluindo os 10 testes novos.
+
+Falta só o passo que exige um fork: `gh repo fork ollama/ollama`, aplicar
+os três arquivos e abrir o PR.
+
 Enquanto o PR upstream não é aceito, o equivalente manual é:
 
 ```bash

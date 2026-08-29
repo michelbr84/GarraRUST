@@ -110,12 +110,29 @@ mais leve (~9 GB contra ~18 GB).
   ausente imprime a dica sem prompt fora de TTY; `-y` baixa e usa;
   `--model openrouter/auto` não vira tag do Ollama.
 
-## Não entregue (e por quê)
+## Parte upstream — escrita e validada, falta abrir o PR
 
-**PR upstream em `ollama/ollama`.** Rastreado à parte. Este repositório entrega
-o lado do GarraIA do contrato (§4 de `docs/integrations/ollama-launch.md`);
-aceitar a integração é decisão dos mantenedores do Ollama. Windows fica fora da
-primeira versão — o GarraIA não publica instalador `.ps1` para web.
+`contrib/ollama-launch/` traz `garraia.go` (implementa `Runner` +
+`ManagedSingleModel`, espelhando `cmd/launch/hermes.go`), `garraia_test.go`
+(10 testes) e o patch do `registry.go`. **Escritos contra o `ollama/ollama`
+real e validados lá dentro**: `gofmt -l cmd/` limpo, `go vet ./cmd/launch/`
+limpo, `go build ./...` ok, e `go test ./cmd/launch/` — a suíte **inteira** —
+verde.
+
+Armadilha que só apareceu rodando a suíte de verdade: `TestListIntegrationInfos`
+tem dois subtestes com exigências opostas. `follows_launcher_order` compara a
+lista visível inteira contra `launcherIntegrationOrder` (toda integração
+não-hidden precisa estar lá), enquanto `prioritizes_primary_launcher_integrations`
+trava o **prefixo**. A entrada nova tem de ir no **fim**. A primeira tentativa
+pôs `garraia` em quarto lugar e quebrou o segundo subteste — promover uma
+integração no menu primário é decisão dos mantenedores do Ollama, não nossa.
+
+**O que falta:** o passo que exige fork (`gh repo fork ollama/ollama`,
+aplicar os três arquivos, abrir o PR). Não foi possível nesta sessão: o acesso
+GitHub está escopado em `michelbr84/garrarust` e o `add_repo` recusa adds
+cross-owner. Aceitar a integração é decisão dos mantenedores do Ollama.
+Windows fica fora da primeira versão — o GarraIA não publica instalador
+`.ps1` para web.
 
 ## Nota de segurança
 

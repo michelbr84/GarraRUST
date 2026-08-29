@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tests/install_sh/parse_args.sh` (18 casos) ligada ao CI.
 - Nova página `docs/integrations/ollama-launch.md` cobrindo o modelo padrão,
   a resolução do `--model` e o que falta para `ollama launch garraia`.
+- **`contrib/ollama-launch/`** — a integração Go do `ollama launch`, pronta
+  para virar PR no `ollama/ollama`: `garraia.go` (implementa `Runner` +
+  `ManagedSingleModel`, espelhando `cmd/launch/hermes.go`), `garraia_test.go`
+  (10 testes) e o patch do `registry.go`. Escrita contra o `ollama/ollama`
+  real e validada lá dentro — `gofmt` e `go vet` limpos, `go build ./...` ok
+  e a suíte `./cmd/launch/` **inteira** verde. Não é código de runtime deste
+  repositório: o registro de integrações do Ollama é uma slice Go compilada
+  dentro do binário, sem manifesto nem plugin, então a integração só passa a
+  existir quando o PR upstream for aceito.
 - Teste `test_lopdf_roundtrip_smoke` no `garraia-media` — os 4 testes reais de PDF
   estão `#[ignore]`d desde abril, então até agora o `cargo test` só provava que o
   crate compila contra o lopdf. O novo teste escreve um PDF de uma página com o
