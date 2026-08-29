@@ -104,6 +104,35 @@ version 1.0.0). O script consome o JSON; este `.md` é a versão humana auditáv
 **Manter ambos sincronizados** — o script tem flag `--check-md` que valida que
 os números de alerta listados em §4 batem com `entries[].alert_number` do JSON.
 
+### Wiring em workflow (2026-08-29) — fecha o GAR-491.2
+
+O comando acima era executado **à mão**, de uma máquina com PAT de escopo
+`security_events` — foi assim que os 22 alertas de GAR-490/GAR-491 foram
+dispensados (§5). O header do script registrava a lacuna:
+
+> *"Per amendment A8: there is intentionally NO schedule wiring here. (…) A
+> future sub-issue (GAR-491.2) decides if/when to wire it into a workflow."*
+
+Agora existe [`.github/workflows/codeql-apply-dismissals.yml`](../../.github/workflows/codeql-apply-dismissals.yml):
+`workflow_dispatch`, `permissions: security-events: write`, rodando o mesmo
+script com o `GITHUB_TOKEN` do job — sem PAT.
+
+Três decisões que importam:
+
+- **Dry-run é o default.** O input `apply` é `false` até alguém marcar. Rodar o
+  workflow sem pensar não escreve nada.
+- **Workflow separado do de triagem.** `codeql-triage.yml` continua
+  `security-events: read`. Um relatório não carrega permissão de escrita sobre
+  alertas de segurança.
+- **Sem `schedule`.** Dispensar um alerta é ato deliberado, não rotina. E sem
+  `continue-on-error`: `exit 2` (ledger divergente) e `exit 3` (alerta sumiu)
+  **são** o resultado útil quando acontecem — significam "reaudite à mão".
+
+O input `alert` restringe a um número só, que foi como a prova empírica do #43
+foi conduzida. Isso também contorna uma armadilha real: o loop percorre as
+entradas em ordem e aborta na primeira stale, então uma entrada obsoleta no topo
+impediria as de baixo de serem aplicadas.
+
 ## §3. Operational rules
 
 1. **No bulk suppression.** Cada entrada precisa justificativa por linha.
