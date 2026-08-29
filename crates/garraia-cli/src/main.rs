@@ -2,6 +2,7 @@ mod ask;
 mod banner;
 mod capability_prompt;
 mod chat;
+mod cli_args;
 mod config_cmd;
 mod glob_cmd;
 mod max_power;
@@ -17,7 +18,7 @@ mod wizard;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use garraia_security::RedactingWriter;
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
@@ -178,6 +179,10 @@ enum Commands {
         /// On timeout the turn is discarded and the REPL keeps running.
         #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=600))]
         timeout_secs: u64,
+
+        /// Pull a missing Ollama model without asking first.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -210,6 +215,11 @@ enum Commands {
         /// Override the system prompt with an inline string.
         #[arg(long)]
         system_prompt: Option<String>,
+
+        /// Pull a missing Ollama model without asking first. `ask` never
+        /// prompts, so without this flag a missing model is a clean error.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Inspect, validate, and diagnose the effective configuration
@@ -287,6 +297,37 @@ enum ConfigCommands {
         /// Treat warnings as errors (useful for CI).
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Point GarraIA at a model non-interactively, writing `config.yml`.
+    ///
+    /// The headless counterpart to the `garraia init` wizard: it writes one
+    /// `llm:` entry and makes it `agent.default_provider`, without prompting.
+    /// Intended for unattended installs and for third-party launchers
+    /// (`ollama launch garraia --model <tag>`), which configure an agent by
+    /// writing its config file before starting it.
+    ///
+    /// Existing entries under other keys are left untouched; re-running with
+    /// a different `--model` updates the same entry in place.
+    SetModel {
+        /// Model tag, e.g. `qwen3.8:latest` or `openrouter/auto`.
+        #[arg(long, short = 'm')]
+        model: String,
+
+        /// Key in the `llm:` map that this entry gets. Defaults to
+        /// `ollama-launch`, the launcher-owned key — kept separate from a
+        /// hand-written `ollama` entry so the two never fight.
+        #[arg(long, default_value = "ollama-launch")]
+        provider_key: String,
+
+        /// Provider type. Defaults to `openai`, because Ollama's
+        /// OpenAI-compatible `/v1` endpoint is what local launchers target.
+        #[arg(long, default_value = "openai")]
+        provider: String,
+
+        /// Endpoint. Defaults to Ollama's OpenAI-compatible surface.
+        #[arg(long, default_value = "http://127.0.0.1:11434/v1")]
+        base_url: String,
     },
 }
 
@@ -689,14 +730,48 @@ fn kill_and_wait(pid: u32) -> bool {
     false
 }
 
+/// Tokens that consume the next argv entry, for
+/// [`cli_args::inject_default_subcommand`].
+///
+/// Derived from the clap tree rather than hand-written so it cannot drift:
+/// the union of value-taking *global* args and the value-taking args of the
+/// injected subcommand — exactly the flags that may legally precede it.
+fn value_taking_flags() -> Vec<String> {
+    fn push(out: &mut Vec<String>, arg: &clap::Arg) {
+        if !matches!(arg.get_action(), ArgAction::Set | ArgAction::Append) {
+            return;
+        }
+        if let Some(long) = arg.get_long() {
+            out.push(format!("--{long}"));
+        }
+        if let Some(short) = arg.get_short() {
+            out.push(format!("-{short}"));
+        }
+    }
+
+    let cmd = Cli::command();
+    let mut out = Vec::new();
+    for arg in cmd.get_arguments().filter(|a| a.is_global_set()) {
+        push(&mut out, arg);
+    }
+    if let Some(sub) = cmd.find_subcommand(cli_args::DEFAULT_SUBCOMMAND) {
+        for arg in sub.get_arguments() {
+            push(&mut out, arg);
+        }
+    }
+    out
+}
+
 fn main() -> Result<()> {
     // Attempt to load .env file from the current directory, ignoring errors if missing
     dotenvy::dotenv().ok();
 
-    let mut args: Vec<_> = std::env::args_os().collect();
-    if args.len() == 1 {
-        args.push(std::ffi::OsString::from("chat"));
-    }
+    // `garra` and `garra --model qwen3.8` both open the chat REPL: argv that
+    // carries only flags gets `chat` spliced in before clap sees it. See
+    // `cli_args` for why this is not a global clap arg.
+    let flags = value_taking_flags();
+    let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let args = cli_args::inject_default_subcommand(std::env::args_os().collect(), &flag_refs);
     let cli = Cli::parse_from(args);
 
     // Show update notice (non-blocking, from cache)
@@ -747,6 +822,26 @@ fn main() -> Result<()> {
     } = cli.command
     {
         let code = config_cmd::run_config_check(json, strict)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // `config set-model` writes the config, so like `check` it must run
+    // before the global `load()` — an unparseable file is its own EX_DATAERR,
+    // not a panic on the way in.
+    if let Commands::Config {
+        action:
+            ConfigCommands::SetModel {
+                ref model,
+                ref provider_key,
+                ref provider,
+                ref base_url,
+            },
+    } = cli.command
+    {
+        let code = config_cmd::run_set_model(model, provider_key, provider, base_url)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -1419,11 +1514,12 @@ async fn async_main(
             model,
             url,
             timeout_secs,
+            yes,
         } => {
             // Without a tracing subscriber, --debug/RUST_LOG silently produce
             // nothing in chat mode (logs go to file + stderr, like Ask).
             init_tracing(&effective_level);
-            chat::run_chat(config, provider, model, url, timeout_secs).await?;
+            chat::run_chat(config, provider, model, url, timeout_secs, yes).await?;
         }
         Commands::Ask {
             message,
@@ -1433,6 +1529,7 @@ async fn async_main(
             json,
             timeout_secs,
             system_prompt,
+            yes,
         } => {
             // GAR-579: ask is non-interactive; tracing init kept off the
             // stdout/stderr path (`init_tracing` writes to file + stderr
@@ -1448,6 +1545,7 @@ async fn async_main(
                 json,
                 timeout_secs,
                 system_prompt,
+                yes,
             )
             .await?;
             if code != 0 {
@@ -1708,6 +1806,60 @@ mod tests {
     use super::*;
     use clap::Parser;
     use serial_test::serial;
+
+    /// `cli_args::inject_default_subcommand` needs to know which tokens eat
+    /// the next argv entry; `value_taking_flags` derives that from the clap
+    /// tree. Pin the derivation so adding a value-taking flag to `chat` (or a
+    /// value-taking global) fails here instead of silently changing how
+    /// `garra --model …` is parsed.
+    ///
+    /// The failure mode if this ever drifts unnoticed is benign — no
+    /// injection, so clap reports `unexpected argument`, which is exactly the
+    /// pre-feature behaviour — but it is still a regression worth catching.
+    #[test]
+    fn value_taking_flags_matches_the_clap_tree() {
+        let mut actual = value_taking_flags();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec![
+                "--log-level",
+                "--model",
+                "--provider",
+                "--timeout-secs",
+                "--url",
+                "-m",
+                "-p",
+                "-u",
+            ],
+            "value-taking flag set drifted; update cli_args::tests::FLAGS too"
+        );
+    }
+
+    /// End-to-end through clap: the argv rewrite plus the derives must yield
+    /// a `Chat` command carrying the model. Guards the whole feature, not
+    /// just the scanner in isolation.
+    #[test]
+    fn bare_model_flag_parses_as_chat() {
+        let argv = cli_args::inject_default_subcommand(
+            ["garra", "--model", "qwen3.8"]
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect(),
+            &value_taking_flags()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        let cli = Cli::try_parse_from(argv).expect("`garra --model qwen3.8` should parse");
+        match cli.command {
+            Commands::Chat { model, yes, .. } => {
+                assert_eq!(model.as_deref(), Some("qwen3.8"));
+                assert!(!yes);
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+    }
 
     #[test]
     fn test_validate_plugin_path() {

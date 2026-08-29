@@ -10,6 +10,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 - [Channel Integrations](./channels.md)
 - [MCP Setup](./mcp.md)
 - [Hermes ↔ GarraIA Interop (MCP + A2A)](./integrations/hermes-mcp.md)
+- [Ollama — modelo padrão, `--model` e `ollama launch`](./integrations/ollama-launch.md)
 - [Voice Mode](./voice.md)
 - [Memory System](./memory.md)
 - [Security](./security.md)

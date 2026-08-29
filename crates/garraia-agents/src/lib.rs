@@ -41,7 +41,7 @@ pub use multi_agent::{
     AgentCoordinator, AgentHandle, AgentProgress, AgentResult, AgentStatus, MultiAgentSummary,
     SubAgentConfig,
 };
-pub use ollama::OllamaProvider;
+pub use ollama::{OllamaProvider, PullProgress, normalize_ollama_tag};
 pub use openai::OpenAiProvider;
 pub use orchestrator::{
     Orchestrator, OrchestratorLimits, OrchestratorPlan, OrchestratorStep, OrchestratorSummary,

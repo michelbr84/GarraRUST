@@ -11,7 +11,7 @@ llm:
   ollama-local:
     provider: ollama
     # Ajuste o modelo conforme necessário (deve ser baixado primeiro no container Ollama)
-    model: llama3.1
+    model: qwen3.8:latest
     # Aponta para o serviço 'ollama' definido no docker-compose.ollama.yml
     base_url: "http://ollama:11434"
 

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, FileReadTool, FileWriteTool,
-    LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, tools::git_diff_tool::GitDiffTool,
+    LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, normalize_ollama_tag,
+    tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
@@ -271,12 +272,20 @@ fn decide_default_provider(
 
 /// GAR-576 — Last-resort fallback model name per provider kind, used
 /// only when neither the CLI flag nor `config.llm` supplies one.
-fn hardcoded_default_model(provider_kind: &str) -> String {
+///
+/// Single source of truth: `select_explicit_provider` and `detect_provider`
+/// both route through here rather than repeating the literals inline, so the
+/// two paths cannot disagree about what "the default" means.
+pub(crate) fn hardcoded_default_model(provider_kind: &str) -> String {
     match provider_kind {
-        "ollama" => "llama3.1",
+        // `qwen3.8:latest` == `qwen3.8:27b` (Q4_K_M, ~18 GB, 262 144-token
+        // context, vision + tools). Kept byte-identical to
+        // `garraia_agents::ollama::DEFAULT_MODEL`.
+        "ollama" => "qwen3.8:latest",
         "anthropic" => "claude-sonnet-4-5-20250929",
         "openai" => "gpt-4o",
         "openrouter" => "openrouter/auto",
+        "echo" => "echo-stub",
         _ => "auto",
     }
     .to_string()
@@ -359,7 +368,7 @@ pub(crate) fn select_explicit_provider(
     match kind {
         "ollama" => {
             let model = resolve_provider_model(config, "ollama", model_override)
-                .unwrap_or_else(|| "llama3.1".to_string());
+                .unwrap_or_else(|| hardcoded_default_model("ollama"));
             let ollama = OllamaProvider::new(Some(model.clone()), None);
             Ok((
                 "ollama".to_string(),
@@ -371,7 +380,7 @@ pub(crate) fn select_explicit_provider(
             let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY not set and not found in config")?;
             let model = resolve_provider_model(config, "anthropic", model_override)
-                .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+                .unwrap_or_else(|| hardcoded_default_model("anthropic"));
             let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
             Ok((
                 "anthropic".to_string(),
@@ -383,7 +392,7 @@ pub(crate) fn select_explicit_provider(
             let key = get_api_key(config, "openai", "OPENAI_API_KEY")
                 .context("OPENAI_API_KEY not set and not found in config")?;
             let model = resolve_provider_model(config, "openai", model_override)
-                .unwrap_or_else(|| "gpt-4o".to_string());
+                .unwrap_or_else(|| hardcoded_default_model("openai"));
             let op = OpenAiProvider::new(&key, Some(model.clone()), None);
             Ok((
                 "openai".to_string(),
@@ -395,7 +404,7 @@ pub(crate) fn select_explicit_provider(
             let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")
                 .context("OPENROUTER_API_KEY not set and not found in config")?;
             let model = resolve_provider_model(config, "openrouter", model_override)
-                .unwrap_or_else(|| "openrouter/auto".to_string());
+                .unwrap_or_else(|| hardcoded_default_model("openrouter"));
             // GAR-582: name the provider "openrouter" so AgentRuntime's
             // lookup-by-name resolves correctly (avoids WARN at request time).
             let op = OpenAiProvider::new(
@@ -416,7 +425,7 @@ pub(crate) fn select_explicit_provider(
         #[cfg(feature = "dev-echo-provider")]
         "echo" => {
             let model = resolve_provider_model(config, "echo", model_override)
-                .unwrap_or_else(|| "echo-stub".to_string());
+                .unwrap_or_else(|| hardcoded_default_model("echo"));
             let echo = garraia_agents::EchoProvider::new(Some(model.clone()));
             Ok((
                 "echo".to_string(),
@@ -430,10 +439,180 @@ pub(crate) fn select_explicit_provider(
     }
 }
 
+/// Base URL of the local Ollama daemon. Extracted so the autodetect chain
+/// and [`try_local_ollama_model`] cannot drift apart.
+fn ollama_base_url() -> String {
+    std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
+}
+
+/// How long the "is this tag installed?" probe may take. Local HTTP against
+/// `/api/tags`; 2s is generous and keeps `garra --model …` snappy when the
+/// daemon is down.
+const OLLAMA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// True when `model` is the model of a configured *non-Ollama* provider.
+///
+/// Without this, `--model gpt-4o` on a box that also runs Ollama would be
+/// probed against `/api/tags`, come back missing, and offer to *pull gpt-4o
+/// from Ollama* — a download that cannot succeed and a question the user
+/// should never be asked. When config already says `gpt-4o` belongs to
+/// `openai`, the Ollama path is skipped entirely and the regular chain
+/// routes it.
+fn model_belongs_to_configured_cloud_provider(config: &AppConfig, model: &str) -> bool {
+    config
+        .llm
+        .values()
+        .any(|cfg| cfg.provider != "ollama" && cfg.model.as_deref() == Some(model))
+}
+
+/// Outcome of probing the local Ollama daemon for an explicit `--model` tag.
+enum LocalOllamaProbe {
+    /// The tag is installed; the provider is ready to use.
+    Installed(Box<(String, String, Arc<dyn LlmProvider>)>),
+    /// The daemon answered but does not have this tag. Carries the
+    /// normalized tag so the caller can offer to pull it.
+    Missing { tag: String },
+    /// Not an Ollama-shaped reference, or the daemon is unreachable.
+    NotApplicable,
+}
+
+/// Probe the local Ollama daemon for an explicit `--model <tag>`.
+///
+/// This is what makes `garraia --model qwen3.8` open the local model
+/// directly. `qwen3.8` is normalized to `qwen3.8:latest` first, because
+/// `/api/tags` only ever reports explicit tags.
+///
+/// Deliberately conservative: it can only ever win on an exact hit in
+/// `/api/tags`, so `--model gpt-4o` is never hijacked to a local provider.
+async fn try_local_ollama_model(config: &AppConfig, model_override: &str) -> LocalOllamaProbe {
+    // `openrouter/auto` and friends belong to another provider — bail before
+    // spending a round-trip.
+    let Some(tag) = normalize_ollama_tag(model_override) else {
+        return LocalOllamaProbe::NotApplicable;
+    };
+    // Config already claims this name for a cloud provider — not a tag to pull.
+    if model_belongs_to_configured_cloud_provider(config, model_override) {
+        return LocalOllamaProbe::NotApplicable;
+    }
+
+    let base = ollama_base_url();
+    let Ok(probe_client) = reqwest::Client::builder()
+        .timeout(OLLAMA_PROBE_TIMEOUT)
+        .build()
+    else {
+        return LocalOllamaProbe::NotApplicable;
+    };
+    let probe = OllamaProvider::new(None, Some(base.clone())).with_client(probe_client);
+
+    match probe.resolve_installed_model(&tag).await {
+        Ok(Some(found)) => {
+            // Rebuild with the default (untimed) client — the 2s probe budget
+            // must not cap inference.
+            let provider = OllamaProvider::new(Some(found.clone()), Some(base));
+            LocalOllamaProbe::Installed(Box::new((
+                "ollama".to_string(),
+                found,
+                Arc::new(provider) as Arc<dyn LlmProvider>,
+            )))
+        }
+        Ok(None) => LocalOllamaProbe::Missing { tag },
+        // Daemon down: stay quiet and let the regular chain report whatever
+        // it finds. `--model` is still honored by every branch below.
+        Err(_) => LocalOllamaProbe::NotApplicable,
+    }
+}
+
+/// Offer to pull a missing Ollama tag, then return the ready provider.
+///
+/// * `assume_yes` (the `-y` flag) pulls without asking.
+/// * An interactive terminal gets a confirmation prompt.
+/// * Anything else — a pipe, CI, `ask --json` — never prompts and returns
+///   `None` so the caller can fall through with a visible hint.
+///
+/// Progress goes to stderr so `ask --json` keeps a single clean JSON line on
+/// stdout.
+async fn offer_pull_ollama_model(
+    tag: &str,
+    assume_yes: bool,
+) -> Option<(String, String, Arc<dyn LlmProvider>)> {
+    use std::io::IsTerminal as _;
+
+    let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
+    if !assume_yes {
+        if !interactive {
+            eprintln!(
+                "{YELLOW}Modelo '{tag}' nao esta baixado no Ollama.{RESET} \
+                 Rode `ollama pull {tag}` (ou use -y para baixar agora)."
+            );
+            return None;
+        }
+        eprint!("{YELLOW}Modelo '{tag}' nao esta baixado. Baixar agora? [S/n] {RESET}");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            return None;
+        }
+        let answer = answer.trim().to_lowercase();
+        if !(answer.is_empty()
+            || answer == "s"
+            || answer == "sim"
+            || answer == "y"
+            || answer == "yes")
+        {
+            eprintln!("{DIM}  Download cancelado. Rode `ollama pull {tag}` quando quiser.{RESET}");
+            return None;
+        }
+    }
+
+    let base = ollama_base_url();
+    // Default client: no timeout — a cold pull can run for many minutes.
+    let puller = OllamaProvider::new(Some(tag.to_string()), Some(base.clone()));
+
+    eprintln!("{DIM}Baixando {tag}…{RESET}");
+    let mut last_status = String::new();
+    let result = puller
+        .pull_model(tag, |progress| {
+            match progress.percent() {
+                Some(pct) => eprint!("\r{DIM}  {} {pct:.0}%          {RESET}", progress.status),
+                None if progress.status != last_status => {
+                    eprint!("\r{DIM}  {}          {RESET}", progress.status);
+                }
+                None => return,
+            }
+            last_status = progress.status.clone();
+            let _ = io::stderr().flush();
+        })
+        .await;
+    eprintln!();
+
+    match result {
+        Ok(()) => {
+            eprintln!("{GREEN}  {tag} pronto.{RESET}");
+            let provider = OllamaProvider::new(Some(tag.to_string()), Some(base));
+            Some((
+                "ollama".to_string(),
+                tag.to_string(),
+                Arc::new(provider) as Arc<dyn LlmProvider>,
+            ))
+        }
+        Err(e) => {
+            eprintln!("{YELLOW}  Falha ao baixar {tag}: {e}{RESET}");
+            None
+        }
+    }
+}
+
 /// Detect which provider to use based on config and availability.
+///
+/// `model_override` is the CLI `--model` flag. It has absolute precedence
+/// over every configured model, and — when it names a tag the local Ollama
+/// daemon has installed — it also selects the provider (see
+/// [`try_local_ollama_model`]).
 pub async fn detect_provider(
     config: &AppConfig,
     url_override: Option<&str>,
+    model_override: Option<&str>,
+    assume_yes: bool,
 ) -> (String, String, Arc<dyn LlmProvider>) {
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
@@ -450,16 +629,37 @@ pub async fn detect_provider(
         )
         .with_name("lmstudio");
 
-        // Try to detect available models
-        let model = match provider.available_models().await {
-            Ok(models) if !models.is_empty() => models[0].clone(),
-            _ => "default".to_string(),
+        // An explicit --model wins over whatever the endpoint advertises.
+        let model = match model_override {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => match provider.available_models().await {
+                Ok(models) if !models.is_empty() => models[0].clone(),
+                _ => "default".to_string(),
+            },
         };
         return (
             format!("lmstudio ({})", base),
             model,
             Arc::new(provider) as Arc<dyn LlmProvider>,
         );
+    }
+
+    // 0.5 — an explicitly named, locally-installed Ollama tag beats
+    // `agent.default_provider`: `garraia --model qwen3.8` must open qwen3.8
+    // even on a box configured for OpenRouter. Placed after `--url`, which is
+    // a more explicit routing instruction than a bare model name.
+    if let Some(m) = model_override.filter(|m| !m.is_empty()) {
+        match try_local_ollama_model(config, m).await {
+            LocalOllamaProbe::Installed(hit) => return *hit,
+            LocalOllamaProbe::Missing { tag } => {
+                if let Some(hit) = offer_pull_ollama_model(&tag, assume_yes).await {
+                    return hit;
+                }
+                // Declined / failed / non-interactive: fall through. Every
+                // branch below still honors `--model`.
+            }
+            LocalOllamaProbe::NotApplicable => {}
+        }
     }
 
     // GAR-576 — honor `config.agent.default_provider` BEFORE the env-based
@@ -478,6 +678,10 @@ pub async fn detect_provider(
         provider_kind,
         model,
     } = decision
+        // `--model` outranks the configured default. With `None` this
+        // reproduces `decide_default_provider`'s own lookup exactly.
+        && let model = resolve_provider_model(config, &provider_kind, model_override)
+            .unwrap_or(model)
         && let Some(cfg) = config.llm.get(&config_key)
         && let Some(provider) =
             try_build_default_provider(config, &provider_kind, cfg, &model).await
@@ -491,13 +695,16 @@ pub async fn detect_provider(
         // legacy autodetect chain below.
     }
 
-    // 1. Try Ollama first (local, offline)
-    let ollama_url =
-        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    // Every branch below resolves its model through `resolve_provider_model`,
+    // so `--model` is honored whichever provider wins — and the returned
+    // provider object always carries the model it will actually be asked for.
+    let ollama_url = ollama_base_url();
 
-    let ollama = OllamaProvider::new(None, Some(ollama_url.clone()));
+    // 1. Try Ollama first (local, offline)
+    let model = resolve_provider_model(config, "ollama", model_override)
+        .unwrap_or_else(|| hardcoded_default_model("ollama"));
+    let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()));
     if ollama.health_check().await.unwrap_or(false) {
-        let model = ollama.configured_model().unwrap_or("llama3.1").to_string();
         return (
             "ollama".to_string(),
             model,
@@ -507,12 +714,8 @@ pub async fn detect_provider(
 
     // 2. Try Anthropic (cloud)
     if let Some(key) = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY") {
-        let model = config
-            .llm
-            .get("anthropic")
-            .and_then(|c| c.model.as_deref())
-            .unwrap_or("claude-sonnet-4-5-20250929")
-            .to_string();
+        let model = resolve_provider_model(config, "anthropic", model_override)
+            .unwrap_or_else(|| hardcoded_default_model("anthropic"));
         let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
         return (
             "anthropic".to_string(),
@@ -523,12 +726,8 @@ pub async fn detect_provider(
 
     // 3. Try OpenAI (cloud)
     if let Some(key) = get_api_key(config, "openai", "OPENAI_API_KEY") {
-        let model = config
-            .llm
-            .get("openai")
-            .and_then(|c| c.model.as_deref())
-            .unwrap_or("gpt-4o")
-            .to_string();
+        let model = resolve_provider_model(config, "openai", model_override)
+            .unwrap_or_else(|| hardcoded_default_model("openai"));
         let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
         return (
             "openai".to_string(),
@@ -539,12 +738,8 @@ pub async fn detect_provider(
 
     // 4. Try OpenRouter (cloud fallback)
     if let Some(key) = get_api_key(config, "openrouter", "OPENROUTER_API_KEY") {
-        let model = config
-            .llm
-            .get("openrouter")
-            .and_then(|c| c.model.as_deref())
-            .unwrap_or("openrouter/auto")
-            .to_string();
+        let model = resolve_provider_model(config, "openrouter", model_override)
+            .unwrap_or_else(|| hardcoded_default_model("openrouter"));
         // GAR-582: name the provider "openrouter" so AgentRuntime's
         // lookup-by-name resolves correctly (avoids WARN at request time).
         let provider = OpenAiProvider::new(
@@ -561,8 +756,7 @@ pub async fn detect_provider(
     }
 
     // 5. Fallback: Ollama with no health check (user will see error on first message)
-    let ollama = OllamaProvider::new(None, Some(ollama_url));
-    let model = ollama.configured_model().unwrap_or("llama3.1").to_string();
+    let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url));
     (
         "ollama (offline)".to_string(),
         model,
@@ -621,24 +815,26 @@ pub async fn run_chat(
     model_override: Option<String>,
     url_override: Option<String>,
     timeout_secs: u64,
+    assume_yes: bool,
 ) -> Result<()> {
-    // Detect or use specified provider
-    let (mut provider_name, mut model_name, mut provider) =
-        detect_provider(&config, url_override.as_deref()).await;
-
-    // Apply overrides
-    if let Some(ref p) = provider_override {
+    // An explicit `--provider` short-circuits detection entirely; otherwise
+    // `detect_provider` owns both the provider *and* the model, so the two can
+    // no longer disagree (previously `--model` without `--provider` swapped
+    // only the displayed string, leaving the built provider stale).
+    let (provider_name, mut model_name, provider) = if let Some(ref p) = provider_override {
         // GAR-579: shared with `garra ask` — the explicit-provider path
-        // now lives in `select_explicit_provider` so chat and ask agree
+        // lives in `select_explicit_provider` so chat and ask agree
         // byte-for-byte on construction + model resolution + error msgs.
-        let (name, model, prov) =
-            select_explicit_provider(&config, p.as_str(), model_override.as_deref())?;
-        provider_name = name;
-        model_name = model;
-        provider = prov;
-    } else if let Some(ref m) = model_override {
-        model_name = m.clone();
-    }
+        select_explicit_provider(&config, p.as_str(), model_override.as_deref())?
+    } else {
+        detect_provider(
+            &config,
+            url_override.as_deref(),
+            model_override.as_deref(),
+            assume_yes,
+        )
+        .await
+    };
 
     let mode = if provider_name.contains("ollama") {
         "local"
@@ -760,13 +956,35 @@ pub async fn run_chat(
                 continue;
             }
             _ if input.starts_with("/model ") => {
-                let new_model = input[7..].trim().to_string();
+                let new_model = input[7..].trim();
                 if new_model.is_empty() {
                     println!("{DIM}Uso: /model <nome>{RESET}");
-                } else {
-                    model_name = new_model;
-                    println!("{DIM}Modelo alterado para: {model_name}{RESET}");
+                    continue;
                 }
+                // On Ollama, `/model qwen3.8` means `qwen3.8:latest` — spell
+                // it out so the banner and `/models` marker line up.
+                let resolved = if provider_name.contains("ollama") {
+                    normalize_ollama_tag(new_model).unwrap_or_else(|| new_model.to_string())
+                } else {
+                    new_model.to_string()
+                };
+                // Advisory only: an unknown name is not fatal (the provider
+                // may serve models it does not list), but silently talking to
+                // a nonexistent model is a bad surprise.
+                if let Some(p) = runtime.default_provider()
+                    && let Ok(models) = p.available_models().await
+                    && !models.is_empty()
+                    && !models.contains(&resolved)
+                {
+                    println!(
+                        "{YELLOW}Aviso: '{resolved}' nao aparece em /models deste provider.{RESET}"
+                    );
+                }
+                model_name = resolved;
+                println!("{DIM}Modelo alterado para: {model_name}{RESET}");
+                println!(
+                    "{DIM}  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model){RESET}"
+                );
                 continue;
             }
             "/models" => {
@@ -792,6 +1010,9 @@ pub async fn run_chat(
                 let new_provider = input[10..].trim();
                 println!(
                     "{DIM}Para trocar provider, reinicie com: garraia chat --provider {new_provider}{RESET}"
+                );
+                println!(
+                    "{DIM}  Para um modelo local do Ollama basta: garraia --model <tag>{RESET}"
                 );
                 continue;
             }
@@ -1142,6 +1363,75 @@ mod tests {
             }
             other => panic!("expected UseDefault with hardcoded model, got {other:?}"),
         }
+    }
+
+    /// Spec-lock for the one default-model table. Every fallback in this file
+    /// routes through `hardcoded_default_model`, so this is the only place the
+    /// defaults are written down — changing a row here means changing the docs
+    /// and example configs in lockstep.
+    #[test]
+    fn hardcoded_default_model_table_is_locked() {
+        assert_eq!(hardcoded_default_model("ollama"), "qwen3.8:latest");
+        assert_eq!(
+            hardcoded_default_model("anthropic"),
+            "claude-sonnet-4-5-20250929"
+        );
+        assert_eq!(hardcoded_default_model("openai"), "gpt-4o");
+        assert_eq!(hardcoded_default_model("openrouter"), "openrouter/auto");
+        assert_eq!(hardcoded_default_model("echo"), "echo-stub");
+        assert_eq!(hardcoded_default_model("something-else"), "auto");
+    }
+
+    /// The Ollama default must be byte-identical to the provider crate's own
+    /// `DEFAULT_MODEL`, or `OllamaProvider::new(None, _)` and the CLI would
+    /// disagree about which model "no model specified" means.
+    #[test]
+    fn ollama_default_matches_the_provider_crate() {
+        let provider = garraia_agents::OllamaProvider::new(None, None);
+        assert_eq!(
+            provider.configured_model(),
+            Some(hardcoded_default_model("ollama").as_str())
+        );
+    }
+
+    /// Guard for the "offer to pull gpt-4o from Ollama" trap: when config
+    /// already names the model under a cloud provider, the local-Ollama path
+    /// must not claim it.
+    #[test]
+    fn configured_cloud_models_are_not_ollama_pull_candidates() {
+        let cfg = config_with_default(
+            "openai",
+            &[
+                (
+                    "openai",
+                    make_llm_cfg("openai", Some("gpt-4o"), Some("k"), None),
+                ),
+                (
+                    "local",
+                    make_llm_cfg("ollama", Some("qwen3.8:latest"), None, None),
+                ),
+            ],
+        );
+        assert!(model_belongs_to_configured_cloud_provider(&cfg, "gpt-4o"));
+        // An Ollama-provider entry is never a reason to skip the probe.
+        assert!(!model_belongs_to_configured_cloud_provider(
+            &cfg,
+            "qwen3.8:latest"
+        ));
+        // Unknown names stay eligible.
+        assert!(!model_belongs_to_configured_cloud_provider(&cfg, "qwen3.8"));
+    }
+
+    /// `select_explicit_provider` must land on the same table. Ollama is the
+    /// only kind constructible without an API key, so it is the one arm that
+    /// can be exercised without touching env or config.
+    #[test]
+    fn select_explicit_provider_uses_the_default_table_for_ollama() {
+        let cfg = AppConfig::default();
+        let (name, model, _) =
+            select_explicit_provider(&cfg, "ollama", None).expect("ollama needs no credential");
+        assert_eq!(name, "ollama");
+        assert_eq!(model, "qwen3.8:latest");
     }
 
     // ─── stream_turn (regression: bounded-channel deadlock, GAR chat hang) ─

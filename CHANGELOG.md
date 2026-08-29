@@ -6,7 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`garraia --model <tag>` abre o chat direto no modelo local.** Rodar o
+  binário só com flags (sem subcomando) agora entra no REPL — antes o clap
+  respondia *unexpected argument* porque o subcomando `chat` só era injetado
+  quando o argv estava totalmente vazio. A tag é normalizada (`qwen3.8` →
+  `qwen3.8:latest`) e procurada no daemon Ollama local via `GET /api/tags`;
+  em acerto exato o provider Ollama é escolhido, mesmo que o `config.yml`
+  aponte para outro default. A sonda tem timeout de 2 s e só vence com acerto
+  exato, então `--model gpt-4o` nunca é sequestrado para um provider local.
+- **Download do modelo faltante.** Com terminal, o GarraIA pergunta antes de
+  baixar; com `-y`/`--yes` (novo em `chat` e `ask`) baixa direto; sem
+  terminal nunca pergunta — imprime `ollama pull <tag>` no stderr e segue.
+  Usa `POST /api/pull` do daemon (não `ollama pull`), então funciona sem o
+  binário no `PATH` e respeita `OLLAMA_BASE_URL` remoto. O progresso vai
+  para o stderr, preservando o stdout de uma linha do `ask --json`.
+- **Seletor de modelo no `garraia init`.** O wizard passou de um `Confirm`
+  fixo no Qwen3-14B para uma lista (Qwen 3.8 27B, Qwen 3 8B, Qwen3-14B GGUF,
+  Llama 3.1) mais a opção de **digitar qualquer tag do Ollama**, incluindo
+  referências de registry (`hf.co/user/repo:Q4_K_M`).
+- **`garraia config set-model`** — configuração headless: grava uma entrada
+  no `llm:` e a torna `agent.default_provider`, sem prompt algum. O resto do
+  `config.yml` fica intacto e o default anterior é rebaixado para
+  `fallback_providers` em vez de descartado. Arquivo gravado com modo `0600`.
+- **Flags no `install.sh`** — `--skip-setup`, `--skip-init`, `--skip-start`,
+  `--no-local`, `--version <tag>`, `--install-dir <dir>`, `--help`. `curl …
+  | sh` não consegue passar variáveis de ambiente para o shell do pipe;
+  `curl … | sh -s -- --skip-setup` consegue. Uma env var já definida pelo
+  chamador ganha da flag correspondente. Nova suíte
+  `tests/install_sh/parse_args.sh` (18 casos) ligada ao CI.
+- Nova página `docs/integrations/ollama-launch.md` cobrindo o modelo padrão,
+  a resolução do `--model` e o que falta para `ollama launch garraia`.
+- **`contrib/ollama-launch/`** — a integração Go do `ollama launch`, pronta
+  para virar PR no `ollama/ollama`: `garraia.go` (implementa `Runner` +
+  `ManagedSingleModel`, espelhando `cmd/launch/hermes.go`), `garraia_test.go`
+  (10 testes) e o patch do `registry.go`. Escrita contra o `ollama/ollama`
+  real e validada lá dentro — `gofmt` e `go vet` limpos, `go build ./...` ok
+  e a suíte `./cmd/launch/` **inteira** verde. Não é código de runtime deste
+  repositório: o registro de integrações do Ollama é uma slice Go compilada
+  dentro do binário, sem manifesto nem plugin, então a integração só passa a
+  existir quando o PR upstream for aceito.
+- Teste `test_lopdf_roundtrip_smoke` no `garraia-media` — os 4 testes reais de PDF
+  estão `#[ignore]`d desde abril, então até agora o `cargo test` só provava que o
+  crate compila contra o lopdf. O novo teste escreve um PDF de uma página com o
+  writer do lopdf e o lê de volta por `extract_text_from_bytes`, exercendo
+  writer → reader → xref → content stream → extração. Verde na 0.42 e na 0.44.
+
 ### Changed
+- **Modelo Ollama padrão passa a ser `qwen3.8:latest`** (resolve para
+  `qwen3.8:27b` — Q4_K_M, ~18 GB, 262 144 tokens de contexto, visão +
+  tools), no lugar de `llama3.1`. Atualizado no provider, na CLI, no wizard,
+  nos configs de exemplo e na documentação.
+- **`detect_provider` recebe o `--model`.** Todos os ramos da cadeia
+  (Ollama, Anthropic, OpenAI, OpenRouter, fallback offline e o caminho
+  `--url`) passaram a resolver o modelo por `resolve_provider_model`, então
+  `detect_provider` e `select_explicit_provider` concordam. Efeito colateral
+  intencional: os ramos de nuvem agora também varrem `config.llm[*]` por
+  `provider == kind`, e não só `config.llm[<kind>]`.
+- A tabela de modelos padrão vive num único lugar
+  (`chat::hardcoded_default_model`); as 11 cópias inline dos literais foram
+  removidas.
 - **lopdf 0.42 → 0.44 com a feature `time` desligada** — a partir da 0.43 o
   `time_impl` do lopdf chama `BorrowedFormatItem::StringLiteral` com um padrão
   estilo strftime; a variante só existe no `time` >= 0.3.49 (fixamos 0.3.47), então
@@ -17,12 +76,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default-features = false` + `features = ["chrono", "jiff", "rayon"]` destrava o
   bump sem mudança de comportamento e sem alterar código de produção.
 
-### Added
-- Teste `test_lopdf_roundtrip_smoke` no `garraia-media` — os 4 testes reais de PDF
-  estão `#[ignore]`d desde abril, então até agora o `cargo test` só provava que o
-  crate compila contra o lopdf. O novo teste escreve um PDF de uma página com o
-  writer do lopdf e o lê de volta por `extract_text_from_bytes`, exercendo
-  writer → reader → xref → content stream → extração. Verde na 0.42 e na 0.44.
+### Fixed
+- **`--model` sem `--provider` não trocava o provider.** `run_chat` só
+  substituía a string exibida no banner — o `Arc<dyn LlmProvider>` continuava
+  sendo o que o autodetect construiu, com o modelo interno obsoleto. Valia
+  para `garraia chat` e `garraia ask`.
+- `/model <nome>` no REPL agora normaliza a tag quando o provider é Ollama e
+  avisa quando o nome não aparece em `/models`.
 
 ### Security
 - **RUSTSEC-2026-0192 fechado estruturalmente** — na 0.44 o `ttf-parser` passou a ser

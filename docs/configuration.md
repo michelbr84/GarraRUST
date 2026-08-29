@@ -41,7 +41,7 @@ llm:
   # Ollama (local)
   ollama:
     provider: ollama
-    model: llama3.1
+    model: qwen3.8:latest
     base_url: "http://localhost:11434"
 
   # OpenRouter
@@ -228,7 +228,7 @@ Inside the chosen provider, the model is resolved in this order:
 3. **First `config.llm[*]` whose `provider:` field equals the chosen
    kind** and supplies a non-empty `model` (provider-field match — lets
    operators give blocks arbitrary names like `my-router`).
-4. **Hardcoded last-resort default** per kind: `llama3.1`,
+4. **Hardcoded last-resort default** per kind: `qwen3.8:latest`,
    `claude-sonnet-4-5-20250929`, `gpt-4o`, `openrouter/auto`.
 
 ### OpenRouter cost policy

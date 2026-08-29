@@ -1,0 +1,34 @@
+diff --git a/cmd/launch/registry.go b/cmd/launch/registry.go
+index f0453aa..c910f3b 100644
+--- a/cmd/launch/registry.go
++++ b/cmd/launch/registry.go
+@@ -33,7 +33,7 @@ type IntegrationInfo struct {
+ 	Description string
+ }
+ 
+-var launcherIntegrationOrder = []string{"claude", "chatgpt", "hermes", "openclaw", "opencode", "hermes-desktop", "codex", "copilot", "omp", "cline", "droid", "dsh", "pi", "pool", "qwen"}
++var launcherIntegrationOrder = []string{"claude", "chatgpt", "hermes", "openclaw", "opencode", "hermes-desktop", "codex", "copilot", "omp", "cline", "droid", "dsh", "pi", "pool", "qwen", "garraia"}
+ 
+ var integrationSpecs = []*IntegrationSpec{
+ 	{
+@@ -262,6 +262,20 @@ var integrationSpecs = []*IntegrationSpec{
+ 			URL: "https://github.com/poolsideai/pool",
+ 		},
+ 	},
++	{
++		Name:        "garraia",
++		Runner:      &Garraia{},
++		Description: "Local-first personal AI assistant and gateway, in Rust",
++		Install: IntegrationInstallSpec{
++			CheckInstalled: func() bool {
++				return (&Garraia{}).installed()
++			},
++			EnsureInstalled: func() error {
++				return (&Garraia{}).ensureInstalled()
++			},
++			URL: "https://github.com/michelbr84/GarraRUST#quick-start",
++		},
++	},
+ 	{
+ 		Name:        "hermes",
+ 		Runner:      &Hermes{},

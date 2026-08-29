@@ -12,7 +12,7 @@
 //! from `serde_yaml`/`toml` but never prints the full failing file.
 
 use anyhow::Result;
-use garraia_config::{ConfigCheck, ConfigLoader, Severity};
+use garraia_config::{AppConfig, ConfigCheck, ConfigLoader, LlmProviderConfig, Severity};
 
 /// Maximum length of the `format!("{e}")` snippet emitted on parse failure.
 /// Keeps error output bounded without losing the leading line/column context.
@@ -276,4 +276,213 @@ fn print_human(check: &ConfigCheck, strict: bool) {
         warnings,
         if strict { " [strict]" } else { "" }
     );
+}
+
+/// Where a `set-model` write should land, and what it should contain.
+///
+/// Split out from [`run_set_model`] so the merge semantics are unit-testable
+/// without touching the real config directory or the filesystem.
+pub(crate) struct SetModelRequest<'a> {
+    pub provider_key: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub base_url: &'a str,
+}
+
+/// Apply a `set-model` request to `config` in place.
+///
+/// Deliberately narrow: it replaces exactly one `llm:` entry and repoints
+/// `agent.default_provider`. Everything else — other providers, channels,
+/// voice, the operator's system prompt — is left byte-for-byte alone, because
+/// this runs unattended (unpacked installs, `ollama launch`) where clobbering
+/// an existing config would be silent data loss.
+///
+/// The previous `agent.default_provider`, when it named a different key that
+/// still exists, is demoted to the front of `fallback_providers` rather than
+/// dropped, so switching to a local model does not disable a configured cloud
+/// provider outright.
+pub(crate) fn apply_set_model(config: &mut AppConfig, req: &SetModelRequest<'_>) {
+    let api_key = if req.provider == "ollama" {
+        // Native Ollama needs no credential.
+        None
+    } else {
+        // Ollama's OpenAI-compatible endpoint ignores the key but the client
+        // requires a non-empty one; "ollama" is the conventional placeholder.
+        Some("ollama".to_string())
+    };
+
+    config.llm.insert(
+        req.provider_key.to_string(),
+        LlmProviderConfig {
+            provider: req.provider.to_string(),
+            model: Some(req.model.to_string()),
+            api_key,
+            base_url: Some(req.base_url.to_string()),
+            extra: Default::default(),
+        },
+    );
+
+    let previous = config
+        .agent
+        .default_provider
+        .replace(req.provider_key.to_string());
+    if let Some(prev) = previous
+        && prev != req.provider_key
+        && config.llm.contains_key(&prev)
+        && !config.agent.fallback_providers.contains(&prev)
+    {
+        config.agent.fallback_providers.insert(0, prev);
+    }
+}
+
+/// `garraia config set-model` — write one provider entry and make it default.
+pub fn run_set_model(
+    model: &str,
+    provider_key: &str,
+    provider: &str,
+    base_url: &str,
+) -> Result<i32> {
+    if model.trim().is_empty() {
+        eprintln!("error: --model must not be empty");
+        return Ok(2);
+    }
+    if provider_key.trim().is_empty() {
+        eprintln!("error: --provider-key must not be empty");
+        return Ok(2);
+    }
+
+    let loader = ConfigLoader::new()?;
+    loader.ensure_dirs()?;
+
+    // An unparseable existing config is EX_DATAERR, same as `config check` —
+    // never silently overwrite a file we could not read.
+    let mut config = match loader.load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "error: existing config could not be parsed: {}",
+                truncate_error(format!("{e}"))
+            );
+            eprintln!("       fix it (or move it aside) before running `config set-model`.");
+            return Ok(65);
+        }
+    };
+
+    apply_set_model(
+        &mut config,
+        &SetModelRequest {
+            provider_key,
+            provider,
+            model,
+            base_url,
+        },
+    );
+
+    // `save` serializes and clamps the file to 0600 (it can hold credentials).
+    loader.save(&config)?;
+
+    println!(
+        "Modelo definido: {model} (provider '{provider}' sob a chave '{provider_key}')\n\
+         Config: {}/config.yml",
+        loader.config_dir().display()
+    );
+    Ok(0)
+}
+
+#[cfg(test)]
+mod set_model_tests {
+    use super::*;
+
+    fn req<'a>(key: &'a str, model: &'a str) -> SetModelRequest<'a> {
+        SetModelRequest {
+            provider_key: key,
+            provider: "openai",
+            model,
+            base_url: "http://127.0.0.1:11434/v1",
+        }
+    }
+
+    #[test]
+    fn writes_entry_and_makes_it_default() {
+        let mut cfg = AppConfig::default();
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
+
+        let entry = cfg.llm.get("ollama-launch").expect("entry written");
+        assert_eq!(entry.provider, "openai");
+        assert_eq!(entry.model.as_deref(), Some("qwen3.8:latest"));
+        assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:11434/v1"));
+        // Ollama's /v1 ignores the key but the OpenAI client demands one.
+        assert_eq!(entry.api_key.as_deref(), Some("ollama"));
+        assert_eq!(cfg.agent.default_provider.as_deref(), Some("ollama-launch"));
+    }
+
+    #[test]
+    fn native_ollama_provider_stays_keyless() {
+        let mut cfg = AppConfig::default();
+        let mut r = req("local", "qwen3.8:latest");
+        r.provider = "ollama";
+        apply_set_model(&mut cfg, &r);
+        assert!(cfg.llm["local"].api_key.is_none());
+    }
+
+    #[test]
+    fn rerunning_updates_in_place_without_duplicating() {
+        let mut cfg = AppConfig::default();
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3:8b"));
+
+        assert_eq!(cfg.llm.len(), 1);
+        assert_eq!(cfg.llm["ollama-launch"].model.as_deref(), Some("qwen3:8b"));
+        assert!(
+            cfg.agent.fallback_providers.is_empty(),
+            "a key must never become its own fallback"
+        );
+    }
+
+    #[test]
+    fn previous_default_is_demoted_to_fallback_not_dropped() {
+        // The unattended-install case: a user already configured OpenRouter,
+        // then a launcher points GarraIA at a local model. Their cloud
+        // provider must survive as a fallback.
+        let mut cfg = AppConfig::default();
+        cfg.llm.insert(
+            "openrouter".to_string(),
+            LlmProviderConfig {
+                provider: "openrouter".to_string(),
+                model: Some("openrouter/auto".to_string()),
+                api_key: Some("k".to_string()),
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+        cfg.agent.default_provider = Some("openrouter".to_string());
+
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
+
+        assert_eq!(cfg.agent.default_provider.as_deref(), Some("ollama-launch"));
+        assert_eq!(cfg.agent.fallback_providers, vec!["openrouter".to_string()]);
+        // And the original entry is untouched.
+        assert_eq!(cfg.llm["openrouter"].api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn dangling_previous_default_is_not_promoted_to_fallback() {
+        let mut cfg = AppConfig::default();
+        cfg.agent.default_provider = Some("provider-that-was-deleted".to_string());
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
+        assert!(cfg.agent.fallback_providers.is_empty());
+    }
+
+    #[test]
+    fn unrelated_config_is_left_alone() {
+        let mut cfg = AppConfig::default();
+        cfg.agent.system_prompt = Some("persona do operador".to_string());
+        cfg.gateway.port = 4242;
+        apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
+        assert_eq!(
+            cfg.agent.system_prompt.as_deref(),
+            Some("persona do operador")
+        );
+        assert_eq!(cfg.gateway.port, 4242);
+    }
 }
