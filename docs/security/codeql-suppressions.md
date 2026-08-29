@@ -12,10 +12,17 @@
 > (`crates/garraia-gateway/src/path_validation.rs`) as a sanitizer. Each
 > entry references the helper guard line, the dismissed-as-FP rationale,
 > and the integration test that pins the rejection — see §4 alerts #67-#82.
-> Last updated: **2026-05-01**.
-> Audit re-triage por: **2026-08-01** (entradas com mais de 90 dias devem ser
-> revisitadas; alertas que não existem mais no Security tab devem ser removidos
-> do ledger).
+> Last updated: **2026-08-29**.
+> Audit re-triage por: **2026-08-01** — ⚠️ **VENCIDO** desde 2026-08-01
+> (entradas com mais de 90 dias devem ser revisitadas; alertas que não existem
+> mais no Security tab devem ser removidos do ledger).
+>
+> Estado do re-audit em 2026-08-29: a **metade mecânica** está feita e provada —
+> as 23 entradas ainda casam `rule_id`/`path`/`linha` (§5.2). A **metade de
+> julgamento** — cada justificativa ainda procede? o guard citado ainda está na
+> linha citada? — **não** foi refeita, e por isso a data **não** foi renovada:
+> mexer nela sem re-auditar seria exatamente o que §3 regra 4 existe para
+> impedir. Renovar só junto com o re-audit de verdade.
 
 ## §1. Background
 
@@ -58,10 +65,13 @@ Desde 2026-08-29, `.github/workflows/codeql.yml` passa
   justificativa por linha realmente agrega (ex.: `credentials.rs:49`, um
   `vec![0u8; SALT_LEN]` sobrescrito por `SystemRandom::fill` na linha seguinte).
 - As 5 entradas de `rust/hard-coded-cryptographic-value` que são fixture
-  (`mobile_auth.rs`, `validation.rs`) devem ficar **stale** (`exit 3` no script
-  de reapply) assim que o `-test` estiver em `main`. Limpar depois de confirmar
-  com o relatório de `.github/workflows/codeql-triage.yml`. `credentials.rs:49`
-  é produção e permanece.
+  (`mobile_auth.rs`, `validation.rs`) **continuam válidas** — ao contrário do que
+  esta seção previa antes de 2026-08-29. A previsão era que ficariam stale
+  (`exit 3`) assim que o `-test` chegasse à `main`; a medição mostrou o
+  contrário, e a razão está em §5.2. `credentials.rs:49` é produção e permanece
+  de qualquer forma.
+- O `-test` continua valendo para **alertas novos**: fixture que ainda não virou
+  alerta não vira mais. O que ele não faz é apagar alerta já dispensado.
 - As 16 entradas de `rust/path-injection` são High e não são afetadas.
 
 Contexto completo da onda que motivou a mudança (bundle 2.26.3 → 2.26.4,
@@ -178,14 +188,17 @@ impediria as de baixo de serem aplicadas.
 | <a id="alert-80"></a>[#80](https://github.com/michelbr84/GarraRUST/security/code-scanning/80) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:312` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `update_skill` double-guards URL `name` + `body.name` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at lines 300 and 307 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::update_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-81"></a>[#81](https://github.com/michelbr84/GarraRUST/security/code-scanning/81) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:523` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `export_skill` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 519 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::export_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-82"></a>[#82](https://github.com/michelbr84/GarraRUST/security/code-scanning/82) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:579` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `set_skill_triggers` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 574 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name`. | GAR-490 |
-| <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ⚠️ Reconferir o número após o merge: 165 foi atribuído na análise da branch do PR. | PR-869 |
+| <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ✅ Número reconferido na `main` em 2026-08-29 (squash `a47d3c3`): o dry-run casou `rule_id`/`path`/`line` sem `exit 2`, então 165 sobreviveu ao squash. Dispensado no mesmo dia — ver §5.2. | PR-869 |
 
-**Total**: 22 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A).
+**Total**: 23 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
+1 from PR [#869](https://github.com/michelbr84/GarraRUST/pull/869)).
 Bulk-dismissal proibido — cada linha foi revisada individualmente, com
 referência ao helper guard, ao handler afetado, e à regressão de teste
 correspondente.
 
 ## §5. Empirical validation
+
+### §5.1 — Persistência do dismissal entre re-análises (2026-05-01)
 
 **Hypothesis**: dismissals via REST API persistem entre re-análises CodeQL
 no mesmo repositório; o `state=dismissed` não é resetado quando o workflow
@@ -238,6 +251,111 @@ same ledger reports `6 skipped, 0 applied, 0 errors`. The script's
 fail-closed validation (rule_id + path + start_line) re-passes for each
 entry, and the API-form-aware skip check correctly identifies
 already-dismissed alerts.
+
+### §5.2 — O `-test` não apaga alerta já dispensado (2026-08-29)
+
+**Previsão que foi falsificada.** §1 afirmava que as 5 entradas de fixture
+(`mobile_auth.rs`, `validation.rs`) ficariam stale — `exit 3` — assim que o
+`CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"` chegasse à `main`.
+O raciocínio era: sem extração, sem alerta.
+
+**Medição.** Com o `-test` já em `main` desde `c3e7521` (PR #869, 13:29Z), o
+workflow `codeql-apply-dismissals.yml` rodou em `--dry-run` **sem `--alert`**,
+percorrendo as 23 entradas:
+
+| Run | Inputs | Resultado |
+|---|---|---|
+| [`33261274173`](https://github.com/michelbr84/GarraRUST/actions/runs/33261274173) | `apply:false, alert:165` | `DRY-RUN: would PATCH alert #165 state=dismissed reason='won't fix'` — `applied: 0, dry-run: 1, errors: 0` |
+| [`33261314173`](https://github.com/michelbr84/GarraRUST/actions/runs/33261314173) | `apply:true, alert:165` | `applied: 1, skipped: 0, errors: 0` |
+| [`33261350845`](https://github.com/michelbr84/GarraRUST/actions/runs/33261350845) | `apply:true, alert:165` | `skip: already dismissed (reason='won't fix')` — idempotência confirmada |
+| [`33261527354`](https://github.com/michelbr84/GarraRUST/actions/runs/33261527354) | `apply:false` (sem escopo) | **`skipped: 23 (already-dismissed)`, `applied: 0`, `errors: 0`** |
+
+**Verdict**: ❌ **previsão falsa.** Nenhuma das 5 entradas ficou stale. A
+transição para `state=fixed` acontece para alertas que estavam **`open`** e
+deixaram de aparecer na análise; um alerta já `dismissed` permanece `dismissed`
+independentemente de o código continuar sendo extraído. O `-test` reduz alertas
+**novos**, não retroage sobre dispensados.
+
+**Consequência prática.** A armadilha descrita em §2 — "o loop aborta na primeira
+entrada stale, então uma obsoleta no topo impediria as de baixo" — é uma
+propriedade real do script, mas **não se materializou aqui**: a run sem escopo
+chegou até o #165. O input `alert` continua útil como bisturi, não como
+contorno obrigatório.
+
+**Ganho colateral, que vale registrar.** A validação fail-closed (`rule_id` +
+`path` + `start_line`) roda **antes** do skip de já-dispensado
+(`codeql-reapply-dismissals.sh:184-200` vs `:229`). Como a run fechou com
+`errors: 0` e sem `exit 2`, ela provou mecanicamente que **as 23 entradas ainda
+apontam para o mesmo rule/path/linha** que o ledger registra. Isso cobre a
+metade mecânica do re-audit de 90 dias exigido por §3 regra 4 — não a metade de
+julgamento (a justificativa continua fazendo sentido?), que segue pendente. Ver
+o aviso de expiração no topo deste arquivo.
+
+### §5.3 — Os 16 `path-injection` foram RENUMERADOS, não reabertos (2026-08-29)
+
+Medido pelo `codeql-triage.yml` em `ba6d86b`
+([run 33263640687](https://github.com/michelbr84/GarraRUST/actions/runs/33263640687)),
+`severity=high, state=open`: **24 alertas**, e 16 deles são
+`rust/path-injection` nos mesmos arquivos e linhas que este ledger já dispensa.
+
+Não é regressão nem o dismissal falhando. §5.2 provou que #67–#82 continuam
+`dismissed`. O que aconteceu é que a re-análise pós-upgrade do bundle
+(2.26.3 → 2.26.4) emitiu um **segundo conjunto de alertas** para os mesmos
+achados, com números novos. O mapeamento é um-para-um por `rule_id` + `path` +
+`linha`:
+
+| Ledger (dismissed) | Live (open) | Arquivo:linha |
+|---|---|---|
+| #67 | #149 | `skins_handler.rs:84` |
+| #68 | #147 | `skins_handler.rs:111` |
+| #69 | #148 | `skins_handler.rs:141` |
+| #76 | #161 | `skins_handler.rs:104` |
+| #77 | #162 | `skins_handler.rs:134` |
+| #70 | #150 | `skills_handler.rs:177` |
+| #71 | #153 | `skills_handler.rs:269` |
+| #72 | #154 | `skills_handler.rs:344` |
+| #73 | #151 | `skills_handler.rs:533` |
+| #74 | #152 | `skills_handler.rs:590` |
+| #75 | #155 | `skills_handler.rs:632` |
+| #78 | #156 | `skills_handler.rs:167` |
+| #79 | #157 | `skills_handler.rs:227` |
+| #80 | #158 | `skills_handler.rs:312` |
+| #81 | #159 | `skills_handler.rs:523` |
+| #82 | #160 | `skills_handler.rs:579` |
+
+**Por que o `alert_number` NÃO foi atualizado agora.** Duas razões, nenhuma
+delas burocrática:
+
+1. As linhas vão mudar de novo. O merge de
+   [#874](https://github.com/michelbr84/GarraRUST/pull/874) (Copilot Autofix
+   para o #161) inseriu ~25 linhas em `skins_handler.rs::get_skin`, e as linhas
+   dos sinks pinados já se moveram no fonte: `:104 → :136`, `:134 → :159`,
+   `:141 → :166`, `:111 → :117`. Só `:84` (#67/#149) não mexeu. Renumerar antes
+   da próxima análise do CodeQL sobre `ba6d86b` produziria um ledger que nasce
+   stale.
+2. O autofix pode ter **resolvido** #161 de verdade — ele adicionou
+   `canonicalize` + checagem de prefixo em `get_skin`, que é exatamente o que o
+   CodeQL queria. Se resolveu, a entrada correspondente sai do ledger em vez de
+   ser renumerada.
+
+**Próximo passo, na ordem certa:** esperar a análise CodeQL de `ba6d86b`
+concluir → rodar `codeql-apply-dismissals.yml` com `apply:false` **sem escopo**
+→ ler o `exit 2`/`exit 3` que ele der → reconciliar `.json` **e** `.md` num PR
+revisável. §3 regra 5 é explícita: divergência não se auto-corrige.
+
+**Os outros 8 High**, todos verificados no fonte e todos falso-positivo ou
+material de ledger, nenhum exigindo código:
+
+| Regra | # | Local | Leitura |
+|---|---|---|---|
+| `rust/cleartext-logging` | #111, #112 | `config_cmd.rs:210,233` | Imprime `"set"`/`"not set"` e a **lista de nomes** de provider com chave — nunca o valor. É o invariante de redaction do plan 0046. |
+| `rust/cleartext-logging` | #113 | `wizard/mod.rs:640` | Imprime o **nome da entrada** do cofre; o `key` vai só para `vault.set(entry, key)`. |
+| `rust/cleartext-transmission` | #143–#146 | `signal/mod.rs:143,203`, `whatsapp/api.rs:48,79` | Ainda não auditados linha a linha. |
+| `rust/cleartext-storage-database` | #115 | `session_store.rs:1261` | Ainda não auditado. |
+
+Correção de escopo: o plano anterior falava em "33 sites de `non-https-url`".
+Essa regra **não aparece** entre os alertas abertos. A onda High real é
+16 + 4 + 3 + 1 = 24.
 
 ## §6. Failure handling (no global filter fallback)
 

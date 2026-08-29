@@ -173,6 +173,53 @@ endereço unspecified. Nenhum deles é endpoint legítimo.
 | **E** Elevation of privilege | Prompt injection em conteúdo ingerido faz `web_fetch` varrer a rede interna e devolver o resultado ao modelo. | Bloqueio de IP + sem redirects + cap de corpo. | Registrar a deny-list de domínios (hoje `WebFetchTool::new(None)` = vazia) a partir do `AppConfig`. |
 | **S** Spoofing | DNS rebinding troca o IP entre a checagem e o connect. | `resolve_to_addrs` pina os endereços já validados; `.send()` não re-resolve. | — |
 
+## 5.7. Caminhos de filesystem vindos do request (`/api/projects`)
+
+Fechado em 2026-08-29. `POST /api/projects` aceitava `path` como `String` crua
+do corpo JSON e guardava sem validar; `GET /api/projects/{id}/files` percorria
+esse diretório **recursivamente**. Todo o `/api/*` é auth-free por decisão de
+design, e o gateway pode escutar em `0.0.0.0`, então a sequência
+
+```text
+POST /api/projects {"name":"x","path":"/etc"}
+GET  /api/projects/{id}/files
+```
+
+enumerava `/etc` (ou `/root`, `/proc`, `/`) para qualquer um que alcançasse a
+porta. Não era alerta do CodeQL — a regra `rust/path-injection` não modela este
+caminho.
+
+**Mitigação**: `garraia_gateway::project_root::confine`. O caminho é resolvido
+com `std::fs::canonicalize` — que segue symlinks e achata `..` — e só então
+comparado contra as raízes permitidas com `Path::starts_with`, que compara
+componente a componente. Resolver **antes** de comparar é o ponto: a string
+crua deixaria passar tanto `~/projs/../../etc` quanto um symlink
+`~/projs/fuga → /etc`. Comparar por prefixo de string aceitaria
+`/home/user-evil` como estando sob `/home/user`.
+
+Raiz padrão: o home do usuário, e só ele. Override pelo operador via
+`GARRAIA_PROJECT_ROOTS` (formato de `PATH`), que **substitui** o padrão. Sem
+nenhuma raiz que resolva, tudo é recusado — fail-closed.
+
+Aplicado nos três pontos que tocam o disco, não só na escrita: `create_project`,
+`update_project` (senão o `PUT` reabriria o que o `POST` fechou) e
+`list_project_files` — este último **re-confina na leitura**, porque é a linha
+que de fato percorre o disco e o caminho pode ter virado symlink entre o POST e
+o GET.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **I** Information disclosure | `POST /api/projects {"path":"/etc"}` + `GET .../files` enumera o filesystem sem autenticação. | `project_root::confine` em create/update/list; guards de regressão em `tests/projects_test.rs` verificados contra o código vulnerável. | Raiz configurável hoje só por env var; mover para `AppConfig` quando `projects_handler` passar a receber `State`. |
+| **I** Information disclosure | Resposta distingue "não existe" de "fora das raízes", virando oráculo de existência de diretório. | 400 com corpo idêntico para todas as variantes de erro, como o 401 byte-idêntico de `/v1/auth/login`. | — |
+| **T** Tampering | Symlink dentro da raiz apontando para fora, criado entre o registro e a leitura (TOCTOU). | `canonicalize` resolve o symlink, e a re-validação em `list_project_files` roda no momento da leitura. | Janela residual entre o `canonicalize` e o `read_dir` é inerente ao filesystem; reduzida, não eliminada. |
+
+**Nota sobre `working_dir`**: `projects_handler::create_session_with_project`
+aceita um `working_dir` e foi endurecido junto, mas **não está roteado** —
+`POST /api/sessions` vai para `api::create_session`, cujo `CreateSessionRequest`
+só tem `agent_id`, então o campo é descartado pelo serde. Não era superfície
+viva; o guard existe para o dia em que a rota mudar, e
+`post_sessions_does_not_expose_working_dir_today` fixa esse estado.
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

@@ -30,6 +30,7 @@ pub mod openclaw_handler;
 pub mod parrot_ws;
 pub mod path_validation;
 pub mod plugins_handler;
+pub mod project_root;
 pub mod projects_handler;
 pub mod rate_limiter;
 pub mod rest_v1;

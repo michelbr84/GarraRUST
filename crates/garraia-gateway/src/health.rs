@@ -76,15 +76,74 @@ pub fn new_health_cache() -> HealthCache {
 
 // ─── Health Check Implementations ──────────────────────────────────────────
 
+/// Política SSRF dos health checks.
+///
+/// `AllowPrivate` porque os alvos legítimos daqui são majoritariamente locais —
+/// Ollama em `localhost:11434`, whisper, TTS self-hosted. O que continua
+/// bloqueado é o que nunca é alvo legítimo: link-local (`169.254.169.254`, o
+/// metadata de instância em nuvem e o prêmio de maior valor num SSRF),
+/// CGNAT, multicast e o endereço unspecified. Ver `IpScope::AllowPrivate`.
+///
+/// `http` além de `https` porque um Ollama de LAN em texto claro é escolha
+/// legítima do operador.
+fn health_url_policy(timeout_secs: u64) -> garraia_common::ssrf::UrlPolicy {
+    garraia_common::ssrf::UrlPolicy::http_public(
+        Duration::from_secs(timeout_secs),
+        "garraia-health/1.0",
+    )
+    .with_ip_scope(garraia_common::ssrf::IpScope::AllowPrivate)
+}
+
 /// Check an HTTP endpoint's health by hitting a URL and measuring latency.
+///
+/// ## Por que passa pelo guard de SSRF
+///
+/// Hoje as URLs daqui vêm da config do operador (`llm.*.base_url`,
+/// `voice.*_endpoint`), carregada no boot — **não** há caminho de request que
+/// as altere: `PATCH /api/settings` é dry-run (`settings_handler.rs`, plan
+/// 0121a é que vai persistir) e `PUT /admin/api/providers/{id}/settings` exige
+/// `AuthenticatedAdmin` + `Permission::Providers/Update` e nem persiste o
+/// `base_url`. Ou seja: **não é SSRF vivo em 2026-08-29**.
+///
+/// O guard entra porque a forma de oráculo já está montada e é o pior tipo:
+/// `/api/health` é auth-free e devolve **latência e o texto do erro**, que é
+/// leitura completa do resultado da requisição. No dia em que o plan 0121a
+/// persistir o `PATCH /api/settings`, este call site vira SSRF explorável sem
+/// que ninguém precise tocar neste arquivo — e sem o guard ninguém repararia.
+/// Guardar agora custa uma função; guardar depois custa um incidente.
 async fn check_http(name: &str, url: &str, timeout_secs: u64) -> HealthStatus {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    let policy = health_url_policy(timeout_secs);
+
+    let vetted = match garraia_common::ssrf::vet_url(url, &policy) {
+        Ok(v) => v,
+        Err(e) => {
+            // Sem latência: nada foi para a rede, e reportar um tempo aqui
+            // daria ao chamador um sinal que não existe.
+            warn!(check = %name, "health check recusado pelo guard de SSRF: {e}");
+            return HealthStatus {
+                name: name.to_string(),
+                ok: false,
+                latency_ms: None,
+                error: Some(format!("blocked by SSRF guard: {e}")),
+            };
+        }
+    };
+
+    let client = match garraia_common::ssrf::pinned_client(&vetted, &policy) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(check = %name, "falha ao construir client pinado: {e}");
+            return HealthStatus {
+                name: name.to_string(),
+                ok: false,
+                latency_ms: None,
+                error: Some(format!("client build failed: {e}")),
+            };
+        }
+    };
 
     let start = Instant::now();
-    match client.get(url).send().await {
+    match client.get(vetted.url.clone()).send().await {
         Ok(resp) => {
             let latency = start.elapsed().as_millis();
             if resp.status().is_success()
@@ -534,4 +593,54 @@ pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<Capa
         experimental_flags: Vec::new(),
         version: env!("CARGO_PKG_VERSION"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garraia_common::ssrf::vet_url;
+
+    /// O ponto do `AllowPrivate`: alvo local passa, metadata de nuvem não.
+    ///
+    /// Guard do endurecimento de 2026-08-29. `/api/health` é auth-free e
+    /// devolve latência **e** o texto do erro, então é oráculo de leitura
+    /// completa — se um dia a URL virar controlável por request (plan 0121a,
+    /// que persiste o `PATCH /api/settings`), é este teste que garante que o
+    /// alvo de maior valor continua fechado.
+    #[test]
+    fn health_policy_allows_local_targets_but_blocks_cloud_metadata() {
+        let policy = health_url_policy(5);
+
+        // Ollama local é o caso de uso legítimo — precisa passar.
+        assert!(
+            vet_url("http://127.0.0.1:11434/api/tags", &policy).is_ok(),
+            "loopback deveria passar sob AllowPrivate"
+        );
+
+        // O prêmio de maior valor num SSRF em nuvem.
+        assert!(
+            vet_url("http://169.254.169.254/latest/meta-data/", &policy).is_err(),
+            "link-local (metadata de instancia) deve continuar bloqueado"
+        );
+
+        // Nem toda faixa interna é liberada por AllowPrivate.
+        for blocked in ["http://0.0.0.0/", "http://224.0.0.1/", "http://100.64.0.1/"] {
+            assert!(
+                vet_url(blocked, &policy).is_err(),
+                "{blocked} deveria ser bloqueado mesmo sob AllowPrivate"
+            );
+        }
+    }
+
+    /// Esquema fora da allow-list não vira requisição.
+    #[test]
+    fn health_policy_rejects_non_http_schemes() {
+        let policy = health_url_policy(5);
+        for bad in ["file:///etc/passwd", "gopher://localhost/", "ftp://host/"] {
+            assert!(
+                vet_url(bad, &policy).is_err(),
+                "{bad} deveria ser recusado pelo allowlist de esquema"
+            );
+        }
+    }
 }

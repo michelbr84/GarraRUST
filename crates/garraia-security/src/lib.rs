@@ -10,5 +10,5 @@ pub use credentials::{
     try_vault_delete_prefix, try_vault_get, try_vault_set, vault_passphrase_from_env,
 };
 pub use pairing::PairingManager;
-pub use redaction::{RedactingWriter, redact_secrets};
+pub use redaction::{RedactingMakeWriter, RedactingWriter, redact_secrets};
 pub use validation::InputValidator;
