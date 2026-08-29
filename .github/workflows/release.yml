@@ -251,9 +251,16 @@ jobs:
 
       - name: Get version
         id: version
+        # Os valores vão por `env:` e são lidos como variáveis de shell entre
+        # aspas — nunca interpolados em `run:`. `inputs.version` é texto livre
+        # de quem dispara o workflow, e interpolado ele vira injeção de shell.
+        # Mesmo padrão de branch-cleanup.yml:56-60.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.version }}" != "" ]]; then
-            VERSION="${{ inputs.version }}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
+            VERSION="${INPUT_VERSION}"
           else
             VERSION=${GITHUB_REF#refs/tags/}
           fi
