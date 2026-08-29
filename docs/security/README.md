@@ -7,7 +7,8 @@ Documentação técnica de segurança do GarraIA.
 | Arquivo | Descrição | Status |
 |---|---|---|
 | [`threat-model.md`](threat-model.md) | STRIDE threat model por componente (Gateway, auth, storage, plugins, channels, mobile) | Draft v1 (next review trimestral) |
-| [`codeql-setup.md`](codeql-setup.md) | Setup avançado do CodeQL (3 linguagens, config, toggle do default setup) | Ativo desde 2026-04-30 |
+| [`codeql-setup.md`](codeql-setup.md) | Setup avançado do CodeQL (3 linguagens, config, toggle do default setup, onda de 2026-08-28, triagem programática) | Ativo desde 2026-04-30 |
+| [`.github/workflows/codeql-triage.yml`](../../.github/workflows/codeql-triage.yml) + [`scripts/security/codeql-alert-report.py`](../../scripts/security/codeql-alert-report.py) | Lê os alertas de code scanning de dentro do repo (`security-events: read`) e agrega por regra, separando produção de teste | `workflow_dispatch`, desde 2026-08-29 |
 | [`codeql-suppressions.md`](codeql-suppressions.md) (+ [`.json`](codeql-suppressions.json)) | Ledger versionado de supressões (dismissal via API + script de reapply) — 22 entradas | ⚠️ Re-audit de 90 dias vencido em 2026-08-01 |
 | [`secret-scanning-runbook.md`](secret-scanning-runbook.md) | Resposta a segredos vazados em commits | Ativo |
 | [`protect-main-ruleset.md`](protect-main-ruleset.md) (+ [`.json`](protect-main-ruleset.json)) | Ruleset do `main` (PR obrigatório, 4 checks, zero bypass) — fonte de verdade versionada | Ativo |

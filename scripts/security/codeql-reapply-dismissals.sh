@@ -8,7 +8,8 @@
 #   --dry-run     (default) print intended PATCH calls but do not execute
 #   --apply       execute PATCH (mutually exclusive with --dry-run)
 #   --check-md    validate that `.md` ledger and `.json` ledger list the same
-#                 alert numbers; exit 0 if in sync, 4 if drift
+#                 alert numbers; exit 0 if in sync, 4 if drift. Local-only:
+#                 needs `jq` but NOT `gh`, so it runs in pre-commit and CI.
 #   --alert <N>   restrict to a single alert number (used by empirical proof)
 #   -h | --help   print usage
 #
@@ -87,7 +88,14 @@ need() {
     exit 5
   }
 }
-need gh
+# `gh` is only needed by the reapply loop, which talks to the code-scanning
+# API. `--check-md` compares two local files and nothing else, so requiring
+# `gh` for it made the one mode that can run anywhere — pre-commit, CI, a
+# container without the CLI — fail with exit 5 for no reason. Amendment
+# 2026-08-29.
+if [[ "$CHECK_MD" -ne 1 ]]; then
+  need gh
+fi
 need jq
 
 if [[ ! -f "$LEDGER_JSON" ]]; then

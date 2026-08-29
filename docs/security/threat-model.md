@@ -134,6 +134,45 @@ Componente: `crates/garraia-agents/src/providers/*.rs` (OpenAI, OpenRouter, Anth
 
 ---
 
+## 5.6. SSRF — toda requisição outbound com URL de origem remota
+
+Adicionado em 2026-08-29, depois de a onda de alertas Critical do CodeQL
+(`rust/request-forgery`, security-severity 9.1) mostrar que o padrão implementado
+em `plugins_handler.rs` (GAR-460/461) existia em quatro outros lugares, em três
+crates diferentes, cada um com uma defesa diferente ou nenhuma.
+
+**Regra:** todo fetch outbound cuja URL venha de um request HTTP, de config
+editável por request, ou de uma tool call de LLM, passa por
+`garraia_common::ssrf` antes de abrir conexão. Nunca `reqwest::get(url)` cru.
+
+O guard cobre cinco coisas: allowlist de esquema; resolução **única** do host com
+bloqueio de faixas internas; DNS pinning via `resolve_to_addrs` (fecha o TOCTOU
+de rebinding); `redirect::Policy::none()` (um host permitido não redireciona para
+um bloqueado depois da checagem); e leitura de corpo com cap de bytes.
+
+Auth e SSRF são independentes: `plugins_handler` exige
+`Permission::ManagePlugins` **e** valida a URL, porque um operador legítimo
+também não deve conseguir fazer o gateway varrer a rede interna.
+
+| Call site | Política | Por quê |
+|---|---|---|
+| `plugins_handler::download_and_validate_manifest` | https + allowlist de host (vazia = desligado) + `PublicOnly` | manifest de plugin é código de terceiro |
+| `garraia_skills::SkillInstaller::install_from_url` | https + `PublicOnly` | skill é conteúdo executável-adjacente; guard fica no crate para cobrir também o CLI |
+| `tools::web_fetch_tool` | http+https + `PublicOnly` | URL vem de tool call do LLM — dirigível por prompt injection |
+| `router::add_provider` (`base_url`) | http+https + `AllowPrivate` | Ollama local e LM Studio na LAN são o caso de uso; metadata continua bloqueada |
+| `mcp::manager::connect_http` | http+https + `AllowPrivate` | MCP self-hosted em loopback/LAN é o caso ordinário; validado no sink terminal para cobrir create, restart, boot e reconnect |
+
+`IpScope::AllowPrivate` é um afrouxamento deliberado e limitado: libera loopback
+e RFC 1918/ULA, mas **continua** bloqueando link-local (`169.254.169.254`, o
+metadata de instância em nuvem — o alvo de maior valor), CGNAT, multicast e o
+endereço unspecified. Nenhum deles é endpoint legítimo.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **I** Information disclosure | `POST /api/skills/import` ou `POST /api/providers` apontado para `169.254.169.254` extrai credenciais de instância em nuvem. | `garraia_common::ssrf` recusa antes de conectar, em todos os call sites da tabela acima. | Estender aos itens ainda não cobertos: `health.rs::check_http`, `admin/providers.rs`, `admin/mcp_templates.rs`, `channels/{teams,matrix,google_chat}`, `voice/tts/chatterbox_client`, `agents/a2a/client`. |
+| **E** Elevation of privilege | Prompt injection em conteúdo ingerido faz `web_fetch` varrer a rede interna e devolver o resultado ao modelo. | Bloqueio de IP + sem redirects + cap de corpo. | Registrar a deny-list de domínios (hoje `WebFetchTool::new(None)` = vazia) a partir do `AppConfig`. |
+| **S** Spoofing | DNS rebinding troca o IP entre a checagem e o connect. | `resolve_to_addrs` pina os endereços já validados; `.send()` não re-resolve. | — |
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

@@ -30,7 +30,7 @@
 //!      eliminates the TOCTOU window an attacker controlling the
 //!      upstream resolver could otherwise exploit (DNS rebinding).
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -402,44 +402,20 @@ impl InstallError {
 /// SSRF, redirect amplification, slow-loris, and oversize bodies — see the
 /// crate-level docstring above for the threat model.
 async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson, InstallError> {
-    // 1) URL parse + scheme gate. Use reqwest's re-exported `Url` so we
-    //    don't need to add a direct dep on the `url` crate.
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| InstallError::bad_request(format!("invalid URL: {e}")))?;
-    if parsed.scheme() != "https" {
-        return Err(InstallError::bad_request(
-            "manifest URL must use https scheme",
-        ));
-    }
+    // 1-3) Scheme gate, host allow-list, single DNS resolve and IP block, all
+    //      in the shared guard (`garraia_common::ssrf`). Extracted from this
+    //      module on 2026-08-29 so the skill importer, the `web_fetch` tool and
+    //      the MCP transport get the same defenses instead of near-copies.
+    let vetted = garraia_common::ssrf::vet_url(url, &manifest_url_policy())
+        .map_err(ssrf_to_install_error)?;
 
-    // 2) Allowlist gate (empty by default → remote URL install disabled).
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| InstallError::bad_request("URL is missing host"))?
-        .to_lowercase();
-    if !host_in_allowlist(&host, INSTALL_URL_ALLOWLIST) {
-        return Err(InstallError::forbidden(
-            "remote URL install disabled (host not in allowlist; \
-             empty allowlist == disabled by default)",
-        ));
-    }
-
-    // 3) DNS resolve + IP block gate. Resolves ONCE here; the resolved
-    //    addrs are pinned into the reqwest client below via
-    //    `resolve_to_addrs` so the connect does NOT re-resolve `host`
-    //    (defense against DNS rebinding — GAR-461).
-    let port = parsed.port_or_known_default().unwrap_or(443);
-    let resolved = resolve_manifest_addrs(&host, port)?;
-    validate_manifest_addrs(&resolved, &host)?;
-
-    // 4) HTTP fetch with redirect=none + timeout + bounded body. Client
-    //    is built with `resolve_to_addrs(&host, &resolved)` so reqwest's
-    //    `.send()` skips DNS resolution entirely for `host` and connects
-    //    to the IPs we already validated in step (3).
-    let client = build_pinned_manifest_client(&host, &resolved)?;
+    // 4) HTTP fetch with redirect=none + timeout + bounded body. The client is
+    //    pinned to the addresses vetted above, so `.send()` skips DNS entirely
+    //    and cannot be rebound between the check and the connect (GAR-461).
+    let client = build_pinned_manifest_client(&vetted.host, &vetted.addrs)?;
 
     let response = client
-        .get(parsed)
+        .get(vetted.url.clone())
         .send()
         .await
         .map_err(|e| InstallError::upstream(format!("download failed: {e}")))?;
@@ -451,17 +427,8 @@ async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson,
         )));
     }
 
-    // Optional Content-Length sanity check (some upstreams omit this header).
-    if let Some(len) = response.content_length()
-        && (len as usize) > MANIFEST_BODY_CAP_BYTES
-    {
-        return Err(InstallError::bad_request(format!(
-            "manifest exceeds {} byte cap (declared {} bytes)",
-            MANIFEST_BODY_CAP_BYTES, len
-        )));
-    }
-
-    // Bounded read — accumulate up to the cap, refuse if exceeded.
+    // Bounded read. The shared helper also honours a declared Content-Length
+    // over the cap, so the previous separate pre-check is no longer needed.
     let bytes = read_capped(response, MANIFEST_BODY_CAP_BYTES).await?;
 
     let text = std::str::from_utf8(&bytes)
@@ -491,39 +458,32 @@ async fn download_and_validate_manifest(url: &str) -> Result<PluginManifestJson,
     Ok(manifest)
 }
 
-/// Resolve `host:port` to the full set of `SocketAddr`s via the system
-/// resolver. Returns an `InstallError::bad_request` if resolution fails
-/// or returns zero addresses. Pure helper — no IO besides DNS, easy to
-/// reason about and replace.
-fn resolve_manifest_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, InstallError> {
-    let socket_str = format!("{host}:{port}");
-    let resolved: Vec<SocketAddr> = socket_str
-        .to_socket_addrs()
-        .map_err(|e| InstallError::bad_request(format!("DNS resolve failed: {e}")))?
-        .collect();
-    if resolved.is_empty() {
-        return Err(InstallError::bad_request(format!(
-            "host '{host}' resolved to no addresses"
-        )));
-    }
-    Ok(resolved)
+/// Policy for plugin-manifest fetches: https only, host allow-list enforced
+/// (empty by default == remote URL install disabled), 10s timeout.
+///
+/// The allow-list is `Some(INSTALL_URL_ALLOWLIST)` rather than `None` on
+/// purpose — that is what keeps remote install off unless an operator opts in.
+fn manifest_url_policy() -> garraia_common::ssrf::UrlPolicy {
+    garraia_common::ssrf::UrlPolicy::https_public(
+        MANIFEST_TIMEOUT,
+        concat!("GarraIA/", env!("CARGO_PKG_VERSION"), " plugin-installer"),
+    )
+    .with_host_allowlist(INSTALL_URL_ALLOWLIST)
 }
 
-/// Reject the entire `addrs` list if ANY address falls in a blocked
-/// IP range (per [`is_blocked_ip`]). Returning `Ok(())` guarantees every
-/// entry is publicly routable. The `host` parameter only flavors the
-/// error message.
-fn validate_manifest_addrs(addrs: &[SocketAddr], host: &str) -> Result<(), InstallError> {
-    for addr in addrs {
-        if is_blocked_ip(&addr.ip()) {
-            return Err(InstallError::forbidden(format!(
-                "host '{host}' resolves to blocked address {} \
-                 (loopback/private/link-local/multicast/unspecified)",
-                addr.ip()
-            )));
-        }
+/// Map the shared guard's rejection onto this module's error type, preserving
+/// the status split the pre-existing tests assert on: malformed input is a
+/// 400, a policy refusal is a 403, our own client failure is an upstream error.
+fn ssrf_to_install_error(rejection: garraia_common::ssrf::SsrfRejection) -> InstallError {
+    use garraia_common::ssrf::SsrfCategory;
+    // Match on the category, not on the status code: a new `SsrfRejection`
+    // variant then forces this mapping to be revisited instead of silently
+    // landing in a catch-all arm.
+    match rejection.category() {
+        SsrfCategory::Forbidden => InstallError::forbidden(rejection.to_string()),
+        SsrfCategory::Upstream => InstallError::upstream(rejection.to_string()),
+        SsrfCategory::BadRequest => InstallError::bad_request(rejection.to_string()),
     }
-    Ok(())
 }
 
 /// Build a `reqwest::Client` that connects ONLY to the pre-validated
@@ -537,129 +497,20 @@ fn build_pinned_manifest_client(
     host: &str,
     addrs: &[SocketAddr],
 ) -> Result<reqwest::Client, InstallError> {
-    reqwest::Client::builder()
-        .resolve_to_addrs(host, addrs)
-        .timeout(MANIFEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .https_only(true)
-        .user_agent(concat!(
-            "GarraIA/",
-            env!("CARGO_PKG_VERSION"),
-            " plugin-installer"
-        ))
-        .build()
-        .map_err(|e| InstallError::upstream(format!("client build failed: {e}")))
+    garraia_common::ssrf::pinned_client_for(host, addrs, &manifest_url_policy())
+        .map_err(ssrf_to_install_error)
 }
 
 /// Read at most `cap` bytes from a response body, aborting with a 400 if
 /// the body would exceed the cap. Streams the body to keep peak memory
 /// bounded even on misbehaving upstreams that lie about Content-Length.
 async fn read_capped(response: reqwest::Response, cap: usize) -> Result<Vec<u8>, InstallError> {
-    use futures::StreamExt;
-
-    let mut buf: Vec<u8> = Vec::with_capacity(cap.min(8192));
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| InstallError::upstream(format!("body stream error: {e}")))?;
-        if buf.len() + chunk.len() > cap {
-            return Err(InstallError::bad_request(format!(
-                "manifest exceeds {cap} byte cap (streamed)"
-            )));
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
+    garraia_common::ssrf::read_capped(response, cap)
+        .await
+        .map_err(ssrf_to_install_error)
 }
 
-// ── SSRF helpers (kept defensive duplicates; see crate docstring) ──────────
-
-/// Returns `true` if `ip` is loopback, private, link-local, multicast,
-/// unspecified, or otherwise unsafe to use as an HTTP target from the
-/// gateway (SSRF defense). Covers IPv4 + IPv6.
-///
-/// IPv4 ranges blocked:
-///   * 127.0.0.0/8       (loopback)
-///   * 10.0.0.0/8        (RFC 1918)
-///   * 172.16.0.0/12     (RFC 1918)
-///   * 192.168.0.0/16    (RFC 1918)
-///   * 169.254.0.0/16    (link-local incl. AWS/GCP IMDS at 169.254.169.254)
-///   * 0.0.0.0/8         (unspecified / "this network")
-///   * 224.0.0.0/4       (multicast)
-///   * 100.64.0.0/10     (CGNAT)
-///
-/// IPv6 ranges blocked:
-///   * ::1/128           (loopback)
-///   * ::/128            (unspecified)
-///   * fc00::/7          (unique local)
-///   * fe80::/10         (link-local)
-///   * ff00::/8          (multicast)
-///   * ::ffff:0:0/96     (IPv4-mapped — inspect inner v4)
-///   * ::a.b.c.d         (IPv4-compatible legacy RFC 4291 §2.5.5.1 — inspect inner v4)
-fn is_blocked_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || o[0] == 0                  // 0.0.0.0/8
-                || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
-                return true;
-            }
-            let segs = v6.segments();
-            // fc00::/7 (unique local).
-            if segs[0] & 0xfe00 == 0xfc00 {
-                return true;
-            }
-            // fe80::/10 (link-local).
-            if segs[0] & 0xffc0 == 0xfe80 {
-                return true;
-            }
-            // IPv4-mapped IPv6 (::ffff:0:0/96): inspect the inner v4.
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_blocked_ip(&IpAddr::V4(v4));
-            }
-            // IPv4-compatible IPv6 (RFC 4291 §2.5.5.1, deprecated):
-            // ::a.b.c.d where the high 96 bits are zero and the low 32
-            // bits encode an IPv4 address. Distinguished from v4-mapped
-            // (::ffff:a.b.c.d, handled above by to_ipv4_mapped) and from
-            // pure ::1/:: (caught by is_loopback/is_unspecified guards
-            // ABOVE this branch — those guards run first, so the cases
-            // segs[6] == 0 && segs[7] in (0, 1) never reach here). GAR-460.
-            if segs[0..6] == [0, 0, 0, 0, 0, 0] {
-                let v4 = Ipv4Addr::new(
-                    (segs[6] >> 8) as u8,
-                    (segs[6] & 0xff) as u8,
-                    (segs[7] >> 8) as u8,
-                    (segs[7] & 0xff) as u8,
-                );
-                return is_blocked_ip(&IpAddr::V4(v4));
-            }
-            false
-        }
-    }
-}
-
-/// Suffix-match a host against an allowlist of host suffixes. An empty
-/// allowlist returns `false` (the empty-by-default disabled state).
-/// Suffixes match either the full host or a `.suffix` boundary — so
-/// `"plugins.example.com"` matches `"plugins.example.com"` and
-/// `"v2.plugins.example.com"`, but NOT `"evilplugins.example.com"`.
-fn host_in_allowlist(host: &str, allowlist: &[&str]) -> bool {
-    if allowlist.is_empty() {
-        return false;
-    }
-    let host = host.trim_end_matches('.').to_lowercase();
-    allowlist.iter().any(|allowed| {
-        let allowed = allowed.trim_end_matches('.').to_lowercase();
-        host == allowed || host.ends_with(&format!(".{allowed}"))
-    })
-}
+// ── SSRF adapters (thin delegates to `garraia_common::ssrf`) ──────────────
 
 // ── Manifest helpers (unchanged from pre-PR-A) ──────────────────────────────
 
@@ -714,126 +565,7 @@ mod tests {
         assert!(!is_valid_semver("abc"));
         assert!(!is_valid_semver("1.0.0-beta"));
     }
-
-    // ── SSRF defense — IP block ────────────────────────────────────────────
-
-    fn ip(s: &str) -> IpAddr {
-        s.parse().expect("test ip parse")
-    }
-
-    #[test]
-    fn is_blocked_ip_loopback_v4() {
-        assert!(is_blocked_ip(&ip("127.0.0.1")));
-        assert!(is_blocked_ip(&ip("127.255.255.254")));
-    }
-
-    #[test]
-    fn is_blocked_ip_rfc1918_v4() {
-        assert!(is_blocked_ip(&ip("10.0.0.1")));
-        assert!(is_blocked_ip(&ip("10.255.255.255")));
-        assert!(is_blocked_ip(&ip("172.16.0.1")));
-        assert!(is_blocked_ip(&ip("172.31.255.255")));
-        assert!(is_blocked_ip(&ip("192.168.0.1")));
-        assert!(is_blocked_ip(&ip("192.168.255.255")));
-    }
-
-    #[test]
-    fn is_blocked_ip_link_local_and_imds_v4() {
-        assert!(is_blocked_ip(&ip("169.254.0.1")));
-        // AWS / GCP / Azure IMDS endpoint.
-        assert!(is_blocked_ip(&ip("169.254.169.254")));
-    }
-
-    #[test]
-    fn is_blocked_ip_unspecified_and_multicast_and_cgnat_v4() {
-        assert!(is_blocked_ip(&ip("0.0.0.0")));
-        assert!(is_blocked_ip(&ip("0.1.2.3")));
-        assert!(is_blocked_ip(&ip("224.0.0.1")));
-        assert!(is_blocked_ip(&ip("239.255.255.255")));
-        // CGNAT 100.64.0.0/10.
-        assert!(is_blocked_ip(&ip("100.64.0.1")));
-        assert!(is_blocked_ip(&ip("100.127.255.254")));
-    }
-
-    #[test]
-    fn is_blocked_ip_ipv6_loopback_and_unspecified() {
-        assert!(is_blocked_ip(&ip("::1")));
-        assert!(is_blocked_ip(&ip("::")));
-    }
-
-    #[test]
-    fn is_blocked_ip_ipv6_unique_local_and_link_local() {
-        assert!(is_blocked_ip(&ip("fc00::1")));
-        assert!(is_blocked_ip(&ip("fd00::1")));
-        assert!(is_blocked_ip(&ip("fe80::1")));
-        assert!(is_blocked_ip(&ip("febf::1")));
-    }
-
-    #[test]
-    fn is_blocked_ip_ipv6_multicast_and_v4_mapped() {
-        assert!(is_blocked_ip(&ip("ff02::1")));
-        // ::ffff:127.0.0.1 — IPv4-mapped IPv6 of loopback.
-        assert!(is_blocked_ip(&ip("::ffff:127.0.0.1")));
-        // ::ffff:169.254.169.254 — IPv4-mapped IPv6 of IMDS.
-        assert!(is_blocked_ip(&ip("::ffff:169.254.169.254")));
-    }
-
-    #[test]
-    fn is_blocked_ip_ipv6_v4_compatible_legacy() {
-        // GAR-460 — IPv4-compatible IPv6 (RFC 4291 §2.5.5.1, deprecated):
-        // ::a.b.c.d. NOT captured by Ipv6Addr::to_ipv4_mapped() (which
-        // only handles ::ffff:a.b.c.d). The new branch in is_blocked_ip
-        // walks segs[0..6] == [0;6] and decodes segs[6..8] as a v4 addr.
-        assert!(is_blocked_ip(&ip("::127.0.0.1"))); // loopback wrapped
-        assert!(is_blocked_ip(&ip("::169.254.169.254"))); // IMDS wrapped
-        assert!(is_blocked_ip(&ip("::10.0.0.1"))); // RFC1918 wrapped
-        assert!(is_blocked_ip(&ip("::192.168.1.1"))); // RFC1918 wrapped
-        // Public v4 wrapped in v4-compatible should NOT be blocked.
-        assert!(!is_blocked_ip(&ip("::8.8.8.8")));
-        assert!(!is_blocked_ip(&ip("::1.1.1.1")));
-        // Boundary: ::1 stays IPv6 loopback (caught by is_loopback BEFORE
-        // the v4-compat branch fires — guards run in declared order).
-        assert!(is_blocked_ip(&ip("::1")));
-        // Boundary: :: stays IPv6 unspecified (caught by is_unspecified
-        // BEFORE the v4-compat branch). Would also collapse to 0.0.0.0
-        // which is blocked, but for the right reason.
-        assert!(is_blocked_ip(&ip("::")));
-    }
-
-    #[test]
-    fn is_blocked_ip_allows_public_addresses() {
-        assert!(!is_blocked_ip(&ip("8.8.8.8")));
-        assert!(!is_blocked_ip(&ip("1.1.1.1")));
-        assert!(!is_blocked_ip(&ip("203.0.113.1"))); // documentation prefix, but not blocked
-        assert!(!is_blocked_ip(&ip("2606:4700::1111"))); // Cloudflare public
-        assert!(!is_blocked_ip(&ip("2001:4860:4860::8888"))); // Google public
-    }
-
     // ── SSRF defense — host allowlist ──────────────────────────────────────
-
-    #[test]
-    fn empty_allowlist_blocks_everything() {
-        assert!(!host_in_allowlist("example.com", &[]));
-        assert!(!host_in_allowlist("plugins.example.com", &[]));
-    }
-
-    #[test]
-    fn allowlist_exact_match_only_when_no_subdomain_left() {
-        let list = &["plugins.example.com"];
-        assert!(host_in_allowlist("plugins.example.com", list));
-        assert!(host_in_allowlist("v2.plugins.example.com", list));
-        // Boundary check: no trailing-substring spoofing.
-        assert!(!host_in_allowlist("evilplugins.example.com", list));
-        assert!(!host_in_allowlist("example.com", list));
-    }
-
-    #[test]
-    fn allowlist_is_case_insensitive_and_trims_trailing_dot() {
-        let list = &["Plugins.Example.Com"];
-        assert!(host_in_allowlist("plugins.example.com", list));
-        assert!(host_in_allowlist("PLUGINS.EXAMPLE.COM", list));
-        assert!(host_in_allowlist("plugins.example.com.", list));
-    }
 
     // ── End-to-end: scheme + allowlist gates ───────────────────────────────
 
@@ -873,55 +605,6 @@ mod tests {
     // which we plug in `build_pinned_manifest_client`. We do not test
     // `resolve_manifest_addrs` directly because it depends on the system
     // resolver (covered indirectly by the existing e2e harness).
-
-    #[test]
-    fn validate_manifest_addrs_accepts_empty() {
-        // Trivially total. `resolve_manifest_addrs` would have returned
-        // an error before reaching this; we still want a no-panic on [].
-        assert!(validate_manifest_addrs(&[], "example.com").is_ok());
-    }
-
-    #[test]
-    fn validate_manifest_addrs_rejects_loopback_v4() {
-        let addrs = vec![SocketAddr::from(([127, 0, 0, 1], 443))];
-        let err =
-            validate_manifest_addrs(&addrs, "evil.example").expect_err("loopback must be rejected");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert!(err.message.contains("blocked address"));
-    }
-
-    #[test]
-    fn validate_manifest_addrs_rejects_imds() {
-        let addrs = vec![SocketAddr::from(([169, 254, 169, 254], 443))];
-        assert!(validate_manifest_addrs(&addrs, "evil.example").is_err());
-    }
-
-    #[test]
-    fn validate_manifest_addrs_rejects_mixed_public_private() {
-        // Critical case: an attacker's resolver returns a public IP
-        // first (would pass alone) followed by RFC1918. The helper MUST
-        // walk the entire list and trip on ANY blocked entry.
-        let addrs = vec![
-            SocketAddr::from(([8, 8, 8, 8], 443)), // public, would pass alone
-            SocketAddr::from(([10, 0, 0, 1], 443)), // RFC1918 — must trip
-        ];
-        let err = validate_manifest_addrs(&addrs, "evil.example")
-            .expect_err("mixed public+private must be rejected");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn validate_manifest_addrs_accepts_all_public_v4_v6() {
-        let addrs = vec![
-            SocketAddr::from(([8, 8, 8, 8], 443)),
-            SocketAddr::from(([1, 1, 1, 1], 443)),
-            SocketAddr::from((
-                std::net::Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111),
-                443,
-            )),
-        ];
-        assert!(validate_manifest_addrs(&addrs, "ok.example").is_ok());
-    }
 
     #[test]
     fn build_pinned_manifest_client_smoke() {

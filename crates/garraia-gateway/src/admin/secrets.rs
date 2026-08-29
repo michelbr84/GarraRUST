@@ -415,9 +415,9 @@ pub async fn migrate_secrets(
     )
 }
 
-// ── Encryption helpers (private) ─────────────────────────────────────
+// ── Encryption helpers (pub(super): also used by shared.rs re-key migration) ─────────────────────────────────────
 
-fn encrypt_value(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+pub(super) fn encrypt_value(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let unbound = UnboundKey::new(&AES_256_GCM, key)
         .map_err(|_| "failed to create encryption key".to_string())?;
     let aead_key = LessSafeKey::new(unbound);
@@ -438,7 +438,11 @@ fn encrypt_value(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Str
     Ok((in_out, nonce_bytes))
 }
 
-fn decrypt_value(ciphertext: &[u8], nonce_bytes: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn decrypt_value(
+    ciphertext: &[u8],
+    nonce_bytes: &[u8],
+    key: &[u8],
+) -> Result<Vec<u8>, String> {
     let unbound = UnboundKey::new(&AES_256_GCM, key)
         .map_err(|_| "failed to create decryption key".to_string())?;
     let aead_key = LessSafeKey::new(unbound);

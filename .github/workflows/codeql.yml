@@ -33,6 +33,28 @@ jobs:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Desliga `cfg(test)` no extractor Rust. Sem isto ele liga `test`
+      # incondicionalmente (github/codeql, rust/extractor/src/config.rs, fn
+      # to_cfg_overrides faz `enabled_cfgs.insert(to_cfg_override("test"))` sem
+      # condicao), e os ~204 modulos `#[cfg(test)]` inline do workspace viram
+      # sinks de rust/hard-coded-cryptographic-value (9.8 = Critical).
+      #
+      # NIVEL DE JOB, nao do step `Initialize CodeQL` — e a diferenca entre
+      # funcionar e nao funcionar. Com `build-mode: none` a extracao acontece
+      # dentro de `Perform CodeQL analysis` (811s no run 33233416706, contra
+      # 10s do init), entao uma env no step do init nunca chega ao extractor.
+      # Comprovado empiricamente: no run 33239057983 o alerta 164 apontou para
+      # um `assert!` dentro de um `#[cfg(test)]`, ou seja o override foi
+      # ignorado. Ver docs/security/codeql-setup.md.
+      #
+      # Isto e mudanca de ESCOPO DE ANALISE, nao supressao: nao mexe em
+      # docs/security/codeql-suppressions.json, nao faz PATCH state=dismissed,
+      # e fica versionada e revisavel no diff. Helpers atras de
+      # `#[cfg(feature = "test-helpers")]` CONTINUAM analisados — sao feature,
+      # nao cfg(test). A env e inofensiva nas outras linguagens da matriz: so o
+      # extractor Rust a le.
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"
     permissions:
       # SARIF upload — required for results to appear in the Security tab.
       security-events: write

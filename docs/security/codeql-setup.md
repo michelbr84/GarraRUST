@@ -151,6 +151,114 @@ prioritizes production code paths; Wave 2 covers test fixtures and
 locks in the suppression convention. Both reference the alert numbers
 captured in the Security tab and avoid bulk-dismissal anti-patterns.
 
+## A onda de 2026-08-28: extractor Rust e escopo de teste
+
+Em 2026-08-28 o Security tab passou a mostrar **56 alertas Critical** de uma vez,
+sem nenhuma mudança em `codeql.yml`, em `codeql-config.yml` ou de código de
+segurança na janela.
+
+**Causa:** o bundle do CodeQL nos runners subiu de **2.26.3 para 2.26.4**, e isso
+destravou o extractor de Rust. Comparando os logs do job `Analyze (rust)` do
+mesmo workflow, na mesma branch:
+
+| Run (`main`) | CodeQL | Extraídos com erro | Extraídos sem erro |
+|---|---|---:|---:|
+| [`32170604886`](https://github.com/michelbr84/GarraRUST/actions/runs/32170604886) — 2026-08-18T18:22Z | 2.26.3 | 303 | 118 |
+| [`33233416706`](https://github.com/michelbr84/GarraRUST/actions/runs/33233416706) — 2026-08-29T04:16Z | 2.26.4 | 3 | 422 |
+
+O log novo diz `CodeQL scanned 425 out of 425 Rust files`. A cobertura saiu de
+~28% para ~99% — 3,6× mais código analisado. Os alertas não foram regressão: era
+código que já existia e que o CodeQL passou a enxergar.
+
+### Por que quase tudo era código de teste
+
+204 dos 434 arquivos `.rs` de `crates/` têm um módulo `#[cfg(test)]` **inline**,
+e o extractor Rust liga `cfg(test)` incondicionalmente — no fonte do
+`github/codeql`, `rust/extractor/src/config.rs::to_cfg_overrides` faz
+`enabled_cfgs.insert(to_cfg_override("test"))` sem condição. Todo fixture de
+teste (senha literal, salt, chave de HMAC) virou sink analisável de uma vez.
+
+Das 78 ocorrências de `rust/hard-coded-cryptographic-value` (security-severity
+**9.8**, Critical) no workspace, **69 eram código de teste**: 59 em `#[cfg(test)]`
+inline e 10 em `crates/*/tests/`.
+
+### A correção: escopo, não supressão
+
+`.github/workflows/codeql.yml`, no **nível do job** `analyze`:
+
+```yaml
+jobs:
+  analyze:
+    env:
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: "-test"
+```
+
+> **O nível importa, e essa foi a primeira tentativa errada.** Colocar a env no
+> step `Initialize CodeQL` **não funciona**. Com `build-mode: none` a extração
+> acontece dentro de `Perform CodeQL analysis` — 811 s no run
+> [`33233416706`](https://github.com/michelbr84/GarraRUST/actions/runs/33233416706),
+> contra 10 s do init — então uma env no escopo do init nunca chega ao
+> extractor. O sintoma foi um alerta apontando para um `assert!` dentro de um
+> `#[cfg(test)]` no run
+> [`33239057983`](https://github.com/michelbr84/GarraRUST/actions/runs/33239057983),
+> com o log mostrando 339 arquivos extraídos: os 85 de `crates/*/tests/` tinham
+> sumido (o `paths-ignore` funcionou) mas os módulos inline continuavam lá.
+
+Opção oficial, documentada em `rust/codeql-extractor.yml` do `github/codeql`:
+*"Comma-separated list of cfg settings to enable, or disable if prefixed with
+`-`."* Complementada por `crates/*/tests/**` no `paths-ignore` do
+`codeql-config.yml`, que cobre os testes de integração em arquivos próprios (o
+`-test` sozinho não os remove, porque não são gated por `cfg(test)`).
+
+Isto **não** é supressão: não toca em `codeql-suppressions.json`, não faz
+`PATCH state=dismissed`, e fica versionado e revisável no diff. Resolve
+exatamente o bloqueio registrado em
+[`codeql-suppressions.md`](codeql-suppressions.md) §1 em 2026-05 — *"paths-ignore
+silencia arquivo inteiro; os testes do GarraRUST são INLINE dentro de produção"*.
+
+Helpers atrás de `#[cfg(feature = "test-helpers")]` **continuam** analisados: são
+feature, não `cfg(test)`.
+
+### Como validar em runs futuros
+
+No log do job `Analyze (rust)`, comparar contra a baseline de
+`33233416706` (425/425, 3 com erro):
+
+```text
+CodeQL scanned N out of M Rust files
+| Total number of Rust files that were extracted with errors   |  ... |
+| Total number of Rust files that were extracted without error |  ... |
+```
+
+Se a cobertura de **produção** cair, reverter — o objetivo é remover teste, não
+perder alcance.
+
+## Triagem programática
+
+`GET /repos/{owner}/{repo}/code-scanning/alerts` exige o escopo
+`security_events`, que tokens de PAT/integração normalmente não têm — foi
+exatamente o que impediu diagnosticar a onda de 2026-08-28 pela API. O
+`GITHUB_TOKEN` de um job com `permissions: security-events: read` tem.
+
+[`.github/workflows/codeql-triage.yml`](../../.github/workflows/codeql-triage.yml)
+(`workflow_dispatch`) roda
+[`scripts/security/codeql-alert-report.py`](../../scripts/security/codeql-alert-report.py)
+e publica:
+
+- no **job summary**, uma tabela `rule_id | severidade | total | produção | teste`;
+- como **artifact**, `codeql-alerts.json` (lista crua) e `codeql-alerts.md`.
+
+A classificação produção-vs-teste é heurística — caminho de teste, ou linha do
+alerta dentro de um `#[cfg(test)]` — e serve para dimensionar uma onda, não para
+dispensar triagem individual.
+
+Localmente, com um token que tenha o escopo:
+
+```bash
+GITHUB_TOKEN=... python3 scripts/security/codeql-alert-report.py \
+    --repo michelbr84/GarraRUST --severity critical --state open
+```
+
 ## See also
 
 - `.github/workflows/codeql.yml` — workflow definition.
