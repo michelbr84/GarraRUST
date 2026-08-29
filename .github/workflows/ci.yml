@@ -125,6 +125,17 @@ jobs:
         # scripts/build-installer.ps1.
         run: cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
 
+      - name: Run clippy (mcp-http)
+        # A feature `mcp-http` é OFF por default em toda a árvore, então o
+        # step acima NUNCA compila `McpManager::connect_http` nem o transporte
+        # Streamable HTTP do rmcp — nenhum job passava `--features mcp-http`
+        # ou `--all-features`. Plan 0358: o bump rmcp 1.7 -> 2.2 quebrou
+        # exatamente esse caminho (o rmcp 2.2.0 declara `sse-stream = "0.2"`
+        # mas usa `SseStream::from_bytes_stream`, que só existe a partir da
+        # 0.2.4), e nada no CI teria pegado. Este step fecha o buraco.
+        # `garraia` é o nome do pacote em `crates/garraia-cli/`.
+        run: cargo clippy -p garraia --features mcp-http --all-targets -- -D warnings
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,

@@ -368,3 +368,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0355 | [Robustez sempre-online: ciclo de vida MCP + recorrência](0355-recurrence-and-mcp-lifecycle.md) | plan 0355 (origem) | ✅ Entregue 2026-08-29 (ADR 0013) |
 | 0356 | [lopdf 0.42 → 0.44 com a feature `time` desligada (E0599 do BorrowedFormatItem)](0356-lopdf-044-time-feature-off.md) | Dependabot PR #851 / upstream lopdf#518 | 🚧 Em revisão (2026-08-29) |
 | 0357 | [Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`](0357-ollama-defaults-and-launch.md) | pedido direto | ✅ Entregue 2026-08-29 |
+| 0358 | [rmcp 1.7 → 2.2 (`ContentBlock` e o fim do `Annotated<RawContent>`)](0358-rmcp-220-content-block-migration.md) | Dependabot PR #853 / upstream rust-sdk#927 | 🚧 Em revisão (2026-08-29) |

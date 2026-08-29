@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
-use rmcp::model::{CallToolRequestParams, RawContent};
+use rmcp::model::{CallToolRequestParams, ContentBlock};
 use serde_json::Value;
 use tracing::info;
 
@@ -137,12 +137,17 @@ impl Tool for McpTool {
                 ))
             })?;
 
-        // Converte conteúdos retornados pelo MCP em texto único
+        // Converte conteúdos retornados pelo MCP em texto único.
+        //
+        // rmcp 2.2 removeu a camada `Annotated<RawContent>` (o campo `.raw`) em
+        // favor do enum achatado `ContentBlock`, alinhado à spec MCP
+        // 2025-11-25. O braço `_` é obrigatório: `ContentBlock` é
+        // `#[non_exhaustive]` e ganha variantes novas a cada revisão da spec.
         let mut partes_texto = Vec::new();
         for content in &resultado.content {
-            match &content.raw {
-                RawContent::Text(text_content) => {
-                    partes_texto.push(text_content.text.to_string());
+            match content {
+                ContentBlock::Text(text_content) => {
+                    partes_texto.push(text_content.text.clone());
                 }
                 _ => {
                     // Conteúdo não textual recebe placeholder
