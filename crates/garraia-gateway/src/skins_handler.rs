@@ -99,16 +99,41 @@ pub async fn get_skin(Path(name): Path<String>) -> impl IntoResponse {
         return bad_skin_name(&name, e);
     }
     let dir = skins_dir();
-    let file_path = dir.join(format!("{name}.json"));
-
-    if !file_path.is_file() {
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "skin not found" })),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to prepare skins dir: {e}") })),
+        );
+    }
+    let canonical_dir = match tokio::fs::canonicalize(&dir).await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("failed to resolve skins dir: {e}") })),
+            );
+        }
+    };
+
+    let file_path = dir.join(format!("{name}.json"));
+    let canonical_file = match tokio::fs::canonicalize(&file_path).await {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "skin not found" })),
+            );
+        }
+    };
+
+    if !canonical_file.starts_with(&canonical_dir) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid skin path" })),
         );
     }
 
-    match tokio::fs::read_to_string(&file_path).await {
+    match tokio::fs::read_to_string(&canonical_file).await {
         Ok(contents) => match serde_json::from_str::<Skin>(&contents) {
             Ok(skin) => (StatusCode::OK, Json(serde_json::json!({ "skin": skin }))),
             Err(e) => (
