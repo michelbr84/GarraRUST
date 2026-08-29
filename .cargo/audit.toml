@@ -49,6 +49,10 @@
 #   * Remaining unmaintained IDs in `deny.toml` (gtk-rs family, etc.) are NOT
 #     mirrored here because they are not in Cargo.lock for server builds (only
 #     garraia-desktop pulls them, which is excluded from CI). Do not mass-mirror.
+#   * ttf-parser RUSTSEC-2026-0192 ×1 CLOSED 2026-08-29 (deny.toml-only, nunca
+#     espelhado aqui). lopdf 0.44 moveu o `ttf-parser` para trás da feature
+#     não-default `font_embedding`; o crate saiu do Cargo.lock e o ignore foi
+#     removido do `deny.toml` (plan 0356).
 
 [advisories]
 ignore = [

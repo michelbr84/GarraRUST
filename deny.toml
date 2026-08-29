@@ -145,18 +145,6 @@ ignore = [
     "RUSTSEC-2025-0081", # unic-char-property
     "RUSTSEC-2025-0098", # unic-ucd-version
     "RUSTSEC-2025-0100", # unic-ucd-ident
-
-    # --- ttf-parser unmaintained — via lopdf 0.42 → garraia-media ---
-    # ttf-parser 0.25.1 — author archived the crate (2026-06-28). No safe
-    # upgrade: the advisory DB says "No safe upgrade is available!" — the
-    # author's maintained fork is a different crate (fontations/skrifa).
-    # Pulled transitively: garraia-media → lopdf 0.42.0 → ttf-parser 0.25.1.
-    # lopdf 0.42 is required to fix the stack-overflow advisory RUSTSEC-2026-0187
-    # (any earlier lopdf version is vulnerable). Structural fix: wait for lopdf
-    # upstream to migrate to skrifa or another maintained font parser, then bump
-    # lopdf again. Zero runtime risk from the unmaintained status alone.
-    # Owner: GAR-895 (health run 146). Expires: 2026-10-31.
-    "RUSTSEC-2026-0192", # ttf-parser 0.25.1 (lopdf 0.42 dep, no safe upgrade)
 ]
 
 [licenses]
