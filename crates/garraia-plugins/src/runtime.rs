@@ -14,13 +14,15 @@ use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBu
 // only the path changed. `build_p1()` is feature-gated under `features = ["p1"]`
 // declared in the workspace Cargo.toml since wasmtime-wasi 44.
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
-// `DirPerms` / `FilePerms` / `WasiCtxBuilder` remain at the top of the crate
-// (they are shared by both p1 and p2 contexts). `SocketAddrUse` and the
-// `pipe::*` types moved into `wasmtime_wasi::p2::*` in v30+ when WASIp2
-// became the canonical namespace; the names and contracts are unchanged.
+// 2026-08-29 (PR #848, Dependabot): wasmtime-wasi 47 → 48. `DirPerms` and
+// `FilePerms` bitflags were collapsed into a single `FsPerms { ReadOnly,
+// ReadWrite }` enum, and `preopened_dir` lost its fourth argument
+// accordingly. `WasiCtxBuilder` still lives at the crate root (shared by the
+// p1 and p2 contexts). `SocketAddrUse` and the `pipe::*` types moved into
+// `wasmtime_wasi::p2::*` in v30+ when WASIp2 became the canonical namespace.
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::sockets::SocketAddrUse;
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
+use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 pub struct WasmRuntime {
     manifest: PluginManifest,
@@ -115,19 +117,17 @@ impl WasmRuntime {
 
         for (idx, (host_path, writable)) in mounts.into_iter().enumerate() {
             let guest_path = format!("mnt{idx}");
-            let dir_perms = if writable {
-                DirPerms::READ | DirPerms::MUTATE
+            // wasmtime-wasi 48 folded the dir/file bitflag pair into one enum:
+            // `READ` alone is `ReadOnly`, `READ | MUTATE` plus `READ | WRITE`
+            // is `ReadWrite`. Same intent, fewer ways to get it wrong.
+            let fs_perms = if writable {
+                FsPerms::ReadWrite
             } else {
-                DirPerms::READ
-            };
-            let file_perms = if writable {
-                FilePerms::READ | FilePerms::WRITE
-            } else {
-                FilePerms::READ
+                FsPerms::ReadOnly
             };
 
             builder
-                .preopened_dir(&host_path, &guest_path, dir_perms, file_perms)
+                .preopened_dir(&host_path, &guest_path, fs_perms)
                 .map_err(|e| {
                     Error::Plugin(format!(
                         "failed to preopen filesystem path {}: {e}",
@@ -150,14 +150,7 @@ impl WasmRuntime {
         builder.allow_udp(true);
         builder.socket_addr_check(move |addr, reason| {
             let allowed_ips = Arc::clone(&allowed_ips);
-            Box::pin(async move {
-                match reason {
-                    SocketAddrUse::TcpConnect
-                    | SocketAddrUse::UdpConnect
-                    | SocketAddrUse::UdpOutgoingDatagram => allowed_ips.contains(&addr.ip()),
-                    SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => false,
-                }
-            })
+            Box::pin(async move { socket_use_allowed(reason, addr, &allowed_ips) })
         });
 
         Ok(())
@@ -413,9 +406,54 @@ fn resolve_allowlisted_ips(domains: &[String]) -> Result<HashSet<IpAddr>> {
     Ok(ips)
 }
 
+/// Decides whether a sandboxed plugin may use `addr` for `reason`.
+///
+/// The policy is: a plugin may reach out to addresses its manifest
+/// allowlisted, and may never act as a server.
+///
+/// The bind arms deserve an explanation, because the obvious `false` is wrong
+/// on wasmtime-wasi 48. When a guest calls `connect` on a socket it never
+/// bound, v48 asks this check about an *implicit* bind to the wildcard
+/// address before it asks about the connect itself (`sockets/tcp.rs:208` and
+/// `sockets/udp.rs:123` in 48.0.1). Refusing every bind therefore refuses
+/// every outbound connection, turning the allowlist into a silent deny-all.
+/// v47 had no such implicit check, which is why the port is not mechanical.
+///
+/// So we permit exactly the shape wasmtime uses for an implicit bind —
+/// `0.0.0.0:0` or `[::]:0` (`sockets/mod.rs:573-579`) — and keep refusing an
+/// explicit bind to a concrete local address. Listening and accepting, the
+/// operations that actually expose a plugin to the network, stay refused
+/// outright.
+///
+/// The match is deliberately exhaustive with no `_` arm: a variant added by a
+/// future wasmtime should fail the build and force a decision here, rather
+/// than silently inherit network access.
+fn socket_use_allowed(
+    reason: SocketAddrUse,
+    addr: std::net::SocketAddr,
+    allowed_ips: &HashSet<IpAddr>,
+) -> bool {
+    match reason {
+        // Outbound traffic — gated by the manifest allowlist.
+        SocketAddrUse::TcpConnect | SocketAddrUse::UdpSend | SocketAddrUse::UdpReceive => {
+            allowed_ips.contains(&addr.ip())
+        }
+
+        // Implicit bind only (see above); an explicit bind stays refused.
+        SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => {
+            addr.ip().is_unspecified() && addr.port() == 0
+        }
+
+        // A plugin is never a server.
+        SocketAddrUse::TcpListen | SocketAddrUse::TcpAccept => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_private_ip, normalize_scoped_path, resolve_allowlisted_ips};
+    use super::{
+        is_private_ip, normalize_scoped_path, resolve_allowlisted_ips, socket_use_allowed,
+    };
     use std::net::IpAddr;
     use std::path::Path;
 
@@ -497,5 +535,104 @@ mod tests {
         assert!(!is_private_ip(
             &"2001:4860:4860::8888".parse::<IpAddr>().unwrap()
         ));
+    }
+
+    // ── socket_use_allowed (wasmtime-wasi 48 policy) ──────────────────────
+    //
+    // These pin the semantics of the 47 → 48 migration. The bind cases are
+    // the ones that matter: on 48 a `connect` on an unbound socket is checked
+    // as an implicit wildcard bind *first*, so a blanket `false` on the bind
+    // arms would silently refuse every outbound connection.
+
+    use super::SocketAddrUse;
+    use std::collections::HashSet;
+    use std::net::SocketAddr;
+
+    fn allowlist() -> HashSet<IpAddr> {
+        let mut set = HashSet::new();
+        set.insert("93.184.216.34".parse::<IpAddr>().unwrap());
+        set
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn outbound_to_allowlisted_ip_is_permitted() {
+        let allowed = allowlist();
+        for reason in [
+            SocketAddrUse::TcpConnect,
+            SocketAddrUse::UdpSend,
+            SocketAddrUse::UdpReceive,
+        ] {
+            assert!(
+                socket_use_allowed(reason, addr("93.184.216.34:443"), &allowed),
+                "allowlisted peer must be reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn outbound_to_unlisted_ip_is_refused() {
+        let allowed = allowlist();
+        for reason in [
+            SocketAddrUse::TcpConnect,
+            SocketAddrUse::UdpSend,
+            SocketAddrUse::UdpReceive,
+        ] {
+            assert!(
+                !socket_use_allowed(reason, addr("1.1.1.1:443"), &allowed),
+                "peer outside the manifest allowlist must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn implicit_wildcard_bind_is_permitted() {
+        // wasmtime 48 passes SocketAddr::new(UNSPECIFIED, 0) for the implicit
+        // bind it checks before TcpConnect / UdpSend. Refusing this would
+        // break every outbound connection, so it must be allowed.
+        let allowed = allowlist();
+        for reason in [SocketAddrUse::TcpBind, SocketAddrUse::UdpBind] {
+            assert!(
+                socket_use_allowed(reason, addr("0.0.0.0:0"), &allowed),
+                "implicit IPv4 bind precedes every outbound connect"
+            );
+            assert!(
+                socket_use_allowed(reason, addr("[::]:0"), &allowed),
+                "implicit IPv6 bind precedes every outbound connect"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_bind_to_a_concrete_address_is_refused() {
+        let allowed = allowlist();
+        for reason in [SocketAddrUse::TcpBind, SocketAddrUse::UdpBind] {
+            assert!(
+                !socket_use_allowed(reason, addr("127.0.0.1:8080"), &allowed),
+                "binding a concrete local address is not the implicit form"
+            );
+            // Wildcard IP but a fixed port is still an explicit bind.
+            assert!(
+                !socket_use_allowed(reason, addr("0.0.0.0:8080"), &allowed),
+                "a pinned port means the guest asked for this bind"
+            );
+        }
+    }
+
+    #[test]
+    fn listening_and_accepting_are_always_refused() {
+        let allowed = allowlist();
+        // Even an allowlisted address must not let a plugin serve.
+        for reason in [SocketAddrUse::TcpListen, SocketAddrUse::TcpAccept] {
+            assert!(!socket_use_allowed(
+                reason,
+                addr("93.184.216.34:443"),
+                &allowed
+            ));
+            assert!(!socket_use_allowed(reason, addr("0.0.0.0:0"), &allowed));
+        }
     }
 }
