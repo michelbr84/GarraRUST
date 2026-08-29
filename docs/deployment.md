@@ -47,10 +47,10 @@ docker compose -f docker-compose.ollama.yml up --build -d
 ### 2. **Importante:** Você deve baixar o modelo LLM dentro do container Ollama antes que o GarraIA possa utilizá-lo:
 
 ```bash
-docker compose -f docker-compose.ollama.yml exec ollama ollama pull llama3.1
+docker compose -f docker-compose.ollama.yml exec ollama ollama pull qwen3.8:latest
 ```
 
-*(Observação: ajuste `llama3.1` se você alterou o modelo em `docs/deployment/config.ollama.yml`)*
+*(Observação: ajuste `qwen3.8:latest` se você alterou o modelo em `docs/deployment/config.ollama.yml`)*
 
 ### 3. O GarraIA estará disponível em:
 

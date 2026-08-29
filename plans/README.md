@@ -366,3 +366,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0353 | [Installer worker Cloudflare get.garraia.cloud](0353-installer-worker.md) | issue #827 | ✅ Merged 2026-08-17 via PR #829 (`97ec887`); domínio descontinuado — issue #827 fechada *not planned* em 2026-08-18 |
 | 0354 | [Fix do POST /v1/me/anonymize — coluna fantasma + email não anonimizado](0354-anonymize-fix.md) | plan 0345 (origem) | ✅ Merged 2026-08-18 via PR #843 (`31135d5`) — releases v0.3.1/v0.3.2 |
 | 0355 | [Robustez sempre-online: ciclo de vida MCP + recorrência](0355-recurrence-and-mcp-lifecycle.md) | plan 0355 (origem) | ✅ Entregue 2026-08-29 (ADR 0013) |
+| 0356 | [Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`](0356-ollama-defaults-and-launch.md) | pedido direto | ✅ Entregue 2026-08-29 |

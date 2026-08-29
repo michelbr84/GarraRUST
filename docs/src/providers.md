@@ -79,7 +79,7 @@ Executa modelos localmente. Não requer chave de API.
 | Campo                | Valor                    |
 | -------------------- | ------------------------ |
 | Tipo                 | `ollama`                 |
-| Modelo padrão        | `llama3.1`               |
+| Modelo padrão        | `qwen3.8:latest`         |
 | URL base             | `http://localhost:11434` |
 | Variável de ambiente | Nenhuma                  |
 
@@ -89,7 +89,7 @@ Exemplo:
 llm:
   local:
     provider: ollama
-    model: llama3.1
+    model: qwen3.8:latest
     base_url: "http://localhost:11434"
 ```
 

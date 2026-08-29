@@ -36,6 +36,16 @@
 #                           GPU/Ollama/Qwen3 prompts even on a machine
 #                           with a working `nvidia-smi`. See plan 0126.
 #
+# Command-line flags (usable through a pipe via `sh -s -- <flags>`):
+#   --skip-setup            Same as GARRAIA_SKIP_INIT=1 GARRAIA_SKIP_START=1.
+#   --skip-init             Same as GARRAIA_SKIP_INIT=1.
+#   --skip-start            Same as GARRAIA_SKIP_START=1.
+#   --no-local              Same as GARRAIA_BOOTSTRAP_LOCAL=0.
+#   --version <tag>         Same as GARRAIA_VERSION=<tag>.
+#   --install-dir <dir>     Same as GARRAIA_INSTALL_DIR=<dir>.
+#   -h, --help              Print usage and exit 0.
+# An env var already set by the caller wins over the matching flag.
+#
 #   GARRAIA_INSTALL_SH_LIBRARY=1
 #                           Test-only. When set, the script returns
 #                           instead of calling main(), so its functions
@@ -53,7 +63,83 @@ curl_gh() {
     curl -fsSL --retry 5 --retry-delay 2 "$@"
 }
 
+# Parse CLI flags. Every flag is an alias for an environment variable that
+# already existed, so `sh install.sh --skip-setup` and
+# `GARRAIA_SKIP_INIT=1 GARRAIA_SKIP_START=1 sh install.sh` are equivalent.
+#
+# Flags matter because `curl … | sh` gives no way to set an env var for the
+# piped shell; `curl … | sh -s -- --skip-setup` does. That is exactly the
+# invocation form third-party launchers use (Ollama's `ollama launch` runs
+# the analogous `… | bash -s -- --skip-setup` for other agents), so a
+# flagless installer cannot be driven by one.
+#
+# An explicit env var already set by the caller wins over its flag, so
+# existing automation keeps its behaviour.
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --skip-setup)
+                GARRAIA_SKIP_INIT="${GARRAIA_SKIP_INIT:-1}"
+                GARRAIA_SKIP_START="${GARRAIA_SKIP_START:-1}"
+                export GARRAIA_SKIP_INIT GARRAIA_SKIP_START
+                ;;
+            --skip-init)
+                GARRAIA_SKIP_INIT="${GARRAIA_SKIP_INIT:-1}"; export GARRAIA_SKIP_INIT ;;
+            --skip-start)
+                GARRAIA_SKIP_START="${GARRAIA_SKIP_START:-1}"; export GARRAIA_SKIP_START ;;
+            --no-local|--skip-local)
+                GARRAIA_BOOTSTRAP_LOCAL="${GARRAIA_BOOTSTRAP_LOCAL:-0}"
+                export GARRAIA_BOOTSTRAP_LOCAL
+                ;;
+            --version)
+                [ "$#" -ge 2 ] || error "--version requires a release tag (e.g. --version v0.3.4)"
+                GARRAIA_VERSION="${GARRAIA_VERSION:-$2}"; export GARRAIA_VERSION; shift ;;
+            --version=*)
+                GARRAIA_VERSION="${GARRAIA_VERSION:-${1#--version=}}"; export GARRAIA_VERSION ;;
+            --install-dir)
+                [ "$#" -ge 2 ] || error "--install-dir requires a path"
+                GARRAIA_INSTALL_DIR="${GARRAIA_INSTALL_DIR:-$2}"; export GARRAIA_INSTALL_DIR; shift ;;
+            --install-dir=*)
+                GARRAIA_INSTALL_DIR="${GARRAIA_INSTALL_DIR:-${1#--install-dir=}}"
+                export GARRAIA_INSTALL_DIR ;;
+            -h|--help)
+                usage; exit 0 ;;
+            --)
+                shift; break ;;
+            *)
+                error "unknown option: $1 (try --help)" ;;
+        esac
+        shift
+    done
+}
+
+usage() {
+    cat <<'USAGE'
+GarraIA installer
+
+Usage:
+  curl -fsSL https://garraia.org/install.sh | sh
+  curl -fsSL https://garraia.org/install.sh | sh -s -- [options]
+  sh install.sh [options]
+
+Options:
+  --skip-setup          Install only: skip both `garraia init` and `garraia start`.
+  --skip-init           Skip the interactive setup wizard.
+  --skip-start          Skip starting the gateway.
+  --no-local            Skip the GPU/Ollama/local-model prompts in the wizard.
+  --version <tag>       Pin a release tag (e.g. v0.3.4) instead of latest.
+  --install-dir <dir>   Install into <dir> instead of the autodetected location.
+  -h, --help            Show this help.
+
+Every option mirrors an environment variable (GARRAIA_SKIP_INIT,
+GARRAIA_SKIP_START, GARRAIA_BOOTSTRAP_LOCAL, GARRAIA_VERSION,
+GARRAIA_INSTALL_DIR). An environment variable already set by the caller
+takes precedence over the corresponding flag.
+USAGE
+}
+
 main() {
+    parse_args "$@"
     detect_platform
     check_glibc
     resolve_version
@@ -380,4 +466,4 @@ if [ "${GARRAIA_INSTALL_SH_LIBRARY:-}" = "1" ]; then
     return 0
 fi
 
-main
+main "$@"
