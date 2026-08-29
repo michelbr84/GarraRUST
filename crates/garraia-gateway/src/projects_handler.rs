@@ -8,10 +8,10 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::project_root;
 use crate::state::SharedState;
 
 // ── In-memory project store ─────────────────────────────────────────────────
@@ -65,13 +65,43 @@ pub struct CreateSessionWithProjectRequest {
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
+/// Resposta 400 padrão para um `path` recusado por [`project_root::confine`].
+///
+/// A mensagem é **a mesma** para todas as variantes de erro de propósito:
+/// distinguir "não existe" de "existe mas está fora das raízes" transformaria
+/// este endpoint auth-free num oráculo de existência de diretório — o mesmo
+/// motivo pelo qual `/v1/auth/login` responde 401 byte-idêntico.
+fn reject_path() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": "project path is not an allowed directory",
+            "hint": format!(
+                "o caminho precisa ser um diretório existente sob uma das raízes \
+                 permitidas (padrão: o home do usuário; configurável em {})",
+                project_root::ROOTS_ENV
+            ),
+        })),
+    )
+}
+
 /// POST /api/projects — create a new project.
 pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl IntoResponse {
+    // Confina ANTES de guardar, e guarda o caminho já resolvido: é o resolvido
+    // que `list_project_files` vai percorrer.
+    let Ok(path) = project_root::confine(&body.path) else {
+        // `?` (Debug) e não `%` (Display): o valor é controlado pelo cliente, e
+        // o Debug de `String` escapa `\n`/controle, o que evita forjar linhas
+        // no log.
+        warn!(path = ?body.path, "recusado POST /api/projects: path fora das raizes permitidas");
+        return reject_path();
+    };
+
     let now = chrono::Utc::now().to_rfc3339();
     let project = Project {
         id: Uuid::new_v4().to_string(),
         name: body.name,
-        path: body.path,
+        path: path.to_string_lossy().into_owned(),
         description: body.description,
         created_at: now.clone(),
         updated_at: now,
@@ -110,6 +140,19 @@ pub async fn update_project(
     Path(id): Path<String>,
     Json(body): Json<UpdateProjectRequest>,
 ) -> impl IntoResponse {
+    // Confina ANTES do lookup: um `path` inválido é 400 exista o projeto ou
+    // não, e assim a validação não fica atrás de um `get_mut` que segura o
+    // shard do DashMap. Sem isto o PUT reabria exatamente o buraco que o POST
+    // fechou.
+    let new_path = match body.path.as_deref().map(project_root::confine) {
+        Some(Ok(p)) => Some(p),
+        Some(Err(_)) => {
+            warn!(path = ?body.path, "recusado PUT /api/projects: path fora das raizes permitidas");
+            return reject_path();
+        }
+        None => None,
+    };
+
     let Some(mut entry) = PROJECTS.get_mut(&id) else {
         return (
             StatusCode::NOT_FOUND,
@@ -120,8 +163,8 @@ pub async fn update_project(
     if let Some(name) = body.name {
         project.name = name;
     }
-    if let Some(path) = body.path {
-        project.path = path;
+    if let Some(path) = new_path {
+        project.path = path.to_string_lossy().into_owned();
     }
     if let Some(desc) = body.description {
         project.description = Some(desc);
@@ -156,15 +199,17 @@ pub async fn list_project_files(Path(id): Path<String>) -> impl IntoResponse {
             Json(serde_json::json!({ "error": "project not found" })),
         );
     };
-    let project_path = PathBuf::from(&entry.path);
+    let stored_path = entry.path.clone();
     drop(entry);
 
-    if !project_path.is_dir() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "project path is not a directory" })),
-        );
-    }
+    // Re-confina na hora de ler, e não só na hora de gravar. Entre o POST e o
+    // GET o caminho pode ter virado symlink para fora, ou as raízes permitidas
+    // podem ter mudado; e esta é a linha que de fato percorre o disco. É aqui
+    // que a garantia precisa valer.
+    let Ok(project_path) = project_root::confine(&stored_path) else {
+        warn!(path = ?stored_path, "recusado GET /api/projects/{{id}}/files: path fora das raizes");
+        return reject_path();
+    };
 
     // Attempt to use garraia_glob scanner if available; otherwise fall back to
     // a simple readdir.
@@ -328,6 +373,22 @@ pub async fn create_session_with_project(
     State(state): State<SharedState>,
     Json(body): Json<CreateSessionWithProjectRequest>,
 ) -> impl IntoResponse {
+    // `working_dir` é a mesma superfície do `path` de projeto — string crua do
+    // corpo JSON que vira diretório de trabalho da sessão — e por isso passa
+    // pelo mesmo confinamento. Validar antes de criar a sessão evita deixar
+    // uma sessão órfã atrás de um 400.
+    let working_dir = match body.working_dir.as_deref().map(project_root::confine) {
+        Some(Ok(p)) => Some(p.to_string_lossy().into_owned()),
+        Some(Err(_)) => {
+            warn!(
+                working_dir = ?body.working_dir,
+                "recusado POST /api/sessions: working_dir fora das raizes permitidas"
+            );
+            return reject_path();
+        }
+        None => None,
+    };
+
     let session_id = state.create_session();
 
     // Apply project context.
@@ -346,7 +407,7 @@ pub async fn create_session_with_project(
         }
 
         // Explicit overrides take precedence over project lookups.
-        if let Some(ref wd) = body.working_dir {
+        if let Some(ref wd) = working_dir {
             session.working_dir = Some(wd.clone());
         }
         if let Some(ref pn) = body.project_name {
@@ -359,7 +420,8 @@ pub async fn create_session_with_project(
         Json(serde_json::json!({
             "session_id": session_id,
             "agent_id": body.agent_id,
-            "working_dir": body.working_dir,
+            // O confinado, não o cru: é ele que a sessão está usando.
+            "working_dir": working_dir,
             "project_name": body.project_name,
             "project_id": body.project_id,
         })),
