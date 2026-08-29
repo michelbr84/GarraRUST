@@ -395,6 +395,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 | `/generate-docs` | Gera documentação automática |
 | `/code-review` | Revisão de código inline |
 | `/git-assist` | Ajuda com git workflow |
+| `steward` | Guia para dirigir PR até o verde — quais falhas de CI são ambientais e quais são suas. Não é slash command: é lida automaticamente por um agente ao reagir a evento de CI/review num PR. |
 
 ## Agents disponíveis
 
