@@ -361,7 +361,16 @@ benches/
 2. **NUNCA** `rm -rf /`, `rm -rf ~` ou fork bombs
 3. **NUNCA** force push para `main`
 4. **NUNCA** usar `unwrap()` em código de produção (apenas em testes)
-5. **NUNCA** concatenar strings em SQL queries — `params!` (rusqlite) ou `sqlx::query!` (Postgres)
+5. **NUNCA** concatenar strings em SQL queries — `params!` (rusqlite) ou `sqlx::query!` (Postgres).
+   Desde o sqlx 0.9 o compilador reforça isso: `sqlx::query()` / `query_as()` / `query_scalar()` /
+   `raw_sql()` só aceitam `&'static str` (trait `SqlSafeStr`), então qualquer `format!()` vira erro
+   `E0277`. **Exceção única e delimitada:** identificador SQL que o Postgres não aceita como bind
+   parameter (nome de tabela/coluna, `ORDER BY` dinâmico, DDL). Nesses casos usar
+   `sqlx::AssertSqlSafe` (note: `sqlx::AssertSqlSafe`, **não** `sqlx::sql_str::AssertSqlSafe`, que
+   não é público) **com comentário de auditoria nomeando a origem fechada do valor**. Não é
+   permitido em `crates/*/src/` — só em alvos de teste; hoje há exatamente 3 usos, todos em
+   `tests/`. Valor de dado continua **sempre** por `.bind()`. Para GUC de RLS, use
+   `SELECT set_config('app.current_group_id', $1, true)` com bind — nunca `SET LOCAL` interpolado.
 6. **NUNCA** expor secrets/PII em logs (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_METRICS_TOKEN`, `ANTHROPIC_API_KEY`, etc.)
 7. **NUNCA** ignorar erros de compilação do `cargo check`
 8. **SEMPRE** escrever ADR em `docs/adr/NNNN-*.md` antes de decisão arquitetural irreversível (Postgres vs SQLite, vector store, storage backend, etc.) — ver `ROADMAP.md` §3.1

@@ -124,23 +124,19 @@ async fn seed_file(h: &Harness, group_id: Uuid, uploader_id: Uuid, deleted: bool
     // 64 lowercase hex chars satisfy both checksum_sha256 and integrity_hmac CHECK constraints.
     let hex64 = "a".repeat(64);
 
-    let deleted_at_expr = if deleted {
-        "'2000-01-01T00:00:00Z'::timestamptz"
-    } else {
-        "NULL"
-    };
-
     // files row — no folder (NULL folder_id is fine per migration 003 MATCH SIMPLE FK).
-    sqlx::query(&format!(
+    sqlx::query(
         "INSERT INTO files \
             (id, group_id, name, size_bytes, mime_type, \
              created_by, created_by_label, deleted_at) \
          VALUES ($1, $2, 'test-file.bin', 1024, 'application/octet-stream', \
-                 $3, 'Test User', {deleted_at_expr})",
-    ))
+                 $3, 'Test User', \
+                 CASE WHEN $4 THEN '2000-01-01T00:00:00Z'::timestamptz ELSE NULL END)",
+    )
     .bind(file_id)
     .bind(group_id)
     .bind(uploader_id)
+    .bind(deleted)
     .execute(&h.admin_pool)
     .await
     .expect("seed files row");
