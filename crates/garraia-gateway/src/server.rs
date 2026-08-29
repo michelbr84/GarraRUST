@@ -117,10 +117,11 @@ impl GatewayServer {
         let agents = Arc::new(agents);
         let mut state = AppState::new(self.config, agents, channels);
 
-        // Arc the manager NOW: register_mcp_tools() reads mcp_manager_arc and
-        // used to be a silent no-op because the Arc was only created ~300
-        // lines further down — MCP slash commands never registered.
-        let mcp_manager_arc = Arc::new(mcp_manager);
+        // `build_mcp_tools` already returns the Arc: the bridged tools hold it
+        // so they can resolve the CURRENT peer on every call (surviving
+        // reconnects). register_mcp_tools() also reads mcp_manager_arc, and
+        // used to be a silent no-op when the Arc was created ~300 lines below.
+        let mcp_manager_arc = mcp_manager;
         state.mcp_manager_arc = Some(Arc::clone(&mcp_manager_arc));
 
         // Sync MCP registry with live manager state (populates Running/Stopped statuses).

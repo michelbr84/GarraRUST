@@ -909,12 +909,12 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 /// failures living only in a warn! line.
 pub async fn build_mcp_tools(
     config: &AppConfig,
-) -> (McpManager, Vec<Box<dyn Tool>>, Vec<(String, String)>) {
+) -> (Arc<McpManager>, Vec<Box<dyn Tool>>, Vec<(String, String)>) {
     let loader = match garraia_config::ConfigLoader::new() {
         Ok(l) => l,
         Err(e) => {
             warn!("failed to create config loader for MCP: {e}");
-            return (McpManager::new(), Vec::new(), Vec::new());
+            return (Arc::new(McpManager::new()), Vec::new(), Vec::new());
         }
     };
 
@@ -927,10 +927,10 @@ pub async fn build_mcp_tools(
             config_yml_mcp = config.mcp.len(),
             "no MCP servers configured (checked mcp.json and the 'mcp:' section of config.yml in this directory)"
         );
-        return (McpManager::new(), Vec::new(), Vec::new());
+        return (Arc::new(McpManager::new()), Vec::new(), Vec::new());
     }
 
-    let manager = McpManager::new();
+    let manager = Arc::new(McpManager::new());
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 

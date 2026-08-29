@@ -64,6 +64,16 @@ enum ConnectionParams {
     Http { url: String, timeout_secs: u64 },
 }
 
+impl ConnectionParams {
+    fn timeout_secs(&self) -> u64 {
+        match self {
+            ConnectionParams::Stdio { timeout_secs, .. } => *timeout_secs,
+            #[cfg(feature = "mcp-http")]
+            ConnectionParams::Http { timeout_secs, .. } => *timeout_secs,
+        }
+    }
+}
+
 /// GAR-293: Tracks auto-restart history for one MCP server.
 #[derive(Clone, Debug)]
 struct RestartState {
@@ -130,6 +140,21 @@ struct McpConnection {
     params: ConnectionParams,
     /// GAR-190: tool allowlist — empty means all tools are permitted.
     allowed_tools: Vec<String>,
+}
+
+impl McpConnection {
+    /// Liveness of the child/transport.
+    ///
+    /// `RunningService::is_closed()` is NOT usable here: rmcp only flips it in
+    /// `close()`/`cancel()`/`waiting()`, so it stays `false` forever when the
+    /// child process dies on its own (the serve loop exits with
+    /// `QuitReason::Closed` without cancelling the token). That made
+    /// `check_and_reconnect` a no-op and reported dead servers as `Running`.
+    /// The peer's transport channel is the signal that actually closes when
+    /// the serve loop ends.
+    fn is_alive(&self) -> bool {
+        !self.service.peer().is_transport_closed()
+    }
 }
 
 /// Manages the lifecycle of MCP server connections.
@@ -398,29 +423,42 @@ impl McpManager {
         }
     }
 
+    /// Clone the current peer for a server, releasing the connections lock
+    /// before the caller awaits anything on it.
+    ///
+    /// Every RPC path must resolve the peer through here: a reconnect swaps
+    /// the whole `McpConnection`, so any `Peer` captured earlier talks to a
+    /// dead transport.
+    pub(crate) async fn peer_for(&self, name: &str) -> Option<Peer<RoleClient>> {
+        let conns = self.connections.read().await;
+        let conn = conns.get(name)?;
+        if !conn.is_alive() {
+            return None;
+        }
+        Some(conn.service.peer().clone())
+    }
+
     /// Create `Tool` trait objects for all tools from a specific server.
     ///
     /// GAR-190: If the connection has a non-empty `allowed_tools` list, only tools
     /// whose names appear in that list are returned. Unknown names in the allowlist
     /// are silently ignored (the tool simply wasn't discovered by this server).
-    pub async fn take_tools(&self, name: &str, timeout: Duration) -> Vec<Box<dyn Tool>> {
+    pub async fn take_tools(self: &Arc<Self>, name: &str, timeout: Duration) -> Vec<Box<dyn Tool>> {
         let conns = self.connections.read().await;
         let Some(conn) = conns.get(name) else {
             return Vec::new();
         };
-
-        let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
 
         conn.tools
             .iter()
             .filter(|t| is_tool_allowed(&conn.allowed_tools, &t.name))
             .map(|t| {
                 Box::new(McpTool::new(
+                    Arc::clone(self),
                     &conn.server_name,
                     t.name.clone(),
                     t.description.clone(),
                     t.input_schema.clone(),
-                    Arc::clone(&peer),
                     timeout,
                 )) as Box<dyn Tool>
             })
@@ -432,7 +470,7 @@ impl McpManager {
         let conns = self.connections.read().await;
         conns
             .iter()
-            .map(|(name, conn)| (name.clone(), conn.tools.len(), !conn.service.is_closed()))
+            .map(|(name, conn)| (name.clone(), conn.tools.len(), conn.is_alive()))
             .collect()
     }
 
@@ -587,7 +625,9 @@ impl McpManager {
         result
     }
 
-    /// Spawn a background health monitor that pings servers and reconnects on failure.
+    /// Spawn a background health monitor that detects dead transports and
+    /// reconnects with exponential backoff. It does not send MCP `ping`s —
+    /// liveness comes from `McpConnection::is_alive`.
     pub fn spawn_health_monitor(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
@@ -609,55 +649,60 @@ impl McpManager {
     /// # Returns
     /// The tool's output as a string, or an error
     pub async fn call_tool(
-        &self,
+        self: &Arc<Self>,
         server_name: &str,
         tool_name: &str,
         arguments: std::collections::HashMap<String, serde_json::Value>,
     ) -> std::result::Result<String, String> {
         use crate::tools::{Tool, ToolContext};
 
-        let conns = self.connections.read().await;
-        let conn = match conns.get(server_name) {
-            Some(c) => c,
-            None => return Err(format!("MCP server '{}' not found", server_name)),
-        };
+        // Resolve everything we need under the guard, then DROP it: the
+        // execution below awaits an RPC, and holding `connections.read()`
+        // across it lets one slow server block the write-fair lock for the
+        // whole subsystem (reconnects included).
+        let (tool_info, timeout_secs) = {
+            let conns = self.connections.read().await;
+            let conn = match conns.get(server_name) {
+                Some(c) => c,
+                None => return Err(format!("MCP server '{}' not found", server_name)),
+            };
 
-        // Find the tool in the connection's tool list
-        let tool_info = match conn
-            .tools
-            .iter()
-            .find(|t| t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name))
-        {
-            Some(t) => t,
-            None => {
+            // Find the tool in the connection's tool list
+            let tool_info = match conn
+                .tools
+                .iter()
+                .find(|t| t.name == tool_name || t.name == format!("{}.{}", server_name, tool_name))
+            {
+                Some(t) => t.clone(),
+                None => {
+                    return Err(format!(
+                        "Tool '{}' not found on server '{}'",
+                        tool_name, server_name
+                    ));
+                }
+            };
+
+            // GAR-190: the allowlist must bind this path too — `take_tools`
+            // filters what the LLM sees, but call_tool (admin API / slash
+            // commands) used to dispatch any discovered tool regardless.
+            if !is_tool_allowed(&conn.allowed_tools, &tool_info.name) {
                 return Err(format!(
-                    "Tool '{}' not found on server '{}'",
-                    tool_name, server_name
+                    "Tool '{}' on server '{}' is blocked by the allowed_tools allowlist",
+                    tool_info.name, server_name
                 ));
             }
+
+            (tool_info, conn.params.timeout_secs())
         };
 
-        // GAR-190: the allowlist must bind this path too — `take_tools`
-        // filters what the LLM sees, but call_tool (admin API / slash
-        // commands) used to dispatch any discovered tool regardless.
-        if !is_tool_allowed(&conn.allowed_tools, &tool_info.name) {
-            return Err(format!(
-                "Tool '{}' on server '{}' is blocked by the allowed_tools allowlist",
-                tool_info.name, server_name
-            ));
-        }
-
-        // Create a peer reference
-        let peer: Arc<Peer<RoleClient>> = Arc::new(conn.service.peer().clone());
-
-        // Create the tool
+        // The tool resolves the current peer itself at execution time.
         let tool = McpTool::new(
+            Arc::clone(self),
             server_name,
             tool_info.name.clone(),
             tool_info.description.clone(),
             tool_info.input_schema.clone(),
-            peer,
-            Duration::from_secs(60),
+            Duration::from_secs(timeout_secs),
         );
 
         // Execute the tool
@@ -685,7 +730,7 @@ impl McpManager {
             let conns = self.connections.read().await;
             conns
                 .iter()
-                .filter(|(_, conn)| conn.service.is_closed())
+                .filter(|(_, conn)| !conn.is_alive())
                 .map(|(name, conn)| {
                     (
                         name.clone(),

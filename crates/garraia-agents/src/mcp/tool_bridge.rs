@@ -4,10 +4,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use rmcp::model::{CallToolRequestParams, RawContent};
-use rmcp::service::{Peer, RoleClient};
 use serde_json::Value;
 use tracing::info;
 
+use super::manager::McpManager;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
 /// Faz a ponte entre uma ferramenta exposta por um servidor MCP
@@ -25,8 +25,16 @@ pub struct McpTool {
     /// JSON Schema de entrada da ferramenta
     schema_entrada: Value,
 
-    /// Referência compartilhada para o peer MCP
-    peer: Arc<Peer<RoleClient>>,
+    /// Nome do servidor MCP que expõe esta ferramenta.
+    nome_servidor: String,
+
+    /// Manager consultado a cada chamada para obter o peer ATUAL.
+    ///
+    /// Guardar um `Arc<Peer>` capturado no registro (como antes) quebrava a
+    /// ferramenta para sempre após qualquer reconexão: o reconnect troca a
+    /// `McpConnection` inteira por uma com peer novo, e o `AgentRuntime` é
+    /// imutável depois do boot, então ninguém atualizava a cópia antiga.
+    manager: Arc<McpManager>,
 
     /// Timeout máximo para execução da ferramenta
     timeout: Duration,
@@ -34,11 +42,11 @@ pub struct McpTool {
 
 impl McpTool {
     pub fn new(
+        manager: Arc<McpManager>,
         nome_servidor: &str,
         nome_original: String,
         descricao: Option<String>,
         schema_entrada: Value,
-        peer: Arc<Peer<RoleClient>>,
         timeout: Duration,
     ) -> Self {
         Self {
@@ -50,7 +58,8 @@ impl McpTool {
             }),
             nome_original,
             schema_entrada,
-            peer,
+            nome_servidor: nome_servidor.to_string(),
+            manager,
             timeout,
         }
     }
@@ -99,8 +108,21 @@ impl Tool for McpTool {
             params = params.with_arguments(a);
         }
 
+        // Resolve o peer ATUAL a cada chamada (sobrevive a reconexões) e solta
+        // o lock de conexões antes de aguardar a resposta.
+        let peer = self
+            .manager
+            .peer_for(&self.nome_servidor)
+            .await
+            .ok_or_else(|| {
+                Error::Mcp(format!(
+                    "servidor MCP '{}' desconectado; reconexão automática em andamento",
+                    self.nome_servidor
+                ))
+            })?;
+
         // Executa com timeout
-        let resultado = tokio::time::timeout(self.timeout, self.peer.call_tool(params))
+        let resultado = tokio::time::timeout(self.timeout, peer.call_tool(params))
             .await
             .map_err(|_| {
                 Error::Mcp(format!(
@@ -108,7 +130,12 @@ impl Tool for McpTool {
                     self.nome_completo, self.timeout
                 ))
             })?
-            .map_err(|e| Error::Mcp(format!("falha ao chamar call_tool: {e}")))?;
+            .map_err(|e| {
+                Error::Mcp(format!(
+                    "falha ao chamar '{}' no servidor MCP '{}': {e}",
+                    self.nome_original, self.nome_servidor
+                ))
+            })?;
 
         // Converte conteúdos retornados pelo MCP em texto único
         let mut partes_texto = Vec::new();
