@@ -290,6 +290,10 @@ impl McpManager {
             apply_memory_limit(&mut cmd, limit_mb);
         }
 
+        // Containment: children must not outlive an abruptly-killed gateway.
+        #[cfg(target_os = "linux")]
+        apply_parent_death_signal(&mut cmd);
+
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| Error::Mcp(format!("failed to spawn MCP server '{name}': {e}")))?;
 
@@ -481,16 +485,22 @@ impl McpManager {
         }
     }
 
-    /// Disconnect all MCP servers.
+    /// Disconnect all MCP servers, concurrently.
+    ///
+    /// Sequential cancellation made shutdown cost the sum of every server's
+    /// drain time; one slow server delayed all the others. The caller is
+    /// still expected to bound this with a timeout.
     pub async fn disconnect_all(&self) {
         let conns: HashMap<String, McpConnection> =
             std::mem::take(&mut *self.connections.write().await);
-        for (name, conn) in conns {
+        self.pending.write().await.clear();
+        let cancels = conns.into_iter().map(|(name, conn)| async move {
             info!("disconnecting MCP server '{name}'");
             if let Err(e) = conn.service.cancel().await {
                 warn!("error cancelling MCP server '{name}': {e}");
             }
-        }
+        });
+        futures::future::join_all(cancels).await;
     }
 
     /// Clone the current peer for a server, releasing the connections lock
@@ -976,6 +986,22 @@ impl McpManager {
 /// slash commands). Empty allowlist = every discovered tool is allowed.
 fn is_tool_allowed(allowed: &[String], tool_name: &str) -> bool {
     allowed.is_empty() || allowed.iter().any(|t| t == tool_name)
+}
+
+/// Ask the kernel to signal the child when its parent (the gateway) dies.
+///
+/// Without this, `kill -9` on the gateway — or any exit that skips the
+/// graceful shutdown path — leaves every MCP child running with no parent to
+/// reap it. Linux-only; other platforms rely on the shutdown path.
+#[cfg(target_os = "linux")]
+fn apply_parent_death_signal(cmd: &mut Command) {
+    // SAFETY: `prctl` is async-signal-safe and only affects the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
 }
 
 /// GAR-293: Apply a virtual-memory limit to a child process (Unix only).

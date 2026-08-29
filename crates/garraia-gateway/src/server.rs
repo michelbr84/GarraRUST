@@ -664,58 +664,43 @@ impl GatewayServer {
         // use axum-server with rustls. Otherwise, plain HTTP.
         let use_tls = tls_cert.is_some() && tls_key.is_some();
 
-        if use_tls {
+        // Each branch yields a Result instead of `?`-ing out: the MCP/channel
+        // cleanup below must run even when serving fails, otherwise the child
+        // processes spawned above are orphaned.
+        let serve_result: Result<()> = if use_tls {
             #[cfg(feature = "tls")]
             {
-                let cert_path = tls_cert.as_ref().unwrap();
-                let key_path = tls_key.as_ref().unwrap();
-                info!("TLS enabled: cert={}, key={}", cert_path, key_path);
-                let tls_config =
-                    axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-                        .await
-                        .map_err(|e| {
-                            garraia_common::Error::Gateway(format!("TLS config error: {e}"))
-                        })?;
-                let sock_addr: std::net::SocketAddr = addr
-                    .parse()
-                    .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
-                info!("GarraIA gateway listening on https://{}", sock_addr);
-                axum_server::bind_rustls(sock_addr, tls_config)
-                    .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                    .await
-                    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+                serve_tls(&addr, tls_cert.as_deref(), tls_key.as_deref(), app).await
             }
             #[cfg(not(feature = "tls"))]
             {
                 warn!(
                     "TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP"
                 );
-                let listener = TcpListener::bind(&addr).await?;
-                info!("GarraIA gateway listening on http://{}", addr);
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                )
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
+                serve_plain(&addr, app).await
             }
         } else {
-            let listener = TcpListener::bind(&addr).await?;
-            info!("GarraIA gateway listening on http://{}", addr);
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))?;
-        }
+            serve_plain(&addr, app).await
+        };
 
-        // Disconnect MCP servers on shutdown
+        // Cleanup runs even when the listener errored out: this block used to
+        // sit after a `?`, so any serve error skipped it and orphaned every
+        // MCP child process. The serve result is propagated at the end.
+        //
+        // Bounded: `disconnect_all` cancels each service, and a server that
+        // ignores stdin EOF can take up to its own drain time; unbounded and
+        // sequential, N bad servers could hang shutdown indefinitely.
         if let Some(ref manager) = state_for_shutdown.mcp_manager_arc {
             info!("disconnecting MCP servers...");
-            manager.disconnect_all().await;
+            if tokio::time::timeout(MCP_SHUTDOWN_TIMEOUT, manager.disconnect_all())
+                .await
+                .is_err()
+            {
+                warn!(
+                    "MCP disconnect exceeded {:?}; continuing shutdown (children are killed on drop)",
+                    MCP_SHUTDOWN_TIMEOUT
+                );
+            }
         }
 
         info!("disconnecting channels...");
@@ -726,6 +711,8 @@ impl GatewayServer {
             .disconnect_all()
             .await
             .ok();
+
+        serve_result?;
 
         info!("gateway shut down gracefully");
         Ok(())
@@ -815,6 +802,51 @@ pub async fn build_router_for_test_with_storage(
     ));
 
     build_router(state, whatsapp_state, admin_store)
+}
+
+/// Upper bound for cancelling MCP services at shutdown. A server that ignores
+/// stdin EOF must not hold the gateway open forever; children are killed when
+/// their transport is dropped regardless.
+const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serve plain HTTP until the shutdown signal.
+async fn serve_plain(addr: &str, app: axum::Router) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    info!("GarraIA gateway listening on http://{}", addr);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
+}
+
+/// Serve HTTPS (rustls) until the process is signalled.
+#[cfg(feature = "tls")]
+async fn serve_tls(
+    addr: &str,
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+    app: axum::Router,
+) -> Result<()> {
+    let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
+        return Err(garraia_common::Error::Gateway(
+            "TLS requested without cert/key paths".to_string(),
+        ));
+    };
+    info!("TLS enabled: cert={}, key={}", cert_path, key_path);
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+        .await
+        .map_err(|e| garraia_common::Error::Gateway(format!("TLS config error: {e}")))?;
+    let sock_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
+    info!("GarraIA gateway listening on https://{}", sock_addr);
+    axum_server::bind_rustls(sock_addr, tls_config)
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await
+        .map_err(|e| garraia_common::Error::Gateway(format!("server error: {e}")))
 }
 
 async fn shutdown_signal() {

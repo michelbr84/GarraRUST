@@ -625,13 +625,47 @@ impl Drop for PidFileGuard {
     }
 }
 
-/// Send SIGTERM and wait up to 5s for the process to exit. Returns true if it exited.
+/// Terminate the gateway and everything it spawned.
+///
+/// The daemon path double-forks + `setsid`, so the gateway is a process-group
+/// leader and its MCP children share that group. Signalling only the single
+/// PID left those children running; we signal the whole group when the target
+/// leads one (never our own group), then escalate to SIGKILL if it is still
+/// alive after the grace period.
 #[cfg(unix)]
 fn kill_and_wait(pid: u32) -> bool {
+    let target = pid as libc::pid_t;
+    // SAFETY: getpgid/kill on a pid we were handed; failures are reported via
+    // the return value and handled below.
+    let group = unsafe { libc::getpgid(target) };
+    let own_group = unsafe { libc::getpgid(0) };
+    let signal_group = group > 0 && group == target && group != own_group;
+
     unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        if signal_group {
+            libc::kill(-group, libc::SIGTERM);
+        } else {
+            libc::kill(target, libc::SIGTERM);
+        }
     }
+
     for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !is_process_running(pid) {
+            return true;
+        }
+    }
+
+    // Grace period spent: stop asking.
+    println!("Process {pid} did not exit after SIGTERM; sending SIGKILL...");
+    unsafe {
+        if signal_group {
+            libc::kill(-group, libc::SIGKILL);
+        } else {
+            libc::kill(target, libc::SIGKILL);
+        }
+    }
+    for _ in 0..8 {
         std::thread::sleep(std::time::Duration::from_millis(250));
         if !is_process_running(pid) {
             return true;
@@ -1619,7 +1653,7 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} did not exit within 5s. It may still be shutting down.");
+        println!("Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent.");
     }
 
     Ok(())
@@ -1654,7 +1688,7 @@ fn stop_daemon(port: u16) -> Result<()> {
         println!("GarraIA stopped.");
         std::fs::remove_file(&pid_path).ok();
     } else {
-        println!("Process {pid} did not exit within 5s. It may still be shutting down.");
+        println!("Process {pid} survived SIGTERM and SIGKILL — check for a stuck mount or a zombie parent.");
     }
 
     Ok(())
