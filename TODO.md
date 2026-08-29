@@ -27,8 +27,9 @@ curtos para a próxima sessão autônoma.
   (`required-features`). Promover a required check: tracker interno #164.
 - **Deps consolidadas** (PR #844): jsonwebtoken 11, validator 0.21, base64
   0.23, serial_test 4, itertools 0.15, uuid/tauri, e **wasmtime 47 em par**
-  (grupo dependabot novo evita o par quebrado). lopdf/rmcp adiados com
-  `@dependabot ignore` → tracker interno #163. h2 0.4.16 (RUSTSEC-2026-0258).
+  (grupo dependabot novo evita o par quebrado). rmcp segue adiado com
+  `@dependabot ignore` → tracker interno #163; lopdf destravado em 2026-08-29
+  (0.42→0.44 com a feature `time` off, plan 0356). h2 0.4.16 (RUSTSEC-2026-0258).
 - **CI higiene** (PR #842): `timeout-minutes` em e2e/playwright (2 runs de 6h
   presos no download do Chromium em 2026-08-17), `Cross.toml` para o build
   ARM64.
@@ -255,8 +256,9 @@ curtos para a próxima sessão autônoma.
    pela primeira vez** após o fix do baseline no plan 0354).
 2. Promover `Auth Integration (test-support)` a required check do ruleset após
    ~1 semana sem flakes (tracker interno #164).
-3. Retomar upgrades adiados quando houver janela: lopdf 0.44 (garraia-media) e
-   rmcp 1.7→3.x (tracker interno #163).
+3. Retomar o upgrade adiado do rmcp 1.7→3.x quando houver janela (tracker
+   interno #163). lopdf 0.44 entregue em 2026-08-29 (plan 0356) — a feature
+   `time` fica desligada até um release > 0.44.0 trazer o fix do upstream #518.
 4. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14
    (tracker interno #162).
 5. Ajustar a skill `garra-routine` (`.claude/commands/garra-routine.md`), que
