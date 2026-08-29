@@ -1,7 +1,7 @@
 //! GAR-583 — MCP server exposing `garra ask` as a stdio tool.
 //!
 //! Implements the `Model Context Protocol` (MCP) `ServerHandler` trait
-//! from `rmcp 1.6` and exposes a single tool — `garra_ask` — that calls
+//! from `rmcp 2.2` and exposes a single tool — `garra_ask` — that calls
 //! [`crate::ask::ask_oneshot`] **in-process** (no subprocess spawn, no
 //! shell). Designed for Claude Desktop, Claude Code, and any MCP host
 //! that speaks stdio JSON-RPC.
@@ -22,7 +22,7 @@ use anyhow::Result;
 use garraia_config::AppConfig;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
+    CallToolRequestParams, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
@@ -307,15 +307,15 @@ impl GarraToolHandler {
 
 impl ServerHandler for GarraToolHandler {
     /// GAR-585 — advertise the `tools` capability in the `initialize`
-    /// handshake. Without this override, `rmcp 1.6`'s default `get_info`
+    /// handshake. Without this override, rmcp's default `get_info`
     /// returns `ServerInfo::default()` whose `capabilities` field is
     /// empty (`{}`); MCP hosts (Claude Code's `/mcp` panel, Claude
     /// Desktop) read that as "no tools" and never call `tools/list`,
     /// leaving `garra_ask` invisible to the model even though the
     /// `list_tools` handler below is wired correctly.
     ///
-    /// Mirrors the canonical example in `rmcp-1.6.0/tests/common/
-    /// calculator.rs` (`enable_tools()` flips `tools` to
+    /// Mirrors the canonical example in `rmcp`'s own
+    /// `tests/common/calculator.rs` (`enable_tools()` flips `tools` to
     /// `Some(ToolsCapability::default())`). No other capabilities are
     /// enabled here on purpose — see `get_info_advertises_only_tools_capability`.
     fn get_info(&self) -> ServerInfo {
@@ -394,7 +394,10 @@ impl ServerHandler for GarraToolHandler {
                 "{\"schema\":\"garra.ask.v1\",\"ok\":false,\"error\":{\"kind\":\"io\",\"message\":\"json serialization failed\"}}",
             )
         });
-        let content = vec![Content::text(text)];
+        // rmcp 2.2 removeu o alias `Content` (era `Annotated<RawContent>`); o
+        // tipo agora é o enum achatado `ContentBlock`, que `CallToolResult::
+        // success`/`error` recebem como `Vec<ContentBlock>`.
+        let content = vec![ContentBlock::text(text)];
         if outcome.is_ok() {
             Ok(CallToolResult::success(content))
         } else {

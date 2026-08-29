@@ -54,13 +54,13 @@ build; produção permanece sem o caminho keyless.
 
 Transcript de `initialize → tools/list → tools/call` contra o binário
 com `dev-echo-provider` (evidência colada do teste executado em
-2026-08-28):
+2026-08-29, já contra o rmcp 2.2 — ver plan 0358):
 
 ```text
 >>> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",
      "capabilities":{},"clientInfo":{"name":"hermes-e2e-test","version":"1.0.0"}}}
 <<< {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25",
-     "capabilities":{"tools":{}},"serverInfo":{"name":"rmcp","version":"1.7.0"}}}
+     "capabilities":{"tools":{}},"serverInfo":{"name":"rmcp","version":"2.2.0"}}}
 >>> {"jsonrpc":"2.0","method":"notifications/initialized"}
 >>> {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 <<< ... tools: ["garra_ask"], provider enum: ["ollama","anthropic","openai","openrouter","echo"] ...

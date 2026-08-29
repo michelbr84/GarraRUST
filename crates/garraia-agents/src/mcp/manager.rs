@@ -761,12 +761,18 @@ impl McpManager {
             .messages
             .into_iter()
             .map(|m| {
+                // rmcp 2.2 (spec MCP 2025-11-25) dissolveu os enums específicos
+                // de prompt: `PromptMessageRole` virou o `Role` compartilhado e
+                // `PromptMessageContent` virou o `ContentBlock` unificado.
+                // `Role` é intencionalmente exaustivo (User/Assistant), então
+                // não leva braço curinga; `ContentBlock` é `#[non_exhaustive]`
+                // e leva.
                 let role = match m.role {
-                    rmcp::model::PromptMessageRole::User => "user",
-                    rmcp::model::PromptMessageRole::Assistant => "assistant",
+                    rmcp::model::Role::User => "user",
+                    rmcp::model::Role::Assistant => "assistant",
                 };
                 let text = match m.content {
-                    rmcp::model::PromptMessageContent::Text { text } => text,
+                    rmcp::model::ContentBlock::Text(text_content) => text_content.text,
                     _ => "(non-text content)".to_string(),
                 };
                 format!("[{role}] {text}")

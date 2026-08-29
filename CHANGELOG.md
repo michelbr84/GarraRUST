@@ -53,6 +53,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writer → reader → xref → content stream → extração. Verde na 0.42 e na 0.44.
 
 ### Changed
+- **`rmcp` 1.7 → 2.2**, alinhando os tipos de modelo à spec MCP 2025-11-25
+  (upstream `rust-sdk#927`). O SDK dissolveu duas camadas: `Content`
+  (`= Annotated<RawContent>`) e o próprio `RawContent` viraram o enum achatado
+  `ContentBlock`, e `PromptMessageRole`/`PromptMessageContent` viraram
+  `Role`/`ContentBlock`. Migrados os três call sites — a ponte de tools MCP, o
+  formatador de prompts e o servidor `garra mcp-server`. O **formato de wire não
+  mudou**: o handshake real continua emitindo `{"type":"text","text":…}`, e o
+  transcript de evidência em `docs/integrations/hermes-mcp.md` foi regravado a
+  partir de uma execução de verdade contra a 2.2.0. Detalhes em `plans/0358`.
+- `sse-stream` 0.2.3 → 0.2.5 no lock. O rmcp 2.2.0 declara `sse-stream = "0.2"`
+  mas usa `SseStream::from_bytes_stream`, que só existe a partir da 0.2.4 —
+  under-specification upstream que quebrava o build com `--features mcp-http`.
 - **Modelo Ollama padrão passa a ser `qwen3.8:latest`** (resolve para
   `qwen3.8:27b` — Q4_K_M, ~18 GB, 262 144 tokens de contexto, visão +
   tools), no lugar de `llama3.1`. Atualizado no provider, na CLI, no wizard,

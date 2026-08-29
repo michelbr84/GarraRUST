@@ -131,7 +131,12 @@ teloxide = { version = "0.17", default-features = false, features = ["rustls", "
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "1.7" }
+# 2.2 alinha os tipos de modelo à spec MCP 2025-11-25 (upstream rust-sdk#927):
+# `Annotated<RawContent>`/`RawContent`/`Content` viraram o enum achatado
+# `ContentBlock`, e `PromptMessageRole`/`PromptMessageContent` viraram
+# `Role`/`ContentBlock`. Migração em plans/0358. O salto para 3.x segue
+# adiado (tracker interno #163).
+rmcp = { version = "2.2" }
 
 # System / OS interop
 libc = "0.2"
