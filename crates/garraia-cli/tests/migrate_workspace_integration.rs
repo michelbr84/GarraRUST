@@ -16,8 +16,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
 use std::num::NonZeroU32;
 
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{AssertSqlSafe, PgPool};
 use testcontainers::core::{ImageExt, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
@@ -116,7 +116,12 @@ async fn apply_migrations(pool: &PgPool) {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let sql = std::fs::read_to_string(&path).expect("read migration file");
-        sqlx::raw_sql(&sql)
+        // AssertSqlSafe: sqlx 0.9 only accepts `&'static str`, and this SQL is
+        // genuinely dynamic — it is the text of a migration file. `path` comes
+        // from walking `crates/garraia-workspace/migrations/`, i.e. files
+        // versioned in this repository; no user input reaches this string.
+        // Audited 2026-08-29.
+        sqlx::raw_sql(AssertSqlSafe(sql))
             .execute(pool)
             .await
             .unwrap_or_else(|e| panic!("apply migration {name}: {e}"));
