@@ -159,10 +159,16 @@ impl SignalChannel {
 
 /// Reject a signal-cli base URL that would put traffic on the wire in the clear.
 ///
-/// Closes CodeQL `rust/cleartext-transmission`. Every request this channel
-/// makes carries the account's phone number in the path, and `send_text` /
-/// `send_to_group` carry the message body — so an unencrypted hop to anything
-/// but the local machine exposes both to the network.
+/// Every request this channel makes carries the account's phone number in the
+/// path, and `send_text` / `send_to_group` carry the message body — so an
+/// unencrypted hop to anything but the local machine exposes both to the
+/// network. This guard is what stops that.
+///
+/// It is the *justification* for CodeQL `rust/cleartext-transmission` being
+/// dismissed on the polling loop, not what closes the alert — the ledger entry
+/// does that. Deliberately no alert numbers here: they are renumbered whenever
+/// the analysis scope changes, and `docs/security/codeql-suppressions.md` is
+/// the canonical place to tie an alert to a line.
 ///
 /// Reached only through [`SignalChannel::ensure_url_vetted`], which every
 /// request-issuing method calls. That indirection is the fix for a gap this
