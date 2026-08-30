@@ -135,6 +135,12 @@ plans/*
 # scripts/ subdirectory is NOT excluded (contains build-installer.ps1)
 /*.ps1
 
+# ...but install.ps1 is a published artifact, not internal tooling: it is the
+# Windows `irm | iex` entry point, the sibling of install.sh, and release.yml
+# copies it into every release. The blanket rule above stays as the default for
+# anything else that lands at the repo root.
+!install.ps1
+
 # Temporary Linear issue-close scripts (gerados por sessão de trabalho)
 close_gar*.ps1
 close_glob*.ps1

@@ -380,7 +380,19 @@ benches/
 12. **NUNCA** ler `user_identities.password_hash` no app pool role (`garraia_app`) — RLS filtra para 0 rows. Tratar 0 rows como "user not found" é anti-pattern (significa "RLS bloqueou"). Sempre usar `garraia_login` via login endpoint. Ver ADR 0005 §"Anti-patterns".
 13. **SEMPRE** usar a `garraia_signup` BYPASSRLS dedicated role exclusivamente para o signup flow (`POST /v1/auth/signup`). Acesso só via `garraia-auth::SignupPool` newtype — nunca raw `PgPool`, nunca substituível pelo `LoginPool`. O role tem `INSERT` em `users`/`user_identities` mas NENHUM acesso a `sessions`, `messages`, `chats`, `memory_*`, `tasks*`, `groups`, `group_members` ou qualquer dado de tenant. Migration 010, ADR 0005 §"Amendment 2026-04-13" Gap B.
 14. **SEMPRE** passar por `garraia_common::ssrf` (`vet_url` + `pinned_client`) qualquer requisição HTTP de saída cuja URL venha de um request, de config editável por request, ou de uma tool call de LLM. **NUNCA** `reqwest::get(url)` cru nesses caminhos. O guard faz allowlist de esquema, resolve o host uma vez e bloqueia faixas internas, pina os IPs vetados (`resolve_to_addrs`, anti-DNS-rebinding), desliga redirects e limita o corpo. Auth não substitui o guard: `plugins_handler` exige `Permission::ManagePlugins` **e** valida a URL. Onde o alvo legítimo é local (Ollama, MCP self-hosted), usar `IpScope::AllowPrivate` — que ainda bloqueia link-local (`169.254.169.254`), CGNAT, multicast e unspecified. Ver `docs/security/threat-model.md` §5.6.
-15. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
+15. **NUNCA** renomear ou remover os assets de release "crus" (`garraia-<os>-<arch>[.exe]`)
+    nem seus `<asset>.sha256` irmaos. `crates/garraia-cli/src/update.rs:42-48` resolve o
+    asset por nome exato e `:127` exige o `.sha256` irmao, entao qualquer renomeacao quebra
+    o `garra update` de toda instalacao ja existente no momento em que ela pular para essa
+    versao. Formatos novos (`.tar.gz`, `.zip`, `.msi`) entram **aditivamente**, ao lado.
+    O `select_checksum_line` do `install.sh` (e o `Select-ChecksumLine` do `install.ps1`)
+    ancoram o nome em fim de linha justamente para que `garraia-linux-x86_64` nunca case
+    com `garraia-linux-x86_64.tar.gz`.
+16. **SEMPRE** manter `install.sh` e `install.ps1` em paridade de comportamento. Sao o mesmo
+    contrato em dois sistemas operacionais (flags, env vars, precedencia env-vence-flag,
+    verificacao SHA-256, encadeamento `init`/`start`); mudou um, muda o outro, e as suites
+    em `tests/install_sh/` e `tests/install_ps1/` espelham-se uma a outra.
+17. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 
 ## Framework de Desenvolvimento: Superpowers
 

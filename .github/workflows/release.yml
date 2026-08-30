@@ -181,6 +181,70 @@ jobs:
           name: garraia-macos-aarch64
           path: release/garraia-macos-aarch64
 
+  # Build the Windows desktop installers (MSI + NSIS).
+  #
+  # Best-effort by design: this job is in the `release` job's `needs:` so the
+  # release waits for it, but it is deliberately NOT in that job's `if:`
+  # condition. That is exactly how build-linux-arm64 is already treated, and it
+  # gets best-effort semantics without `continue-on-error`, which the project
+  # forbids outright (CLAUDE.md, Regras absolutas).
+  #
+  # Why it is treated as unproven: `garraia-desktop` is excluded from every
+  # cargo invocation in ci.yml because its build needs GTK and a sidecar that
+  # Linux runners lack. That reasoning is Linux-specific -- windows-latest ships
+  # WebView2, the Tauri CLI fetches WiX and NSIS itself, and step 1 of
+  # build-installer.ps1 produces the sidecar -- but this crate has never been
+  # built in CI, so a failure here must never block the CLI release.
+  #
+  # Known failure mode: WiX ProductVersion is a three-part numeric field and
+  # cannot express a semver prerelease, so an `-rc` tag fails this job. The
+  # gating above absorbs it. See docs/releasing.md.
+  build-windows-installer:
+    name: Build Windows Installer (MSI + NSIS)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build MSI + NSIS
+        shell: pwsh
+        # Single source of truth: the same script a maintainer runs locally.
+        # It throws when the bundler produces no MSI, so a green-but-empty run
+        # is not possible.
+        run: ./scripts/build-installer.ps1 -StageDir "${env:RUNNER_TEMP}\bundles"
+
+      - name: Collect bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # build-installer.ps1 throws when no MSI is produced, so the previous
+          # step has already failed if this directory is empty. Asserting anyway
+          # keeps the failure message about the missing bundle rather than about
+          # an unmatched glob.
+          shopt -s nullglob
+          bundles=("${RUNNER_TEMP}"/bundles/*)
+          if [ ${#bundles[@]} -eq 0 ]; then
+            echo "::error ::no bundles produced under ${RUNNER_TEMP}/bundles"
+            exit 1
+          fi
+          cp "${bundles[@]}" release/
+          ls -l release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-windows
+          path: release/
+
   # Create release
   release:
     name: Create Release
@@ -195,6 +259,7 @@ jobs:
       - build-windows-x86_64
       - build-macos-x86_64
       - build-macos-arm64
+      - build-windows-installer
     if: |
       always() &&
       needs.build-linux-x86_64.result == 'success' &&
@@ -242,12 +307,94 @@ jobs:
             echo "::warning ::macOS aarch64 binary not built; release will ship without it."
           fi
 
+          # The Windows desktop installers, when the best-effort job produced
+          # them. Same conditional treatment as the aarch64 binaries above.
+          if [ -f artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64.msi ]; then
+            cp artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64.msi release/
+          else
+            echo "::warning ::Windows desktop MSI not built; release ships CLI assets only."
+          fi
+          if [ -f artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe ]; then
+            cp artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe release/
+          fi
+
           # Ship the installer as a release asset too. Release-asset downloads
           # go through GitHub's release CDN, which does not enforce the
           # aggressive per-IP limits that make raw.githubusercontent.com
           # answer 429 on shared cloud-pod egress IPs:
           #   curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh
           cp install.sh release/
+
+          # Same reasoning for the Windows installer: `irm | iex` against the
+          # release CDN is the mirror that keeps working when
+          # raw.githubusercontent.com answers 429.
+          cp install.ps1 release/
+
+      - name: Package archives
+        # Additive on purpose. `garra update` resolves assets by exact name
+        # (crates/garraia-cli/src/update.rs:42-48) and needs a `<asset>.sha256`
+        # sibling (:127), so the bare binaries stay exactly as they are and the
+        # archives sit beside them. Replacing them would break the auto-updater
+        # of every install already in the field.
+        #
+        # Staged under RUNNER_TEMP, never inside release/: the checksum loop
+        # below is `for f in *` under `set -euo pipefail`, and sha256sum on a
+        # directory exits non-zero, which would fail the whole release job.
+        run: |
+          set -euo pipefail
+          command -v zip >/dev/null || { echo "::error ::zip is not installed on this runner"; exit 1; }
+
+          stage="${RUNNER_TEMP}/archive-stage"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+
+          # pack <source-asset> <archive-basename> <name-inside-archive> <format>
+          #
+          # The archive basename is passed separately from the source asset so
+          # the Windows archive is `garraia-windows-x86_64.zip`, not
+          # `garraia-windows-x86_64.exe.zip`.
+          pack() {
+            asset="$1"; base="$2"; inner="$3"; format="$4"
+            if [ ! -f "release/${asset}" ]; then
+              echo "::warning ::${asset} not present; skipping its archive."
+              return 0
+            fi
+
+            dir="$stage/${base}"
+            mkdir -p "$dir"
+            # Renamed to the plain command name so extracting the archive
+            # yields a usable `garraia`, not a platform-suffixed file. The
+            # single top-level directory also keeps this from being a tarbomb.
+            cp "release/${asset}" "$dir/${inner}"
+            chmod +x "$dir/${inner}"
+            # MIT requires the notice to travel with redistributions, and an
+            # archive is a redistribution. README gives an offline quick start.
+            cp LICENSE README.md "$dir/"
+
+            case "$format" in
+              tar)
+                # Deterministic ordering and ownership so the archive bytes
+                # depend only on the contents.
+                tar --sort=name --owner=0 --group=0 --numeric-owner \
+                    -czf "${GITHUB_WORKSPACE}/release/${base}.tar.gz" \
+                    -C "$stage" "${base}"
+                ;;
+              zip)
+                ( cd "$stage" && zip -qr "${GITHUB_WORKSPACE}/release/${base}.zip" "${base}" )
+                ;;
+            esac
+            echo "packaged ${base} (${format})"
+          }
+
+          pack garraia-linux-x86_64       garraia-linux-x86_64   garraia     tar
+          pack garraia-linux-aarch64      garraia-linux-aarch64  garraia     tar
+          pack garraia-macos-x86_64       garraia-macos-x86_64   garraia     tar
+          pack garraia-macos-aarch64      garraia-macos-aarch64  garraia     tar
+          pack garraia-windows-x86_64.exe garraia-windows-x86_64 garraia.exe zip
+
+          rm -rf "$stage"
+          echo "--- release/ ---"
+          ls -l release/
 
       - name: Get version
         id: version
@@ -313,7 +460,15 @@ jobs:
             release/garraia-windows-x86_64.exe
             release/garraia-macos-x86_64
             release/garraia-macos-aarch64
+            release/garraia-linux-x86_64.tar.gz
+            release/garraia-linux-aarch64.tar.gz
+            release/garraia-macos-x86_64.tar.gz
+            release/garraia-macos-aarch64.tar.gz
+            release/garraia-windows-x86_64.zip
+            release/garraia-desktop-windows-x86_64.msi
+            release/garraia-desktop-windows-x86_64-setup.exe
             release/install.sh
+            release/install.ps1
             release/SHA256SUMS
             release/*.sha256
         env:

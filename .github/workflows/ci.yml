@@ -97,6 +97,70 @@ jobs:
       - name: Execute installer parse-args tests
         run: bash tests/install_sh/parse_args.sh
 
+  # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
+  # entry point, so it gets the same treatment: a blocking lint plus unit tests
+  # for the pure logic. The suites are hand-rolled harnesses rather than Pester
+  # on purpose -- they mirror `tests/install_sh/` one-for-one and keep this job
+  # free of a PSGallery dependency for the test run itself.
+  #
+  # Both matrix legs earn their place. `ubuntu-latest` runs PowerShell 7 and is
+  # the fast gate. `windows-latest` runs Windows PowerShell 5.1, which is what
+  # users actually paste the one-liner into, and is the only place the 5.1
+  # hazards surface: TLS 1.2 is not the default, `Invoke-WebRequest` needs
+  # `-UseBasicParsing`, and the install-dir guard and PATH registry writes are
+  # meaningless off Windows (those assertions report as SKIP on Linux).
+  #
+  # NOTE ON `shell:` -- do not reintroduce `shell: ${{ matrix.shell }}` here.
+  # `jobs.<id>.steps.*.shell` is one of the few keys where NO context is
+  # available, so an expression there is not a runtime error: the whole
+  # workflow fails to start, every job in this file is skipped, and the
+  # required checks sit forever at "Expected - waiting for status to be
+  # reported". Every step below is a plain `run:` that launches the
+  # interpreter explicitly, which keeps the matrix without touching `shell:`.
+  # Validate with `actionlint` before pushing; `yaml.safe_load` does not check
+  # the GitHub schema.
+  installer-powershell:
+    name: install.ps1 lint + tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe: pwsh          # PowerShell 7
+          - os: windows-latest
+            exe: powershell    # Windows PowerShell 5.1
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install PSScriptAnalyzer
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module PSScriptAnalyzer -Force -Scope CurrentUser"
+
+      # The gate lives in a script so it can be run locally, and so this step
+      # needs no `shell:`. It exits 1 on any finding.
+      - name: Run PSScriptAnalyzer
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/run_lint.ps1
+
+      # Each suite is listed explicitly, matching the shellcheck job above: a
+      # new suite only runs once it is added here.
+      - name: Execute installer parse-args tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/parse_args.ps1
+
+      - name: Execute installer checksum-format tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/checksum_format.ps1
+
+      - name: Execute installer resolve-version tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/resolve_version.ps1
+
+      - name: Execute installer install-dir tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/install_dir.ps1
+
+      - name: Execute installer bootstrap-phase tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/bootstrap_phase.ps1
+
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting

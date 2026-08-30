@@ -44,7 +44,7 @@
 - `garraia-channels`: adapters Telegram/Discord/Slack/WhatsApp/iMessage.
 - `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/ElevenLabs/Kokoro stubs).
 - Mobile (Flutter): auth JWT + chat + mascote — roda no emulator Android.
-- Desktop (Tauri v2): scaffold + sidecar Windows MSI.
+- Desktop (Tauri v2): scaffold + sidecar Windows MSI/NSIS, publicado pelo job best-effort `build-windows-installer` (`release.yml`) desde 2026-08-30. Sem assinatura de codigo (SmartScreen avisa) e sem auto-updater funcional -- ver `docs/releasing.md`.
 
 **O que ainda é stub, frágil ou ausente (snapshot 2026-04-13 — mantido como
 registro histórico; a verificação empírica de 2026-05-18 abaixo classifica
@@ -81,7 +81,7 @@ mapeada ao seu estado atual com pointer de evidência. Quando o status é
 | 7 | Mobile Android com Gradle/SDK desatualizados | ✅ **Done** | `app/build.gradle.kts` usa `flutter.compileSdkVersion`/`minSdkVersion` (delegado ao Flutter SDK); JDK 23; AndroidX habilitado. `applicationId` + `namespace` migrados de `com.example.garraia_mobile` (template default Flutter) para `org.garraia.mobile` em 2026-05-18 (reverse-DNS de `garraia.org`, alinhado ao binário CLI `garraia` e ao `install.sh`). |
 | 8 | Desktop UI apenas WebView básico | ⚠️ **Parcial** | Web Console "Garra Glass" (ADR 0009, 10 PRs #330-341, 2026-05-14) entregue como `webchat.html` servido pelo gateway — Dashboard, Chat, Providers, Channels, Sessions, Settings (schema-driven dry-run), Diagnostics (12 checks), Logs, Themes/Skins. O **shell desktop Tauri** (`crates/garraia-desktop/src-tauri/`) continua um wrapper WebView que carrega esse mesmo HTML; UI nativa rich (notifications, file picker hooks, system tray menu items) ainda backlog. |
 | 9 | MCP em sandbox WASM | ✅ **Done (baseline)** | `crates/garraia-plugins/src/{loader,manifest,runtime,sdk,traits}.rs` em `wasmtime 44.0.1` (RUSTSEC closed PR #108). Features avançadas (capability tokens, resource limits per-plugin) na Fase 2.2. |
-| 10 | Sem wizard, `.env.example` é caminho oficial | ✅ **Done** | `crates/garraia-cli/src/wizard/` + subcomando `garraia init` (PR #348, plan 0126) + `curl \| sh` installer wizard (PR #350, plan 0127). Cobre Linux/macOS x86_64+aarch64 + Windows MSI. |
+| 10 | Sem wizard, `.env.example` é caminho oficial | ✅ **Done** | `crates/garraia-cli/src/wizard/` + subcomando `garraia init` (PR #348, plan 0126) + `curl \| sh` installer wizard (PR #350, plan 0127). Cobre Linux/macOS x86_64+aarch64 via `curl \| sh` e Windows via `irm \| iex` (`install.ps1`, 2026-08-30). O MSI do desktop e publicado a parte, best-effort. |
 | 11 | Cobertura de testes baixa | 🔁 **Em curso** | Mutation testing 90.78% killed em `garraia-auth` (GAR-436 + PR #94). AI Quality Ratchet PR-1 em report-only (plan 0064, `scripts/quality/`). Coverage job em CI (`Coverage (cargo-llvm-cov)`) ativo. Sub-issues Q6.1-Q6.9 + GAR-505 ainda fechando mutation gaps. |
 
 **Sumário:** dos 11 itens listados em §1 como "stub, frágil ou ausente" em
@@ -963,7 +963,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **Bridge Rust ↔ TS**: comandos Tauri typed via `specta` ou `tauri-bindgen`.
 - [ ] **Offline-first**: cache local de chats/arquivos recentes via IndexedDB.
 - [ ] **Workspaces**: seletor de grupo no topo; switch rápido com `Ctrl+K`.
-- [ ] **Instaladores**: MSI (Win), DMG (Mac, notarizado), AppImage + deb + rpm (Linux).
+- [x] **Instaladores -- Windows**: `install.ps1` (`irm | iex`) + MSI/NSIS via Tauri, entregues em 2026-08-30. Ambos **sem assinatura de codigo** -- o certificado OV/EV para remover o aviso do SmartScreen segue em aberto.
+- [ ] **Instaladores -- restantes**: DMG (Mac, notarizado), AppImage + deb + rpm (Linux).
+- [ ] **Archives**: entregues para todas as plataformas em 2026-08-30 (`.tar.gz` / `.zip`), aditivos aos binarios crus que o `garra update` consome.
 
 **Critério de aceite:**
 
