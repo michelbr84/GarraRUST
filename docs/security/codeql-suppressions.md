@@ -17,6 +17,16 @@
 > (entradas com mais de 90 dias devem ser revisitadas; alertas que não existem
 > mais no Security tab devem ser removidos do ledger).
 >
+> Removida em 2026-08-30 a entrada do alerta **#43** (`credentials.rs:49`,
+> `rust/hard-coded-cryptographic-value`): o padrão que a justificava —
+> `let mut salt = vec![0u8; SALT_LEN];` seguido de `rng.fill` — deixou de
+> existir. O site passou a usar `garraia_security::random_bytes`, que devolve
+> o array já preenchido pelo CSPRNG e nunca materializa um buffer de zeros.
+> É o mesmo desfecho do alerta #142 e a preferência declarada em §3: correção
+> em código, não supressão. O ledger cai de 30 para 29 entradas. A §5 continua
+> narrando o experimento empírico que usou o #43 como alvo — é registro
+> histórico, e por isso a referência lá virou texto simples.
+>
 > Estado do re-audit em 2026-08-29: a **metade mecânica** está feita e provada —
 > as 23 entradas ainda casam `rule_id`/`path`/`linha` (§5.2). A **metade de
 > julgamento** — cada justificativa ainda procede? o guard citado ainda está na
@@ -80,7 +90,7 @@ cobertura de extração de 118 para 422 arquivos):
 
 **A entrada nova desta leva já está registrada**: alerta
 [#165](#alert-165), o salt PBKDF2 legado em
-`crates/garraia-gateway/src/admin/shared.rs:68` (`LEGACY_KDF_SALT`). O salt
+`crates/garraia-gateway/src/admin/shared.rs:67` (`LEGACY_KDF_SALT`). O salt
 constante deixou de ser usado para derivar qualquer chave nova — agora é
 aleatório por instalação, com 600k iterações — mas a constante permanece no
 fonte porque a migração forward-only precisa dela para decifrar os segredos já
@@ -212,7 +222,6 @@ esperar alguém reparar no Security tab.
 | <a id="alert-40"></a>[#40](https://github.com/michelbr84/GarraRUST/security/code-scanning/40) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/mobile_auth.rs:738` | dismissed-used-in-tests | `used_in_tests` | Test fixture em `#[tokio::test] argon2id_register_and_login_roundtrip`. Literal salt `""` é placeholder do path PHC Argon2id (que embute seu próprio salt); coluna legacy não-usada. | GAR-491 |
 | <a id="alert-41"></a>[#41](https://github.com/michelbr84/GarraRUST/security/code-scanning/41) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/mobile_auth.rs:749` | dismissed-used-in-tests | `used_in_tests` | Test fixture em `#[tokio::test] argon2id_register_and_login_roundtrip` — branch negativo, password `"nope"` deve retornar false. Input intencionalmente inválido para coverage. | GAR-491 |
 | <a id="alert-42"></a>[#42](https://github.com/michelbr84/GarraRUST/security/code-scanning/42) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/mobile_auth.rs:870` | dismissed-used-in-tests | `used_in_tests` | Test fixture em `#[tokio::test] second_login_after_upgrade_still_works`. `"seq-password-xyz"` exercita o PBKDF2 → Argon2id lazy-upgrade transactional path; nunca persistido. | GAR-491 |
-| <a id="alert-43"></a>[#43](https://github.com/michelbr84/GarraRUST/security/code-scanning/43) | `rust/hard-coded-cryptographic-value` | `crates/garraia-security/src/credentials.rs:49` | dismissed-false-positive | `false_positive` | `vec![0u8; SALT_LEN]` é buffer initializer imediatamente sobrescrito por `ring::SystemRandom::fill` na linha 50. API do `ring` exige `&mut [u8]` como backing; literal `0u8` nunca vira salt real. **Anchor da empirical proof do mecanismo.** | GAR-491 |
 | <a id="alert-44"></a>[#44](https://github.com/michelbr84/GarraRUST/security/code-scanning/44) | `rust/hard-coded-cryptographic-value` | `crates/garraia-security/src/validation.rs:233` | dismissed-used-in-tests | `used_in_tests` | Test fixture em `#[test] validate_password_length`. Literal `"short"` intencionalmente abaixo do mínimo para asserir `Err`. Negative-path coverage. | GAR-491 |
 | <a id="alert-45"></a>[#45](https://github.com/michelbr84/GarraRUST/security/code-scanning/45) | `rust/hard-coded-cryptographic-value` | `crates/garraia-security/src/validation.rs:234` | dismissed-used-in-tests | `used_in_tests` | Test fixture em `#[test] validate_password_length`. Literal `"validpass123"` intencionalmente acima do mínimo para asserir `Ok`. Positive-path coverage. | GAR-491 |
 | <a id="alert-149"></a>[#149](https://github.com/michelbr84/GarraRUST/security/code-scanning/149) | `rust/path-injection` | `crates/garraia-gateway/src/skins_handler.rs:84` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `create_skin` guards `body.name` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 60 before `tokio::fs::create_dir_all` / `tokio::fs::write`. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skins_test.rs::create_skin_with_path_traversal_returns_400` + `create_skin_with_dot_in_name_returns_400` + `create_skin_rejects_underscore_per_project_convention`. | GAR-490 |
@@ -238,7 +247,7 @@ esperar alguém reparar no Security tab.
 | <a id="alert-144"></a>[#144](https://github.com/michelbr84/GarraRUST/security/code-scanning/144) | `rust/cleartext-transmission` | `crates/garraia-channels/src/signal/mod.rs:279` | dismissed-false-positive | `false_positive` | **Triagem 2026-08-30.** O sink (`:279` neste PR, `:272` no alerta vivo, que foi emitido contra a main antes de este PR deslocar o arquivo) esta **dentro** de `connect()`, depois do guard: `connect()` chama `ensure_url_vetted()?` antes de qualquer IO, e o `?` aborta se a URL for recusada. O `config` e clonado **antes** do `tokio::spawn` e `SignalConfig` nao tem mutabilidade interior, entao a URL do loop e o mesmo valor imutavel ja validado. CodeQL nao liga o clone a validacao anterior. Auditado por `security-auditor`. Contraste com o **#143**, mesma regra e mesmo arquivo, que **nao** entrou neste ledger: era codigo morto (`receive_messages`, `#[allow(dead_code)]`, zero call sites) e foi **removido**, fechando como `Fixed`. | GAR-491 |
 | <a id="alert-145"></a>[#145](https://github.com/michelbr84/GarraRUST/security/code-scanning/145) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:48` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** O destino e HTTPS: `const GRAPH_API_BASE: &str = "https://graph.facebook.com/v21.0"` ([whatsapp/api.rs:5](../../crates/garraia-channels/src/whatsapp/api.rs)), entao `.bearer_auth(token)` sai sempre sobre TLS. O esquema e constante de compilacao e nenhum caminho de config o altera. CodeQL nao dobra a const dentro do `format!` e trata o esquema como desconhecido. | GAR-491 |
 | <a id="alert-146"></a>[#146](https://github.com/michelbr84/GarraRUST/security/code-scanning/146) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:79` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Identico ao [#145](#alert-145), em `mark_as_read`. Contraste deliberado com os alertas 143/144 do canal Signal: mesmo rule, mas **nao** eram falso-positivo — la a URL base vinha da config do operador e admitia `http://` remoto, e foi corrigida em codigo (guard `vet_signal_cli_url`). | GAR-491 |
-| <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ✅ Número reconferido na `main` em 2026-08-29 (squash `a47d3c3`): o dry-run casou `rule_id`/`path`/`line` sem `exit 2`, então 165 sobreviveu ao squash. Dispensado no mesmo dia — ver §5.2. | PR-869 |
+| <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:67` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ✅ Número reconferido na `main` em 2026-08-29 (squash `a47d3c3`): o dry-run casou `rule_id`/`path`/`line` sem `exit 2`, então 165 sobreviveu ao squash. Dispensado no mesmo dia — ver §5.2. | PR-869 |
 
 **Total**: 30 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
 1 from PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) + 5 from
@@ -324,7 +333,7 @@ no mesmo repositório; o `state=dismissed` não é resetado quando o workflow
 
 **Procedure**:
 
-1. Aplicar dismissal apenas no alerta [#43](#alert-43) (`credentials.rs:49`,
+1. Aplicar dismissal apenas no alerta #43 (`credentials.rs:49`,
    `dismissed_reason=false_positive`) na branch
    `security/gar-491-codeql-suppressions-2026-05-01`.
 2. Imediato: `gh api repos/michelbr84/GarraRUST/code-scanning/alerts/43 --jq

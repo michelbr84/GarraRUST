@@ -1,8 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::pbkdf2;
-use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -11,7 +10,6 @@ use tracing::{info, warn};
 
 const PBKDF2_ITERATIONS: u32 = 600_000;
 const SALT_LEN: usize = 32;
-const NONCE_LEN: usize = 12; // AES-256-GCM nonce
 const KEY_LEN: usize = 32; // 256 bits
 
 /// On-disk representation of the encrypted vault.
@@ -45,10 +43,9 @@ impl CredentialVault {
             return Err(CredentialError::AlreadyExists(path.display().to_string()));
         }
 
-        let rng = SystemRandom::new();
-        let mut salt = vec![0u8; SALT_LEN];
-        rng.fill(&mut salt)
-            .map_err(|_| CredentialError::Crypto("failed to generate salt".into()))?;
+        let salt = crate::random_bytes::<SALT_LEN>()
+            .map_err(|_| CredentialError::Crypto("failed to generate salt".into()))?
+            .to_vec();
 
         let derived_key = derive_key(passphrase, &salt);
 
@@ -136,14 +133,15 @@ impl CredentialVault {
         let plaintext = serde_json::to_vec(&self.entries)
             .map_err(|e| CredentialError::Format(format!("failed to serialize vault: {e}")))?;
 
-        let rng = SystemRandom::new();
-        let mut nonce_bytes = vec![0u8; NONCE_LEN];
-        rng.fill(&mut nonce_bytes)
+        let nonce_bytes = crate::random_bytes::<NONCE_LEN>()
             .map_err(|_| CredentialError::Crypto("failed to generate nonce".into()))?;
 
         let key = make_aead_key(&self.derived_key)?;
-        let nonce = Nonce::try_assume_unique_for_key(&nonce_bytes)
-            .map_err(|_| CredentialError::Crypto("invalid nonce length".into()))?;
+        // `random_bytes` returns `[u8; NONCE_LEN]`, so the length is
+        // guaranteed by the type and this cannot fail. `open` above keeps the
+        // fallible variant: there the nonce is decoded from the vault file and
+        // its length is only known at runtime.
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
         let mut in_out = plaintext;
         key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
@@ -151,7 +149,7 @@ impl CredentialVault {
 
         let vault_file = VaultFile {
             salt: BASE64.encode(&self.salt),
-            nonce: BASE64.encode(&nonce_bytes),
+            nonce: BASE64.encode(nonce_bytes),
             ciphertext: BASE64.encode(&in_out),
         };
 
