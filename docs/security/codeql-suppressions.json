@@ -309,6 +309,30 @@
       "ledger_md_anchor": "alert-113"
     },
     {
+      "alert_number": 115,
+      "rule_id": "rust/cleartext-storage-database",
+      "path": "crates/garraia-db/src/session_store.rs",
+      "line": 1326,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso-positivo. A ancora e o `.prepare(&sql)` de `validate_session_token`; o unico valor ligado a essa query esta duas linhas abaixo, em `session_store.rs:1329`: `params![hash_session_token(token)]`. Ou seja, o que chega ao banco e um hash, nunca o token. `hash_session_token` (session_store.rs:1261) e SHA-256 hex de mao unica. O lado da escrita declara o invariante em session_store.rs:1283 (\"Only the hash is persisted; the raw token goes to the caller and is never written to disk\") e ha migracao que reescreve tokens legados em claro, detectando-os por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (session_store.rs:344). CodeQL marca `token: &str` como credencial e ve o parametro fluindo para a query, sem modelar que `hash_session_token` e transformacao irreversivel.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-115",
+      "sink_snippet": ".prepare(&sql)"
+    },
+    {
+      "alert_number": 144,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-channels/src/signal/mod.rs",
+      "line": 279,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso-positivo: o sink esta DENTRO de `connect()`, depois do guard. `connect()` chama `self.ensure_url_vetted()?` antes de qualquer IO; se a URL for recusada, o `?` propaga e nenhuma linha posterior executa. O `config` e clonado (`let config = self.config.clone()`) ANTES do `tokio::spawn`, e `SignalConfig` nao tem mutabilidade interior — entao a URL que o loop usa e literalmente o mesmo valor imutavel que foi validado. CodeQL nao relaciona o clone com a validacao anterior. Auditado por security-auditor em 2026-08-30. NOTA DE ANCORA: o alerta vivo aponta :272 porque foi emitido contra a main; este mesmo PR desloca o sink para :279 ao remover a `receive_messages` morta e adicionar `ensure_url_vetted`. A linha aqui e a do fonte deste PR, que e o que o check-ledger-anchors.py valida e o que o CodeQL vera na proxima analise.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-144",
+      "sink_snippet": "r = client.get(&url).timeout(Duration::from_secs(30)).send() => {"
+    },
+    {
       "alert_number": 145,
       "rule_id": "rust/cleartext-transmission",
       "path": "crates/garraia-channels/src/whatsapp/api.rs",

@@ -247,6 +247,23 @@ jobs:
         # `garraia` é o nome do pacote em `crates/garraia-cli/`.
         run: cargo clippy -p garraia --features mcp-http --all-targets -- -D warnings
 
+      - name: Run clippy + tests (signal)
+        # Mesmo buraco do `mcp-http` acima, e do `auth-integration` mais
+        # abaixo: `pub mod signal` e `#[cfg(feature = "signal")]` e a feature
+        # e OFF por default, entao o `--workspace` do step anterior e o
+        # `cargo test --workspace` do job `test` NAO compilam nem rodam uma
+        # linha sequer do canal Signal — silenciosamente, como o comentario do
+        # auth-integration ja documentou custar 16 semanas de vermelho nao lido.
+        #
+        # Concreto: o guard `vet_signal_cli_url` cobre o corpo das mensagens e
+        # o numero de telefone, e as regressoes que provam isso
+        # (`send_message_refuses_cleartext_without_connect`,
+        # `send_to_group_refuses_cleartext_without_connect`) so existem sob
+        # esta feature. Sem este step elas seriam decoracao.
+        run: |
+          cargo clippy -p garraia-channels --features signal --all-targets -- -D warnings
+          cargo test -p garraia-channels --features signal --lib
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
