@@ -97,6 +97,99 @@ jobs:
       - name: Execute installer parse-args tests
         run: bash tests/install_sh/parse_args.sh
 
+  # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
+  # entry point, so it gets the same treatment: a blocking lint plus unit tests
+  # for the pure logic. The suites are hand-rolled harnesses rather than Pester
+  # on purpose -- they mirror `tests/install_sh/` one-for-one and keep this job
+  # free of a PSGallery dependency.
+  #
+  # Both matrix legs earn their place. `ubuntu-latest` runs PowerShell 7 and is
+  # the fast gate. `windows-latest` runs Windows PowerShell 5.1, which is what
+  # users actually paste the one-liner into, and is the only place the 5.1
+  # hazards surface: TLS 1.2 is not the default, `Invoke-WebRequest` needs
+  # `-UseBasicParsing`, and the install-dir guard and PATH registry writes are
+  # meaningless off Windows (those assertions report as SKIP on Linux).
+  installer-powershell:
+    name: install.ps1 lint + tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: pwsh
+            exe: pwsh
+          - os: windows-latest
+            shell: powershell
+            exe: powershell
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install PSScriptAnalyzer
+        shell: ${{ matrix.shell }}
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+
+      # A finding of any severity fails the job. Both settings files carry
+      # their exclusions with written justifications, so anything reaching here
+      # is a real regression. The test suites are linted too, under a looser
+      # ruleset appropriate to test doubles -- unlinted test code is how style
+      # debt accumulates unnoticed.
+      - name: Run PSScriptAnalyzer
+        shell: ${{ matrix.shell }}
+        run: |
+          $failed = $false
+
+          $shipping = Invoke-ScriptAnalyzer `
+              -Path install.ps1 `
+              -Settings tests/install_ps1/PSScriptAnalyzerSettings.psd1
+          $shipping += Invoke-ScriptAnalyzer `
+              -Path scripts/build-installer.ps1 `
+              -Settings tests/install_ps1/PSScriptAnalyzerSettings.psd1
+          if ($shipping) {
+              Write-Host 'Findings in shipping scripts:'
+              $shipping | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+              $failed = $true
+          }
+
+          $suites = Invoke-ScriptAnalyzer `
+              -Path tests/install_ps1 `
+              -Settings tests/install_ps1/PSScriptAnalyzerSettings.Tests.psd1
+          if ($suites) {
+              Write-Host 'Findings in test suites:'
+              $suites | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+              $failed = $true
+          }
+
+          if ($failed) { exit 1 }
+          Write-Host 'PSScriptAnalyzer: clean'
+
+      # Each suite is listed explicitly, matching the shellcheck job above: a
+      # new suite only runs once it is added here.
+      - name: Execute installer parse-args tests
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/parse_args.ps1
+
+      - name: Execute installer checksum-format tests
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/checksum_format.ps1
+
+      - name: Execute installer resolve-version tests
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/resolve_version.ps1
+
+      - name: Execute installer install-dir tests
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/install_dir.ps1
+
+      - name: Execute installer bootstrap-phase tests
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/bootstrap_phase.ps1
+
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting
