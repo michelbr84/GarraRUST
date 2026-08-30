@@ -26,6 +26,18 @@ fn bad_skin_name(name: &str, err: NameError) -> (StatusCode, Json<serde_json::Va
     )
 }
 
+/// Build a safe absolute path for a skin file and ensure it stays under `dir`.
+fn skin_file_path(dir: &std::path::Path, name: &str) -> std::result::Result<PathBuf, NameError> {
+    let base = dir
+        .canonicalize()
+        .map_err(|_| NameError::ContainsSeparator)?;
+    let candidate = base.join(format!("{name}.json"));
+    if !candidate.starts_with(&base) {
+        return Err(NameError::ContainsSeparator);
+    }
+    Ok(candidate)
+}
+
 /// Resolve the skins directory path.
 fn skins_dir() -> PathBuf {
     std::env::var("GARRAIA_SKINS_DIR")
@@ -99,7 +111,10 @@ pub async fn get_skin(Path(name): Path<String>) -> impl IntoResponse {
         return bad_skin_name(&name, e);
     }
     let dir = skins_dir();
-    let file_path = dir.join(format!("{name}.json"));
+    let file_path = match skin_file_path(&dir, &name) {
+        Ok(path) => path,
+        Err(e) => return bad_skin_name(&name, e),
+    };
 
     if !file_path.is_file() {
         return (
@@ -129,7 +144,10 @@ pub async fn delete_skin(Path(name): Path<String>) -> impl IntoResponse {
         return bad_skin_name(&name, e);
     }
     let dir = skins_dir();
-    let file_path = dir.join(format!("{name}.json"));
+    let file_path = match skin_file_path(&dir, &name) {
+        Ok(path) => path,
+        Err(e) => return bad_skin_name(&name, e),
+    };
 
     if !file_path.is_file() {
         return (
