@@ -5,6 +5,21 @@
 # exclusion is listed with why, and `install.ps1` itself is still held to the
 # stricter PSScriptAnalyzerSettings.psd1 next door.
 @{
+    # The suites run on Windows PowerShell 5.1 as well, so they are held to the
+    # same compatibility bar as the shipping scripts.
+    Rules = @{
+        PSUseCompatibleSyntax = @{
+            Enable         = $true
+            TargetVersions = @('5.1', '7.0')
+        }
+        PSUseCompatibleCommands = @{
+            Enable = $true
+            TargetProfiles = @(
+                'win-8_x64_10.0.17763.0_5.1.17763.316_x64_4.0.30319.42000_framework'
+            )
+        }
+    }
+
     ExcludeRules = @(
         # Same reason as the installer: assertion output is the point.
         'PSAvoidUsingWriteHost',

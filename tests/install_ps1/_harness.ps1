@@ -22,7 +22,13 @@ $script:Failed = 0
 # function would load install.ps1's functions into the function scope, where
 # they evaporate the moment it returns.
 function Get-InstallerPath {
-    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+    # Join-Path aninhado de proposito. Windows PowerShell 5.1 nao tem o parametro
+    # -AdditionalChildPath (chegou no PowerShell 6), entao a forma de tres
+    # argumentos `Join-Path $x '..' '..'` falha ali com "A positional parameter
+    # cannot be found that accepts argument '..'". Nao "simplifique" de volta: a
+    # perna windows-latest do CI roda 5.1 justamente para pegar isto, e ja pegou uma
+    # vez. O guarda em run_lint.ps1 rejeita a forma de tres argumentos.
+    $repoRoot = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
     $installer = Join-Path $repoRoot 'install.ps1'
     if (-not (Test-Path $installer)) {
         throw "install.ps1 not found at $installer"
