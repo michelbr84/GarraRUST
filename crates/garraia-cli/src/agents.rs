@@ -12,11 +12,18 @@
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Pacote npm que provê o binário `agentdeck`.
-const AGENTDECK_NPM_PACKAGE: &str = "agentdeck";
+/// Instalador oficial do AgentDeck (michelbr84/AgentDeck).
+///
+/// **Não** use `npm install -g agentdeck`: o nome `agentdeck` no registro do npm
+/// pertence a um projeto **diferente e sem relação** ("Mobile control for your
+/// coding agents"). Instalá-lo traria um binário alheio com o nome certo — o
+/// tipo de erro que só aparece num teste ponta a ponta, e que instalaria
+/// software de terceiro na máquina do usuário sem ele pedir.
+const AGENTDECK_INSTALL_URL: &str =
+    "https://raw.githubusercontent.com/michelbr84/AgentDeck/main/scripts/install.sh";
 
 /// Subcomandos repassados ao `agentdeck`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,8 +54,9 @@ impl AgentsAction {
 pub trait DeckProbe {
     /// Caminho do binário `agentdeck`, se existir.
     fn find_agentdeck(&self) -> Option<PathBuf>;
-    /// Caminho do `npm`, se existir.
-    fn find_npm(&self) -> Option<PathBuf>;
+    /// `true` quando o binário encontrado é o AgentDeck certo — isto é, quando
+    /// ele conhece o grupo de comandos `agents`.
+    fn supports_agents_command(&self, bin: &Path) -> bool;
 }
 
 pub struct RealProbe;
@@ -58,8 +66,17 @@ impl DeckProbe for RealProbe {
         which_in_path("agentdeck")
     }
 
-    fn find_npm(&self) -> Option<PathBuf> {
-        which_in_path("npm")
+    fn supports_agents_command(&self, bin: &Path) -> bool {
+        // Um binário chamado `agentdeck` na PATH não é prova de nada: existe um
+        // pacote npm homônimo e sem relação. Perguntar pelo comando que nos
+        // interessa é a checagem barata que distingue os dois.
+        Command::new(bin)
+            .args(["agents", "--help"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
@@ -89,14 +106,24 @@ fn print_missing_deck_hint() {
     eprintln!("AgentDeck não encontrado — é ele que provisiona os agentes.");
     eprintln!();
     eprintln!("Instale com:");
-    eprintln!("  npm install -g {AGENTDECK_NPM_PACKAGE}");
-    eprintln!();
-    eprintln!("ou:");
-    eprintln!(
-        "  curl -fsSL https://raw.githubusercontent.com/michelbr84/AgentDeck/main/scripts/install.sh | bash"
-    );
+    eprintln!("  curl -fsSL {AGENTDECK_INSTALL_URL} | bash");
     eprintln!();
     eprintln!("Depois rode `garra agents setup` de novo.");
+    eprintln!();
+    eprintln!("Nota: NÃO use `npm install -g agentdeck` — esse nome no npm é de");
+    eprintln!("outro projeto, sem relação com o AgentDeck que este comando usa.");
+}
+
+/// Mensagem para quando existe um `agentdeck` na PATH que não é o nosso.
+fn print_wrong_deck_hint(bin: &Path) {
+    eprintln!(
+        "O binário `agentdeck` em {} não reconhece o comando `agents`.",
+        bin.display()
+    );
+    eprintln!();
+    eprintln!("Provavelmente é o pacote npm homônimo, que é outro projeto.");
+    eprintln!("Instale o AgentDeck correto e garanta que ele venha antes na PATH:");
+    eprintln!("  curl -fsSL {AGENTDECK_INSTALL_URL} | bash");
 }
 
 /// Decide o que fazer quando o `agentdeck` não foi encontrado.
@@ -133,31 +160,37 @@ pub fn run(
     let interactive = std::io::stdin().is_terminal();
 
     let bin = match probe.find_agentdeck() {
-        Some(p) => p,
+        // Encontrado, mas pode ser o homônimo: confirmar antes de delegar.
+        Some(p) if probe.supports_agents_command(&p) => p,
+        Some(p) => {
+            print_wrong_deck_hint(&p);
+            return Ok(1);
+        }
         None => {
             if !should_offer_install(interactive, assume_yes)? {
                 return Ok(1);
             }
-            let Some(npm) = probe.find_npm() else {
-                eprintln!("error: `npm` não encontrado no PATH — instale o Node.js 20+ primeiro.");
-                print_missing_deck_hint();
-                return Ok(1);
-            };
-            println!("Instalando {AGENTDECK_NPM_PACKAGE} via npm...");
-            let status = Command::new(npm)
-                .args(["install", "-g", AGENTDECK_NPM_PACKAGE])
+            println!("Instalando o AgentDeck a partir do instalador oficial...");
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(format!("curl -fsSL {AGENTDECK_INSTALL_URL} | bash"))
                 .status()
-                .context("falha ao executar npm")?;
+                .context("falha ao executar o instalador do AgentDeck")?;
             if !status.success() {
-                eprintln!("error: `npm install -g {AGENTDECK_NPM_PACKAGE}` falhou.");
+                eprintln!("error: o instalador do AgentDeck falhou.");
                 return Ok(status.code().unwrap_or(1));
             }
-            probe.find_agentdeck().ok_or_else(|| {
+            let found = probe.find_agentdeck().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "npm reportou sucesso mas o binário `agentdeck` não apareceu no PATH; \
-                     confira o prefixo global do npm (`npm config get prefix`)"
+                    "o instalador reportou sucesso mas o binário `agentdeck` não apareceu \
+                     no PATH; abra um terminal novo ou confira o diretório de instalação"
                 )
-            })?
+            })?;
+            if !probe.supports_agents_command(&found) {
+                print_wrong_deck_hint(&found);
+                return Ok(1);
+            }
+            found
         }
     };
 
@@ -176,15 +209,15 @@ mod tests {
 
     struct FakeProbe {
         deck: Option<PathBuf>,
-        npm: Option<PathBuf>,
+        supports_agents: bool,
     }
 
     impl DeckProbe for FakeProbe {
         fn find_agentdeck(&self) -> Option<PathBuf> {
             self.deck.clone()
         }
-        fn find_npm(&self) -> Option<PathBuf> {
-            self.npm.clone()
+        fn supports_agents_command(&self, _bin: &Path) -> bool {
+            self.supports_agents
         }
     }
 
@@ -210,13 +243,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_npm_is_reported_rather_than_panicking() {
+    fn a_homonymous_binary_is_refused_rather_than_driven() {
+        // `agentdeck` on npm is an unrelated project. Finding *a* binary with
+        // that name proves nothing, and delegating to the wrong one would fail
+        // in a confusing way far from the cause.
         let probe = FakeProbe {
-            deck: None,
-            npm: None,
+            deck: Some(PathBuf::from("/usr/bin/agentdeck")),
+            supports_agents: false,
         };
         let code = run(AgentsAction::Status, &[], true, &probe).expect("must not error");
-        assert_eq!(code, 1, "missing npm is a clean exit code, not a panic");
+        assert_eq!(code, 1, "a wrong agentdeck exits cleanly with guidance");
+    }
+
+    #[test]
+    fn the_install_url_points_at_the_right_project() {
+        // Guard against anyone "simplifying" this back to `npm install -g`.
+        assert!(AGENTDECK_INSTALL_URL.contains("michelbr84/AgentDeck"));
+        assert!(!AGENTDECK_INSTALL_URL.contains("registry.npmjs"));
     }
 
     #[test]

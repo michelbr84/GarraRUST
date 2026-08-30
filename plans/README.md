@@ -370,3 +370,4 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0357 | [Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`](0357-ollama-defaults-and-launch.md) | pedido direto | ✅ Entregue 2026-08-29 |
 | 0358 | [rmcp 1.7 → 2.2 (`ContentBlock` e o fim do `Annotated<RawContent>`)](0358-rmcp-220-content-block-migration.md) | Dependabot PR #853 / upstream rust-sdk#927 | 🚧 Em revisão (2026-08-29) |
 | 0359 | [Instalador Windows `install.ps1` + matriz de artefatos multiplataforma](0359-windows-installer-and-release-matrix.md) | pedido direto | ✅ Entregue 2026-08-30 |
+| 0360 | [`garra agents setup`: provisionamento e roteamento multi-agente](0360-garra-agents-setup.md) | pedido direto | ✅ Entregue 2026-08-30 (ADR 0014) |
