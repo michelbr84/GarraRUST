@@ -169,10 +169,14 @@ usuário e encadeia `init` + `start`. Não exige privilégio de administrador.
 > Mesmos canais alternativos do `install.sh`:
 >
 > ```powershell
-> irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 > irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 > irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+> irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 > ```
+>
+> O espelho do release CDN só resolve a partir da `v0.3.4`: o `install.ps1`
+> entrou depois da tag `v0.3.3`. Detalhes em
+> [`docs/installation.md`](docs/installation.md).
 
 **Passando flags.** `irm | iex` avalia o script **sem argumentos** — não existe
 equivalente PowerShell do `sh -s --`. Para passar flags, transforme o texto

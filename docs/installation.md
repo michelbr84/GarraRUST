@@ -51,16 +51,26 @@ verifies it against the release's `SHA256SUMS`, installs it as `garraia.exe`,
 adds it to your **user** PATH, and then chains into `garraia init` and
 `garraia start`. It never needs administrator rights.
 
-Same mirrors as the shell installer, in the same order of robustness:
+Same mirrors as the shell installer:
 
 ```powershell
-# Official mirror - GitHub release CDN (no aggressive per-IP limits):
-irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
-
 # Repository main branch (raw) and community CDN mirror:
 irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
 irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+
+# GitHub release CDN (no aggressive per-IP limits) - see the caveat below:
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
 ```
+
+> **Release-CDN caveat.** `install.ps1` landed after the `v0.3.3` tag, so
+> `releases/latest/download/install.ps1` returns 404 until the next release is
+> cut. `release.yml` already uploads it, so this resolves itself from `v0.3.4`
+> onward. Until then, use `garraia.org`, raw, or jsDelivr on Windows. The
+> shell installer is unaffected -- `install.sh` has shipped as a release asset
+> for several versions.
+>
+> The `Install endpoints` workflow probes every URL on this page daily, so a
+> broken mirror surfaces without anyone having to notice by hand.
 
 **Passing options.** `irm | iex` evaluates the script with no arguments -- there
 is no PowerShell equivalent of `sh -s --`. To pass flags, turn the downloaded
