@@ -12,7 +12,7 @@
 > (`crates/garraia-gateway/src/path_validation.rs`) as a sanitizer. Each
 > entry references the helper guard line, the dismissed-as-FP rationale,
 > and the integration test that pins the rejection — see §4 alerts #67-#82.
-> Last updated: **2026-08-29**.
+> Last updated: **2026-08-30**.
 > Audit re-triage por: **2026-08-01** — ⚠️ **VENCIDO** desde 2026-08-01
 > (entradas com mais de 90 dias devem ser revisitadas; alertas que não existem
 > mais no Security tab devem ser removidos do ledger).
@@ -161,6 +161,49 @@ impediria as de baixo de serem aplicadas.
    recorrer a `query-filters: exclude` global — abrir nova sub-issue para
    decidir entre custom query suite, path-specific approach, ou manual UI
    dismissal mantendo este ledger.
+7. **`alert_number` não é chave estável — reconciliar antes de reaplicar.**
+   Ver "Amendment 2026-08-30" abaixo.
+
+### Amendment 2026-08-30 — renumeração silenciosa e o `--rekey`
+
+Em 2026-08-29 o Security tab voltou a acusar 16 alertas `rust/path-injection`
+que já estavam dispensados desde o PR
+[#111](https://github.com/michelbr84/GarraRUST/pull/111). Não foi regressão de
+código, nem o dismissal ter sido revertido: o dry-run do
+`codeql-reapply-dismissals.sh` no run
+[33261527354](https://github.com/michelbr84/GarraRUST/actions/runs/33261527354)
+reportou `skipped: 23 (already-dismissed)` — as entradas #67–#82 continuavam
+vivas e dispensadas.
+
+O que aconteceu foi **duplicação**. Quando o escopo da análise mudou no mesmo
+dia (`paths-ignore: crates/*/tests/**` mais o
+`CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES` movido para o nível do job),
+os `partialFingerprints` do SARIF mudaram junto, o GitHub deixou de casar os
+achados com os alertas existentes e **criou alertas novos** — #147–#162 — para
+o mesmo código, nas mesmas linhas. Os dismissals ficaram grudados nas
+duplicatas aposentadas.
+
+A lição: `alert_number` é um identificador de apresentação, não uma identidade.
+A identidade estável é `(rule_id, path, line)` — que é, aliás, exatamente o que
+o `codeql-reapply-dismissals.sh` já validava fail-closed antes de reaplicar.
+
+Por isso existe [`scripts/security/codeql-rekey-ledger.py`](../../scripts/security/codeql-rekey-ledger.py):
+ele lista os alertas abertos, casa por `(rule_id, path, line)` e reaponta o
+`alert_number` das entradas, reescrevendo `.json` e `.md` em sincronia para o
+`--check-md` continuar passando. Ele **não** emite `PATCH`, **não** inventa
+entrada para alerta sem justificativa, e **não** apaga entrada — nada nele
+afrouxa a regra 1 (`no bulk suppression`): a justificativa de cada linha já foi
+revisada uma vez e continua valendo, só o ponteiro muda, e o diff vai a review
+em PR como qualquer outro.
+
+Duas chaves iguais casando com dois alertas abertos é `exit 2`: o script não
+adivinha. Entrada sem alerta aberto correspondente **não** é erro — é o estado
+saudável de uma entrada dispensada e quieta —, só entra no resumo para alimentar
+o re-audit de 90 dias da regra 4.
+
+O `codeql-triage.yml` roda esse plano em `--dry-run` a cada execução e publica
+no job summary, então a divergência aparece sozinha na próxima triagem em vez de
+esperar alguém reparar no Security tab.
 
 ## §4. Ledger
 
@@ -188,10 +231,16 @@ impediria as de baixo de serem aplicadas.
 | <a id="alert-80"></a>[#80](https://github.com/michelbr84/GarraRUST/security/code-scanning/80) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:312` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `update_skill` double-guards URL `name` + `body.name` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at lines 300 and 307 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::update_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-81"></a>[#81](https://github.com/michelbr84/GarraRUST/security/code-scanning/81) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:523` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `export_skill` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 519 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::export_skill_rejects_dot_in_name`. | GAR-490 |
 | <a id="alert-82"></a>[#82](https://github.com/michelbr84/GarraRUST/security/code-scanning/82) | `rust/path-injection` | `crates/garraia-gateway/src/skills_handler.rs:579` | dismissed-false-positive | `false_positive` | GAR-490 PR A (PR [#111](https://github.com/michelbr84/GarraRUST/pull/111), squash `613510d`): `set_skill_triggers` guards `Path(name)` via [`validate_skill_name`](../../crates/garraia-gateway/src/path_validation.rs) at line 574 before `skill_path.exists()` check. Charset `[A-Za-z0-9-]{1,128}` ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: `tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name`. | GAR-490 |
+| <a id="alert-111"></a>[#111](https://github.com/michelbr84/GarraRUST/security/code-scanning/111) | `rust/cleartext-logging` | `crates/garraia-cli/src/config_cmd.rs:210` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** `garraia config check` imprime presenca, nunca valor: o campo `summary.gateway_api_key_set` e `bool` e as unicas strings possiveis sao os literais `"set"` / `"not set"`. A secao sai sob o cabecalho literal `"Summary (redacted)"` (config_cmd.rs:203). CodeQL rastreia o identificador chamado `api_key`, nao o booleano que ele carrega. | GAR-491 |
+| <a id="alert-112"></a>[#112](https://github.com/michelbr84/GarraRUST/security/code-scanning/112) | `rust/cleartext-logging` | `crates/garraia-cli/src/config_cmd.rs:233` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Mesma superficie do [#111](#alert-111): imprime `summary.llm_providers_api_key_set.join(", ")`, que e a lista de **nomes de provider** com chave configurada (ex.: `[openai, anthropic]`), nao as chaves. Invariante de redaction documentado em CLAUDE.md (garraia-config, plan 0046). | GAR-491 |
+| <a id="alert-113"></a>[#113](https://github.com/michelbr84/GarraRUST/security/code-scanning/113) | `rust/cleartext-logging` | `crates/garraia-cli/src/wizard/mod.rs:640` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Imprime o erro, nao a passphrase. `CredentialVault::open` devolve `CredentialError`, cujas 5 variantes ([credentials.rs:329-340](../../crates/garraia-security/src/credentials.rs)) sao construidas de `path.display()` e de erros de serde/base64 — nenhuma interpola a passphrase. O branch de senha errada e `WrongPassphrase`, com Display estatico `"wrong passphrase or corrupted vault"`. CodeQL contamina `e` apenas porque `passphrase` e argumento de `open()`. | GAR-491 |
+| <a id="alert-145"></a>[#145](https://github.com/michelbr84/GarraRUST/security/code-scanning/145) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:48` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** O destino e HTTPS: `const GRAPH_API_BASE: &str = "https://graph.facebook.com/v21.0"` ([whatsapp/api.rs:5](../../crates/garraia-channels/src/whatsapp/api.rs)), entao `.bearer_auth(token)` sai sempre sobre TLS. O esquema e constante de compilacao e nenhum caminho de config o altera. CodeQL nao dobra a const dentro do `format!` e trata o esquema como desconhecido. | GAR-491 |
+| <a id="alert-146"></a>[#146](https://github.com/michelbr84/GarraRUST/security/code-scanning/146) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:79` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Identico ao [#145](#alert-145), em `mark_as_read`. Contraste deliberado com os alertas 143/144 do canal Signal: mesmo rule, mas **nao** eram falso-positivo — la a URL base vinha da config do operador e admitia `http://` remoto, e foi corrigida em codigo (guard `vet_signal_cli_url`). | GAR-491 |
 | <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ✅ Número reconferido na `main` em 2026-08-29 (squash `a47d3c3`): o dry-run casou `rule_id`/`path`/`line` sem `exit 2`, então 165 sobreviveu ao squash. Dispensado no mesmo dia — ver §5.2. | PR-869 |
 
-**Total**: 23 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
-1 from PR [#869](https://github.com/michelbr84/GarraRUST/pull/869)).
+**Total**: 28 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
+1 from PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) + 5 from
+Wave 3 cleartext).
 Bulk-dismissal proibido — cada linha foi revisada individualmente, com
 referência ao helper guard, ao handler afetado, e à regressão de teste
 correspondente.
