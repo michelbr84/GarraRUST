@@ -304,11 +304,17 @@ function Resolve-GarraiaVersion {
     }
 
     $version = $null
+    # Each tier is allowed to fail so the next one gets a turn, but the reason
+    # is kept: without it a failure anywhere in here collapses into a generic
+    # "failed to resolve", which is exactly what made a Windows PowerShell 5.1
+    # bug in the third tier undiagnosable from the CI log.
+    $lastError = $null
 
     try {
         $resp = Invoke-GhRequest -Uri "https://github.com/$script:Repo/releases/latest"
         $version = Get-TagFromReleaseUrl (Get-EffectiveUri $resp)
     } catch {
+        $lastError = "redirect: $($_.Exception.Message)"
         $version = $null
     }
 
@@ -317,32 +323,47 @@ function Resolve-GarraiaVersion {
             $resp = Invoke-GhRequest `
                 -Uri "https://api.github.com/repos/$script:Repo/releases/latest" `
                 -Headers @{ 'Accept' = 'application/vnd.github+json' }
-            $version = ($resp.Content | ConvertFrom-Json).tag_name
+            $parsed = ConvertFrom-Json -InputObject $resp.Content
+            if ($parsed) { $version = $parsed.tag_name }
         } catch {
+            $lastError = "releases/latest: $($_.Exception.Message)"
             $version = $null
         }
     }
 
     # Last resort: the newest non-draft release. /releases/latest 404s on a
-    # repository whose only releases are prereleases. PowerShell parses JSON
-    # natively, so the awk pipeline of extract_first_non_draft_tag
-    # (install.sh:267-282) collapses to a Where-Object.
+    # repository whose only releases are prereleases. This replaces the awk
+    # pipeline of extract_first_non_draft_tag (install.sh:267-282).
+    #
+    # Assign then `foreach`, rather than piping into Where-Object and taking
+    # `(...).tag_name`. Two portability traps live in that shorter form:
+    # Windows PowerShell 5.1 and PowerShell 7 do not agree on whether
+    # ConvertFrom-Json unrolls a JSON array onto the pipeline, and member
+    # access on an empty pipeline result throws under Set-StrictMode. `foreach`
+    # iterates an array and a lone object identically on both versions.
     if (-not $version) {
         try {
             $resp = Invoke-GhRequest `
                 -Uri "https://api.github.com/repos/$script:Repo/releases" `
                 -Headers @{ 'Accept' = 'application/vnd.github+json' }
-            $version = ($resp.Content | ConvertFrom-Json |
-                Where-Object { -not $_.draft } |
-                Select-Object -First 1).tag_name
+            $releases = ConvertFrom-Json -InputObject $resp.Content
+            foreach ($release in $releases) {
+                if (-not $release.draft) {
+                    $version = $release.tag_name
+                    break
+                }
+            }
         } catch {
+            $lastError = "releases list: $($_.Exception.Message)"
             $version = $null
         }
     }
 
     if (-not $version) {
         Write-RateLimitHint
-        Write-InstallError "Failed to resolve latest release. Set `$env:GARRAIA_VERSION='vX.Y.Z' to pin."
+        $detail = if ($lastError) { " Last error - $lastError" } else { '' }
+        Write-InstallError ("Failed to resolve latest release. " +
+            "Set `$env:GARRAIA_VERSION='vX.Y.Z' to pin.$detail")
     }
 
     Write-Host "Latest version: $version"
