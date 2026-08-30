@@ -312,10 +312,10 @@
       "alert_number": 144,
       "rule_id": "rust/cleartext-transmission",
       "path": "crates/garraia-channels/src/signal/mod.rs",
-      "line": 279,
+      "line": 228,
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "Falso-positivo: o sink esta DENTRO de `connect()`, depois do guard. `connect()` chama `self.ensure_url_vetted()?` antes de qualquer IO; se a URL for recusada, o `?` propaga e nenhuma linha posterior executa. O `config` e clonado (`let config = self.config.clone()`) ANTES do `tokio::spawn`, e `SignalConfig` nao tem mutabilidade interior — entao a URL que o loop usa e literalmente o mesmo valor imutavel que foi validado. CodeQL nao relaciona o clone com a validacao anterior. Auditado por security-auditor em 2026-08-30. NOTA DE ANCORA: o alerta vivo aponta :272 porque foi emitido contra a main; este mesmo PR desloca o sink para :279 ao remover a `receive_messages` morta e adicionar `ensure_url_vetted`. A linha aqui e a do fonte deste PR, que e o que o check-ledger-anchors.py valida e o que o CodeQL vera na proxima analise.",
+      "justification": "**Triagem 2026-08-30, reancorada neste PR.** O sink (`:228` aqui; o alerta vivo aponta `:279`, emitido contra a main antes de este PR encolher os sends para wrappers) esta **dentro** de `connect()`, depois do guard: `connect()` chama `ensure_url_vetted()?` antes de qualquer IO, e o `?` aborta se a URL for recusada. O `config` e clonado **antes** do `tokio::spawn` e `SignalConfig` nao tem mutabilidade interior, entao a URL do loop e o mesmo valor imutavel ja validado. CodeQL nao liga o clone a validacao anterior. Auditado por `security-auditor`. Este PR reforca a justificativa: o POST de resposta dentro do mesmo spawn passou a chamar `api::send_text`, que roda o guard — antes ele dependia so da ordem de execucao. Contraste com o **#143**, mesma regra e mesmo arquivo, que **nao** entrou neste ledger: era codigo morto (`receive_messages`, `#[allow(dead_code)]`, zero call sites) e foi **removido**, fechando como `Fixed`.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-144",
       "sink_snippet": "r = client.get(&url).timeout(Duration::from_secs(30)).send() => {"
