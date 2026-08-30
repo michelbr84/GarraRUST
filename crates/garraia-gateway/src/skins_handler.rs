@@ -156,14 +156,34 @@ pub async fn delete_skin(Path(name): Path<String>) -> impl IntoResponse {
     let dir = skins_dir();
     let file_path = dir.join(format!("{name}.json"));
 
-    if !file_path.is_file() {
+    let canonical_dir = match tokio::fs::canonicalize(&dir).await {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("failed to resolve skins dir: {e}") })),
+            );
+        }
+    };
+
+    let canonical_file = match tokio::fs::canonicalize(&file_path).await {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "skin not found" })),
+            );
+        }
+    };
+
+    if !canonical_file.starts_with(&canonical_dir) {
         return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "skin not found" })),
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid skin path" })),
         );
     }
 
-    match tokio::fs::remove_file(&file_path).await {
+    match tokio::fs::remove_file(&canonical_file).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
