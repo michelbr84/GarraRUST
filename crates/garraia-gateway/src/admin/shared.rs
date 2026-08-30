@@ -37,7 +37,6 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -87,13 +86,12 @@ struct KdfParams {
 }
 
 impl KdfParams {
-    fn generate(rng: &SystemRandom) -> Result<Self, String> {
-        let mut salt = vec![0u8; KDF_SALT_LEN];
-        rng.fill(&mut salt)
+    fn generate() -> Result<Self, String> {
+        let salt = garraia_security::random_bytes::<KDF_SALT_LEN>()
             .map_err(|_| "failed to generate KDF salt".to_string())?;
         Ok(Self {
             version: KDF_PARAMS_VERSION,
-            salt: BASE64.encode(&salt),
+            salt: BASE64.encode(salt),
             iterations: KDF_ITERATIONS,
         })
     }
@@ -175,21 +173,16 @@ fn admin_passphrase() -> Option<String> {
 /// 3. No passphrase -> the pre-existing random `master.key` file, which was
 ///    never affected by the constant-salt problem.
 fn derive_admin_keys(stored: Option<StoredKdfParams>) -> AdminKeys {
-    let rng = SystemRandom::new();
     match admin_passphrase() {
-        Some(passphrase) => derive_with_passphrase(stored, &passphrase, &rng),
-        None => master_key_file_keys(&rng),
+        Some(passphrase) => derive_with_passphrase(stored, &passphrase),
+        None => master_key_file_keys(),
     }
 }
 
 /// The passphrase-derived half of [`derive_admin_keys`], with the passphrase
 /// passed in rather than read from the environment so it can be driven
 /// deterministically from tests.
-fn derive_with_passphrase(
-    stored: Option<StoredKdfParams>,
-    passphrase: &str,
-    rng: &SystemRandom,
-) -> AdminKeys {
+fn derive_with_passphrase(stored: Option<StoredKdfParams>, passphrase: &str) -> AdminKeys {
     if let Some((_, salt_b64, iterations)) = stored {
         match BASE64
             .decode(&salt_b64)
@@ -216,7 +209,7 @@ fn derive_with_passphrase(
         }
     }
 
-    match KdfParams::generate(rng) {
+    match KdfParams::generate() {
         Ok(params) => match params.salt_bytes() {
             Ok(salt) => {
                 return AdminKeys {
@@ -250,7 +243,7 @@ fn derive_with_passphrase(
 /// No passphrase configured: a random 32-byte key persisted at
 /// `<config_dir>/admin/master.key`. This path never used a salt, so it needs no
 /// migration.
-fn master_key_file_keys(rng: &SystemRandom) -> AdminKeys {
+fn master_key_file_keys() -> AdminKeys {
     let key_path = admin_dir().join("master.key");
 
     if let Ok(data) = std::fs::read(&key_path)
@@ -263,8 +256,12 @@ fn master_key_file_keys(rng: &SystemRandom) -> AdminKeys {
         };
     }
 
-    let mut key = vec![0u8; MASTER_KEY_LEN];
-    rng.fill(&mut key).expect("failed to generate master key");
+    // The `.expect` predates this change: the function returns `AdminKeys`,
+    // not `Result`, so propagating would mean changing the signature and its
+    // callers. Without entropy there is no key to hand back either way.
+    let key = garraia_security::random_bytes::<MASTER_KEY_LEN>()
+        .expect("failed to generate master key")
+        .to_vec();
 
     if let Some(parent) = key_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -404,9 +401,8 @@ mod tests {
 
     #[test]
     fn generated_salts_differ_between_installations() {
-        let rng = SystemRandom::new();
-        let a = KdfParams::generate(&rng).expect("a");
-        let b = KdfParams::generate(&rng).expect("b");
+        let a = KdfParams::generate().expect("a");
+        let b = KdfParams::generate().expect("b");
         assert_ne!(a.salt, b.salt, "two installations must not share a salt");
         assert_eq!(a.salt_bytes().expect("decode").len(), KDF_SALT_LEN);
 
@@ -431,13 +427,12 @@ mod tests {
         // The bug the single-resolution-point design exists to prevent: with no
         // params recorded, each derivation mints a fresh salt. Once they ARE
         // recorded, every later boot must land on the exact same key.
-        let rng = SystemRandom::new();
-        let first = derive_with_passphrase(None, PASS, &rng);
+        let first = derive_with_passphrase(None, PASS);
         assert!(first.migration_pending());
         let recorded = params_of(&first);
 
-        let second = derive_with_passphrase(Some(recorded.clone()), PASS, &rng);
-        let third = derive_with_passphrase(Some(recorded), PASS, &rng);
+        let second = derive_with_passphrase(Some(recorded.clone()), PASS);
+        let third = derive_with_passphrase(Some(recorded), PASS);
         assert_eq!(first.current, second.current);
         assert_eq!(second.current, third.current);
         assert!(!second.migration_pending(), "nothing left to migrate");
@@ -445,14 +440,13 @@ mod tests {
 
     #[test]
     fn unusable_stored_params_fall_back_to_legacy_not_to_a_third_key() {
-        let rng = SystemRandom::new();
         let legacy = pbkdf2_key(LEGACY_KDF_SALT, LEGACY_KDF_ITERATIONS, PASS);
 
         for bad in [
             (1u32, "!!!not base64!!!".to_string(), 600_000u32),
             (1, BASE64.encode([7u8; 32]), 0), // zero iterations
         ] {
-            let keys = derive_with_passphrase(Some(bad), PASS, &rng);
+            let keys = derive_with_passphrase(Some(bad), PASS);
             assert_eq!(
                 keys.current, legacy,
                 "must stay on the key the ciphertexts are under"
@@ -464,7 +458,7 @@ mod tests {
     // ── Forward-only re-key migration ────────────────────────────────────
 
     fn pending_keys(passphrase: &str) -> AdminKeys {
-        derive_with_passphrase(None, passphrase, &SystemRandom::new())
+        derive_with_passphrase(None, passphrase)
     }
 
     #[test]
@@ -500,7 +494,7 @@ mod tests {
         // Params landed in the SAME transaction, so the next boot rederives the
         // very key the ciphertexts are now under.
         let recorded = store.kdf_params().expect("params recorded");
-        let next_boot = derive_with_passphrase(Some(recorded), PASS, &SystemRandom::new());
+        let next_boot = derive_with_passphrase(Some(recorded), PASS);
         assert_eq!(next_boot.current, keys.current);
         assert!(!next_boot.migration_pending());
     }
