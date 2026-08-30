@@ -7,7 +7,7 @@ pub mod config;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -45,6 +45,12 @@ pub struct SignalChannel {
     status: ChannelStatus,
     on_message: SignalOnMessageFn,
     shutdown_tx: Option<watch::Sender<bool>>,
+    /// Set once `vet_signal_cli_url` has accepted `config.signal_cli_url`.
+    ///
+    /// The guard resolves the host (`to_socket_addrs`, a blocking syscall), so
+    /// paying it on every send would be both slow and pointless: `SignalConfig`
+    /// is immutable after construction, so the verdict cannot change.
+    url_vetted: OnceLock<()>,
 }
 
 impl SignalChannel {
@@ -56,7 +62,26 @@ impl SignalChannel {
             status: ChannelStatus::Disconnected,
             on_message,
             shutdown_tx: None,
+            url_vetted: OnceLock::new(),
         }
+    }
+
+    /// Run [`vet_signal_cli_url`] at most once, then remember the verdict.
+    ///
+    /// Every method that puts the phone number or a message body on the wire
+    /// calls this first. Until 2026-08-30 only `connect` did, and the guard's
+    /// own doc comment claimed to cover the sends — `send_text` and
+    /// `send_to_group` are reachable through `Channel::send_message` without
+    /// `connect` ever running, and nothing in the type system orders the two.
+    fn ensure_url_vetted(&self) -> Result<()> {
+        if self.url_vetted.get().is_some() {
+            return Ok(());
+        }
+        vet_signal_cli_url(&self.config.signal_cli_url)?;
+        // A racing caller may vet concurrently; the guard is pure and the
+        // verdict identical, so losing the race is harmless.
+        let _ = self.url_vetted.set(());
+        Ok(())
     }
 
     /// Access the current config.
@@ -66,6 +91,7 @@ impl SignalChannel {
 
     /// Send a text message to a recipient via signal-cli REST API.
     pub async fn send_text(&self, recipient: &str, text: &str) -> Result<()> {
+        self.ensure_url_vetted()?;
         let url = format!(
             "{}/v2/send",
             self.config.signal_cli_url.trim_end_matches('/')
@@ -98,6 +124,7 @@ impl SignalChannel {
 
     /// Send a message to a Signal group.
     pub async fn send_to_group(&self, group_id: &str, text: &str) -> Result<()> {
+        self.ensure_url_vetted()?;
         let url = format!(
             "{}/v2/send",
             self.config.signal_cli_url.trim_end_matches('/')
@@ -128,47 +155,27 @@ impl SignalChannel {
 
         Ok(())
     }
-
-    /// Poll for new messages from the signal-cli REST API.
-    #[allow(dead_code)]
-    async fn receive_messages(&self) -> Result<Vec<serde_json::Value>> {
-        let url = format!(
-            "{}/v1/receive/{}",
-            self.config.signal_cli_url.trim_end_matches('/'),
-            self.config.phone_number
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-            .map_err(|e| Error::Channel(format!("signal receive failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "signal receive error {status}: {body}"
-            )));
-        }
-
-        let messages: Vec<serde_json::Value> = resp
-            .json()
-            .await
-            .map_err(|e| Error::Channel(format!("signal receive parse failed: {e}")))?;
-
-        Ok(messages)
-    }
 }
 
 /// Reject a signal-cli base URL that would put traffic on the wire in the clear.
 ///
-/// Closes CodeQL `rust/cleartext-transmission` (alerts 143/144). Every request
-/// this channel makes carries the account's phone number in the path, and
-/// `send_text` / `send_to_group` carry the message body — so an unencrypted hop
-/// to anything but the local machine exposes both to the network.
+/// Every request this channel makes carries the account's phone number in the
+/// path, and `send_text` / `send_to_group` carry the message body — so an
+/// unencrypted hop to anything but the local machine exposes both to the
+/// network. This guard is what stops that.
+///
+/// It is the *justification* for CodeQL `rust/cleartext-transmission` being
+/// dismissed on the polling loop, not what closes the alert — the ledger entry
+/// does that. Deliberately no alert numbers here: they are renumbered whenever
+/// the analysis scope changes, and `docs/security/codeql-suppressions.md` is
+/// the canonical place to tie an alert to a line.
+///
+/// Reached only through [`SignalChannel::ensure_url_vetted`], which every
+/// request-issuing method calls. That indirection is the fix for a gap this
+/// very comment used to paper over: the sentence above always claimed to cover
+/// the sends, but until 2026-08-30 `connect` was the only caller, and
+/// `Channel::send_message` reaches `send_text` / `send_to_group` without
+/// `connect` ever running.
 ///
 /// `signal_cli_url` is operator config with no default (the
 /// `http://localhost:8080` in the docs and in the tests below is an example,
@@ -245,7 +252,7 @@ impl Channel for SignalChannel {
         // Fail closed before any request goes out. `SignalChannel::new` cannot
         // do this (it returns `Self`), and connect is what the channel manager
         // calls before the first send, so this is the earliest fallible gate.
-        vet_signal_cli_url(&self.config.signal_cli_url)?;
+        self.ensure_url_vetted()?;
 
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -348,8 +355,19 @@ impl Channel for SignalChannel {
                                     "number": reply_config.phone_number,
                                     "recipients": [reply_to],
                                 });
-                                if let Err(e) = reply_client.post(&url).json(&body).send().await {
-                                    error!("signal: failed to send reply: {e}");
+                                // `send()` only errors on transport failure: a
+                                // 4xx/5xx from signal-cli comes back as
+                                // `Ok(Response)`. Checking just the `Err` arm
+                                // dropped rejected replies in silence, while
+                                // `send_text` has always inspected the status.
+                                match reply_client.post(&url).json(&body).send().await {
+                                    Ok(resp) if !resp.status().is_success() => {
+                                        let status = resp.status();
+                                        let detail = resp.text().await.unwrap_or_default();
+                                        error!("signal: reply rejected with {status}: {detail}");
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => error!("signal: failed to send reply: {e}"),
                                 }
                             }
                             Err(e) if e == "__blocked__" => {}
@@ -469,6 +487,61 @@ mod tests {
         assert!(vets("file:///etc/passwd").is_err());
         assert!(vets("ftp://localhost:8080").is_err());
         assert!(vets("not a url").is_err());
+    }
+
+    /// O buraco que este PR fecha: `send_message` chega em `send_text` sem
+    /// `connect` nunca ter rodado, e ate 2026-08-30 so `connect` chamava o
+    /// guard. Um `http://` remoto levava numero e corpo da mensagem em claro.
+    #[tokio::test]
+    async fn send_message_refuses_cleartext_without_connect() {
+        let config = SignalConfig {
+            signal_cli_url: "http://10.0.0.5:8080".into(),
+            phone_number: "+15550001111".into(),
+        };
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_, _, _, _| Box::pin(async { Ok(String::new()) }));
+        let channel = SignalChannel::new(config, on_msg);
+
+        let mut message = Message::text(
+            garraia_common::types::SessionId::from_string("test-session"),
+            garraia_common::types::ChannelId::from_string("test-channel"),
+            garraia_common::types::UserId::from_string("test-user"),
+            garraia_common::MessageDirection::Outgoing,
+            "segredo",
+        );
+        message.metadata = serde_json::json!({ "signal_recipient": "+15550002222" });
+
+        // Nenhum `connect()` antes — era exatamente por aqui que passava.
+        let err = channel
+            .send_message(&message)
+            .await
+            .expect_err("send must fail closed without connect");
+        assert!(
+            err.to_string().contains("non-loopback"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `send_to_group` e `pub`, entao nem depende de `send_message` para ser
+    /// alcancado de fora da crate.
+    #[tokio::test]
+    async fn send_to_group_refuses_cleartext_without_connect() {
+        let config = SignalConfig {
+            signal_cli_url: "http://10.0.0.5:8080".into(),
+            phone_number: "+15550001111".into(),
+        };
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_, _, _, _| Box::pin(async { Ok(String::new()) }));
+        let channel = SignalChannel::new(config, on_msg);
+
+        let err = channel
+            .send_to_group("group-id", "segredo")
+            .await
+            .expect_err("send_to_group must fail closed without connect");
+        assert!(
+            err.to_string().contains("non-loopback"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
