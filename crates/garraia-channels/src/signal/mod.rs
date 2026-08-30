@@ -3,6 +3,7 @@
 //! Provides a `SignalChannel` struct that implements the `Channel` trait,
 //! communicating via the signal-cli REST API daemon.
 
+pub mod api;
 pub mod config;
 
 use std::future::Future;
@@ -47,10 +48,11 @@ pub struct SignalChannel {
     shutdown_tx: Option<watch::Sender<bool>>,
     /// Set once `vet_signal_cli_url` has accepted `config.signal_cli_url`.
     ///
-    /// The guard resolves the host (`to_socket_addrs`, a blocking syscall), so
-    /// paying it on every send would be both slow and pointless: `SignalConfig`
-    /// is immutable after construction, so the verdict cannot change.
-    url_vetted: OnceLock<()>,
+    /// Behind an `Arc` so the polling task in [`Channel::connect`] can clone it
+    /// alongside `client` and `config`: without that, the reply POST inside
+    /// `tokio::spawn` had no way to reach the guard and relied on `connect`
+    /// having run it earlier — ordering, not the type system.
+    url_vetted: Arc<OnceLock<()>>,
 }
 
 impl SignalChannel {
@@ -62,26 +64,19 @@ impl SignalChannel {
             status: ChannelStatus::Disconnected,
             on_message,
             shutdown_tx: None,
-            url_vetted: OnceLock::new(),
+            url_vetted: Arc::new(OnceLock::new()),
         }
     }
 
     /// Run [`vet_signal_cli_url`] at most once, then remember the verdict.
     ///
     /// Every method that puts the phone number or a message body on the wire
-    /// calls this first. Until 2026-08-30 only `connect` did, and the guard's
+    /// goes through this. Until 2026-08-30 only `connect` did, and the guard's
     /// own doc comment claimed to cover the sends — `send_text` and
     /// `send_to_group` are reachable through `Channel::send_message` without
     /// `connect` ever running, and nothing in the type system orders the two.
     fn ensure_url_vetted(&self) -> Result<()> {
-        if self.url_vetted.get().is_some() {
-            return Ok(());
-        }
-        vet_signal_cli_url(&self.config.signal_cli_url)?;
-        // A racing caller may vet concurrently; the guard is pure and the
-        // verdict identical, so losing the race is harmless.
-        let _ = self.url_vetted.set(());
-        Ok(())
+        api::ensure_url_vetted(&self.config, &self.url_vetted)
     }
 
     /// Access the current config.
@@ -91,69 +86,19 @@ impl SignalChannel {
 
     /// Send a text message to a recipient via signal-cli REST API.
     pub async fn send_text(&self, recipient: &str, text: &str) -> Result<()> {
-        self.ensure_url_vetted()?;
-        let url = format!(
-            "{}/v2/send",
-            self.config.signal_cli_url.trim_end_matches('/')
-        );
-
-        let body = serde_json::json!({
-            "message": text,
-            "number": self.config.phone_number,
-            "recipients": [recipient],
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Channel(format!("signal send failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "signal send error {status}: {body}"
-            )));
-        }
-
-        Ok(())
+        api::send_text(
+            &self.client,
+            &self.config,
+            &self.url_vetted,
+            recipient,
+            text,
+        )
+        .await
     }
 
     /// Send a message to a Signal group.
     pub async fn send_to_group(&self, group_id: &str, text: &str) -> Result<()> {
-        self.ensure_url_vetted()?;
-        let url = format!(
-            "{}/v2/send",
-            self.config.signal_cli_url.trim_end_matches('/')
-        );
-
-        let body = serde_json::json!({
-            "message": text,
-            "number": self.config.phone_number,
-            "recipients": [],
-            "group_id": group_id,
-        });
-
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Channel(format!("signal group send failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Error::Channel(format!(
-                "signal group send error {status}: {body}"
-            )));
-        }
-
-        Ok(())
+        api::send_to_group(&self.client, &self.config, &self.url_vetted, group_id, text).await
     }
 }
 
@@ -260,6 +205,10 @@ impl Channel for SignalChannel {
         let client = self.client.clone();
         let config = self.config.clone();
         let on_message = Arc::clone(&self.on_message);
+        // Cloned so the reply task can run the same guard the sends run. It
+        // is already set by the `ensure_url_vetted` above, so this costs a
+        // load, not a DNS lookup.
+        let url_vetted = Arc::clone(&self.url_vetted);
 
         // Spawn a polling loop for incoming messages
         tokio::spawn(async move {
@@ -341,33 +290,25 @@ impl Channel for SignalChannel {
                     let cb = Arc::clone(&on_message);
                     let reply_client = client.clone();
                     let reply_config = config.clone();
+                    let reply_vetted = Arc::clone(&url_vetted);
                     let reply_to = source.clone();
 
                     tokio::spawn(async move {
                         match cb(reply_to.clone(), source_name, text, None).await {
                             Ok(reply) => {
-                                let url = format!(
-                                    "{}/v2/send",
-                                    reply_config.signal_cli_url.trim_end_matches('/')
-                                );
-                                let body = serde_json::json!({
-                                    "message": reply,
-                                    "number": reply_config.phone_number,
-                                    "recipients": [reply_to],
-                                });
-                                // `send()` only errors on transport failure: a
-                                // 4xx/5xx from signal-cli comes back as
-                                // `Ok(Response)`. Checking just the `Err` arm
-                                // dropped rejected replies in silence, while
-                                // `send_text` has always inspected the status.
-                                match reply_client.post(&url).json(&body).send().await {
-                                    Ok(resp) if !resp.status().is_success() => {
-                                        let status = resp.status();
-                                        let detail = resp.text().await.unwrap_or_default();
-                                        error!("signal: reply rejected with {status}: {detail}");
-                                    }
-                                    Ok(_) => {}
-                                    Err(e) => error!("signal: failed to send reply: {e}"),
+                                // Same function the trait's `send_message`
+                                // path calls, guard included. This used to be
+                                // an open-coded POST that skipped the guard.
+                                if let Err(e) = api::send_text(
+                                    &reply_client,
+                                    &reply_config,
+                                    &reply_vetted,
+                                    &reply_to,
+                                    &reply,
+                                )
+                                .await
+                                {
+                                    error!("signal: failed to send reply: {e}");
                                 }
                             }
                             Err(e) if e == "__blocked__" => {}
