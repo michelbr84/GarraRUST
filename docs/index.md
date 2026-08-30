@@ -40,10 +40,22 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 
 ## Getting Started
 
-1. Install GarraIA:
+1. Install GarraIA.
+
+   Linux / macOS:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
+   curl -fsSL https://garraia.org/install.sh | sh
    ```
+
+   Windows (PowerShell 5.1+):
+   ```powershell
+   irm https://garraia.org/install.ps1 | iex
+   ```
+
+   Mirrors, options and troubleshooting live in
+   [`installation.md`](installation.md) -- the canonical install document.
+   Do not use `curl -fsSL` on Windows: PowerShell aliases `curl` to
+   `Invoke-WebRequest`, which rejects those flags.
 
 2. Initialize:
    ```bash

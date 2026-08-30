@@ -11,6 +11,7 @@ mod mcp_server;
 mod migrate;
 mod migrate_workspace;
 mod repo_workflow;
+mod spinner;
 mod team;
 mod update;
 mod verify;

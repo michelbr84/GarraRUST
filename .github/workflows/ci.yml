@@ -115,13 +115,14 @@ jobs:
         run: shellcheck tests/install_sh/fixtures/garraia-stub.sh
 
       - name: Run shellcheck on installer unit tests
-        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh
+        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh tests/install_sh/documented_urls.sh
 
       - name: Syntax-check the bash test runners
         run: |
           bash -n tests/install_sh/bootstrap_phase.sh
           bash -n tests/install_sh/check_glibc.sh
           bash -n tests/install_sh/parse_args.sh
+          bash -n tests/install_sh/documented_urls.sh
 
       - name: Execute installer bootstrap_phase tests
         run: bash tests/install_sh/bootstrap_phase.sh
@@ -143,6 +144,13 @@ jobs:
       # regression there breaks unattended installs.
       - name: Execute installer parse-args tests
         run: bash tests/install_sh/parse_args.sh
+      # Contrato das URLs publicas do instalador. Guarda de regressao do
+      # apagao do `garraia.org/install.ps1`: o site respondia a rota do
+      # PowerShell com o HTML da home em HTTP 200. O conserto do endpoint vive
+      # no repo do site; a URL canonica e a lista de espelhos vivem aqui, e as
+      # duas nao podem divergir.
+      - name: Execute installer documented-URL tests
+        run: bash tests/install_sh/documented_urls.sh
 
   # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
   # entry point, so it gets the same treatment: a blocking lint plus unit tests
@@ -207,6 +215,9 @@ jobs:
 
       - name: Execute installer bootstrap-phase tests
         run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/bootstrap_phase.ps1
+      # Espelha tests/install_sh/documented_urls.sh (CLAUDE.md 16).
+      - name: Execute installer documented-URL tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/documented_urls.ps1
 
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:

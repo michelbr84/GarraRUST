@@ -764,48 +764,133 @@ pub async fn detect_provider(
     )
 }
 
+/// Resultado de um turno, do ponto de vista do REPL.
+///
+/// `Cancelled` existe porque o `Ctrl+C` passou a abortar apenas o turno em
+/// andamento em vez de matar o processo — ver `stream_turn`.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum TurnOutcome<T, E> {
+    Done(std::result::Result<T, E>),
+    TimedOut,
+    Cancelled,
+}
+
 /// Await the streaming LLM call while concurrently draining `rx`, writing
 /// each delta to `out` as it arrives. The runtime pushes deltas through a
 /// bounded channel with `send().await` (runtime.rs), so the receiver MUST be
 /// polled during the call — draining only after completion deadlocks the
 /// producer once the buffer fills (the original `garra chat` hang).
 ///
-/// Returns `None` on timeout. In every path the call future is dropped
-/// before the final drain, which closes the sender side so the drain
-/// terminates once buffered deltas are consumed.
+/// Returns `TurnOutcome::TimedOut` on timeout. In every path the call future
+/// is dropped before the final drain, which closes the sender side so the
+/// drain terminates once buffered deltas are consumed.
+///
+/// # Indicador de atividade
+///
+/// `spinner` anima a janela entre o envio e o primeiro token. Ele é um
+/// **braço a mais do mesmo `select!`** — nunca uma task separada nem um sleep
+/// bloqueante — justamente para não quebrar a drenagem concorrente descrita
+/// acima: `rx` continua sendo consumido enquanto a garra gira. `None`
+/// desativa a animação por completo (stdout redirecionado, `NO_COLOR`, etc.)
+/// e nesse caso nem um byte de spinner chega ao `out`.
+///
+/// `prefix` (o rótulo `garra >`) é escrito exatamente uma vez, imediatamente
+/// antes do primeiro delta — ou na saída, se nenhum delta chegar. Ele não pode
+/// ser impresso antes da chamada como era feito: o spinner ocupa a mesma linha
+/// e o `\r\x1b[2K` da limpeza apagaria o rótulo junto.
+///
+/// `cancel` é acordado pelo vigia de SIGINT de `run_chat` quando o usuário
+/// aperta Ctrl+C durante o turno.
 async fn stream_turn<F, T, E>(
     call: F,
     mut rx: mpsc::Receiver<String>,
     timeout: std::time::Duration,
     out: &mut (impl io::Write + ?Sized),
-) -> Option<std::result::Result<T, E>>
+    mut spinner: Option<crate::spinner::Spinner>,
+    prefix: &str,
+    cancel: &tokio::sync::Notify,
+) -> TurnOutcome<T, E>
 where
     F: Future<Output = std::result::Result<T, E>>,
 {
     let mut call = Box::pin(tokio::time::timeout(timeout, call));
     let mut rx_open = true;
+    let mut prefix_written = false;
+
+    // O primeiro tick de `interval` dispara imediatamente, então a garra
+    // aparece assim que o turno começa, sem esperar um período.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
+        crate::spinner::FRAME_INTERVAL_MS,
+    ));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // `write_delta` centraliza a ordem obrigatória: apagar o spinner, escrever
+    // o prefixo uma única vez, só então o texto do modelo. Sem isso o rótulo
+    // sairia no meio da resposta ou colidiria com um quadro da animação.
+    macro_rules! write_delta {
+        ($delta:expr) => {{
+            if let Some(s) = spinner.as_mut() {
+                s.clear(out);
+            }
+            if !prefix_written {
+                let _ = write!(out, "{prefix}");
+                prefix_written = true;
+            }
+            let _ = write!(out, "{}", $delta);
+            let _ = out.flush();
+        }};
+    }
+
     let result = loop {
         tokio::select! {
-            r = &mut call => break r,
+            r = &mut call => break match r {
+                Ok(inner) => TurnOutcome::Done(inner),
+                Err(_elapsed) => TurnOutcome::TimedOut,
+            },
+            // Cancelamento do turno, sinalizado pelo vigia de SIGINT criado em
+            // `run_chat`. Sem este braço o Ctrl+C matava o processo inteiro no
+            // meio do stream, levando junto o histórico da sessão.
+            //
+            // O sinal NÃO é registrado aqui de propósito: `tokio::signal::ctrl_c`
+            // instala um handler para o resto da vida do processo, e um handler
+            // sem ninguém escutando engoliria o Ctrl+C no prompt `voce >` — o
+            // usuário ficaria sem como sair. Um dono único resolve os dois casos.
+            _ = cancel.notified() => break TurnOutcome::Cancelled,
+            _ = ticker.tick(), if spinner.is_some() => {
+                // Só anima antes do primeiro token: depois disso a linha
+                // pertence à resposta e um quadro colidiria com ela.
+                if !prefix_written
+                    && let Some(s) = spinner.as_mut() {
+                        s.render_frame(out);
+                    }
+            }
             maybe = rx.recv(), if rx_open => match maybe {
-                Some(delta) => {
-                    let _ = write!(out, "{delta}");
-                    let _ = out.flush();
-                }
+                Some(delta) => write_delta!(delta),
                 None => rx_open = false,
             },
         }
     };
+
     // Box::pin so the future (and its sender) can be dropped here even after
     // a timeout — tokio::pin! would keep it alive and hang the drain below.
     drop(call);
     if rx_open {
         while let Some(delta) = rx.recv().await {
-            let _ = write!(out, "{delta}");
-            let _ = out.flush();
+            write_delta!(delta);
         }
     }
-    result.ok()
+
+    // Limpeza incondicional: vale para sucesso, erro do provedor, timeout,
+    // Ctrl+C e cancelamento. `clear` é idempotente, então repetir é barato.
+    if let Some(s) = spinner.as_mut() {
+        s.clear(out);
+    }
+    if !prefix_written {
+        let _ = write!(out, "{prefix}");
+    }
+    let _ = out.flush();
+
+    result
 }
 
 /// Run the interactive chat REPL.
@@ -894,6 +979,45 @@ pub async fn run_chat(
 
     let session_id = format!("cli-{}", uuid::Uuid::new_v4());
     let mut history: Vec<ChatMessage> = Vec::new();
+    // Semente do indicador de atividade: roda a mensagem de abertura a
+    // cada turno, para dois envios seguidos não começarem com a mesma frase.
+    let mut turn_index: usize = 0;
+
+    // Dono único do SIGINT.
+    //
+    // `tokio::signal::ctrl_c()` instala um handler que substitui o
+    // comportamento padrão do processo e permanece instalado até o fim da
+    // execução. Registrá-lo dentro do turno (o lugar óbvio) teria um efeito
+    // colateral silencioso e ruim: a partir do primeiro turno, o Ctrl+C no
+    // prompt `voce >` deixaria de encerrar o `garra` e simplesmente sumiria,
+    // porque o handler continua instalado sem ninguém escutando e o
+    // `read_line` apenas reinicia no EINTR. O usuário ficaria preso.
+    //
+    // Com um dono único os dois casos ficam corretos:
+    //   - durante o turno  -> cancela o turno e devolve o prompt;
+    //   - ocioso no prompt -> encerra a sessão, como sempre encerrou.
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let cancel = std::sync::Arc::clone(&cancel);
+        let turn_active = std::sync::Arc::clone(&turn_active);
+        tokio::spawn(async move {
+            loop {
+                if tokio::signal::ctrl_c().await.is_err() {
+                    // Sem handler de sinal disponível: mantém o padrão do SO.
+                    return;
+                }
+                if turn_active.load(std::sync::atomic::Ordering::SeqCst) {
+                    cancel.notify_waiters();
+                } else {
+                    // 130 = terminado por SIGINT, a convenção do shell.
+                    println!("\n{DIM}Ate mais! 🦀{RESET}");
+                    let _ = io::stdout().flush();
+                    std::process::exit(130);
+                }
+            }
+        });
+    }
     let stdin = io::stdin();
     let mut reader = stdin.lock();
 
@@ -1019,9 +1143,14 @@ pub async fn run_chat(
             _ => {}
         }
 
-        // Stream response
-        print!("{CYAN}{BOLD}garra >{RESET} ");
-        io::stdout().flush()?;
+        // Stream response.
+        //
+        // O rótulo NÃO é impresso aqui: ele vai como `prefix` para o
+        // `stream_turn`, que o escreve junto do primeiro token. O indicador de
+        // atividade ocupa esta linha enquanto o modelo pensa, e limpá-la
+        // apagaria o rótulo se ele já estivesse na tela.
+        let spinner = crate::spinner::detect(turn_index);
+        turn_index = turn_index.wrapping_add(1);
 
         let (tx, rx) = mpsc::channel::<String>(100);
 
@@ -1040,22 +1169,31 @@ pub async fn run_chat(
             Some(&model_clone),
         );
         let mut stdout = io::stdout();
+        turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
         let outcome = stream_turn(
             call,
             rx,
             std::time::Duration::from_secs(timeout_secs),
             &mut stdout,
+            spinner,
+            &format!("{CYAN}{BOLD}garra >{RESET} "),
+            &cancel,
         )
         .await;
+        turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
 
         match outcome {
-            None => {
+            TurnOutcome::TimedOut => {
                 println!(
                     "\n{YELLOW}Tempo esgotado apos {timeout_secs}s. A resposta foi descartada; \
                      tente de novo ou aumente com --timeout-secs.{RESET}"
                 );
             }
-            Some(Ok(full_response)) => {
+            TurnOutcome::Cancelled => {
+                // Ctrl+C aborta o turno, não a sessão: o histórico segue vivo.
+                println!("\n{DIM}Cancelado. Manda outra ou /exit para sair.{RESET}");
+            }
+            TurnOutcome::Done(Ok(full_response)) => {
                 // Deltas were already printed live during streaming
                 println!();
 
@@ -1068,7 +1206,7 @@ pub async fn run_chat(
                     content: MessagePart::Text(full_response),
                 });
             }
-            Some(Err(e)) => {
+            TurnOutcome::Done(Err(e)) => {
                 println!("\n{YELLOW}Erro: {e}{RESET}");
 
                 // Hint for common errors
@@ -1453,15 +1591,25 @@ mod tests {
         };
 
         let mut out: Vec<u8> = Vec::new();
+        // Com o spinner LIGADO de propósito: o braço extra do `select!` não
+        // pode roubar a vez da drenagem e re-introduzir o deadlock original.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            stream_turn(call, rx, std::time::Duration::from_secs(30), &mut out),
+            stream_turn(
+                call,
+                rx,
+                std::time::Duration::from_secs(30),
+                &mut out,
+                test_spinner(),
+                "",
+                &tokio::sync::Notify::new(),
+            ),
         )
         .await
         .expect("stream_turn must not deadlock with >capacity deltas");
 
-        assert_eq!(outcome, Some(Ok("full".to_string())));
-        let printed = String::from_utf8(out).expect("utf8");
+        assert_eq!(outcome, TurnOutcome::Done(Ok("full".to_string())));
+        let printed = strip_spinner(&String::from_utf8(out).expect("utf8"));
         assert!(printed.starts_with("d0 "));
         assert!(printed.ends_with("d299 "));
         assert_eq!(printed.matches(' ').count(), 300);
@@ -1484,13 +1632,344 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            stream_turn(call, rx, std::time::Duration::from_millis(50), &mut out),
+            stream_turn(
+                call,
+                rx,
+                std::time::Duration::from_millis(50),
+                &mut out,
+                None,
+                "",
+                &tokio::sync::Notify::new(),
+            ),
         )
         .await
         .expect("timeout path must not hang");
 
-        assert_eq!(outcome, None);
+        assert_eq!(outcome, TurnOutcome::TimedOut);
         assert_eq!(String::from_utf8(out).expect("utf8"), "partial ");
+    }
+
+    // ---- Ajuda para os testes do indicador de atividade -------------------
+
+    /// Spinner determinístico para teste: estilo ASCII (comparável byte a byte)
+    /// e largura fixa, sem depender do terminal do runner de CI.
+    fn test_spinner() -> Option<crate::spinner::Spinner> {
+        Some(crate::spinner::Spinner::new(
+            crate::spinner::SpinnerStyle::Ascii,
+            80,
+            0,
+        ))
+    }
+
+    /// Remove as sequências ANSI de `raw`, preservando os `\r`.
+    fn strip_ansi(raw: &str) -> String {
+        let mut out = String::new();
+        let mut chars = raw.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Consome o CSI inteiro (ESC '[' ... letra final).
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for t in chars.by_ref() {
+                        if t.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// Devolve só o que o modelo escreveu, descartando as linhas do spinner.
+    ///
+    /// Cada quadro é reescrito a partir de um `\r`, então basta quebrar por
+    /// `\r` e jogar fora os segmentos que começam com um desenho da garra.
+    /// Descartar *segmentos inteiros* (em vez de só o glifo) é o que torna a
+    /// asserção estável: o texto da mensagem — "Afiando as garras..." — sai
+    /// junto, e um tick que ganhe a corrida do `select!` contra o primeiro
+    /// delta não vira teste intermitente.
+    fn strip_spinner(raw: &str) -> String {
+        strip_ansi(raw)
+            .split('\r')
+            .filter(|segment| !ASCII_FRAMES.iter().any(|f| segment.starts_with(f)))
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Os quadros do estilo ASCII, que é o usado por `test_spinner`.
+    const ASCII_FRAMES: [&str; 6] = ["<   >", "</  >", "<// >", "<///>", "< //>", "<  />"];
+
+    /// Qualquer quadro da animação presente no texto cru?
+    fn contains_spinner_frame(raw: &str) -> bool {
+        ASCII_FRAMES.iter().any(|f| raw.contains(f))
+    }
+
+    /// O indicador tem de aparecer ANTES do primeiro token, que é exatamente a
+    /// janela em que o REPL parecia congelado no `garra >`.
+    #[tokio::test]
+    async fn spinner_runs_before_the_first_token() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            // Latência de provedor: vários quadros cabem aqui antes do 1o token.
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            tx.send("resposta".to_string())
+                .await
+                .map_err(|_| "receiver dropped")?;
+            Ok::<String, &'static str>("resposta".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            test_spinner(),
+            "garra > ",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+
+        assert_eq!(outcome, TurnOutcome::Done(Ok("resposta".to_string())));
+        let raw = String::from_utf8(out).expect("utf8");
+        assert!(
+            contains_spinner_frame(&raw),
+            "nenhum quadro desenhado durante a espera: {raw:?}"
+        );
+        let first_frame = raw.find("<").expect("quadro presente");
+        let first_token = raw.find("resposta").expect("token presente");
+        assert!(
+            first_frame < first_token,
+            "o spinner tem de vir antes do primeiro token"
+        );
+    }
+
+    /// A linha do spinner é apagada antes do texto, e nenhum quadro sobrevive
+    /// depois que a resposta começa a sair.
+    #[tokio::test]
+    async fn spinner_is_cleared_before_streamed_output() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tx.send("alpha ".to_string())
+                .await
+                .map_err(|_| "receiver dropped")?;
+            tx.send("beta".to_string())
+                .await
+                .map_err(|_| "receiver dropped")?;
+            Ok::<String, &'static str>("alpha beta".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let _ = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            test_spinner(),
+            "garra > ",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+
+        let raw = String::from_utf8(out).expect("utf8");
+        let clear_at = raw.find("\r\x1b[2K").expect("sequência de limpeza emitida");
+        let token_at = raw.find("alpha").expect("token presente");
+        assert!(clear_at < token_at, "limpa a linha antes de escrever");
+
+        // Depois do primeiro token não pode haver mais nenhum quadro: a linha
+        // agora pertence à resposta e um quadro colidiria com ela.
+        assert!(
+            !contains_spinner_frame(&raw[token_at..]),
+            "quadro desenhado depois do primeiro token: {:?}",
+            &raw[token_at..]
+        );
+
+        // O texto do modelo sai íntegro e o rótulo aparece exatamente uma vez.
+        let cleaned = strip_spinner(&raw);
+        assert!(cleaned.contains("garra > alpha beta"), "saiu: {cleaned:?}");
+        assert_eq!(cleaned.matches("garra >").count(), 1);
+    }
+
+    /// Erro do provedor precisa limpar a animação — nada de spinner órfão.
+    #[tokio::test]
+    async fn spinner_is_cleaned_up_on_provider_error() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            drop(tx);
+            Err::<String, &'static str>("provider exploded")
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            test_spinner(),
+            "garra > ",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+
+        assert_eq!(outcome, TurnOutcome::Done(Err("provider exploded")));
+        let raw = String::from_utf8(out).expect("utf8");
+        assert!(raw.contains("\r\x1b[2K"), "a linha tem de ser apagada");
+        assert!(
+            raw.ends_with("\r\x1b[2Kgarra > "),
+            "limpa a linha e ainda assim emite o rótulo: {raw:?}"
+        );
+        assert!(!raw.contains("\x1b[?25l"), "nunca esconde o cursor");
+    }
+
+    /// Timeout também limpa.
+    #[tokio::test]
+    async fn spinner_is_cleaned_up_on_timeout() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            let _keep = tx;
+            std::future::pending::<()>().await;
+            Ok::<String, &'static str>("unreachable".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(
+                call,
+                rx,
+                std::time::Duration::from_millis(300),
+                &mut out,
+                test_spinner(),
+                "garra > ",
+                &tokio::sync::Notify::new(),
+            ),
+        )
+        .await
+        .expect("timeout path must not hang");
+
+        assert_eq!(outcome, TurnOutcome::TimedOut);
+        let raw = String::from_utf8(out).expect("utf8");
+        assert!(contains_spinner_frame(&raw), "girou durante a espera");
+        assert!(raw.contains("\r\x1b[2K"), "limpou ao estourar o tempo");
+        assert!(!raw.contains("\x1b[?25l"), "nunca esconde o cursor");
+    }
+
+    /// Ctrl+C durante a espera: cancela o turno, limpa a animação e devolve o
+    /// prompt — sem matar o processo e sem deixar o cursor escondido.
+    #[tokio::test]
+    async fn cancellation_stops_and_cleans_up_the_spinner() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            let _keep = tx;
+            // Provedor que nunca responde: só o cancelamento tira a gente daqui.
+            std::future::pending::<()>().await;
+            Ok::<String, &'static str>("unreachable".to_string())
+        };
+
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        let signal = std::sync::Arc::clone(&cancel);
+        tokio::spawn(async move {
+            // Tempo para alguns quadros aparecerem antes do "Ctrl+C".
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            signal.notify_waiters();
+        });
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(
+                call,
+                rx,
+                std::time::Duration::from_secs(30),
+                &mut out,
+                test_spinner(),
+                "garra > ",
+                &cancel,
+            ),
+        )
+        .await
+        .expect("cancelamento não pode travar");
+
+        assert_eq!(outcome, TurnOutcome::Cancelled);
+        let raw = String::from_utf8(out).expect("utf8");
+        assert!(contains_spinner_frame(&raw), "girou antes de cancelar");
+        assert!(raw.contains("\r\x1b[2K"), "limpou a linha ao cancelar");
+        assert!(!raw.contains("\x1b[?25l"), "nunca esconde o cursor");
+        assert!(raw.ends_with("\r\x1b[2Kgarra > "), "termina limpo: {raw:?}");
+    }
+
+    /// Superfície não-TTY (stdout redirecionado / pipe): `detect` devolve
+    /// `None` e a saída tem de ser byte a byte igual à de antes do spinner.
+    #[tokio::test]
+    async fn non_tty_output_contains_no_animation_frames() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let call = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            tx.send("resposta limpa".to_string())
+                .await
+                .map_err(|_| "receiver dropped")?;
+            Ok::<String, &'static str>("resposta limpa".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let _ = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            None, // exatamente o que `spinner::detect` devolve num pipe
+            "garra > ",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+
+        let raw = String::from_utf8(out).expect("utf8");
+        assert_eq!(raw, "garra > resposta limpa");
+        assert!(!contains_spinner_frame(&raw));
+        assert!(
+            !raw.contains('\r'),
+            "sem carriage return em saída redirecionada"
+        );
+        assert!(
+            !raw.contains('\x1b'),
+            "sem escape ANSI em saída redirecionada"
+        );
+    }
+
+    /// O rótulo sai uma única vez mesmo com muitos deltas — regressão contra
+    /// duplicação de linha quando o provedor entrega token a token.
+    #[tokio::test]
+    async fn prefix_is_written_exactly_once_across_many_deltas() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(4);
+        let call = async move {
+            for i in 0..50 {
+                tx.send(format!("t{i}"))
+                    .await
+                    .map_err(|_| "receiver dropped")?;
+            }
+            Ok::<String, &'static str>("done".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let _ = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            test_spinner(),
+            "garra > ",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+
+        let cleaned = strip_spinner(&String::from_utf8(out).expect("utf8"));
+        assert_eq!(cleaned.matches("garra >").count(), 1);
+        assert!(cleaned.contains("garra > t0t1t2"));
     }
 
     /// Errors from the call are passed through untouched.
@@ -1503,8 +1982,17 @@ mod tests {
         };
 
         let mut out: Vec<u8> = Vec::new();
-        let outcome = stream_turn(call, rx, std::time::Duration::from_secs(5), &mut out).await;
-        assert_eq!(outcome, Some(Err("provider exploded")));
+        let outcome = stream_turn(
+            call,
+            rx,
+            std::time::Duration::from_secs(5),
+            &mut out,
+            None,
+            "",
+            &tokio::sync::Notify::new(),
+        )
+        .await;
+        assert_eq!(outcome, TurnOutcome::Done(Err("provider exploded")));
         assert!(out.is_empty());
     }
 }
