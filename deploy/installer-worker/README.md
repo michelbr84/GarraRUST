@@ -1,5 +1,15 @@
 # garraia-installer — Worker do `get.garraia.cloud`
 
+> **DESCONTINUADO (2026-08-18).** O domínio `get.garraia.cloud` nunca entrou no
+> ar e a issue #827 foi fechada como *not planned* — o 429 do
+> `raw.githubusercontent.com` acabou mitigado pelo espelho do release CDN. Este
+> Worker está aqui como registro: a rota do `wrangler.toml` segue comentada e
+> nada neste diretório é implantado. **Não** é o que serve
+> `garraia.org/install.sh`; isso é uma regra de redirect no repositório do
+> site. O canal primário e os espelhos oficiais estão em
+> [`docs/installation.md`](../../docs/installation.md).
+
+
 Cloudflare Worker que serve o `install.sh` do branch `main` com cache no
 edge, eliminando o HTTP 429 por IP do `raw.githubusercontent.com` no
 bootstrap (issue #827; contexto completo no PR #826 §"O que este PR NÃO

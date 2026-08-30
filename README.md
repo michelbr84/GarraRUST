@@ -157,9 +157,11 @@ platform, resolves the latest release, verifies the download against
 puts it on your user PATH, then chains into init and start. No administrator
 rights needed.
 
-Mirrors (same script, auto-synced): the GitHub release CDN
-`https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1`,
-`raw.githubusercontent.com`, and jsDelivr.
+Mirrors (same script, auto-synced): `raw.githubusercontent.com`, jsDelivr, and
+the GitHub release CDN
+`https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1`
+— the release CDN mirror only resolves from `v0.3.4` onward, since `install.ps1`
+landed after the `v0.3.3` tag. See [`docs/installation.md`](docs/installation.md).
 
 `irm | iex` cannot receive arguments — there is no PowerShell equivalent of
 `sh -s --`. To pass flags, invoke the downloaded text as a scriptblock:
