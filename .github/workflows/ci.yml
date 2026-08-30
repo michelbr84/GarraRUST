@@ -46,6 +46,53 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check --all
 
+  # Guarda de integridade do ledger de supressoes do CodeQL.
+  #
+  # O ledger em docs/security/codeql-suppressions.json e chaveado por
+  # (rule_id, path, line), e `line` apodrece em silencio: qualquer commit que
+  # insira linhas acima de um sink desloca a ancora e a entrada passa a
+  # descrever outro statement. Quando isso acontece, o
+  # codeql-reapply-dismissals.sh falha fechado (exit 2) e ABORTA O LOOP —
+  # deixando os alertas restantes abertos e o ledger inutilizavel ate alguem
+  # reauditar a mao.
+  #
+  # Ate aqui nada na trilha de PR percebia isso: `--check-md` e o
+  # codeql-rekey-ledger.py so rodam dentro de codeql-triage.yml e
+  # codeql-apply-dismissals.yml, ambos `workflow_dispatch` apenas. Foi esse
+  # ponto cego que deixou o alerta #113 apontar para o statement errado por
+  # tres meses, e que teria deixado passar o PR #882 (Copilot Autofix), que
+  # inseriu 18 linhas em skins_handler.rs e deslocou as cinco ancoras
+  # 84/104/111/134/141 registradas por quatro entradas do ledger.
+  #
+  # Os tres passos sao OFFLINE de proposito — sem rede, sem GITHUB_TOKEN, sem
+  # escopo `security_events`. E o que permite rodar na trilha de PR, inclusive
+  # em PR de fork. `--check-md` pula explicitamente a precondicao `need gh`
+  # (so exige jq, ja presente no runner) e o checker/os testes usam apenas a
+  # stdlib do Python, sem `pip install` — supply-chain em zero, mesmo criterio
+  # do `rm -rf` inline usado em security-gate-bola.yml.
+  ledger-anchors:
+    name: CodeQL Ledger Anchors
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Conjunto de numeros de alerta identico entre .md e .json.
+      - name: Ledger .md e .json em sincronia
+        run: bash scripts/security/codeql-reapply-dismissals.sh --check-md
+
+      # Cada entrada ainda aponta para o statement que a justificativa descreve,
+      # e a coluna File:line do .md casa com o .json (o --check-md acima so
+      # compara os numeros, nao as ancoras).
+      - name: Ancoras do ledger ainda apontam para seus statements
+        run: python3 scripts/security/check-ledger-anchors.py
+
+      - name: Testes do checker de ancoras
+        run: python3 scripts/security/tests/test_ledger_anchors.py
+
   # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
   # `install.sh` is the public `curl | sh` entry point and has been
   # historically linted by hand; promoting that to a blocking CI step
