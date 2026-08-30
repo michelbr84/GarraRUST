@@ -47,12 +47,13 @@ func (g *Garraia) String() string { return "GarraIA" }
 
 // Supported reports why the integration cannot run on this platform.
 //
-// GarraIA publishes a POSIX `install.sh` for Linux and macOS only; its
-// Windows artifact is a GitHub release binary with no scripted installer,
-// so launch has no unattended install path there yet.
+// GarraIA publishes a POSIX `install.sh` for Linux and macOS and a PowerShell
+// `install.ps1` for Windows. This launcher shells out to `sh`, so it can only
+// drive the POSIX one; the Windows path is a documented one-liner the user
+// runs themselves, not an unattended install we can perform here.
 func (g *Garraia) Supported() error {
 	if garraiaGOOS == "windows" {
-		return fmt.Errorf("GarraIA does not publish a Windows install script yet\n\nDownload the binary from https://github.com/michelbr84/GarraRUST/releases and run:\n  garraia config set-model --model <model>\n  garraia chat")
+		return fmt.Errorf("this launcher cannot install GarraIA on Windows (it shells out to sh)\n\nInstall it in PowerShell 5.1+ with:\n  irm https://garraia.org/install.ps1 | iex\n\nThen run:\n  garraia config set-model --model <model>\n  garraia chat")
 	}
 	return nil
 }

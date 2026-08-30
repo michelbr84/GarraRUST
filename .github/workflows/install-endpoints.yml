@@ -1,0 +1,112 @@
+# Sonda dos endpoints públicos de instalação.
+#
+# Por que existe: em 2026-08 o `irm https://garraia.org/install.ps1 | iex`
+# devolvia o HTML da home com HTTP 200 — não um 404 — porque o site tinha
+# regra de redirect para `/install.sh` e nenhuma para `/install.ps1`, então a
+# rota caía no fallback SPA. O `irm` baixava a home e o `iex` tentava
+# executá-la. Nenhum teste do repositório podia pegar isso: o site é
+# publicado fora daqui.
+#
+# Por que NÃO é gate de PR: estas asserções falam do estado *implantado*, que
+# um PR não tem como consertar. Um deploy ruim do site travaria todo PR do
+# core. Roda no schedule e sob demanda; a falha vira notificação, não bloqueio.
+name: Install endpoints
+
+on:
+  schedule:
+    # 06:00 UTC diariamente — cedo o suficiente para o mantenedor ver antes
+    # de o dia começar na Flórida.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe public installer URLs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Probe every documented installer URL
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          failures=0
+
+          # Assinatura de cada script. `install.sh` começa com o shebang;
+          # `install.ps1` começa com o bloco de ajuda comment-based `<#`.
+          probe() {
+            label="$1"
+            url="$2"
+            expected="$3"
+
+            echo "::group::${label}"
+            echo "URL: ${url}"
+
+            body="$(curl -fsSL --retry 3 --retry-delay 2 --max-time 60 "${url}" 2>/dev/null)"
+            status=$?
+
+            if [ "${status}" -ne 0 ]; then
+              echo "::error ::${label}: curl falhou (exit ${status}) em ${url}"
+              failures=$((failures + 1))
+              echo "::endgroup::"
+              return
+            fi
+
+            # O modo de falha real: HTTP 200 com HTML no corpo.
+            case "${body}" in
+              *"<!DOCTYPE"*|*"<!doctype"*|*"<html"*)
+                echo "::error ::${label}: recebeu HTML em vez do script — o \
+            fallback SPA do site está engolindo a rota ${url}"
+                failures=$((failures + 1))
+                echo "${body}" | head -5
+                echo "::endgroup::"
+                return
+                ;;
+            esac
+
+            case "${body}" in
+              "${expected}"*)
+                echo "OK — começa com a assinatura esperada (${expected})"
+                ;;
+              *)
+                echo "::error ::${label}: corpo não começa com ${expected}"
+                failures=$((failures + 1))
+                echo "${body}" | head -5
+                ;;
+            esac
+            echo "::endgroup::"
+          }
+
+          # --- canal primário: o que a documentação e o site mandam usar -----
+          probe "garraia.org/install.sh"  "https://garraia.org/install.sh"  "#!/bin/sh"
+          probe "garraia.org/install.ps1" "https://garraia.org/install.ps1" "<#"
+
+          # --- espelhos oficiais ---------------------------------------------
+          probe "raw/install.sh" \
+            "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh" "#!/bin/sh"
+          probe "raw/install.ps1" \
+            "https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1" "<#"
+          probe "jsdelivr/install.sh" \
+            "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh" "#!/bin/sh"
+          probe "jsdelivr/install.ps1" \
+            "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1" "<#"
+          probe "release-cdn/install.sh" \
+            "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh" "#!/bin/sh"
+          # NOTA: o espelho do release CDN só resolve a partir da primeira
+          # release que carrega o install.ps1 (>= v0.3.4). A v0.3.3 é anterior
+          # ao instalador Windows, então este probe falha até a próxima tag —
+          # é exatamente o sinal que queremos ver.
+          probe "release-cdn/install.ps1" \
+            "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1" "<#"
+
+          if [ "${failures}" -ne 0 ]; then
+            echo "::error ::${failures} endpoint(s) de instalação quebrados"
+            exit 1
+          fi
+          echo "Todos os endpoints de instalação servem o script correto."
