@@ -163,6 +163,70 @@ impl SignalChannel {
     }
 }
 
+/// Reject a signal-cli base URL that would put traffic on the wire in the clear.
+///
+/// Closes CodeQL `rust/cleartext-transmission` (alerts 143/144). Every request
+/// this channel makes carries the account's phone number in the path, and
+/// `send_text` / `send_to_group` carry the message body — so an unencrypted hop
+/// to anything but the local machine exposes both to the network.
+///
+/// `signal_cli_url` is operator config with no default (the
+/// `http://localhost:8080` in the docs and in the tests below is an example,
+/// not a fallback), so nothing stops it pointing at a remote box over `http`.
+/// The rule: `https` anywhere, `http` only to loopback.
+///
+/// The host is resolved rather than string-matched — `localhost` is not the only
+/// spelling of loopback, and a name like `signal.internal` can resolve off-box.
+/// Every resolved address must be loopback; one public answer rejects the URL.
+fn vet_signal_cli_url(raw: &str) -> Result<()> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| Error::Config(format!("signal_cli_url is not a valid URL: {e}")))?;
+
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = url
+                .host_str()
+                .ok_or_else(|| Error::Config("signal_cli_url has no host".into()))?;
+            let port = url.port_or_known_default().unwrap_or(80);
+
+            // `host_str` keeps the brackets on an IPv6 literal (`[::1]`), which
+            // ToSocketAddrs cannot parse — strip them. Domains are unaffected.
+            let bare = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host);
+
+            // A bare IP literal needs no DNS; ToSocketAddrs handles both forms.
+            let addrs: Vec<std::net::SocketAddr> =
+                std::net::ToSocketAddrs::to_socket_addrs(&(bare, port))
+                    .map_err(|e| {
+                        Error::Config(format!("signal_cli_url host {host:?} did not resolve: {e}"))
+                    })?
+                    .collect();
+
+            if addrs.is_empty() {
+                return Err(Error::Config(format!(
+                    "signal_cli_url host {host:?} resolved to no addresses"
+                )));
+            }
+            if addrs.iter().all(|a| a.ip().is_loopback()) {
+                Ok(())
+            } else {
+                Err(Error::Config(format!(
+                    "signal_cli_url uses http:// with non-loopback host {host:?}; \
+                     the phone number and message bodies would cross the network \
+                     unencrypted. Use https://, or run signal-cli on localhost."
+                )))
+            }
+        }
+        other => Err(Error::Config(format!(
+            "signal_cli_url scheme {other:?} is not supported; use https:// \
+             (or http:// to loopback)"
+        ))),
+    }
+}
+
 #[async_trait]
 impl Channel for SignalChannel {
     fn channel_type(&self) -> &str {
@@ -177,6 +241,11 @@ impl Channel for SignalChannel {
         if matches!(self.status, ChannelStatus::Connected) {
             return Ok(());
         }
+
+        // Fail closed before any request goes out. `SignalChannel::new` cannot
+        // do this (it returns `Self`), and connect is what the channel manager
+        // calls before the first send, so this is the earliest fallible gate.
+        vet_signal_cli_url(&self.config.signal_cli_url)?;
 
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
@@ -364,6 +433,61 @@ mod tests {
         assert_eq!(channel.channel_type(), "signal");
         assert_eq!(channel.display_name(), "Signal");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    fn vets(url: &str) -> Result<()> {
+        super::vet_signal_cli_url(url)
+    }
+
+    #[test]
+    fn https_is_always_accepted() {
+        assert!(vets("https://signal.example.com:8080").is_ok());
+        assert!(vets("https://10.0.0.5").is_ok());
+    }
+
+    #[test]
+    fn http_to_loopback_is_accepted() {
+        assert!(vets("http://localhost:8080").is_ok());
+        assert!(vets("http://127.0.0.1:8080").is_ok());
+        assert!(vets("http://[::1]:8080").is_ok());
+    }
+
+    #[test]
+    fn http_to_remote_host_is_rejected() {
+        // The whole point of the guard: phone number and message bodies would
+        // otherwise cross the network in the clear.
+        let err = vets("http://10.0.0.5:8080").expect_err("must reject");
+        assert!(
+            err.to_string().contains("non-loopback"),
+            "unexpected error: {err}"
+        );
+        assert!(vets("http://93.184.216.34:8080").is_err());
+    }
+
+    #[test]
+    fn non_http_schemes_are_rejected() {
+        assert!(vets("file:///etc/passwd").is_err());
+        assert!(vets("ftp://localhost:8080").is_err());
+        assert!(vets("not a url").is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_cleartext_to_remote_host() {
+        let config = SignalConfig {
+            signal_cli_url: "http://10.0.0.5:8080".into(),
+            phone_number: "+15550001111".into(),
+        };
+        let on_msg: SignalOnMessageFn =
+            Arc::new(|_, _, _, _| Box::pin(async { Ok(String::new()) }));
+        let mut channel = SignalChannel::new(config, on_msg);
+        let err = channel
+            .connect()
+            .await
+            .expect_err("connect must fail closed");
+        assert!(
+            err.to_string().contains("non-loopback"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
