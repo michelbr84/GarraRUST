@@ -47,7 +47,7 @@
 >   `return` imediato no erro — verificado função a função, não por amostragem.
 > - **#111 / #112** (`config_cmd.rs`) imprimem `"set"`/`"not set"` e uma lista
 >   de *nomes* de provider (`.map(|(name, _)| name.clone())` em
->   `check.rs:202`), nunca a chave.
+>   `check.rs:212`), nunca a chave.
 > - **#113** (`wizard/mod.rs:673`): o `key` vai só para `vault.set(entry, key)`;
 >   o `println!` interpola apenas `entry`. A correção de 2026-08-30 procede.
 > - **#115** (`session_store.rs:1326`): o único valor ligado à query é
