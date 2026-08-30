@@ -234,16 +234,52 @@ esperar alguém reparar no Security tab.
 | <a id="alert-111"></a>[#111](https://github.com/michelbr84/GarraRUST/security/code-scanning/111) | `rust/cleartext-logging` | `crates/garraia-cli/src/config_cmd.rs:210` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** `garraia config check` imprime presenca, nunca valor: o campo `summary.gateway_api_key_set` e `bool` e as unicas strings possiveis sao os literais `"set"` / `"not set"`. A secao sai sob o cabecalho literal `"Summary (redacted)"` (config_cmd.rs:203). CodeQL rastreia o identificador chamado `api_key`, nao o booleano que ele carrega. | GAR-491 |
 | <a id="alert-112"></a>[#112](https://github.com/michelbr84/GarraRUST/security/code-scanning/112) | `rust/cleartext-logging` | `crates/garraia-cli/src/config_cmd.rs:233` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Mesma superficie do [#111](#alert-111): imprime `summary.llm_providers_api_key_set.join(", ")`, que e a lista de **nomes de provider** com chave configurada (ex.: `[openai, anthropic]`), nao as chaves. Invariante de redaction documentado em CLAUDE.md (garraia-config, plan 0046). | GAR-491 |
 | <a id="alert-113"></a>[#113](https://github.com/michelbr84/GarraRUST/security/code-scanning/113) | `rust/cleartext-logging` | `crates/garraia-cli/src/wizard/mod.rs:673` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** `println!("  Cloud provider API key encrypted in vault (entry {entry}).")` imprime o **nome** da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` ([wizard/mod.rs:630](../../crates/garraia-cli/src/wizard/mod.rs)); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. **Re-audit 2026-08-30:** esta entrada apontava para `:640` e descrevia outro statement — o `eprintln!` do `vault open failed`, hoje em `:643`. O alerta vivo sempre esteve no `println!` de `:673`, que e o que [§5.3](#53--os-16-path-injection-foram-renumerados-nao-reabertos-2026-08-29) ja dizia; era o `.json` que estava errado. Ver a nota de re-audit apos esta tabela. | GAR-491 |
+| <a id="alert-115"></a>[#115](https://github.com/michelbr84/GarraRUST/security/code-scanning/115) | `rust/cleartext-storage-database` | `crates/garraia-db/src/session_store.rs:1326` | dismissed-false-positive | `false_positive` | **Triagem 2026-08-30.** O que chega ao banco e um hash, nunca o token: `validate_session_token` liga `params![hash_session_token(token)]`, e `hash_session_token` ([session_store.rs:1261](../../crates/garraia-db/src/session_store.rs)) e SHA-256 hex de mao unica. O lado da escrita declara o invariante em `session_store.rs:1283` — *"Only the hash is persisted; the raw token goes to the caller and is never written to disk"* — e ha migracao que reescreve tokens legados em claro, detectados por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (`session_store.rs:344`). CodeQL trata `token: &str` como credencial fluindo para uma query, sem modelar o hash como transformacao irreversivel. | GAR-491 |
+| <a id="alert-144"></a>[#144](https://github.com/michelbr84/GarraRUST/security/code-scanning/144) | `rust/cleartext-transmission` | `crates/garraia-channels/src/signal/mod.rs:279` | dismissed-false-positive | `false_positive` | **Triagem 2026-08-30.** O sink (`:279` neste PR, `:272` no alerta vivo, que foi emitido contra a main antes de este PR deslocar o arquivo) esta **dentro** de `connect()`, depois do guard: `connect()` chama `ensure_url_vetted()?` antes de qualquer IO, e o `?` aborta se a URL for recusada. O `config` e clonado **antes** do `tokio::spawn` e `SignalConfig` nao tem mutabilidade interior, entao a URL do loop e o mesmo valor imutavel ja validado. CodeQL nao liga o clone a validacao anterior. Auditado por `security-auditor`. Contraste com o **#143**, mesma regra e mesmo arquivo, que **nao** entrou neste ledger: era codigo morto (`receive_messages`, `#[allow(dead_code)]`, zero call sites) e foi **removido**, fechando como `Fixed`. | GAR-491 |
 | <a id="alert-145"></a>[#145](https://github.com/michelbr84/GarraRUST/security/code-scanning/145) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:48` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** O destino e HTTPS: `const GRAPH_API_BASE: &str = "https://graph.facebook.com/v21.0"` ([whatsapp/api.rs:5](../../crates/garraia-channels/src/whatsapp/api.rs)), entao `.bearer_auth(token)` sai sempre sobre TLS. O esquema e constante de compilacao e nenhum caminho de config o altera. CodeQL nao dobra a const dentro do `format!` e trata o esquema como desconhecido. | GAR-491 |
 | <a id="alert-146"></a>[#146](https://github.com/michelbr84/GarraRUST/security/code-scanning/146) | `rust/cleartext-transmission` | `crates/garraia-channels/src/whatsapp/api.rs:79` | dismissed-false-positive | `false_positive` | **Wave 3 — cleartext.** Identico ao [#145](#alert-145), em `mark_as_read`. Contraste deliberado com os alertas 143/144 do canal Signal: mesmo rule, mas **nao** eram falso-positivo — la a URL base vinha da config do operador e admitia `http://` remoto, e foi corrigida em codigo (guard `vet_signal_cli_url`). | GAR-491 |
 | <a id="alert-165"></a>[#165](https://github.com/michelbr84/GarraRUST/security/code-scanning/165) | `rust/hard-coded-cryptographic-value` | `crates/garraia-gateway/src/admin/shared.rs:68` | dismissed-wont-fix | `wont_fix` | `LEGACY_KDF_SALT`. **Não é falso-positivo nem fixture** — o CodeQL está certo, é um salt PBKDF2 constante. Permanece deliberadamente porque a migração forward-only do PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) precisa dele para decifrar **uma última vez** os segredos de instalações anteriores a 2026-08-29, antes de re-cifrá-los sob a chave derivada do salt aleatório por instalação. Nenhuma chave nova é derivada dele: `derive_with_passphrase` só o usa no arm de migração pendente e no fallback de parâmetros ilegíveis. Os parâmetros novos vivem na tabela `kdf_params` do `admin.db`, gravados na mesma transação que re-cifra os segredos. Só sai quando não houver mais instalações por migrar. ✅ Número reconferido na `main` em 2026-08-29 (squash `a47d3c3`): o dry-run casou `rule_id`/`path`/`line` sem `exit 2`, então 165 sobreviveu ao squash. Dispensado no mesmo dia — ver §5.2. | PR-869 |
 
-**Total**: 28 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
+**Total**: 30 entries (6 from GAR-491 Wave 2 + 16 from GAR-490 Wave 1 PR A +
 1 from PR [#869](https://github.com/michelbr84/GarraRUST/pull/869) + 5 from
-Wave 3 cleartext).
+Wave 3 cleartext + 2 da triagem de 2026-08-30, #115 e #144).
 Bulk-dismissal proibido — cada linha foi revisada individualmente, com
 referência ao helper guard, ao handler afetado, e à regressão de teste
 correspondente.
+
+### Triagem 2026-08-30 — os 3 alertas que sobraram sem entrada
+
+Depois da renumeração e do `apply` dos 21 dismissals, o `--dry-run` do
+`codeql-rekey-ledger.py` deixou exatamente 3 alertas abertos sem entrada:
+**#115**, **#143** e **#144**. Os três foram auditados, e o desfecho **não** foi
+o mesmo para os três — que é o ponto de auditar um a um.
+
+**#143 saiu por remoção de código, não por supressão.** O sink era
+`receive_messages()` em `signal/mod.rs`, marcada `#[allow(dead_code)]`, com zero
+call sites em todo o workspace, duplicando a construção de URL e o GET que o loop
+dentro de `connect()` já faz. Ela também era uma armadilha: não passava pelo
+guard, ao contrário do loop. Foi **removida**, e o alerta fecha como `Fixed`.
+Nenhuma entrada foi criada — o ledger é último recurso (§3), e código morto não
+precisa de justificativa, precisa de `git rm`.
+
+**#144 e #115 são falso-positivo de verdade** e entraram na tabela acima, cada um
+com a evidência de linha.
+
+**O que a auditoria destapou de brinde.** O doc comment do próprio
+`vet_signal_cli_url` afirmava cobrir *"every request this channel makes"*,
+nomeando `send_text` / `send_to_group` porque carregam o corpo da mensagem. Mas o
+guard tinha **um único call site**: `connect()`. E `Channel::send_message` alcança
+os dois sends sem `connect()` jamais rodar — nada no tipo nem em runtime ordena os
+dois. Era vazamento real de número de telefone e corpo de mensagem sobre `http://`
+remoto, e o CodeQL **não** flagou (só apontou `:143` e `:272`). Corrigido no mesmo
+PR: os sends passam por `ensure_url_vetted`, que memoiza o veredito num
+`OnceLock` — o guard resolve DNS com syscall bloqueante, e `SignalConfig` é
+imutável depois de construída, então pagar isso a cada envio seria caro e inútil.
+
+Mitigante que a auditoria também estabeleceu: `SignalChannel` hoje não é
+instanciado em lugar nenhum — `bootstrap/channels.rs` não tem arm `"signal"`.
+Risco imediato baixo, risco latente alto, que é exatamente o caso em que se
+fecha a porta antes de alguém abrir.
 
 ### Re-audit 2026-08-30 — a renumeração aplicada, e o que ela destapou
 
