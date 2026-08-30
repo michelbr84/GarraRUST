@@ -63,9 +63,7 @@ pub struct TotpStatusResponse {
 
 /// Generate a cryptographically random TOTP secret (base32 encoded).
 pub fn generate_totp_secret() -> Result<String, String> {
-    let rng = ring::rand::SystemRandom::new();
-    let mut buf = vec![0u8; TOTP_SECRET_BYTES];
-    ring::rand::SecureRandom::fill(&rng, &mut buf)
+    let buf = garraia_security::random_bytes::<TOTP_SECRET_BYTES>()
         .map_err(|_| "failed to generate TOTP secret".to_string())?;
     Ok(base32_encode(&buf))
 }

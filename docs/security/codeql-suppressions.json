@@ -45,18 +45,6 @@
       "ledger_md_anchor": "alert-42"
     },
     {
-      "alert_number": 43,
-      "rule_id": "rust/hard-coded-cryptographic-value",
-      "path": "crates/garraia-security/src/credentials.rs",
-      "line": 49,
-      "sink_snippet": "let mut salt = vec![0u8; SALT_LEN];",
-      "disposition": "dismissed-false-positive",
-      "dismissed_reason": "false_positive",
-      "justification": "vec![0u8; SALT_LEN] is a buffer initializer immediately overwritten by ring::SystemRandom::fill on the next line (credentials.rs:50). The ring API requires a &mut [u8] backing slice; the zero literal never becomes a real salt. CodeQL flags the 0u8 literal pattern but the dataflow proves the bytes are replaced before any cryptographic use. Empirical-proof anchor for GAR-491 mechanism.",
-      "gar_ref": "GAR-491",
-      "ledger_md_anchor": "alert-43"
-    },
-    {
       "alert_number": 44,
       "rule_id": "rust/hard-coded-cryptographic-value",
       "path": "crates/garraia-security/src/validation.rs",
@@ -360,7 +348,7 @@
       "alert_number": 165,
       "rule_id": "rust/hard-coded-cryptographic-value",
       "path": "crates/garraia-gateway/src/admin/shared.rs",
-      "line": 68,
+      "line": 67,
       "sink_snippet": "const LEGACY_KDF_SALT: &[u8] = b\"garraia-admin-secrets-v1\";",
       "disposition": "dismissed-wont-fix",
       "dismissed_reason": "wont_fix",

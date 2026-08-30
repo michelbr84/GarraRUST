@@ -1,7 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
-use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{Connection, params};
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -360,8 +359,8 @@ impl AdminStore {
         ip_address: Option<&str>,
         user_agent: Option<&str>,
     ) -> Result<AdminSession, String> {
-        let token = generate_random_token(SESSION_TOKEN_LEN)?;
-        let csrf_token = generate_random_token(CSRF_TOKEN_LEN)?;
+        let token = generate_random_token::<SESSION_TOKEN_LEN>()?;
+        let csrf_token = generate_random_token::<CSRF_TOKEN_LEN>()?;
 
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(SESSION_DURATION_SECS);
         let expires_str = expires_at.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -934,9 +933,7 @@ pub struct ConfigVersionEntry {
 // ── Password hashing ─────────────────────────────────────────────────
 
 fn hash_password(password: &str) -> Result<(String, String), String> {
-    let rng = SystemRandom::new();
-    let mut salt = vec![0u8; SALT_LEN];
-    rng.fill(&mut salt)
+    let salt = garraia_security::random_bytes::<SALT_LEN>()
         .map_err(|_| "failed to generate salt".to_string())?;
 
     let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
@@ -949,7 +946,7 @@ fn hash_password(password: &str) -> Result<(String, String), String> {
         &mut hash,
     );
 
-    Ok((BASE64.encode(&hash), BASE64.encode(&salt)))
+    Ok((BASE64.encode(&hash), BASE64.encode(salt)))
 }
 
 fn verify_password_hash(password: &str, stored_hash: &str, stored_salt: &str) -> bool {
@@ -971,12 +968,10 @@ fn verify_password_hash(password: &str, stored_hash: &str, stored_salt: &str) ->
     .is_ok()
 }
 
-fn generate_random_token(len: usize) -> Result<String, String> {
-    let rng = SystemRandom::new();
-    let mut buf = vec![0u8; len];
-    rng.fill(&mut buf)
+fn generate_random_token<const N: usize>() -> Result<String, String> {
+    let buf = garraia_security::random_bytes::<N>()
         .map_err(|_| "failed to generate random token".to_string())?;
-    Ok(BASE64.encode(&buf))
+    Ok(BASE64.encode(buf))
 }
 
 #[cfg(test)]
