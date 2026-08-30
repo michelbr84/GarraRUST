@@ -75,7 +75,7 @@
       "ledger_md_anchor": "alert-45"
     },
     {
-      "alert_number": 67,
+      "alert_number": 149,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 84,
@@ -83,10 +83,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skin guards body.name via validate_skill_name (path_validation.rs) at line 60 before any FS use. Charset [A-Za-z0-9-]{1,128} ASCII-only, strict subset of garraia_skills::validate_skill convention. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::create_skin_with_path_traversal_returns_400 + create_skin_with_dot_in_name_returns_400 + create_skin_rejects_underscore_per_project_convention.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-67"
+      "ledger_md_anchor": "alert-149"
     },
     {
-      "alert_number": 68,
+      "alert_number": 147,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 111,
@@ -94,10 +94,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 99 before format!(\"{name}.json\"). Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-68"
+      "ledger_md_anchor": "alert-147"
     },
     {
-      "alert_number": 69,
+      "alert_number": 148,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 141,
@@ -105,10 +105,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 129 before tokio::fs::remove_file. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-69"
+      "ledger_md_anchor": "alert-148"
     },
     {
-      "alert_number": 70,
+      "alert_number": 150,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 177,
@@ -116,10 +116,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 162 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::get_skill_rejects_path_traversal.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-70"
+      "ledger_md_anchor": "alert-150"
     },
     {
-      "alert_number": 71,
+      "alert_number": 153,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 269,
@@ -127,10 +127,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skill guards body.name via validate_skill_name (path_validation.rs) at line 220 before std::fs::write at this line. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::create_skill_rejects_{path_traversal,empty_name,nul_byte,windows_drive}.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-71"
+      "ledger_md_anchor": "alert-153"
     },
     {
-      "alert_number": 72,
+      "alert_number": 154,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 344,
@@ -138,10 +138,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): update_skill double-guards URL name + body.name via validate_skill_name (path_validation.rs) at lines 300/307 before std::fs::write at this line. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::update_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-72"
+      "ledger_md_anchor": "alert-154"
     },
     {
-      "alert_number": 73,
+      "alert_number": 151,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 533,
@@ -149,10 +149,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-73"
+      "ledger_md_anchor": "alert-151"
     },
     {
-      "alert_number": 74,
+      "alert_number": 152,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 590,
@@ -160,10 +160,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-74"
+      "ledger_md_anchor": "alert-152"
     },
     {
-      "alert_number": 75,
+      "alert_number": 155,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 632,
@@ -171,10 +171,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before std::fs::write of updated trigger content at this line. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-75"
+      "ledger_md_anchor": "alert-155"
     },
     {
-      "alert_number": 76,
+      "alert_number": 161,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 104,
@@ -182,10 +182,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 99 before tokio::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-76"
+      "ledger_md_anchor": "alert-161"
     },
     {
-      "alert_number": 77,
+      "alert_number": 162,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 134,
@@ -193,10 +193,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 129 before file_path.is_file() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-77"
+      "ledger_md_anchor": "alert-162"
     },
     {
-      "alert_number": 78,
+      "alert_number": 156,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 167,
@@ -204,10 +204,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 162 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::get_skill_rejects_path_traversal.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-78"
+      "ledger_md_anchor": "alert-156"
     },
     {
-      "alert_number": 79,
+      "alert_number": 157,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 227,
@@ -215,10 +215,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skill guards body.name via validate_skill_name (path_validation.rs) at line 220 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::create_skill_rejects_{path_traversal,empty_name,nul_byte,windows_drive,underscore_per_project_convention}.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-79"
+      "ledger_md_anchor": "alert-157"
     },
     {
-      "alert_number": 80,
+      "alert_number": 158,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 312,
@@ -226,10 +226,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): update_skill double-guards URL name + body.name via validate_skill_name (path_validation.rs) at lines 300/307 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::update_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-80"
+      "ledger_md_anchor": "alert-158"
     },
     {
-      "alert_number": 81,
+      "alert_number": 159,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 523,
@@ -237,10 +237,10 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-81"
+      "ledger_md_anchor": "alert-159"
     },
     {
-      "alert_number": 82,
+      "alert_number": 160,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 579,
@@ -248,7 +248,7 @@
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
-      "ledger_md_anchor": "alert-82"
+      "ledger_md_anchor": "alert-160"
     },
     {
       "alert_number": 111,
@@ -276,10 +276,10 @@
       "alert_number": 113,
       "rule_id": "rust/cleartext-logging",
       "path": "crates/garraia-cli/src/wizard/mod.rs",
-      "line": 640,
+      "line": 673,
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "`eprintln!(\"  Warning: vault open failed ({e}); secrets will fall back to env vars.\")` imprime o erro, nao a passphrase. `CredentialVault::open` devolve `CredentialError`, cujas 5 variantes (credentials.rs:329-340) sao construidas a partir de `path.display()` e de erros de serde/base64 — nenhuma interpola a passphrase. O branch de senha errada e `CredentialError::WrongPassphrase`, cujo Display e a string estatica \"wrong passphrase or corrupted vault\". CodeQL contamina `e` so porque `passphrase` e argumento de `open()`.",
+      "justification": "`println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\")` imprime o NOME da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` (wizard/mod.rs:630); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. Re-audit 2026-08-30: esta entrada apontava para a linha 640 e descrevia outro statement — o `eprintln!(\"Warning: vault open failed ({e})...\")`, hoje na linha 643. O alerta vivo sempre esteve ancorado no `println!` de :673, e o §5.3 deste ledger ja o descrevia corretamente; era o .json que estava errado. O drift passou despercebido porque `plan_rekey` pulava entradas cujo numero seguia aberto sem validar a chave — corrigido no mesmo PR.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-113"
     },
