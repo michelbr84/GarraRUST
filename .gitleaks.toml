@@ -40,6 +40,11 @@ regexes = [
     # Localhost Postgres DSN — always a test-only value; production DSNs
     # never use @localhost in this repo.
     '''postgres://[^@]+@localhost''',
+    # Inline `#[cfg(test)]` fixtures for `config set-routing` (plan 0360).
+    # They live in `src/`, not `tests/`, so the path allowlist above does not
+    # reach them. The values are deliberately synthetic and were never live.
+    '''sk-or-v1-(test|original)\b''',
+    '''sk-ant-existing\b''',
     # Documentation placeholders
     '''your[-_][A-Za-z0-9_-]+[-_](key|token|secret)''',
     '''<your[-_].*?>''',

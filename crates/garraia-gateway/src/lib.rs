@@ -1,6 +1,7 @@
 pub mod a2a;
 pub mod admin;
 pub mod agent_router;
+pub mod anthropic_api;
 pub mod api;
 pub mod auth_metrics;
 pub mod auth_routes;

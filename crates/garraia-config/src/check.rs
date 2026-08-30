@@ -81,6 +81,16 @@ pub struct ConfigSummary {
     pub channels_count: usize,
     pub llm_providers: Vec<String>,
     pub llm_providers_api_key_set: Vec<String>,
+    /// Key in `llm:` that `agent.default_provider` points at.
+    pub default_provider: Option<String>,
+    /// Ordered fallback chain from `agent.fallback_providers`.
+    pub fallback_providers: Vec<String>,
+    /// Model configured per `llm:` entry.
+    ///
+    /// Model names are not secret — the credential is reported separately, and
+    /// only as presence, by `llm_providers_api_key_set`. Exposing the model is
+    /// what lets a caller confirm a routing write actually landed.
+    pub llm_models: std::collections::BTreeMap<String, String>,
     pub embeddings_providers: Vec<String>,
     pub mcp_servers_count: usize,
     pub log_level: Option<String>,
@@ -203,6 +213,12 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
         .collect();
     llm_providers_api_key_set.sort();
 
+    let llm_models: std::collections::BTreeMap<String, String> = config
+        .llm
+        .iter()
+        .filter_map(|(name, cfg)| cfg.model.clone().map(|m| (name.clone(), m)))
+        .collect();
+
     let mut embeddings_providers: Vec<String> = config.embeddings.keys().cloned().collect();
     embeddings_providers.sort();
 
@@ -217,6 +233,9 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
         channels_count: config.channels.len(),
         llm_providers,
         llm_providers_api_key_set,
+        default_provider: config.agent.default_provider.clone(),
+        fallback_providers: config.agent.fallback_providers.clone(),
+        llm_models,
         embeddings_providers,
         mcp_servers_count,
         log_level: config.log_level.clone(),

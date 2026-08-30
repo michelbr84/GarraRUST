@@ -203,6 +203,14 @@ pub fn build_router(
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(openai_api::chat_completions))
         .route("/v1/models", get(openai_api::list_models))
+        // Anthropic-compatible endpoints (plan 0361 / ADR 0014). Deliberately
+        // does NOT register `/v1/models`: it is already registered just above,
+        // and Axum panics at startup on a duplicate method+path.
+        .route("/v1/messages", post(crate::anthropic_api::messages_handler))
+        .route(
+            "/v1/messages/count_tokens",
+            post(crate::anthropic_api::count_tokens_handler),
+        )
         .route("/api/stats", get(stats_handler::stats_handler))
         .route("/api/status", get(status))
         .route("/api/auth-check", get(auth_check))

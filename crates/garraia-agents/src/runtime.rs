@@ -1573,7 +1573,13 @@ impl AgentRuntime {
 
     /// Try `primary` provider with exponential-backoff retries, then fall through
     /// the configured `fallback_providers_list` on retryable errors (429, 5xx).
-    async fn complete_with_fallback(
+    ///
+    /// `pub` so the Anthropic-compatible shim (`POST /v1/messages`) can reuse
+    /// the primary→backup chain instead of reimplementing it. That endpoint is a
+    /// proxy, not an agent: it must not go through `process_message_*`, which
+    /// injects GarraIA's own tools and executes them itself — the caller needs
+    /// the raw `tool_use` blocks back so it can run its own tools.
+    pub async fn complete_with_fallback(
         &self,
         primary: &Arc<dyn LlmProvider>,
         request: &LlmRequest,
@@ -1649,7 +1655,9 @@ impl AgentRuntime {
 
     /// Like `complete_with_fallback` but for streaming.
     /// Tries primary, then fallbacks, returning the first successful stream.
-    async fn stream_complete_with_fallback(
+    /// Streaming counterpart of [`complete_with_fallback`], `pub` for the same
+    /// reason.
+    pub async fn stream_complete_with_fallback(
         &self,
         primary: &Arc<dyn LlmProvider>,
         request: &LlmRequest,
