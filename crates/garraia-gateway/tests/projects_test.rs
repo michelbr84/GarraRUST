@@ -270,7 +270,8 @@ async fn create_project_rejects_path_outside_allowed_roots() {
     let base = &env.base;
     let client = reqwest::Client::new();
 
-    for evil in ["/etc", "/", "/root", "/proc"] {
+    let evil_paths = ["/etc", "/", "/root", "/proc"];
+    for evil in evil_paths {
         let resp = client
             .post(format!("{base}/api/projects"))
             .json(&json!({ "name": "pwn", "path": evil }))
@@ -286,6 +287,20 @@ async fn create_project_rejects_path_outside_allowed_roots() {
     }
 
     // E nada foi registrado — senão o GET .../files ainda teria o que enumerar.
+    //
+    // Filtra pelo que ESTE teste tentou criar, em vez de exigir a lista global
+    // vazia. `PROJECTS` (projects_handler.rs:36) é um `static LazyLock<DashMap>`
+    // — estado global do PROCESSO, compartilhado por todos os testes deste
+    // binário e alheio a tempdir, porta ou config. Com a asserção de lista
+    // vazia, este teste só passava se rodasse antes de
+    // `list_project_files_works_inside_the_allowed_root`, que cria um projeto
+    // legítimo e não o remove; `#[serial]` serializa os testes mas não fixa a
+    // ordem entre eles. Foi assim que o Security Gate (BOLA) quebrou no PR #879.
+    //
+    // Filtrar pela raiz permitida também não serve: cada teste tem a sua, num
+    // tempdir próprio, então um projeto legítimo de outro teste apareceria como
+    // fuga. O discriminador correto é o par (nome, caminho) que este teste
+    // POSTou — e ele continua falhando se `confine` deixar passar qualquer um.
     let list: serde_json::Value = client
         .get(format!("{base}/api/projects"))
         .send()
@@ -294,9 +309,20 @@ async fn create_project_rejects_path_outside_allowed_roots() {
         .json()
         .await
         .expect("valid JSON");
+    let registrados: Vec<&serde_json::Value> = list["projects"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|p| {
+            p["name"].as_str() == Some("pwn")
+                || p["path"]
+                    .as_str()
+                    .is_some_and(|path| evil_paths.contains(&path))
+        })
+        .collect();
     assert!(
-        list["projects"].as_array().expect("array").is_empty(),
-        "nenhum projeto deveria ter sido criado: {list}"
+        registrados.is_empty(),
+        "nenhum dos caminhos recusados deveria ter sido registrado: {registrados:?}"
     );
 }
 

@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/base.json",
   "schema_version": "1.0.0",
   "repo": "michelbr84/GarraRUST",
-  "last_updated": "2026-08-29",
+  "last_updated": "2026-08-30",
   "audit_expiration": "2026-08-01",
   "policy": "no-bulk-suppression",
   "linear_owner": "GAR-491",
@@ -249,6 +249,61 @@
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
       "gar_ref": "GAR-490",
       "ledger_md_anchor": "alert-82"
+    },
+    {
+      "alert_number": 111,
+      "rule_id": "rust/cleartext-logging",
+      "path": "crates/garraia-cli/src/config_cmd.rs",
+      "line": 210,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "`garraia config check` imprime apenas presenca, nunca valor. A linha e `println!(\"  gateway_api_key    : {}\", if check.summary.gateway_api_key_set { \"set\" } else { \"not set\" })` — o campo e `bool`, e as unicas duas strings que podem sair sao os literais \"set\" e \"not set\". A secao inteira e emitida sob o cabecalho literal \"Summary (redacted)\" (config_cmd.rs:203). CodeQL rastreia o identificador chamado `api_key` e nao o valor booleano que ele carrega.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-111"
+    },
+    {
+      "alert_number": 112,
+      "rule_id": "rust/cleartext-logging",
+      "path": "crates/garraia-cli/src/config_cmd.rs",
+      "line": 233,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Mesma superficie do #111. Imprime `check.summary.llm_providers_api_key_set.join(\", \")`, que e a lista de **nomes de provider** que tem chave configurada (ex.: `[openai, anthropic]`), nao as chaves. O invariante de redaction do `config check` esta documentado em CLAUDE.md (garraia-config, plan 0046): a saida humana e a JSON so reportam presenca de secret (`api_key_set: true`), nunca o valor.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-112"
+    },
+    {
+      "alert_number": 113,
+      "rule_id": "rust/cleartext-logging",
+      "path": "crates/garraia-cli/src/wizard/mod.rs",
+      "line": 640,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "`eprintln!(\"  Warning: vault open failed ({e}); secrets will fall back to env vars.\")` imprime o erro, nao a passphrase. `CredentialVault::open` devolve `CredentialError`, cujas 5 variantes (credentials.rs:329-340) sao construidas a partir de `path.display()` e de erros de serde/base64 — nenhuma interpola a passphrase. O branch de senha errada e `CredentialError::WrongPassphrase`, cujo Display e a string estatica \"wrong passphrase or corrupted vault\". CodeQL contamina `e` so porque `passphrase` e argumento de `open()`.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-113"
+    },
+    {
+      "alert_number": 145,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-channels/src/whatsapp/api.rs",
+      "line": 48,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "O destino e HTTPS. A URL e `format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\")` com `const GRAPH_API_BASE: &str = \"https://graph.facebook.com/v21.0\"` (whatsapp/api.rs:5), entao o `.bearer_auth(token)` sai sempre sobre TLS para a Graph API da Meta. O esquema e constante de compilacao e nao ha caminho de config que o altere. CodeQL nao dobra a const dentro do `format!` e por isso trata o esquema como desconhecido.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-145"
+    },
+    {
+      "alert_number": 146,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-channels/src/whatsapp/api.rs",
+      "line": 79,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Identico ao #145, no `mark_as_read`: mesma const `GRAPH_API_BASE` HTTPS (whatsapp/api.rs:5), mesmo `.bearer_auth(token)` sobre TLS. Contraste deliberado com os alertas 143/144 do canal Signal, que eram do mesmo rule e **nao** eram falso-positivo — la a URL base vinha da config do operador e admitia `http://` remoto, e foi corrigida em codigo.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-146"
     },
     {
       "alert_number": 165,

@@ -61,6 +61,106 @@ async fn start_test_gateway_with_skins_dir(skins_dir: &str) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// Same as above but bound to a non-loopback interface, which flips the
+/// admin gate on `/api/skins/*` and `/api/skills/*`.
+async fn start_test_gateway_bound_to_wildcard(skins_dir: &str) -> String {
+    let port = random_port();
+    let mut config = AppConfig::default();
+    config.gateway.port = port;
+    config.gateway.host = "0.0.0.0".to_string();
+    config.memory.enabled = false;
+    config.mcp.clear();
+
+    let tmp_config = tempfile::tempdir().expect("create temp config dir");
+    // SAFETY: we are in a test and no other threads are reading these env vars yet.
+    unsafe {
+        std::env::set_var("GARRAIA_CONFIG_DIR", tmp_config.path().to_str().unwrap());
+        std::env::set_var("GARRAIA_SKINS_DIR", skins_dir);
+    }
+
+    tokio::spawn(async move {
+        let server = GatewayServer::new(config);
+        let _ = server.run().await;
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .expect("build reqwest client");
+
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if client
+            .get(format!("http://127.0.0.1:{port}/health"))
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+    }
+
+    format!("http://127.0.0.1:{port}")
+}
+
+/// On a non-loopback bind the skins endpoints stop being anonymous.
+///
+/// This is the whole point of the gate: bound to 0.0.0.0 these routes are
+/// remotely reachable file write and delete, so they require an admin session.
+#[tokio::test]
+#[serial]
+async fn non_loopback_bind_requires_admin_auth_on_skins() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let skins_path = tmp.path().join("skins");
+    let base =
+        start_test_gateway_bound_to_wildcard(skins_path.to_str().expect("valid utf8 path")).await;
+    let client = reqwest::Client::new();
+
+    // Health is untouched by the gate — proves the server is actually up and
+    // that a 401 below is the gate talking, not a dead listener.
+    let health = client
+        .get(format!("{base}/health"))
+        .send()
+        .await
+        .expect("health should respond");
+    assert_eq!(health.status(), 200);
+
+    for (method, url) in [
+        ("GET", format!("{base}/api/skins")),
+        ("GET", format!("{base}/api/skins/anything")),
+    ] {
+        let resp = client
+            .request(method.parse().expect("valid method"), &url)
+            .send()
+            .await
+            .expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            401,
+            "{method} {url} must require an admin session when bound off-loopback",
+        );
+    }
+
+    // A write must not slip through either.
+    let create = client
+        .post(format!("{base}/api/skins"))
+        .json(&json!({ "name": "sneaky", "primary_color": "#000000" }))
+        .send()
+        .await
+        .expect("create should complete");
+    assert_eq!(
+        create.status(),
+        401,
+        "anonymous skin creation must be rejected off-loopback"
+    );
+
+    // And nothing was written to disk.
+    assert!(
+        !skins_path.join("sneaky.json").exists(),
+        "rejected request must not have created a file"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn skin_crud_lifecycle() {
