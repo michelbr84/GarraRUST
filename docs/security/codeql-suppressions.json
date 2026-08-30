@@ -284,6 +284,28 @@
       "ledger_md_anchor": "alert-113"
     },
     {
+      "alert_number": 115,
+      "rule_id": "rust/cleartext-storage-database",
+      "path": "crates/garraia-db/src/session_store.rs",
+      "line": 1326,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso-positivo: o que chega ao banco e um hash, nunca o token. `validate_session_token` liga `params![hash_session_token(token)]`, e `hash_session_token` (session_store.rs:1261) e SHA-256 hex de mao unica. O lado da escrita documenta o invariante em session_store.rs:1283 (\"Only the hash is persisted; the raw token goes to the caller and is never written to disk\") e ha migracao que reescreve tokens legados em claro, detectando-os por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (session_store.rs:344). CodeQL marca `token: &str` como credencial e ve o parametro fluindo para uma query, sem modelar que `hash_session_token` e transformacao irreversivel.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-115"
+    },
+    {
+      "alert_number": 144,
+      "rule_id": "rust/cleartext-transmission",
+      "path": "crates/garraia-channels/src/signal/mod.rs",
+      "line": 272,
+      "disposition": "dismissed-false-positive",
+      "dismissed_reason": "false_positive",
+      "justification": "Falso-positivo: o sink da linha 272 esta DENTRO de `connect()`, depois do guard. `connect()` chama `self.ensure_url_vetted()?` antes de qualquer IO; se a URL for recusada, o `?` propaga e nenhuma linha posterior executa. O `config` e clonado (`let config = self.config.clone()`) ANTES do `tokio::spawn`, e `SignalConfig` nao tem mutabilidade interior — entao a URL que o loop usa e literalmente o mesmo valor imutavel que foi validado. CodeQL nao relaciona o clone com a validacao anterior. Auditado por security-auditor em 2026-08-30. Nesta mesma revisao o guard deixou de ser exclusivo do `connect()`: `send_text` e `send_to_group` passaram a chama-lo via `ensure_url_vetted`, fechando uma lacuna real que o CodeQL nao havia flagado.",
+      "gar_ref": "GAR-491",
+      "ledger_md_anchor": "alert-144"
+    },
+    {
       "alert_number": 145,
       "rule_id": "rust/cleartext-transmission",
       "path": "crates/garraia-channels/src/whatsapp/api.rs",
