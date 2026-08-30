@@ -325,6 +325,46 @@ impl SessionStore {
              WHERE id LIKE 'telegram-%';",
         );
 
+        // Security: session_tokens.token used to hold the token in cleartext,
+        // so read access to the SQLite file yielded usable credentials (CodeQL
+        // rust/cleartext-storage-database). It now holds sha256 hex.
+        //
+        // Forward-only and idempotent. A row is already migrated iff its token
+        // is 64 lowercase hex chars; a legacy token is 43 chars of base64url
+        // (32 random bytes, URL_SAFE_NO_PAD), so the two can never be confused.
+        // Hashing in place keeps existing sessions valid — the client still
+        // holds the raw token, and validation hashes before comparing.
+        //
+        // SQLite has no sha256 builtin, so this cannot be a plain SQL UPDATE.
+        let legacy: Vec<(i64, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT rowid, token FROM session_tokens
+                     WHERE length(token) <> 64 OR token GLOB '*[^0-9a-f]*'",
+                )
+                .map_err(|e| Error::Database(format!("session_token rehash prepare: {e}")))?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| Error::Database(format!("session_token rehash query: {e}")))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("session_token rehash read: {e}")))?
+        };
+        if !legacy.is_empty() {
+            for (rowid, token) in &legacy {
+                self.conn
+                    .execute(
+                        "UPDATE session_tokens SET token = ?1 WHERE rowid = ?2",
+                        params![hash_session_token(token), rowid],
+                    )
+                    .map_err(|e| Error::Database(format!("session_token rehash: {e}")))?;
+            }
+            info!(
+                count = legacy.len(),
+                "migrated cleartext session tokens to sha256"
+            );
+        }
+
         Ok(())
     }
 
@@ -1207,6 +1247,26 @@ fn generate_session_token() -> Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf))
 }
 
+/// Hash a session token for storage, as lowercase SHA-256 hex.
+///
+/// Tokens are stored hashed so that read access to the SQLite file does not
+/// yield usable credentials (CodeQL `rust/cleartext-storage-database`). A
+/// plain digest — no salt, no KDF — is the right primitive here: the token is
+/// 256 bits from `SystemRandom`, so there is no guessable input to stretch,
+/// and a per-row salt would forfeit the O(1) primary-key lookup that
+/// validation depends on.
+///
+/// The 64-char hex output is also what distinguishes a migrated row from a
+/// legacy cleartext one, which is 43 chars of base64url. See `run_migrations`.
+fn hash_session_token(token: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, token.as_bytes());
+    let mut out = String::with_capacity(digest.as_ref().len() * 2);
+    for b in digest.as_ref() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
 impl SessionStore {
     /// Create a new session token for `session_id`.
     ///
@@ -1220,6 +1280,9 @@ impl SessionStore {
         user_agent: Option<&str>,
     ) -> Result<String> {
         let token = generate_session_token()?;
+        // Only the hash is persisted; the raw token goes to the caller and is
+        // never written to disk.
+        let token_hash = hash_session_token(&token);
         self.conn
             .execute(
                 "INSERT INTO session_tokens
@@ -1229,7 +1292,9 @@ impl SessionStore {
                      datetime('now', '+' || ?4 || ' seconds'),
                      datetime('now'),
                      ?5, ?6)",
-                params![token, session_id, source, ttl_secs, ip_address, user_agent],
+                params![
+                    token_hash, session_id, source, ttl_secs, ip_address, user_agent
+                ],
             )
             .map_err(|e| Error::Database(format!("create_session_token: {e}")))?;
         Ok(token)
@@ -1261,7 +1326,7 @@ impl SessionStore {
             .prepare(&sql)
             .map_err(|e| Error::Database(format!("validate_session_token prepare: {e}")))?;
         let session_id: Option<String> = stmt
-            .query_row(params![token], |row| row.get(0))
+            .query_row(params![hash_session_token(token)], |row| row.get(0))
             .optional()
             .map_err(|e| Error::Database(format!("validate_session_token: {e}")))?;
         Ok(session_id)
@@ -1272,7 +1337,7 @@ impl SessionStore {
         self.conn
             .execute(
                 "UPDATE session_tokens SET last_active = datetime('now') WHERE token = ?1",
-                params![token],
+                params![hash_session_token(token)],
             )
             .map_err(|e| Error::Database(format!("touch_session_token: {e}")))?;
         Ok(())
@@ -1283,7 +1348,7 @@ impl SessionStore {
         self.conn
             .execute(
                 "DELETE FROM session_tokens WHERE token = ?1",
-                params![token],
+                params![hash_session_token(token)],
             )
             .map_err(|e| Error::Database(format!("revoke_session_token: {e}")))?;
         Ok(())
@@ -1830,5 +1895,137 @@ mod tests {
         // (We can't easily check internal metadata, but setting mode shouldn't break)
         let mode = store.get_agent_mode(session_id).unwrap();
         assert_eq!(mode, Some("orchestrator".to_string()));
+    }
+
+    // ── Session tokens stored hashed (CodeQL rust/cleartext-storage-database) ──
+
+    /// Create a session row so `session_tokens.session_id` FK is satisfiable.
+    fn store_with_session(session_id: &str) -> SessionStore {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        store
+            .upsert_session(session_id, "web", "user-1", &serde_json::json!({}))
+            .expect("session upsert should succeed");
+        store
+    }
+
+    fn stored_token_value(store: &SessionStore, session_id: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                "SELECT token FROM session_tokens WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("token row should exist")
+    }
+
+    #[test]
+    fn session_token_is_never_persisted_in_cleartext() {
+        let session_id = "tok-session-1";
+        let store = store_with_session(session_id);
+
+        let token = store
+            .create_session_token(session_id, "web", 3600, None, None)
+            .expect("token creation should succeed");
+
+        let stored = stored_token_value(&store, session_id);
+        assert_ne!(stored, token, "raw token must not reach the database");
+        assert_eq!(stored, super::hash_session_token(&token));
+        assert_eq!(stored.len(), 64, "sha256 hex is 64 chars");
+        assert!(stored.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn session_token_round_trip_still_validates() {
+        let session_id = "tok-session-2";
+        let store = store_with_session(session_id);
+
+        let token = store
+            .create_session_token(session_id, "web", 3600, None, None)
+            .expect("token creation should succeed");
+
+        assert_eq!(
+            store
+                .validate_session_token(&token, 0)
+                .expect("validation should succeed"),
+            Some(session_id.to_string()),
+        );
+
+        // Touch and revoke also hash before matching, so both must still bite.
+        store
+            .touch_session_token(&token)
+            .expect("touch should work");
+        store
+            .revoke_session_token(&token)
+            .expect("revoke should work");
+        assert_eq!(
+            store
+                .validate_session_token(&token, 0)
+                .expect("validation should succeed"),
+            None,
+            "revoked token must stop validating",
+        );
+    }
+
+    #[test]
+    fn unknown_token_does_not_validate() {
+        let session_id = "tok-session-3";
+        let store = store_with_session(session_id);
+        store
+            .create_session_token(session_id, "web", 3600, None, None)
+            .expect("token creation should succeed");
+
+        assert_eq!(
+            store
+                .validate_session_token("not-a-real-token", 0)
+                .expect("validation should succeed"),
+            None,
+        );
+    }
+
+    #[test]
+    fn legacy_cleartext_token_is_migrated_in_place_and_keeps_working() {
+        let session_id = "tok-session-4";
+        let store = store_with_session(session_id);
+
+        // Simulate a row written before the hashing change: token in cleartext.
+        //
+        // Deliberately a low-entropy, obviously-fake literal. The first version
+        // of this fixture was a realistic 43-char base64url string and gitleaks
+        // flagged it as a `generic-api-key` (entropy 5.38) — the inline
+        // `#[cfg(test)]` module lives in `src/`, which `.gitleaks.toml` does not
+        // allowlist, and allowlisting `crates/*/src/**` would blind the scanner
+        // to production code. Nothing here needs entropy: the migration decides
+        // "legacy" by `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'`, and any
+        // non-hex string satisfies it. `PLACEHOLDER` is an allowlisted marker.
+        let legacy_token = "legacy-cleartext-token-PLACEHOLDER";
+        store
+            .connection()
+            .execute(
+                "INSERT INTO session_tokens
+                    (token, session_id, source, expires_at, last_active)
+                 VALUES (?1, ?2, 'web', datetime('now', '+3600 seconds'), datetime('now'))",
+                params![legacy_token, session_id],
+            )
+            .expect("legacy insert should succeed");
+        assert_eq!(stored_token_value(&store, session_id), legacy_token);
+
+        store.run_migrations().expect("migration should succeed");
+
+        let stored = stored_token_value(&store, session_id);
+        assert_ne!(stored, legacy_token, "cleartext row must be rewritten");
+        assert_eq!(stored, super::hash_session_token(legacy_token));
+
+        // The client still holds the raw token, so it must keep authenticating.
+        assert_eq!(
+            store
+                .validate_session_token(legacy_token, 0)
+                .expect("validation should succeed"),
+            Some(session_id.to_string()),
+        );
+
+        // Idempotent: a second pass must not double-hash.
+        store.run_migrations().expect("re-migration should succeed");
+        assert_eq!(stored_token_value(&store, session_id), stored);
     }
 }
