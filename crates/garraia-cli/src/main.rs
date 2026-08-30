@@ -1,3 +1,4 @@
+mod agents;
 mod ask;
 mod banner;
 mod capability_prompt;
@@ -254,6 +255,16 @@ enum Commands {
         mode: String,
     },
 
+    /// Provision the external agents (GarraIA, Hermes, OpenClaw, Claude Code)
+    /// and point them all at one provider + model.
+    ///
+    /// Thin front-end over AgentDeck, which owns the adapters, the deck UI and
+    /// the agent groups. Flags after the subcommand are passed through verbatim.
+    Agents {
+        #[command(subcommand)]
+        action: AgentsCommands,
+    },
+
     /// Run the local validation pipeline: fmt check, clippy, test, flutter
     /// analyze, gitleaks detect (GAR-501).
     ///
@@ -372,6 +383,51 @@ enum ConfigCommands {
         /// Report what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentsCommands {
+    /// Detect, install/update and configure the LLM for every managed agent.
+    Setup {
+        /// Flags forwarded to `agentdeck agents setup` (e.g. --dry-run,
+        /// --provider, --model, --backup-provider, --backup-model, --per-agent).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+
+        /// Install AgentDeck without asking when it is missing.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Show what is installed and where each agent currently points.
+    Status,
+
+    /// Wire the agents so they can call each other.
+    Link {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Restore agent configs captured before a routing apply.
+    Rollback {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Open the AgentDeck control panel in a browser.
+    Web {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -922,6 +978,24 @@ fn main() -> Result<()> {
             api_key_stdin,
             dry_run,
         )?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // `garra agents` delegates to AgentDeck and touches no gateway state, so it
+    // is intercepted before the config is loaded — it must work on a machine
+    // that has never run `garra init`.
+    if let Commands::Agents { ref action } = cli.command {
+        let (agents_action, args, yes) = match action {
+            AgentsCommands::Setup { args, yes } => (agents::AgentsAction::Setup, args, *yes),
+            AgentsCommands::Status => (agents::AgentsAction::Status, &Vec::new(), false),
+            AgentsCommands::Link { args, yes } => (agents::AgentsAction::Link, args, *yes),
+            AgentsCommands::Rollback { args, yes } => (agents::AgentsAction::Rollback, args, *yes),
+            AgentsCommands::Web { args, yes } => (agents::AgentsAction::Web, args, *yes),
+        };
+        let code = agents::run(agents_action, args, yes, &agents::RealProbe)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -1637,6 +1711,10 @@ async fn async_main(
             // before the global config is loaded so that EX_DATAERR (65) is
             // reported correctly when the file is present but unparseable.
             unreachable!("Commands::Config is intercepted in main() before async_main");
+        }
+
+        Commands::Agents { .. } => {
+            unreachable!("Commands::Agents is intercepted in main() before async_main");
         }
         Commands::McpServer => {
             // GAR-583: MCP server over stdio exposing `garra_ask` tool.
