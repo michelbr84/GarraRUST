@@ -78,6 +78,27 @@ jobs:
           # restrito nao alcancam, e o step summary so e legivel pela UI.
           cat codeql-alerts.md
 
+      - name: Conferir se o ledger aponta para os alertas vivos
+        # `alert_number` nao e chave estavel: uma mudanca de escopo da analise
+        # muda os partialFingerprints e o GitHub CRIA alertas novos para o mesmo
+        # achado, deixando os dismissals grudados nas duplicatas aposentadas.
+        # Foi o que aconteceu em 2026-08-29 (#67-#82 dispensados, #147-#162
+        # abertos nas mesmas linhas). Este passo so LE e so REPORTA — o
+        # `--apply` roda local, num PR, com o diff revisado por humano.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/security/codeql-rekey-ledger.py \
+            --repo "$GITHUB_REPOSITORY" --dry-run | tee rekey-plan.txt
+          {
+            echo "## Ledger vs alertas vivos"
+            echo ""
+            echo '```'
+            cat rekey-plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publicar JSON e markdown
         if: always() && hashFiles('codeql-alerts.json') != ''
         uses: actions/upload-artifact@v7
@@ -86,4 +107,5 @@ jobs:
           path: |
             codeql-alerts.json
             codeql-alerts.md
+            rekey-plan.txt
           retention-days: 30

@@ -41,6 +41,100 @@ fn apply_telemetry_layers(router: Router) -> Router {
 }
 
 /// Build the main application router with all routes.
+/// True when the gateway's configured bind address reaches only this machine.
+///
+/// Resolved rather than string-matched: `localhost`, `127.0.0.1`, `::1` and any
+/// other name that answers only with loopback all count, while `0.0.0.0` is
+/// unspecified — it accepts connections on every interface — and does not.
+/// A host that fails to resolve is treated as NOT loopback: the gate is
+/// fail-closed, so an unparseable config errs toward requiring auth.
+fn bind_is_loopback(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    match std::net::ToSocketAddrs::to_socket_addrs(&(bare, 0u16)) {
+        Ok(addrs) => {
+            let addrs: Vec<_> = addrs.collect();
+            !addrs.is_empty() && addrs.iter().all(|a| a.ip().is_loopback())
+        }
+        Err(_) => false,
+    }
+}
+
+/// Skills and Skins editors, gated on the bind address.
+///
+/// These 9 endpoints create, overwrite and delete `.md` / `.json` files under
+/// the skills and skins directories. `validate_skill_name` keeps every write
+/// inside those directories (see `path_validation.rs`), but nothing decides
+/// *who* may write.
+///
+/// GarraIA is local-first — `gateway.host` defaults to `127.0.0.1`, and the Web
+/// Console that drives these editors is itself served unauthenticated at `GET
+/// /`. On loopback, adding an admin gate here would only break the console
+/// without moving a trust boundary: anyone who can reach the endpoint can
+/// already reach the page that calls it.
+///
+/// Binding anywhere else (`0.0.0.0`, a LAN address) changes that completely —
+/// the endpoints become remotely reachable file write and delete. There they
+/// get the same treatment as `/api/plugins/*`: admin session, CSRF on mutating
+/// methods, and the security headers the `/admin` router carries.
+fn build_skill_skin_routes(
+    state: SharedState,
+    admin_store: Arc<Mutex<admin::store::AdminStore>>,
+) -> Router {
+    let routes = Router::new()
+        .route(
+            "/api/skills",
+            get(crate::skills_handler::list_skills).post(crate::skills_handler::create_skill),
+        )
+        .route(
+            "/api/skills/import",
+            post(crate::skills_handler::import_skill),
+        )
+        .route(
+            "/api/skills/{name}",
+            get(crate::skills_handler::get_skill)
+                .put(crate::skills_handler::update_skill)
+                .delete(crate::skills_handler::delete_skill),
+        )
+        .route(
+            "/api/skills/{name}/export",
+            get(crate::skills_handler::export_skill),
+        )
+        .route(
+            "/api/skills/{name}/triggers",
+            post(crate::skills_handler::set_skill_triggers),
+        )
+        .route(
+            "/api/skins",
+            get(crate::skins_handler::list_skins).post(crate::skins_handler::create_skin),
+        )
+        .route(
+            "/api/skins/{name}",
+            get(crate::skins_handler::get_skin).delete(crate::skins_handler::delete_skin),
+        );
+
+    if bind_is_loopback(&state.config.gateway.host) {
+        return routes.with_state(state);
+    }
+
+    tracing::info!(
+        host = %state.config.gateway.host,
+        "gateway is not bound to loopback: requiring admin auth on /api/skills/* and /api/skins/*"
+    );
+    routes
+        .layer(axum::middleware::from_fn(admin::middleware::require_csrf))
+        .layer(axum::middleware::from_fn(
+            admin::middleware::require_admin_auth,
+        ))
+        .layer(axum::Extension(admin_store))
+        .layer(axum::middleware::from_fn(
+            admin::middleware::security_headers,
+        ))
+        .with_state(state)
+}
+
 pub fn build_router(
     state: SharedState,
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
@@ -299,29 +393,6 @@ pub fn build_router(
             "/api/mcp/{id}/config-schema",
             get(crate::mcp_marketplace::mcp_config_schema),
         )
-        // Phase 3.3: Skills Editor
-        .route(
-            "/api/skills",
-            get(crate::skills_handler::list_skills).post(crate::skills_handler::create_skill),
-        )
-        .route(
-            "/api/skills/import",
-            post(crate::skills_handler::import_skill),
-        )
-        .route(
-            "/api/skills/{name}",
-            get(crate::skills_handler::get_skill)
-                .put(crate::skills_handler::update_skill)
-                .delete(crate::skills_handler::delete_skill),
-        )
-        .route(
-            "/api/skills/{name}/export",
-            get(crate::skills_handler::export_skill),
-        )
-        .route(
-            "/api/skills/{name}/triggers",
-            post(crate::skills_handler::set_skill_triggers),
-        )
         // Phase 1.3: Projects
         .route(
             "/api/projects",
@@ -337,15 +408,6 @@ pub fn build_router(
         .route(
             "/api/projects/{id}/files",
             get(crate::projects_handler::list_project_files),
-        )
-        // Phase 1.3: Skins
-        .route(
-            "/api/skins",
-            get(crate::skins_handler::list_skins).post(crate::skins_handler::create_skin),
-        )
-        .route(
-            "/api/skins/{name}",
-            get(crate::skins_handler::get_skin).delete(crate::skins_handler::delete_skin),
         )
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
@@ -384,6 +446,7 @@ pub fn build_router(
         // Must merge BEFORE the /admin nest because the nest call moves
         // `admin_store`. The clone keeps the Arc<Mutex<AdminStore>> live
         // for both consumers — same admin store, two mounting points.
+        .merge(build_skill_skin_routes(state.clone(), admin_store.clone()))
         .merge(crate::plugins_handler::build_plugin_routes(
             state.clone(),
             admin_store.clone(),
@@ -1361,5 +1424,37 @@ mod tests {
             .expect("collect body")
             .to_bytes();
         assert_eq!(&body[..], b"pong");
+    }
+
+    // ── Bind-conditional gate on /api/skills/* and /api/skins/* ─────────────
+
+    #[test]
+    fn loopback_binds_are_recognised() {
+        assert!(super::bind_is_loopback("127.0.0.1"));
+        assert!(super::bind_is_loopback("localhost"));
+        assert!(super::bind_is_loopback("::1"));
+        assert!(super::bind_is_loopback("[::1]"));
+    }
+
+    #[test]
+    fn wildcard_bind_is_not_loopback() {
+        // The case that matters: 0.0.0.0 accepts connections on every
+        // interface, so the editors must be gated behind admin auth.
+        assert!(!super::bind_is_loopback("0.0.0.0"));
+        assert!(!super::bind_is_loopback("::"));
+    }
+
+    #[test]
+    fn routable_address_is_not_loopback() {
+        assert!(!super::bind_is_loopback("10.0.0.5"));
+        assert!(!super::bind_is_loopback("93.184.216.34"));
+    }
+
+    #[test]
+    fn unresolvable_host_fails_closed() {
+        // An unparseable bind must err toward requiring auth, never toward
+        // leaving the endpoints open.
+        assert!(!super::bind_is_loopback(""));
+        assert!(!super::bind_is_loopback("this is not a hostname"));
     }
 }
