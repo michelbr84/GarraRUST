@@ -674,7 +674,12 @@ jobs:
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-e2e
         run: |
-          ./target/release/garra start --host 0.0.0.0 --port 3888 &
+          # Loopback, not 0.0.0.0: both jobs reach the gateway via
+          # http://localhost:3888 on this same runner, so binding every
+          # interface bought nothing — and off-loopback binds now require an
+          # admin session on /api/skills/* and /api/skins/* (router.rs,
+          # build_skill_skin_routes), which the anonymous e2e client has not got.
+          ./target/release/garra start --host 127.0.0.1 --port 3888 &
           echo $! > /tmp/garraia.pid
           # Wait up to 30s for health endpoint to respond
           for i in $(seq 1 30); do
@@ -813,7 +818,12 @@ jobs:
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-test-config
         run: |
-          ./target/release/garra start --host 0.0.0.0 --port 3888 &
+          # Loopback, not 0.0.0.0: both jobs reach the gateway via
+          # http://localhost:3888 on this same runner, so binding every
+          # interface bought nothing — and off-loopback binds now require an
+          # admin session on /api/skills/* and /api/skins/* (router.rs,
+          # build_skill_skin_routes), which the anonymous e2e client has not got.
+          ./target/release/garra start --host 127.0.0.1 --port 3888 &
           echo $! > /tmp/garraia.pid
           for i in $(seq 1 30); do
             if curl -sf http://localhost:3888/health; then
