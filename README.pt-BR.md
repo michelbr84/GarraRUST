@@ -146,6 +146,68 @@ Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next
 > A partir de `v0.2.1` (2026-05-14) — primeira release **não-prerelease** do repo — o script consome `GET /repos/michelbr84/GarraRUST/releases/latest` e verifica o binário baixado contra o arquivo `SHA256SUMS` da release (um único manifesto para todos os assets, via `sha256sum -c`). O formato `<asset>.sha256` é usado pelo `garraia update`, não pelo `install.sh`.
 > Em ARM, certifique-se de que `uname -m` reporta `aarch64`/`arm64` — os assets `garraia-linux-aarch64` e `garraia-macos-aarch64` são publicados normalmente desde a **v0.3.2** (2026-08-18) — o cross-compile ARM64 foi resolvido com `cross` moderno + sqlx em rustls ([release.yml](.github/workflows/release.yml)).
 
+> Cada plataforma também tem um **archive**: `.tar.gz` (Linux/macOS) ou `.zip`
+> (Windows), contendo o binário com o nome simples `garraia`/`garraia.exe` mais
+> `LICENSE` e `README.md`. Os binários crus continuam publicados sem alteração —
+> o `garra update` e os dois instaladores resolvem assets por nome exato, então
+> eles são superfície de compatibilidade e não serão renomeados nem removidos.
+
+</details>
+
+<details>
+<summary>Instalar via script (Windows) — <code>irm | iex</code></summary>
+
+```powershell
+irm https://garraia.org/install.ps1 | iex
+```
+
+Irmão Windows do `install.sh`, em paridade de comportamento: detecta a
+plataforma, resolve a última release, verifica o download contra o `SHA256SUMS`,
+instala `garraia.exe` em `%LOCALAPPDATA%\Programs\GarraIA`, registra no PATH do
+usuário e encadeia `init` + `start`. Não exige privilégio de administrador.
+
+> Mesmos canais alternativos do `install.sh`:
+>
+> ```powershell
+> irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
+> irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+> irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+> ```
+
+**Passando flags.** `irm | iex` avalia o script **sem argumentos** — não existe
+equivalente PowerShell do `sh -s --`. Para passar flags, transforme o texto
+baixado em scriptblock:
+
+```powershell
+& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+```
+
+Variáveis de ambiente funcionam nas duas formas e costumam ser mais simples em
+automação:
+
+```powershell
+$env:GARRAIA_SKIP_INIT=1; $env:GARRAIA_SKIP_START=1
+irm https://garraia.org/install.ps1 | iex
+```
+
+As flags espelham as do shell (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
+`-NoLocal`, `-Version <tag>`, `-InstallDir <dir>`, `-NoModifyPath`, `-Help`),
+cada uma um alias da `GARRAIA_*` correspondente. Env var setada pelo chamador
+vence a flag.
+
+**PATH.** O instalador escreve o PATH do usuário direto no registro
+(`HKCU\Environment`, como `REG_EXPAND_SZ`) **e** atualiza `$env:Path` da sessão
+atual, então `garraia` funciona no mesmo terminal. Terminais já abertos precisam
+ser reiniciados.
+
+> **SmartScreen:** os binários e instaladores **não são assinados** (não há
+> certificado de code signing configurado). O Windows mostrará *"O Windows
+> protegeu o seu PC"* na primeira execução do MSI do desktop — é esperado, não é
+> adulteração. Verifique o `SHA256SUMS` se quiser certeza.
+
+> **Windows ARM64:** ainda não há build nativo. O instalador avisa e instala o
+> binário x86_64, que roda sob emulação do Windows 11.
+
 </details>
 
 <details>

@@ -1,0 +1,88 @@
+name: Desktop Installer
+
+# The Tauri desktop crate has historically never been built by CI: `ci.yml`
+# excludes `garraia-desktop` from every cargo invocation because its build needs
+# GTK and a sidecar binary that Linux runners do not have. The consequence was
+# that `scripts/build-installer.ps1`, `tauri.conf.json` and the sidecar wiring
+# could drift indefinitely without anything noticing -- and they did: the
+# config declared `binaries/garra` while `src/gateway.rs:14` looked up
+# `sidecar("garraia")`, so an installed app would never have started its own
+# gateway.
+#
+# This workflow closes that window. It runs the same build the release job runs,
+# on the PRs that can break it, so a desktop change is verified before a tag
+# exists rather than during a release.
+on:
+  pull_request:
+    paths:
+      - 'crates/garraia-desktop/**'
+      - 'crates/garraia-cli/**'
+      - 'scripts/build-installer.ps1'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-installer:
+    name: Build MSI + NSIS (windows-latest)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build MSI + NSIS
+        shell: pwsh
+        # The same entry point release.yml uses. It throws when the bundler
+        # emits no MSI, so this step cannot pass with an empty result.
+        run: ./scripts/build-installer.ps1 -StageDir "${env:RUNNER_TEMP}\bundles"
+
+      - name: Verify the bundles are non-empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          msi="${RUNNER_TEMP}/bundles/garraia-desktop-windows-x86_64.msi"
+          [ -s "$msi" ] || { echo "::error ::MSI missing or empty at $msi"; exit 1; }
+          echo "MSI size: $(stat -c%s "$msi") bytes"
+          ls -l "${RUNNER_TEMP}/bundles/"
+
+      # The sidecar filename must match the externalBin basename in
+      # tauri.conf.json, which must match the `.sidecar("garraia")` lookup in
+      # src/gateway.rs. A mismatch installs cleanly and then silently fails to
+      # start the gateway, so it is asserted here rather than discovered by a user.
+      - name: Assert the sidecar name matches the config and the code
+        shell: bash
+        run: |
+          set -euo pipefail
+          conf=crates/garraia-desktop/src-tauri/tauri.conf.json
+          declared=$(grep -o '"binaries/[a-z0-9_-]*"' "$conf" | head -1 | tr -d '"')
+          declared=${declared#binaries/}
+          looked_up=$(grep -o 'sidecar("[a-z0-9_-]*")' crates/garraia-desktop/src-tauri/src/gateway.rs | head -1 | sed 's/.*("\(.*\)")/\1/')
+          echo "externalBin basename : $declared"
+          echo "gateway.rs lookup    : $looked_up"
+          if [ "$declared" != "$looked_up" ]; then
+            echo "::error ::sidecar mismatch — tauri.conf.json declares '$declared' but gateway.rs asks for '$looked_up'"
+            exit 1
+          fi
+          staged="crates/garraia-desktop/src-tauri/binaries/${declared}-x86_64-pc-windows-msvc.exe"
+          [ -f "$staged" ] || { echo "::error ::sidecar not staged at $staged"; exit 1; }
+          echo "sidecar staged at $staged"
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-windows-pr
+          path: ${{ runner.temp }}/bundles/

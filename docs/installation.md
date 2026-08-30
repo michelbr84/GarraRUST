@@ -41,7 +41,77 @@ curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
 
 ### Windows
 
-Download the pre-compiled binary from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases).
+```powershell
+irm https://garraia.org/install.ps1 | iex
+```
+
+`install.ps1` is the Windows sibling of `install.sh` and behaves the same way:
+it detects the platform, resolves the latest release, downloads the binary,
+verifies it against the release's `SHA256SUMS`, installs it as `garraia.exe`,
+adds it to your **user** PATH, and then chains into `garraia init` and
+`garraia start`. It never needs administrator rights.
+
+Same mirrors as the shell installer, in the same order of robustness:
+
+```powershell
+# Official mirror - GitHub release CDN (no aggressive per-IP limits):
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
+
+# Repository main branch (raw) and community CDN mirror:
+irm https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1 | iex
+irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
+```
+
+**Passing options.** `irm | iex` evaluates the script with no arguments -- there
+is no PowerShell equivalent of `sh -s --`. To pass flags, turn the downloaded
+text into a scriptblock and invoke that:
+
+```powershell
+& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+```
+
+Environment variables work in both forms and are usually simpler in automation:
+
+```powershell
+$env:GARRAIA_SKIP_INIT=1; $env:GARRAIA_SKIP_START=1
+irm https://garraia.org/install.ps1 | iex
+```
+
+| Flag | Environment variable | Effect |
+|------|----------------------|--------|
+| `-SkipSetup` | `GARRAIA_SKIP_INIT=1` + `GARRAIA_SKIP_START=1` | Install only. |
+| `-SkipInit` | `GARRAIA_SKIP_INIT=1` | Skip the setup wizard. |
+| `-SkipStart` | `GARRAIA_SKIP_START=1` | Skip starting the gateway. |
+| `-NoLocal` | `GARRAIA_BOOTSTRAP_LOCAL=0` | Skip the GPU/Ollama prompts. |
+| `-Version <tag>` | `GARRAIA_VERSION=<tag>` | Pin a release instead of latest. |
+| `-InstallDir <dir>` | `GARRAIA_INSTALL_DIR=<dir>` | Install elsewhere. |
+| `-NoModifyPath` | `GARRAIA_NO_PATH=1` | Do not touch the user PATH. |
+
+An environment variable set by the caller always wins over the matching flag,
+so existing automation keeps its behavior.
+
+**Where it installs.** `%LOCALAPPDATA%\Programs\GarraIA` by default -- a
+per-user location, so no UAC prompt. The installer adds that directory to your
+user PATH *and* to the current session, so `garraia` works immediately in the
+terminal you ran it from; other terminals that were already open need a
+restart. Windows system directories are refused outright.
+
+**SmartScreen.** The published binaries and installers are **not code-signed**
+(there is no certificate configured for this project). Windows SmartScreen will
+show *"Windows protected your PC"* the first time you run the desktop installer,
+and you need *More info -> Run anyway*. Windows Defender may also flag a
+low-reputation unsigned binary. This is expected, not a sign of tampering --
+verify the `SHA256SUMS` entry if you want certainty. Removing the warning
+requires an OV/EV code-signing certificate, which is tracked separately.
+
+**Windows ARM64.** No native ARM64 build is published yet. The installer warns
+and installs the x86_64 binary, which runs under Windows 11's x64 emulation.
+
+**Desktop app (optional).** Releases also carry
+`garraia-desktop-windows-x86_64.msi` (and, when the bundler produces it, a NSIS
+`-setup.exe`) -- a tray application that bundles the CLI as a sidecar. It is
+built best-effort, so a given release may ship without it. The MSI is not a
+prerequisite for the CLI; the one-liner above is the supported path.
 
 ## Build from Source
 
@@ -234,17 +304,29 @@ CMD ["start"]
 
 Download from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases):
 
-| Platform | Architecture | Filename |
-|----------|--------------|----------|
-| Linux | x86_64 | garraia-linux-x86_64 |
-| Linux | aarch64 (ARM64) | garraia-linux-aarch64 |
-| macOS | x86_64 | garraia-macos-x86_64 |
-| macOS | aarch64 (Apple Silicon) | garraia-macos-aarch64 |
-| Windows | x86_64 | garraia-windows-x86_64.exe |
+| Platform | Architecture | Bare binary | Archive |
+|----------|--------------|-------------|---------|
+| Linux | x86_64 | `garraia-linux-x86_64` | `garraia-linux-x86_64.tar.gz` |
+| Linux | aarch64 (ARM64) | `garraia-linux-aarch64` | `garraia-linux-aarch64.tar.gz` |
+| macOS | x86_64 | `garraia-macos-x86_64` | `garraia-macos-x86_64.tar.gz` |
+| macOS | aarch64 (Apple Silicon) | `garraia-macos-aarch64` | `garraia-macos-aarch64.tar.gz` |
+| Windows | x86_64 | `garraia-windows-x86_64.exe` | `garraia-windows-x86_64.zip` |
+
+Plus, on Windows only, the desktop installers
+`garraia-desktop-windows-x86_64.msi` and
+`garraia-desktop-windows-x86_64-setup.exe` (both best-effort -- a release may
+ship without them).
+
+**Bare binary or archive?** They contain the same program. The archive adds
+`LICENSE` and `README.md` and unpacks to a single directory whose executable is
+named plainly `garraia` / `garraia.exe`, which is what you want for a manual
+install or for repackaging. The bare binaries exist because `garraia update`
+and both installers resolve assets by exact name -- they are the compatibility
+surface and will not be renamed or removed.
 
 > From `v0.2.1` (2026-05-14) aarch64 binaries match Rust's `std::env::consts::ARCH`,
-> so `garraia update` selects the right asset automatically. Each binary ships with
-> a sibling `<name>.sha256` for verification.
+> so `garraia update` selects the right asset automatically. Every asset ships with
+> a sibling `<name>.sha256`, and all of them are listed in `SHA256SUMS`.
 
 ## Verification
 
@@ -275,6 +357,13 @@ curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/inst
 
 # Community CDN mirror of main:
 curl -fsSL https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh | sh
+```
+
+On Windows the same mirrors serve `install.ps1`:
+
+```powershell
+irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex
+irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
 ```
 
 Inside the installer itself, downloads retry automatically and the release

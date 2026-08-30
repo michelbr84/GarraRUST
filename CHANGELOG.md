@@ -7,6 +7,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Instalador de uma linha para Windows.** Novo `install.ps1`, irmão do
+  `install.sh` e em paridade de comportamento com ele:
+  `irm https://garraia.org/install.ps1 | iex` detecta a plataforma, resolve a
+  release, verifica o SHA-256 contra o `SHA256SUMS`, instala `garraia.exe` em
+  `%LOCALAPPDATA%\Programs\GarraIA`, registra no PATH do usuário e encadeia
+  `init` + `start` — sem exigir administrador. Antes, a instrução para Windows
+  era "baixe o binário na página de releases", sem PATH nem verificação.
+  Flags via `& ([scriptblock]::Create((irm ...))) -SkipSetup`, já que
+  `irm | iex` não recebe argumentos; toda flag tem uma `GARRAIA_*`
+  equivalente, e a env var setada pelo chamador vence a flag.
+- **Archives em todas as plataformas.** Cada release passa a trazer
+  `.tar.gz` (Linux/macOS) e `.zip` (Windows) contendo o binário com o nome
+  simples `garraia`/`garraia.exe` mais `LICENSE` e `README.md`. **Aditivo**:
+  os binários crus continuam publicados sem alteração, porque o
+  `garra update` resolve assets por nome exato.
+- **Instaladores desktop do Windows (MSI + NSIS) de volta ao pipeline.**
+  Nenhum `.msi` era publicado desde a v0.2.1 — `scripts/build-installer.ps1`
+  existia mas nenhum workflow o invocava. Agora há o job best-effort
+  `build-windows-installer` no `release.yml` e o `desktop.yml`, que constrói o
+  crate Tauri nos PRs que o tocam (a primeira cobertura de CI que esse crate
+  já teve). Os instaladores **não são assinados** — o SmartScreen avisa.
+- **Suítes de teste do `install.ps1`** em `tests/install_ps1/` (84 asserções)
+  e o job `installer-powershell` no CI, com PSScriptAnalyzer bloqueante e
+  matriz PowerShell 7 (Linux) + Windows PowerShell 5.1.
+
+### Fixed
+- **Sidecar do Garra Desktop nunca era encontrado.** `src/gateway.rs:14` chama
+  `.sidecar("garraia")` enquanto o `tauri.conf.json` declarava
+  `externalBin: ["binaries/garra"]`. Como o Tauri resolve o sidecar pelo
+  basename do `externalBin`, o app instalava e **nunca subia o gateway**,
+  registrando apenas "gateway sidecar not found" no stderr. O `desktop.yml`
+  passa a asseverar que os dois nomes coincidem.
+- **`scripts/build-installer.ps1` podia passar sem produzir nada.** Usava
+  `-ErrorAction SilentlyContinue` e só imprimia quando encontrava o bundle, de
+  modo que um `cargo tauri build` que saísse 0 sem emitir MSI deixava o script
+  verde. Agora falha alto.
+- **Drift de versão do crate desktop.** `tauri.conf.json` e
+  `src-tauri/Cargo.toml` estavam presos em `0.3.0` com a workspace em `0.3.4`.
+  O Cargo passa a herdar (`version.workspace`) e o campo `version` do JSON foi
+  removido, já que o Tauri v2 cai para a versão do crate.
+- **`GARRAIA_BOOTSTRAP_LOCAL` documentado ao contrário no wiki.**
+  `wiki/Instalacao-e-Primeiros-Passos.md` dizia `=1` "usa artefatos locais em
+  vez de baixar"; o valor é `=0` e ele suprime os prompts de GPU/Ollama do
+  wizard (`install.sh:35-38`).
+- **`ROADMAP.md` afirmava cobertura "Windows MSI"** em duas linhas (`:47`,
+  `:84`) que a automação não sustentava. Reconciliado agora que sustenta.
+
 - **`garraia --model <tag>` abre o chat direto no modelo local.** Rodar o
   binário só com flags (sem subcomando) agora entra no REPL — antes o clap
   respondia *unexpected argument* porque o subcomando `chat` só era injetado

@@ -133,10 +133,50 @@ In TTY-less contexts (Docker build, CI) the installer prints next steps
 and exits 0 instead of blocking.
 
 Releases ship 5 prebuilt CLI binaries: Linux x86_64/aarch64,
-macOS x86_64/aarch64, Windows x86_64. The Linux binaries are built
-against glibc 2.35, so they need Ubuntu 22.04+ / Debian 12+; older
-distros and musl-based systems (Alpine) have to build from source.
-The installer checks this before downloading.
+macOS x86_64/aarch64, Windows x86_64 — each also as a `.tar.gz`
+(`.zip` on Windows) containing the binary named plainly `garraia`,
+plus `LICENSE` and `README.md`. The bare binaries stay published
+unchanged because `garra update` and both installers resolve assets
+by exact name. The Linux binaries are built against glibc 2.35, so
+they need Ubuntu 22.04+ / Debian 12+; older distros and musl-based
+systems (Alpine) have to build from source. The installer checks
+this before downloading.
+
+</details>
+
+<details>
+<summary>Install via script (Windows) — <code>irm | iex</code></summary>
+
+```powershell
+irm https://garraia.org/install.ps1 | iex
+```
+
+The Windows sibling of `install.sh`, at behavioral parity with it: detects the
+platform, resolves the latest release, verifies the download against
+`SHA256SUMS`, installs `garraia.exe` under `%LOCALAPPDATA%\Programs\GarraIA`,
+puts it on your user PATH, then chains into init and start. No administrator
+rights needed.
+
+Mirrors (same script, auto-synced): the GitHub release CDN
+`https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1`,
+`raw.githubusercontent.com`, and jsDelivr.
+
+`irm | iex` cannot receive arguments — there is no PowerShell equivalent of
+`sh -s --`. To pass flags, invoke the downloaded text as a scriptblock:
+
+```powershell
+& ([scriptblock]::Create((irm https://garraia.org/install.ps1))) -SkipSetup
+```
+
+Flags mirror the shell installer (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
+`-NoLocal`, `-Version <tag>`, `-InstallDir <dir>`, `-NoModifyPath`, `-Help`),
+each an alias for the matching `GARRAIA_*` environment variable; an env var set
+by the caller wins over its flag.
+
+The binaries and installers are **not code-signed**, so SmartScreen shows
+"Windows protected your PC" on first run of the desktop MSI — expected, not
+tampering. See [docs/installation.md](docs/installation.md) for the full
+Windows section.
 
 </details>
 
