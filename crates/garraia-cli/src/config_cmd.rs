@@ -486,3 +486,453 @@ mod set_model_tests {
         assert_eq!(cfg.gateway.port, 4242);
     }
 }
+
+// =============================================================================
+// `garraia config set-routing` — primary + backup provider in one write.
+// =============================================================================
+
+/// One side of a routing: which provider type, which model, which endpoint.
+pub(crate) struct RoutingSide<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub base_url: Option<&'a str>,
+}
+
+pub(crate) struct SetRoutingRequest<'a> {
+    pub primary: RoutingSide<'a>,
+    pub backup: Option<RoutingSide<'a>>,
+    /// Credential for the *primary* provider, when it needs one. Never sourced
+    /// from argv — see `run_set_routing`.
+    pub api_key: Option<&'a str>,
+}
+
+/// Default endpoint per provider type, mirroring the gateway's boot arms in
+/// `garraia-gateway/src/bootstrap/mod.rs`.
+fn default_base_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "ollama" => Some("http://localhost:11434"),
+        "openai" | "anthropic" => None, // provider clients carry their own default
+        _ => None,
+    }
+}
+
+/// The `llm:` map key a routing side occupies.
+///
+/// Keyed by provider type rather than by role, so re-running with the two sides
+/// swapped updates the same two entries instead of accumulating orphans.
+fn routing_key(provider: &str) -> String {
+    provider.to_string()
+}
+
+/// Apply a `set-routing` request to `config` in place.
+///
+/// Writes both `llm:` entries, points `agent.default_provider` at the primary,
+/// and makes the backup the head of `agent.fallback_providers`. Everything else
+/// in the config is left alone — this runs unattended from AgentDeck, where
+/// clobbering a hand-written channel or persona would be silent data loss.
+///
+/// Note the asymmetry with `apply_set_model`: that one *demotes* whatever was
+/// default before, because it only knows about one provider. Here the caller
+/// states both roles explicitly, so the previous default is simply replaced —
+/// keeping it would contradict the routing the user just chose.
+pub(crate) fn apply_set_routing(config: &mut AppConfig, req: &SetRoutingRequest<'_>) {
+    let primary_key = routing_key(req.primary.provider);
+
+    let primary_base = req
+        .primary
+        .base_url
+        .map(str::to_string)
+        .or_else(|| default_base_url(req.primary.provider).map(str::to_string));
+
+    // Preserve an existing key when the caller did not supply one: rotating the
+    // model must not silently de-authenticate the provider.
+    let existing_key = config
+        .llm
+        .get(&primary_key)
+        .and_then(|entry| entry.api_key.clone());
+
+    config.llm.insert(
+        primary_key.clone(),
+        LlmProviderConfig {
+            provider: req.primary.provider.to_string(),
+            model: Some(req.primary.model.to_string()),
+            api_key: req
+                .api_key
+                .map(str::to_string)
+                .or(existing_key)
+                .or_else(|| placeholder_key(req.primary.provider)),
+            base_url: primary_base,
+            extra: Default::default(),
+        },
+    );
+
+    config.agent.default_provider = Some(primary_key.clone());
+
+    match &req.backup {
+        Some(backup) => {
+            let backup_key = routing_key(backup.provider);
+            let backup_base = backup
+                .base_url
+                .map(str::to_string)
+                .or_else(|| default_base_url(backup.provider).map(str::to_string));
+            let backup_existing = config
+                .llm
+                .get(&backup_key)
+                .and_then(|entry| entry.api_key.clone());
+
+            config.llm.insert(
+                backup_key.clone(),
+                LlmProviderConfig {
+                    provider: backup.provider.to_string(),
+                    model: Some(backup.model.to_string()),
+                    api_key: backup_existing.or_else(|| placeholder_key(backup.provider)),
+                    base_url: backup_base,
+                    extra: Default::default(),
+                },
+            );
+
+            // The backup leads the fallback chain; anything else the operator
+            // configured stays behind it rather than being discarded.
+            config
+                .agent
+                .fallback_providers
+                .retain(|k| k != &backup_key && k != &primary_key);
+            config.agent.fallback_providers.insert(0, backup_key);
+        }
+        None => {
+            // No backup requested: the primary must not shadow itself.
+            config
+                .agent
+                .fallback_providers
+                .retain(|k| k != &primary_key);
+        }
+    }
+}
+
+/// Placeholder credential for providers whose client requires a non-empty key
+/// but whose endpoint ignores it. `None` means "genuinely needs a real key".
+fn placeholder_key(provider: &str) -> Option<String> {
+    match provider {
+        "ollama" => Some("ollama".to_string()),
+        _ => None,
+    }
+}
+
+/// `garraia config set-routing` — configure primary + backup in one shot.
+///
+/// The credential is read from **stdin**, never from a flag: argv is readable
+/// by any process on the machine (`/proc/<pid>/cmdline` on Linux, `ps` almost
+/// everywhere), so an `--api-key sk-...` would leak the key to every local user
+/// for the lifetime of the process.
+#[allow(clippy::too_many_arguments)]
+pub fn run_set_routing(
+    primary_provider: &str,
+    primary_model: &str,
+    primary_base_url: Option<&str>,
+    backup_provider: Option<&str>,
+    backup_model: Option<&str>,
+    backup_base_url: Option<&str>,
+    api_key_stdin: bool,
+    dry_run: bool,
+) -> Result<i32> {
+    if primary_provider.trim().is_empty() || primary_model.trim().is_empty() {
+        eprintln!("error: --primary-provider and --primary-model must not be empty");
+        return Ok(2);
+    }
+
+    let backup = match (backup_provider, backup_model) {
+        (Some(p), Some(m)) if !p.trim().is_empty() && !m.trim().is_empty() => Some(RoutingSide {
+            provider: p,
+            model: m,
+            base_url: backup_base_url,
+        }),
+        (None, None) => None,
+        _ => {
+            eprintln!("error: --backup-provider and --backup-model must be given together");
+            return Ok(2);
+        }
+    };
+
+    if let Some(b) = &backup
+        && b.provider == primary_provider
+    {
+        eprintln!(
+            "error: backup provider must differ from the primary ('{primary_provider}'); \
+             a provider cannot fall back to itself"
+        );
+        return Ok(2);
+    }
+
+    let api_key = if api_key_stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_line(&mut buf)
+            .map_err(|e| anyhow::anyhow!("failed to read API key from stdin: {e}"))?;
+        let trimmed = buf.trim().to_string();
+        if trimmed.is_empty() {
+            eprintln!("error: --api-key-stdin was given but stdin was empty");
+            return Ok(2);
+        }
+        Some(trimmed)
+    } else {
+        None
+    };
+
+    let loader = ConfigLoader::new()?;
+    loader.ensure_dirs()?;
+
+    let mut config = match loader.load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "error: existing config could not be parsed: {}",
+                truncate_error(format!("{e}"))
+            );
+            eprintln!("       fix it (or move it aside) before running `config set-routing`.");
+            return Ok(65);
+        }
+    };
+
+    apply_set_routing(
+        &mut config,
+        &SetRoutingRequest {
+            primary: RoutingSide {
+                provider: primary_provider,
+                model: primary_model,
+                base_url: primary_base_url,
+            },
+            backup,
+            api_key: api_key.as_deref(),
+        },
+    );
+
+    if dry_run {
+        // Report the decision without touching disk. Never echo the key —
+        // only whether one was supplied.
+        println!(
+            "dry-run: primário {primary_provider} ({primary_model}), backup {}, api_key {}",
+            backup_provider
+                .zip(backup_model)
+                .map(|(p, m)| format!("{p} ({m})"))
+                .unwrap_or_else(|| "nenhum".to_string()),
+            if api_key.is_some() {
+                "fornecida"
+            } else {
+                "não fornecida"
+            }
+        );
+        return Ok(0);
+    }
+
+    // `save` serializes and clamps the file to 0600 (it can hold credentials).
+    loader.save(&config)?;
+
+    println!(
+        "Roteamento definido:\n  primário: {primary_provider} ({primary_model})\n  backup:   {}\n\
+         Config: {}/config.yml",
+        backup_provider
+            .zip(backup_model)
+            .map(|(p, m)| format!("{p} ({m})"))
+            .unwrap_or_else(|| "nenhum".to_string()),
+        loader.config_dir().display()
+    );
+    Ok(0)
+}
+
+#[cfg(test)]
+mod set_routing_tests {
+    use super::*;
+
+    fn side<'a>(provider: &'a str, model: &'a str) -> RoutingSide<'a> {
+        RoutingSide {
+            provider,
+            model,
+            base_url: None,
+        }
+    }
+
+    fn apply(config: &mut AppConfig, api_key: Option<&str>) {
+        apply_set_routing(
+            config,
+            &SetRoutingRequest {
+                primary: side("openrouter", "z-ai/glm-5.3-flash"),
+                backup: Some(side("ollama", "qwen3.5:2b")),
+                api_key,
+            },
+        );
+    }
+
+    #[test]
+    fn writes_both_sides_and_points_the_agent_at_them() {
+        let mut config = AppConfig::default();
+        apply(&mut config, Some("sk-or-v1-test"));
+
+        assert_eq!(config.agent.default_provider.as_deref(), Some("openrouter"));
+        assert_eq!(config.agent.fallback_providers, vec!["ollama".to_string()]);
+
+        let primary = config.llm.get("openrouter").expect("primary entry");
+        assert_eq!(primary.provider, "openrouter");
+        assert_eq!(primary.model.as_deref(), Some("z-ai/glm-5.3-flash"));
+        assert_eq!(primary.api_key.as_deref(), Some("sk-or-v1-test"));
+        assert_eq!(
+            primary.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+
+        let backup = config.llm.get("ollama").expect("backup entry");
+        assert_eq!(backup.model.as_deref(), Some("qwen3.5:2b"));
+        // Ollama needs no real credential, only a non-empty placeholder.
+        assert_eq!(backup.api_key.as_deref(), Some("ollama"));
+    }
+
+    #[test]
+    fn re_applying_the_same_routing_is_idempotent() {
+        let mut config = AppConfig::default();
+        apply(&mut config, Some("sk-or-v1-test"));
+        let first = (
+            config.agent.default_provider.clone(),
+            config.agent.fallback_providers.clone(),
+            config.llm.len(),
+        );
+
+        apply(&mut config, Some("sk-or-v1-test"));
+
+        assert_eq!(config.agent.default_provider, first.0);
+        assert_eq!(config.agent.fallback_providers, first.1);
+        assert_eq!(config.llm.len(), first.2, "must not accumulate llm entries");
+    }
+
+    #[test]
+    fn rotating_the_model_preserves_an_existing_credential() {
+        // Changing model must never silently de-authenticate the provider.
+        let mut config = AppConfig::default();
+        apply(&mut config, Some("sk-or-v1-original"));
+
+        apply_set_routing(
+            &mut config,
+            &SetRoutingRequest {
+                primary: side("openrouter", "openrouter/auto"),
+                backup: Some(side("ollama", "qwen3.5:2b")),
+                api_key: None,
+            },
+        );
+
+        let primary = config.llm.get("openrouter").expect("primary entry");
+        assert_eq!(primary.model.as_deref(), Some("openrouter/auto"));
+        assert_eq!(primary.api_key.as_deref(), Some("sk-or-v1-original"));
+    }
+
+    #[test]
+    fn swapping_the_two_sides_does_not_leave_orphans() {
+        let mut config = AppConfig::default();
+        apply(&mut config, Some("sk-or-v1-test"));
+
+        apply_set_routing(
+            &mut config,
+            &SetRoutingRequest {
+                primary: side("ollama", "qwen3.5:2b"),
+                backup: Some(side("openrouter", "z-ai/glm-5.3-flash")),
+                api_key: None,
+            },
+        );
+
+        assert_eq!(config.agent.default_provider.as_deref(), Some("ollama"));
+        assert_eq!(
+            config.agent.fallback_providers,
+            vec!["openrouter".to_string()]
+        );
+        assert_eq!(config.llm.len(), 2, "keys are per provider, not per role");
+    }
+
+    #[test]
+    fn a_routing_without_a_backup_does_not_shadow_itself() {
+        let mut config = AppConfig::default();
+        config
+            .agent
+            .fallback_providers
+            .push("openrouter".to_string());
+
+        apply_set_routing(
+            &mut config,
+            &SetRoutingRequest {
+                primary: side("openrouter", "z-ai/glm-5.3-flash"),
+                backup: None,
+                api_key: None,
+            },
+        );
+
+        assert!(
+            !config
+                .agent
+                .fallback_providers
+                .contains(&"openrouter".to_string()),
+            "the primary must not also be its own fallback"
+        );
+    }
+
+    #[test]
+    fn other_fallbacks_stay_behind_the_new_backup() {
+        let mut config = AppConfig::default();
+        config.agent.fallback_providers = vec!["anthropic".to_string()];
+
+        apply(&mut config, None);
+
+        assert_eq!(
+            config.agent.fallback_providers,
+            vec!["ollama".to_string(), "anthropic".to_string()],
+            "an operator-configured fallback must be kept, just demoted"
+        );
+    }
+
+    #[test]
+    fn unrelated_config_is_left_alone() {
+        let mut config = AppConfig::default();
+        config.agent.system_prompt = Some("persona do operador".to_string());
+        config.agent.max_tokens = Some(4096);
+        config.llm.insert(
+            "anthropic".to_string(),
+            LlmProviderConfig {
+                provider: "anthropic".to_string(),
+                model: Some("claude-sonnet-4-5-20250929".to_string()),
+                api_key: Some("sk-ant-existing".to_string()),
+                base_url: None,
+                extra: Default::default(),
+            },
+        );
+
+        apply(&mut config, Some("sk-or-v1-test"));
+
+        assert_eq!(
+            config.agent.system_prompt.as_deref(),
+            Some("persona do operador")
+        );
+        assert_eq!(config.agent.max_tokens, Some(4096));
+        let untouched = config.llm.get("anthropic").expect("pre-existing entry");
+        assert_eq!(untouched.api_key.as_deref(), Some("sk-ant-existing"));
+    }
+
+    #[test]
+    fn explicit_base_urls_override_the_provider_defaults() {
+        let mut config = AppConfig::default();
+        apply_set_routing(
+            &mut config,
+            &SetRoutingRequest {
+                primary: RoutingSide {
+                    provider: "openrouter",
+                    model: "z-ai/glm-5.3-flash",
+                    base_url: Some("https://proxy.internal/v1"),
+                },
+                backup: None,
+                api_key: None,
+            },
+        );
+        assert_eq!(
+            config
+                .llm
+                .get("openrouter")
+                .and_then(|e| e.base_url.as_deref()),
+            Some("https://proxy.internal/v1")
+        );
+    }
+}

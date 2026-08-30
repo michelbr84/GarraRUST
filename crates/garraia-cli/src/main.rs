@@ -329,6 +329,50 @@ enum ConfigCommands {
         #[arg(long, default_value = "http://127.0.0.1:11434/v1")]
         base_url: String,
     },
+
+    /// Configure the primary provider **and** its backup in one write.
+    ///
+    /// The headless counterpart to picking a provider pair in the wizard, and
+    /// what AgentDeck calls when it applies one routing across every agent.
+    /// Writes both `llm:` entries, points `agent.default_provider` at the
+    /// primary and puts the backup at the head of `agent.fallback_providers`,
+    /// which the runtime already honours with a circuit breaker.
+    ///
+    /// The API key is read from **stdin** (`--api-key-stdin`), never from a
+    /// flag: argv is readable by any local process.
+    SetRouting {
+        /// Primary provider type, e.g. `openrouter`.
+        #[arg(long)]
+        primary_provider: String,
+
+        /// Primary model, e.g. `z-ai/glm-5.3-flash`.
+        #[arg(long)]
+        primary_model: String,
+
+        /// Override the primary endpoint. Defaults per provider type.
+        #[arg(long)]
+        primary_base_url: Option<String>,
+
+        /// Backup provider type, e.g. `ollama`. Requires `--backup-model`.
+        #[arg(long)]
+        backup_provider: Option<String>,
+
+        /// Backup model, e.g. `qwen3.5:2b`. Requires `--backup-provider`.
+        #[arg(long)]
+        backup_model: Option<String>,
+
+        /// Override the backup endpoint. Defaults per provider type.
+        #[arg(long)]
+        backup_base_url: Option<String>,
+
+        /// Read the primary provider's API key from the first line of stdin.
+        #[arg(long)]
+        api_key_stdin: bool,
+
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -845,6 +889,39 @@ fn main() -> Result<()> {
     } = cli.command
     {
         let code = config_cmd::run_set_model(model, provider_key, provider, base_url)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // `config set-routing` runs before the config is loaded for the same reason
+    // `set-model` does: it must be able to repair a config that does not yet
+    // exist, and it needs no gateway state.
+    if let Commands::Config {
+        action:
+            ConfigCommands::SetRouting {
+                ref primary_provider,
+                ref primary_model,
+                ref primary_base_url,
+                ref backup_provider,
+                ref backup_model,
+                ref backup_base_url,
+                api_key_stdin,
+                dry_run,
+            },
+    } = cli.command
+    {
+        let code = config_cmd::run_set_routing(
+            primary_provider,
+            primary_model,
+            primary_base_url.as_deref(),
+            backup_provider.as_deref(),
+            backup_model.as_deref(),
+            backup_base_url.as_deref(),
+            api_key_stdin,
+            dry_run,
+        )?;
         if code != 0 {
             std::process::exit(code);
         }
