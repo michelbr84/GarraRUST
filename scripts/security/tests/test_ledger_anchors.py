@@ -17,6 +17,7 @@ as cinco ancoras de skins_handler.rs em ate 18 linhas.
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import json
 import unittest
@@ -67,7 +68,18 @@ class LedgerAnchorsTest(unittest.TestCase):
 
         ledger = self.root / "ledger.json"
         ledger.write_text(
-            json.dumps({"schema_version": "1.1.0", "entries": entries}, indent=2),
+            json.dumps(
+                {
+                    "schema_version": "1.1.0",
+                    # Longe no futuro de proposito: estes casos exercitam a
+                    # deteccao de drift das ancoras, e um prazo vencido faria
+                    # todos falharem por um motivo que nao e o que testam.
+                    # A janela de re-auditoria tem sua propria classe.
+                    "audit_expiration": "2099-01-01",
+                    "entries": entries,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -203,6 +215,43 @@ class LedgerAnchorsTest(unittest.TestCase):
         row = _md_row(162, "rust/path-injection", "src/handler.rs", 3)
         ledger, md = self.build(entries, source=self.SOURCE, md_rows=[row, row])
         self.assertEqual(self.run_check(ledger, md), MOD.EXIT_PRECONDITION)
+
+
+class ExpirationTest(unittest.TestCase):
+    """A janela de re-auditoria de 90 dias (§3 regra 4).
+
+    Ate 2026-08-30 o campo `audit_expiration` nao era lido por nada — nem
+    script, nem workflow, nem teste. Ficou vencido 29 dias sem que nenhum
+    build reclamasse. Estes testes existem para que isso nao se repita.
+    """
+
+    def test_a_future_date_passes(self):
+        ok, msg = MOD.check_expiration("2026-12-01", dt.date(2026, 8, 30))
+        self.assertTrue(ok)
+        self.assertIn("2026-12-01", msg)
+
+    def test_today_is_still_inside_the_window(self):
+        # A data e o ultimo dia valido, nao o primeiro dia vencido.
+        ok, _ = MOD.check_expiration("2026-08-30", dt.date(2026, 8, 30))
+        self.assertTrue(ok)
+
+    def test_a_past_date_fails_and_says_how_overdue(self):
+        ok, msg = MOD.check_expiration("2026-08-01", dt.date(2026, 8, 30))
+        self.assertFalse(ok)
+        self.assertIn("29 dia", msg)
+
+    def test_a_missing_field_fails(self):
+        # Nao e "sem data, sem problema": um ledger sem prazo e um ledger sem
+        # re-auditoria, que e justamente o que a regra impede.
+        for missing in (None, ""):
+            with self.subTest(missing=missing):
+                ok, _ = MOD.check_expiration(missing, dt.date(2026, 8, 30))
+                self.assertFalse(ok)
+
+    def test_a_malformed_date_fails_instead_of_crashing(self):
+        ok, msg = MOD.check_expiration("01/08/2026", dt.date(2026, 8, 30))
+        self.assertFalse(ok)
+        self.assertIn("ISO", msg)
 
 
 class RealLedgerTest(unittest.TestCase):

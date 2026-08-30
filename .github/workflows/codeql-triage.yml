@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       severity:
-        description: 'Severidade (critical|high|medium|low|warning|note|error). Vazio = todas.'
+        description: 'Severidade (critical|high|medium|low|warning|note|error). Use `all` para todas.'
         required: false
         default: 'critical'
         type: string
@@ -65,9 +65,17 @@ jobs:
           IN_TOOL: ${{ inputs.tool }}
         run: |
           set -euo pipefail
+          # O script trata `--severity ""` como "todas" (`if severity:` em
+          # fetch_alerts), mas o input nao consegue entregar vazio: o Actions
+          # substitui string vazia pelo `default: critical` declarado acima, e
+          # a descricao prometia um "vazio = todas" inalcancavel via API.
+          # `all` e o sentinela que fecha essa lacuna sem mudar o significado
+          # de nenhum valor existente.
+          severity="$IN_SEVERITY"
+          if [ "$severity" = "all" ]; then severity=""; fi
           python3 scripts/security/codeql-alert-report.py \
             --repo "$GITHUB_REPOSITORY" \
-            --severity "$IN_SEVERITY" \
+            --severity "$severity" \
             --state "$IN_STATE" \
             --tool "$IN_TOOL" \
             --json-out codeql-alerts.json \
