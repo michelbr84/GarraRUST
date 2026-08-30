@@ -45,6 +45,12 @@ Exit codes:
        aberto. Fail-closed — reaudite à mão, não adivinhe.
     5  falha de precondição (ledger ausente/malformado, token ausente, API).
 
+O exit 2 tambem cobre **drift**: entrada cujo `alert_number` continua aberto mas
+cujo alerta vivo esta em outra `(rule_id, path, line)`. Ate 2026-08-30 esse caso
+era pulado em silencio — so o numero era comparado — e foi como o #113 passou
+tres meses descrevendo o statement errado. Nao ha o que reapontar ali: o numero
+ja esta certo, o que apodreceu foi a linha, e corrigir isso exige reler o codigo.
+
 Entrada sem alerta aberto correspondente **não** é erro: é o estado saudável de
 uma entrada já dispensada e sem duplicata. Ela é listada no resumo para o
 re-audit de 90 dias (§3.4 do ledger) e o exit continua 0.
@@ -125,8 +131,10 @@ def entry_key(entry: dict) -> tuple[str, str, int]:
     return (entry["rule_id"], entry["path"], int(entry["line"]))
 
 
-def plan_rekey(entries: list[dict], open_alerts: list[dict]) -> tuple[dict[int, int], list[dict], list[tuple]]:
-    """Decide o remapeamento. Retorna (mapping, sem_correspondencia, ambiguos).
+def plan_rekey(
+    entries: list[dict], open_alerts: list[dict]
+) -> tuple[dict[int, int], list[dict], list[tuple], list[tuple]]:
+    """Decide o remapeamento. Retorna (mapping, sem_correspondencia, ambiguos, drift).
 
     Puro — sem I/O — para ser testável.
     """
@@ -134,19 +142,32 @@ def plan_rekey(entries: list[dict], open_alerts: list[dict]) -> tuple[dict[int, 
     for a in open_alerts:
         by_key.setdefault(alert_key(a), []).append(int(a["number"]))
 
-    open_numbers = {int(a["number"]) for a in open_alerts}
+    open_by_number: dict[int, tuple] = {int(a["number"]): alert_key(a) for a in open_alerts}
 
     mapping: dict[int, int] = {}
     unmatched: list[dict] = []
     ambiguous: list[tuple] = []
+    drifted: list[tuple] = []
 
     for entry in entries:
         current = int(entry["alert_number"])
         key = entry_key(entry)
         candidates = by_key.get(key, [])
 
-        if current in open_numbers:
-            # Ja aponta para um alerta aberto nesta chave: nada a fazer.
+        if current in open_by_number:
+            live = open_by_number[current]
+            if live == key:
+                # Ja aponta para um alerta aberto NESTA chave: nada a fazer.
+                continue
+            # O numero segue aberto, mas o alerta se move para outro
+            # (rule_id, path, line). Ate 2026-08-30 este arm so olhava o numero,
+            # e a entrada passava calada — foi assim que o #113 ficou tres meses
+            # apontando para wizard/mod.rs:640 e descrevendo um `eprintln!`
+            # enquanto o alerta vivo estava em :673, noutro statement. Nao da
+            # para reapontar: o numero ja esta certo, o que apodreceu foi a
+            # linha e, com ela, possivelmente a justificativa. Isso e re-audit
+            # humano, nao remapeamento.
+            drifted.append((entry, live))
             continue
         if not candidates:
             # Sem duplicata aberta. Normal para entrada ja dispensada e quieta.
@@ -160,7 +181,7 @@ def plan_rekey(entries: list[dict], open_alerts: list[dict]) -> tuple[dict[int, 
         if target != current:
             mapping[current] = target
 
-    return mapping, unmatched, ambiguous
+    return mapping, unmatched, ambiguous, drifted
 
 
 def rewrite_md(md_text: str, mapping: dict[int, int]) -> str:
@@ -223,7 +244,20 @@ def main() -> int:
     open_alerts = fetch_open_alerts(args.repo, token)
     print(f"alertas abertos: {len(open_alerts)} | entradas no ledger: {len(entries)}")
 
-    mapping, unmatched, ambiguous = plan_rekey(entries, open_alerts)
+    mapping, unmatched, ambiguous, drifted = plan_rekey(entries, open_alerts)
+
+    if drifted:
+        print("\nDRIFT — o numero segue aberto, mas o alerta mudou de (rule_id, path, line):")
+        for entry, live in drifted:
+            print(f"  #{entry['alert_number']}  ledger: {entry['rule_id']} @ "
+                  f"{entry['path']}:{entry['line']}")
+            print(f"        {' ' * len(str(entry['alert_number']))}  vivo:   "
+                  f"{live[0]} @ {live[1]}:{live[2]}")
+        fail(
+            "reaudite a mao: a linha do ledger apodreceu e a justificativa pode "
+            "estar descrevendo outro statement",
+            2,
+        )
 
     if ambiguous:
         print("\nAMBIGUO — mesma (rule_id, path, line) casa com varios alertas abertos:")

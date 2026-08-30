@@ -50,7 +50,7 @@ def test_duplicate_open_alert_is_repointed():
     entries = [_entry(67, RULE, PATH, 84)]
     alerts = [_alert(149, RULE, PATH, 84)]
 
-    mapping, unmatched, ambiguous = mod.plan_rekey(entries, alerts)
+    mapping, unmatched, ambiguous, _drift = mod.plan_rekey(entries, alerts)
 
     assert mapping == {67: 149}
     assert unmatched == []
@@ -62,11 +62,55 @@ def test_entry_already_pointing_at_open_alert_is_left_alone():
     entries = [_entry(149, RULE, PATH, 84)]
     alerts = [_alert(149, RULE, PATH, 84)]
 
-    mapping, unmatched, ambiguous = mod.plan_rekey(entries, alerts)
+    mapping, unmatched, ambiguous, drifted = mod.plan_rekey(entries, alerts)
 
     assert mapping == {}
     assert unmatched == []
     assert ambiguous == []
+    # Numero aberto E chave batendo: nada a fazer, e nada de drift.
+    assert drifted == []
+
+
+def test_open_number_with_moved_key_is_reported_as_drift():
+    """Numero aberto nao basta — a chave tem que bater.
+
+    Ate 2026-08-30 `plan_rekey` so olhava o numero, entao este caso era pulado
+    em silencio: nem `mapping`, nem `unmatched`, nem `ambiguous`. A entrada
+    apodrecia sem aparecer em relatorio nenhum.
+    """
+    mod = _load_module()
+    entries = [_entry(149, RULE, PATH, 84)]
+    alerts = [_alert(149, RULE, PATH, 117)]  # mesmo numero, linha outra
+
+    mapping, unmatched, ambiguous, drifted = mod.plan_rekey(entries, alerts)
+
+    assert mapping == {}
+    assert unmatched == []
+    assert ambiguous == []
+    assert len(drifted) == 1
+    entry, live = drifted[0]
+    assert entry["alert_number"] == 149
+    assert live == (RULE, PATH, 117)
+
+
+def test_the_113_case_drifted_to_a_different_statement():
+    """O caso real do #113, encontrado no re-audit de 2026-08-30.
+
+    O ledger apontava `wizard/mod.rs:640` e descrevia um `eprintln!`; o alerta
+    #113 seguia aberto, mas em `:673`, outro statement. Como o numero nunca
+    deixou de existir, o relatorio nao acusava nada.
+    """
+    mod = _load_module()
+    rule, path = "rust/cleartext-logging", "crates/garraia-cli/src/wizard/mod.rs"
+    entries = [_entry(113, rule, path, 640)]
+    alerts = [_alert(113, rule, path, 673)]
+
+    mapping, unmatched, ambiguous, drifted = mod.plan_rekey(entries, alerts)
+
+    assert mapping == {}
+    assert unmatched == []
+    assert ambiguous == []
+    assert drifted == [(entries[0], (rule, path, 673))]
 
 
 def test_dismissed_entry_without_open_duplicate_is_reported_not_rewritten():
@@ -74,7 +118,7 @@ def test_dismissed_entry_without_open_duplicate_is_reported_not_rewritten():
     mod = _load_module()
     entries = [_entry(43, "rust/hard-coded-cryptographic-value", "x.rs", 49)]
 
-    mapping, unmatched, ambiguous = mod.plan_rekey(entries, [])
+    mapping, unmatched, ambiguous, _drift = mod.plan_rekey(entries, [])
 
     assert mapping == {}
     assert [e["alert_number"] for e in unmatched] == [43]
@@ -87,7 +131,7 @@ def test_two_open_alerts_on_same_key_are_ambiguous_not_guessed():
     entries = [_entry(67, RULE, PATH, 84)]
     alerts = [_alert(149, RULE, PATH, 84), _alert(201, RULE, PATH, 84)]
 
-    mapping, unmatched, ambiguous = mod.plan_rekey(entries, alerts)
+    mapping, unmatched, ambiguous, _drift = mod.plan_rekey(entries, alerts)
 
     assert mapping == {}
     assert len(ambiguous) == 1
@@ -100,7 +144,7 @@ def test_different_line_is_not_matched():
     entries = [_entry(67, RULE, PATH, 84)]
     alerts = [_alert(149, RULE, PATH, 999)]
 
-    mapping, unmatched, _ = mod.plan_rekey(entries, alerts)
+    mapping, unmatched, _, _drift = mod.plan_rekey(entries, alerts)
 
     assert mapping == {}
     assert [e["alert_number"] for e in unmatched] == [67]
@@ -111,7 +155,7 @@ def test_different_rule_on_same_line_is_not_matched():
     entries = [_entry(67, RULE, PATH, 84)]
     alerts = [_alert(149, "rust/cleartext-logging", PATH, 84)]
 
-    mapping, unmatched, _ = mod.plan_rekey(entries, alerts)
+    mapping, unmatched, _, _drift = mod.plan_rekey(entries, alerts)
 
     assert mapping == {}
     assert [e["alert_number"] for e in unmatched] == [67]
