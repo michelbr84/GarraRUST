@@ -2,8 +2,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
-use ring::rand::{SecureRandom, SystemRandom};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use ring::rand::SystemRandom;
 
 use super::middleware::{AuthenticatedAdmin, extract_ip};
 use super::rbac::{Action, Resource, check_permission};
@@ -422,20 +422,26 @@ pub(super) fn encrypt_value(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Ve
         .map_err(|_| "failed to create encryption key".to_string())?;
     let aead_key = LessSafeKey::new(unbound);
 
+    // Nonce straight from the CSPRNG. `ring::rand::generate` hands back the
+    // array already filled, so no zeroed buffer exists in between — the
+    // `vec![0u8; 12]` this replaced was what CodeQL read as a hard-coded
+    // cryptographic value (alert #142), even though `fill` overwrote it on the
+    // next line. Two smaller wins come with it: the length is `NONCE_LEN`
+    // rather than a literal 12, and `assume_unique_for_key` is infallible over
+    // `[u8; NONCE_LEN]`, so there is one fewer error arm.
     let rng = SystemRandom::new();
-    let mut nonce_bytes = vec![0u8; 12];
-    rng.fill(&mut nonce_bytes)
-        .map_err(|_| "failed to generate nonce".to_string())?;
+    let nonce_bytes: [u8; NONCE_LEN] = ring::rand::generate(&rng)
+        .map_err(|_| "failed to generate nonce".to_string())?
+        .expose();
 
-    let nonce =
-        Nonce::try_assume_unique_for_key(&nonce_bytes).map_err(|_| "invalid nonce".to_string())?;
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
     let mut in_out = plaintext.to_vec();
     aead_key
         .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
         .map_err(|_| "encryption failed".to_string())?;
 
-    Ok((in_out, nonce_bytes))
+    Ok((in_out, nonce_bytes.to_vec()))
 }
 
 pub(super) fn decrypt_value(
@@ -486,5 +492,53 @@ pub(super) fn redact_config_secrets(config: &mut garraia_config::AppConfig) {
                 *val = serde_json::json!("***REDACTED***");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AES-256 key. Not a credential: a fixed byte pattern is enough to drive
+    /// the AEAD, and the property under test is the *nonce*, not the key.
+    const TEST_KEY: [u8; 32] = [7u8; 32];
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let (ciphertext, nonce) =
+            encrypt_value(b"sk-live-roundtrip", &TEST_KEY).expect("encrypt should succeed");
+        let plaintext =
+            decrypt_value(&ciphertext, &nonce, &TEST_KEY).expect("decrypt should succeed");
+        assert_eq!(plaintext, b"sk-live-roundtrip");
+    }
+
+    #[test]
+    fn nonce_has_aead_length() {
+        let (_, nonce) = encrypt_value(b"x", &TEST_KEY).expect("encrypt should succeed");
+        assert_eq!(nonce.len(), NONCE_LEN);
+    }
+
+    /// The assertion that keeps CodeQL alert #142 honest: the nonce is drawn
+    /// per call, so the same plaintext under the same key never encrypts to the
+    /// same bytes. A hard-coded nonce would make both of these equal — and
+    /// reusing a nonce under one AES-GCM key is a real break, not a lint.
+    #[test]
+    fn nonce_is_fresh_per_call() {
+        let (first_ct, first_nonce) = encrypt_value(b"same-plaintext", &TEST_KEY).expect("encrypt");
+        let (second_ct, second_nonce) =
+            encrypt_value(b"same-plaintext", &TEST_KEY).expect("encrypt");
+
+        assert_ne!(first_nonce, second_nonce, "nonce must not repeat");
+        assert_ne!(first_ct, second_ct, "ciphertext must not repeat");
+
+        // Both still decrypt: freshness must not have cost correctness.
+        assert_eq!(
+            decrypt_value(&first_ct, &first_nonce, &TEST_KEY).expect("decrypt first"),
+            b"same-plaintext"
+        );
+        assert_eq!(
+            decrypt_value(&second_ct, &second_nonce, &TEST_KEY).expect("decrypt second"),
+            b"same-plaintext"
+        );
     }
 }
