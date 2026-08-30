@@ -23,6 +23,24 @@ Atualizado após plan 0145 / PR #396 (2026-05-18). **22 crates ativos** no works
 ```text
 crates/
   garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate,
+                        `spinner.rs` (2026-08-30): indicador de atividade do
+                        `garra chat`. Estado puro e sem relógio
+                        (`SpinnerState::tick`), renderizado como um braço a mais
+                        do `tokio::select!` em `stream_turn` — nunca uma task
+                        própria, para não quebrar a drenagem concorrente do
+                        canal limitado documentada em `chat.rs`. Escreve no
+                        mesmo sink `io::Write` dos deltas, o que torna cada
+                        quadro afirmável contra um `Vec<u8>`. `detect()`
+                        devolve `None` (animação desligada) fora de TTY, sob
+                        `NO_COLOR`, `TERM=dumb` ou `GARRAIA_NO_SPINNER`. O
+                        cursor **nunca** é escondido — `\x1b[?25l` não é
+                        emitido em lugar nenhum —, então nenhum caminho de
+                        saída deixa o terminal sem cursor. Fallback ASCII
+                        cobre quadro **e** texto (numa code page legada do
+                        Windows o `ç`/`…` também vira mojibake). Proibido em
+                        `ask.rs` e `mcp_server.rs`, com teste que varre o
+                        fonte. `Ctrl+C` passou a cancelar o turno em vez de
+                        matar o processo.
                         `config check` (GAR-379 slice 1) com validation + precedence
                         report + exit codes sysexits (0/2/65). Plan 0039 (GAR-413
                         Stage 1): novo subcomando `garraia migrate workspace
@@ -392,7 +410,20 @@ benches/
     contrato em dois sistemas operacionais (flags, env vars, precedencia env-vence-flag,
     verificacao SHA-256, encadeamento `init`/`start`); mudou um, muda o outro, e as suites
     em `tests/install_sh/` e `tests/install_ps1/` espelham-se uma a outra.
-17. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
+17. **O site `garraia.org` NÃO está neste repositório.** Ele vive em
+    `michelbr84/garraia-74c335d5` (Vite + React + shadcn, publicado pelo Lovable).
+    Editar `install.sh`/`install.ps1` aqui **não** muda o que `garraia.org` serve:
+    as rotas públicas são regras de redirect em `public/_redirects` daquele repo,
+    apontando para o raw do `main`. Foi exatamente essa separação que causou o
+    apagão do `irm https://garraia.org/install.ps1 | iex`: existia regra para
+    `/install.sh` e nenhuma para `/install.ps1`, então o fallback SPA
+    (`/* /index.html 200`) devolvia a home em HTML com HTTP 200 — não um 404 — e
+    o PowerShell tentava executá-la. Ao adicionar um instalador novo, adicione a
+    regra no repo do site **junto**. O workflow `install-endpoints.yml` (agendado,
+    não é gate de PR) sonda todas as URLs documentadas e falha se alguma voltar
+    HTML. O Worker em `deploy/installer-worker/` está descontinuado e nunca serviu
+    o `garraia.org`.
+18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 
 ## Framework de Desenvolvimento: Superpowers
 

@@ -633,6 +633,32 @@ mod tests {
 
     /// Compile-time + read-time guarantee. Scans only the **production**
     /// portion of the file (everything before `#[cfg(test)]`) for tool-
+    /// O indicador de atividade é UX de terminal interativo e não pode vazar
+    /// para nenhuma superfície legível por máquina.
+    ///
+    /// `garra ask` (com ou sem `--json`) e o servidor MCP são consumidos por
+    /// scripts, CI e outros agentes: um único quadro de animação no stdout
+    /// corromperia o envelope `garra.ask.v1` ou o frame JSON-RPC. A garantia é
+    /// estrutural — nenhum dos dois chama `stream_turn` —, e este teste trava
+    /// a invariante em vez de deixá-la por convenção.
+    #[test]
+    fn machine_readable_surfaces_never_reference_the_spinner() {
+        let forbidden = ["spinner", "render_frame", "SpinnerState", "SpinnerStyle"];
+        for (name, source) in [
+            ("ask.rs", include_str!("ask.rs")),
+            ("mcp_server.rs", include_str!("mcp_server.rs")),
+        ] {
+            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+            for needle in forbidden {
+                assert!(
+                    !production.contains(needle),
+                    "{name} production code must not contain `{needle}` — \
+                     o spinner é exclusivo do REPL interativo"
+                );
+            }
+        }
+    }
+
     /// registration patterns. If a follow-up PR ever tries to slip a
     /// tool registration into `ask.rs`, this test fails loudly.
     #[test]
