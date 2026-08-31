@@ -335,12 +335,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
           if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
             VERSION="${INPUT_VERSION}"
           else
             VERSION=${GITHUB_REF#refs/tags/}
           fi
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "VERSION: $VERSION"
 
       - name: Install nfpm (pinned + checksum)
