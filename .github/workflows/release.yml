@@ -286,6 +286,154 @@ jobs:
           name: garraia-desktop-windows
           path: release/
 
+  # Package the Linux binaries into .deb / .rpm / AppImage.
+  #
+  # Best-effort by design: in the `release` job's `needs:` but deliberately
+  # NOT in its `if:` — the same treatment as build-linux-arm64 and
+  # build-windows-installer (sem `continue-on-error`, que o projeto proíbe).
+  #
+  # Job SEPARADO de propósito: rodar nfpm/appimagetool dentro do job `release`
+  # faria qualquer falha do tooling novo bloquear a release inteira — o oposto
+  # de best-effort. Aqui só se EMPACOTA binários já buildados pelos jobs acima;
+  # nada é recompilado. Ferramentas pinadas por versão + SHA-256 para que um
+  # "latest"/"continuous" móvel nunca quebre uma release futura.
+  # Decisão de toolchain e naming: docs/adr/0015-linux-packaging-toolchain.md.
+  package-linux:
+    name: Package Linux (.deb/.rpm/AppImage)
+    needs:
+      - build-linux-x86_64
+      - build-linux-arm64
+    # x86_64 é obrigatório (é o que o job empacota incondicionalmente);
+    # aarch64 é best-effort — sem o binário, os pacotes arm64 só não saem.
+    if: always() && needs.build-linux-x86_64.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NFPM_VERSION: 2.47.0
+      NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+      APPIMAGETOOL_VERSION: 1.9.1
+      APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        # Sem `name:` de propósito — baixa o que existir e não falha quando o
+        # artifact aarch64 (best-effort) não foi produzido.
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        # Os valores vão por `env:` e são lidos como variáveis de shell entre
+        # aspas — nunca interpolados em `run:`. `inputs.version` é texto livre
+        # de quem dispara o workflow, e interpolado ele vira injeção de shell.
+        # Mesmo padrão do job `release` abaixo.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
+            VERSION="${INPUT_VERSION}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION: $VERSION"
+
+      - name: Install nfpm (pinned + checksum)
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          curl -fsSL --retry 5 --retry-delay 2 -o nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum -c -
+          mkdir -p nfpm-dist
+          tar -xzf nfpm.tar.gz -C nfpm-dist nfpm
+          ./nfpm-dist/nfpm --version
+
+      - name: Package .deb and .rpm
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          export GARRAIA_PKG_VERSION="${VERSION#v}"
+
+          # pack_arch <goarch> <asset-arch>
+          # GOARCH é o que o nfpm espera em `arch:`; o sufixo do asset segue a
+          # nomenclatura Rust dos binários crus (x86_64/aarch64). Nomes de
+          # saída sem versão — URLs /releases/latest/download/ estáveis.
+          pack_arch() {
+            goarch="$1"; asset_arch="$2"
+            bin="artifacts/garraia-linux-${asset_arch}/garraia-linux-${asset_arch}"
+            if [ ! -f "$bin" ]; then
+              echo "::warning ::garraia-linux-${asset_arch} not built; skipping its .deb/.rpm."
+              return 0
+            fi
+            export GARRAIA_PKG_ARCH="$goarch"
+            export GARRAIA_PKG_BIN="$bin"
+            "${RUNNER_TEMP}/nfpm-dist/nfpm" package -f packaging/nfpm.yaml \
+              -p deb -t "stage/garraia-linux-${asset_arch}.deb"
+            "${RUNNER_TEMP}/nfpm-dist/nfpm" package -f packaging/nfpm.yaml \
+              -p rpm -t "stage/garraia-linux-${asset_arch}.rpm"
+          }
+
+          pack_arch amd64 x86_64
+          pack_arch arm64 aarch64
+          ls -l stage/
+
+      - name: Install appimagetool (pinned + checksum)
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          curl -fsSL --retry 5 --retry-delay 2 -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+
+      - name: Build AppImage (x86_64)
+        run: |
+          set -euo pipefail
+          appdir="${RUNNER_TEMP}/garraia.AppDir"
+          rm -rf "$appdir"
+          mkdir -p "$appdir/usr/bin"
+          cp artifacts/garraia-linux-x86_64/garraia-linux-x86_64 "$appdir/usr/bin/garraia"
+          chmod +x "$appdir/usr/bin/garraia"
+          cp packaging/appimage/garraia.desktop "$appdir/garraia.desktop"
+          # Ícone reaproveitado do desktop Tauri (256x256) — não duplicado no repo.
+          cp crates/garraia-desktop/src-tauri/icons/128x128@2x.png "$appdir/garraia.png"
+          ln -s usr/bin/garraia "$appdir/AppRun"
+          # APPIMAGE_EXTRACT_AND_RUN: os runners ubuntu-latest (24.04) não têm
+          # libfuse2, então o próprio appimagetool precisa rodar extraído.
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "${RUNNER_TEMP}/appimagetool" \
+            "$appdir" stage/garraia-linux-x86_64.AppImage
+          ls -l stage/
+
+      - name: Smoke-test packages
+        run: |
+          set -euo pipefail
+          echo "--- deb ---"
+          dpkg-deb --info stage/garraia-linux-x86_64.deb
+          dpkg-deb --contents stage/garraia-linux-x86_64.deb | grep -F './usr/bin/garraia'
+          echo "--- rpm ---"
+          sudo apt-get update -q && sudo apt-get install -y -q rpm
+          rpm -qip stage/garraia-linux-x86_64.rpm
+          echo "--- AppImage ---"
+          # De quebra prova que o binário buildado em 22.04 roda em 24.04.
+          chmod +x stage/garraia-linux-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 stage/garraia-linux-x86_64.AppImage --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        # Só arquivos flat: o loop de checksums do job `release` roda
+        # `sha256sum` sobre `release/*` e um diretório o faria falhar.
+        with:
+          name: garraia-linux-packages
+          path: stage/
+
   # Create release
   release:
     name: Create Release
@@ -302,6 +450,7 @@ jobs:
       - build-macos-x86_64
       - build-macos-arm64
       - build-windows-installer
+      - package-linux
     if: |
       always() &&
       needs.build-linux-x86_64.result == 'success' &&
@@ -364,6 +513,23 @@ jobs:
           if [ -f artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe ]; then
             cp artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe release/
           fi
+
+          # Linux packages (.deb/.rpm/AppImage) do job best-effort package-linux.
+          # x86_64 avisa quando falta (o job deveria tê-los produzido); os
+          # pacotes aarch64 pulam em silêncio — a ausência do binário aarch64
+          # já emitiu o ::warning:: acima, mesmo tratamento do -setup.exe.
+          for pkg in garraia-linux-x86_64.deb garraia-linux-x86_64.rpm garraia-linux-x86_64.AppImage; do
+            if [ -f "artifacts/garraia-linux-packages/${pkg}" ]; then
+              cp "artifacts/garraia-linux-packages/${pkg}" release/
+            else
+              echo "::warning ::${pkg} not packaged; release will ship without it."
+            fi
+          done
+          for pkg in garraia-linux-aarch64.deb garraia-linux-aarch64.rpm; do
+            if [ -f "artifacts/garraia-linux-packages/${pkg}" ]; then
+              cp "artifacts/garraia-linux-packages/${pkg}" release/
+            fi
+          done
 
           # Ship the installer as a release asset too. Release-asset downloads
           # go through GitHub's release CDN, which does not enforce the
@@ -515,6 +681,11 @@ jobs:
             release/garraia-macos-aarch64.tar.gz
             release/garraia-windows-x86_64.zip
             release/garraia-windows-aarch64.zip
+            release/garraia-linux-x86_64.deb
+            release/garraia-linux-aarch64.deb
+            release/garraia-linux-x86_64.rpm
+            release/garraia-linux-aarch64.rpm
+            release/garraia-linux-x86_64.AppImage
             release/garraia-desktop-windows-x86_64.msi
             release/garraia-desktop-windows-x86_64-setup.exe
             release/install.sh

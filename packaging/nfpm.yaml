@@ -1,0 +1,70 @@
+# nfpm config — pacotes Linux (.deb / .rpm) do CLI GarraIA.
+#
+# Consumido pelo job `package-linux` do release.yml, que empacota os binários
+# JÁ BUILDADOS pelos jobs de build (nada é recompilado aqui). Parametrizado
+# por env vars — nfpm expande ${VAR} nativamente em version/arch e, com
+# `expand: true`, também em src/dst de contents:
+#
+#   GARRAIA_PKG_VERSION  versão semver SEM o prefixo v (ex.: 0.3.4)
+#   GARRAIA_PKG_ARCH     arch em nomenclatura GOARCH: amd64 | arm64
+#                        (o nfpm traduz sozinho para amd64/arm64 no deb e
+#                        x86_64/aarch64 no header do rpm)
+#   GARRAIA_PKG_BIN      caminho do binário de entrada (o asset cru baixado,
+#                        ex.: artifacts/garraia-linux-x86_64/garraia-linux-x86_64)
+#
+# Decisão de toolchain e naming: docs/adr/0015-linux-packaging-toolchain.md.
+# Os nomes dos ASSETS publicados são sem versão (garraia-linux-<arch>.deb)
+# para manter URLs /releases/latest/download/ estáveis; a versão real vive
+# nos metadados internos do pacote (este arquivo).
+name: garraia
+arch: ${GARRAIA_PKG_ARCH}
+platform: linux
+version: ${GARRAIA_PKG_VERSION}
+# semver (default) é explícito de propósito: converte prerelease para as
+# gramáticas do deb/rpm — sem o modo de falha do WiX com tags -rc.
+version_schema: semver
+section: utils
+priority: optional
+maintainer: Michel <166889728+michelbr84@users.noreply.github.com>
+description: |
+  GarraIA — gateway de IA multi-canal (CLI).
+  Binário dinâmico contra glibc >= 2.35 (Ubuntu 22.04+, Debian 12+).
+  Sistemas musl (Alpine) devem compilar da fonte.
+vendor: GarraIA
+homepage: https://github.com/michelbr84/GarraRUST
+license: MIT
+
+contents:
+  # O binário instala como /usr/bin/garraia — o mesmo nome que o install.sh
+  # usa e que os archives .tar.gz carregam (superfície de compatibilidade).
+  # mode em octal com zero à esquerda, na forma exata da doc do nfpm
+  # ("Make sure that the mode is specified in octal, e.g. 0644").
+  - src: ${GARRAIA_PKG_BIN}
+    dst: /usr/bin/garraia
+    expand: true
+    file_info:
+      mode: 0755
+
+  # MIT exige que o aviso viaje com redistribuições; um pacote é uma
+  # redistribuição. type: doc marca %doc no rpm.
+  - src: LICENSE
+    dst: /usr/share/doc/garraia/LICENSE
+    type: doc
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/garraia/README.md
+    type: doc
+    file_info:
+      mode: 0644
+
+overrides:
+  deb:
+    # Baseline de glibc espelhando o preflight MIN_GLIBC do install.sh e o
+    # runner ubuntu-22.04 pinado do build (release.yml).
+    depends:
+      - libc6 (>= 2.35)
+  # rpm: sem depends explícito de propósito. O nome do provider de glibc
+  # varia entre distros rpm (glibc no Fedora/RHEL, pacotes distintos no
+  # openSUSE), e um nome errado quebra a instalação; o requisito está na
+  # description e em docs/installation.md.
