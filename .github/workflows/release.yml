@@ -181,6 +181,47 @@ jobs:
           name: garraia-macos-aarch64
           path: release/garraia-macos-aarch64
 
+  # Build for Windows ARM64 (native, cross-compiled on the x86_64 runner).
+  #
+  # Best-effort by design: in the `release` job's `needs:` but deliberately
+  # NOT in its `if:` condition — the same treatment as build-linux-arm64
+  # (sem `continue-on-error`, que o projeto proíbe). Antes da v0.3.4 usuários
+  # de Windows ARM64 rodavam o binário x86_64 sob emulação; este job entrega
+  # o nativo, e uma falha aqui volta a release ao estado anterior (sem o
+  # asset), nunca a bloqueia.
+  #
+  # Maior risco conhecido: wasmtime é Tier 3 upstream em aarch64-pc-windows-msvc,
+  # então este é o build com mais chance de quebrar num bump de deps. O gating
+  # acima absorve a falha; se ela persistir, o asset simplesmente não sai.
+  build-windows-aarch64:
+    name: Build Windows ARM64
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Build release
+        run: cargo build --release --target aarch64-pc-windows-msvc --package garraia
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p release
+          cp target/aarch64-pc-windows-msvc/release/garra.exe release/garraia-windows-aarch64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-windows-aarch64
+          path: release/garraia-windows-aarch64.exe
+
   # Build the Windows desktop installers (MSI + NSIS).
   #
   # Best-effort by design: this job is in the `release` job's `needs:` so the
@@ -257,6 +298,7 @@ jobs:
       - build-linux-x86_64
       - build-linux-arm64
       - build-windows-x86_64
+      - build-windows-aarch64
       - build-macos-x86_64
       - build-macos-arm64
       - build-windows-installer
@@ -305,6 +347,11 @@ jobs:
             cp artifacts/garraia-macos-aarch64/garraia-macos-aarch64 release/
           else
             echo "::warning ::macOS aarch64 binary not built; release will ship without it."
+          fi
+          if [ -f artifacts/garraia-windows-aarch64/garraia-windows-aarch64.exe ]; then
+            cp artifacts/garraia-windows-aarch64/garraia-windows-aarch64.exe release/
+          else
+            echo "::warning ::Windows aarch64 binary not built; release will ship without it."
           fi
 
           # The Windows desktop installers, when the best-effort job produced
@@ -391,6 +438,7 @@ jobs:
           pack garraia-macos-x86_64       garraia-macos-x86_64   garraia     tar
           pack garraia-macos-aarch64      garraia-macos-aarch64  garraia     tar
           pack garraia-windows-x86_64.exe garraia-windows-x86_64 garraia.exe zip
+          pack garraia-windows-aarch64.exe garraia-windows-aarch64 garraia.exe zip
 
           rm -rf "$stage"
           echo "--- release/ ---"
@@ -450,14 +498,15 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}
           generate_release_notes: true
           # `softprops/action-gh-release` uses glob expansion on this list, so
-          # `*.sha256` covers every per-asset checksum (5 expected; missing
-          # aarch64 builds simply contribute fewer matches). `fail_on_unmatched_files`
-          # defaults to false, so a missing optional binary still ships the
-          # release with what we have.
+          # `*.sha256` covers every per-asset checksum (one per staged asset;
+          # missing best-effort builds simply contribute fewer matches).
+          # `fail_on_unmatched_files` defaults to false, so a missing optional
+          # binary still ships the release with what we have.
           files: |
             release/garraia-linux-x86_64
             release/garraia-linux-aarch64
             release/garraia-windows-x86_64.exe
+            release/garraia-windows-aarch64.exe
             release/garraia-macos-x86_64
             release/garraia-macos-aarch64
             release/garraia-linux-x86_64.tar.gz
@@ -465,6 +514,7 @@ jobs:
             release/garraia-macos-x86_64.tar.gz
             release/garraia-macos-aarch64.tar.gz
             release/garraia-windows-x86_64.zip
+            release/garraia-windows-aarch64.zip
             release/garraia-desktop-windows-x86_64.msi
             release/garraia-desktop-windows-x86_64-setup.exe
             release/install.sh
