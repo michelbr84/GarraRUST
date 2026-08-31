@@ -410,20 +410,32 @@ benches/
 16. **SEMPRE** manter `install.sh` e `install.ps1` em paridade de comportamento. Sao o mesmo
     contrato em dois sistemas operacionais (flags, env vars, precedencia env-vence-flag,
     verificacao SHA-256, encadeamento `init`/`start`); mudou um, muda o outro, e as suites
-    em `tests/install_sh/` e `tests/install_ps1/` espelham-se uma a outra.
+    em `tests/install_sh/` e `tests/install_ps1/` espelham-se uma a outra. A paridade
+    vale também para o *serving*: cada instalador tem cópia estática + entrada no
+    workflow de sync do repo do site (regra 17) e sondas espelhadas no
+    `install-endpoints.yml`.
 17. **O site `garraia.org` NÃO está neste repositório.** Ele vive em
     `michelbr84/garraia-74c335d5` (Vite + React + shadcn, publicado pelo Lovable).
-    Editar `install.sh`/`install.ps1` aqui **não** muda o que `garraia.org` serve:
-    as rotas públicas são regras de redirect em `public/_redirects` daquele repo,
-    apontando para o raw do `main`. Foi exatamente essa separação que causou o
-    apagão do `irm https://garraia.org/install.ps1 | iex`: existia regra para
-    `/install.sh` e nenhuma para `/install.ps1`, então o fallback SPA
-    (`/* /index.html 200`) devolvia a home em HTML com HTTP 200 — não um 404 — e
-    o PowerShell tentava executá-la. Ao adicionar um instalador novo, adicione a
-    regra no repo do site **junto**. O workflow `install-endpoints.yml` (agendado,
-    não é gate de PR) sonda todas as URLs documentadas e falha se alguma voltar
-    HTML. O Worker em `deploy/installer-worker/` está descontinuado e nunca serviu
-    o `garraia.org`.
+    Editar `install.sh`/`install.ps1` aqui **não** muda o que `garraia.org` serve.
+    O hosting da Lovable **IGNORA** `public/_redirects`: `/install.sh` e
+    `/install.ps1` só funcionam porque existem **cópias estáticas em `public/`**
+    daquele repo (o Vite copia `public/*` para a raiz do build), mantidas em
+    sincronia com o raw do `main` daqui pelo workflow de sync do site
+    (`sync-install-sh.yml`, cron diário). Publicar em produção é um passo
+    **manual** do Lovable (Publish no editor, ou `deploy_project` via MCP) —
+    merge no repo do site não muda o que garraia.org serve até alguém publicar.
+    Essa separação já causou dois apagões do
+    `irm https://garraia.org/install.ps1 | iex`: em 2026-08, HTML da home com
+    HTTP 200 (o fallback SPA engolia a rota, na época em que se acreditava que
+    `_redirects` valia); em 2026-08-31, 404 puro (faltava `public/install.ps1`).
+    Ao adicionar um instalador novo, adicione **junto** o arquivo estático + a
+    entrada no sync do repo do site, e republique. O `_redirects` e o
+    `infra/nginx.conf` de lá são future-proofing para self-hosting, não o
+    mecanismo vivo. O workflow `install-endpoints.yml` (agendado, não é gate de
+    PR) sonda todas as URLs documentadas, imprime o código HTTP de cada sonda,
+    roda todas antes de falhar e verifica o contrato real do Windows com
+    `Invoke-RestMethod`. O Worker em `deploy/installer-worker/` está
+    descontinuado e nunca serviu o `garraia.org`.
 18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 
 ## Framework de Desenvolvimento: Superpowers
