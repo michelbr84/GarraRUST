@@ -148,9 +148,13 @@ Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next
 
 > Cada plataforma também tem um **archive**: `.tar.gz` (Linux/macOS) ou `.zip`
 > (Windows), contendo o binário com o nome simples `garraia`/`garraia.exe` mais
-> `LICENSE` e `README.md`. Os binários crus continuam publicados sem alteração —
-> o `garra update` e os dois instaladores resolvem assets por nome exato, então
-> eles são superfície de compatibilidade e não serão renomeados nem removidos.
+> `LICENSE` e `README.md`. A partir da `v0.3.4`, as releases trazem também
+> **pacotes Linux** — `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` e um
+> `garraia-linux-x86_64.AppImage` portátil (todos best-effort; ver
+> [`docs/installation.md`](docs/installation.md)). Os binários crus continuam
+> publicados sem alteração — o `garra update` e os dois instaladores resolvem
+> assets por nome exato, então eles são superfície de compatibilidade e não
+> serão renomeados nem removidos.
 
 </details>
 
@@ -209,8 +213,11 @@ ser reiniciados.
 > protegeu o seu PC"* na primeira execução do MSI do desktop — é esperado, não é
 > adulteração. Verifique o `SHA256SUMS` se quiser certeza.
 
-> **Windows ARM64:** ainda não há build nativo. O instalador avisa e instala o
-> binário x86_64, que roda sob emulação do Windows 11.
+> **Windows ARM64:** a partir da `v0.3.4` existe build nativo
+> (`garraia-windows-aarch64.exe`, best-effort) e o instalador o seleciona
+> automaticamente. Pinar `GARRAIA_VERSION` anterior à `v0.3.4` em ARM64 dá 404 —
+> aquelas releases só serviam ARM64 via binário x86_64 sob emulação do
+> Windows 11, que segue disponível para download manual.
 
 </details>
 
@@ -231,7 +238,7 @@ garraia rollback
 
 </details>
 
-As releases atuais (v0.3.x) publicam os 5 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows `.exe`); instaladores desktop (Windows `.msi`) e mobile (Android `.apk`) foram publicados até a v0.2.1, nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
+As releases atuais (v0.3.4+) publicam 6 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64) com seus archives, pacotes Linux (`.deb`/`.rpm`/AppImage) e os instaladores desktop do Windows (`.msi` + `-setup.exe`, de volta ao pipeline desde 2026-08-30) — os formatos além dos binários x86_64 são best-effort. O `.apk` mobile (Android) foi publicado até a v0.2.1. Tudo nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
 
 ## Por que GarraIA?
 

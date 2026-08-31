@@ -53,7 +53,9 @@ primeira execução do MSI do desktop. Detalhes em
 [`docs/installation.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md).
 
 **Binários pré-compilados:** Linux (x86_64 e ARM64 a partir da v0.3.2), macOS e
-Windows — cada um também como archive (`.tar.gz`, ou `.zip` no Windows). Veja a
+Windows (x86_64, e ARM64 nativo a partir da v0.3.4) — cada um também como
+archive (`.tar.gz`, ou `.zip` no Windows). A partir da v0.3.4 há também
+pacotes Linux best-effort: `.deb`, `.rpm` e AppImage (x86_64). Veja a
 [página de releases](https://github.com/michelbr84/GarraRUST/releases).
 
 **Requisito mínimo (Linux):** os binários publicados exigem **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+) — o `install.sh` verifica isso antes de baixar e aborta com instruções se a distro for mais antiga. Em musl (Alpine) ou glibc anterior, compile do source. Detalhes em [`docs/installation.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md).

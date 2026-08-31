@@ -5,9 +5,42 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-08-18 (America/New_York)
+**Atualizado:** 2026-08-31 (America/New_York)
 
-## Concluído nesta sessão (2026-08-18 — cleanup total + v0.3.1/v0.3.2)
+## Concluído nesta sessão (2026-08-31 — release v0.3.4 + pacotes Linux + Windows ARM64)
+
+- **Release v0.3.4 preparada** (plan 0361, ADR 0015): `[Unreleased]` fundido na
+  seção `[0.3.4]` do CHANGELOG (data 2026-08-31). Primeira release a exercitar
+  a matriz do plan 0359 (archives, MSI/NSIS, `install.ps1` — a sonda
+  `release-cdn/install.ps1` do `install-endpoints.yml` fica verde com ela).
+  Publicação: `workflow_dispatch` do Release com `version=v0.3.4` + dispatch
+  manual do Deploy (tag via `GITHUB_TOKEN` não dispara workflows de tag-push —
+  documentado no runbook §2/§4).
+- **Pacotes Linux `.deb`/`.rpm`/AppImage** no novo job best-effort
+  `package-linux` do `release.yml`: nfpm 2.47.0 + appimagetool 1.9.1, ambos
+  pinados por versão + SHA-256; empacotam os binários já buildados
+  (`/usr/bin/garraia`; `.deb` exige `libc6 >= 2.35`); nomes de asset sem
+  versão. Config em `packaging/`. ADR 0015 registra a decisão de toolchain
+  (nfpm vs cargo-deb/fpm; appimagetool 1.9.1 porque o AppImageKit 13 foi
+  marcado obsoleto pelo upstream).
+- **Windows ARM64 nativo best-effort**: job `build-windows-aarch64`
+  (`aarch64-pc-windows-msvc`; wasmtime é Tier 3 nesse alvo — falha não bloqueia
+  a release), `garra update` com o arm `(windows, aarch64)` + primeiro módulo
+  de testes do `update.rs`, `install.ps1` instalando o nativo (pinar
+  `GARRAIA_VERSION < v0.3.4` em ARM64 dá 404 — caveat documentado).
+- **Paridade de testes dos instaladores** (regra 16): nova suíte
+  `tests/install_ps1/platform.ps1` (registrada no `installer-powershell` do
+  ci.yml) e caso mixed de `SHA256SUMS` com `.deb`/`.rpm`/`.AppImage` nos
+  `checksum_format` **dos dois lados** (o sh só cobria o irmão `.sha256`).
+- **Docs sincronizadas**: READMEs (incl. a linha estale do pt-BR que dizia
+  "MSI/APK até a v0.2.1"), `docs/installation.md` (tabela + seção Linux
+  packages + caveat `garra update` sob pacote root-owned), `docs/releasing.md`
+  (matriz de assets + verificação + Deploy manual), wiki, ROADMAP §4.1
+  (restantes: só DMG notarizado + AppImage aarch64), CLAUDE.md regra 15
+  (lista aditiva ganha `.deb`/`.rpm`/`.AppImage`); typo do ADR 0014 (plan
+  0360, não 0361) corrigido.
+
+## Concluído em 2026-08-18 (cleanup total + v0.3.1/v0.3.2)
 
 - **Repo zerado e verificado**: 0 issues abertas, 0 PRs abertos, só a branch
   `main`. Trigger `garra-routine-trigger.yml` **desativado** (`gh workflow
@@ -274,11 +307,15 @@ curtos para a próxima sessão autônoma.
    `docker run --rm -p 3888:3888 garraia:local`,
    `curl -fsS http://localhost:3888/ping`,
    `curl -fsS http://localhost:3888/health`.
-2. Rodar smoke público Runpod quando houver endpoint disponível:
+7. Rodar smoke público Runpod quando houver endpoint disponível:
    `curl -fsS https://<ENDPOINT_ID>.api.runpod.ai/ping`.
-3. Abrir follow-up para `PORT_HEALTH` separado somente se Runpod exigir health
+8. Abrir follow-up para `PORT_HEALTH` separado somente se Runpod exigir health
    listener distinto de `PORT`.
-4. Decidir destino de GAR-492: fechar épico como MVP completo ou abrir issues
+9. Decidir destino de GAR-492: fechar épico como MVP completo ou abrir issues
    separadas para dogfood em bug real e execução async/provider-backed.
-5. Preparar ambiente local com Rust toolchain para permitir mudanças de código
-   mais ambiciosas nas próximas sessões.
+10. Preparar ambiente local com Rust toolchain para permitir mudanças de código
+    mais ambiciosas nas próximas sessões.
+11. Pós-merge da v0.3.4: disparar o Release (`version=v0.3.4`), verificar os
+    assets (incl. aditividade dos 5 nomes crus da v0.3.3), disparar o Deploy
+    (`tag=v0.3.4`) e conferir o `install-endpoints.yml` do dia seguinte.
+    Follow-ups registrados: AppImage aarch64 e DMG notarizado (ROADMAP §4.1).

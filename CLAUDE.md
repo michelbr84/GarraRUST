@@ -402,7 +402,8 @@ benches/
     nem seus `<asset>.sha256` irmaos. `crates/garraia-cli/src/update.rs:42-48` resolve o
     asset por nome exato e `:127` exige o `.sha256` irmao, entao qualquer renomeacao quebra
     o `garra update` de toda instalacao ja existente no momento em que ela pular para essa
-    versao. Formatos novos (`.tar.gz`, `.zip`, `.msi`) entram **aditivamente**, ao lado.
+    versao. Formatos novos (`.tar.gz`, `.zip`, `.msi`, `.deb`, `.rpm`, `.AppImage`) entram
+    **aditivamente**, ao lado.
     O `select_checksum_line` do `install.sh` (e o `Select-ChecksumLine` do `install.ps1`)
     ancoram o nome em fim de linha justamente para que `garraia-linux-x86_64` nunca case
     com `garraia-linux-x86_64.tar.gz`.

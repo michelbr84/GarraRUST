@@ -114,8 +114,12 @@ low-reputation unsigned binary. This is expected, not a sign of tampering --
 verify the `SHA256SUMS` entry if you want certainty. Removing the warning
 requires an OV/EV code-signing certificate, which is tracked separately.
 
-**Windows ARM64.** No native ARM64 build is published yet. The installer warns
-and installs the x86_64 binary, which runs under Windows 11's x64 emulation.
+**Windows ARM64.** From `v0.3.4` a native ARM64 build
+(`garraia-windows-aarch64.exe`, best-effort) is published, and the installer
+selects it automatically on ARM64 hosts. Pinning `GARRAIA_VERSION` to anything
+older than `v0.3.4` on ARM64 fails with a 404 -- those releases only served
+ARM64 via the x86_64 binary under Windows 11's x64 emulation, which you can
+still download by hand if you need an older version.
 
 **Desktop app (optional).** Releases also carry
 `garraia-desktop-windows-x86_64.msi` (and, when the bundler produces it, a NSIS
@@ -321,11 +325,39 @@ Download from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases
 | macOS | x86_64 | `garraia-macos-x86_64` | `garraia-macos-x86_64.tar.gz` |
 | macOS | aarch64 (Apple Silicon) | `garraia-macos-aarch64` | `garraia-macos-aarch64.tar.gz` |
 | Windows | x86_64 | `garraia-windows-x86_64.exe` | `garraia-windows-x86_64.zip` |
+| Windows | aarch64 (ARM64, from `v0.3.4`) | `garraia-windows-aarch64.exe` | `garraia-windows-aarch64.zip` |
 
 Plus, on Windows only, the desktop installers
 `garraia-desktop-windows-x86_64.msi` and
 `garraia-desktop-windows-x86_64-setup.exe` (both best-effort -- a release may
 ship without them).
+
+### Linux packages (`.deb` / `.rpm` / AppImage)
+
+From `v0.3.4` releases also carry Linux packages (all best-effort, packaged by
+the `package-linux` job from the same binaries as above -- see ADR 0015):
+
+```bash
+# Debian / Ubuntu (needs glibc >= 2.35, i.e. Ubuntu 22.04+ / Debian 12+):
+sudo apt install ./garraia-linux-x86_64.deb
+
+# Fedora / RHEL / openSUSE:
+sudo rpm -i garraia-linux-x86_64.rpm
+
+# Portable AppImage (x86_64 only for now):
+chmod +x garraia-linux-x86_64.AppImage
+./garraia-linux-x86_64.AppImage --version
+```
+
+Both packages install `/usr/bin/garraia` plus `LICENSE`/`README.md` under
+`/usr/share/doc/garraia/`. aarch64 variants (`garraia-linux-aarch64.deb` /
+`.rpm`) exist whenever the best-effort aarch64 binary was built.
+
+**`garraia update` under a package install.** The self-updater swaps the
+binary file in place, and a package installs it root-owned in `/usr/bin` -- so
+run `sudo garraia update`, or simply download and install the next release's
+package. The packages are not GPG-signed (there is no hosted apt/dnf
+repository); verify downloads against the release's `SHA256SUMS`.
 
 **Bare binary or archive?** They contain the same program. The archive adds
 `LICENSE` and `README.md` and unpacks to a single directory whose executable is
