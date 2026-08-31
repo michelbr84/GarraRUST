@@ -132,13 +132,16 @@ garraia start
 In TTY-less contexts (Docker build, CI) the installer prints next steps
 and exits 0 instead of blocking.
 
-Releases ship 5 prebuilt CLI binaries: Linux x86_64/aarch64,
-macOS x86_64/aarch64, Windows x86_64 — each also as a `.tar.gz`
+Releases ship 6 prebuilt CLI binaries: Linux x86_64/aarch64,
+macOS x86_64/aarch64, Windows x86_64/aarch64 — each also as a `.tar.gz`
 (`.zip` on Windows) containing the binary named plainly `garraia`,
-plus `LICENSE` and `README.md`. The bare binaries stay published
-unchanged because `garra update` and both installers resolve assets
-by exact name. The Linux binaries are built against glibc 2.35, so
-they need Ubuntu 22.04+ / Debian 12+; older distros and musl-based
+plus `LICENSE` and `README.md`. From `v0.3.4` they also carry Linux
+packages — `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` and a portable
+`garraia-linux-x86_64.AppImage` (all best-effort; see
+[docs/installation.md](docs/installation.md)). The bare binaries stay
+published unchanged because `garra update` and both installers resolve
+assets by exact name. The Linux binaries are built against glibc 2.35,
+so they need Ubuntu 22.04+ / Debian 12+; older distros and musl-based
 systems (Alpine) have to build from source. The installer checks
 this before downloading.
 
@@ -174,6 +177,11 @@ Flags mirror the shell installer (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
 `-NoLocal`, `-Version <tag>`, `-InstallDir <dir>`, `-NoModifyPath`, `-Help`),
 each an alias for the matching `GARRAIA_*` environment variable; an env var set
 by the caller wins over its flag.
+
+On Windows ARM64 the installer picks the native
+`garraia-windows-aarch64.exe` (published from `v0.3.4`, best-effort);
+pinning `GARRAIA_VERSION` to anything older on ARM64 fails with a 404, since
+those releases only served ARM64 via the x86_64 binary under emulation.
 
 The binaries and installers are **not code-signed**, so SmartScreen shows
 "Windows protected your PC" on first run of the desktop MSI — expected, not

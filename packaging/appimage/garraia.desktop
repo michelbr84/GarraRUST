@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GarraIA
+Comment=Gateway de IA multi-canal (CLI)
+Exec=garraia
+Icon=garraia
+Terminal=true
+Categories=Utility;

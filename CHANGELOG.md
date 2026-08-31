@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-31
+
 ### Added
 - **Instalador de uma linha para Windows.** Novo `install.ps1`, irmão do
   `install.sh` e em paridade de comportamento com ele:
@@ -31,6 +33,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Suítes de teste do `install.ps1`** em `tests/install_ps1/` (84 asserções)
   e o job `installer-powershell` no CI, com PSScriptAnalyzer bloqueante e
   matriz PowerShell 7 (Linux) + Windows PowerShell 5.1.
+- **Pacotes Linux: `.deb`, `.rpm` e AppImage.** Novo job best-effort
+  `package-linux` no `release.yml` empacota os binários já buildados em
+  `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` (nfpm 2.47.0, instala
+  `/usr/bin/garraia`; o `.deb` declara `libc6 >= 2.35`) e
+  `garraia-linux-x86_64.AppImage` (appimagetool 1.9.1) — ferramentas pinadas
+  por versão + SHA-256 no workflow. Nomes de asset sem versão para URLs
+  `/releases/latest/download/` estáveis; tudo aditivo aos binários crus
+  (regra 15). Decisão de toolchain: ADR 0015.
+- **Binário nativo Windows ARM64 (best-effort).** Novo job
+  `build-windows-aarch64` (cross-compile `aarch64-pc-windows-msvc`) publica
+  `garraia-windows-aarch64.exe` + `.zip`. O `garra update` ganha o mapeamento
+  `(windows, aarch64)` — com o primeiro módulo de testes do `update.rs` — e o
+  `install.ps1` passa a instalar o nativo em hosts ARM64 em vez do x86_64 sob
+  emulação. Pinar `GARRAIA_VERSION < v0.3.4` em ARM64 agora dá 404: caveat
+  documentado, mesmo precedente do install.sh em Apple Silicon pré-v0.2.1.
+- **Suíte `tests/install_ps1/platform.ps1`** (mapeamento de arquitetura,
+  WOW64, rejeição de 32-bit) e casos mixed novos nos `checksum_format` dos
+  dois instaladores cobrindo `.deb`/`.rpm`/`.AppImage` — o nome cru continua
+  selecionando só a própria linha do `SHA256SUMS` (invariante aditivo).
 
 ### Fixed
 - **Sidecar do Garra Desktop nunca era encontrado.** `src/gateway.rs:14` chama
@@ -98,6 +119,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   crate compila contra o lopdf. O novo teste escreve um PDF de uma página com o
   writer do lopdf e o lê de volta por `extract_text_from_bytes`, exercendo
   writer → reader → xref → content stream → extração. Verde na 0.42 e na 0.44.
+- **`--model` sem `--provider` não trocava o provider.** `run_chat` só
+  substituía a string exibida no banner — o `Arc<dyn LlmProvider>` continuava
+  sendo o que o autodetect construiu, com o modelo interno obsoleto. Valia
+  para `garraia chat` e `garraia ask`.
+- `/model <nome>` no REPL agora normaliza a tag quando o provider é Ollama e
+  avisa quando o nome não aparece em `/models`.
+- **Binário Linux x86_64 roda em Ubuntu 22.04+ de novo** — o job
+  `build-linux-x86_64` usava `runs-on: ubuntu-latest`, que passou a mapear
+  para Ubuntu 24.04 (glibc 2.39); os binários da v0.3.2 **e da v0.3.3**
+  abortavam com ``version `GLIBC_2.39' not found`` em qualquer sistema com
+  glibc mais antiga (ex.: containers Ubuntu 22.04, Debian 12). O runner
+  agora é pinado em `ubuntu-22.04`, estabelecendo a baseline suportada:
+  **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+).
+- **`install.sh` checa a glibc antes de baixar** — novo preflight
+  `check_glibc` (`MIN_GLIBC=2.35`) falha cedo com mensagem acionável
+  (atualizar a distro ou `cargo install --git`) em vez do erro críptico do
+  loader depois da instalação. Detecta musl (Alpine) e aponta para build
+  from source. Coberto por `tests/install_sh/check_glibc.sh`, registrado no
+  job `installer-shellcheck` do `ci.yml` (sem isso a suíte nunca rodaria: o
+  job lista cada arquivo de teste explicitamente).
 
 ### Changed
 - **`rmcp` 1.7 → 2.2**, alinhando os tipos de modelo à spec MCP 2025-11-25
@@ -134,40 +175,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   com o lopdf — `CreationDate`/`ModDate` saem como bytes crus — então
   `default-features = false` + `features = ["chrono", "jiff", "rayon"]` destrava o
   bump sem mudança de comportamento e sem alterar código de produção.
-
-### Fixed
-- **`--model` sem `--provider` não trocava o provider.** `run_chat` só
-  substituía a string exibida no banner — o `Arc<dyn LlmProvider>` continuava
-  sendo o que o autodetect construiu, com o modelo interno obsoleto. Valia
-  para `garraia chat` e `garraia ask`.
-- `/model <nome>` no REPL agora normaliza a tag quando o provider é Ollama e
-  avisa quando o nome não aparece em `/models`.
-
-### Security
-- **RUSTSEC-2026-0192 fechado estruturalmente** — na 0.44 o `ttf-parser` passou a ser
-  opcional atrás da feature `font_embedding`, que não usamos (nem `FontData` nem
-  `add_font`). O `ttf-parser 0.25.1` (não mantido, sem upgrade seguro) saiu do
-  `Cargo.lock` e o ignore correspondente foi removido do `deny.toml`.
-
-## [0.3.4] - 2026-08-29
-
-### Fixed
-- **Binário Linux x86_64 roda em Ubuntu 22.04+ de novo** — o job
-  `build-linux-x86_64` usava `runs-on: ubuntu-latest`, que passou a mapear
-  para Ubuntu 24.04 (glibc 2.39); os binários da v0.3.2 **e da v0.3.3**
-  abortavam com ``version `GLIBC_2.39' not found`` em qualquer sistema com
-  glibc mais antiga (ex.: containers Ubuntu 22.04, Debian 12). O runner
-  agora é pinado em `ubuntu-22.04`, estabelecendo a baseline suportada:
-  **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+).
-- **`install.sh` checa a glibc antes de baixar** — novo preflight
-  `check_glibc` (`MIN_GLIBC=2.35`) falha cedo com mensagem acionável
-  (atualizar a distro ou `cargo install --git`) em vez do erro críptico do
-  loader depois da instalação. Detecta musl (Alpine) e aponta para build
-  from source. Coberto por `tests/install_sh/check_glibc.sh`, registrado no
-  job `installer-shellcheck` do `ci.yml` (sem isso a suíte nunca rodaria: o
-  job lista cada arquivo de teste explicitamente).
-
-### Changed
 - **OpenSSL agora é vendored/estático** (`native-tls/vendored` via
   garraia-channels, feature discord) — o binário de release não linka mais
   `libssl.so.x` do sistema, e o `pre-build` do `Cross.toml` deixou de
@@ -184,6 +191,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `rustls_backend` está bloqueado — o 0.12.5 mapeia a feature para
   `reqwest/rustls-tls`, removida no reqwest 0.13, que o tauri ^0.13 prende
   no lock; reavaliar quando o serenity suportar reqwest 0.13.
+
+### Security
+- **RUSTSEC-2026-0192 fechado estruturalmente** — na 0.44 o `ttf-parser` passou a ser
+  opcional atrás da feature `font_embedding`, que não usamos (nem `FontData` nem
+  `add_font`). O `ttf-parser 0.25.1` (não mantido, sem upgrade seguro) saiu do
+  `Cargo.lock` e o ignore correspondente foi removido do `deny.toml`.
 
 ## [0.3.3] - 2026-08-27
 

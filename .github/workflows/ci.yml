@@ -219,6 +219,9 @@ jobs:
       - name: Execute installer documented-URL tests
         run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/documented_urls.ps1
 
+      - name: Execute installer platform tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/platform.ps1
+
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:
     name: Clippy Linting

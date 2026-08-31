@@ -53,7 +53,8 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0011](0011-garra-max-power.md) | GarraMaxPower — Native Agent-Advanced Mode (`garra max-power`) | ✅ accepted | 2026-05-24 | [GAR-492](https://linear.app/chatgpt25/issue/GAR-492) |
 | [0012](0012-garra-persona.md) | Persona Amistosa do Garra — tom de voz padrão (inspirado em OpenHuman) | ✅ accepted | 2026-06-01 | GAR-771 |
 | [0013](0013-scheduling-two-tier-recurrence.md) | Recorrência de agendamento em duas camadas (cron no SQLite pessoal + RRULE no workspace) | ✅ accepted | 2026-08-29 | plan 0355 |
-| [0014](0014-anthropic-messages-shim.md) | Superfície Anthropic-compatible no gateway (`POST /v1/messages`) | ✅ accepted | 2026-08-30 | plan 0360/0361 |
+| [0014](0014-anthropic-messages-shim.md) | Superfície Anthropic-compatible no gateway (`POST /v1/messages`) | ✅ accepted | 2026-08-30 | plan 0360 |
+| [0015](0015-linux-packaging-toolchain.md) | Toolchain de empacotamento Linux (nfpm `.deb`/`.rpm` + appimagetool AppImage) | ✅ accepted | 2026-08-31 | plan 0361 |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

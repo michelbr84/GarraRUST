@@ -1,7 +1,7 @@
 # ADR 0014 — Superfície Anthropic-compatible no gateway (`POST /v1/messages`)
 
 **Status:** Accepted (2026-08-30, horário da Flórida)
-**Contexto:** plan 0361, epic `garra agents setup`
+**Contexto:** plan 0360, epic `garra agents setup`
 **Supersedes:** nada. **Superseded by:** nada.
 
 ## Contexto
