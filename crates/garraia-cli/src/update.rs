@@ -40,12 +40,24 @@ fn cache_path() -> PathBuf {
 
 /// Return the asset name for the current platform.
 fn platform_asset_name() -> Result<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    asset_name_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Map an (os, arch) pair onto the release asset name. These names are the
+/// compatibility surface of every release (CLAUDE.md, regra 15): they never
+/// change, and every entry needs a `<asset>.sha256` sibling published with it.
+/// `garraia-windows-aarch64.exe` exists from v0.3.4 onward; a native ARM64
+/// binary asking for it against an older release fails with "no asset for
+/// this platform", which is accurate — those releases only served ARM64 via
+/// the x86_64 binary under emulation.
+fn asset_name_for(os: &str, arch: &str) -> Result<&'static str> {
+    match (os, arch) {
         ("macos", "aarch64") => Ok("garraia-macos-aarch64"),
         ("macos", "x86_64") => Ok("garraia-macos-x86_64"),
         ("linux", "x86_64") => Ok("garraia-linux-x86_64"),
         ("linux", "aarch64") => Ok("garraia-linux-aarch64"),
         ("windows", "x86_64") => Ok("garraia-windows-x86_64.exe"),
+        ("windows", "aarch64") => Ok("garraia-windows-aarch64.exe"),
         (os, arch) => bail!("unsupported platform: {os}/{arch}"),
     }
 }
@@ -340,4 +352,62 @@ fn sha256_digest(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(d.as_ref());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regra 15 do CLAUDE.md: estes nomes são superfície de compatibilidade.
+    // Renomear qualquer um quebra `garra update` de toda instalação em campo.
+    #[test]
+    fn asset_names_are_the_published_compatibility_surface() {
+        let expected = [
+            (("linux", "x86_64"), "garraia-linux-x86_64"),
+            (("linux", "aarch64"), "garraia-linux-aarch64"),
+            (("macos", "x86_64"), "garraia-macos-x86_64"),
+            (("macos", "aarch64"), "garraia-macos-aarch64"),
+            (("windows", "x86_64"), "garraia-windows-x86_64.exe"),
+            (("windows", "aarch64"), "garraia-windows-aarch64.exe"),
+        ];
+        for ((os, arch), name) in expected {
+            assert_eq!(asset_name_for(os, arch).unwrap(), name, "{os}/{arch}");
+        }
+    }
+
+    #[test]
+    fn unsupported_platforms_fail_instead_of_guessing() {
+        for (os, arch) in [
+            ("freebsd", "x86_64"),
+            ("linux", "riscv64"),
+            ("windows", "x86"),
+        ] {
+            let err = asset_name_for(os, arch).unwrap_err();
+            assert!(
+                err.to_string().contains("unsupported platform"),
+                "{os}/{arch}: {err}"
+            );
+        }
+    }
+
+    // O download só prossegue quando existe o irmão `<asset>.sha256` com esse
+    // nome exato na release — o formato derivado aqui é o contrato que o
+    // release.yml cumpre ao gerar um `.sha256` por asset.
+    #[test]
+    fn checksum_sibling_name_appends_sha256_to_the_full_asset_name() {
+        let asset = asset_name_for("windows", "aarch64").unwrap();
+        assert_eq!(
+            format!("{asset}.sha256"),
+            "garraia-windows-aarch64.exe.sha256"
+        );
+    }
+
+    #[test]
+    fn current_platform_resolves_to_a_known_asset() {
+        // Em qualquer alvo em que a suíte compile e rode hoje, o updater deve
+        // resolver um nome — se um dia um alvo novo de CI cair no bail!, este
+        // teste aponta direto para o mapa em asset_name_for.
+        let name = platform_asset_name().unwrap();
+        assert!(name.starts_with("garraia-"));
+    }
 }
