@@ -232,7 +232,8 @@ function Invoke-GhRequest {
 }
 
 # Map the host architecture onto the release asset name. release.yml publishes
-# only garraia-windows-x86_64.exe today. Mirrors detect_platform (install.sh:180).
+# garraia-windows-x86_64.exe and, from v0.3.4 on, garraia-windows-aarch64.exe
+# (best-effort). Mirrors detect_platform (install.sh:180).
 function Get-GarraiaPlatform {
     # A 32-bit PowerShell on 64-bit Windows reports x86 in PROCESSOR_ARCHITECTURE
     # and the real architecture in PROCESSOR_ARCHITEW6432.
@@ -243,12 +244,12 @@ function Get-GarraiaPlatform {
     switch ($arch.ToUpperInvariant()) {
         'AMD64' { return "$script:Binary-windows-x86_64.exe" }
         'ARM64' {
-            # Windows 11 on ARM runs x64 binaries under emulation, so this
-            # works - just not natively. Warn and proceed rather than blocking
-            # an install that will actually succeed.
-            Write-Host 'warning: no native Windows ARM64 build is published yet.'
-            Write-Host '         Installing the x86_64 binary, which runs under emulation.'
-            return "$script:Binary-windows-x86_64.exe"
+            # Native ARM64 builds exist from v0.3.4 onward. Pinning
+            # GARRAIA_VERSION to anything older on an ARM64 host 404s (same
+            # documented caveat as install.sh on Apple Silicon before v0.2.1);
+            # the workaround is downloading garraia-windows-x86_64.exe by hand,
+            # which still runs under emulation.
+            return "$script:Binary-windows-aarch64.exe"
         }
         'X86' {
             Write-InstallError '32-bit Windows is not supported. Build from source instead.'

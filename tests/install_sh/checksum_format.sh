@@ -73,6 +73,29 @@ printf '%s *%s.sha256\n' "${HASH}" "${ARTIFACT}" > "${work}/sibling.sums"
 got="$(select_checksum_line "${ARTIFACT}" "${work}/sibling.sums" || true)"
 assert_eq "anchored to EOL (no .sha256 match)" "" "${got}"
 
+# --- the additive-release invariant (parity with checksum_format.ps1) --------
+# A realistic post-v0.3.4 SHA256SUMS: the bare binary shares its prefix with
+# the .sha256 sibling, the .tar.gz archive and the Linux packages
+# (.deb / .rpm / .AppImage). The bare name must select only its own line, and
+# each longer sibling must stay selectable on its own — adding formats never
+# changes which line an existing client picks.
+{
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  %s.sha256\n'   "${ARTIFACT}"
+    printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  %s.tar.gz\n'   "${ARTIFACT}"
+    printf 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  %s.deb\n'      "${ARTIFACT}"
+    printf 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  %s.rpm\n'      "${ARTIFACT}"
+    printf 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  %s.AppImage\n' "${ARTIFACT}"
+    printf '%s  %s\n' "${HASH}" "${ARTIFACT}"
+} > "${work}/mixed.sums"
+got="$(select_checksum_line "${ARTIFACT}" "${work}/mixed.sums" || true)"
+assert_eq "bare binary ignores .sha256/.tar.gz/.deb/.rpm/.AppImage" "${HASH}  ${ARTIFACT}" "${got}"
+got="$(select_checksum_line "${ARTIFACT}.deb" "${work}/mixed.sums" || true)"
+assert_eq ".deb still selectable on its own" \
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  ${ARTIFACT}.deb" "${got}"
+got="$(select_checksum_line "${ARTIFACT}.AppImage" "${work}/mixed.sums" || true)"
+assert_eq ".AppImage still selectable on its own" \
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  ${ARTIFACT}.AppImage" "${got}"
+
 # --- absent artifact yields empty -------------------------------------------
 printf '%s *garraia-windows-x86_64.exe\n' "${HASH}" > "${work}/absent.sums"
 got="$(select_checksum_line "${ARTIFACT}" "${work}/absent.sums" || true)"

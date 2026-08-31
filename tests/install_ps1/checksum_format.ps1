@@ -43,17 +43,24 @@ Assert-Equal 'windows .exe'  '66666666666666666666666666666666666666666666666666
 
 Write-Host ''
 Write-Host 'Select-ChecksumLine: end-of-line anchoring (the additive-release invariant)'
-# A realistic post-archives SHA256SUMS: the bare binary, its own .sha256
-# sibling, and the new .tar.gz / .zip all share a filename prefix.
+# A realistic post-v0.3.4 SHA256SUMS: the bare binary, its own .sha256
+# sibling, the .tar.gz / .zip archives and the Linux packages
+# (.deb / .rpm / .AppImage) all share a filename prefix, and the native
+# Windows ARM64 pair sits beside the x86_64 one.
 $mixed = @(
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  garraia-linux-x86_64.sha256',
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  garraia-linux-x86_64.tar.gz',
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  garraia-linux-x86_64',
     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  garraia-windows-x86_64.exe.sha256',
     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  garraia-windows-x86_64.zip',
-    'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  garraia-windows-x86_64.exe'
+    'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  garraia-windows-x86_64.exe',
+    '0000000000000000000000000000000000000000000000000000000000000000  garraia-linux-x86_64.deb',
+    '1234123412341234123412341234123412341234123412341234123412341234  garraia-linux-x86_64.rpm',
+    '5678567856785678567856785678567856785678567856785678567856785678  garraia-linux-x86_64.AppImage',
+    '9999999999999999999999999999999999999999999999999999999999999999  garraia-windows-aarch64.exe',
+    '8888888888888888888888888888888888888888888888888888888888888888  garraia-windows-aarch64.zip'
 )
-Assert-Equal 'bare binary does not match .sha256 or .tar.gz' `
+Assert-Equal 'bare binary does not match .sha256/.tar.gz/.deb/.rpm/.AppImage' `
     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' `
     (Get-ExpectedHash (Select-ChecksumLine -Artifact 'garraia-linux-x86_64' -Lines $mixed))
 Assert-Equal 'the .tar.gz still selectable on its own' `
@@ -62,6 +69,15 @@ Assert-Equal 'the .tar.gz still selectable on its own' `
 Assert-Equal 'windows .exe does not match .exe.sha256 or .zip' `
     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' `
     (Get-ExpectedHash (Select-ChecksumLine -Artifact 'garraia-windows-x86_64.exe' -Lines $mixed))
+Assert-Equal 'the .deb still selectable on its own' `
+    '0000000000000000000000000000000000000000000000000000000000000000' `
+    (Get-ExpectedHash (Select-ChecksumLine -Artifact 'garraia-linux-x86_64.deb' -Lines $mixed))
+Assert-Equal 'the .AppImage still selectable on its own' `
+    '5678567856785678567856785678567856785678567856785678567856785678' `
+    (Get-ExpectedHash (Select-ChecksumLine -Artifact 'garraia-linux-x86_64.AppImage' -Lines $mixed))
+Assert-Equal 'native ARM64 .exe does not match its .zip' `
+    '9999999999999999999999999999999999999999999999999999999999999999' `
+    (Get-ExpectedHash (Select-ChecksumLine -Artifact 'garraia-windows-aarch64.exe' -Lines $mixed))
 
 Write-Host ''
 Write-Host 'Select-ChecksumLine: absent artifact'
