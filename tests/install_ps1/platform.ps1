@@ -4,7 +4,7 @@
 # is compatibility surface (CLAUDE.md, regra 15): these exact strings must
 # match what release.yml publishes. From v0.3.4 the ARM64 branch returns the
 # native garraia-windows-aarch64.exe instead of falling back to x86_64 under
-# emulation — pinning that mapping here keeps a future refactor from silently
+# emulation -- pinning that mapping here keeps a future refactor from silently
 # reviving the fallback (or breaking the WOW64 detection).
 #
 # PROCESSOR_ARCHITECTURE / PROCESSOR_ARCHITEW6432 are plain env vars, so the
@@ -39,7 +39,7 @@ try {
     Set-ArchEnvironment -Architecture 'arm64'
     Assert-Equal 'lowercase arm64 also resolves' 'garraia-windows-aarch64.exe' (Get-GarraiaPlatform)
     # A 32-bit PowerShell on an ARM64 host reports x86 in PROCESSOR_ARCHITECTURE
-    # and the truth in PROCESSOR_ARCHITEW6432 — the WOW64 var must win.
+    # and the truth in PROCESSOR_ARCHITEW6432 -- the WOW64 var must win.
     Set-ArchEnvironment -Architecture 'x86' -Wow6432 'ARM64'
     Assert-Equal '32-bit shell on ARM64 host still gets aarch64' 'garraia-windows-aarch64.exe' (Get-GarraiaPlatform)
 
