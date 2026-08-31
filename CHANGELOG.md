@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`.deb` volta a carregar `LICENSE`/`README.md`.** O `packaging/nfpm.yaml`
+  marcava os docs com `type: doc`, que é um tipo **exclusivo do RPM** no nfpm
+  ("ignored by other packagers") — o `garraia-linux-*.deb` da v0.3.4 saiu só
+  com `/usr/bin/garraia`, sem o aviso MIT que uma redistribuição deve
+  carregar (o `.rpm` e os archives não foram afetados). Removido o
+  `type: doc`: como arquivos comuns, `LICENSE`/`README.md` entram nos dois
+  pacotes; o custo aceito é perder a marcação `%doc` no rpm. Vale a partir
+  da próxima release.
+
 ## [0.3.4] - 2026-08-31
 
 ### Added
