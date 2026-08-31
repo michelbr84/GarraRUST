@@ -413,15 +413,19 @@ benches/
 17. **O site `garraia.org` NÃO está neste repositório.** Ele vive em
     `michelbr84/garraia-74c335d5` (Vite + React + shadcn, publicado pelo Lovable).
     Editar `install.sh`/`install.ps1` aqui **não** muda o que `garraia.org` serve:
-    as rotas públicas são regras de redirect em `public/_redirects` daquele repo,
-    apontando para o raw do `main`. Foi exatamente essa separação que causou o
-    apagão do `irm https://garraia.org/install.ps1 | iex`: existia regra para
-    `/install.sh` e nenhuma para `/install.ps1`, então o fallback SPA
-    (`/* /index.html 200`) devolvia a home em HTML com HTTP 200 — não um 404 — e
-    o PowerShell tentava executá-la. Ao adicionar um instalador novo, adicione a
-    regra no repo do site **junto**. O workflow `install-endpoints.yml` (agendado,
-    não é gate de PR) sonda todas as URLs documentadas e falha se alguma voltar
-    HTML. O Worker em `deploy/installer-worker/` está descontinuado e nunca serviu
+    o hosting da Lovable **ignora** `public/_redirects`; o que responde em
+    `/install.sh` e `/install.ps1` são cópias estáticas em `public/` daquele repo,
+    mantidas em sincronia com o raw do `main` pelo workflow `sync-install-sh.yml`
+    (diário + `workflow_dispatch`) — e a produção só muda após um **Publish** no
+    Lovable. Foi exatamente essa separação que causou o apagão do
+    `irm https://garraia.org/install.ps1 | iex`: só existia a cópia de
+    `install.sh`, então `/install.ps1` respondia 404 (ou, sob o fallback SPA
+    `/* /index.html 200`, a home em HTML com HTTP 200) e o PowerShell tentava
+    executá-la. Ao adicionar um instalador novo, adicione a cópia em `public/` e a
+    entrada no workflow de sync do repo do site **junto** (o PR #6 de lá, de
+    2026-08-31, é o modelo). O workflow `install-endpoints.yml` (agendado, não é
+    gate de PR) sonda todas as URLs documentadas e falha se alguma voltar HTML ou
+    404. O Worker em `deploy/installer-worker/` está descontinuado e nunca serviu
     o `garraia.org`.
 18. **NUNCA** cherry-pickar ou misturar arquivos de migration (`crates/garraia-workspace/migrations/`) entre repositórios diferentes sem verificar a numeração estrita e linear. Os esquemas e numerações de migrations são independentes e forward-only.
 

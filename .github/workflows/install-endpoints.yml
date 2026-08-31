@@ -34,7 +34,12 @@ jobs:
       - name: Probe every documented installer URL
         shell: bash
         run: |
-          set -uo pipefail
+          # `shell: bash` roda o step sob `bash -eo pipefail`. O `-e` herdado
+          # abortava o step na primeira atribuicao `body="$(curl -f ...)"` que
+          # falhasse, antes do resumo "N endpoint(s) quebrados" — o log parecia
+          # ter sondado uma URL so (run 33397795606, 2026-08-31). O probe conta
+          # falhas e decide no fim; o `set +e` devolve esse controle a ele.
+          set +e -u -o pipefail
 
           failures=0
 
