@@ -55,6 +55,7 @@ Exit codes (a convencao 2/3/4/5 ja esta ocupada pelos scripts irmaos):
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import re
 import sys
@@ -66,6 +67,7 @@ DEFAULT_MD = "docs/security/codeql-suppressions.md"
 EXIT_OK = 0
 EXIT_PRECONDITION = 5
 EXIT_DRIFT = 6
+EXIT_EXPIRED = 7
 
 # Linha canonica do ledger markdown. Casa apenas as tres primeiras celulas, para
 # nao tropecar num `|` dentro da justificativa (que e prosa livre com codigo):
@@ -78,6 +80,36 @@ MD_ROW = re.compile(
 def fail(msg: str, code: int = EXIT_PRECONDITION) -> None:
     print(f"error: {msg}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def check_expiration(
+    audit_expiration: str | None, today: dt.date
+) -> tuple[bool, str]:
+    """Is the 90-day re-audit window still open?
+
+    Returns `(ok, message)`. The date lives in `audit_expiration` at the root
+    of the ledger and §3 regra 4 makes the re-audit mandatory every 90 days —
+    but until 2026-08-30 **nothing read the field**: not a script, not a
+    workflow, not a test. It sat expired for 29 days and no build noticed.
+    A rule with no reader is a comment, so this is what turns it into a gate.
+
+    Deliberately not auto-renewable: the date is the record that a human
+    looked at each justification. Moving it without doing that work is the
+    same fraud as hand-editing `.quality/baseline.json` to pass the ratchet.
+    """
+    if not audit_expiration:
+        return False, "ledger sem `audit_expiration` na raiz"
+    try:
+        deadline = dt.date.fromisoformat(audit_expiration)
+    except ValueError:
+        return False, f"`audit_expiration` nao e uma data ISO valida: {audit_expiration!r}"
+    if deadline < today:
+        overdue = (today - deadline).days
+        return False, (
+            f"re-auditoria do ledger vencida em {audit_expiration} "
+            f"(ha {overdue} dia(s))"
+        )
+    return True, f"re-auditoria do ledger valida ate {audit_expiration}"
 
 
 def unbacktick(cell: str) -> str:
@@ -212,6 +244,23 @@ def main() -> int:
         return EXIT_DRIFT
 
     print(f"ok: {len(entries)} entradas do ledger conferem com o codigo e com o .md")
+
+    # As ancoras batem; agora a janela de re-auditoria. Vem depois de proposito:
+    # um ledger com ancora podre e o problema mais urgente, e reportar os dois
+    # de uma vez esconderia o primeiro atras do segundo.
+    fresh, message = check_expiration(doc.get("audit_expiration"), dt.date.today())
+    if not fresh:
+        print(f"error: {message}", file=sys.stderr)
+        print(
+            "\nRevise o merito de cada entrada (a justificativa ainda procede? o\n"
+            "alerta ainda existe? mudou de categoria?) e so entao avance a data,\n"
+            "no MESMO commit. Avancar `audit_expiration` sozinho transforma o\n"
+            "ledger em teatro — e a mesma fraude que editar .quality/baseline.json\n"
+            "a mao para passar o ratchet.",
+            file=sys.stderr,
+        )
+        return EXIT_EXPIRED
+    print(f"ok: {message}")
     return EXIT_OK
 
 

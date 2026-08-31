@@ -13,9 +13,16 @@
 > entry references the helper guard line, the dismissed-as-FP rationale,
 > and the integration test that pins the rejection — see §4 alerts #67-#82.
 > Last updated: **2026-08-30**.
-> Audit re-triage por: **2026-08-01** — ⚠️ **VENCIDO** desde 2026-08-01
-> (entradas com mais de 90 dias devem ser revisitadas; alertas que não existem
-> mais no Security tab devem ser removidos do ledger).
+> Audit re-triage por: **2026-11-28** — 90 dias a partir da re-auditoria de
+> 2026-08-30 (entradas com mais de 90 dias devem ser revisitadas; alertas que
+> não existem mais no Security tab devem ser removidos do ledger).
+>
+> **A data agora é verificada por código.** `check-ledger-anchors.py` compara
+> `audit_expiration` com a data de hoje e sai com **exit 7** se estiver no
+> passado; o job `CodeQL Ledger Anchors` roda em todo PR. Até 2026-08-30 o
+> campo não era lido por *nada* — nem script, nem workflow, nem teste — e ficou
+> vencido 29 dias sem que nenhum build reclamasse. Uma regra sem leitor é um
+> comentário.
 >
 > Removida em 2026-08-30 a entrada do alerta **#43** (`credentials.rs:49`,
 > `rust/hard-coded-cryptographic-value`): o padrão que a justificava —
@@ -27,12 +34,43 @@
 > narrando o experimento empírico que usou o #43 como alvo — é registro
 > histórico, e por isso a referência lá virou texto simples.
 >
-> Estado do re-audit em 2026-08-29: a **metade mecânica** está feita e provada —
-> as 23 entradas ainda casam `rule_id`/`path`/`linha` (§5.2). A **metade de
-> julgamento** — cada justificativa ainda procede? o guard citado ainda está na
-> linha citada? — **não** foi refeita, e por isso a data **não** foi renovada:
-> mexer nela sem re-auditar seria exatamente o que §3 regra 4 existe para
-> impedir. Renovar só junto com o re-audit de verdade.
+> **Re-auditoria de mérito concluída em 2026-08-30** (issue
+> [#886](https://github.com/michelbr84/GarraRUST/issues/886)), sobre as 29
+> entradas. A metade mecânica virou contínua com o `CodeQL Ledger Anchors`
+> (PR #882), então esta passagem cobriu o que ferramenta não faz — se cada
+> justificativa ainda procede:
+>
+> - **Os 16 `rust/path-injection`** se apoiam em `validate_skill_name`
+>   (`path_validation.rs:76`) ser allow-list. Conferido: continua
+>   `is_ascii_alphanumeric() || c == b'-'` com `MAX_NAME_LEN = 128`, exatamente
+>   como o ledger alega. E é chamado **antes** de todos os 16 sinks, com
+>   `return` imediato no erro — verificado função a função, não por amostragem.
+> - **#111 / #112** (`config_cmd.rs`) imprimem `"set"`/`"not set"` e uma lista
+>   de *nomes* de provider (`.map(|(name, _)| name.clone())` em
+>   `check.rs:212`), nunca a chave.
+> - **#113** (`wizard/mod.rs:673`): o `key` vai só para `vault.set(entry, key)`;
+>   o `println!` interpola apenas `entry`. A correção de 2026-08-30 procede.
+> - **#115** (`session_store.rs:1326`): o único valor ligado à query é
+>   `params![hash_session_token(token)]`, duas linhas abaixo.
+> - **#144** (`signal/mod.rs`): reforçado desde a triagem — o POST de resposta
+>   do mesmo `tokio::spawn` passou a chamar `api::send_text`, que roda o guard.
+> - **#145 / #146** (`whatsapp/api.rs`): `GRAPH_API_BASE` é uma constante
+>   `https://`; não há caminho para tráfego em claro.
+> - **#40, #41, #42, #44, #45**: continuam dentro de `#[cfg(test)]`.
+>
+> Nenhuma entrada mudou de categoria e nenhuma virou achado real. A #43 saiu
+> por correção em código (acima), não por vencimento.
+>
+> **#165 — a condição de saída não é verificável neste repositório.** A entrada
+> diz que o `LEGACY_KDF_SALT` "só sai quando não houver mais instalações por
+> migrar". Confirmei que o código que o consome segue vivo:
+> `resolve_admin_encryption_key` é chamado no boot (`server.rs:657` e `:820`) e
+> dispara `migrate_admin_secrets_kdf`. Mas *se ainda existem instalações
+> anteriores a 2026-08-29 sem ter bootado* é fato de campo, não de código — o
+> repositório não tem como responder. A entrada fica, e a condição de saída
+> precisa de um critério observável (por exemplo: nenhuma instalação suportada
+> em versão anterior à que introduziu o salt por instalação) antes de poder ser
+> avaliada por quem for renovar em 2026-11-28.
 
 ## §1. Background
 
