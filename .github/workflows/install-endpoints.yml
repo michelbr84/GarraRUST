@@ -1,11 +1,19 @@
 # Sonda dos endpoints públicos de instalação.
 #
 # Por que existe: em 2026-08 o `irm https://garraia.org/install.ps1 | iex`
-# devolvia o HTML da home com HTTP 200 — não um 404 — porque o site tinha
-# regra de redirect para `/install.sh` e nenhuma para `/install.ps1`, então a
-# rota caía no fallback SPA. O `irm` baixava a home e o `iex` tentava
-# executá-la. Nenhum teste do repositório podia pegar isso: o site é
-# publicado fora daqui.
+# devolvia o HTML da home com HTTP 200 — não um 404 — porque a rota caía no
+# fallback SPA do site. O `irm` baixava a home e o `iex` tentava executá-la.
+# Nenhum teste do repositório podia pegar isso: o site é publicado fora daqui.
+#
+# Segundo apagão (2026-08-31, run #1 deste workflow): o hosting da Lovable
+# IGNORA `public/_redirects` — o garraia.org serve os instaladores como
+# arquivos ESTÁTICOS `public/install.{sh,ps1}` do repo do site. Faltava o
+# `public/install.ps1`, então a URL devolvia 404 puro. E este workflow morria
+# no primeiro curl com erro HTTP (exit 22) sem imprimir diagnóstico nenhum:
+# `shell: bash` roda com `-e -o pipefail` implícitos, e o `set -uo pipefail`
+# daqui não desligava o `-e` — toda a contabilidade de failures era código
+# morto. Daí as duas regras do script atual: nenhum comando falível fora de
+# guarda `|| var=$?`, e o código HTTP de cada sonda SEMPRE aparece no log.
 #
 # Por que NÃO é gate de PR: estas asserções falam do estado *implantado*, que
 # um PR não tem como consertar. Um deploy ruim do site travaria todo PR do
@@ -33,55 +41,115 @@ jobs:
 
       - name: Probe every documented installer URL
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
+          # `shell: bash` = `bash --noprofile --norc -e -o pipefail`. O `-e`
+          # implícito matou o run #1 no primeiro HTTP 404 (exit 22, zero
+          # diagnóstico). Regra do script: todo comando falível é capturado
+          # com `|| var=$?` e probe() SEMPRE retorna 0 — uma sonda vermelha
+          # não pode impedir as outras de rodar.
+          set -u
 
           failures=0
+          workdir="$(mktemp -d)"
+
+          # fail <label> <mode> <mensagem> — ::error e conta, ou ::warning.
+          fail() {
+            if [ "$2" = "warn" ]; then
+              echo "::warning ::$1: $3 (tolerado — ver nota release-cdn)"
+            else
+              echo "::error ::$1: $3"
+              failures=$((failures + 1))
+            fi
+          }
 
           # Assinatura de cada script. `install.sh` começa com o shebang;
           # `install.ps1` começa com o bloco de ajuda comment-based `<#`.
           probe() {
-            label="$1"
-            url="$2"
-            expected="$3"
+            label="$1"; url="$2"; expected="$3"; on_fail="${4:-error}"
+            body_file="${workdir}/body"
+            rm -f "${body_file}"
 
             echo "::group::${label}"
             echo "URL: ${url}"
 
-            body="$(curl -fsSL --retry 3 --retry-delay 2 --max-time 60 "${url}" 2>/dev/null)"
-            status=$?
+            http_code=""; curl_status=0
+            http_code="$(curl -sSL --retry 3 --retry-delay 2 --max-time 60 \
+              -o "${body_file}" -w '%{http_code}' "${url}")" || curl_status=$?
 
-            if [ "${status}" -ne 0 ]; then
-              echo "::error ::${label}: curl falhou (exit ${status}) em ${url}"
-              failures=$((failures + 1))
-              echo "::endgroup::"
-              return
+            if [ "${curl_status}" -ne 0 ]; then
+              # Sem -f e sem 2>/dev/null: o erro real do curl (DNS/TLS/
+              # timeout) já saiu no stderr logo acima.
+              fail "${label}" "${on_fail}" \
+                "curl falhou (exit ${curl_status}) em ${url} (HTTP ${http_code:-n/a})"
+              echo "::endgroup::"; return 0
             fi
 
-            # O modo de falha real: HTTP 200 com HTML no corpo.
-            case "${body}" in
+            if [ "${http_code}" != "200" ]; then
+              fail "${label}" "${on_fail}" "HTTP ${http_code} em ${url}"
+              echo "::endgroup::"; return 0
+            fi
+
+            head_bytes="$(head -c 4096 "${body_file}")" || head_bytes=""
+
+            # O modo de falha do primeiro apagão: HTTP 200 com HTML no corpo.
+            case "${head_bytes}" in
               *"<!DOCTYPE"*|*"<!doctype"*|*"<html"*)
-                echo "::error ::${label}: recebeu HTML em vez do script — o \
-            fallback SPA do site está engolindo a rota ${url}"
-                failures=$((failures + 1))
-                echo "${body}" | head -5
-                echo "::endgroup::"
-                return
+                fail "${label}" "${on_fail}" \
+                  "HTTP 200 mas o corpo é HTML — o fallback SPA do site está engolindo ${url}"
+                head -5 "${body_file}"
+                echo "::endgroup::"; return 0
                 ;;
             esac
 
-            case "${body}" in
-              "${expected}"*)
-                echo "OK — começa com a assinatura esperada (${expected})"
-                ;;
+            case "${head_bytes}" in
+              "${expected}"*) : ;;
               *)
-                echo "::error ::${label}: corpo não começa com ${expected}"
-                failures=$((failures + 1))
-                echo "${body}" | head -5
+                fail "${label}" "${on_fail}" \
+                  "corpo não começa com a assinatura esperada (${expected})"
+                head -5 "${body_file}"
+                echo "::endgroup::"; return 0
                 ;;
             esac
+
+            # Fidelidade extra para shell: o corpo INTEIRO precisa parsear —
+            # pega truncamento/corrupção que a assinatura não vê.
+            if [ "${expected}" = "#!/bin/sh" ]; then
+              sh_status=0
+              sh -n "${body_file}" || sh_status=$?
+              if [ "${sh_status}" -ne 0 ]; then
+                fail "${label}" "${on_fail}" \
+                  "corpo não passa em 'sh -n' (truncado/corrompido?)"
+                echo "::endgroup::"; return 0
+              fi
+            fi
+
+            echo "OK — HTTP 200, assinatura ${expected}"
             echo "::endgroup::"
+            return 0
           }
+
+          # --- release-cdn/install.ps1: tolerância temporária ----------------
+          # A v0.3.3 (2026-08-28) antecede o instalador Windows; o release.yml
+          # já publica install.ps1 nas próximas tags. Enquanto a "latest" for
+          # EXATAMENTE v0.3.3, a ausência vira ::warning. Qualquer tag
+          # posterior sem install.ps1 volta a ser erro duro, e se a consulta
+          # da tag falhar o modo também é erro duro (fail-safe, nunca
+          # silenciosamente tolerante). REMOVER este bloco (e o argumento
+          # extra do probe lá embaixo) depois da primeira release >= v0.3.4.
+          KNOWN_PRE_PS1_TAG="v0.3.3"
+          latest_tag=""
+          latest_tag="$(gh api "repos/${GITHUB_REPOSITORY:-michelbr84/GarraRUST}/releases/latest" \
+            --jq .tag_name 2>/dev/null)" || latest_tag=""
+          release_ps1_mode="error"
+          if [ "${latest_tag}" = "${KNOWN_PRE_PS1_TAG}" ]; then
+            release_ps1_mode="warn"
+            echo "release mais recente ainda é ${KNOWN_PRE_PS1_TAG} (pré-ps1):" \
+              "release-cdn/install.ps1 roda em modo warning"
+          fi
+
+          # --- probes --------------------------------------------------------
 
           # --- canal primário: o que a documentação e o site mandam usar -----
           probe "garraia.org/install.sh"  "https://garraia.org/install.sh"  "#!/bin/sh"
@@ -98,15 +166,54 @@ jobs:
             "https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1" "<#"
           probe "release-cdn/install.sh" \
             "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh" "#!/bin/sh"
-          # NOTA: o espelho do release CDN só resolve a partir da primeira
-          # release que carrega o install.ps1 (>= v0.3.4). A v0.3.3 é anterior
-          # ao instalador Windows, então este probe falha até a próxima tag —
-          # é exatamente o sinal que queremos ver.
           probe "release-cdn/install.ps1" \
-            "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1" "<#"
+            "https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1" "<#" \
+            "${release_ps1_mode}"
 
           if [ "${failures}" -ne 0 ]; then
             echo "::error ::${failures} endpoint(s) de instalação quebrados"
             exit 1
           fi
           echo "Todos os endpoints de instalação servem o script correto."
+
+      # Roda mesmo com o step anterior vermelho: cada step contribui o seu
+      # diagnóstico, e qualquer um dos dois falhando derruba o job.
+      - name: Probe irm fidelity (contrato do one-liner Windows)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          # O que o usuário Windows roda de verdade é `irm <url> | iex`. Um
+          # servidor que responda `application/octet-stream` faz o irm
+          # devolver byte[] em vez de [string], e o `| iex` quebra MESMO com
+          # o conteúdo byte-perfeito — modo de falha que a sonda curl acima
+          # não enxerga. (Restrição relacionada: install.ps1 precisa
+          # continuar ASCII puro — o irm do PowerShell 5.1 decodifica
+          # ISO-8859-1 quando o servidor não manda charset.)
+          $failures = 0
+          $urls = @(
+            'https://garraia.org/install.ps1',
+            'https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.ps1'
+          )
+          foreach ($url in $urls) {
+            Write-Host "::group::irm $url"
+            try {
+              $body = Invoke-RestMethod -Uri $url `
+                -MaximumRetryCount 3 -RetryIntervalSec 2 -TimeoutSec 60
+              if ($body -isnot [string]) {
+                Write-Host "::error ::irm ${url}: devolveu $($body.GetType().Name), não [string] — o Content-Type do servidor quebra 'irm | iex'"
+                $failures++
+              } elseif (-not $body.StartsWith('<#')) {
+                $head = $body.Substring(0, [Math]::Min(80, $body.Length)) -replace "`r?`n", ' '
+                Write-Host "::error ::irm ${url}: corpo não começa com '<#' (início: $head)"
+                $failures++
+              } else {
+                Write-Host "OK — [string] de $($body.Length) chars começando com '<#'"
+              }
+            } catch {
+              $code = try { [int]$_.Exception.Response.StatusCode } catch { 'n/a' }
+              Write-Host "::error ::irm ${url}: HTTP $code — $($_.Exception.Message)"
+              $failures++
+            }
+            Write-Host '::endgroup::'
+          }
+          if ($failures -ne 0) { exit 1 }
