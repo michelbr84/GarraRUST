@@ -29,6 +29,50 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Cheap tripwire that runs before any Rust compiles: `frontendDist: "../ui"`
+  # embeds whatever is on disk, and `cargo tauri build` does NOT fail when a
+  # static file referenced by the UI is missing. That is exactly how v0.3.4
+  # shipped an invisible parrot: ui/assets/parrot-sprite.png was gitignored,
+  # nothing generated it in CI, and the overlay's only visual is that sprite.
+  # A byte-compare against a fresh gen_sprite.py run is deliberately NOT done:
+  # zlib output is not stable across zlib/zlib-ng builds, so it would
+  # false-fail. Dimensions + PNG magic catch the real failure mode (absent or
+  # truncated file) without that fragility.
+  assert-ui-assets:
+    name: Assert UI assets exist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Every asset referenced by ui/ must exist on disk
+        run: |
+          set -euo pipefail
+          ui=crates/garraia-desktop/ui
+          refs=$(grep -rhoE "assets/[A-Za-z0-9._-]+" "$ui" --include='*.html' --include='*.css' --include='*.js' | sort -u)
+          [ -n "$refs" ] || { echo "::error ::no asset references found under $ui — the grep is broken, not the UI"; exit 1; }
+          for ref in $refs; do
+            if [ ! -f "$ui/$ref" ]; then
+              echo "::error ::$ref is referenced in ui/ but missing on disk — installers would ship an invisible overlay"
+              exit 1
+            fi
+            echo "ok: $ref"
+          done
+
+      - name: Sprite sheet is a 1280x600 PNG
+        run: |
+          set -euo pipefail
+          python3 - <<'EOF'
+          import struct
+          data = open('crates/garraia-desktop/ui/assets/parrot-sprite.png', 'rb').read()
+          assert data[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG'
+          width, height = struct.unpack('>II', data[16:24])
+          assert (width, height) == (1280, 600), f'unexpected sprite size {width}x{height}'
+          print(f'parrot-sprite.png ok: {width}x{height}, {len(data)} bytes')
+          EOF
+
   build-installer:
     name: Build MSI + NSIS (windows-latest)
     runs-on: windows-latest

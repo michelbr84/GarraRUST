@@ -10,17 +10,6 @@ const WIN_H: f64 = 320.0;
 /// Position adapts to screen resolution (bottom-right, with taskbar clearance).
 /// Returns an `Arc<AtomicBool>` tracking visibility state (true = visible).
 pub fn create_overlay(app: &AppHandle) -> tauri::Result<Arc<AtomicBool>> {
-    let monitor = app
-        .primary_monitor()?
-        .unwrap_or_else(|| panic!("No monitor found"));
-
-    let scale = monitor.scale_factor();
-    let screen_w = monitor.size().width as f64 / scale;
-    let screen_h = monitor.size().height as f64 / scale;
-
-    // Adaptive right margin: give more breathing room on ultra-wide displays.
-    let right_margin = if screen_w > 2560.0 { 56.0 } else { 24.0 };
-
     // Bottom margin clears the taskbar.
     // Windows/Linux taskbar is typically ~40px at the bottom.
     // macOS menu bar is at the top, so the bottom is free.
@@ -29,8 +18,24 @@ pub fn create_overlay(app: &AppHandle) -> tauri::Result<Arc<AtomicBool>> {
     #[cfg(not(target_os = "macos"))]
     let bottom_margin = 48.0_f64;
 
-    let x = screen_w - WIN_W - right_margin;
-    let y = screen_h - WIN_H - bottom_margin;
+    // Headless/RDP sessions can report no primary monitor; fall back to a
+    // fixed position instead of aborting the whole app in setup().
+    let (x, y) = match app.primary_monitor()? {
+        Some(monitor) => {
+            let scale = monitor.scale_factor();
+            let screen_w = monitor.size().width as f64 / scale;
+            let screen_h = monitor.size().height as f64 / scale;
+
+            // Adaptive right margin: more breathing room on ultra-wide displays.
+            let right_margin = if screen_w > 2560.0 { 56.0 } else { 24.0 };
+
+            (
+                screen_w - WIN_W - right_margin,
+                screen_h - WIN_H - bottom_margin,
+            )
+        }
+        None => (100.0, 100.0),
+    };
 
     WebviewWindowBuilder::new(app, "parrot", WebviewUrl::App("index.html".into()))
         .title("Garra")

@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **O papagaio do Garra Desktop voltou a aparecer.** O sprite
+  `crates/garraia-desktop/ui/assets/parrot-sprite.png` estava no `.gitignore`
+  ("binário grande" — na verdade 32KB) e nenhum build de CI executava o
+  `gen_sprite.py`, então todo instalador da v0.3.4 (MSI/NSIS) embarcava a
+  janela do overlay 100% transparente: um retângulo invisível de 220x320 no
+  canto inferior direito que ainda comia cliques. Instaladores antigos
+  (v0.2.1) funcionavam porque eram gerados em máquina de dev que tinha o
+  sprite. O PNG agora é commitado, o `.gitignore` documenta a regra nova e o
+  `desktop.yml` ganhou o job `assert-ui-assets`: todo `assets/...`
+  referenciado em `ui/` precisa existir em disco e o sprite precisa ser um
+  PNG 1280x600 (byte-compare com regeneração foi rejeitado de propósito —
+  a saída do zlib varia entre builds).
+- **`overlay.rs` não derruba mais o app sem monitor.** `create_overlay`
+  dava `panic!("No monitor found")` em sessão headless/RDP (violação da
+  regra nº 4 do CLAUDE.md); agora cai para posição fixa `(100, 100)`.
+- **READMEs da raiz ensinavam o nome errado do sidecar.** `README.md` e
+  `README.pt-BR.md` mandavam stagear `binaries/garra-<triple>`, mas o
+  `externalBin` é `binaries/garraia` — quem seguisse o doc construía um
+  desktop cujo gateway nunca subia (o mesmo bug corrigido no app em #878).
+- **`settings.html` sem versão fóssil nem controles mortos.** A página
+  exibia `v0.2.0` hardcoded (quatro minors atrás) e os toggles de
+  autostart/som nunca tiveram listener; a versão agora vem de
+  `app.getVersion()` e os toggles saíram (autostart vive na bandeja).
+
 - **`.deb` volta a carregar `LICENSE`/`README.md`.** O `packaging/nfpm.yaml`
   marcava os docs com `type: doc`, que é um tipo **exclusivo do RPM** no nfpm
   ("ignored by other packagers") — o `garraia-linux-*.deb` da v0.3.4 saiu só

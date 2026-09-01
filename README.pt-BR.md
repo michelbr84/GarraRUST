@@ -104,7 +104,7 @@ O app desktop requer que o binário CLI já esteja compilado como sidecar:
 cargo build --release -p garraia
 
 # 2. Copiar para o diretório de sidecar esperado pelo Tauri
-cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garra-$(rustc -vV | grep host | cut -d' ' -f2)
+cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garraia-$(rustc -vV | grep host | cut -d' ' -f2)
 
 # 3. Compilar o desktop
 cargo build --release -p garraia-desktop
