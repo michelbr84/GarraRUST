@@ -245,7 +245,7 @@ mod tests {
         drop(sink);
 
         let mut frames = Vec::new();
-        while let Ok(Some(Message::Text(text))) = collected.try_next() {
+        while let Ok(Message::Text(text)) = collected.try_recv() {
             frames.push(text.to_string());
         }
         assert_eq!(frames.len(), 2);
