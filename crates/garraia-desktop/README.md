@@ -7,11 +7,23 @@ Built with [Tauri v2](https://tauri.app/) — transparent always-on-top window, 
 
 - **Animated parrot** — idle, thinking, and talking sprite animations
 - **Speech bubble** — shows GarraIA responses in real time
-- **Global hotkey** `Alt+G` — toggle input bar from anywhere on the desktop
+- **Chat bar** — floating type-to-chat bar at the top-center of the desktop:
+  draggable by its grip, hide with ✕/Esc/tray/`Ctrl+Space`, position and
+  visibility persisted across restarts (`chat-bar.json` in the app config dir)
+- **Global hotkeys** — `Alt+G` toggles the parrot input bar, `Ctrl+Space`
+  toggles the chat bar
 - **WebSocket connection** to `garraia-gateway` on `ws://localhost:3888/ws/parrot`
-- **System tray** with contextual menu (Open, Restart Gateway, Toggle Voice, Open Logs, Autostart, Quit)
+  (shared client `ui/ws.js`; parrot and chat bar share the `parrot-desktop`
+  session, so the conversation is one continuous thread)
+- **System tray** with contextual menu (Open, Chat Bar, Restart Gateway, Toggle Voice, Open Logs, Settings, Autostart, Quit)
 - **Start with OS** — optional autostart via system login entry
-- **Adaptive positioning** — bottom-right corner, adjusts for screen resolution and taskbar
+- **Adaptive positioning** — parrot bottom-right, chat bar top-center; adjusts for screen resolution and taskbar
+
+> Linux note: on Wayland (Ubuntu's default session) window managers do not
+> honor `always_on_top`/`skip_taskbar` for regular toplevels — the parrot and
+> the chat bar behave as normal windows there. X11 sessions behave as
+> described. `Ctrl+Space` may clash with some IME toggles (ibus); the hotkey
+> lives in `src-tauri/src/hotkey.rs`.
 
 ## Requirements
 
@@ -55,9 +67,13 @@ Output bundles are placed in `target/release/bundle/`:
 crates/garraia-desktop/
 ├── src-tauri/          # Rust backend (Tauri v2)
 │   ├── src/
-│   │   ├── lib.rs      # App setup, global shortcut (Alt+G)
+│   │   ├── lib.rs      # App setup, command registry, exit flush
 │   │   ├── main.rs     # Binary entry point
-│   │   ├── overlay.rs  # Transparent window creation + toggle
+│   │   ├── overlay.rs  # Parrot window creation + toggle
+│   │   ├── chat_bar.rs # Chat bar window + position/visibility persistence
+│   │   ├── hotkey.rs   # Global shortcuts (Alt+G, Ctrl+Space)
+│   │   ├── gateway.rs  # garraia sidecar spawn/restart/kill
+│   │   ├── commands.rs # Tauri commands (dialogs, notify, chat bar, updater)
 │   │   └── tray.rs     # System tray icon + menu
 │   ├── capabilities/
 │   │   └── default.json
@@ -66,7 +82,10 @@ crates/garraia-desktop/
 └── ui/                 # WebView frontend (HTML/CSS/JS)
     ├── index.html
     ├── parrot.css
-    ├── parrot.js       # Animation engine + WebSocket client
+    ├── parrot.js       # Animation engine + shared WS wiring
+    ├── ws.js           # Shared WebSocket client (parrot + chat bar)
+    ├── chat-bar.html   # Floating chat bar
+    ├── settings.html
     └── assets/
         └── parrot-sprite.png   # 1280x600px sprite sheet (3 rows x 8 frames)
 ```
@@ -112,7 +131,7 @@ persists across gateway restarts and overlay reconnections.
 | Item              | Action                                                    |
 |-------------------|-----------------------------------------------------------|
 | Open Garra        | Show/hide the overlay window                              |
-| Quick Chat        | Toggle the quick-chat window (`Ctrl+Space`)               |
+| Chat Bar          | Show/hide the chat bar (`Ctrl+Space`)                     |
 | Restart Gateway   | Kill and respawn the bundled `garraia` sidecar            |
 | Toggle Voice      | Emit voice-toggle event to overlay (future feature)       |
 | Open Logs         | Open the app log directory in the file manager            |

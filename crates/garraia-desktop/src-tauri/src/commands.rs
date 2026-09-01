@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -70,16 +69,19 @@ pub async fn notify_message(
     Ok(())
 }
 
-// ── Quick-chat window management ────────────────────────────────────────────
+// ── Chat-bar window management ──────────────────────────────────────────────
 
-/// Hides the quick-chat window (called from the quick-chat JS on Escape).
+/// Hides the chat bar (called from the chat-bar JS on Escape / ✕) and
+/// persists the choice so it stays hidden on the next launch.
 #[tauri::command]
-pub async fn hide_quick_chat(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("quick-chat") {
-        win.hide()
-            .map_err(|e| format!("Failed to hide quick-chat: {e}"))?;
-    }
-    Ok(())
+pub async fn hide_chat_bar(app: tauri::AppHandle) -> Result<(), String> {
+    crate::chat_bar::hide(&app)
+}
+
+/// Grows/shrinks the chat-bar window when the response panel opens/closes.
+#[tauri::command]
+pub async fn set_chat_bar_expanded(app: tauri::AppHandle, expanded: bool) -> Result<(), String> {
+    crate::chat_bar::set_expanded(&app, expanded)
 }
 
 // ── Updater commands ────────────────────────────────────────────────────────

@@ -27,4 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# tokio::time::sleep no debounce de persistência da chat bar; o runtime em si
+# já é o do Tauri (tauri::async_runtime), esta dep só dá acesso à API.
+tokio = { workspace = true }
 

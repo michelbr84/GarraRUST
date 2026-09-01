@@ -6,7 +6,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 /// Registers global hotkeys:
 /// - Alt+G: toggle input bar in the parrot overlay
-/// - Ctrl+Space: toggle quick-chat overlay
+/// - Ctrl+Space: toggle the chat bar
 pub fn register_hotkeys(
     app: &AppHandle,
     visible: Arc<AtomicBool>,
@@ -38,7 +38,7 @@ pub fn register_hotkeys(
             if event.state != ShortcutState::Pressed {
                 return;
             }
-            crate::quick_chat::toggle_quick_chat(&handle_ctrl_space);
+            crate::chat_bar::toggle(&handle_ctrl_space);
         })?;
 
     Ok(())

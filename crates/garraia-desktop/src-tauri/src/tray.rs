@@ -13,7 +13,7 @@ const TRAY_ID: &str = "garra_tray";
 
 fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::Wry>> {
     let open = MenuItem::with_id(app, "open", "Open Garra", true, None::<&str>)?;
-    let quick_chat = MenuItem::with_id(app, "quick_chat", "Quick Chat", true, Some("Ctrl+Space"))?;
+    let chat_bar = MenuItem::with_id(app, "chat_bar", "Chat Bar", true, Some("Ctrl+Space"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let restart = MenuItem::with_id(
         app,
@@ -40,7 +40,7 @@ fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::
         app,
         &[
             &open,
-            &quick_chat,
+            &chat_bar,
             &sep1,
             &restart,
             &voice,
@@ -72,7 +72,7 @@ pub fn setup_tray(
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => crate::overlay::toggle_overlay(app, &visible_menu),
-            "quick_chat" => crate::quick_chat::toggle_quick_chat(app),
+            "chat_bar" => crate::chat_bar::toggle(app),
             "restart_gateway" => crate::gateway::restart(app, &gw),
             "toggle_voice" => {
                 if let Some(win) = app.get_webview_window("parrot") {

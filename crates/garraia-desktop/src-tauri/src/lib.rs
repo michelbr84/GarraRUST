@@ -1,8 +1,8 @@
+mod chat_bar;
 mod commands;
 mod gateway;
 mod hotkey;
 mod overlay;
-mod quick_chat;
 mod tray;
 
 use tauri::Manager;
@@ -25,6 +25,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let visible = overlay::create_overlay(app.handle())?;
+
+            // A chat bar lê/grava o estado gerenciado, então o manage() vem
+            // antes da criação da janela.
+            app.manage(chat_bar::ChatBarState::default());
+            chat_bar::create_chat_bar(app.handle())?;
+
             let gw = gateway::launch(app.handle());
 
             // Store in managed state so the exit handler can reach it
@@ -63,7 +69,8 @@ pub fn run() {
             commands::select_project_folder,
             commands::select_files,
             commands::notify_message,
-            commands::hide_quick_chat,
+            commands::hide_chat_bar,
+            commands::set_chat_bar_expanded,
             commands::check_for_updates,
             commands::install_update,
         ])
@@ -71,6 +78,9 @@ pub fn run() {
         .expect("error while running garraia-desktop")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                // Flush final do estado da chat bar (o debounce de Moved pode
+                // não ter disparado ainda).
+                chat_bar::save_state(app);
                 let gw = app.state::<gateway::GatewayHandle>();
                 gateway::kill(&gw);
             }

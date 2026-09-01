@@ -4,7 +4,7 @@
   "description": "Capability for the Garra parrot overlay window",
   "windows": [
     "parrot",
-    "quick-chat",
+    "chat-bar",
     "settings"
   ],
   "permissions": [

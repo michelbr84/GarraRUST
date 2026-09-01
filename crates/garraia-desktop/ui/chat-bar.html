@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Garra Chat Bar</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: transparent;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100%;
+      overflow: hidden;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 48px;
+      padding: 0 10px;
+      background: rgba(24, 24, 32, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      flex: 0 0 auto;
+    }
+    /* Grip de arraste: só ele move a janela — o input fica clicável/focável. */
+    .grip {
+      cursor: move;
+      color: rgba(255, 255, 255, 0.35);
+      font-size: 14px;
+      letter-spacing: 2px;
+      padding: 8px 2px;
+      user-select: none;
+    }
+    .logo {
+      font-size: 16px;
+      user-select: none;
+    }
+    .bar input {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: #eee;
+      padding: 8px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    .bar input:focus { border-color: rgba(136, 170, 255, 0.4); }
+    .bar input::placeholder { color: rgba(255, 255, 255, 0.3); }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #8af;
+      opacity: 0;
+      flex: 0 0 auto;
+    }
+    .dot.thinking {
+      opacity: 1;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.25; } }
+    .icon-btn {
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.45);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      user-select: none;
+    }
+    .icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+    #collapse { display: none; }
+    body.expanded #collapse { display: block; }
+    .panel {
+      display: none;
+      flex: 1;
+      margin-top: 6px;
+      padding: 12px 14px;
+      background: rgba(24, 24, 32, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      color: #ddd;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    body.expanded .panel { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="bar">
+      <div class="grip" data-tauri-drag-region title="Arraste para mover">&#x2847;&#x2847;</div>
+      <span class="logo" data-tauri-drag-region>&#x1F99C;</span>
+      <input id="query" type="text" placeholder="Converse com o Garra..." autocomplete="off" spellcheck="false" autofocus />
+      <div class="dot" id="dot"></div>
+      <button class="icon-btn" id="collapse" title="Recolher resposta">&#x25B4;</button>
+      <button class="icon-btn" id="close" title="Ocultar barra (bandeja ou Ctrl+Space para reabrir)">&#x2715;</button>
+    </div>
+    <div class="panel" id="panel"></div>
+  </div>
+
+  <script src="ws.js"></script>
+  <script>
+    'use strict';
+    const queryEl = document.getElementById('query');
+    const panelEl = document.getElementById('panel');
+    const dotEl = document.getElementById('dot');
+    const invoke = window.__TAURI__?.core?.invoke ?? (() => Promise.resolve());
+
+    let streaming = false;
+
+    // O redimensionamento da janela vive no Rust (set_chat_bar_expanded):
+    // a webview não recebe a capability core:window:allow-set-size e as
+    // constantes de geometria ficam num lugar só (chat_bar.rs).
+    function expand() {
+      document.body.classList.add('expanded');
+      invoke('set_chat_bar_expanded', { expanded: true }).catch(() => {});
+    }
+    function collapse() {
+      document.body.classList.remove('expanded');
+      invoke('set_chat_bar_expanded', { expanded: false }).catch(() => {});
+    }
+
+    const chat = window.GarraWS.connect({
+      onThinking() {
+        streaming = false;
+        dotEl.classList.add('thinking');
+        expand();
+        panelEl.textContent = 'Pensando...';
+      },
+      onChunk(text) {
+        if (!streaming) {
+          streaming = true;
+          expand();
+          panelEl.textContent = '';
+        }
+        panelEl.textContent += text;
+        panelEl.scrollTop = panelEl.scrollHeight;
+      },
+      onResponse(text) {
+        streaming = false;
+        dotEl.classList.remove('thinking');
+        expand();
+        panelEl.textContent = text;
+        panelEl.scrollTop = panelEl.scrollHeight;
+      },
+      onError(message) {
+        streaming = false;
+        dotEl.classList.remove('thinking');
+        expand();
+        panelEl.textContent = '⚠ ' + message;
+      },
+    });
+
+    queryEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const text = queryEl.value.trim();
+        if (!text) return;
+        if (chat.send(text)) {
+          queryEl.value = '';
+        } else {
+          expand();
+          panelEl.textContent = 'Garra offline — inicie o GarraIA primeiro';
+        }
+      } else if (e.key === 'Escape') {
+        if (document.body.classList.contains('expanded')) {
+          collapse();
+        } else {
+          invoke('hide_chat_bar').catch(() => {});
+        }
+      }
+      e.stopPropagation();
+    });
+
+    // Evita arraste acidental enquanto digita
+    queryEl.addEventListener('mousedown', e => e.stopPropagation());
+
+    document.getElementById('close').addEventListener('click', () => {
+      invoke('hide_chat_bar').catch(() => {});
+    });
+    document.getElementById('collapse').addEventListener('click', collapse);
+
+    // Quando a barra é reexibida (bandeja/atalho), o input volta ao foco.
+    window.addEventListener('focus', () => queryEl.focus());
+  </script>
+</body>
+</html>

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Garra Chat Bar.** Nova barra de chat flutuante do Garra Desktop: nasce
+  visível no topo central do monitor primário, arrastável pelo grip, e
+  conversa com o Garra pela mesma sessão `parrot-desktop` do papagaio (um
+  único fio de histórico, persistido em SQLite pelo gateway). Oculta/reaparece
+  por ✕, Esc, item "Chat Bar" da bandeja ou `Ctrl+Space`; posição e
+  visibilidade sobrevivem a restarts em `chat-bar.json` no diretório de
+  config do app (persistência manual — o `tauri-plugin-window-state`
+  restauraria também o tamanho e brigaria com o expand/collapse do painel).
+  O painel de resposta expande a janela via comando Rust
+  (`set_chat_bar_expanded`), então a webview não precisa da capability
+  `core:window:allow-set-size`. Em Wayland (default do Ubuntu) o WM não
+  honra always-on-top/skip-taskbar — a barra funciona como janela normal.
+
+### Changed
+- **Quick Chat evolui para a Chat Bar.** A janelinha centrada do `Ctrl+Space`
+  (`quick-chat.html`/`quick_chat.rs`) foi substituída pela barra; o atalho e o
+  item da bandeja agora alternam a barra. O cliente WebSocket que estava
+  copiado-e-colado em `parrot.js` e `quick-chat.html` virou o compartilhado
+  `ui/ws.js` (uma cópia a menos, e a terceira nunca nasceu).
+
 ### Fixed
 - **O papagaio do Garra Desktop voltou a aparecer.** O sprite
   `crates/garraia-desktop/ui/assets/parrot-sprite.png` estava no `.gitignore`
