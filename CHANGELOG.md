@@ -20,6 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `core:window:allow-set-size`. Em Wayland (default do Ubuntu) o WM não
   honra always-on-top/skip-taskbar — a barra funciona como janela normal.
 
+- **Streaming no `/ws/parrot`.** O gateway passa a emitir cada delta do LLM
+  como um frame `{"type":"chunk","text":...}` (via
+  `process_message_streaming_with_agent_config`), fechando com o
+  `{"type":"response"}` completo — autoritativo, então cliente que perder
+  chunks termina consistente. O papagaio e a chat bar já tinham o handler de
+  `chunk` pronto (era código morto desde o início); agora ele anima de
+  verdade. O loop drena os deltas concorrentemente ao task do agente (canal
+  limitado — mesma lição do `stream_turn` do `garra chat`).
+
 ### Changed
 - **Quick Chat evolui para a Chat Bar.** A janelinha centrada do `Ctrl+Space`
   (`quick-chat.html`/`quick_chat.rs`) foi substituída pela barra; o atalho e o

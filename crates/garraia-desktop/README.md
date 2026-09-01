@@ -119,9 +119,14 @@ All messages are JSON.
 ```json
 { "type": "connected" }
 { "type": "thinking" }
+{ "type": "chunk", "text": "..." }
 { "type": "response", "text": "..." }
 { "type": "error", "message": "..." }
 ```
+
+Each LLM delta arrives as one `chunk` frame (streaming); the closing
+`response` always carries the complete accumulated text, so clients that
+ignore or miss chunks still render the same conversation.
 
 The desktop always uses the fixed session ID `parrot-desktop` so conversation history
 persists across gateway restarts and overlay reconnections.
