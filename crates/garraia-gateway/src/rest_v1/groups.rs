@@ -41,7 +41,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use garraia_auth::{Action, Principal, WorkspaceAuditAction, audit_workspace_event, can};
-use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -863,18 +862,18 @@ pub async fn create_invite(
         .map_err(|msg| RestError::BadRequest(msg.into()))?;
 
     // 4. Generate invite token: 32 random bytes → URL-safe base64.
-    //    Uses `password_hash::rand_core::OsRng` (rand_core 0.6) to
-    //    avoid version conflict with argon2 0.5's rand_core dep.
+    //    `getrandom::fill` direct — same convention as garraia-auth.
     let mut token_bytes = [0u8; 32];
-    password_hash::rand_core::OsRng.fill_bytes(&mut token_bytes);
+    getrandom::fill(&mut token_bytes)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("getrandom failure: {e}")))?;
     let token_plaintext = URL_SAFE_NO_PAD.encode(token_bytes);
 
     // 5. Hash the token with Argon2id. The token is a random secret,
     //    not a user password, so we use default Argon2 params directly
-    //    rather than the garraia-auth RFC 9106 tuned params.
-    let salt = password_hash::SaltString::generate(&mut password_hash::rand_core::OsRng);
+    //    rather than the garraia-auth RFC 9106 tuned params. The salt is
+    //    generated internally by `hash_password` (password-hash 0.6).
     let token_hash = argon2::Argon2::default()
-        .hash_password(token_plaintext.as_bytes(), &salt)
+        .hash_password(token_plaintext.as_bytes())
         .map_err(|e| RestError::Internal(anyhow::anyhow!("argon2 hash failure: {e}")))?
         .to_string();
 

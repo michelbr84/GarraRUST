@@ -15,7 +15,8 @@
 //! [`AuthError::UnknownHashFormat`]: crate::error::AuthError::UnknownHashFormat
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use password_hash::phc::PasswordHash;
+use password_hash::{PasswordHasher, PasswordVerifier};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::AuthError;
@@ -44,10 +45,9 @@ fn argon2id() -> Argon2<'static> {
 ///   - `InternalProvider::create_identity` (signup)
 ///   - `InternalProvider::verify_credential` (lazy upgrade from PBKDF2)
 pub fn hash_argon2id(password: &SecretString) -> Result<String, AuthError> {
-    let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
     let argon = argon2id();
     let phc = argon
-        .hash_password(password.expose_secret().as_bytes(), &salt)
+        .hash_password(password.expose_secret().as_bytes())
         .map_err(|e| AuthError::Hashing(e.to_string()))?;
     Ok(phc.to_string())
 }
@@ -67,7 +67,7 @@ pub fn verify_argon2id(phc: &str, password: &SecretString) -> Result<bool, AuthE
     let argon = argon2id();
     match argon.verify_password(password.expose_secret().as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(password_hash::Error::Password) => Ok(false),
+        Err(password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(AuthError::Hashing(e.to_string())),
     }
 }
@@ -85,9 +85,9 @@ pub fn verify_pbkdf2(phc: &str, password: &SecretString) -> Result<bool, AuthErr
             parsed.algorithm
         )));
     }
-    match pbkdf2::Pbkdf2.verify_password(password.expose_secret().as_bytes(), &parsed) {
+    match pbkdf2::Pbkdf2::default().verify_password(password.expose_secret().as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(password_hash::Error::Password) => Ok(false),
+        Err(password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(AuthError::Hashing(e.to_string())),
     }
 }
@@ -184,10 +184,11 @@ mod tests {
     ///
     /// Reproduce via `examples/gen_pbkdf2_fixture.rs` (deleted before commit):
     /// ```ignore
-    /// let salt = SaltString::from_b64("Y3JhYi1zYWx0LWZpeGVk").unwrap();
-    /// Pbkdf2.hash_password_customized(
-    ///     b"correct horse battery staple", None, None,
-    ///     pbkdf2::Params { rounds: 600_000, output_length: 32 }, &salt,
+    /// // password-hash 0.6 API: salt is a raw `&[u8]`; b"crab-salt-fixed"
+    /// // encodes to exactly `Y3JhYi1zYWx0LWZpeGVk`.
+    /// Pbkdf2::default().hash_password_customized(
+    ///     b"correct horse battery staple", b"crab-salt-fixed", None, None,
+    ///     pbkdf2::Params::new_with_output_len(600_000, 32).unwrap(),
     /// ).unwrap().to_string()
     /// ```
     const PBKDF2_FIXTURE_PHC: &str = "$pbkdf2-sha256$i=600000,l=32$Y3JhYi1zYWx0LWZpeGVk$fJC/CVFjhIg4Ba4mggBBBt9+u5ygVtyQEzEFm7qN+xE";

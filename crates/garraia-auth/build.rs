@@ -21,9 +21,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use argon2::{Algorithm, Argon2, Params, Version};
-use password_hash::rand_core::{OsRng, RngCore};
-use password_hash::{PasswordHasher, SaltString};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -41,15 +39,13 @@ fn main() {
     // meaning; we never need to verify against it. We just need a stable
     // PHC string that has the same cost profile as a real password hash.
     //
-    // `OsRng` is pulled from `password_hash::rand_core` (rand_core 0.6) to
-    // avoid a multi-version conflict with `rand 0.9` / `rand_core 0.9`.
-    let mut rng = OsRng;
+    // The 16-byte salt is generated internally by `hash_password`
+    // (password-hash 0.6 pulls it from getrandom, same source as the secret).
     let mut secret_bytes = [0u8; 32];
-    rng.fill_bytes(&mut secret_bytes);
-    let salt = SaltString::generate(&mut OsRng);
+    getrandom::fill(&mut secret_bytes).expect("OS RNG must be available at build time");
 
     let phc = argon2
-        .hash_password(&secret_bytes, &salt)
+        .hash_password(&secret_bytes)
         .expect("Argon2id hash of 32 random bytes with valid params cannot fail");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("cargo always sets OUT_DIR"));
