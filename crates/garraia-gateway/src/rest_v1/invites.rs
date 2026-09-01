@@ -23,12 +23,11 @@
 //! The caller does NOT need an `X-Group-Id` header — the group is
 //! resolved from the matched invite row.
 
-use argon2::PasswordVerifier;
+use argon2::{PasswordHash, PasswordVerifier};
 use axum::Json;
 use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use garraia_auth::{Principal, WorkspaceAuditAction, audit_workspace_event};
-use password_hash::PasswordHash;
 use serde::Serialize;
 use serde_json::json;
 use utoipa::ToSchema;

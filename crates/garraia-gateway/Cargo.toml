@@ -55,9 +55,14 @@ futures = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 base64 = { workspace = true }
-# Plan 0018: Argon2id hashing for invite tokens.
-argon2 = "0.5"
-password-hash = { version = "0.5", features = ["getrandom"] }
+# Plan 0018: Argon2id hashing for invite tokens. Salts are generated
+# internally by `hash_password` (password-hash 0.6 via getrandom) and
+# `PasswordHash` comes from the argon2 re-export, so there is no direct
+# password-hash dependency anymore.
+argon2 = "0.6"
+# Cryptographic randomness for invite tokens + API keys — `getrandom::fill`
+# direct, same convention as garraia-auth.
+getrandom = "0.4"
 ring = { workspace = true }
 jsonwebtoken = { workspace = true }
 # Fase 3.4 REST /v1 (plan 0015): OpenAPI generation + Swagger UI.

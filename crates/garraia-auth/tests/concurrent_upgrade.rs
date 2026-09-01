@@ -20,7 +20,7 @@ use garraia_auth::{
     AuthError, Credential, InternalProvider, LoginConfig, LoginPool, RequestCtx, audit::AuditAction,
 };
 use garraia_workspace::{Workspace, WorkspaceConfig};
-use password_hash::{PasswordHasher, SaltString};
+use password_hash::PasswordHasher;
 use pbkdf2::Pbkdf2;
 use secrecy::SecretString;
 use sqlx::Row;
@@ -53,11 +53,10 @@ async fn concurrent_lazy_upgrade_emits_exactly_one_upgrade_row() -> anyhow::Resu
         .execute(&admin)
         .await?;
 
-    // Seed a PBKDF2 user.
+    // Seed a PBKDF2 user. Salt generated internally by `hash_password`.
     let plaintext = "concurrent-pw";
-    let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
-    let phc = Pbkdf2
-        .hash_password(plaintext.as_bytes(), &salt)
+    let phc = Pbkdf2::default()
+        .hash_password(plaintext.as_bytes())
         .unwrap()
         .to_string();
     assert!(phc.starts_with("$pbkdf2-sha256$"));
