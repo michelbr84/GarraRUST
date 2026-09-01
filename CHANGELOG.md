@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-01
+
 ### Added
 - **Garra Desktop para Linux (`.deb` + AppImage).** Novo job best-effort
   `build-linux-desktop` no `release.yml` (e gate de PR `build-linux-bundles`
