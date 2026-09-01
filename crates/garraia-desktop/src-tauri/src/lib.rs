@@ -38,7 +38,7 @@ pub fn run() {
 
             tray::setup_tray(app.handle(), visible.clone(), gw)?;
 
-            // Register global hotkeys (Alt+G overlay toggle, Ctrl+Space quick-chat)
+            // Register global hotkeys (Alt+G overlay toggle, Ctrl+Space chat bar)
             hotkey::register_hotkeys(app.handle(), visible)?;
 
             // Copy default config if not present

@@ -39,18 +39,8 @@ fn build_menu(app: &AppHandle, autostart_on: bool) -> tauri::Result<Menu<tauri::
     Menu::with_items(
         app,
         &[
-            &open,
-            &chat_bar,
-            &sep1,
-            &restart,
-            &voice,
-            &logs,
-            &settings,
-            &sep2,
-            &autostart,
-            &update,
-            &sep3,
-            &quit,
+            &open, &chat_bar, &sep1, &restart, &voice, &logs, &settings, &sep2, &autostart,
+            &update, &sep3, &quit,
         ],
     )
 }

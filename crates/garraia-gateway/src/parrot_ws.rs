@@ -234,7 +234,9 @@ mod tests {
     async fn forward_deltas_emits_one_chunk_frame_per_delta_in_order() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(4);
         tx.send("olá ".to_string()).await.expect("send first delta");
-        tx.send("mundo".to_string()).await.expect("send second delta");
+        tx.send("mundo".to_string())
+            .await
+            .expect("send second delta");
         // Produtor termina: dropar o sender fecha o canal e encerra o loop.
         drop(tx);
 
