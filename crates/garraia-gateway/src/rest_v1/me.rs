@@ -83,7 +83,6 @@ use garraia_auth::{
     PasswordChangeOutcome, Principal, WorkspaceAuditAction, anon_token, anonymize_identity,
     audit_workspace_event, change_password,
 };
-use password_hash::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
@@ -2961,13 +2960,14 @@ pub async fn create_my_api_key(
 
     // Generate 32 random bytes → "gai_<url-safe-base64-no-pad>"
     let mut key_bytes = [0u8; 32];
-    password_hash::rand_core::OsRng.fill_bytes(&mut key_bytes);
+    getrandom::fill(&mut key_bytes)
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("getrandom failure: {e}")))?;
     let raw_key = format!("gai_{}", URL_SAFE_NO_PAD.encode(key_bytes));
 
-    // Argon2id hash of the raw key (PHC string format).
-    let salt = password_hash::SaltString::generate(&mut password_hash::rand_core::OsRng);
+    // Argon2id hash of the raw key (PHC string format). Salt generated
+    // internally by `hash_password` (password-hash 0.6 via getrandom).
     let key_hash = argon2::Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
+        .hash_password(raw_key.as_bytes())
         .map_err(|e| RestError::Internal(anyhow::anyhow!("argon2 hash failure: {e}")))?
         .to_string();
 

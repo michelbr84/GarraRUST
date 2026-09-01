@@ -43,12 +43,16 @@ validator = { version = "0.21", features = ["derive"] }
 # Password hashing — Argon2id (RFC 9106 first recommendation: m=64MiB, t=3, p=4)
 # via RustCrypto. Isolated from garraia-security (which uses ring/PBKDF2) per
 # plan 0011 §13 Q5 default.
-argon2 = "0.5"
+argon2 = "0.6"
 # Legacy PBKDF2 verify for the dual-verify lazy upgrade path. PBKDF2-SHA256
-# stored as PHC strings produced by garraia-security and the GAR-413 migration tool.
-pbkdf2 = { version = "0.12", features = ["password-hash", "simple"] }
-# Shared PHC string parser — required by both argon2 and pbkdf2.
-password-hash = "0.5"
+# stored as PHC strings produced by garraia-security and the GAR-413 migration
+# tool. Feature `phc` (renamed from `simple` in 0.13) enables the PHC-string
+# verify path + the `Pbkdf2::default()` SHA-256 hasher.
+pbkdf2 = { version = "0.13", features = ["phc", "getrandom"] }
+# Shared PHC string parser — required by both argon2 and pbkdf2. Since 0.6 the
+# parsing lives in the `phc` crate (feature `phc`); `getrandom` powers the
+# internal salt generation of `hash_password`.
+password-hash = { version = "0.6.1", features = ["phc", "getrandom"] }
 # Constant-time refresh-token comparison.
 subtle = "2.6"
 # HMAC-SHA256 for refresh-token hash + sha2 for the digest primitive.
@@ -73,14 +77,12 @@ axum = { workspace = true }
 # random secret) at compile time so the constant-time anti-enumeration path
 # does not have to pay the hashing cost on every cold start. See plan 0011 §6.1.
 #
-# `rand` is pinned to 0.8 (NOT the workspace 0.9) because `password-hash 0.5`
-# brings `rand_core 0.6` and rand 0.9 brings `rand_core 0.9` — the two
-# `rand_core` major versions are incompatible at the trait level. Build-deps
-# are isolated from runtime-deps in cargo, so this pin does not affect the
-# workspace 0.9 rand used at runtime by jwt.rs / sessions.rs / hashing.rs.
-argon2 = "0.5"
-rand = "0.8"
-password-hash = { version = "0.5", features = ["getrandom"] }
+# The dummy secret comes from `getrandom::fill` and the salt is generated
+# internally by `hash_password` (password-hash 0.6 uses getrandom directly),
+# so the old `rand = "0.8"` / rand_core 0.6 pin is gone. `PasswordHasher` is
+# imported through the argon2 re-export — no direct password-hash build-dep.
+argon2 = "0.6"
+getrandom = "0.4"
 
 [dev-dependencies]
 # Compile-time `LoginPool: !Clone` denial — see GAR-391a security review H-1.

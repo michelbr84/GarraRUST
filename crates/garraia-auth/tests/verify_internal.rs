@@ -218,15 +218,14 @@ async fn argon2id_happy_path_emits_login_success_audit() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pbkdf2_happy_path_lazy_upgrades_to_argon2id() -> anyhow::Result<()> {
     use password_hash::PasswordHasher;
-    use password_hash::SaltString;
     use pbkdf2::Pbkdf2;
     let f = boot().await?;
 
     // Build a real PBKDF2-SHA256 PHC string with a known plaintext.
+    // Salt generated internally by `hash_password` (password-hash 0.6).
     let plaintext = "legacy-pw";
-    let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
-    let phc = Pbkdf2
-        .hash_password(plaintext.as_bytes(), &salt)
+    let phc = Pbkdf2::default()
+        .hash_password(plaintext.as_bytes())
         .unwrap()
         .to_string();
     assert!(phc.starts_with("$pbkdf2-sha256$"));

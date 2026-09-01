@@ -34,7 +34,7 @@ use garraia_auth::{
     LoginConfig, LoginPool, PasswordChangeOutcome, anonymize_identity, change_password,
     hash_argon2id,
 };
-use password_hash::{PasswordHasher, SaltString};
+use password_hash::PasswordHasher;
 use pbkdf2::Pbkdf2;
 use secrecy::SecretString;
 use sqlx::Row;
@@ -133,10 +133,10 @@ async fn change_password_correct_pbkdf2sha256_returns_success() -> anyhow::Resul
     let email = format!("cp-ok-pbkdf2-{}@garraia.test", Uuid::now_v7());
 
     // Build a real PBKDF2-SHA256 PHC string — same pattern as verify_internal.rs.
+    // Salt generated internally by `hash_password` (password-hash 0.6).
     let plaintext_str = "legacy-pbkdf2-password-for-change";
-    let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
-    let phc = Pbkdf2
-        .hash_password(plaintext_str.as_bytes(), &salt)
+    let phc = Pbkdf2::default()
+        .hash_password(plaintext_str.as_bytes())
         .expect("PBKDF2 hash must succeed in tests")
         .to_string();
     // Hard assertion: the prefix must be exactly what production code dispatches on.
