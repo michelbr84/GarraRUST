@@ -45,6 +45,7 @@ Assets da `release.yml`, em detalhe:
 | `garraia-linux-x86_64.AppImage` | job `package-linux` (appimagetool pinado) | **best-effort** |
 | `install.sh`, `install.ps1` | copiados do repo | sim |
 | `garraia-desktop-windows-x86_64.msi`, `…-setup.exe` | job `build-windows-installer` | **best-effort** |
+| `garraia-desktop-linux-x86_64.deb` / `.AppImage` | job `build-linux-desktop` (bundler do Tauri via `scripts/build-desktop-linux.sh`) | **best-effort**; AppImage ~80-100MB (embute webkit2gtk) |
 | `SHA256SUMS` + um `<asset>.sha256` por asset | step `Generate checksums` | sim |
 
 **Por que os binários crus continuam publicados.** `garra update` resolve o
@@ -54,9 +55,9 @@ auto-update de toda instalação já existente no momento em que ela pulasse par
 essa versão. Não renomeie nem remova os assets crus.
 
 **Instaladores desktop, ARM64 do Windows e pacotes Linux são best-effort.**
-Os jobs `build-windows-installer`, `build-windows-aarch64` e `package-linux`
-estão no `needs:` do job `release` mas deliberadamente **fora** da condição
-`if:` — mesmo padrão do `build-linux-arm64`. Uma falha emite `::warning::` e a
+Os jobs `build-windows-installer`, `build-windows-aarch64`, `package-linux` e
+`build-linux-desktop` estão no `needs:` do job `release` mas deliberadamente
+**fora** da condição `if:` — mesmo padrão do `build-linux-arm64`. Uma falha emite `::warning::` e a
 release sai sem o asset correspondente, sem `continue-on-error` (proibido pelo
 CLAUDE.md). Modo de falha conhecido: o `ProductVersion` do WiX é numérico de
 três partes e não expressa prerelease semver, então **tags `-rc` fazem o job

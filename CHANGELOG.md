@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Garra Desktop para Linux (`.deb` + AppImage).** Novo job best-effort
+  `build-linux-desktop` no `release.yml` (e gate de PR `build-linux-bundles`
+  no `desktop.yml`) empacota o app desktop com o bundler do próprio Tauri via
+  `scripts/build-desktop-linux.sh` — irmão do `build-installer.ps1`. Assets
+  novos e **aditivos** (regra 15): `garraia-desktop-linux-x86_64.deb` e
+  `garraia-desktop-linux-x86_64.AppImage`, ao lado dos pacotes da CLI. O deb
+  declara `Provides/Conflicts/Replaces: garraia` porque instala o sidecar em
+  `/usr/bin/garraia`, mesmo path do deb da CLI — instalar o desktop substitui
+  o pacote da CLI mantendo o comando `garraia`. Antes não existia app desktop
+  para Linux em release nenhuma: quem baixava o AppImage esperando o papagaio
+  recebia a CLI de terminal. Ver `docs/installation.md` §"Garra Desktop on
+  Linux" e o Amendment 2026-09-01 do ADR 0015.
 - **Garra Chat Bar.** Nova barra de chat flutuante do Garra Desktop: nasce
   visível no topo central do monitor primário, arrastável pelo grip, e
   conversa com o Garra pela mesma sessão `parrot-desktop` do papagaio (um

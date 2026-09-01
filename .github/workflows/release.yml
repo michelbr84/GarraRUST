@@ -286,6 +286,64 @@ jobs:
           name: garraia-desktop-windows
           path: release/
 
+  # Build the Linux desktop packages (.deb + AppImage) via the Tauri bundler.
+  #
+  # Best-effort by design, mesmo tratamento do build-windows-installer acima:
+  # em `needs:` do release, fora do `if:`, sem `continue-on-error` (proibido
+  # pelo CLAUDE.md). Único job do pipeline que compila o crate Tauri num
+  # runner Linux — ubuntu-22.04 fixado pela mesma razão do build-linux-x86_64
+  # (baseline glibc 2.35). Os pacotes são ADITIVOS aos da CLI (regra 15):
+  # garraia-desktop-linux-x86_64.{deb,AppImage} ao lado de
+  # garraia-linux-x86_64.{deb,rpm,AppImage}. O deb declara
+  # Provides/Conflicts/Replaces: garraia porque instala o sidecar em
+  # /usr/bin/garraia — o mesmo path que o deb da CLI possui.
+  build-linux-desktop:
+    name: Build Linux Desktop (.deb + AppImage)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Tauri v2 system deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libgtk-3-dev libfuse2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .deb + AppImage
+        # Fonte única de verdade, como o build-installer.ps1 no Windows: o
+        # script falha alto quando o bundler não emite os pacotes.
+        run: STAGE_DIR="${RUNNER_TEMP}/bundles" ./scripts/build-desktop-linux.sh
+
+      - name: Collect bundles
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          shopt -s nullglob
+          bundles=("${RUNNER_TEMP}"/bundles/*)
+          if [ ${#bundles[@]} -eq 0 ]; then
+            echo "::error ::no bundles produced under ${RUNNER_TEMP}/bundles"
+            exit 1
+          fi
+          cp "${bundles[@]}" release/
+          ls -l release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-linux
+          path: release/
+
   # Package the Linux binaries into .deb / .rpm / AppImage.
   #
   # Best-effort by design: in the `release` job's `needs:` but deliberately
@@ -451,6 +509,7 @@ jobs:
       - build-macos-x86_64
       - build-macos-arm64
       - build-windows-installer
+      - build-linux-desktop
       - package-linux
     if: |
       always() &&
@@ -514,6 +573,16 @@ jobs:
           if [ -f artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe ]; then
             cp artifacts/garraia-desktop-windows/garraia-desktop-windows-x86_64-setup.exe release/
           fi
+
+          # Pacotes Linux do desktop (job best-effort build-linux-desktop) —
+          # mesmo tratamento condicional do MSI acima.
+          for pkg in garraia-desktop-linux-x86_64.deb garraia-desktop-linux-x86_64.AppImage; do
+            if [ -f "artifacts/garraia-desktop-linux/${pkg}" ]; then
+              cp "artifacts/garraia-desktop-linux/${pkg}" release/
+            else
+              echo "::warning ::${pkg} not built; release ships without the Linux desktop app."
+            fi
+          done
 
           # Linux packages (.deb/.rpm/AppImage) do job best-effort package-linux.
           # x86_64 avisa quando falta (o job deveria tê-los produzido); os
@@ -689,6 +758,8 @@ jobs:
             release/garraia-linux-x86_64.AppImage
             release/garraia-desktop-windows-x86_64.msi
             release/garraia-desktop-windows-x86_64-setup.exe
+            release/garraia-desktop-linux-x86_64.deb
+            release/garraia-desktop-linux-x86_64.AppImage
             release/install.sh
             release/install.ps1
             release/SHA256SUMS

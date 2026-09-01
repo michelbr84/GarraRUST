@@ -18,6 +18,7 @@ on:
       - 'crates/garraia-desktop/**'
       - 'crates/garraia-cli/**'
       - 'scripts/build-installer.ps1'
+      - 'scripts/build-desktop-linux.sh'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
@@ -129,4 +130,53 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: garraia-desktop-windows-pr
+          path: ${{ runner.temp }}/bundles/
+
+  # O espelho Linux do build-installer: mesmo script que o job
+  # build-linux-desktop do release.yml usa, rodando nos PRs que podem
+  # quebrá-lo. ubuntu-22.04 fixado pela mesma razão do build-linux-x86_64
+  # do release.yml — baseline glibc 2.35 (Ubuntu 22.04+/Debian 12+).
+  build-linux-bundles:
+    name: Build Linux .deb + AppImage (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Tauri v2 system deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libgtk-3-dev libfuse2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .deb + AppImage
+        run: STAGE_DIR="${RUNNER_TEMP}/bundles" ./scripts/build-desktop-linux.sh
+
+      - name: Verify the bundles are non-empty and the deb owns the binaries
+        run: |
+          set -euo pipefail
+          for f in garraia-desktop-linux-x86_64.deb garraia-desktop-linux-x86_64.AppImage; do
+            [ -s "${RUNNER_TEMP}/bundles/$f" ] || { echo "::error ::$f missing or empty"; exit 1; }
+            echo "$f size: $(stat -c%s "${RUNNER_TEMP}/bundles/$f") bytes"
+          done
+          # O deb precisa carregar o app E o sidecar garraia — sem o sidecar o
+          # gateway nunca sobe (mesma classe de bug do externalBin de #878).
+          contents=$(dpkg-deb --contents "${RUNNER_TEMP}/bundles/garraia-desktop-linux-x86_64.deb")
+          echo "$contents" | grep -E 'usr/bin/garraia-desktop$' || { echo "::error ::deb sem usr/bin/garraia-desktop"; exit 1; }
+          echo "$contents" | grep -E 'usr/bin/garraia$' || { echo "::error ::deb sem o sidecar usr/bin/garraia"; exit 1; }
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-linux-pr
           path: ${{ runner.temp }}/bundles/
