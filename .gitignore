@@ -173,8 +173,8 @@ crates/garraia-desktop/src-tauri/target/
 crates/garraia-desktop/src-tauri/WixTools/
 crates/garraia-desktop/src-tauri/binaries/
 # node_modules/ covered by global rule above
-# Sprite sheet is generated — do not commit large binary
-crates/garraia-desktop/ui/assets/parrot-sprite.png
+# parrot-sprite.png é COMMITADO (32KB): regenerar com gen_sprite.py e comitar junto.
+# (Estava ignorado até a v0.3.4 — o instalador saía com o papagaio invisível.)
 .quality-tmp/
 current-metrics.json
 quality-report.md

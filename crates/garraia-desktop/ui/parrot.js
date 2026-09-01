@@ -110,75 +110,47 @@ async function setClickThrough(ignore) {
   try { await invoke('set_ignore_mouse', { ignore }); } catch (_) {}
 }
 
-// ── WebSocket to GarraIA ────────────────────────────────────────────────────
-const WS_URL = 'ws://localhost:3888/ws/parrot';
-let ws = null;
-let reconnectDelay = 2000;
+// ── WebSocket to GarraIA (cliente compartilhado — ws.js) ────────────────────
 let streamActive = false;
 
-function connect() {
-  try { ws = new WebSocket(WS_URL); } catch (_) { scheduleReconnect(); return; }
-
-  ws.onopen = () => {
-    reconnectDelay = 2000;
-  };
-
-  ws.onmessage = ev => {
-    try {
-      const msg = JSON.parse(ev.data);
-      switch (msg.type) {
-        case 'thinking':
-          streamActive = false;
-          clearTimeout(postTalkTimer);
-          setState('thinking');
-          hideBubble();
-          break;
-
-        case 'chunk':
-          // Streaming chunk — accumulate in bubble while talking
-          if (!streamActive) {
-            streamActive = true;
-            setState('talking');
-            bubbleTxt.textContent = '';
-            bubbleEl.classList.remove('hidden', 'bubble-hide');
-          }
-          appendBubble(msg.text ?? '');
-          break;
-
-        case 'response':
-          streamActive = false;
-          setState('talking');
-          showBubble(msg.text ?? '', 8000);
-          clearTimeout(postTalkTimer);
-          postTalkTimer = setTimeout(() => setState('idle'), 5500);
-          break;
-
-        case 'error':
-          streamActive = false;
-          setState('idle');
-          showBubble('\u26a0 ' + (msg.message ?? 'Erro desconhecido'), 5000);
-          break;
-      }
-    } catch (_) {}
-  };
-
-  ws.onclose = () => { ws = null; scheduleReconnect(); };
-  ws.onerror = () => { ws?.close(); };
-}
-
-function scheduleReconnect() {
-  setTimeout(connect, reconnectDelay);
-  reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-}
+const chat = window.GarraWS.connect({
+  onThinking() {
+    streamActive = false;
+    clearTimeout(postTalkTimer);
+    setState('thinking');
+    hideBubble();
+  },
+  onChunk(text) {
+    // Streaming chunk — accumulate in bubble while talking
+    if (!streamActive) {
+      streamActive = true;
+      setState('talking');
+      bubbleTxt.textContent = '';
+      bubbleEl.classList.remove('hidden', 'bubble-hide');
+    }
+    appendBubble(text);
+  },
+  onResponse(text) {
+    streamActive = false;
+    setState('talking');
+    showBubble(text, 8000);
+    clearTimeout(postTalkTimer);
+    postTalkTimer = setTimeout(() => setState('idle'), 5500);
+  },
+  onError(message) {
+    streamActive = false;
+    setState('idle');
+    showBubble('\u26a0 ' + message, 5000);
+  },
+});
 
 function sendMessage(text) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  if (!chat.send(text)) {
     showBubble('Garra offline \u2014 inicie o GarraIA primeiro', 4000);
     return;
   }
   setState('thinking');
   hideBubble();
-  ws.send(JSON.stringify({ type: 'message', text }));
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -202,4 +174,3 @@ if (!window.__TAURI__) {
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 setState('idle');
-connect();

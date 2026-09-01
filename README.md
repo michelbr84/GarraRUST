@@ -210,7 +210,7 @@ checksum), and swaps the executable atomically.
 
 ```bash
 cargo build --release -p garraia
-cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garra-$(rustc -vV | grep host | cut -d' ' -f2)
+cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garraia-$(rustc -vV | grep host | cut -d' ' -f2)
 cargo build --release -p garraia-desktop
 ```
 

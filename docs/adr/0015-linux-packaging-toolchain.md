@@ -115,3 +115,18 @@ job dedicado **`package-linux`** do `release.yml`:
   - Atualizar o pin de qualquer ferramenta = trocar versão **e** SHA-256 no
     `release.yml` (falha de checksum é o comportamento desejado quando o
     upstream re-publica um artefato).
+
+---
+
+## Amendment 2026-09-01 — pacotes Linux do Garra Desktop
+
+O escopo deste ADR permanece a **CLI**: `package-linux` segue empacotando os
+binários crus com nfpm + appimagetool pinados. Os pacotes do **desktop**
+(`garraia-desktop-linux-x86_64.deb`/`.AppImage`, job `build-linux-desktop`,
+`scripts/build-desktop-linux.sh`) usam o **bundler do próprio Tauri** — o
+crate já depende dele, o sidecar/ícones/desktop-entry saem corretos de graça,
+e replicar isso em nfpm duplicaria configuração. Consequência assumida: o
+linuxdeploy que o Tauri baixa não é pinado por SHA-256 como as ferramentas da
+CLI; o job é best-effort e uma quebra dele nunca bloqueia a release. O deb do
+desktop declara `Provides/Conflicts/Replaces: garraia` porque instala o
+sidecar em `/usr/bin/garraia` — o mesmo path que o deb da CLI possui.

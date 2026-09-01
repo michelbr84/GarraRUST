@@ -6,7 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Garra Desktop para Linux (`.deb` + AppImage).** Novo job best-effort
+  `build-linux-desktop` no `release.yml` (e gate de PR `build-linux-bundles`
+  no `desktop.yml`) empacota o app desktop com o bundler do próprio Tauri via
+  `scripts/build-desktop-linux.sh` — irmão do `build-installer.ps1`. Assets
+  novos e **aditivos** (regra 15): `garraia-desktop-linux-x86_64.deb` e
+  `garraia-desktop-linux-x86_64.AppImage`, ao lado dos pacotes da CLI. O deb
+  declara `Provides/Conflicts/Replaces: garraia` porque instala o sidecar em
+  `/usr/bin/garraia`, mesmo path do deb da CLI — instalar o desktop substitui
+  o pacote da CLI mantendo o comando `garraia`. Antes não existia app desktop
+  para Linux em release nenhuma: quem baixava o AppImage esperando o papagaio
+  recebia a CLI de terminal. Ver `docs/installation.md` §"Garra Desktop on
+  Linux" e o Amendment 2026-09-01 do ADR 0015.
+- **Garra Chat Bar.** Nova barra de chat flutuante do Garra Desktop: nasce
+  visível no topo central do monitor primário, arrastável pelo grip, e
+  conversa com o Garra pela mesma sessão `parrot-desktop` do papagaio (um
+  único fio de histórico, persistido em SQLite pelo gateway). Oculta/reaparece
+  por ✕, Esc, item "Chat Bar" da bandeja ou `Ctrl+Space`; posição e
+  visibilidade sobrevivem a restarts em `chat-bar.json` no diretório de
+  config do app (persistência manual — o `tauri-plugin-window-state`
+  restauraria também o tamanho e brigaria com o expand/collapse do painel).
+  O painel de resposta expande a janela via comando Rust
+  (`set_chat_bar_expanded`), então a webview não precisa da capability
+  `core:window:allow-set-size`. Em Wayland (default do Ubuntu) o WM não
+  honra always-on-top/skip-taskbar — a barra funciona como janela normal.
+
+- **Streaming no `/ws/parrot`.** O gateway passa a emitir cada delta do LLM
+  como um frame `{"type":"chunk","text":...}` (via
+  `process_message_streaming_with_agent_config`), fechando com o
+  `{"type":"response"}` completo — autoritativo, então cliente que perder
+  chunks termina consistente. O papagaio e a chat bar já tinham o handler de
+  `chunk` pronto (era código morto desde o início); agora ele anima de
+  verdade. O loop drena os deltas concorrentemente ao task do agente (canal
+  limitado — mesma lição do `stream_turn` do `garra chat`).
+
+### Changed
+- **Quick Chat evolui para a Chat Bar.** A janelinha centrada do `Ctrl+Space`
+  (`quick-chat.html`/`quick_chat.rs`) foi substituída pela barra; o atalho e o
+  item da bandeja agora alternam a barra. O cliente WebSocket que estava
+  copiado-e-colado em `parrot.js` e `quick-chat.html` virou o compartilhado
+  `ui/ws.js` (uma cópia a menos, e a terceira nunca nasceu).
+
 ### Fixed
+- **O papagaio do Garra Desktop voltou a aparecer.** O sprite
+  `crates/garraia-desktop/ui/assets/parrot-sprite.png` estava no `.gitignore`
+  ("binário grande" — na verdade 32KB) e nenhum build de CI executava o
+  `gen_sprite.py`, então todo instalador da v0.3.4 (MSI/NSIS) embarcava a
+  janela do overlay 100% transparente: um retângulo invisível de 220x320 no
+  canto inferior direito que ainda comia cliques. Instaladores antigos
+  (v0.2.1) funcionavam porque eram gerados em máquina de dev que tinha o
+  sprite. O PNG agora é commitado, o `.gitignore` documenta a regra nova e o
+  `desktop.yml` ganhou o job `assert-ui-assets`: todo `assets/...`
+  referenciado em `ui/` precisa existir em disco e o sprite precisa ser um
+  PNG 1280x600 (byte-compare com regeneração foi rejeitado de propósito —
+  a saída do zlib varia entre builds).
+- **`overlay.rs` não derruba mais o app sem monitor.** `create_overlay`
+  dava `panic!("No monitor found")` em sessão headless/RDP (violação da
+  regra nº 4 do CLAUDE.md); agora cai para posição fixa `(100, 100)`.
+- **READMEs da raiz ensinavam o nome errado do sidecar.** `README.md` e
+  `README.pt-BR.md` mandavam stagear `binaries/garra-<triple>`, mas o
+  `externalBin` é `binaries/garraia` — quem seguisse o doc construía um
+  desktop cujo gateway nunca subia (o mesmo bug corrigido no app em #878).
+- **`settings.html` sem versão fóssil nem controles mortos.** A página
+  exibia `v0.2.0` hardcoded (quatro minors atrás) e os toggles de
+  autostart/som nunca tiveram listener; a versão agora vem de
+  `app.getVersion()` e os toggles saíram (autostart vive na bandeja).
+
 - **`.deb` volta a carregar `LICENSE`/`README.md`.** O `packaging/nfpm.yaml`
   marcava os docs com `type: doc`, que é um tipo **exclusivo do RPM** no nfpm
   ("ignored by other packagers") — o `garraia-linux-*.deb` da v0.3.4 saiu só

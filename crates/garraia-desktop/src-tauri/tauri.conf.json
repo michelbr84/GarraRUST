@@ -36,6 +36,17 @@
       "wix": {
         "language": "pt-BR"
       }
+    },
+    "linux": {
+      "deb": {
+        "provides": ["garraia"],
+        "conflicts": ["garraia"],
+        "replaces": ["garraia"]
+      },
+      "rpm": {
+        "provides": ["garraia"],
+        "conflicts": ["garraia"]
+      }
     }
   }
 }

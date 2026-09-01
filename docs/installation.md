@@ -127,6 +127,33 @@ still download by hand if you need an older version.
 built best-effort, so a given release may ship without it. The MSI is not a
 prerequisite for the CLI; the one-liner above is the supported path.
 
+### Garra Desktop on Linux
+
+From `v0.3.5` releases also carry the desktop app (parrot overlay + chat bar)
+for Linux, built best-effort by the Tauri bundler:
+
+- `garraia-desktop-linux-x86_64.deb` — `sudo apt install ./garraia-desktop-linux-x86_64.deb`
+- `garraia-desktop-linux-x86_64.AppImage` — `chmod +x` and run; needs `libfuse2`
+  on Ubuntu 22.04+ (`sudo apt install libfuse2`), or run with
+  `--appimage-extract-and-run`
+
+These are **different packages from the CLI ones**: `garraia-linux-x86_64.deb`
+installs only the terminal CLI (`/usr/bin/garraia`); the desktop `.deb`
+installs the tray app **plus** the same CLI as its bundled sidecar, also at
+`/usr/bin/garraia`. Because both own that path, the desktop package declares
+`Provides/Conflicts/Replaces: garraia` — installing it **replaces** the CLI
+package (you keep the `garraia` command either way). Pick one:
+
+| You want | Install |
+|---|---|
+| Terminal only | `garraia-linux-x86_64.deb` (or the one-liner above) |
+| Parrot + chat bar + CLI | `garraia-desktop-linux-x86_64.deb` |
+
+**Wayland caveat.** On Wayland sessions (Ubuntu's default) the window manager
+does not honor always-on-top/skip-taskbar for regular windows, so the parrot
+and the chat bar behave as normal windows. X11 sessions behave as documented.
+The app itself works on both.
+
 ## Build from Source
 
 ### Prerequisites
