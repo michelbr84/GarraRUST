@@ -1,4 +1,8 @@
 #!/bin/sh
+# SC2030/SC2031 are expected here, not bugs: every case builds a throwaway
+# environment inside a subshell (env vars + shadowed uname) and the export's
+# scope ending with that subshell is the isolation the test relies on.
+# shellcheck disable=SC2030,SC2031
 # Unit tests for `detect_platform` (Termux branch) and the Android paths of
 # `install_binary` / `print_next_steps_legacy` in `install.sh`.
 #
@@ -13,7 +17,7 @@
 # `detect_platform` in subshells where `uname` is shadowed by a function
 # printing the case's OS/arch and the Termux environment is simulated.
 # Written in POSIX sh (like checksum_format.sh) so it stays in the
-# shellcheck list of the installer job, not just `bash -n`.
+# static-analysis step of the installer job, not just `bash -n`.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -46,8 +50,8 @@ run_platform_case() {
     out_file="$(mktemp)"
     rc=0
     (
-        TERMUX_VERSION="${termux_version}"
-        PREFIX="${prefix}"
+        export TERMUX_VERSION="${termux_version}"
+        export PREFIX="${prefix}"
         eval "uname() { case \"\$1\" in -s) printf '%s\n' '${stub_os}' ;; -m) printf '%s\n' '${stub_arch}' ;; esac; }"
         detect_platform
         echo "OS_NAME=${OS_NAME}"
@@ -78,8 +82,8 @@ run_error_case() {
     out_file="$(mktemp)"
     rc=0
     (
-        TERMUX_VERSION="${termux_version}"
-        PREFIX="${prefix}"
+        export TERMUX_VERSION="${termux_version}"
+        export PREFIX="${prefix}"
         eval "uname() { case \"\$1\" in -s) printf '%s\n' '${stub_os}' ;; -m) printf '%s\n' '${stub_arch}' ;; esac; }"
         detect_platform
     ) >"${out_file}" 2>&1 || rc=$?
@@ -136,12 +140,12 @@ printf '#!/bin/sh\nexit 0\n' > "${fake_artifact}"
 fake_prefix="${tmp_root}/prefix"
 rc=0
 (
-    OS_NAME="android"
-    PREFIX="${fake_prefix}"
-    ARTIFACT="garraia-android-aarch64"
-    GARRAIA_TMPDIR="${tmp_root}"
-    GARRAIA_INSTALL_DIR=""
-    VERSION="vTEST"
+    export OS_NAME="android"
+    export PREFIX="${fake_prefix}"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR=""
+    export VERSION="vTEST"
     install_binary
 ) >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -ne 0 ]; then
@@ -156,12 +160,12 @@ fi
 custom_dir="${tmp_root}/custom"
 rc=0
 (
-    OS_NAME="android"
-    PREFIX="${fake_prefix}"
-    ARTIFACT="garraia-android-aarch64"
-    GARRAIA_TMPDIR="${tmp_root}"
-    GARRAIA_INSTALL_DIR="${custom_dir}"
-    VERSION="vTEST"
+    export OS_NAME="android"
+    export PREFIX="${fake_prefix}"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR="${custom_dir}"
+    export VERSION="vTEST"
     install_binary
 ) >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -ne 0 ]; then
@@ -176,11 +180,11 @@ fi
 gate_out="$(mktemp)"
 rc=0
 (
-    OS_NAME="android"
-    ARTIFACT="garraia-android-aarch64"
-    GARRAIA_TMPDIR="${tmp_root}"
-    GARRAIA_INSTALL_DIR="/usr/bin"
-    VERSION="vTEST"
+    export OS_NAME="android"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR="/usr/bin"
+    export VERSION="vTEST"
     install_binary
 ) >"${gate_out}" 2>&1 || rc=$?
 if [ "${rc}" -ne 1 ]; then
@@ -210,7 +214,7 @@ esac
 # check_glibc is a linux-only probe: on android it must return 0 before
 # touching ldd — Termux has no glibc/musl loader to interrogate.
 rc=0
-( OS_NAME="android"; ARCH="aarch64"; check_glibc ) >/dev/null 2>&1 || rc=$?
+( export OS_NAME="android" ARCH="aarch64"; check_glibc ) >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 0 ]; then
     pass "check_glibc skipped on android"
 else

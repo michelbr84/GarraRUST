@@ -70,15 +70,18 @@ impl KeySource {
 /// The environment variable (and credential-vault entry name — they are the
 /// same string by convention) that holds the API key for `provider`.
 ///
-/// Returns `None` for providers that need no key: `ollama` talks to a local
-/// daemon, and `echo` is the feature-gated dev provider. An unknown provider
-/// string also yields `None`, matching the gateway's
-/// `warn!("unknown LLM provider type")` arm.
+/// Returns `None` for providers that need no key: `ollama` and `llamacpp`
+/// talk to local daemons, and `echo` is the feature-gated dev provider. An
+/// unknown provider string also yields `None`, matching the gateway's
+/// `warn!("unknown LLM provider type")` arm — callers that must distinguish
+/// "keyless" from "unknown" whitelist the locals explicitly (see
+/// `check.rs`).
 ///
 /// Keep in lockstep with the `match llm_config.provider.as_str()` arms in
 /// `garraia-gateway/src/bootstrap/mod.rs`. The gateway test
 /// `bootstrap::config::tests::provider_key_table_covers_every_arm_of_the_boot_loop`
-/// asserts the two agree, including that `ollama` and `echo` stay keyless.
+/// asserts the two agree, including that `ollama`, `llamacpp` and `echo`
+/// stay keyless.
 pub fn provider_key_env(provider: &str) -> Option<&'static str> {
     Some(match provider {
         "anthropic" => "ANTHROPIC_API_KEY",
@@ -165,7 +168,7 @@ pub fn resolve_api_key(config_key: Option<&str>, vault_key: &str, env_var: &str)
 }
 
 /// Resolve the key for a configured `llm:` entry, keyed off its `provider`
-/// field. Providers that need no key (`ollama`, `echo`) report
+/// field. Providers that need no key (`ollama`, `llamacpp`, `echo`) report
 /// [`KeySource::Config`] with no value, since absence of a key is not a fault
 /// for them.
 pub fn resolve_provider_key_source(provider: &str, config_key: Option<&str>) -> KeySource {
@@ -220,6 +223,7 @@ mod tests {
     #[test]
     fn keyless_providers_are_never_reported_missing() {
         assert!(provider_key_env("ollama").is_none());
+        assert!(provider_key_env("llamacpp").is_none());
         assert!(provider_key_env("echo").is_none());
         assert!(provider_key_env("totally-unknown").is_none());
 
@@ -227,7 +231,12 @@ mod tests {
             resolve_provider_key_source("ollama", None),
             KeySource::Config
         );
+        assert_eq!(
+            resolve_provider_key_source("llamacpp", None),
+            KeySource::Config
+        );
         assert!(resolve_provider_key_source("ollama", None).is_resolved());
+        assert!(resolve_provider_key_source("llamacpp", None).is_resolved());
     }
 
     #[test]

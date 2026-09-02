@@ -133,6 +133,7 @@ mod tests {
 
         // Keyless arms: these must never be reported as missing a key.
         assert_eq!(provider_key_env("ollama"), None);
+        assert_eq!(provider_key_env("llamacpp"), None);
         assert_eq!(provider_key_env("echo"), None);
     }
 }
