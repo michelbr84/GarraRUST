@@ -2,7 +2,7 @@
 
 > Roadmap unificado do ecossistema GarraIA (CLI, Gateway, Desktop, Mobile, Agents, Channels, Voice) rumo ao padrão **AAA**. Funde o plano de inferência local + workflows agenticos com a nova direção de produto **Group Workspace** (família/equipe multi-tenant) derivada de `deep-research-report.md`.
 >
-> **Última atualização:** 2026-08-31 (local America/New_York) — **release v0.3.4** (plan 0361 + ADR 0015): primeira release a exercitar a matriz do plan 0359 (archives, MSI/NSIS, `install.ps1`) e a estrear **pacotes Linux `.deb`/`.rpm` (nfpm) + AppImage x86_64 (appimagetool)** no job best-effort `package-linux`, **binário nativo Windows ARM64** (`garraia-windows-aarch64.exe` + `.zip`, job `build-windows-aarch64`) com `garra update` e `install.ps1` resolvendo o asset novo, suíte `tests/install_ps1/platform.ps1` e casos mixed de checksum nos dois instaladores. Restam DMG notarizado e AppImage aarch64 (§4.1). Anterior (2026-08-18): cleanup total do repo (0 issues, 0 PRs, só `main`): releases **v0.3.1** e **v0.3.2** (5 binários — `garraia-linux-aarch64` pela primeira vez; cross da git + sqlx→rustls, PR #846); fix crítico LGPD no `POST /v1/me/anonymize` (plan 0354, PR #843 — retornava 500 desde junho) + job CI `auth-integration` rodando a matriz RLS em todo PR; deps consolidadas incl. wasmtime 47 (PR #844); timeouts e2e/playwright + grupo dependabot wasmtime + Cross.toml (PR #842); h2 0.4.16 (RUSTSEC-2026-0258). **Linear descontinuado — planejamento interno migrou para o tracker interno; trigger de issues da garra-routine desativado.** Anterior (2026-05-24): docs/backlog sync: `TODO.md` criado como fila operacional obrigatória, GAR-493/ADR 0011 ✅ **Done** via PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) (`95618d3`), `plans/README.md` sincronizado, e checklist GAR-603 reconciliada com evidência já presente em `Dockerfile`, `router.rs` e `docs/deployment-runpod.md`; smoke Docker/Runpod real permanece pendente. GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
+> **Última atualização:** 2026-09-01 (local America/New_York) — **release v0.3.5** (plan 0362 + Amendment do ADR 0015): **Garra Desktop para Linux** (`garraia-desktop-linux-x86_64.deb`/`.AppImage` via bundler Tauri, job best-effort `build-linux-desktop`; o `.deb` declara `Provides/Conflicts/Replaces: garraia` porque instala o sidecar em `/usr/bin/garraia`), **Garra Chat Bar** (barra flutuante `Ctrl+Space` que substitui o quick-chat e compartilha a sessão `parrot-desktop` com o papagaio), streaming de chunks no `/ws/parrot`, sprite do papagaio commitado + guarda `assert-ui-assets` no CI, migração argon2 0.6 / pbkdf2 0.13 / password-hash 0.6.1 (GAR-669 slice 3). Anterior (2026-08-31): **release v0.3.4** (plan 0361 + ADR 0015): primeira release a exercitar a matriz do plan 0359 (archives, MSI/NSIS, `install.ps1`) e a estrear **pacotes Linux `.deb`/`.rpm` (nfpm) + AppImage x86_64 (appimagetool)** no job best-effort `package-linux`, **binário nativo Windows ARM64** (`garraia-windows-aarch64.exe` + `.zip`, job `build-windows-aarch64`) com `garra update` e `install.ps1` resolvendo o asset novo, suíte `tests/install_ps1/platform.ps1` e casos mixed de checksum nos dois instaladores. Restam DMG notarizado e AppImage aarch64 (§4.1). Ainda em 2026-08-30: plan 0360 / ADR 0014 — `garra agents setup|status|link|rollback|web` (front-end do AgentDeck) + shim Anthropic-compatible `POST /v1/messages` para o Claude Code apontar para o gateway. Anterior (2026-08-18): cleanup total do repo (0 issues, 0 PRs, só `main`): releases **v0.3.1** e **v0.3.2** (5 binários — `garraia-linux-aarch64` pela primeira vez; cross da git + sqlx→rustls, PR #846); fix crítico LGPD no `POST /v1/me/anonymize` (plan 0354, PR #843 — retornava 500 desde junho) + job CI `auth-integration` rodando a matriz RLS em todo PR; deps consolidadas incl. wasmtime 47 (PR #844; depois 48 + MSRV 1.95 no PR #865, 2026-08-28); timeouts e2e/playwright + grupo dependabot wasmtime + Cross.toml (PR #842); h2 0.4.16 (RUSTSEC-2026-0258). **Linear descontinuado — planejamento interno migrou para o tracker interno; trigger de issues da garra-routine desativado.** Anterior (2026-05-24): docs/backlog sync: `TODO.md` criado como fila operacional obrigatória, GAR-493/ADR 0011 ✅ **Done** via PR [#492](https://github.com/michelbr84/GarraRUST/pull/492) (`95618d3`), `plans/README.md` sincronizado, e checklist GAR-603 reconciliada com evidência já presente em `Dockerfile`, `router.rs` e `docs/deployment-runpod.md`; smoke Docker/Runpod real permanece pendente. GarraMaxPower sincronizado: GAR-498 Skills MVP ✅ **Done** (PR [#488](https://github.com/michelbr84/GarraRUST/pull/488) `c65e099`), GAR-499 Agent Team MVP ✅ **Done** (PR [#490](https://github.com/michelbr84/GarraRUST/pull/490) `7e45ec5`). GAR-695 health run 23 docs ✅ **Done** via PRs [#493](https://github.com/michelbr84/GarraRUST/pull/493) / [#494](https://github.com/michelbr84/GarraRUST/pull/494). Anterior: GAR-679 SSE rate-limit per user ✅ **Done** (plan 0163); GAR-680 Audit-log of SSE chat subscriptions ✅ **Done** (PR [#463](https://github.com/michelbr84/GarraRUST/pull/463) `a972947`); GAR-496 Repo workflow seguro ✅ **Done** (PR #455 `1b7f04c`); GAR-495 ✅ **Done** (PR #453 `e5a2a08`); GAR-669 Slice 2 + GAR-500 Auto Dream ✅; GAR-372 embeddings scaffoldado; ADR 0010 Accepted + `garraia-learning`.
 > **Owner:** @michelbr84
 > **Tracking:** tracker interno desde 2026-08-18 (histórico no Linear, time `GAR` — IDs preservados neste doc)
 > **Branch base:** `main`
@@ -44,7 +44,7 @@
 - `garraia-channels`: adapters Telegram/Discord/Slack/WhatsApp/iMessage.
 - `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/ElevenLabs/Kokoro stubs).
 - Mobile (Flutter): auth JWT + chat + mascote — roda no emulator Android.
-- Desktop (Tauri v2): scaffold + sidecar Windows MSI/NSIS, publicado pelo job best-effort `build-windows-installer` (`release.yml`) desde 2026-08-30. Sem assinatura de codigo (SmartScreen avisa) e sem auto-updater funcional -- ver `docs/releasing.md`.
+- Desktop (Tauri v2): overlay do papagaio + bandeja + hotkeys + notificações/diálogos nativos + Chat Bar (`Ctrl+Space`, v0.3.5), com a CLI como sidecar. Instaladores Windows MSI/NSIS (job best-effort `build-windows-installer`, desde 2026-08-30) e Linux `.deb`/AppImage x86_64 (job `build-linux-desktop`, v0.3.5 em 2026-09-01). Sem assinatura de codigo (SmartScreen avisa), sem DMG, e com `tauri-plugin-updater` ligado mas inerte (nenhum workflow publica `latest.json`) -- ver `docs/releasing.md`.
 
 **O que ainda é stub, frágil ou ausente (snapshot 2026-04-13 — mantido como
 registro histórico; a verificação empírica de 2026-05-18 abaixo classifica
@@ -72,22 +72,23 @@ mapeada ao seu estado atual com pointer de evidência. Quando o status é
 
 | # | Reivindicação §1 | Status hoje | Evidência |
 |---|---|---|---|
-| 1 | Sem Postgres (só SQLite) | ✅ **Done** | `crates/garraia-workspace/migrations/` tem 19 migrations, 29 tabelas, RLS FORCE, BYPASSRLS roles dedicados (`garraia_login` / `garraia_signup` / `garraia_app`). ADR 0003 Accepted 2026-04-13. |
+| 1 | Sem Postgres (só SQLite) | ✅ **Done** | `crates/garraia-workspace/migrations/` tem 33 migrations, 37 tabelas (32 sob FORCE RLS), roles BYPASSRLS dedicados (`garraia_login` / `garraia_signup`) + role de app `garraia_app` sujeito a FORCE RLS. ADR 0003 Accepted 2026-04-13. |
 | 2 | Sem object storage | ✅ **Done** | `crates/garraia-storage/{local_fs,s3_compat}.rs` (GAR-394) + tus 1.0 ledger em `tus_uploads` (migration 014, GAR-395 mergeado em `96f5c03`). ADR 0004 Accepted. |
 | 3 | Sem grupos/membros/RBAC | ✅ **Done** | Migrations 001 (users/groups), 002 (63 role_permissions + RBAC table-driven), 011-013, 018 (RLS FORCE em groups+members). Matriz de 81 cenários cross-tenant (GAR-392). |
 | 4 | Sem embeddings locais nem busca vetorial | ⚠️ **Parcial → scaffold em 2026-05-18** | Trait surface + types entregues hoje via PR #396 (GAR-372, plan 0145). `PgVectorStore` real sobre `sqlx` contra `memory_embeddings` (migration 005 já tem `vector(768)` + HNSW cosine) é o próximo slice. Modelo real (mxbai) também é slice futuro. |
 | 5 | Sem OpenTelemetry, sem métricas | ✅ **Done (baseline)** | `crates/garraia-telemetry/src/{config,layers,metrics,tracer,redact}.rs` — GAR-384, feature-gated, PII-safe via `redact.rs`. |
-| 6 | CredentialVault não é fonte única | ✅ **Done** | GAR-410 mergeado em 2026-05-17. Secrets agora lidos via `garraia-config::auth` + `garraia-telemetry::config` dedicados; grep verifica que `std::env::var("GARRAIA_JWT_SECRET")` e `GarraIA_VAULT_PASSPHRASE` aparecem só nesses módulos. |
-| 7 | Mobile Android com Gradle/SDK desatualizados | ✅ **Done** | `app/build.gradle.kts` usa `flutter.compileSdkVersion`/`minSdkVersion` (delegado ao Flutter SDK); JDK 23; AndroidX habilitado. `applicationId` + `namespace` migrados de `com.example.garraia_mobile` (template default Flutter) para `org.garraia.mobile` em 2026-05-18 (reverse-DNS de `garraia.org`, alinhado ao binário CLI `garraia` e ao `install.sh`). |
-| 8 | Desktop UI apenas WebView básico | ⚠️ **Parcial** | Web Console "Garra Glass" (ADR 0009, 10 PRs #330-341, 2026-05-14) entregue como `webchat.html` servido pelo gateway — Dashboard, Chat, Providers, Channels, Sessions, Settings (schema-driven dry-run), Diagnostics (12 checks), Logs, Themes/Skins. O **shell desktop Tauri** (`crates/garraia-desktop/src-tauri/`) continua um wrapper WebView que carrega esse mesmo HTML; UI nativa rich (notifications, file picker hooks, system tray menu items) ainda backlog. |
-| 9 | MCP em sandbox WASM | ✅ **Done (baseline)** | `crates/garraia-plugins/src/{loader,manifest,runtime,sdk,traits}.rs` em `wasmtime 44.0.1` (RUSTSEC closed PR #108). Features avançadas (capability tokens, resource limits per-plugin) na Fase 2.2. |
+| 6 | CredentialVault não é fonte única | ⚠️ **Parcial** | Leitura de secrets centralizada em 2026-05-17 (plan 0046): valores lidos só em `garraia-config::auth` + `garraia-telemetry::config` (leituras presence-only em `settings_handler`/`diagnostics_handler`/`check.rs`). O CredentialVault **final** (GAR-410: fonte única do gateway + rotação + master key argon2id) segue adiado — o gateway ainda não consome o cofre e `garraia-security` não tem rotação. Ver §5.1 e `TODO.md`. |
+| 7 | Mobile Android com Gradle/SDK desatualizados | ✅ **Done** | `app/build.gradle.kts` usa `flutter.compileSdkVersion`/`minSdkVersion` (delegado ao Flutter SDK); gradle 8.14, AGP 8.11.1, Java 17 (source/target/jvmTarget); AndroidX habilitado. `applicationId` + `namespace` migrados de `com.example.garraia_mobile` (template default Flutter) para `org.garraia.mobile` em 2026-05-18 (reverse-DNS de `garraia.org`, alinhado ao binário CLI `garraia` e ao `install.sh`). |
+| 8 | Desktop UI apenas WebView básico | ⚠️ **Parcial** | Web Console "Garra Glass" (ADR 0009, 10 PRs #330-341, 2026-05-14) entregue como `webchat.html` servido pelo gateway — Dashboard, Chat, Providers, Channels, Sessions, Settings (schema-driven dry-run), Diagnostics (12 checks), Logs, Themes/Skins. O **shell desktop Tauri** (`crates/garraia-desktop/src-tauri/`) hoje tem UI própria: overlay do papagaio (`index.html`), bandeja com 9 itens (`tray.rs`), hotkeys `Alt+G`/`Ctrl+Space` (`hotkey.rs`), notificações + diálogos nativos (`commands.rs`) e a Chat Bar (`chat_bar.rs`, v0.3.5). Pendente: assinatura de código, auto-updater alimentado, DMG, always-on-top no Wayland. |
+| 9 | MCP em sandbox WASM | ✅ **Done (baseline)** | `crates/garraia-plugins/src/{loader,manifest,runtime,sdk,traits}.rs` em `wasmtime 48.0.1` (44.0.1 fechou o RUSTSEC no PR #108; 47→48 + MSRV 1.95 no PR #865, 2026-08-28). Features avançadas (capability tokens, resource limits per-plugin) na Fase 2.2. |
 | 10 | Sem wizard, `.env.example` é caminho oficial | ✅ **Done** | `crates/garraia-cli/src/wizard/` + subcomando `garraia init` (PR #348, plan 0126) + `curl \| sh` installer wizard (PR #350, plan 0127). Cobre Linux/macOS x86_64+aarch64 via `curl \| sh` e Windows via `irm \| iex` (`install.ps1`, 2026-08-30). O MSI do desktop e publicado a parte, best-effort. |
-| 11 | Cobertura de testes baixa | 🔁 **Em curso** | Mutation testing 90.78% killed em `garraia-auth` (GAR-436 + PR #94). AI Quality Ratchet PR-1 em report-only (plan 0064, `scripts/quality/`). Coverage job em CI (`Coverage (cargo-llvm-cov)`) ativo. Sub-issues Q6.1-Q6.9 + GAR-505 ainda fechando mutation gaps. |
+| 11 | Cobertura de testes baixa | 🔁 **Em curso** | Mutation testing 90.78% killed em `garraia-auth` (GAR-436 + PR #94). AI Quality Ratchet PR-1 em report-only (plan 0064, `scripts/quality/`). Coverage job em CI (`Coverage (cargo-llvm-cov)`) ativo. Sub-issues Q6 restantes ainda fechando mutation gaps (GAR-505 fechou em 2026-05-04); `cargo-mutants` semanal verde desde 2026-08-24. |
 
 **Sumário:** dos 11 itens listados em §1 como "stub, frágil ou ausente" em
 2026-04-13, **7 estão ✅ Done** em `main`, **3 estão ⚠️ Parciais** (embeddings com
-scaffold real entregue 2026-05-18, falta `PgVectorStore` + modelo real; Android
-applicationId; Desktop Tauri native UI), e **1 está 🔁 em curso** (cobertura de
+scaffold real entregue 2026-05-18, falta `PgVectorStore` + modelo real;
+CredentialVault final — GAR-410; Desktop Tauri — UI própria entregue, faltam
+assinatura/updater/DMG), e **1 está 🔁 em curso** (cobertura de
 testes, sem fim explícito — Quality Ratchet é o sistema permanente).
 
 A lista original em §1 acima é mantida como registro histórico do estado em
@@ -108,7 +109,7 @@ seções de fase ao longo deste documento.
 
 ### Sprint **Green Security Baseline 2026-04-30** (umbrella GAR-486)
 
-Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 em andamento.
+Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 fechadas em 2026-05-04 (ver "Status do umbrella" abaixo).
 
 | PR | Commit | Conteúdo |
 |----|--------|----------|
@@ -125,14 +126,14 @@ Sub-issues 1-3 ✅ done implicitamente em `main@7fc838b`. Sub-issues 4-5 em anda
 - Dependabot alerts: **20 → 7** — todos os 7 residuais com Linear ownership em [`docs/security/dependabot-status.md`](docs/security/dependabot-status.md)
 - CodeQL total open: **90** (medição da Phase 0 desta sessão, advanced setup já em main) → **84** após os 6 dismissals do GAR-491. O description original do GAR-486 mencionava "~90 → 71" como projeção do efeito do `paths-ignore`, mas a medição direta via `gh api ... code-scanning/alerts | length` retornou 90 alertas open antes de qualquer triagem ativa nesta sessão. Triagem ativa só começou via GAR-491 (Wave 2) e levou o total para 84. GAR-490 (Wave 1) ataca os 16 path-injection + 8 sql-injection restantes na sessão futura.
 - GitHub-native CodeQL default setup: `configured` → `not-configured` (advanced setup é canonical)
-- `continue-on-error: true` em workflows: 4 removidos no Lote 2 (PR #64, GAR-438) + 1 no Lote 4 (PR sobre Playwright `data-testid`); restante intencional (1 RUSTSEC residual)
+- `continue-on-error: true` em workflows: 4 removidos no Lote 2 (PR #64, GAR-438) + 1 no Lote 4 (PR sobre Playwright `data-testid`); o último (RUSTSEC) virou gate bloqueante no plan 0053 (GAR-453) — hoje **0** `continue-on-error` ativos nos workflows (jobs best-effort da release usam `needs` fora do `if`)
 
-### CodeQL triage **ainda em aberto** (registro da sessão de triagem; GAR-490 Wave 1 pendente)
+### CodeQL triage (registro histórico da sessão de 2026-05-01 — fechado em 2026-05-04)
 
-Sub-issues 4 e 5 de GAR-486 estão em execução agora:
+Sub-issues 4 e 5 de GAR-486 (estado em 2026-05-01; ambas mergeadas em 2026-05-04):
 
-- **GAR-491 — CodeQL Wave 2 (fixtures + suppression convention)** — sub-issue 5/5, **In Progress** desde 2026-05-01, PR [#109](https://github.com/michelbr84/GarraRUST/pull/109) draft. Estabelece a convenção de suppression para Rust CodeQL via REST API dismissal + ledger versionado em [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) + [`docs/security/codeql-suppressions.json`](docs/security/codeql-suppressions.json) + script [`scripts/security/codeql-reapply-dismissals.sh`](scripts/security/codeql-reapply-dismissals.sh) com fail-closed validation (rule_id/path/line). 6 alertas em escopo, 21 deferidos para `GAR-491.1`.
-- **GAR-490 — CodeQL Wave 1 (production paths)** — sub-issue 4/5, **Backlog**, bloqueada por GAR-491. 16 path-injection (`skills_handler.rs`, `skins_handler.rs`) + 8 sql-injection (`rest_v1/groups.rs`, `rest_v1/invites.rs`). Plano de ataque: helper `validate_skill_name` em handlers + integração de `garraia_storage::sanitise_key` em `skins_handler.rs` (single-segment) + experimento `SELECT set_config('app.current_user_id', $1, true)` substituindo `SET LOCAL ... format!()` antes de qualquer dismissal.
+- **GAR-491 — CodeQL Wave 2 (fixtures + suppression convention)** — sub-issue 5/5, ✅ mergeada em 2026-05-01 via PR [#109](https://github.com/michelbr84/GarraRUST/pull/109). Estabelece a convenção de suppression para Rust CodeQL via REST API dismissal + ledger versionado em [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) + [`docs/security/codeql-suppressions.json`](docs/security/codeql-suppressions.json) + script [`scripts/security/codeql-reapply-dismissals.sh`](scripts/security/codeql-reapply-dismissals.sh) com fail-closed validation (rule_id/path/line). 6 alertas em escopo, 21 deferidos para `GAR-491.1`.
+- **GAR-490 — CodeQL Wave 1 (production paths)** — sub-issue 4/5, ✅ mergeada em 2026-05-04 via PR #112 (o experimento `SELECT set_config(...)` abaixo virou o padrão em `rest_v1/groups.rs`). 16 path-injection (`skills_handler.rs`, `skins_handler.rs`) + 8 sql-injection (`rest_v1/groups.rs`, `rest_v1/invites.rs`). Plano de ataque: helper `validate_skill_name` em handlers + integração de `garraia_storage::sanitise_key` em `skins_handler.rs` (single-segment) + experimento `SELECT set_config('app.current_user_id', $1, true)` substituindo `SET LOCAL ... format!()` antes de qualquer dismissal.
 
 **Decisão central documentada**: Rust CodeQL ainda **não suporta** comentários inline `// codeql[rule]: ...` em 2026 ([github/codeql#21638](https://github.com/github/codeql/issues/21637) aberto). `paths-ignore` global não serve porque os testes do GarraRUST são INLINE (`#[cfg(test)] mod tests {}`) dentro de produção. Mecanismo escolhido: ledger versionado + REST dismissal por alerta + script fail-closed. **Sem fallback global**: se a empirical proof falhar, abort + nova decisão (sem `query-filters: exclude` por rule-id). Ver [`docs/security/codeql-suppressions.md`](docs/security/codeql-suppressions.md) §3-§6.
 
@@ -140,7 +141,7 @@ Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 
 - **GAR-436 (mutation testing baseline)** ✅ — `cargo-mutants` pilot em `garraia-auth`. Run inicial 85% killed (19 missed). PR [#94](https://github.com/michelbr84/GarraRUST/pull/94) appended run `25116031135`: **85.04% → 90.78% killed (+5.74 p.p.)**.
 - **GAR-463 Q6.1** ✅ — kill 5 critical mutation bypasses em `garraia-auth/src/hashing.rs` + `lib.rs` (PR #92).
-- **GAR-468 Q6.6** ✅ — kill 3 Debug-redaction mutation bypasses em `garraia-auth` (PR [#96](https://github.com/michelbr84/GarraRUST/pull/96)). **Memória local**: rodar Q6 sub-issues 6.1-6.7 ainda pendentes (`project_next_session_q6_queue`).
+- **GAR-468 Q6.6** ✅ — kill 3 Debug-redaction mutation bypasses em `garraia-auth` (PR [#96](https://github.com/michelbr84/GarraRUST/pull/96)). **Memória local**: fila Q6 (`project_next_session_q6_queue`) consumida — 6.1/6.3/6.5/6.6/6.7/6.8 fechadas.
 - **GAR-469 Q6.7** ✅ — `mutants.yml` timeout bumped 90 → 150 min (PR #93).
 - **GAR-481 Q6.8** ✅ — workflows migrated to **Node 24** (`actions/{checkout,setup-node,upload-artifact,download-artifact,cache}` v4 → latest, deprecation pre-announce 2026-Q3) (PR [#95](https://github.com/michelbr84/GarraRUST/pull/95)).
 
@@ -148,11 +149,11 @@ Sub-issues 4 e 5 de GAR-486 estão em execução agora:
 
 - **GAR-438 (Lote 2)** ✅ (PR [#64](https://github.com/michelbr84/GarraRUST/pull/64), `1828625`) — fix `e2e` + `playwright` jobs que tentavam executar `./target/release/garraia-gateway` (binário inexistente — `garraia-gateway` é biblioteca). Substituído por `cargo build --bin garraia --release` + `services: postgres:16.8-alpine` + envs de auth via `::add-mask::`. 4 de 7 `continue-on-error: true` removidos.
 - **GAR-443 (Lote 4)** ✅ — Playwright admin specs migrados para `getByTestId(...)` ancorados em `data-testid` estáveis (`admin.html`). Convenção: especificações Playwright do admin DEVEM preferir `data-testid` em vez de `placeholder*=` ou `getByRole(button,{name})`.
-- **GitHub Actions annotations follow-up (2026-05-03)** — CI voltou a ficar verde após PR [#113](https://github.com/michelbr84/GarraRUST/pull/113), mas os jobs `Analyze (javascript-typescript)` e `Analyze (rust)` ainda emitem 2 annotations não-bloqueantes: (a) `github/codeql-action/init@v3` + `analyze@v3` rodam em Node.js 20 (forced switch 2026-06-02, removido em 2026-09-16) — escopo expandido em GAR-482 (Q6.9 third-party Node 24 readiness); (b) CodeQL Action v3 será deprecated em dezembro de 2026 — rastreado em GAR-502 (chore migrate v3 → v4). Manutenção preventiva de CI/runtime, **não** alerta CodeQL real (esses ficam em GAR-490 / GAR-491) e **não** bloqueia o merge verde atual.
+- **GitHub Actions annotations follow-up (2026-05-03)** — CI voltou a ficar verde após PR [#113](https://github.com/michelbr84/GarraRUST/pull/113), mas os jobs `Analyze (javascript-typescript)` e `Analyze (rust)` ainda emitem 2 annotations não-bloqueantes: (a) `github/codeql-action/init@v3` + `analyze@v3` rodam em Node.js 20 (forced switch 2026-06-02, removido em 2026-09-16) — escopo expandido em GAR-482 (Q6.9 third-party Node 24 readiness); (b) CodeQL Action v3 será deprecated em dezembro de 2026 — rastreado em GAR-502 (chore migrate v3 → v4). **Resolvido:** `codeql.yml` já roda `codeql-action/init@v4` + `analyze@v4` (GAR-502 ✅). Manutenção preventiva de CI/runtime, **não** alerta CodeQL real (esses ficam em GAR-490 / GAR-491) e **não** bloqueia o merge verde atual.
 - **CARGO_BIN_EXE_garraia removal** (GAR-503) ✅ — fallback dead-code removido de `crates/garraia-cli/tests/migrate_workspace_integration.rs` (plan [`0060`](plans/0060-gar-503-cargo-bin-exe-cleanup.md), PR [#132](https://github.com/michelbr84/GarraRUST/pull/132) `750fb50`, 2026-05-05). `git grep CARGO_BIN_EXE_garraia` agora retorna 0 hits.
-- **Benchmark evidence run** (GAR-504) — primeira execução real de `benches/agent-framework-comparison/run.sh --all` em droplet DigitalOcean 1 vCPU / 1 GB para repor a tabela do `README.md` (PR [#117](https://github.com/michelbr84/GarraRUST/pull/117) §"Open follow-ups"). **Bloqueado** por requerer provisionamento de infra externa.
+- **Benchmark evidence run** (GAR-504) — primeira execução real de `benches/agent-framework-comparison/run.sh --all` em droplet DigitalOcean 1 vCPU / 1 GB para repor a tabela do `README.md` (PR [#117](https://github.com/michelbr84/GarraRUST/pull/117) §"Open follow-ups"). **Parcial**: o run em VM x86_64 está versionado em `results/2026-08-28-vm/` e alimenta a tabela do README; o run de referência no droplet 1 vCPU / 1 GB segue pendente.
 - **Mutation Testing 2026-05-04 missed mutants** (GAR-505) ✅ — triagem dos 6 NEW missed mutants em `jwt.rs` / `storage_redacted.rs` / `app_pool.rs` + 3 timeouts (run [25307117776](https://github.com/michelbr84/GarraRUST/actions/runs/25307117776)) entregue via PR [#119](https://github.com/michelbr84/GarraRUST/pull/119) / PR [#120](https://github.com/michelbr84/GarraRUST/pull/120), 2026-05-04. Sub-issue de GAR-436.
-- **AI Quality Ratchet PR-1** (epic novo, plan [`0064`](plans/0064-quality-ratchet-pr1.md), 2026-05-05) — scaffold do sistema de catraca de qualidade. PR-1 entrega `.quality/{baseline,README,thresholds}`, `scripts/quality/{collect-metrics.sh, compare.py, freeze-baseline.py, parse-{llvm-cov,cargo-audit,clippy}.py + tests/}`, `.github/workflows/quality-ratchet.yml` em modo report-only via flag `compare.py --mode report-only` (zero `continue-on-error`), `.claude/commands/quality-babysit.md` em modo manual-only, e `CODEOWNERS` como camada inicial de visibilidade. **Out of scope deste PR**: duplicação (PR-3), promoção a bloqueante (PR-4 com aprovação explícita), branch protection (sempre com aprovação explícita). Plan-mãe com filosofia + 5 ajustes do owner: `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md` (não versionado). Issue TBD após merge (tracker interno).
+- **AI Quality Ratchet PR-1** (epic novo, plan [`0064`](plans/0064-quality-ratchet-pr1.md), 2026-05-05) — scaffold do sistema de catraca de qualidade. PR-1 entrega `.quality/{baseline,README,thresholds}`, `scripts/quality/{collect-metrics.sh, compare.py, freeze-baseline.py, parse-{llvm-cov,cargo-audit,clippy}.py + tests/}`, `.github/workflows/quality-ratchet.yml` em modo report-only via flag `compare.py --mode report-only` (zero `continue-on-error`), `.claude/commands/quality-babysit.md` em modo manual-only, e `CODEOWNERS` como camada inicial de visibilidade. **Out of scope deste PR**: duplicação (PR-3), promoção a bloqueante (PR-4 com aprovação explícita), branch protection (sempre com aprovação explícita). Plan-mãe com filosofia + 5 ajustes do owner: `~/.claude/plans/voc-est-no-projeto-buzzing-volcano.md` (não versionado). ✅ mergeado; sem issue (tracker interno).
 
 ### Status do umbrella GAR-486
 
@@ -180,14 +181,14 @@ foram corrigidos no mesmo PR:
 
 Workspace version bumped `0.2.0 → 0.2.1` em `Cargo.toml`, `crates/garraia-desktop/src-tauri/Cargo.toml` e `tauri.conf.json` para fechar o gap de versão sem reuso de tag. Linear: GAR-619 (criada nesta sessão).
 
-### Sprint **Web Console Garra Glass** (2026-05-14) — `web_chat.html` redesenhado de ponta-a-ponta
+### Sprint **Web Console Garra Glass** (2026-05-14) — `webchat.html` redesenhado de ponta-a-ponta
 
-10 PRs sequenciais (#330–#341) entregando o Web Console multi-page completo com design system "Garra Glass" (ADR 0009, plan 0116). Stack: HTML + CSS custom properties `--garra-*` + JS vanilla, zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline. Páginas: Dashboard, Chat, Providers & Models, Channels, Sessions, Settings Registry (schema-driven dry-run), Diagnostics (12 checks), Logs (filter/search/export), Themes & Skins (4 presets). Novos endpoints REST (todos `/api/*`, auth-free, secret-free via `configured: bool` em vez de `value`): `/api/health` (Dashboard schema com `version`, `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`, `warnings`, back-compat `checks`), `/api/capabilities`, `/api/channels`, `POST /api/providers/test`, `PATCH /api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings` (validate + audit + dry-run; persistência TOML em plan 0121a), `/api/diagnostics`. Plans: 0116a, 0116b, 0117–0123. Issues Linear: GAR-607, GAR-612…GAR-618, GAR-623.
+10 PRs sequenciais (#330–#341) entregando o Web Console multi-page completo com design system "Garra Glass" (ADR 0009, plan 0116). Stack: HTML + CSS custom properties `--garra-*` + JS vanilla, zero CDN para Bootstrap/AdminLTE/Animate.css — todos os ícones SVG inline. Páginas: Dashboard, Chat, Providers & Models, Channels, Sessions, Settings Registry (schema-driven dry-run), Diagnostics (12 checks), Logs (filter/search/export), Themes & Skins (4 presets). Novos endpoints REST (todos `/api/*`, auth-free, secret-free via `configured: bool` em vez de `value`): `/api/health` (Dashboard schema com `version`, `uptime_secs`, `active_sessions`, `provider`, `model`, `channels`, `warnings`, back-compat `checks`), `/api/capabilities`, `/api/channels`, `POST /api/providers/test`, `PATCH /api/providers/default`, `/api/settings/{schema,effective}`, `PATCH /api/settings` (validate + audit + dry-run; persistência TOML em plan 0121a), `/api/diagnostics`. Plans: 0116a, 0116b, 0117–0123. Issues (histórico Linear): GAR-607, GAR-612…GAR-618, GAR-623.
 
 ### Sprint **Onboarding zero-friction** (2026-05-14..15)
 
-- **PR-A — `garraia init` env-aware bootstrap** (plan 0126, PR #348 `6a2279e`, 2026-05-14): subcomando `garraia init` que detecta config existente, oferece wizard interativo + flags `--yes`/`--non-interactive` para CI, materializa `.garraia/config.toml` + `.env` placeholder. Issue: TBD (tracker interno).
-- **PR-B — `curl \| sh` installer wizard** (plan 0127, PR #350 `bfddf78`, 2026-05-15): `install.sh` ganhou bootstrap wizard de uma linha (`curl -fsSL https://garraia.org/install.sh | sh`) que detecta plataforma, baixa binário correto, roda `garraia init --yes`, sobe `garraia start` em foreground. Cobre Linux/macOS x86_64 + aarch64. Issue: TBD (tracker interno).
+- **PR-A — `garraia init` env-aware bootstrap** (plan 0126, PR #348 `6a2279e`, 2026-05-14): subcomando `garraia init` que detecta config existente, oferece wizard interativo + flags `--yes`/`--non-interactive` para CI, materializa `config.yml` no diretório de config (estratégias FirstWrite/Backup/MergeUpdate em `wizard/config_writer.rs`).
+- **PR-B — `curl \| sh` installer wizard** (plan 0127, PR #350 `bfddf78`, 2026-05-15): `install.sh` ganhou bootstrap wizard de uma linha (`curl -fsSL https://garraia.org/install.sh | sh`) que detecta plataforma, baixa binário correto, roda `garraia init` interativo (ou pula com `GARRAIA_SKIP_INIT=1`), depois `exec garraia start`. Cobre Linux/macOS x86_64 + aarch64.
 
 ### Sprint **Q9 admin/handlers.rs modularização** (2026-05-15..16, 6 PRs)
 
@@ -236,21 +237,21 @@ Continuação do padrão Q9 agora em `crates/garraia-gateway/src/rest_v1/tasks.r
 
 ### Sprint **Garra Learning Agent — épico criado** (2026-05-17, esta sessão)
 
-Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear `GAR-641` com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura.
+Nova iniciativa estratégica §1.4 + ADR 0010 Proposed + plan 0138 + épico Linear `GAR-641` com 10 sub-issues criados (ver §1.4 e ADR para detalhes). Sem implementação ainda — apenas planejamento + arquitetura *(superado em 2026-05-20: 9/10 sub-issues Done, ver §1.4)*.
 
 ### Sprint **Garra Learning Agent — scaffold GAR-642** (2026-05-18)
 
 Primeira implementação real do Learning Agent epic. Plan [0144](plans/0144-gar-642-learning-agent-scaffold.md):
 
 - ADR 0010 promovido **Proposed → Accepted**.
-- Novo crate `crates/garraia-learning/` adicionado ao workspace (19 → 20 crates ativos).
+- Novo crate `crates/garraia-learning/` adicionado ao workspace (19 → 20 crates ativos; 22 hoje).
 - `safety.rs` **funcional**: 5 SafetyDenial variants + 17 unit tests verdes (DangerousCommand, CriticalPath, ScoreTooLow, AntiFlapDeprecated, PiiDetected).
 - 8 módulos stub: miner, generator, registry, retriever, evaluator, updater, versioning, skill_override — todos retornam `Err(Error::Other("... não implementado"))`.
 - Issue: GAR-642 ✅ Done.
 
 ### `garraia update` / CLI helpers / Runpod compatibility
 
-- **GAR-603 Runpod Load Balancer Serverless compat** ✅ — PR [#327](https://github.com/michelbr84/GarraRUST/pull/327) `cdebe9a`, 2026-05-13. Container HTTP server mode + `GET /ping` health + `PORT`/`HOST` env honor; `PORT_HEALTH` documentado como igual a `PORT` até haver listener separado. Ver §6.1.1.
+- **GAR-603 Runpod Load Balancer Serverless compat** ⚠️ Parcial — código/docs via PR [#327](https://github.com/michelbr84/GarraRUST/pull/327) `cdebe9a`, 2026-05-13: container HTTP server mode + `GET /ping` health + `PORT`/`HOST` env honor; `PORT_HEALTH` documentado como igual a `PORT` até haver listener separado. Smoke Docker local e smoke público Runpod ainda pendentes — ver §6.1.1 e `TODO.md`.
 - **GAR-604 DM creation via `POST /v1/groups/{id}/chats`** ✅ — PR [#324](https://github.com/michelbr84/GarraRUST/pull/324) `4ce9d75`, 2026-05-14.
 - **GAR-605 CodeQL `actions` language matrix re-add** ✅ — PR [#323](https://github.com/michelbr84/GarraRUST/pull/323) `f6698c7`, 2026-05-14. Fecha 17 alertas Medium stale.
 - **CI concurrency cancel-superseded** ✅ — PR [#311](https://github.com/michelbr84/GarraRUST/pull/311) `10f637b` + PR [#316](https://github.com/michelbr84/GarraRUST/pull/316) `f57af85`. Canonical `group: workflow-prNum||ref` + `cancel-in-progress`.
@@ -266,7 +267,7 @@ O roadmap está dividido em **7 fases + trilhas contínuas**. Cada fase tem:
 - **Critérios de aceite** (verificáveis)
 - **Dependências** (fases/entregáveis prévios)
 - **Estimativa** (semanas: baixa / provável / alta)
-- **Épicos Linear (GAR)** quando aplicável
+- **Épicos** (tracker interno; IDs `GAR-xxx` são histórico do Linear) quando aplicável
 
 Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group Workspace). Fase 4 é **experiência**. Fase 5 é **qualidade/compliance**. Fase 6 é **lançamento**. Fase 7 é **pós-GA**. Trilhas contínuas cortam todas as fases.
 
@@ -279,8 +280,8 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 ### 1.1 TurboQuant+ — Inferência local otimizada
 
 - [ ] Benchmark dos providers locais atuais (Ollama, llama.cpp) em latência/tokens-por-segundo em `benches/inference.rs` (Criterion).
-- [ ] **KV Cache compression** para sessões longas: investigar integração com `llama.cpp` flags `--cache-type-k q8_0 --cache-type-v q8_0`; expor via `garraia-agents` como opção `kv_quant` no provider config.
-- [ ] **PagedAttention / Continuous Batching**: avaliar `candle` vs `mistral.rs` como backend alternativo em Rust nativo; decisão registrada em ADR `docs/adr/0001-local-inference-backend.md`.
+- [x] **KV Cache compression** para sessões longas: `LlamaCppProvider` expõe `cache_type_k`/`cache_type_v` via `extra` do provider (q8_0/q4_0/f16 + turbo2/3/4 do TurboQuant+), passados como `--cache-type-k/-v` ao `llama.cpp` (`crates/garraia-agents/src/llama_cpp.rs`); stack local em `docker-compose.turboquant.yml` + `scripts/build-turboquant-llama.sh`. *(A opção não se chama `kv_quant`; o compose monta `docs/deployment/config.turboquant.yml`, que não existe no repo — follow-up em `TODO.md`.)*
+- [ ] **PagedAttention / Continuous Batching**: decisão registrada — [ADR 0001](docs/adr/0001-local-inference-backend.md) Accepted (2026-04-21) escolhe `mistral.rs` como backend default com Ollama como fallback; a implementação do backend `mistral.rs` ainda não começou (sem dependência no `Cargo.lock`).
 - [ ] **Backends paralelos**: detectar CUDA/MPS/Vulkan em runtime e passar flags apropriadas.
 - [ ] **Quantização**: suporte a modelos Q4_K_M, Q5_K_M, Q8_0 com auto-seleção por VRAM disponível.
 
@@ -312,13 +313,13 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 
 - Comando `garra max-power` (no `garraia-cli`) que ativa o modo, imprime banner e roteia para a próxima ação certa.
 - **Capability prompt** nativo (não importado do `.claude/`) montado em runtime a partir do que o `AgentRuntime` realmente expõe (providers, tools, canais, MCP servers ativos).
-- Workflow `brainstorm → spec → plan → execute → review → finish` como máquina de estados explícita em `garraia-agents` (ou novo crate `garraia-maxpower`), com gate obrigatório no `spec` antes de qualquer escrita de código.
+- Workflow `brainstorm → spec → plan → execute → review → finish` como máquina de estados explícita (entregue em `garraia-cli/src/team.rs` — `TeamPhase`/`AgentTeam` — sem crate novo), com gate obrigatório no `spec` antes de qualquer escrita de código.
 - **Repo workflow seguro** para GitHub: clonar/branch/PR via `gh`/`git` com checagens de "branch atual não é `main`" e "tree limpo antes de force operations".
 - **Safety gates de bash** centralizados (uma única função que valida antes de spawnar): bloqueia `rm -rf /`, `rm -rf ~`, fork bombs, `git push --force` em `main`, escrita em `.env`/credenciais.
 - 3-5 **skills MVP** nativas (não markdown solto): `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify` — registradas no `garraia-skills` registry.
-- **Agent team MVP**: orquestrador + 2 sub-agentes (revisor + executor) usando `AgentRuntime` real, sem depender do plugin Superpowers do Claude Code.
-- **Handoff / Auto Dream**: arquivo `.garra-estado.md` versionado com último spec, último plan, último review, próxima ação — lido no início da próxima sessão.
-- `garra verify` — validação local idempotente: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `flutter analyze` (se presente), `gitleaks` (se presente). Sai com exit code estilo `sysexits` (0/2/65).
+- **Agent team MVP**: orquestrador + 2 sub-agentes (revisor + executor) — entregue como pipeline síncrono via canais `mpsc` tipados (`team.rs`), sem depender do plugin Superpowers do Claude Code; execução provider-backed via `AgentRuntime` real é follow-up (ver `TODO.md`).
+- **Handoff / Auto Dream**: arquivo `.garra-estado.md` local (gitignored — handoff, não versionado) com último spec, último plan, último review, próxima ação — lido no início da próxima sessão.
+- `garra verify` — validação local idempotente: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `flutter analyze` (se presente), `gitleaks` (se presente). Sai com exit code 0 (ok) / 2 (step falhou).
 
 **Fora de escopo (explícito):**
 
@@ -334,12 +335,12 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 1. ADR `docs/adr/0011-garra-max-power.md` — decisão arquitetural, escopo, alternativas avaliadas.
 2. Subseção §1.2.1 deste ROADMAP (este documento).
 3. Subcomando `garra max-power` no `garraia-cli` (esqueleto + roteamento, sem implementação dos passos pesados).
-4. Crate ou módulo `garraia-maxpower` (ou seção em `garraia-skills`) com a máquina de estados do workflow.
+4. Máquina de estados do workflow — entregue em `garraia-cli/src/{max_power,team}.rs` (sem crate `garraia-maxpower`).
 5. Função `safety_gate(cmd: &str) -> Result<()>` em `garraia-tools` ou `garraia-common`, com testes unitários cobrindo a denylist mínima.
 6. Skills MVP em `garraia-skills` (registry-driven, não arquivos markdown soltos).
 7. `garra verify` em `garraia-cli` com pipeline Rust+Flutter+gitleaks.
 8. `.garra-estado.md` schema documentado + leitor/escritor.
-9. Issues Linear filhas (épico GarraMaxPower abaixo) referenciadas neste documento.
+9. Issues filhas (épico GarraMaxPower abaixo; IDs `GAR-xxx` históricos do Linear, tracker interno hoje) referenciadas neste documento.
 
 **Critérios de aceite:**
 
@@ -360,26 +361,26 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 - **Memória/Auto Dream PII-leak:** `.garra-estado.md` versionado com prompt do usuário pode vazar dados. Mitigação: schema com allow-list de campos; nada de message bodies por padrão.
 - **CI overhead:** `garra verify` em CI pode ficar lento. Mitigação: passos paralelos + cache; budget documentado por etapa.
 
-**Issues Linear filhas do épico GAR-492:**
+**Issues filhas do épico GAR-492 (histórico Linear; tracker interno hoje):**
 
 - ~~`GarraMaxPower roadmap + ADR` (GAR-493) — esta seção + ADR 0011 (umbrella já registra; issue filha amarra commits).~~ ✅ Done (PR #492 `95618d3`)
-- `/max-power MVP` (GAR-494) — subcomando `garra max-power` esqueleto + roteamento + banner.
-- `Capability prompt nativo` (GAR-495) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.
-- `Repo workflow seguro` (GAR-496) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".
-- `Safety gates para bash` (GAR-497) — `safety_gate(cmd)` + denylist + testes + integração com tools.
+- ~~`/max-power MVP` (GAR-494) — subcomando `garra max-power` esqueleto + roteamento + banner.~~ ✅ Done (PR #431 `8a9a915`)
+- ~~`Capability prompt nativo` (GAR-495) — gerador provider-agnóstico em runtime, testado contra ≥ 3 providers.~~ ✅ Done (PR #453 `e5a2a08`)
+- ~~`Repo workflow seguro` (GAR-496) — wrappers `gh`/`git` com pré-checagens; cobertura de "main protegida" e "tree limpo".~~ ✅ Done (PR #455 `1b7f04c`)
+- ~~`Safety gates para bash` (GAR-497) — `safety_gate(cmd)` + denylist + testes + integração com tools.~~ ✅ Done (PR #437 `f2ab1d9`)
 - ~~`Skills MVP` (GAR-498) — 3-5 skills nativas via registry `garraia-skills`.~~ ✅ Done (PR #488 `c65e099`)
-- ~~`Agent team MVP` (GAR-499) — orquestrador + 2 sub-agentes, dogfooded em um bug real.~~ ✅ Done (PR #490 `7e45ec5`)
-- `Auto Dream / handoff` (GAR-500) — schema `.garra-estado.md` + reader/writer + redaction.
+- ~~`Agent team MVP` (GAR-499) — orquestrador + 2 sub-agentes, dogfooded em um bug real.~~ ✅ Done (PR #490 `7e45ec5`) *(pipeline entregue; o dogfood em bug real segue pendente — §7 / `TODO.md`)*
+- ~~`Auto Dream / handoff` (GAR-500) — schema `.garra-estado.md` + reader/writer + redaction.~~ ✅ Done (PR #445 `f1fb596`)
 - ~~`garra verify` (GAR-501) — pipeline local idempotente, exit-codes sysexits, relatório markdown.~~ ✅ Done (PR #441 `ca9f1fa2`)
 
 **Estimativa:** 3 / 5 / 8 semanas, em paralelo a 1.2 e 1.3.
 
 ### 1.3 Config & Runtime Wiring unificado
 
-- [ ] **Schema único** de config em `garraia-config` (novo crate) com `serde` + `validator`; fontes: `.garraia/config.toml` > `mcp.json` > env > CLI flags.
+- [x] **Schema único** de config em `garraia-config` com `serde` + `validator` ✅; fontes reais: `<config_dir>/config.yml` (fallback `config.toml`) > `mcp.json` > env > CLI flags, com `config_dir` = `$GARRAIA_CONFIG_DIR` → `~/.config/garraia` (→ `~/.garraia` legado).
 - [ ] **Reactive config**: endpoint SSE `GET /v1/admin/config/stream` emite eventos ao alterar config via Web UI/CLI; `AppState` reage sem restart.
-- [ ] **Provider hot-reload**: alterar API keys ou endpoints propaga para `AgentRuntime` em < 500ms.
-- [ ] **Dry-run validation**: `garraia-cli config check` valida config sem iniciar o servidor.
+- [ ] **Provider hot-reload**: alterar API keys ou endpoints propaga para `AgentRuntime` em < 500ms. *(Parcial: `ConfigWatcher` (notify) recarrega `config.yml` ao vivo para a maioria das settings; providers e canais ainda só no boot.)*
+- [x] **Dry-run validation**: `garraia config check [--json] [--strict]` valida config sem iniciar o servidor — plan 0035 / GAR-379 slice 1 ✅ (+ `PATCH /api/settings` em dry-run no Web Console).
 
 **Critério de aceite:**
 
@@ -396,7 +397,7 @@ Dar ao Garra um modo agente avançado de primeira-classe acionável por `garra m
 > installer já estabelecidos), adicionando os 4 loops novos (Mine, Use+Evaluate,
 > Auto-Update, Promote-to-Manual).
 >
-> **Decisão arquitetural completa:** [`docs/adr/0010-garra-learning-agent.md`](docs/adr/0010-garra-learning-agent.md) (Proposed em 2026-05-17).
+> **Decisão arquitetural completa:** [`docs/adr/0010-garra-learning-agent.md`](docs/adr/0010-garra-learning-agent.md) (Accepted em 2026-05-17, via PR #393 / plan 0144).
 
 **Objetivo:**
 
@@ -415,29 +416,29 @@ aprendido, sem nunca promover skill não-validada.
 
 **Sub-componentes (10):**
 
-1. **Skill Miner** (`garraia-learning::miner`) — lê session logs (`.garra-estado.md` + opt-in `~/.garra/sessions/`), detecta padrões repetíveis (≥3 ocorrências em contextos similares), emite candidates em `~/.garra/skills/_candidates/`.
-2. **Skill Generator** (`garraia-learning::generator`) — LLM-assisted skill drafting com prompt provider-agnóstico (default `openrouter/free`); gera Markdown + YAML frontmatter compatível com `SkillFrontmatter` do crate `garraia-skills`.
+1. **Skill Miner** (`garraia-learning::miner`) — lê session logs (opt-in `~/.garra/sessions/<id>.json`), detecta padrões repetíveis (≥3 ocorrências em contextos similares), emite candidates em `~/.garra/skills/_candidates/`.
+2. **Skill Generator** (`garraia-learning::generator`) — LLM-assisted skill drafting com prompt provider-agnóstico (provider injetado via trait `SkillDraftProvider`, sem default embutido); gera Markdown + YAML frontmatter compatível com `SkillFrontmatter` do crate `garraia-skills`.
 3. **Skill Registry** (`garraia-learning::registry`) — wrapper sobre `garraia-skills`, dual-scope: global (`~/.garra/skills/`, compartilhado entre projetos) + por-projeto (`.garra/skills/`, versionado no repo). Lock-file em `_locks/` para concorrência.
-4. **Skill Retriever** (`garraia-learning::retriever`) — embedding match via `garraia-embeddings` (Fase 2.1 prereq) + filtro por escopo + score mínimo. Skill encontrada vira contexto adicional no prompt do `AgentRuntime`. MVP roda sem Retriever (match por tag/scope) até embeddings estarem prontos.
+4. **Skill Retriever** (`garraia-learning::retriever`) — embedding match via `garraia-embeddings` (Fase 2.1 prereq) + filtro por escopo + score mínimo. Skill encontrada vira contexto adicional no prompt do `AgentRuntime`. Hoje `retriever::retrieve` é um stub que retorna erro (sem fallback por tag/scope) — GAR-646 aguarda a Fase 2.1.
 5. **Skill Evaluator** (`garraia-learning::evaluator`) — mede sucesso via sinais objetivos: exit codes, `cargo test` pass count, `gh pr checks` após skill aplicada, diffs (linhas/arquivos tocados), logs (presença de `ERROR`/`panic`), latência. Atualiza score (EMA exponencial). Skills com score < 0.3 marcadas `deprecated` (não removidas — preserva histórico).
 6. **Skill Auto-Updater** (`garraia-learning::updater`) — quando Evaluator detecta falha ou melhoria, gera diff (skill v2), cria branch `learning/skill-X-vN-vN+1`, submete PR via `gh`. Nunca auto-merge; promoção só via Safety Gate + Human Override.
 7. **Git-backed Versioning** (`garraia-learning::versioning`) — cada skill é arquivo git-tracked em `.garra/skills/`; histórico = `git log` do arquivo; diff = `git diff`; rollback = `git revert`. Score histórico em `.garra/skills/_history/<skill-name>.json` (append-only).
-8. **Safety Gate** (`garraia-learning::safety`) — reusa `garraia-tools::safety_gate` do GarraMaxPower (§1.2.1) + extensões: (a) denylist hard-coded de comandos destrutivos aprendidos (`rm -rf /`, `git push --force`, `DROP TABLE`); (b) paths críticos (`garraia-auth/`, `garraia-security/`, `.github/workflows/`, `deny.toml`) exigem `@security-auditor` + `@code-reviewer` approval; (c) score < threshold não promove; (d) anti-flap (3 falhas consecutivas → deprecated); (e) PII redaction antes do LLM (regex email/path/token via `garraia-telemetry::redact`).
-9. **Human Override** (`garraia-learning::override`) — CLI `garra skills {list,show,lock,unlock,approve,reject,delete,rollback}` + Web UI. Estados: `candidate → proposed → approved → promoted → deprecated → locked`. Editar manualmente vira skill `authored` (protege contra auto-update).
+8. **Safety Gate** (`garraia-learning::safety`) — denylist própria em `garraia-learning::safety` (não reusa `garraia_common::safety_gate` do §1.2.1) + extensões: (a) denylist hard-coded de comandos destrutivos aprendidos (`rm -rf /`, `git push --force`, `DROP TABLE`); (b) paths críticos (`garraia-auth/`, `garraia-security/`, `.github/workflows/`, `deny.toml`) exigem `@security-auditor` + `@code-reviewer` approval; (c) score < threshold não promove; (d) anti-flap (3 falhas consecutivas → deprecated); (e) PII redaction antes do LLM (regex própria de email/path/token).
+9. **Human Override** (`garraia-learning::override`) — Web UI entregue (`/learning` + `/api/learning/*`: approve/reject/lock/rollback/delete); o CLI `garra skills {show,lock,unlock,approve,reject,delete,rollback}` e o módulo `skill_override` ainda são stubs (só `list|install|remove` existem). Estados: `candidate → proposed → approved → promoted → deprecated → locked`. Editar manualmente vira skill `authored` (protege contra auto-update).
 10. **Web UI for Skills and Learning Logs** (`garraia-gateway::web_console::skills`) — aba "Skills" no Web Console Garra Glass (ADR 0009): lista global + por-projeto, score, last_used, promoted_at; detalhe com markdown render + history git + diffs entre versões + score timeline (chart) + logs de execução + botões Rollback/Lock/Delete. Aba "Learning Logs" mostra sessões observadas + candidates pendentes + scores recentes.
 
 **Critérios de aceite:**
 
-- [ ] Crate `garraia-learning` compila com `cargo check -p garraia-learning`.
-- [ ] `garra skills mine --from session-log.json` cria candidate em `~/.garra/skills/_candidates/` sem intervenção manual.
-- [ ] `garra skills list` recupera skill relevante (top-1 por embedding + scope-match) e injeta como contexto no prompt do `AgentRuntime`.
-- [ ] Evaluator propõe atualização quando vê falha ou caminho melhor — abre PR via `gh`, nunca auto-merge.
-- [ ] Tentativa de promover skill contendo `rm -rf /` (test fixture) é bloqueada com `SafetyDenial::DangerousCommand`.
-- [ ] Tentativa de promover skill que altera `crates/garraia-auth/src/lib.rs` (test fixture) exige label `security-audit-passed`, senão `SafetyDenial::CriticalPath`.
-- [ ] Toda mudança de skill tem diff (`git diff`), versão (semver no frontmatter), motivo (PR body), evidência (test/CI link) e rollback (`git revert`) acessíveis via CLI e Web UI.
-- [ ] Separação clara entre memória/skill/log/manual (tabela acima) documentada em CLAUDE.md + README do crate + ADR 0010.
-- [ ] Hermes Agent mencionado **apenas** como referência conceitual; busca por importações de código do Hermes em `Cargo.lock` retorna zero.
-- [ ] Sistema seguro contra: aprendizado errado (Safety Gate denylist + Evaluator threshold), comandos perigosos (hard denylist), acúmulo de lixo (TTL 90d para candidates não-promovidos).
+- [x] Crate `garraia-learning` compila com `cargo check -p garraia-learning` (membro do workspace consumido por `garraia-gateway`).
+- [ ] `garra skills mine --from session-log.json` cria candidate em `~/.garra/skills/_candidates/` sem intervenção manual. *(O Miner existe em `miner.rs`; o subcomando CLI ainda não.)*
+- [ ] `garra skills list` recupera skill relevante (top-1 por embedding + scope-match) e injeta como contexto no prompt do `AgentRuntime`. *(Retriever é stub — GAR-646.)*
+- [x] Evaluator propõe atualização quando vê falha ou caminho melhor — abre PR via `gh`, nunca auto-merge (GAR-647 + GAR-648: `propose_update_with_runner`, `auto_merge_guard`).
+- [x] Tentativa de promover skill contendo `rm -rf /` (test fixture) é bloqueada com `SafetyDenial::DangerousCommand` (GAR-649).
+- [x] Tentativa de promover skill que altera `crates/garraia-auth/src/lib.rs` (test fixture) exige label `security-audit-passed`, senão `SafetyDenial::CriticalPath` (GAR-649).
+- [ ] Toda mudança de skill tem diff (`git diff`), versão (semver no frontmatter), motivo (PR body), evidência (test/CI link) e rollback (`git revert`) acessíveis via CLI e Web UI. *(Parcial: Web UI ✅ via `/api/learning/skills/{name}/rollback` + `versioning::history`; CLI ⏳.)*
+- [ ] Separação clara entre memória/skill/log/manual (tabela acima) documentada em CLAUDE.md + README do crate + ADR 0010. *(Parcial: CLAUDE.md ✅ + ADR 0010 ✅; README do crate ainda não existe.)*
+- [x] Hermes Agent mencionado **apenas** como referência conceitual; busca por importações de código do Hermes em `Cargo.lock` retorna zero.
+- [ ] Sistema seguro contra: aprendizado errado (Safety Gate denylist + Evaluator threshold), comandos perigosos (hard denylist), acúmulo de lixo (TTL 90d para candidates não-promovidos). *(Parcial: denylist + threshold ✅; TTL 90d de candidates não implementado.)*
 
 **Não-fazer (escopo explícito):**
 
@@ -447,13 +448,13 @@ aprendido, sem nunca promover skill não-validada.
 - Não promover skill sem human-in-the-loop em paths sensíveis.
 - Não substituir `garraia-skills` nem `garraia-workspace memory` — Learning Agent **integra**; não duplica.
 
-**Issues Linear filhas do épico `GAR-641`** (criadas 2026-05-17, label `epic:learning-agent`) — **10/10 Done ✅ 2026-05-20**:
+**Issues filhas do épico `GAR-641`** (histórico Linear, tracker interno hoje; criadas 2026-05-17, label `epic:learning-agent`) — **9/10 Done ✅ 2026-05-20** (GAR-646 Retriever segue stub até a Fase 2.1):
 
 - `GAR-642` **Learning Agent Architecture** (High, label `adr-needed`) — ADR 0010 → Accepted + scaffold + integração com `AgentRuntime`.
 - `GAR-643` **Skill Miner** (Medium)
 - `GAR-644` **Skill Generator** (Medium)
 - `GAR-645` **Skill Registry** (High)
-- `GAR-646` **Skill Retriever** (Medium, depende de Fase 2.1)
+- `GAR-646` **Skill Retriever** (Medium, depende de Fase 2.1) — ⏳ stub (`retriever.rs` retorna erro)
 - `GAR-647` **Skill Evaluator** (High)
 - `GAR-648` **Skill Auto-Updater** (Medium)
 - `GAR-649` **Skill Safety Gates** (Urgent — hard wall)
@@ -480,11 +481,11 @@ aprendido, sem nunca promover skill não-validada.
 
 ### 2.1 Memória de longo prazo & RAG local
 
-- [ ] **Embeddings locais**: integrar `mxbai-embed-large-v1` via `ort` (onnxruntime) em novo crate `garraia-embeddings`. Fallback para `fastembed-rs`.
-- [ ] **Vector store**: escolha documentada em ADR `docs/adr/0002-vector-store.md` entre `lancedb` (embutido, colunar) e `qdrant` (embutido ou sidecar). Recomendação inicial: **lancedb** pela simplicidade de deploy.
-- [ ] **Schema**: tabelas `memory_embeddings(memory_item_id, vector, model, created_at)` e índice HNSW.
+- [ ] **Embeddings locais**: crate `garraia-embeddings` scaffoldado (traits `EmbeddingProvider`/`VectorStore` + `DeterministicProvider`, plan 0145, 2026-05-18); o provider real (`MxbaiProvider` via candle, ADR 0001/0002) e o `PgVectorStore` seguem pendentes. Hoje os embeddings reais vêm de `garraia-agents` (`OllamaEmbeddingProvider` nomic-embed-text / OpenAI `text-embedding-3-small`) para a memória SQLite.
+- [x] **Vector store**: [ADR 0002](docs/adr/0002-vector-store.md) Accepted (2026-04-21) — **pgvector** como store primário (migration 005); LanceDB documentado apenas como opção futura para edge/offline.
+- [x] **Schema**: `memory_embeddings` (`vector(768)`, PK `(memory_item_id, model)`) + índice HNSW cosine — migration 005 / GAR-389 ✅
 - [ ] **RAG pipeline**: `garraia-agents` ganha `RetrievalTool` que faz ANN search + re-rank por BM25 (via `tantivy`) + injeção em prompt.
-- [ ] **Governance**: TTL, sensitivity level (`public|group|private`), auditoria de acesso.
+- [ ] **Governance**: TTL + sensitivity (`public|group|private|secret`) na migration 005 e filtrados em `/v1/memory` ✅; audit de escrita/pin/deleção ✅; auditoria de **leitura** ainda pendente.
 
 **Critério de aceite:**
 
@@ -492,11 +493,11 @@ aprendido, sem nunca promover skill não-validada.
 
 ### 2.2 MCP + Plugins WASM
 
-- [ ] **MCP servers expandidos**: registro dinâmico via admin API; health-check periódico.
-- [ ] **WASM sandbox**: integrar `wasmtime` em novo crate `garraia-plugins`; plugins expõem interface WIT (`wit-bindgen`).
-- [ ] **Capabilities-based**: cada plugin declara permissões (`net`, `fs:/allowed/path`, `llm:call`) — nenhum por padrão.
+- [x] **MCP servers expandidos**: registro dinâmico via admin API (`POST /admin/api/mcp`, `DELETE`, `/restart`) + `spawn_health_monitor` a cada 30s ✅
+- [ ] **WASM sandbox**: `wasmtime` 48 + WASI p1 integrados em `garraia-plugins` com ABI de export própria (`plugin_execute`) ✅; interface WIT / component model (`wit-bindgen`) ainda pendente.
+- [ ] **Capabilities-based**: `Permissions { network, filesystem, filesystem_read_paths, filesystem_write_paths, env_vars }` deny-by-default em `manifest.rs` ✅; `llm:call` ainda não existe.
 - [ ] **Self-authoring tools**: sub-agentes podem gerar plugins WASM via template e testá-los no sandbox antes de registrar.
-- [ ] **Plugin registry local**: `~/.garraia/plugins/` com manifesto assinado (ed25519).
+- [ ] **Plugin registry local**: `<config_dir>/plugins/` (`~/.config/garraia/plugins/`) via `PluginRegistry::from_dir` ✅; assinatura ed25519 do manifesto pendente.
 
 **Critério de aceite:**
 
@@ -504,15 +505,15 @@ aprendido, sem nunca promover skill não-validada.
 
 ### 2.3 Zero-latency streaming & Telemetria
 
-**Status:** ✅ baseline entregue em 2026-04-13 via GAR-384 (commit `84c4753`). Crate `garraia-telemetry` em produção atrás de feature flag `telemetry` (default on). Follow-ups: GAR-411 (TLS docs, cardinality, idempotência) e GAR-412 (/metrics auth não-loopback).
+**Status:** ✅ baseline entregue em 2026-04-13 via GAR-384 (commit `84c4753`). Crate `garraia-telemetry` em produção atrás de feature flag `telemetry` (default on). Follow-ups: GAR-411 (TLS docs, cardinality, idempotência) pendente; GAR-412 (/metrics auth não-loopback) ✅ entregue via plan 0024 (`metrics_auth.rs`).
 
 - [ ] **Tokio tuning**: buffers enxutos em WebSocket handlers; `tokio-tungstenite` com `flush_interval` configurável.
-- [x] **OpenTelemetry**: crate `garraia-telemetry` com `tracing-opentelemetry` 0.27 + `opentelemetry-otlp` 0.26 (gRPC), fail-soft init, sampler `TraceIdRatioBased`, guard RAII com shutdown em Drop. ✅
-- [x] **Prometheus**: `/metrics` baseline com 4 métricas (`requests_total`, `http_latency_seconds`, `errors_total`, `active_sessions`) via `metrics-exporter-prometheus 0.15`, bind default `127.0.0.1:9464`. ✅ (métricas adicionais por subsistema ficam como issue futuro)
+- [x] **OpenTelemetry**: crate `garraia-telemetry` com `tracing-opentelemetry` 0.33 + `opentelemetry-otlp` 0.32 (gRPC; 0.26 → 0.32 no plan 0252), fail-soft init, sampler `TraceIdRatioBased`, guard RAII com shutdown em Drop. ✅
+- [x] **Prometheus**: `/metrics` baseline com 4 métricas (`requests_total`, `http_latency_seconds`, `errors_total`, `active_sessions`) via `metrics-exporter-prometheus 0.18` (métricas com prefixo `garraia_`), bind default `127.0.0.1:9464`. ✅ (métricas adicionais por subsistema ficam como issue futuro)
 - [x] **Trace correlation**: `request_id` via `tower-http::SetRequestIdLayer` + propagate layer; `#[tracing::instrument]` em `AgentRuntime::process_message*` (skip_all, has_user_id boolean para LGPD) e `SessionStore::append_message*`/`load_recent_messages`. ✅
-- [x] **PII safety**: `http_trace_layer()` exclui headers dos spans por default; `redact.rs` com header allowlist; `redaction_smoke.rs` como regression guard. ✅
+- [x] **PII safety**: `http_trace_layer()` exclui headers dos spans por default; `redact.rs` com header allowlist; unit tests em `redact.rs` como regression guard. ✅
 - [x] **Infra local**: `ops/compose.otel.yml` (Jaeger 1.60 + Prometheus v2.54 + Grafana 11.2) com provisioning de datasources. ✅
-- [ ] **Dashboards**: templates Grafana em `ops/grafana/dashboards/` para latência, errors, inference p95, fila de jobs. (folder stub existe, dashboards como issue futuro)
+- [ ] **Dashboards**: templates Grafana em `ops/grafana/provisioning/dashboards/` para latência, errors, inference p95, fila de jobs. (só o provider `garraia.yml` existe; nenhum dashboard JSON ainda)
 
 **Critério de aceite:**
 
@@ -527,20 +528,20 @@ aprendido, sem nunca promover skill não-validada.
 
 **Objetivo:** transformar Garra de mono-usuário em **workspace compartilhado** com arquivos, chats e memória IA escopados por grupo, conforme `deep-research-report.md`.
 
-**Status (2026-04-15):** 🟢 **Epic GAR-391 FECHADO — Fase 3.3 completa.** Plan 0014 (GAR-391d, app-layer cross-group authz matrix via HTTP) entregue em `a688497` / PR #17: 15-case table-driven matrix sobre `GET /v1/me`, `POST /v1/groups`, `GET /v1/groups/{id}` × {alice, bob, eve} com fixture `seed_user_without_group`. Revisões `security-auditor` + `code-reviewer` APPROVE. Rule 10 do `CLAUDE.md` satisfeita para os 3 endpoints tenant-scoped existentes. Histórico da Fase 3.3: ADR 0003 + ADR 0005 (com Amendment 2026-04-13) accepted; `garraia-workspace` com **10 migrations**; `garraia-auth` com `Principal` extractor (Axum) + `RequirePermission` struct method + `Role`/`Action` enums tipados + `fn can()` central (110-case test) + `SignupPool` newtype + `signup_user` free function + `RedactedStorageError` wrapper + `AuthConfig` em `garraia-config` + 4 endpoints `/v1/auth/{login,refresh,logout,signup}` wired no `AppState` real + métricas Prometheus baseline + **migration 010** fechando os 3 structural gaps (Gap A `GRANT SELECT ON sessions`, Gap B `garraia_signup NOLOGIN BYPASSRLS`, Gap C `GRANT SELECT ON group_members`) + **GAR-392 RLS matrix** (plan 0013, 81 cenários). ADRs 0004 (storage), 0006 (search) e 0008 (docs collab) ainda pendentes.
+**Status (2026-04-15):** 🟢 **Epic GAR-391 FECHADO — Fase 3.3 completa.** Plan 0014 (GAR-391d, app-layer cross-group authz matrix via HTTP) entregue em `a688497` / PR #17: 15-case table-driven matrix sobre `GET /v1/me`, `POST /v1/groups`, `GET /v1/groups/{id}` × {alice, bob, eve} com fixture `seed_user_without_group`. Revisões `security-auditor` + `code-reviewer` APPROVE. Rule 10 do `CLAUDE.md` satisfeita para os 3 endpoints tenant-scoped existentes. Histórico da Fase 3.3: ADR 0003 + ADR 0005 (com Amendment 2026-04-13) accepted; `garraia-workspace` com **10 migrations**; `garraia-auth` com `Principal` extractor (Axum) + `RequirePermission` struct method + `Role`/`Action` enums tipados + `fn can()` central (110-case test) + `SignupPool` newtype + `signup_user` free function + `RedactedStorageError` wrapper + `AuthConfig` em `garraia-config` + 4 endpoints `/v1/auth/{login,refresh,logout,signup}` wired no `AppState` real + métricas Prometheus baseline + **migration 010** fechando os 3 structural gaps (Gap A `GRANT SELECT ON sessions`, Gap B `garraia_signup NOLOGIN BYPASSRLS`, Gap C `GRANT SELECT ON group_members`) + **GAR-392 RLS matrix** (plan 0013, 81 cenários). ADRs 0004 (storage), 0006 (search) e 0008 (docs collab) foram aceitas em 2026-04-21.
 
 > Esta é a fase de maior valor de produto e a de maior risco de segurança. Tudo aqui nasce com "privacidade por padrão" e testes de autorização.
 
 ### 3.1 Decisões arquiteturais (ADRs obrigatórios antes de codar)
 
 - [x] [`docs/adr/0003-database-for-workspace.md`](docs/adr/0003-database-for-workspace.md) — **Postgres 16 + pgvector + pg_trgm** escolhido com benchmark empírico no PoC `benches/database-poc/` (removido em 2026-08-16 após estabilização; números preservados no ADR 0003). SQLite mantido para dev/CLI single-user. Entregue em 2026-04-13 via GAR-373. ✅
-- [ ] `docs/adr/0004-object-storage.md` — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. (GAR-374)
+- [x] [`docs/adr/0004-object-storage.md`](docs/adr/0004-object-storage.md) — S3 compatível (MinIO default self-host; suporte R2/S3/GCS/Azure). Versionamento obrigatório. Accepted 2026-04-21 (GAR-374). ✅
 - [x] [`docs/adr/0005-identity-provider.md`](docs/adr/0005-identity-provider.md) — **`garraia_login` BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT v1 + lazy upgrade dual-verify PBKDF2→Argon2id** escolhidos. Resolve o hard blocker do login flow sob RLS documentado em GAR-408. Trait `IdentityProvider` shape congelada para futuros adapters OIDC. Entregue em 2026-04-13 via GAR-375. ✅
-- [ ] `docs/adr/0006-search-strategy.md` — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. (GAR-376)
+- [x] [`docs/adr/0006-search-strategy.md`](docs/adr/0006-search-strategy.md) — Postgres FTS (tsvector) como start, Tantivy como evolução, Meilisearch como opção externa. Accepted 2026-04-21 (GAR-376). ✅
 
 ### 3.2 Domínio & Schema
 
-Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-13/14 via 8 migrations sequenciais: 001 (GAR-407, users/groups/sessions/api_keys), 002 (GAR-386, RBAC + audit_events + single-owner index), 004 (GAR-388, chats + messages com `tsvector` GIN + compound FK), 005 (GAR-389, memory_items + memory_embeddings com pgvector HNSW cosine), 006 (GAR-390, tasks Tier 1 Notion-like com RLS embedded), 007 (GAR-408, FORCE RLS em 10 tabelas com NULLIF fail-closed + prova empírica via ownership transfer panic-safe), 008 (GAR-391a, `garraia_login NOLOGIN BYPASSRLS` dedicated role + 4 GRANTs exatos do ADR 0005) e 009 (GAR-391b prereq, `user_identities.hash_upgraded_at`). Smoke test testcontainers `pgvector/pgvector:pg16` cobre todas as migrations em ~10-13s wall. PII-safe `Workspace` handle via `#[instrument(skip(config))]` + custom `Debug` redacting `database_url`. Slot 003 reservado para GAR-387 (files, bloqueado por ADR 0004). Plans: [`plans/0003`](plans/0003-gar-407-workspace-schema-bootstrap.md) → [`plans/0010`](plans/0010-gar-391a-garraia-auth-crate-skeleton.md) → [`plans/0011.5`](plans/0011.5-gar-391b-migration-009-hash-upgraded-at.md).
+Crate `garraia-workspace` ✅ **schema da Fase 3** entregue em 2026-04-13/14 via 8 migrations sequenciais (hoje são 33 migrations / 37 tabelas / 32 sob FORCE RLS): 001 (GAR-407, users/groups/sessions/api_keys), 002 (GAR-386, RBAC + audit_events + single-owner index), 004 (GAR-388, chats + messages com `tsvector` GIN + compound FK), 005 (GAR-389, memory_items + memory_embeddings com pgvector HNSW cosine), 006 (GAR-390, tasks Tier 1 Notion-like com RLS embedded), 007 (GAR-408, FORCE RLS em 10 tabelas com NULLIF fail-closed + prova empírica via ownership transfer panic-safe), 008 (GAR-391a, `garraia_login NOLOGIN BYPASSRLS` dedicated role + 4 GRANTs exatos do ADR 0005) e 009 (GAR-391b prereq, `user_identities.hash_upgraded_at`). Smoke test testcontainers `pgvector/pgvector:pg16` cobre todas as migrations em ~10-13s wall. PII-safe `Workspace` handle via `#[instrument(skip(config))]` + custom `Debug` redacting `database_url`. Migration 003 (GAR-387: folders/files/file_versions, plan 0033) entregue após o ADR 0004. Plans: [`plans/0003`](plans/0003-gar-407-workspace-schema-bootstrap.md) → [`plans/0010`](plans/0010-gar-391a-garraia-auth-crate-skeleton.md) → [`plans/0011.5`](plans/0011.5-gar-391b-migration-009-hash-upgraded-at.md).
 
 **Tabelas (Postgres + SQLx migrations):**
 
@@ -550,7 +551,7 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 - [x] `api_keys` (`id`, `user_id`, `label`, `key_hash UNIQUE`, `scopes jsonb`, `created_at`, `revoked_at`, `last_used_at`) — Argon2id pinned, migration 001 ✅
 - [x] `groups` (`id`, `name`, `type`, `created_by`, `settings jsonb`, `created_at`, `updated_at`) — migration 001 ✅
 - [x] `group_members` (`group_id`, `user_id`, `role`, `status`, `joined_at`, `invited_by`) — migration 001 ✅
-- [x] `group_invites` (`id`, `group_id`, `invited_email citext`, `proposed_role`, `token_hash UNIQUE`, `expires_at`, `created_by`, `created_at`, `accepted_at`, `accepted_by`, `revoked_at`, `revoked_by`) — migration 001 + 021 (plan 0257) ✅
+- [x] `group_invites` (`id`, `group_id`, `invited_email citext`, `proposed_role`, `token_hash UNIQUE`, `expires_at`, `created_by`, `created_at`, `accepted_at`, `accepted_by`, `revoked_at`, `revoked_by`) — migration 001 + 024 (`revoked_*`, plan 0257) + 025 (`declined_*`, plan 0258) ✅
 - [x] `roles`, `permissions`, `role_permissions` — migration 002 ✅ (5 roles + 22 permissions + 63 role_permissions, seed estático)
 - [x] `audit_events` (`id`, `group_id`, `actor_user_id`, `actor_label`, `action`, `resource_type`, `resource_id`, `ip`, `user_agent`, `metadata`, `created_at`) — NO FK intencional, sobrevive CASCADE para LGPD art. 8 §5 / GDPR art. 17(1), migration 002 ✅
 - [x] `group_members_single_owner_idx` — partial unique index `WHERE role = 'owner'` (fecha GAR-414 M1), migration 002 ✅
@@ -559,8 +560,8 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 - [x] `messages` (`id`, `chat_id`, **`group_id` denormalizado**, `sender_user_id`, `sender_label`, `body` CHECK len 1..100k, **`body_tsv tsvector GENERATED STORED + GIN`**, `reply_to_id ON DELETE SET NULL`, `thread_id` plain uuid, `deleted_at` soft-delete, **compound FK `(chat_id, group_id) → chats(id, group_id)`**) — migration 004 ✅
 - [x] `message_threads` (`id`, `chat_id`, `root_message_id UNIQUE`, `title`, `resolved_at`) — migration 004 ✅
 - [x] `message_attachments` (M:N join, `message_id + file_id`, FORCE RLS via `message_attachments_through_messages` policy) — migration 020, GAR-697 (plan 0179) + GAR-700 (plan 0182). ✅
-- [ ] `folders` (`id`, `group_id`, `parent_id`, `name`)
-- [ ] `files`, `file_versions`, `file_shares`
+- [x] `folders` (`id`, `group_id`, `parent_id`, `name`, `deleted_at`) — migration 003 (GAR-387, plan 0033), FORCE RLS ✅
+- [x] `files`, `file_versions` — migration 003, FORCE RLS ✅ (`file_shares` não existe em nenhuma migration — pendente)
 - [x] `memory_items` (`id`, `scope_type` CHECK user/group/chat, `scope_id` sem FK, **`group_id` NULL-able** para user-scope, `created_by ON DELETE SET NULL` + `created_by_label` cache, `kind` CHECK 6 valores, `content` CHECK 10k, `sensitivity` CHECK 4 níveis + partial index em secret, `source_chat_id/source_message_id ON DELETE SET NULL`, `ttl_expires_at` CHECK future) — migration 005 ✅
 - [x] `memory_embeddings` (`memory_item_id` FK CASCADE, `model` CHECK 256, `embedding vector(768)`, PK `(memory_item_id, model)`, **HNSW `vector_cosine_ops`** index) — migration 005 ✅
 - [x] **Row-Level Security (FORCE) em 10 tabelas tenant-scoped** (`messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`) com 3 classes de policies (direct / JOIN / dual) + `NULLIF(current_setting(...), '')::uuid` fail-closed + role `garraia_app` NOLOGIN + `ALTER DEFAULT PRIVILEGES` forward-compat + 8 cenários de smoke test incluindo **prova empírica de FORCE** via ownership transfer para role não-superuser (com `scopeguard::defer!` panic-safe) — migration 007 ✅. **Impacto em GAR-391:** login flow precisa de role BYPASSRLS ou SECURITY DEFINER para ler `user_identities.password_hash` (hard blocker documentado no README).
@@ -574,31 +575,31 @@ Crate `garraia-workspace` ✅ **schema completo da Fase 3** entregue em 2026-04-
 
 Novo crate: `garraia-auth` (separado de `garraia-security`).
 
-**Status (2026-04-13):** 🟢 **Skeleton entregue** via GAR-391a — crate `garraia-auth` existe com `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype validado por `current_user` + migration `008_login_role.sql` criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005. Próximas fatias: **391b** (`verify_credential` real + dual-verify + JWT), **391c** (extractor Axum + `RequirePermission` + wiring), **391d**/GAR-392 (suite cross-group authz). [ADR 0005](docs/adr/0005-identity-provider.md) accepted; trait shape congelada.
+**Status (2026-04-15):** 🟢 **Fase 3.3 completa** — 391a (skeleton), 391b (`verify_credential` real + dual-verify + JWT), 391c (extractor Axum + `RequirePermission` + wiring) e 391d/GAR-392 (suites cross-group authz) entregues; ver o status da Fase 3 acima. [ADR 0005](docs/adr/0005-identity-provider.md) accepted; trait shape congelada.
 
 - [x] **Skeleton (GAR-391a):** crate `garraia-auth` + `IdentityProvider` trait + `InternalProvider` stub + `LoginPool` newtype com `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + migration 008 + smoke tests (3 unit + 3 integration). ✅
 - [x] `struct Principal { user_id, group_id, role: Option<Role> }` — typed `Role` enum shipped in 391c; `Principal` implements `FromRequestParts` with JWT verify + optional group membership lookup. ✅
-- [x] **`verify_credential` real (GAR-391b):** Argon2id (RFC 9106 first recommendation `m=64MiB, t=3, p=4`) + PBKDF2 dual-verify + lazy upgrade transacional + `SELECT ... FOR NO KEY UPDATE OF ui` + constant-time anti-enumeration via `DUMMY_HASH` gerado em build.rs + `audit_events` em todos os terminais + JWT HS256 access token (15min, algorithm-confusion guards) + endpoint `POST /v1/auth/login` sob feature `auth-v1` retornando 401 byte-identical em todos os modos de falha. 32 testes verdes (16 unit + 13 integration garraia-auth + 3 endpoint integration garraia-gateway). ✅
+- [x] **`verify_credential` real (GAR-391b):** Argon2id (RFC 9106 first recommendation `m=64MiB, t=3, p=4`) + PBKDF2 dual-verify + lazy upgrade transacional + `SELECT ... FOR NO KEY UPDATE OF ui` + constant-time anti-enumeration via `DUMMY_HASH` gerado em build.rs + `audit_events` em todos os terminais + JWT HS256 access token (15min, algorithm-confusion guards) + endpoint `POST /v1/auth/login` (default-on; a feature `auth-v1` foi removida em 391c) retornando 401 byte-identical em todos os modos de falha. 32 testes verdes (16 unit + 13 integration garraia-auth + 3 endpoint integration garraia-gateway). ✅
 - [x] **Refresh tokens + `SessionStore::issue` no endpoint (GAR-391c):** migration 010 adiciona `GRANT SELECT ON sessions TO garraia_login` (Gap A); `POST /v1/auth/refresh` (rotação default ON) + `POST /v1/auth/logout` (idempotente, 204 sempre) shipped default-on. ✅
 - [x] **`create_identity` real + signup endpoint (GAR-391c):** `garraia_signup NOLOGIN BYPASSRLS` role + `SignupPool` newtype análogo ao `LoginPool` + `signup_user` free function + `POST /v1/auth/signup` endpoint (201 + tokens em sucesso, 409 em duplicate email). Gap B fechado. ✅
 - [x] **`Principal` extractor + `RequirePermission` (GAR-391c):** `Principal` implementa `FromRequestParts` (Bearer JWT verify + optional `X-Group-Id` membership lookup via Gap C `GRANT SELECT ON group_members`); `RequirePermission` é struct method `check()` + free function `require_permission()` (NOT `FromRequestParts` por const-generic limitation do Axum). ✅
 - [x] `fn can(principal: &Principal, action: Action) -> bool` central — 22-action enum, 5-role enum, 110-case table-driven test (`can_matrix_matches_seed`) cobrindo as 63 rows seedadas em migration 002. ✅
 - [x] Papéis: `Owner`, `Admin`, `Member`, `Guest`, `Child` — `Role` enum tipado com tier numérico (100/80/50/20/10) batendo com `roles` seed. ✅
 - [x] **Capabilities (22 variants):** `files.*`, `chats.*`, `memory.*`, `tasks.*`, `docs.*`, `members.manage`, `group.{settings,delete}`, `export.{self,group}` — `Action` enum mapeado via `fn can()`. ✅
-- [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`.
-- [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — 18 tabelas com FORCE RLS + NULLIF fail-closed. Migrations 006 e 007. ✅
+- [ ] `enum Scope { User(Uuid), Group(Uuid), Chat(Uuid) }` com regra de resolução `Chat > Group > User`. *(Parcial: `Scope { User, Group, Chat }` tipado existe em `garraia-embeddings::Scope` e no `ValidatedScopeType` da busca; a regra de resolução ainda não.)*
+- [x] **Defense-in-depth**: Postgres RLS (`CREATE POLICY`) em `messages`, `chats`, `chat_members`, `message_threads`, `memory_items`, `memory_embeddings`, `audit_events`, `sessions`, `api_keys`, `user_identities`, `task_lists`, `tasks`, `task_assignees`, `task_labels`, `task_label_assignments`, `task_comments`, `task_subscriptions`, `task_activity` — hoje 32 tabelas com FORCE RLS + NULLIF fail-closed (migrations 003, 006, 007, 014, 017, 018, 020-022, 026-029); só `users`, `roles`, `permissions`, `role_permissions` e `group_invites` ficam fora. ✅
 - [x] **FORCE RLS em `groups` + `group_members`** — migration 018, plan 0106 / GAR-589, merged 2026-05-12 via PR #294 (`36b2b72`). `groups_member_access` + `group_members_visible` policies; fixes `get_group` FIXME (missing SET LOCAL) e `list_members` (missing `app.current_group_id`). ✅
 - [x] **Identity provider decision:** [ADR 0005](docs/adr/0005-identity-provider.md) — BYPASSRLS dedicated role (`garraia_login` NOLOGIN BYPASSRLS) + Argon2id (m=64MiB, t=3, p=4) + HS256 JWT + PBKDF2→Argon2id lazy upgrade dual-verify + `IdentityProvider` trait shape congelada. ✅
 - [ ] **Guardrails Child/Dependent**: sem export, sem share externo, content filter aplicado pré-LLM.
 
 **Critério de aceite:**
 
-- Suite de testes `tests/authz/` com > 100 cenários (cross-group leak attempts, role escalation, token replay) — 100% verde.
+- Suites de authz com > 100 cenários ✅: `crates/garraia-auth/tests/rls_matrix.rs` (81 casos RLS), `crates/garraia-gateway/tests/authz_http_matrix.rs` (50 casos HTTP) e a tabela de 110 pares em `can.rs`.
 - Teste específico: usuário do grupo A **não** consegue listar, ler, buscar, nem aparecer em auditoria do grupo B mesmo tentando IDs diretos.
 
 ### 3.4 API REST `/v1` (OpenAPI documented)
 
-Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
+Contrato versionado. OpenAPI gerada com `utoipa` 5 e servida em `GET /v1/openapi.json` + Swagger UI em `/docs` ✅.
 
 **Grupos**
 
@@ -607,7 +608,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}` — plan 0016 M4, entregue 2026-04-14
 - [x] `PATCH /v1/groups/{group_id}` — plan 0017, entregue 2026-04-16
 - [x] `POST /v1/groups/{group_id}/invites` — plan 0018, entregue 2026-04-16
-- [x] `POST /v1/groups/{group_id}/members/{user_id}:setRole` — plan 0020, entregue 2026-04-20
+- [x] `POST /v1/groups/{group_id}/members/{user_id}/setRole` — plan 0020, entregue 2026-04-20 (path com barra, não dois-pontos — limitação Axum 0.8 / matchit)
 - [x] `DELETE /v1/groups/{group_id}/members/{user_id}` — plan 0020, entregue 2026-04-20
 - [x] `GET /v1/groups/{group_id}/members` — plan 0097 / GAR-574, implementado 2026-05-11 (Florida)
 - [x] `GET /v1/groups/{group_id}/members/{user_id}` (fetch single group member) — plan 0286 / GAR-823 ✅
@@ -615,6 +616,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/groups/{group_id}/invites/{invite_id}` — plan 0257 / GAR-780 ✅
 - [x] `DELETE /v1/groups/{group_id}/invites/{invite_id}` (revoke) — plan 0257 / GAR-780 ✅
 - [x] `DELETE /v1/groups/{group_id}` (owner-only soft-delete; sets `archived_at`; idempotent 204; `GroupArchived` audit; migration 031) — plan 0346 / GAR-890 ✅
+- [x] `POST /v1/invites/{token}/accept` — aceite por token (plan 0019) ✅
 - [x] `GET /v1/me` — plan 0015 (skeleton Fase 3.4), entregue 2026-04-14
 - [x] `PATCH /v1/me` (display_name self-update) — plan 0110 / GAR-599 ✅
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765 ✅
@@ -645,6 +647,8 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 - [x] `POST /v1/groups/{group_id}/chats` — plan 0054 / GAR-506, implementado 2026-05-04 (Florida)
 - [x] `GET /v1/groups/{group_id}/chats` — plan 0054 / GAR-506, implementado 2026-05-04 (Florida)
+- [x] `GET` / `PATCH` / `DELETE /v1/chats/{chat_id}` — plan 0076 ✅
+- [x] `GET` / `POST /v1/chats/{chat_id}/members` + `DELETE /v1/chats/{chat_id}/members/{user_id}` ✅
 - [x] `POST /v1/chats/{chat_id}/messages` — plan 0055 / GAR-507, implementado 2026-05-05 (Florida)
 - [x] `GET /v1/chats/{chat_id}/messages?cursor=...` — plan 0055 / GAR-507, implementado 2026-05-05 (Florida)
 - [x] `POST /v1/messages/{message_id}/threads` — plan 0058 / GAR-509, implementado 2026-05-05 (Florida)
@@ -669,6 +673,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [ ] `POST /v1/groups/{group_id}/files:initUpload` (presigned URL + multipart)
 - [ ] `POST /v1/groups/{group_id}/files:completeUpload`
 - [x] `GET /v1/groups/{group_id}/files?folder_id=...` + `GET /v1/groups/{group_id}/folders` ✅ PR #235 GAR-555
+- [x] `POST /v1/groups/{group_id}/folders` + `PATCH` / `DELETE /v1/groups/{group_id}/folders/{folder_id}` — plans 0091/0092 ✅
 - [x] `GET /v1/groups/{group_id}/files/{file_id}` + `GET /v1/groups/{group_id}/folders/{folder_id}` (single resource read) — plan 0090 / GAR-559, implementado 2026-05-09 (Florida) ✅ PR #242 (`4adcb02`)
 - [x] `PATCH /v1/groups/{group_id}/files/{file_id}` (rename) — plan 0089 / GAR-557, implementado 2026-05-09 (Florida) ✅ PR #238 (`9255515`)
 - [x] `GET /v1/files/{file_id}/download` (streaming bytes via ObjectStore) — plan 0093 / GAR-564, implementado 2026-05-10 (Florida) ✅ PR #250 (`b2de161`)
@@ -705,6 +710,7 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 - [x] `GET /v1/search?...&types=users` — plan 0214 / GAR-730, implementado 2026-05-28 (Florida). Slice 13: `users.display_name` FTS via `to_tsvector('simple', display_name)` (no new migration); JOIN through `group_members` for group isolation; `status = 'active'` guard; email excluded from FTS (PII safety); group scope only; result `type: "user"`, `excerpt` = display_name, `sender_user_id` = user's own id, `chat_id` = null, `kind` = null.
 - [x] `GET /v1/search?...&types=groups` — plan 0215 / GAR-733, implementado 2026-05-28 (Florida). Slice 14: `groups.name` FTS via `to_tsvector('simple', name)` (no new migration); user scope only (FORCE RLS migration 018 enforces membership via `app.current_user_id` — no explicit SQL filter needed); result `type: "group"`, `excerpt` = name, `group_id` = group's own id, `sender_user_id` = `created_by`, `kind` = type ('family'/'team'/'personal').
 - [x] `GET /v1/search?...&types=labels` — plan 0219 / GAR-737, implementado 2026-05-29 (Florida). Slice 15: `task_labels.name` FTS via `to_tsvector('simple', name)` (no new migration); group scope only (FORCE RLS `task_labels_group_isolation` migration 006 + explicit `AND group_id = $2`); result `type: "label"`, `excerpt` = name, `kind` = color (`#RRGGBB`), `sender_user_id` = `created_by` (nullable), `chat_id` = null.
+- [x] `GET /v1/search?...&types=doc_pages` + `types=doc_blocks` — plan 0317 / GAR-856. Slices 16-17: `doc_pages.title` e `doc_blocks.content_jsonb::text` via `to_tsvector('simple', ...)` em runtime (sem índice GIN); group scope only.
 
 **Auditoria**
 
@@ -714,19 +720,19 @@ Contrato versionado. Usar `utoipa` para gerar OpenAPI + Swagger UI em `/docs`.
 
 **Critério de aceite:**
 
-- Spec OpenAPI 3.1 gerada e servida em `/docs`.
-- Contract tests via `schemathesis` ou `dredd` rodam em CI.
+- [x] Spec OpenAPI gerada (`utoipa` 5) e servida em `GET /v1/openapi.json` + Swagger UI em `/docs`.
+- [ ] Contract tests via `schemathesis` ou `dredd` rodam em CI.
 
 ### 3.5 Object storage & uploads
 
 Novo crate: `garraia-storage`.
 
-- [ ] Abstração `trait ObjectStore` com impls: `LocalFs`, `S3Compatible` (via `aws-sdk-s3`), `Minio`.
-- [ ] **Presigned URLs** (PUT/GET) com expiração ≤ 15 min e escopo mínimo.
+- [x] Abstração `trait ObjectStore` com impls `LocalFs` e `S3Compatible` (via `aws-sdk-s3`, feature `storage-s3`; MinIO via `endpoint_url` + path-style, não impl separada) — plans 0037/0038 / GAR-394 ✅
+- [x] **Presigned URLs** (PUT/GET) com TTL em [30s, 900s] — só no `S3Compatible` (`LocalFs` responde unsupported) ✅
 - [ ] **Multipart upload** nativo do S3 para arquivos > 16 MiB.
-- [ ] **tus 1.0** server implementation para clientes mobile.
-- [ ] **Versionamento**: cada update cria `file_versions` nova; soft delete move para lixeira com retenção configurável (default 30 dias).
-- [ ] **Criptografia em repouso**: SSE-S3/SSE-KMS quando em cloud; chave local via `CredentialVault` quando `LocalFs`.
+- [x] **tus 1.0** server implementation para clientes mobile — `POST`/`OPTIONS /v1/uploads`, `HEAD`/`PATCH`/`DELETE /v1/uploads/{id}`, migrations 014 + 032 (plans 0041/0044/0047 / GAR-395, PR #62) ✅
+- [ ] **Versionamento**: `file_versions` por update + soft delete (`deleted_at`) ✅ (migration 003, plans 0094/0095); lixeira com retenção configurável / purge worker ainda pendente.
+- [ ] **Criptografia em repouso**: SSE-S3 obrigatório em todo `put` do `S3Compatible` ✅ (ADR 0004 §Security); SSE-KMS e chave local via `CredentialVault` para `LocalFs` pendentes.
 - [ ] **Antivírus opcional**: hook para ClamAV (feature flag `av-clamav`).
 
 **Critério de aceite:**
@@ -745,26 +751,26 @@ Novo crate: `garraia-storage`.
 - [x] Anexos via `message_attachments` → `files` — plan 0182 / GAR-700. ✅
 - [x] **Bot Garra no chat**: agente pode ser invocado por `/garra <prompt>` e responde respeitando o scope do chat. *(plan 0240, GAR-759)*
 - [x] `GET /v1/me/chats` — caller-scoped chat membership inbox (cursor-paginated, type filter) — plan 0245 / GAR-765.
-- [x] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens — slices 1-12 (planos 0084-0085, 0185, 0192-0193, 0200, 0225, 0231-0237 etc.), GAR-549..GAR-726, todos ✅.
+- [x] **Busca**: Postgres FTS (`tsvector`) com índice GIN; migração para Tantivy quando > 10M mensagens — slices 1-17 (planos 0084-0086, 0179, 0185, 0192-0195, 0199-0200, 0208, 0211, 0214-0215, 0219, 0317), GAR-549..GAR-856, todos ✅.
 
 **Critério de aceite:**
 
-- Dois usuários conversam em WebSocket com latência < 100ms intra-LAN.
+- Dois usuários conversam via SSE stream (decisão em 3.4: canal server→client) com latência < 100ms intra-LAN.
 - Busca full-text retorna top-20 em < 150ms p95 com 1M de mensagens.
 
 ### 3.7 Memória IA compartilhada
 
-- [ ] **Três níveis** rigorosamente separados: `personal`, `group`, `chat`.
-- [ ] **UI de memória** (web + mobile): ver, editar, fixar, expirar, excluir.
-- [ ] **Políticas**: retenção por grupo, sensitivity por item, TTL.
-- [ ] **Auditoria**: toda leitura/escrita/deleção de memória gera `audit_events`.
+- [x] **Três níveis** rigorosamente separados: `user` (personal), `group`, `chat` — `memory_items.scope_type` (migration 005) + filtro em `/v1/memory` + `Scope` tipado ✅ (isolamento no retrieval ainda sem teste dedicado — ver critério abaixo).
+- [ ] **UI de memória** (web + mobile): ver, editar, fixar, expirar, excluir. *(Parcial: Web Console gerencia memória; editar/fixar/excluir via `PATCH`/`DELETE /v1/memory/{id}` + `pin`/`unpin`; mobile pendente.)*
+- [ ] **Políticas**: retenção por grupo, sensitivity por item, TTL. *(Parcial: `sensitivity` (4 níveis) + `ttl_expires_at` por item na migration 005 ✅; retenção por grupo pendente.)*
+- [ ] **Auditoria**: toda leitura/escrita/deleção de memória gera `audit_events`. *(Parcial: criação/edição/pin/deleção emitem `memory.*` ✅; leitura ainda não.)*
 - [ ] **Consentimento**: ao salvar memória derivada de chat, mostrar prompt "Salvar para: só eu / grupo / este chat".
-- [ ] **LGPD direitos do titular**: export JSON + delete por user_id dentro de um grupo.
+- [ ] **LGPD direitos do titular**: export JSON + delete por user_id dentro de um grupo. *(Parcial: `GET /v1/me/export` (JSON), `DELETE /v1/me` e `POST /v1/me/anonymize` ✅ — o export ainda não inclui `memory_items`/tasks/mensagens; delete de memória por user_id dentro de um grupo pendente.)*
 
 **Critério de aceite:**
 
 - Memória pessoal do usuário A **nunca** aparece em retrieval do grupo mesmo com query idêntica.
-- Export LGPD de um usuário gera zip com todos os dados em < 30s.
+- Export LGPD de um usuário gera um arquivo (hoje JSON só com perfil/sessões/keys/audit/memberships) com todos os dados em < 30s.
 
 ### 3.8 Tasks & Docs (Notion-like) — módulo de acompanhamento
 
@@ -784,7 +790,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `task_comments` (`id`, `task_id` CASCADE, `author_user_id ON DELETE SET NULL` + `author_label` cache, `body_md` CHECK 50k, `edited_at`, `deleted_at`) — migration 006 ✅
 - [x] `task_attachments` (PK composta `(task_id, file_id)`, `group_id` denorm, `attached_by ON DELETE SET NULL`, `attached_by_label` cache, `attached_at`) — migration 017, FORCE RLS via JOIN tasks, plan 0096 / GAR-572 ✅
 - [x] `task_subscriptions` (PK composta `(task_id, user_id)` CASCADE, `subscribed_at`, `muted`) — migration 006 ✅
-- [x] `task_activity` (`id`, `task_id` CASCADE, **`group_id` denormalizado**, `actor_user_id` plain uuid sem FK, `actor_label` cache, `kind` CHECK 12 valores, `payload jsonb`) — migration 006 ✅
+- [x] `task_activity` (`id`, `task_id` CASCADE, **`group_id` denormalizado**, `actor_user_id` plain uuid sem FK, `actor_label` cache, `kind` CHECK 13 valores (12 em 006 + `moved` em 016), `payload jsonb`) — migration 006 ✅
 - [x] Status enum: `backlog|todo|in_progress|review|done|canceled` — migration 006 ✅
 - [x] Priority enum: `none|low|medium|high|urgent` — migration 006 ✅
 - [x] Índices críticos: `(list_id, status)`, `(group_id, status)`, `(due_at) WHERE deleted_at IS NULL AND due_at IS NOT NULL`, `(parent_task_id)` partial, `(group_id, completed_at DESC) WHERE status = 'done'` — migration 006 ✅
@@ -833,9 +839,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **RBAC:**
 
-- [ ] Novas capabilities: `tasks.read`, `tasks.write`, `tasks.assign`, `tasks.delete`, `tasks.admin`.
-- [ ] Mapeamento padrão: Owner/Admin/Member → read+write+assign; Guest → read + comment; Child → read + comment + complete próprias.
-- [x] Auditoria: toda mudança de status/assignee/due_at gera `task_activity` (plan 0080 / GAR-541 ✅); `audit_events` fan-out deferido para GAR-397.
+- [x] Capabilities `tasks.read`, `tasks.write`, `tasks.assign`, `tasks.delete` — migration 002 + `Action` enum ✅ (`tasks.admin` não existe; remover ou tratar como futuro).
+- [x] Mapeamento padrão (seed da migration 002): Owner/Admin → read+write+assign+delete; Member → read+write (**sem** assign); Guest → read; Child → read+write. *(Diverge do desenho original — Member sem assign, Guest sem comment — revisar se a intenção mudou.)*
+- [x] Auditoria: toda mudança de status/assignee/due_at gera `task_activity` (plan 0080 / GAR-541 ✅); `audit_events` já emitidos para lists/tasks/comments/assignees/labels (`audit_workspace.rs`); fan-out de notificações segue em GAR-397.
 
 **Integração com memória IA & agentes:**
 
@@ -884,7 +890,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [x] `GET /v1/doc-blocks/{block_id}` — plan 0314 / GAR-853
 - [x] `PATCH /v1/doc-blocks/{block_id}` — plan 0304 / GAR-840
 - [x] `DELETE /v1/doc-blocks/{block_id}` — plan 0304 / GAR-840
-- [x] `POST /v1/doc-pages/{page_id}:duplicate` — plan 0309 / GAR-847
+- [x] `POST /v1/doc-pages/{page_id}/duplicate` — plan 0309 / GAR-847
 - [x] `GET /v1/doc-pages/{page_id}/versions` — plan 0307 / GAR-845
 - [x] `POST /v1/doc-pages/{page_id}/versions` (snapshot) — plan 0307 / GAR-845
 - [x] `GET /v1/doc-pages/{page_id}/versions/{version_id}` — plan 0307 / GAR-845
@@ -897,7 +903,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **Colaboração em tempo real:**
 
-- [ ] CRDT via `y-crdt` (Rust) ou OT simplificado; decisão em `docs/adr/0008-doc-collab-strategy.md`.
+- [ ] CRDT via `y-crdt` — decisão tomada em [`docs/adr/0008-doc-collaboration.md`](docs/adr/0008-doc-collaboration.md) (Accepted 2026-04-21: single-editor agora, `y-crdt` acionado por gatilho); implementação pendente.
 - [ ] WebSocket `/v1/doc-pages/{id}/stream` com awareness (cursor/selection).
 - [ ] Modo offline com merge no reconnect.
 
@@ -910,7 +916,7 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 **Busca:**
 
-- [x] FTS indexa `doc_blocks.content_jsonb` via tsvector.
+- [x] Busca em `doc_blocks.content_jsonb` via `to_tsvector` em runtime (slice 17, plan 0317) — sem coluna tsvector/índice GIN ainda.
 - [x] Busca unificada passa a cobrir `messages + files + memory + tasks + docs`.
 
 **Critério de aceite Tier 2:**
@@ -940,8 +946,8 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 3.9 Busca unificada
 
-- [x] Endpoint `/v1/search` retorna resultados heterogêneos (messages, memory) ordenados por relevância — slices 1-4 completos (files deferred para quando file-FTS for implementado).
-- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552), `has_attachment` ✅ (slice 4 / GAR-697 / plan 0179).
+- [x] Endpoint `/v1/search` retorna resultados heterogêneos ordenados por relevância — slices 1-17 completos, 14 tipos (messages, memory, files, tasks, task_comments, folders, chats, task_lists, threads, users, groups, labels, doc_pages, doc_blocks).
+- [x] Filtros: `scope` ✅ (slices 1+2), `types` ✅ (slices 1+2), `from_date` ✅ (slice 3 / GAR-552), `author` ✅ (slice 3 / GAR-552), `has_attachment` ✅ (slice 4 / GAR-697 / plan 0179), `to_date` ✅ (slice 3), `sort_by` ✅ (slice 8 / GAR-713).
 - [ ] **Híbrido**: BM25 + ANN vetorial + re-rank.
 
 **Critério de aceite:**
@@ -959,17 +965,19 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 4.1 Garra Desktop (Tauri v2 — Win/Mac/Linux)
 
-- [ ] **Stack web**: migrar WebView de HTML puro para **SvelteKit** ou **Solid** (decisão em ADR `0007-desktop-frontend.md`).
-- [ ] **Design system**: tokens em `ops/design-tokens/`; dark mode imersivo; glassmorphism com `backdrop-filter`.
+- [x] **Stack web**: decidido em [ADR 0007](docs/adr/0007-desktop-frontend.md) (Accepted 2026-04-21) — fica **HTML + JS vanilla**; migração para **SolidJS** só se o gatilho S1 do ADR disparar (SvelteKit descartado).
+- [ ] **Design system**: tokens `--garra-*` + glassmorphism entregues no Web Console (`webchat.html`, ADR 0009) ✅; ainda não aplicados à UI do desktop (`crates/garraia-desktop/ui/`) e sem `ops/design-tokens/`.
 - [ ] **Micro-interações**: transições 120Hz via `motion.dev` ou `svelte-motion`.
 - [ ] **Bridge Rust ↔ TS**: comandos Tauri typed via `specta` ou `tauri-bindgen`.
 - [ ] **Offline-first**: cache local de chats/arquivos recentes via IndexedDB.
 - [ ] **Workspaces**: seletor de grupo no topo; switch rápido com `Ctrl+K`.
-- [x] **Instaladores -- Windows**: `install.ps1` (`irm | iex`) + MSI/NSIS via Tauri, entregues em 2026-08-30. Ambos **sem assinatura de codigo** -- o certificado OV/EV para remover o aviso do SmartScreen segue em aberto.
+- [x] **Instaladores -- Windows**: `install.ps1` (`irm | iex`) + MSI/NSIS via Tauri, entregues em 2026-08-30 (primeira release com os assets: v0.3.4, 2026-08-31). Ambos **sem assinatura de codigo** -- o certificado OV/EV para remover o aviso do SmartScreen segue em aberto.
 - [x] **Instaladores -- Linux**: `.deb` + `.rpm` (nfpm) e AppImage x86_64 (appimagetool), entregues em 2026-08-31 no job best-effort `package-linux` (ADR 0015, plan 0361). Sem assinatura GPG/repositorio apt-dnf hospedado.
 - [x] **Windows ARM64 nativo**: `garraia-windows-aarch64.exe` + `.zip` best-effort (job `build-windows-aarch64`), com `garra update` e `install.ps1` resolvendo o asset — entregue em 2026-08-31 (plan 0361).
+- [x] **Garra Desktop -- Linux**: `.deb` + AppImage x86_64 do app desktop via bundler Tauri (`scripts/build-desktop-linux.sh`, job best-effort `build-linux-desktop`), entregues em 2026-09-01 na v0.3.5 (plan 0362, Amendment do ADR 0015). O `.deb` declara `Provides/Conflicts/Replaces: garraia` porque instala o sidecar em `/usr/bin/garraia`.
 - [ ] **Instaladores -- restantes**: DMG (Mac, notarizado — exige segredos Apple do mantenedor); AppImage aarch64 (`--runtime-file` + segundo pin de runtime).
 - [x] **Archives**: entregues para todas as plataformas em 2026-08-30 (`.tar.gz` / `.zip`), aditivos aos binarios crus que o `garra update` consome; `garraia-windows-aarch64.zip` juntou-se em 2026-08-31.
+- [ ] **Auto-updater do desktop**: `tauri-plugin-updater` ligado (`check_for_updates`/`install_update` na bandeja) mas inerte — sem chave de assinatura e nenhum workflow publica `latest.json` (`docs/releasing.md` §Débito conhecido).
 
 **Critério de aceite:**
 
@@ -978,9 +986,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 4.2 Garra Mobile (Flutter — Android & iOS)
 
-- [ ] **Fix build Android**: atualizar `gradle` → 8.x, AGP → 8.x, Java 17, `compileSdk 35`.
+- [x] **Fix build Android**: gradle 8.14, AGP 8.11.1, Java 17; `compileSdk` delegado ao Flutter SDK (`flutter.compileSdkVersion`) ✅
 - [ ] **iOS target**: `flutter create --platforms ios`, ajustes CocoaPods, assinatura dev.
-- [ ] **WebSocket seguro** (wss) para chat em tempo real; fallback REST.
+- [ ] **WebSocket seguro** (wss) para chat em tempo real; fallback REST. *(Parcial: cliente wss em `sync_service.dart`; fallback REST pendente.)*
 - [ ] **Upload retomável**: integrar `tus_client` para arquivos grandes.
 - [ ] **Grupo switcher** com cache de membership.
 - [ ] **Tiny-LLMs locais** (fase posterior): avaliar `llama.cpp` via FFI ou ONNX Mobile para modelos ≤ 1B em dispositivos NPU.
@@ -994,11 +1002,23 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 4.3 Garra CLI
 
-- [ ] `garraia-cli chat` interativo com streaming (markdown renderer).
+- [ ] `garraia-cli chat` interativo com streaming ✅ (`garra chat`, spinner de atividade, `Ctrl+C` cancela o turno — PR #884); markdown renderer ainda pendente.
 - [ ] `garraia-cli workspace` (list/create/join/invite).
 - [ ] `garraia-cli files upload/download/ls`.
 - [ ] `garraia-cli bench` (baseline inference).
 - [ ] Autocomplete para bash/zsh/fish/pwsh.
+- [ ] `garra memory` (list/search/forget) — hoje a memória só é gerenciada pelo Web Console e pela API do gateway (README §Memory).
+
+### 4.4 Canais restantes (wiring no gateway)
+
+Os adapters existem em `garraia-channels` (features desligadas por default) mas não são instanciados pelo bootstrap do gateway (`crates/garraia-gateway/src/bootstrap/`):
+
+- [ ] Google Chat
+- [ ] Microsoft Teams
+- [ ] Matrix
+- [ ] LINE
+- [ ] IRC
+- [ ] Signal
 
 **Estimativa fase 4:** 8 / 10 / 14 semanas.
 **Épicos sugeridos:** `GAR-DESK-AAA`, `GAR-MOB-BUILD`, `GAR-MOB-WS`, `GAR-CLI-CHAT`.
@@ -1009,15 +1029,17 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 5.1 Security & Vaults
 
-- [ ] **CredentialVault final (GAR-410)**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`. Fecha GAR-291 (criptografia de tokens MCP, ✅ Done 2026-03-04) ampliando para todos os secrets do gateway.
-- [ ] **TLS 1.3 obrigatório** em todas as superfícies públicas via `rustls`.
-- [ ] **Argon2id** para senhas de usuários (mobile_users → users).
-- [ ] **Rate limiting** por IP + por user_id via `tower-governor`.
-- [ ] **CSRF + CORS** hardening no Gateway (`tower-http`).
-- [ ] **Headers de segurança**: CSP, HSTS, X-Content-Type-Options, Referrer-Policy.
-- [ ] **Secrets scanning** no CI via `gitleaks`.
-- [ ] **Threat model** documentado em `docs/security/threat-model.md` (STRIDE por componente).
+- [ ] **CredentialVault final (GAR-410)**: única fonte de secrets do gateway; rotação de chaves; master key via `argon2id`. *(Parcial: leitura de secrets centralizada em `garraia-config::auth` — plan 0046; o gateway ainda não consome o cofre e não há rotação. Adiado — ver `TODO.md`.)* Fecha GAR-291 (criptografia de tokens MCP, ✅ Done 2026-03-04) ampliando para todos os secrets do gateway.
+- [ ] **TLS 1.3 obrigatório** em todas as superfícies públicas via `rustls`. *(Parcial: TLS via `rustls` disponível atrás da feature `tls` do gateway (`axum-server`); obrigatoriedade e passthrough da feature no binário `garraia` pendentes.)*
+- [x] **Argon2id** para senhas de usuários — `garraia-auth` (RFC 9106, argon2 0.6) + lazy upgrade PBKDF2→Argon2id dos `mobile_users` legados (plan 0036) ✅
+- [x] **Rate limiting** por IP + por user_id + por API key via `governor`/`tower-governor` (`rate_limiter.rs`, GAR-426) + limite de SSE por usuário (GAR-679) ✅
+- [ ] **CSRF + CORS** hardening no Gateway. *(Parcial: CSRF no admin via `require_csrf` ✅; `CorsLayer` ainda não.)*
+- [ ] **Headers de segurança**: CSP, X-Content-Type-Options e Referrer-Policy aplicados globalmente (`admin/middleware.rs`) ✅; HSTS pendente.
+- [x] **Secrets scanning** no CI via `gitleaks` — job `Secret Scan (gitleaks)` no `ci.yml` + hook pre-commit + `garra verify` ✅
+- [x] **Threat model** documentado em [`docs/security/threat-model.md`](docs/security/threat-model.md) (STRIDE por componente; Draft v1 2026-04-21, revisão trimestral) ✅
 - [ ] **Pentest interno** com checklist OWASP ASVS L2.
+- [ ] **Auth por padrão na API local** — `gateway.api_key` / `session_tokens_required` são opt-in hoje (README §Security).
+- [ ] **Cofre como default do wizard** — `garra init` grava chaves em `config.yml` (0600) por padrão; o cofre é opção.
 
 ### 5.2 Testes & Continuous Fuzzing
 
@@ -1025,24 +1047,24 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] **Integration tests** com testcontainers (Postgres, MinIO) em CI. *(Parcial 2026-08-18: job `auth-integration` roda os 16 binários de integração do garraia-auth — matriz RLS incluída — contra pgvector/pg16 em todo PR; MinIO segue gated por feature.)*
 - [ ] **Property tests** (`proptest`) em parsers, scopes, RBAC.
 - [ ] **Fuzzing contínuo** via `cargo-fuzz` nos parsers de MCP, config e protocolos de canais.
-- [ ] **Mutation testing** (`cargo-mutants`) mensal. *(Piloto semanal em garraia-auth existe desde 2026-04; baseline destravado em 2026-08-18 — o seed quebrado que o mantinha vermelho foi corrigido no plan 0354.)*
+- [ ] **Mutation testing** (`cargo-mutants`) — `mutants.yml` roda **semanal** (segundas 05:00 UTC) em `garraia-auth`; verde desde 2026-08-24 após o fix do seed no plan 0354. Expandir a outros crates pendente.
 - [ ] **Load testing**: `k6` ou `vegeta` com cenários de 1k concurrent users.
 - [ ] **Chaos testing**: matar DB/storage e validar degradação graciosa.
 
 ### 5.3 Compliance LGPD / GDPR
 
-- [ ] **DPIA** (Data Protection Impact Assessment) em `docs/compliance/dpia.md`.
+- [x] **DPIA** (Data Protection Impact Assessment) em [`docs/compliance/dpia.md`](docs/compliance/dpia.md) — Draft v1 (2026-04-21), revisão legal externa pendente antes do GA.
 - [ ] **Privacy policy** + **Terms of Service** em PT-BR e EN.
-- [ ] **Records of Processing Activities (RoPA)** documentados.
-- [ ] **Data subject rights**: endpoints de export e delete (art. 18 LGPD / art. 15/17 GDPR). *(Export entregue — GAR-885/plan 0344; anonymize entregue e CORRIGIDO em 2026-08-18 — plan 0354, retornava 500 desde junho; delete de conta pendente.)*
+- [x] **Records of Processing Activities (RoPA)** documentados — `docs/compliance/dpia.md` §6 (Draft v1).
+- [ ] **Data subject rights**: endpoints de export e delete (art. 18 LGPD / art. 15/17 GDPR). *(Export entregue — GAR-885/plan 0344; anonymize entregue e CORRIGIDO em 2026-08-18 — plan 0354, retornava 500 desde junho; soft-delete de conta entregue — `DELETE /v1/me`, GAR-884; hard delete / retention worker pendente.)*
 - [ ] **Retention policies** configuráveis por grupo.
-- [ ] **Incident response runbook**: fluxo de notificação ANPD (comunicado de incidente) e autoridades UE em ≤ 72h quando aplicável.
-- [ ] **Data minimization**: revisão de todos os logs para garantir que não vaze PII.
+- [x] **Incident response runbook**: [`docs/compliance/incident-response.md`](docs/compliance/incident-response.md) — fluxo ANPD / autoridades UE em ≤ 72h (Draft v1, tabletop pendente).
+- [ ] **Data minimization**: revisão de todos os logs para garantir que não vaze PII. *(Parcial: `RedactingWriter` + `garraia-telemetry::redact` no lugar; revisão site a site pendente.)*
 - [ ] **Child protection**: modo Child/Dependent com content filter.
 
 ### 5.4 UX inicial impecável
 
-- [ ] **First-run wizard** (Desktop + Gateway web admin):
+- [ ] **First-run wizard** (Desktop + Gateway web admin). *(Parcial: o wizard CLI `garra init` + `install.sh`/`install.ps1` já detectam GPU/Ollama, escolhem cloud vs local e oferecem o cofre; faltam wizard no Desktop/web admin, detecção de Docker/llama.cpp e convite de grupo.)*:
   - Detecção automática de Docker, Ollama, llama.cpp local.
   - Escolha entre "tudo local" / "hybrid" / "cloud".
   - Setup do CredentialVault (master password).
@@ -1070,9 +1092,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 6.1 Deploy & Infra
 
-- [ ] **Dockerfiles multi-stage** para gateway, workers, frontend.
+- [x] **Dockerfile multi-stage** (cargo-chef planner/builder + runtime `debian:trixie-slim`, binário único `garra`) ✅ — imagens separadas para workers/frontend não se aplicam.
 - [ ] **Helm chart** `charts/garraia/` com: StatefulSet (Postgres), Deployment (gateway/workers), Ingress, HPA, Secrets, RBAC, Probes.
-- [ ] **docker-compose** para dev local com Postgres, MinIO, Ollama, OTel collector.
+- [ ] **docker-compose** para dev local: Postgres (`docker-compose.postgres.yml`), Ollama (`docker-compose.ollama.yml`), OTel/Jaeger/Prometheus/Grafana (`ops/compose.otel.yml`) ✅; MinIO ainda ausente.
 - [ ] **Terraform modules** (`infra/terraform/`) para AWS/GCP/Hetzner (opcional).
 
 #### 6.1.1 Runpod Load Balancer Serverless compatibility (GAR-603)
@@ -1106,9 +1128,9 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 - [ ] Runpod worker becomes healthy under Load Balancer Serverless.
 - [ ] `GET https://<ENDPOINT_ID>.api.runpod.ai/ping` returns HTTP 200.
 - [x] No REPL blocks the container start command (`Dockerfile` runs `garra start --host 0.0.0.0`).
-- [ ] CI remains green before merge.
+- [x] CI remains green before merge (PR #327 merged 2026-05-13).
 
-Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Backlog) is the closest sibling and shares the cloud-deploy goal; GAR-603 narrows it to the Runpod LB Serverless surface.
+Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — em aberto no tracker interno) is the closest sibling and shares the cloud-deploy goal; GAR-603 narrows it to the Runpod LB Serverless surface.
 
 ### 6.2 Observabilidade em prod
 
@@ -1119,11 +1141,11 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Ba
 
 ### 6.3 Release
 
-- [ ] **Semver** estrito; `CHANGELOG.md` por release.
+- [x] **Semver** estrito; `CHANGELOG.md` por release — tags `vX.Y.Z` (v0.1.1 … v0.3.5) + seções por release ✅
 - [ ] **Beta program** com feature flags por grupo.
 - [ ] **Cutover gradual**: 1% → 10% → 50% → 100%.
-- [ ] **Docs**: `https://docs.garraia.org` (mdBook ou Docusaurus).
-- [ ] **Marketing site**: landing + demo + pricing (open-source + cloud hospedado opcional).
+- [ ] **Docs**: `https://docs.garraia.org`. *(Parcial: scaffold mdBook em `docs/book.toml` + `docs/src/`, e `wiki/` sincronizado com o GitHub Wiki via `wiki-sync.yml`; site hospedado pendente.)*
+- [ ] **Marketing site**: landing + demo + pricing. *(Parcial: a landing `garraia.org` vive no repo `michelbr84/garraia-74c335d5` (Lovable) e serve os instaladores; demo/pricing pendentes.)*
 
 **Estimativa fase 6:** 4 / 5 / 7 semanas.
 
@@ -1146,8 +1168,8 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Ba
 ### T1 — Documentação
 
 - `docs/adr/` — todas as decisões arquiteturais.
-- `docs/api/` — OpenAPI gerado + exemplos curl.
-- `docs/guides/` — getting started, self-host, development.
+- OpenAPI gerada em runtime (`GET /v1/openapi.json`, Swagger em `/docs`) + `docs/mobile-api-v1.yaml`; exemplos curl em `docs/`.
+- Guias em `docs/installation.md`, `docs/deployment.md`, `docs/contributing.md` e no mdBook `docs/src/` — getting started, self-host, development.
 - `CHANGELOG.md` sempre atualizado.
 - **Escritor técnico**: `@doc-writer` roda em cada PR grande.
 
@@ -1158,13 +1180,13 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Ba
 
 ### T3 — CI/CD
 
-- GitHub Actions: `fmt`, `clippy -D warnings`, `test`, `coverage`, `audit`, `deny`, `fuzz smoke`.
-- Release pipeline: tag → build → sign → publish (crates.io, Docker Hub, GitHub Releases, MSI).
+- GitHub Actions (`ci.yml` + irmãos): `fmt`, `clippy -D warnings`, `test`, `coverage` (cargo-llvm-cov), `audit`, `deny`, `gitleaks`, `auth-integration` (matriz RLS), `msrv`, `e2e`, `playwright`, CodeQL, `quality-ratchet` (report-only), `mutants` (semanal). Sem fuzz smoke ainda.
+- Release pipeline: tag → build → checksum (`SHA256SUMS` + `.sha256` por asset) → publish (GitHub Releases: binários, archives, `.deb`/`.rpm`/AppImage, MSI/NSIS, desktop Linux; imagem no GHCR via `deploy.yml`). Assinatura, crates.io e Docker Hub pendentes.
 
 ### T4 — Community
 
-- `CONTRIBUTING.md` com guia de PR, código de conduta, DCO.
-- Issue templates (bug, feature, security).
+- `CONTRIBUTING.md` com guia de PR ✅ + `CODE_OF_CONDUCT.md` ✅; DCO ainda não.
+- Issue templates ✅ (bug, feature, general, mcp, provider, telegram); vulnerabilidades via `SECURITY.md`, sem template de issue por design.
 - Discord/Matrix público para contribuidores.
 
 ---
@@ -1180,7 +1202,7 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — Urgent, Ba
 | WASM plugin foge do sandbox | Baixa | **Crítico** | Capabilities default-deny + proptest + audit de wasmtime releases |
 | Compliance LGPD inadequado | Média | **Crítico** | DPIA + legal review externo antes do GA |
 | Complexidade de deploy afasta usuários self-host | Alta | Médio | docker-compose 1-comando + wizard de FTUE |
-| Dependência de provider cloud degrada UX local | Média | Médio | Backends locais first-class (Ollama, llama.cpp, candle) |
+| Dependência de provider cloud degrada UX local | Média | Médio | Backends locais first-class (Ollama e llama.cpp hoje; `mistral.rs` como default planejado — ADR 0001) |
 
 ---
 
@@ -1245,11 +1267,11 @@ Foram materializadas ~40 issues críticas (`GAR-371` a `GAR-410`) cobrindo: 8 AD
 | `GAR-INFRA-GA` | 6.1 | Helm + Terraform + Docker |
 | `GAR-OBS-GA` | 6.2 | SLOs + runbooks + DR |
 | `GAR-RELEASE-GA` | 6.3 | Beta → GA + docs |
-| `GAR-641` | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) — **✅ 10/10 Done 2026-05-20** |
+| `GAR-641` | 1.4 | Garra Learning Agent / Self-Improving Operations Manual (sub: GAR-642 Architecture, GAR-643 Skill Miner, GAR-644 Skill Generator, GAR-645 Skill Registry, GAR-646 Skill Retriever, GAR-647 Skill Evaluator, GAR-648 Skill Auto-Updater, GAR-649 Skill Safety Gates, GAR-650 Skill Versioning/Rollback, GAR-651 Web UI) — **✅ 9/10 Done 2026-05-20** (GAR-646 Retriever segue stub) |
 
 ---
 
-## 5. Timeline indicativo (Gantt)
+## 5. Timeline indicativo (Gantt — estimativa original de 2026-04, mantida como referência histórica)
 
 ```mermaid
 gantt
@@ -1314,7 +1336,7 @@ gantt
 
 ## 7. Próximos passos imediatos (próxima sessão)
 
-**Atualizado 2026-05-24** — `TODO.md` criado e esta seção sincronizada. GAR-493/ADR 0011 ✅ Done via PR #492 (`95618d3`). GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-695 health run 23 docs ✅ Done (PRs #493/#494). GAR-603 Runpod checklist parcialmente reconciliada: implementação/docs estáticas marcadas, smoke Docker/Runpod real segue pendente. Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
+**Atualizado 2026-09-02** — sincronizado com `main` na v0.3.5 (auditoria docs↔código). Estado anterior desta seção (2026-05-24): `TODO.md` criado e esta seção sincronizada. GAR-493/ADR 0011 ✅ Done via PR #492 (`95618d3`). GAR-498 Skills MVP ✅ Done (PR #488, `c65e099`). GAR-499 Agent Team MVP ✅ Done (PR #490, `7e45ec5`). GAR-695 health run 23 docs ✅ Done (PRs #493/#494). GAR-603 Runpod checklist parcialmente reconciliada: implementação/docs estáticas marcadas, smoke Docker/Runpod real segue pendente. Anterior (2026-05-21): GAR-496 Repo workflow seguro ✅ Done (PR #455, `1b7f04c`); GAR-495 ✅ Done (PR #453, `e5a2a08`).
 
 Quando retomar execução, priorizar **nesta ordem**:
 
@@ -1338,7 +1360,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 4. ~~**Fase 1.2.1 GarraMaxPower — GAR-501 `garra verify`**~~ ✅ **Done** (2026-05-19). Pipeline local idempotente com 5 steps: `cargo fmt --check`, `cargo clippy`, `cargo test`, `flutter analyze` (skip se ausente), `gitleaks detect` (skip se ausente). Saída `--json` com schema estável em `docs/maxpower/verify-schema.json`. Exit codes: 0 ok / 2 step-failed. 9 unit tests. Plan: `plans/0155-gar-501-garra-verify.md`. Merged via PR #441 (`ca9f1fa2`).
 
-5. ~~**Garra Learning Agent — Web UI (GAR-651, 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **GAR-641 completo** (10/10).
+5. ~~**Garra Learning Agent — Web UI (GAR-651, 10/10)**~~ ✅ **Done** (2026-05-20). `GET /learning` Garra Glass page + REST namespace `/api/learning/*` (10 endpoints: list/detail/approve/reject/lock/rollback/delete skills + list logs/candidates/scores). 11 unit tests. Plan: `plans/0156-gar-651-learning-web-ui.md`. Merged via PR #443 (`21a13f1`). Epic **GAR-641 em 9/10** (GAR-646 Retriever é stub até a Fase 2.1).
 
 5. ~~**Fase 1.2.1 GarraMaxPower — GAR-500 Auto Dream / handoff**~~ ✅ **Done** (2026-05-20, plan 0157, PR #445 `f1fb596`). `HandoffState` + `RedactedString` + `redact()` em `garraia-common`; `.garra-estado.md` TOML; 17 unit tests; 97.93% cobertura.
 
@@ -1348,21 +1370,25 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 5. ~~**Fase 1.2.1 GarraMaxPower — GAR-498 Skills MVP**~~ ✅ **Done** (2026-05-23, plan 0171, PR #488 `c65e099`). `NativeSkillRegistry` em `garraia-skills` com built-ins `brainstorm`, `write-spec`, `write-plan`, `pre-commit`, `verify`; comandos produzidos passam por `garraia_common::safety_gate`.
 
-5. ~~**Fase 1.2.1 GarraMaxPower — GAR-499 Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0173, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
+5. ~~**Fase 1.2.1 GarraMaxPower — GAR-499 Agent team MVP**~~ ✅ **Done** (2026-05-23/24, plan 0175, PR #490 `7e45ec5`). `AgentTeam` com `OrchestratorAgent`, `ExecutorAgent` e `ReviewerAgent` via canais tipados, pipeline Brainstorm → Spec → Plan → Execute → Review → Finish, 13 unit tests.
 
-5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 (GAR-492)** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`. Registrar follow-ups concretos em `TODO.md` até virarem issues Linear.
+5. **Fase 1.2.1 GarraMaxPower — follow-ups após ADR 0011 (GAR-492)** — manter próximos slices pequenos: execução async/provider-backed das native skills, dogfood em bug real com relatório de review, e expansão incremental do registry sem reescrever `garraia-agents`. Registrar follow-ups concretos em `TODO.md` até virarem itens do tracker interno.
 
 5. ~~**Trilha T1 — criar `TODO.md` operacional**~~ ✅ **Done** (2026-05-24). O arquivo agora resume concluídos, parciais, adiados, decisões e próximos passos recomendados para a próxima sessão autônoma.
 
-6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). Sem `garraia-embeddings`, o Retriever roda em fallback degradado (match por tag/scope). MVP do Learning Agent pode coexistir, mas Retriever full só com Fase 2.1 pronta.
+6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). O crate `garraia-embeddings` existe como scaffold (traits + `DeterministicProvider`, plan 0145); o Retriever ainda é um stub que retorna erro — `PgVectorStore` + `MxbaiProvider` + wiring em learning/agents são os próximos slices.
 
 7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: GAR-374.
 
-8. **Fase 5.1 — CredentialVault final** (GAR-410, Urgent Backlog) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela GAR-291 (MCP tokens, ✅ Done).
+8. **Fase 5.1 — CredentialVault final** (GAR-410, adiado — ver `TODO.md`) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela GAR-291 (MCP tokens, ✅ Done).
+
+9. **Fase 4.1 — Desktop follow-ups**: DMG notarizado, AppImage aarch64, chave de assinatura + `latest.json` do auto-updater (`docs/releasing.md`).
+
+10. **Fase 5.1 — hardening pendente**: CORS, HSTS, auth por padrão na API local, passthrough da feature `tls` no binário `garraia`.
 
 Trilhas paralelas disponíveis para um segundo dev/agente:
-- **Fase 1.3 — Config reativo** (ainda não materializado).
-- **Fase 4.2 — Mobile build Android update** (gradle 8.x / AGP 8.x / Java 17).
+- **Fase 1.3 — Config reativo** (parcial: schema único + file-watch + `config check` entregues; SSE `/v1/admin/config/stream`, provider hot-reload e persistência do `PATCH /api/settings` pendentes).
+- **Fase 4.2 — Mobile** (build Android já em gradle 8.14 / AGP 8.11.1 / Java 17; próximos: iOS target, fallback REST, `tus_client`, push).
 - **Fase 3.4 — Endpoints restantes da API REST `/v1`**: embeds de tasks/files/chats (WebSocket stream ✅ entregue como SSE em PR #459; tus upload ✅ entregue GAR-395).
 
 ---
@@ -1371,6 +1397,6 @@ Trilhas paralelas disponíveis para um segundo dev/agente:
 
 - `deep-research-report.md` — Arquitetura Group Workspace (base da Fase 3).
 - `CLAUDE.md` — Convenções de código e protocolo de sessão.
-- `.garra-estado.md` — Estado da sessão anterior.
-- `docs/adr/` — Decisões arquiteturais (a popular).
+- `.garra-estado.md` — handoff da sessão anterior gerado por `garra max-power` (gitignored; ausente em clone novo — use `TODO.md`).
+- `docs/adr/` — 15 ADRs (0001-0015), todas Accepted; índice em `docs/adr/README.md`.
 - OWASP ASVS L2, LGPD arts. 46-49, GDPR arts. 25/32/33, OpenTelemetry spec, RFC 9457 Problem Details, RFC 8446 TLS 1.3, RFC 9106 Argon2.

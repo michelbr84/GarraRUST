@@ -14,7 +14,7 @@ Ao participar deste projeto, você concorda em ser respeitoso, inclusivo e const
 
 | Ferramenta | Versão mínima | Instalação |
 |------------|---------------|------------|
-| Rust | 1.94 | `rustup update stable` |
+| Rust | 1.95 | `rustup update stable` |
 | Git | qualquer | [git-scm.com](https://git-scm.com) |
 | FFmpeg | 6.x | `apt install ffmpeg` / `brew install ffmpeg` |
 | Node.js (opcional) | 20+ | Para rodar servidores MCP de teste |
@@ -221,9 +221,9 @@ Abra o PR no GitHub apontando para `main`. Preencha o template completamente.
 
 ## Encontrando algo para trabalhar
 
-- [Good first issues](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen)
+- [Good first issues](https://github.com/michelbr84/GarraRUST/issues?q=label%3A%22good+first+issue%22+is%3Aopen)
 - [Help wanted](https://github.com/michelbr84/GarraRUST/issues?q=label%3Ahelp-wanted+is%3Aopen)
-- [Roadmap no Linear](https://linear.app/chatgpt25/project/garraia-complete-roadmap-2026-ac242025/overview)
+- [ROADMAP.md](ROADMAP.md) (visão por fase) e [TODO.md](TODO.md) (fila operacional)
 
 Comente em uma issue antes de começar a trabalhar para evitar esforço duplicado.
 
@@ -231,7 +231,7 @@ Comente em uma issue antes de começar a trabalhar para evitar esforço duplicad
 
 ## Acompanhamento e milestones
 
-Planejamento de releases e ciclos vive no [Linear (time GAR)](https://linear.app/chatgpt25/team/GAR/projects), não em GitHub milestones. Por design, **milestones do GitHub não são utilizados** neste repositório — a ferramenta de prioridade, sequenciamento e alocação por ciclo é o Linear.
+Planejamento de releases e ciclos vive no `ROADMAP.md` (visão por fase) e no `TODO.md` (fila operacional), com um tracker interno para sequenciamento — o Linear foi descontinuado em 2026-08-18 e os IDs `GAR-xxx` que aparecem em planos e ADRs são históricos. Por design, **milestones do GitHub não são utilizados** neste repositório.
 
 GitHub Issues neste repositório serve a três propósitos restritos:
 
@@ -239,7 +239,7 @@ GitHub Issues neste repositório serve a três propósitos restritos:
 2. Issues de automação geradas por workflows (ex.: `garra-routine-trigger.yml`, rotuladas com `automation` + `garra-routine`).
 3. Discussões pontuais que precisem de threading público.
 
-Trabalho interno ativo (slices, planos, refactors, dependências) é rastreado em Linear e correlacionado com PRs por título / branch (`feat(...): GAR-XXX — ...`). Se você for um colaborador externo procurando saber o que está em andamento, prefira o link do Linear acima ou o `ROADMAP.md` na raiz do repositório.
+Trabalho interno ativo (slices, planos, refactors, dependências) é rastreado em `plans/` (um plano por slice; índice em `plans/README.md`) e correlacionado com PRs por título / branch. Se você for um colaborador externo procurando saber o que está em andamento, prefira o `ROADMAP.md` e o `TODO.md` na raiz do repositório.
 
 ---
 

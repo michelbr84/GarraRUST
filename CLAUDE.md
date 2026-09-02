@@ -12,7 +12,7 @@
 
 ## Protocolo de início de sessão
 
-1. Leia `.garra-estado.md` para contexto da sessão anterior
+1. Leia `TODO.md` (backlog operacional) e, se existir, `.garra-estado.md` (handoff local gerado por `garra max-power`; gitignored, ausente em clone novo)
 2. Verifique `git status` e `git log --oneline -5`
 3. Consulte a memória em `.claude/` se o contexto for relevante
 
@@ -122,10 +122,10 @@ crates/
                         denied). Oracle SQLSTATE distingue InsufficientPrivilege
                         (42501 grant) / PermissionDenied (42501 WITH CHECK) /
                         RlsFilteredZero (USING) / RowsVisible (any positive). GAR-391d
-                        (app-layer cross-group via HTTP) DEFERIDO para plan 0014 /
-                        Fase 3.4 — endpoints REST /v1/{chats,messages,memory,tasks,
-                        groups,me} ainda não existem em garraia-gateway (verificado
-                        empiricamente 2026-04-14). Epic GAR-391 continua aberto.
+                        (app-layer cross-group via HTTP) entregue via plan 0014 em
+                        `crates/garraia-gateway/tests/authz_http_matrix.rs` (50 cenários
+                        sobre /v1/me, /v1/groups, /v1/groups/{id}). Epic GAR-391 fechado
+                        em 2026-04-15.
                         Decisão: docs/adr/0005-identity-provider.md (com Amendment 2026-04-13).
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user).
@@ -156,8 +156,9 @@ crates/
   garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
   garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
                         (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
-                        + GAR-387 + GAR-395). 29 tabelas em 14 migrations, 22 sob FORCE RLS, 7 tenant-root
-                        sob app-layer:
+                        + GAR-387 + GAR-395). 37 tabelas em 33 migrations (a lista abaixo cobre as 14
+                        iniciais), 32 sob FORCE RLS e 5 fora dela (users, roles,
+                        permissions, role_permissions, group_invites):
                         • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
                         • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
                         • 003 folders/files/file_versions (GAR-387) — compound FK + object_key UNIQUE
@@ -189,10 +190,11 @@ crates/
                         funcional + 17 unit tests, `versioning.rs`, `skill_override.rs`,
                         `lib.rs`) + tipos `Skill`/`SkillScope`/`SkillSource` + frontmatter
                         `LearningSkillFrontmatter` com `score`/`locked`/`critical_paths_touched`/
-                        `fail_count`. Sub-componentes restantes ainda Backlog em
-                        GAR-643..GAR-651 (miner, generator, registry full, retriever via
-                        garraia-embeddings, evaluator, auto-updater PR flow, versioning
-                        git-backed, override CLI/UI). Separação rígida: memória
+                        `fail_count`. Sub-componentes GAR-643..GAR-651 entregues em
+                        2026-05-18..20 (9/10: miner, generator, registry, evaluator,
+                        auto-updater, safety gates, versioning git-backed, Web UI);
+                        GAR-646 Retriever segue stub até a Fase 2.1 (garraia-embeddings)
+                        e o CLI de override (`skill_override.rs`) também. Separação rígida: memória
                         (`workspace.memory_items`) ≠ skill (`learning.skills`) ≠ log
                         (`telemetry.traces`) ≠ manual distribuível (`garraia-skills` crate).
                         Nunca copiar código do Hermes Agent — Hermes é referência conceitual
@@ -201,7 +203,9 @@ crates/
   garraia-runtime/    — runtime helpers
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
-  garraia-desktop/    — Tauri v2 app (Windows MSI, overlay)
+  garraia-desktop/    — Tauri v2 app: bandeja + overlay do papagaio + Chat Bar
+                        (Ctrl+Space); MSI/NSIS no Windows e .deb/AppImage no Linux
+                        (v0.3.5), CLI como sidecar `binaries/garraia`
   garraia-gateway/    — Plan 0046 (GAR-379 slice 3, 2026-04-22) remove hardcoded
                         fallback inseguro `garraia-insecure-default-jwt-secret-change-me`
                         de `mobile_auth.rs` e introduz sentinel `AuthConfigMissing`
@@ -516,8 +520,8 @@ python3 -m pytest scripts/quality/tests/
 
 - @imports `.claude/agents/` para agentes especializados
 - @imports `skills/` para workflows reutilizáveis
-- @imports `.garra-estado.md` para estado da sessão anterior
+- @imports `TODO.md` (backlog operacional) e `.garra-estado.md` (handoff local, gitignored) para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais. **Accepted:** 0003 (Postgres para Group Workspace). **Proposed/blocked:** 0001, 0002, 0004-0008. Ver `docs/adr/README.md` para o índice.
+- @imports `docs/adr/` — decisões arquiteturais: 15 ADRs (0001-0015), todas **Accepted**. Ver `docs/adr/README.md` para o índice.
 - Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)

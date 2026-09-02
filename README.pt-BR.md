@@ -19,11 +19,11 @@
   <a href="https://github.com/michelbr84/GarraRUST/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="Licença: MIT"></a>
   <a href="https://github.com/michelbr84/GarraRUST/stargazers"><img src="https://img.shields.io/github/stars/michelbr84/GarraRUST" alt="Estrelas"></a>
   <a href="https://github.com/michelbr84/GarraRUST/issues"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST" alt="Issues"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Boas Primeiras Issues"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3A%22good+first+issue%22+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good%20first%20issue?color=7057ff&label=good%20first%20issues" alt="Boas Primeiras Issues"></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
   <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
@@ -73,7 +73,7 @@ Nota de sincronizacao (2026-05-24): a decisao GarraMaxPower esta formalizada em 
 ## Início Rápido
 
 ```bash
-# Requer Rust 1.94+ (alinhado com MSRV declarado em Cargo.toml — GAR-895)
+# Requer Rust 1.95+ (alinhado com MSRV declarado em Cargo.toml)
 cargo build --release -p garraia
 
 # Configuração interativa - escolha seu provedor de LLM; opcionalmente
@@ -103,11 +103,13 @@ O app desktop requer que o binário CLI já esteja compilado como sidecar:
 # 1. Compilar o CLI primeiro
 cargo build --release -p garraia
 
-# 2. Copiar para o diretório de sidecar esperado pelo Tauri
+# 2. Copiar para o diretório de sidecar esperado pelo Tauri (gitignored — crie antes)
+mkdir -p crates/garraia-desktop/src-tauri/binaries
 cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garraia-$(rustc -vV | grep host | cut -d' ' -f2)
 
-# 3. Compilar o desktop
-cargo build --release -p garraia-desktop
+# 3. Gerar o bundle (`cargo build --release -p garraia-desktop` dá só o binário, sem instalador)
+cargo tauri build --manifest-path crates/garraia-desktop/src-tauri/Cargo.toml
+# Linux: ./scripts/build-desktop-linux.sh (.deb + AppImage) · Windows: .\scripts\build-installer.ps1 (MSI + NSIS)
 ```
 
 </details>
@@ -151,7 +153,11 @@ Em contextos sem TTY real (docker build, CI puro), o instalador imprime os "Next
 > `LICENSE` e `README.md`. A partir da `v0.3.4`, as releases trazem também
 > **pacotes Linux** — `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` e um
 > `garraia-linux-x86_64.AppImage` portátil (todos best-effort; ver
-> [`docs/installation.md`](docs/installation.md)). Os binários crus continuam
+> [`docs/installation.md`](docs/installation.md)). Desde a `v0.3.5` sai também o
+> **Garra Desktop** para Linux — `garraia-desktop-linux-x86_64.deb`/`.AppImage`
+> (app de bandeja com o papagaio e a Chat Bar, CLI como sidecar) — ao lado dos
+> `.msi`/`-setup.exe` do Windows; não confunda com o AppImage da CLI, que é só
+> terminal. Os binários crus continuam
 > publicados sem alteração — o `garra update` e os dois instaladores resolvem
 > assets por nome exato, então eles são superfície de compatibilidade e não
 > serão renomeados nem removidos.
@@ -238,7 +244,7 @@ garraia rollback
 
 </details>
 
-As releases atuais (v0.3.4+) publicam 6 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64) com seus archives, pacotes Linux (`.deb`/`.rpm`/AppImage) e os instaladores desktop do Windows (`.msi` + `-setup.exe`, de volta ao pipeline desde 2026-08-30) — os formatos além dos binários x86_64 são best-effort. O `.apk` mobile (Android) foi publicado até a v0.2.1. Tudo nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases).
+As releases atuais (v0.3.4+) publicam 6 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64) com seus archives, pacotes Linux (`.deb`/`.rpm`/AppImage) e os instaladores desktop do Windows (`.msi` + `-setup.exe`, de volta ao pipeline desde 2026-08-30) — os formatos além dos binários x86_64 são best-effort. O `.apk` mobile (Android) foi publicado até a v0.2.1. Tudo nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Desde a v0.3.5, também o Garra Desktop para Linux (`garraia-desktop-linux-x86_64.deb` / `.AppImage`).
 
 ## Por que GarraIA?
 
@@ -261,7 +267,7 @@ segurança usa checkouts de inspeção pinados por commit (OpenClaw
 | **Credenciais em repouso** | Cofre AES-256-GCM disponível, **opt-in** — default do wizard é `config.yml` (0600) | Sem criptografia em repouso (docs deles) — permissões POSIX; SecretRefs/1Password opt-in | ChaCha20-Poly1305 **por default** (única postura cifrada por default das três); chave no mesmo disco; refs 1Password opt-in |
 | **Auth default do gateway** | Canais deny-by-default (pareamento); API local aberta no loopback, token opt-in | Token exigido out-of-the-box (fail-closed) | Pareamento exigido por default; bind público só avisa |
 | **Bind default** | 127.0.0.1 | loopback | 127.0.0.1 |
-| **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (~377 no fechamento) | 1.265 crates (Cargo.lock) |
+| **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (300 pacotes resolvidos no `npm install -g` da run medida) | 1.265 crates (Cargo.lock) |
 | **Canais** | 5 ligados fim-a-fim (+6 implementados no crate, sem wiring) | 27 plugins bundled | ~40 adapters (6 no build default) |
 | **Provedores de LLM** | 15 built-in (100+ modelos via OpenRouter) | via plugins | vários, feature-gated |
 | **Agendamento** | Tarefas one-shot persistidas **e** recorrência cron com timezone IANA | Cron/automations completo | Cron + SOP engine |
@@ -311,6 +317,7 @@ cenário — corrigimos a tabela, não o resultado.
 - **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/src/channels/imessage.md))
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
+- **Claude Code** - via shim Anthropic-compatible `POST /v1/messages` ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)); `garra agents setup|status|link|rollback|web` provisiona GarraIA, OpenClaw, Hermes e Claude Code com um mesmo provedor+modelo via AgentDeck
 
 Implementados no crate `garraia-channels`, **aguardando wiring no
 gateway** (acompanhe no [ROADMAP](ROADMAP.md)): Google Chat, Microsoft
@@ -337,7 +344,7 @@ Além dos comandos embutidos, qualquer servidor MCP que exponha **prompts** via 
 ### Voice Mode (STT/TTS) com Múltiplos Providers
 
 - **STT Providers** - Whisper local (whisper.cpp) e OpenAI Whisper API com dual-endpoint
-- **TTS Providers** - Chatterbox (GPU, multilíngue), Hibiki, ElevenLabs, Kokoro, OpenAI TTS API
+- **TTS Providers** - Chatterbox (GPU, multilíngue), Hibiki ou qualquer endpoint OpenAI-compatible `/v1/audio/speech` (LM Studio); adapters ElevenLabs/Kokoro existem em `garraia-channels::voice_channel`, ainda sem wiring no gateway
 - **Síntese multilíngue** - pt, en, es, fr, de, it, hi via GPU local
 - **Endpoint REST** - `POST /api/tts` para síntese sob demanda
 - **Ativação** - `garra start --with-voice` habilita o modo de voz
@@ -437,7 +444,7 @@ O GarraIA mantém **histórico unificado** entre todos os canais:
 
 - Conecte qualquer servidor compatível com MCP (sistema de arquivos, GitHub, bancos de dados, busca na web)
 - Ferramentas aparecem como ferramentas nativas do agente com nomes namespaced (`server.tool`)
-- Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop)
+- Configure em `config.yml` ou `~/.config/garraia/mcp.json` (compatível com Claude Desktop)
 - CLI: `garra mcp list`, `garra mcp inspect <name>`
 
 ### Modos de Execução (Agent Modes)
@@ -575,7 +582,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 ### Skills
 
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
-- Auto-descoberta de `~/.garraia/skills/` - injetado no prompt do sistema
+- Auto-descoberta de `~/.config/garraia/skills/` - injetado no prompt do sistema
 - CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
 
 ### MCP Tool Integration com Marketplace
@@ -596,7 +603,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 ### Skills Editor com CRUD
 
 - Defina skills de agente como arquivos Markdown (SKILL.md) com frontmatter YAML
-- Auto-descoberta de `~/.garraia/skills/`
+- Auto-descoberta de `~/.config/garraia/skills/`
 - **Editor visual** na WebChat UI para criar/editar skills
 - CLI: `garra skill list`, `garra skill install <url>`, `garra skill remove <name>`
 - CRUD completo via API REST (`GET/POST/PATCH/DELETE /api/skills`)
@@ -617,7 +624,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 
 ### TLS/HTTPS (builds de fonte)
 
-- **Suporte TLS** - compile com `--features tls` e aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido. Caveats honestos: os binários release atuais **não** incluem a feature TLS, e com certs configurados mas sem a feature o gateway loga warning e serve HTTP puro — ambos itens de hardening no roadmap. Para produção, recomenda-se reverse proxy com TLS na frente do bind loopback.
+- **Suporte TLS** - compile com `cargo build -p garraia --features garraia-gateway/tls` (a feature vive no crate do gateway; o binário ainda não tem passthrough `tls`) e aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido. Caveats honestos: os binários release atuais **não** incluem a feature TLS, e com certs configurados mas sem a feature o gateway loga warning e serve HTTP puro — ambos itens de hardening no roadmap. Para produção, recomenda-se reverse proxy com TLS na frente do bind loopback.
 - **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
 
 ### Health Checks Centralizados
@@ -675,7 +682,7 @@ O GarraIA possui um sistema completo de memória que permite ao agente aprender 
 ### Sistema de Memória Completo
 
 ```text
-~/.garraia/
+~/.config/garraia/
 ├── memoria/
 │   ├── fatos.json          # Facts extraídos pelo LLM
 │   └── embeddings/         # Embeddings vetoriais locais
@@ -707,14 +714,14 @@ O GarraIA aprende automaticamente das conversas usando um extrator LLM dedicado:
 ```yaml
 memory:
   enabled: true
-  auto_extract: true        # Extrai fatos automaticamente
-  extraction_interval: 5    # Intervalo em minutos
-  max_facts: 100           # Máximo de fatos armazenados
-  
+  embedding_provider: ollama-embed   # chave da entrada em `embeddings` abaixo
+  # a extração de fatos roda em todo turno (não há knob `auto_extract`)
+
 embeddings:
-  provider: ollama          # ou "openai", "cohere"
-  model: nomic-embed-text  # Modelo de embedding local
-  base_url: "http://localhost:11434"
+  ollama-embed:
+    provider: ollama          # ou "openai", "cohere"
+    model: nomic-embed-text   # Modelo de embedding local
+    base_url: "http://localhost:11434"
 ```
 
 ### Embeddings Locais com Ollama
@@ -744,7 +751,7 @@ subcomando `garra memory` na CLI está no roadmap.
 
 O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que ficam sempre ativos, acessam dados privados e se comunicam externamente.
 
-- **Cofre de credenciais criptografadas (opt-in)** - AES-256-GCM em `~/.garraia/credentials/vault.json`, chave derivada via PBKDF2-HMAC-SHA256 (600k iterações) de `GARRAIA_VAULT_PASSPHRASE`. Dito com clareza: o default recomendado do wizard `garra init` grava as chaves de provider em `config.yml` (modo 0600, texto puro); escolha a opção do cofre e exporte a passphrase a cada start para ter criptografia em repouso. Tornar o cofre o default está no roadmap.
+- **Cofre de credenciais criptografadas (opt-in)** - AES-256-GCM em `~/.config/garraia/credentials/vault.json`, chave derivada via PBKDF2-HMAC-SHA256 (600k iterações) de `GARRAIA_VAULT_PASSPHRASE`. Dito com clareza: o default recomendado do wizard `garra init` grava as chaves de provider em `config.yml` (modo 0600, texto puro); escolha a opção do cofre e exporte a passphrase a cada start para ter criptografia em repouso. Tornar o cofre o default está no roadmap.
 - **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
 - **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
 - **Canais deny-by-default** - Usuários desconhecidos nos canais de mensageria precisam apresentar código de pareamento. A API local (WS/HTTP) faz bind em `127.0.0.1` e é aberta por default — habilite `gateway.api_key` e/ou `session_tokens_required: true` para exigir auth nela (endurecer esse default está no roadmap).
@@ -777,7 +784,7 @@ Use `--dry-run` para visualizar as alterações antes de confirmar. Use `--sourc
 
 ## Configuração
 
-O GarraIA procura configuração em `~/.garraia/config.yml`:
+O GarraIA procura `config.yml` no diretório de config, resolvido como `$GARRAIA_CONFIG_DIR` → `~/.config/garraia` (padrão em instalações novas) → `~/.garraia` (legado, só quando o diretório XDG não existe). `garraia config check` mostra qual está ativo:
 
 ```yaml
 gateway:
@@ -843,13 +850,13 @@ agent:
 
 memory:
   enabled: true
-  auto_extract: true
-  extraction_interval: 5
+  embedding_provider: ollama-embed
 
 embeddings:
-  provider: ollama
-  model: nomic-embed-text
-  base_url: "http://localhost:11434"
+  ollama-embed:
+    provider: ollama
+    model: nomic-embed-text
+    base_url: "http://localhost:11434"
 
 # Servidores MCP para ferramentas externas
 mcp:
@@ -914,7 +921,7 @@ crates/
 ├── garraia-config/     # Carregamento YAML/TOML, hot-reload, config MCP
 ├── garraia-channels/   # Discord, Telegram, Slack, WhatsApp, iMessage
 ├── garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
-├── garraia-auth/       # ✅ verify path real + extractor + endpoints + RLS matrix (GAR-391a/b/c + GAR-392) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). GAR-392 RLS matrix ✅ (plan 0013 path C, 81 cenários × 3 dedicated roles × 10 FORCE RLS tables). GAR-391d (app-layer cross-group matrix via HTTP) deferido ao plan 0014 — aguarda endpoints REST /v1/{chats,messages,memory,tasks,groups,me} da Fase 3.4; epic GAR-391 permanece aberto.
+├── garraia-auth/       # ✅ verify path real + extractor + endpoints + RLS matrix (GAR-391a/b/c + GAR-392) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). GAR-392 RLS matrix ✅ (plan 0013 path C, 81 cenários × 3 dedicated roles × 10 FORCE RLS tables). GAR-391d (matriz cross-group via HTTP, plan 0014) entregue em `crates/garraia-gateway/tests/authz_http_matrix.rs` (50 cenários); epic GAR-391 fechado em 2026-04-15.
 ├── garraia-voice/      # Pipeline de voz: Whisper STT → LLM → Chatterbox/Hibiki TTS
 ├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
 ├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
@@ -926,11 +933,11 @@ crates/
 ├── garraia-skills/     # Parser de SKILL.md, scanner, instalador
 ├── garraia-common/     # Tipos compartilhados, erros, utilitários
 ├── garraia-telemetry/  # ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 (37 tabelas em 32 migrations, FORCE RLS nos dados de tenant)
+├── garraia-workspace/  # ✅ Postgres 16 + pgvector multi-tenant — Fase 3 (37 tabelas em 33 migrations, 32 sob FORCE RLS)
 ├── garraia-embeddings/ # Traits EmbeddingProvider/VectorStore + DeterministicProvider (Fase 2.1)
 ├── garraia-learning/   # Garra Learning Agent — miner/generator/safety gate/versioning (Fase 1.4)
 ├── garraia-storage/    # ObjectStore: LocalFs + S3 (SSE-S3, HMAC integrity, presigned URLs)
-└── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay transparente, hotkey Alt+G, sprite animado
+└── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay do papagaio (Alt+G), Chat Bar (Ctrl+Space), bandeja; MSI/NSIS no Windows e .deb/AppImage no Linux (v0.3.5)
 ```
 
 Além dos crates Rust, o repositório inclui o app mobile:
@@ -1029,7 +1036,7 @@ O GarraIA suporta múltiplos agentes com roteamento inteligente:
 O GarraIA implementa o protocolo MCP com:
 
 - **Transporte stdio** - Servidores MCP locais (processo filho)
-- **Transporte Streamable HTTP** - Servidores MCP remotos (`mcp-http` feature). A config aceita `http`/`sse`/`streamable-http` como valores, todos servidos pelo cliente Streamable HTTP — servidores legados SSE-only não são suportados
+- **Transporte Streamable HTTP** - Servidores MCP remotos (`mcp-http` feature). No `config.yml`/`mcp.json` use `transport: stdio` ou `transport: http`; a admin API aceita também `sse`/`streamableHttp`, todos servidos pelo cliente Streamable HTTP — servidores legados SSE-only não são suportados
 - **Tool Bridging** - Ferramentas aparecem como `server.tool` namespaced
 - **Resource API** - Arquivos, prompts, e custom resources
 - **Health Monitor** - Auto-reconexão com verificação periódica (30s)
@@ -1037,7 +1044,7 @@ O GarraIA implementa o protocolo MCP com:
 - **Diagnostic API** - `GET /api/mcp/tools` lista todas as tools ativas no AgentRuntime (built-ins + MCP); `GET /api/mcp/health` retorna status por servidor com contagem de tools e indicador `all_connected | partial | all_disconnected`
 - **CLI Commands** - `garraia mcp list`, `mcp inspect`, `mcp resources`, `mcp prompts`
 
-Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.
+Configure em `config.yml` ou `~/.config/garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.
 
 | Componente | Status |
 |-----------|--------|
@@ -1072,7 +1079,7 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 | Skills Editor CRUD (API + WebChat UI) | ✅ Funcionando |
 | OAuth2/OIDC + TOTP 2FA | ✅ Funcionando |
 | EU AI Act Compliance (X-AI-Model headers) | ✅ Funcionando |
-| TLS/HTTPS (`--features tls`; fora dos binários release atuais) | ✅ Funcionando |
+| TLS/HTTPS (`--features garraia-gateway/tls`; fora dos binários release atuais) | ✅ Funcionando |
 | Processamento de mídia (PDF, imagens) | ✅ Funcionando |
 | Garra Cloud Alpha — app mobile Flutter (Android/iOS) | ✅ Funcionando |
 | Mobile Auth (register/login/me, JWT, PBKDF2) | ✅ Funcionando |
@@ -1080,8 +1087,7 @@ Configure em `config.yml` ou `~/.garraia/mcp.json` (compatível com Claude Deskt
 
 ## Testes Automatizados
 
-O GarraIA utiliza o **TestSprite MCP** para geração e execução automatizada de testes da API do backend.
-Os testes validam os contratos REST e o comportamento do sistema de forma contínua, garantindo estabilidade durante refatorações.
+CI no GitHub Actions (`ci.yml` e irmãos): fmt, clippy `-D warnings`, testes unitários e de integração (incluindo a matriz RLS de 81 cenários do `garraia-auth` contra Postgres real e a matriz HTTP de 50 cenários do gateway), cobertura (cargo-llvm-cov), cargo-audit/deny, gitleaks, e2e + Playwright, CodeQL e `cargo-mutants` semanal. Ver `docs/contributing.md` e `tests/`.
 
 ## Contribuindo
 
@@ -1099,11 +1105,11 @@ Acompanhe as próximas entregas em [`ROADMAP.md`](ROADMAP.md) — o planejamento
 6. **Fase 6 — Lançamento & SRE** — Helm, Terraform, SLOs, runbooks, beta → GA.
 7. **Fase 7 — Pós-GA & Evolução** — Multi-região, federation, marketplace, voice, vision, enterprise.
 
-Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345), bootstrap dos 7 projects AAA (GAR-371..410), **GAR-384 — OpenTelemetry + Prometheus baseline** via o novo crate `garraia-telemetry` (Jaeger + Prometheus + Grafana via `ops/compose.otel.yml`, feature flag opt-out, PII redaction by design), **GAR-373 — ADR 0003 Database para Group Workspace** que fixa **PostgreSQL 16 + pgvector + pg_trgm** como backend multi-tenant da Fase 3 (benchmark empírico no PoC `benches/database-poc/` — removido em 2026-08-16 após estabilização, números preservados no ADR 0003 — provando 124x vantagem em ANN HNSW e validando RLS cross-group com FORCE ROW LEVEL SECURITY), **GAR-407 — garraia-workspace bootstrap** que materializa a migration 001 (users, user_identities, sessions, api_keys, groups, group_members, group_invites + pgcrypto/citext) com smoke test testcontainers verde em ~7s e `Workspace` handle PII-safe, **GAR-386 — Migration 002 RBAC + audit_events** que adiciona 5 roles × 22 permissions × 63 role_permissions seedados estaticamente, `audit_events` sem FK (sobrevive CASCADE para LGPD erasure demonstrável) e partial unique index `group_members_single_owner_idx`, **GAR-388 — Migration 004 chats + messages + FTS** que adiciona `chats`, `chat_members`, `messages` (com `body_tsv tsvector GENERATED STORED` + GIN index + compound FK `(chat_id, group_id)` contra cross-group drift) e `message_threads`, e o **schema set completo da Fase 3** através de **GAR-389** (memory_items + memory_embeddings com pgvector HNSW cosseno), **GAR-408** (Row-Level Security FORCE em 10 tabelas com NULLIF fail-closed + prova empírica de FORCE via ownership transfer scopeguard-safe + hard blocker documentado para GAR-391 login flow) e **GAR-390** (8 tabelas do módulo Tasks Tier 1 Notion-like — listas/tasks/subtasks/assignees/labels/comments/subscriptions/activity — com RLS FORCE embutido na própria migration e erasure survival via `created_by_label`/`author_label`/`actor_label` cached). **Atualização 2026-04-13:** GAR-391c shipped — Axum `Principal` extractor + `RequirePermission(Action)` + `Role`/`Action` enums + `fn can()` central com 110-case table-driven test + endpoints `/v1/auth/{login,refresh,logout,signup}` wired no `AppState` real (feature flag `auth-v1` removida) + `garraia_signup NOLOGIN BYPASSRLS` role + `SignupPool` newtype + `RedactedStorageError` wrapper + `AuthConfig` em `garraia-config` + métricas Prometheus baseline + **migration 010** com `GRANT SELECT ON sessions TO garraia_login` (Gap A), `GRANT SELECT ON group_members TO garraia_login` (Gap C), e role `garraia_signup` separado (Gap B). Próximo: GAR-392 / 391d (suite cross-group authz ≥100 cenários) fecha o epic GAR-391.
+Marcos já entregues incluem Core Hardening, Voice E2E, Commands Registry, Admin Console, Garra Desktop overlay (Tauri v2 GAR-303..316), Garra Cloud Alpha (Flutter mobile GAR-334..345), bootstrap dos 7 projects AAA (GAR-371..410), **GAR-384 — OpenTelemetry + Prometheus baseline** via o novo crate `garraia-telemetry` (Jaeger + Prometheus + Grafana via `ops/compose.otel.yml`, feature flag opt-out, PII redaction by design), **GAR-373 — ADR 0003 Database para Group Workspace** que fixa **PostgreSQL 16 + pgvector + pg_trgm** como backend multi-tenant da Fase 3 (benchmark empírico no PoC `benches/database-poc/` — removido em 2026-08-16 após estabilização, números preservados no ADR 0003 — provando 124x vantagem em ANN HNSW e validando RLS cross-group com FORCE ROW LEVEL SECURITY), **GAR-407 — garraia-workspace bootstrap** que materializa a migration 001 (users, user_identities, sessions, api_keys, groups, group_members, group_invites + pgcrypto/citext) com smoke test testcontainers verde em ~7s e `Workspace` handle PII-safe, **GAR-386 — Migration 002 RBAC + audit_events** que adiciona 5 roles × 22 permissions × 63 role_permissions seedados estaticamente, `audit_events` sem FK (sobrevive CASCADE para LGPD erasure demonstrável) e partial unique index `group_members_single_owner_idx`, **GAR-388 — Migration 004 chats + messages + FTS** que adiciona `chats`, `chat_members`, `messages` (com `body_tsv tsvector GENERATED STORED` + GIN index + compound FK `(chat_id, group_id)` contra cross-group drift) e `message_threads`, e o **schema set completo da Fase 3** através de **GAR-389** (memory_items + memory_embeddings com pgvector HNSW cosseno), **GAR-408** (Row-Level Security FORCE em 10 tabelas com NULLIF fail-closed + prova empírica de FORCE via ownership transfer scopeguard-safe + hard blocker documentado para GAR-391 login flow) e **GAR-390** (8 tabelas do módulo Tasks Tier 1 Notion-like — listas/tasks/subtasks/assignees/labels/comments/subscriptions/activity — com RLS FORCE embutido na própria migration e erasure survival via `created_by_label`/`author_label`/`actor_label` cached). **Atualização 2026-04-13:** GAR-391c shipped — Axum `Principal` extractor + `RequirePermission(Action)` + `Role`/`Action` enums + `fn can()` central com 110-case table-driven test + endpoints `/v1/auth/{login,refresh,logout,signup}` wired no `AppState` real (feature flag `auth-v1` removida) + `garraia_signup NOLOGIN BYPASSRLS` role + `SignupPool` newtype + `RedactedStorageError` wrapper + `AuthConfig` em `garraia-config` + métricas Prometheus baseline + **migration 010** com `GRANT SELECT ON sessions TO garraia_login` (Gap A), `GRANT SELECT ON group_members TO garraia_login` (Gap C), e role `garraia_signup` separado (Gap B). GAR-392 (matriz RLS, 81 cenários) e GAR-391d (matriz HTTP, 50 cenários) fecharam o epic GAR-391 em 2026-04-15. Desde então: tus uploads + object storage (GAR-395/394), Web Console "Garra Glass" (ADR 0009), Garra Learning Agent (ADR 0010, 9/10), benchmark harness (`benches/agent-framework-comparison/`), e a onda de distribuição v0.3.x (ago–set/2026): `install.sh`/`install.ps1`, pacotes Linux `.deb`/`.rpm`/AppImage, Windows ARM64 nativo, `garra agents setup` + shim `/v1/messages` (ADR 0014), Garra Desktop para Linux com a Chat Bar.
 
-A Fase 3.3 destravou em 2026-04-13 com **GAR-375 — ADR 0005 Identity Provider** (BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT + lazy upgrade dual-verify PBKDF2→Argon2id, trait `IdentityProvider` shape congelada) e **GAR-391a — `garraia-auth` skeleton** (crate skeleton + migration 008 criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005 + `LoginPool` newtype com `current_user` validation + `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + smoke tests integration). Migration 009 (prereq estrutural de GAR-391b) adicionou `user_identities.hash_upgraded_at` para o lazy upgrade transacional. Próximo: **GAR-391b** (`verify_credential` real impl + audit + JWT issuance + endpoint `/v1/auth/login` sob feature flag).
+A Fase 3.3 destravou em 2026-04-13 com **GAR-375 — ADR 0005 Identity Provider** (BYPASSRLS dedicated role + Argon2id RFC 9106 + HS256 JWT + lazy upgrade dual-verify PBKDF2→Argon2id, trait `IdentityProvider` shape congelada) e **GAR-391a — `garraia-auth` skeleton** (crate skeleton + migration 008 criando `garraia_login NOLOGIN BYPASSRLS` com 4 GRANTs exatos do ADR 0005 + `LoginPool` newtype com `current_user` validation + `static_assertions::assert_not_impl_all!(LoginPool: Clone)` + smoke tests integration). Migration 009 (prereq estrutural de GAR-391b) adicionou `user_identities.hash_upgraded_at` para o lazy upgrade transacional. GAR-391b (`verify_credential` real + audit + JWT + `/v1/auth/login`) e GAR-391c foram entregues em 2026-04-13 — ver a linha do `garraia-auth` acima.
 
-Filtre por [`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen) no GitHub para encontrar um lugar para começar.
+Filtre por [`good first issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3A%22good+first+issue%22+is%3Aopen) no GitHub para encontrar um lugar para começar.
 
 ## Licença
 

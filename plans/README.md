@@ -30,9 +30,9 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0019 | [GAR-393 slice 3 — Invite Accept (`POST /v1/invites/{token}/accept`)](0019-gar-393-invite-accept.md) | [GAR-393](https://linear.app/chatgpt25/issue/GAR-393) | ✅ Merged |
 | 0020 | [GAR-394 — ObjectStore trait + LocalFs (storage slice 1)](0020-gar-394-object-store-local-fs.md) | [GAR-394](https://linear.app/chatgpt25/issue/GAR-394) | ✅ Merged |
 | 0021 | [GAR-408 — tus 1.0 uploads (Fase 3.5 slice 1)](0021-gar-408-tus-uploads.md) | [GAR-408](https://linear.app/chatgpt25/issue/GAR-408) | ✅ Merged |
-| 0022 | [GAR-412 — `/metrics` dedicated listener + Prometheus auth](0022-gar-412-metrics-listener.md) | [GAR-412](https://linear.app/chatgpt25/issue/GAR-412) | ✅ Merged |
-| 0023 | [GAR-411 — Rate limiter (Governor/tower-governor)](0023-gar-411-rate-limiter.md) | [GAR-411](https://linear.app/chatgpt25/issue/GAR-411) | ✅ Merged |
-| 0024 | *(renumbered → see 0022)* | — | — |
+| 0022 | [GAR-426 — Workspace security hardening part 2 (rate-limit refinements + audit robustness)](0022-gar-426-workspace-security-part-2.md) | GAR-426 | ✅ Merged |
+| 0023 | [GAR-427 — Migrate api.rs session-IP stamp to real_client_ip](0023-gar-427-xff-api-session-ip.md) | GAR-427 | ✅ Merged |
+| 0024 | [GAR-412 — /metrics endpoint auth (Bearer + IP ACL + startup fail-closed)](0024-gar-412-metrics-endpoint-auth.md) | GAR-412 | ✅ Merged |
 | 0025 | [GAR-415 — Trusted proxy + real_client_ip](0025-gar-415-trusted-proxy.md) | [GAR-415](https://linear.app/chatgpt25/issue/GAR-415) | ✅ Merged |
 | 0026 | [GAR-416 — Request-ID propagation](0026-gar-416-request-id.md) | [GAR-416](https://linear.app/chatgpt25/issue/GAR-416) | ✅ Merged |
 | 0027 | [GAR-417 — Health check `/health`](0027-gar-417-health-check.md) | [GAR-417](https://linear.app/chatgpt25/issue/GAR-417) | ✅ Merged |
@@ -368,7 +368,8 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0355 | [Robustez sempre-online: ciclo de vida MCP + recorrência](0355-recurrence-and-mcp-lifecycle.md) | plan 0355 (origem) | ✅ Entregue 2026-08-29 (ADR 0013) |
 | 0356 | [lopdf 0.42 → 0.44 com a feature `time` desligada (E0599 do BorrowedFormatItem)](0356-lopdf-044-time-feature-off.md) | Dependabot PR #851 / upstream lopdf#518 | 🚧 Em revisão (2026-08-29) |
 | 0357 | [Padrão `qwen3.8`, `garraia --model <tag>` e preparo para `ollama launch`](0357-ollama-defaults-and-launch.md) | pedido direto | ✅ Entregue 2026-08-29 |
-| 0358 | [rmcp 1.7 → 2.2 (`ContentBlock` e o fim do `Annotated<RawContent>`)](0358-rmcp-220-content-block-migration.md) | Dependabot PR #853 / upstream rust-sdk#927 | 🚧 Em revisão (2026-08-29) |
+| 0358 | [rmcp 1.7 → 2.2 (`ContentBlock` e o fim do `Annotated<RawContent>`)](0358-rmcp-220-content-block-migration.md) | Dependabot PR #853 / upstream rust-sdk#927 | ✅ Merged 2026-08-29 via PR #876 (`5e635ab`) |
 | 0359 | [Instalador Windows `install.ps1` + matriz de artefatos multiplataforma](0359-windows-installer-and-release-matrix.md) | pedido direto | ✅ Entregue 2026-08-30 |
 | 0360 | [`garra agents setup`: provisionamento e roteamento multi-agente](0360-garra-agents-setup.md) | pedido direto | ✅ Entregue 2026-08-30 (ADR 0014) |
 | 0361 | [Pacotes Linux `.deb`/`.rpm`/AppImage + Windows ARM64 nativo + release v0.3.4](0361-linux-packages-and-windows-arm64.md) | pedido direto | ✅ Entregue 2026-08-31 (ADR 0015) |
+| 0362 | [Papagaio de volta, Garra Chat Bar e desktop Linux](0362-garra-chat-bar-e-desktop-linux.md) | pedido direto | ✅ Entregue 2026-09-01 (v0.3.5, Amendment do ADR 0015) |

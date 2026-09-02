@@ -18,11 +18,11 @@
   <a href="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml"><img src="https://github.com/michelbr84/GarraRUST/actions/workflows/cargo-audit.yml/badge.svg?branch=main" alt="Security Audit"></a>
   <a href="https://github.com/michelbr84/GarraRUST/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://github.com/michelbr84/GarraRUST/stargazers"><img src="https://img.shields.io/github/stars/michelbr84/GarraRUST" alt="Stars"></a>
-  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
+  <a href="https://github.com/michelbr84/GarraRUST/issues?q=label%3A%22good+first+issue%22+is%3Aopen"><img src="https://img.shields.io/github/issues/michelbr84/GarraRUST/good%20first%20issue?color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
   <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
@@ -57,7 +57,9 @@ If a number has no committed measurement behind it, it does not appear here.
 **Local-first.** All state — conversations, memory, config, credentials —
 is stored on your machine, and there is no telemetry or analytics
 phone-home. Your prompts go only to the LLM provider you configure; run
-[Ollama](https://ollama.com) for a fully offline, zero-egress setup.
+[Ollama](https://ollama.com) for a fully offline setup (set
+`GARRAIA_NO_UPDATE_CHECK=1` to also silence the once-a-day release check
+against the GitHub API — the only other outbound call `garra start` makes).
 
 ## 🐾 Meet Garra
 
@@ -77,7 +79,7 @@ tone in any language. See [ADR 0012](docs/adr/0012-garra-persona.md).
 ## Quick Start
 
 ```bash
-# Requires Rust 1.94+ (matches the MSRV declared in Cargo.toml)
+# Requires Rust 1.95+ (matches the MSRV declared in Cargo.toml)
 cargo build --release -p garraia
 
 # Interactive setup — pick your LLM provider; optionally store API keys
@@ -107,10 +109,12 @@ cargo build --release -p garraia
 curl -fsSL https://garraia.org/install.sh | sh
 ```
 
-Mirrors (same script, auto-synced): GitHub release CDN
+Mirrors of the same script: GitHub release CDN
 `https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh`
-(most robust against IP rate limits) and
-`https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh`.
+(most robust against IP rate limits; a snapshot taken at each release),
+`https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh` and
+`https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.sh` (both
+track `main`).
 
 The installer downloads the binary for your platform, verifies it against
 the release's `SHA256SUMS`, then chains into init and start. Note: the
@@ -133,7 +137,8 @@ In TTY-less contexts (Docker build, CI) the installer prints next steps
 and exits 0 instead of blocking.
 
 Releases ship 6 prebuilt CLI binaries: Linux x86_64/aarch64,
-macOS x86_64/aarch64, Windows x86_64/aarch64 — each also as a `.tar.gz`
+macOS x86_64/aarch64, Windows x86_64/aarch64 (the three aarch64 builds
+are best-effort) — each also as a `.tar.gz`
 (`.zip` on Windows) containing the binary named plainly `garraia`,
 plus `LICENSE` and `README.md`. From `v0.3.4` they also carry Linux
 packages — `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` and a portable
@@ -144,6 +149,15 @@ assets by exact name. The Linux binaries are built against glibc 2.35,
 so they need Ubuntu 22.04+ / Debian 12+; older distros and musl-based
 systems (Alpine) have to build from source. The installer checks
 this before downloading.
+
+Separately from the CLI, the **Garra Desktop** app (a Tauri tray app with
+the parrot overlay and the Chat Bar on `Ctrl+Space`, bundling the CLI as a
+sidecar) is published best-effort as
+`garraia-desktop-windows-x86_64.msi` / `-setup.exe` (from `v0.3.4`) and
+`garraia-desktop-linux-x86_64.deb` / `.AppImage` (from `v0.3.5`). Do not
+confuse the two AppImages: `garraia-linux-x86_64.AppImage` is the
+terminal CLI only. See [docs/installation.md](docs/installation.md)
+§"Garra Desktop on Linux".
 
 </details>
 
@@ -175,8 +189,10 @@ landed after the `v0.3.3` tag. See [`docs/installation.md`](docs/installation.md
 
 Flags mirror the shell installer (`-SkipSetup`, `-SkipInit`, `-SkipStart`,
 `-NoLocal`, `-Version <tag>`, `-InstallDir <dir>`, `-NoModifyPath`, `-Help`),
-each an alias for the matching `GARRAIA_*` environment variable; an env var set
-by the caller wins over its flag.
+each paired with a `GARRAIA_*` environment variable. `GARRAIA_VERSION` and
+`GARRAIA_INSTALL_DIR` set by the caller win over `-Version`/`-InstallDir`;
+for the on/off switches, env var and flag are OR-ed — either one enables
+the behaviour.
 
 On Windows ARM64 the installer picks the native
 `garraia-windows-aarch64.exe` (published from `v0.3.4`, best-effort);
@@ -208,10 +224,17 @@ checksum), and swaps the executable atomically.
 <details>
 <summary>Build the desktop app (Tauri)</summary>
 
+Prebuilt bundles are on the Releases page (see above); build from source
+only if you need to. `scripts/build-desktop-linux.sh` (Linux: `.deb` +
+AppImage, prerequisites listed in its header) and
+`scripts/build-installer.ps1` (Windows: MSI + NSIS) wrap these steps:
+
 ```bash
 cargo build --release -p garraia
+mkdir -p crates/garraia-desktop/src-tauri/binaries
 cp target/release/garra crates/garraia-desktop/src-tauri/binaries/garraia-$(rustc -vV | grep host | cut -d' ' -f2)
-cargo build --release -p garraia-desktop
+cargo tauri build --manifest-path crates/garraia-desktop/src-tauri/Cargo.toml
+# `cargo build --release -p garraia-desktop` gives the bare binary, no bundle
 ```
 
 </details>
@@ -270,13 +293,13 @@ with per-claim evidence in `results/`:
 |---|---|---|---|
 | Chat channels | 5 wired end-to-end (Telegram, Discord, Slack, WhatsApp, iMessage·macOS) + web chat + OpenAI-compatible API; 6 more implemented in-crate, not yet wired | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
 | LLM providers | 15 built-in (Anthropic, OpenAI, Ollama native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
-| MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
+| MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature); also serves MCP over stdio (`garra mcp-server`, one `garra_ask` tool) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
 | Config hot reload | file watch — most settings apply live (channels/providers wire at boot) | file watch (hybrid mode) | explicit reload endpoint only |
 | Scheduling | one-shot heartbeats (up to 30 days ahead) **and** cron recurrence with IANA timezones, delivered to the originating channel; retries failed runs with backoff | full cron + automations | cron + SOP engine |
-| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 37 tables across 32 migrations with FORCE Row-Level Security on tenant data ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
+| Multi-tenant group workspace | in active development — Postgres 16 + pgvector, 37 tables across 33 migrations, 32 of them under FORCE Row-Level Security ([Phase 3](ROADMAP.md)) | explicit non-goal (single trusted operator) | no |
 | Native PT-BR assistant persona | yes — first-class, default | no | no |
-| Prebuilt binaries + self-update | 5 targets, SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
+| Prebuilt binaries + self-update | 6 targets (3 x86_64 required, 3 aarch64 best-effort), SHA-256-verified atomic self-update | npm package (needs Node runtime) | 10 targets, SLSA provenance |
 
 **Where the others win, honestly:** OpenClaw has the broadest channel and
 plugin ecosystem (27 channels, 150+ extensions) plus a mature cron system,
@@ -303,9 +326,14 @@ fallback on 429/5xx with exponential backoff and a circuit breaker.
 Wired end-to-end today: **Telegram** (streaming, MarkdownV2, bot
 commands, pairing), **Discord** (slash commands, sessions), **Slack**
 (Socket Mode), **WhatsApp** (Meta Cloud API webhooks), **iMessage**
-(macOS, chat.db polling + AppleScript). Also: web chat console and an
+(macOS, chat.db polling + AppleScript). Also: web chat console, an
 **OpenAI-compatible API** (`/v1/chat/completions`) for VS Code
-(Continue et al.) sharing the same session history. Six more channel
+(Continue et al.) sharing the same session history, and an
+**Anthropic-compatible `POST /v1/messages`** shim so Claude Code can point
+at the gateway ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)).
+`garra agents setup|status|link|rollback|web` provisions GarraIA,
+OpenClaw, Hermes and Claude Code with one provider + model via AgentDeck.
+Six more channel
 implementations (Google Chat, Teams, Matrix, LINE, IRC, Signal) exist in
 `garraia-channels` and await gateway wiring — tracked on the
 [roadmap](ROADMAP.md).
@@ -322,15 +350,18 @@ deterministic auto-routing.
 ### Voice
 
 STT via Whisper (local whisper.cpp or OpenAI API); TTS via Chatterbox
-(GPU, multilingual), Hibiki, ElevenLabs, Kokoro, or OpenAI TTS;
+(GPU, multilingual), Hibiki, or any OpenAI-compatible `/v1/audio/speech`
+endpoint (LM Studio) — ElevenLabs and Kokoro adapters exist in
+`garraia-channels::voice_channel` but are not wired to the gateway yet;
 `garra start --with-voice`; automatic audio replies on Telegram; format
 conversion via ffmpeg.
 
 ### MCP (Model Context Protocol)
 
 Connect any MCP server: stdio for local processes (default build), plus
-Streamable HTTP for remote ones behind the `mcp-http` feature (config
-accepts `http`/`sse`/`streamable-http` values — all served by the
+Streamable HTTP for remote ones behind the `mcp-http` feature (in
+`config.yml`/`mcp.json` use `transport: stdio` or `transport: http`; the
+admin API additionally accepts `sse`/`streamableHttp`, all mapped to the
 Streamable HTTP client; legacy SSE-only servers are not supported, and
 the prebuilt binaries currently ship stdio-only). Tools appear
 namespaced (`server.tool`); MCP prompts become slash commands
@@ -372,7 +403,7 @@ headers (`X-AI-Model`, `X-AI-Provider`) on every response.
 <config-dir>/                # ~/.config/garraia by default (see Configuration)
 ├── memoria/fatos.json      # LLM-extracted facts
 ├── data/memory.db          # SQLite + vector search (sqlite-vec)
-├── data/sessions.db        # persistent conversation sessions
+├── data/sessions.db        # persistent conversation sessions (today under ~/.garraia/data/ unless `data_dir` is set)
 └── credentials/vault.json  # AES-256-GCM encrypted credentials
 ```
 
@@ -386,11 +417,12 @@ CLI is on the roadmap).
 ```yaml
 memory:
   enabled: true
-  auto_extract: true
+  embedding_provider: ollama-embed   # key of the `embeddings` entry below
 embeddings:
-  provider: ollama
-  model: nomic-embed-text
-  base_url: "http://localhost:11434"
+  ollama-embed:
+    provider: ollama
+    model: nomic-embed-text
+    base_url: "http://localhost:11434"
 ```
 
 ## Security
@@ -421,7 +453,8 @@ the comparison section above for the evidence trail).
 - **Two auth stacks, stated plainly** — Auth v1 (`/v1/auth/*`): 15-minute
   HS256 access tokens + opaque HMAC-signed refresh tokens, Argon2id
   hashing with PBKDF2 lazy upgrade. Legacy mobile endpoints (`/auth/*`):
-  30-day JWTs, PBKDF2 — being migrated to v1.
+  30-day JWTs, Argon2id (legacy PBKDF2 rows upgraded on first login) —
+  being migrated to v1.
 - **Risky-command confirmation** — opt-in `tool_confirmation_enabled`
   pauses before destructive bash (`rm -r`, `git reset --hard`, …).
 - **MCP process resource limits** — optional per-server virtual-memory
@@ -434,8 +467,11 @@ the comparison section above for the evidence trail).
   keyword screen for common prompt-injection phrases on chat channels and
   the WebSocket. It is a heuristic, not a guarantee — treat prompt
   injection as unsolved, like every framework should.
-- **TLS (source builds)** — compile with `--features tls` and point
-  `tls_cert_path`/`tls_key_path` at your certs (e.g. issued via
+- **TLS (source builds)** — compile with
+  `cargo build -p garraia --features garraia-gateway/tls` (the feature
+  lives on the gateway crate; the `garraia` binary has no `tls`
+  passthrough yet) and point `tls_cert_path`/`tls_key_path` at your certs
+  (e.g. issued via
   certbot/Let's Encrypt). No built-in ACME client. Honest caveats: the
   prebuilt release binaries do **not** include the TLS feature today, and
   with certs configured but the feature absent the gateway logs a warning
@@ -451,7 +487,7 @@ garra migrate openclaw            # --dry-run to preview, --source <dir> for cus
 
 Imports your skills and channel configurations. Credential files are
 detected and listed but **not copied** — re-enter API keys via
-`garra init` so they land in the encrypted vault.
+`garra init` (pick the vault option there to store them encrypted).
 
 ## Configuration
 
@@ -489,8 +525,7 @@ agent:
   summarize_threshold: 40
 
 memory:
-  enabled: true
-  auto_extract: true
+  enabled: true   # embeddings + `embedding_provider`: see "Memory and self-learning"
 ```
 
 Run `garra config check` to validate the effective configuration with
@@ -510,7 +545,7 @@ crates/
 ├── garraia-agents/     # LLM providers, tools, MCP client, agent runtime
 ├── garraia-channels/   # Telegram, Discord, Slack, WhatsApp, iMessage (+6 pending wiring)
 ├── garraia-auth/       # Auth v1: Argon2id, JWT HS256, RBAC, RLS-backed identity
-├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (FORCE RLS, 29 tables)
+├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (37 tables / 33 migrations, 32 under FORCE RLS)
 ├── garraia-security/   # Credential vault, allowlists, pairing, validation
 ├── garraia-db/         # SQLite memory, vector search, sessions
 ├── garraia-config/     # YAML/TOML config, hot reload, `config check`
@@ -534,14 +569,17 @@ deep in **Phase 3: Group Workspace**, a multi-tenant family/team space
 with FORCE Row-Level Security. Recent milestones: auth v1 (Argon2id +
 15-min JWTs + refresh tokens), the 37-table RLS schema, tus resumable
 uploads, object storage (local + S3), OpenTelemetry baseline, the Garra
-Learning agent, and this benchmark harness.
+Learning agent, this benchmark harness, and the v0.3.x distribution wave
+(Aug–Sep 2026): `install.sh`/`install.ps1`, Linux `.deb`/`.rpm`/AppImage,
+native Windows ARM64, `garra agents setup` with the Anthropic-compatible
+`/v1/messages` shim, and Garra Desktop for Linux with the Chat Bar.
 
 ## Contributing
 
 GarraIA is MIT-licensed open source. Join the
 [Discord](https://discord.gg/aEXGq5cS), check
 [CONTRIBUTING.md](CONTRIBUTING.md), and filter by
-[`good-first-issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3Agood-first-issue+is%3Aopen).
+[`good first issue`](https://github.com/michelbr84/GarraRUST/issues?q=label%3A%22good+first+issue%22+is%3Aopen).
 Support channels are listed in [SUPPORT.md](SUPPORT.md); security reports
 go through [SECURITY.md](SECURITY.md).
 

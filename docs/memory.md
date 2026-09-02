@@ -63,15 +63,15 @@ Semantic search using:
 ```yaml
 memory:
   enabled: true
-  auto_extract: true        # Extract facts automatically
-  extraction_interval: 5     # Minutes between extractions
-  max_facts: 100           # Maximum facts to store
+  embedding_provider: ollama-embed   # key of the `embeddings` entry below
+  # fact extraction runs on every turn — there is no auto_extract/interval/max_facts knob
 
 embeddings:
-  provider: ollama
-  model: nomic-embed-text
-  base_url: "http://localhost:11434"
-  dimension: 768
+  ollama-embed:
+    provider: ollama
+    model: nomic-embed-text
+    base_url: "http://localhost:11434"
+    dimensions: 768
 ```
 
 ## CLI Commands
@@ -125,7 +125,7 @@ garraia memory export
 ## Data Location
 
 ```
-~/.garraia/
+~/.config/garraia/            # <config-dir>; ~/.garraia only on legacy installs
 ├── memoria/
 │   ├── fatos.json          # Extracted facts
 │   └── embeddings/         # Embedding cache
