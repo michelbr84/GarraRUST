@@ -228,6 +228,37 @@ ser reiniciados.
 </details>
 
 <details>
+<summary>Instalar no Android (Termux) — <code>curl | bash</code> dentro do Termux</summary>
+
+> **A partir da `v0.3.6`** o instalador tem branch Termux: rode **dentro do
+> app [Termux](https://github.com/termux/termux-app#installation)** (build
+> F-Droid ou GitHub — o fork da Play Store não é suportado). Ele detecta o
+> Termux por `$TERMUX_VERSION` / `$PREFIX`, pula o preflight de glibc e
+> instala o `garraia` em `$PREFIX/bin` (no PATH, sem sudo):
+
+```bash
+pkg install curl
+curl -fsSL https://garraia.org/install.sh | bash
+garraia doctor    # plataforma, dirs, config, providers, daemon — sysexits
+garraia chat      # provider cloud, ou --url http://PC-LAN:8080 para LLM na rede
+```
+
+> O binário Android é bionic (`aarch64-linux-android`, API 21+,
+> cargo-ndk no job `build-android-arm64` do release, best-effort) — builds
+> musl estáticos não são publicados de propósito: quebram DNS no Android.
+> O `garra update` resolve o asset `garraia-android-aarch64` dentro do
+> Termux. A LLM pode estar na nuvem ou na sua rede: qualquer servidor
+> OpenAI-compatible (llama.cpp / LM Studio / vLLM / Ollama) funciona via
+> `--url`, e `--provider llamacpp` fala com um llama-server em
+> `localhost:8080`. Mantenha a sessão do Termux em primeiro plano (ou use
+> wakelock) — o phantom process killer do Android e a otimização de
+> bateria podem parar daemons longos em background. A estratégia e o
+> trilho Termux → nativo vivem no
+> [ADR 0016](docs/adr/0016-mobile-termux-local-first.md).
+
+</details>
+
+<details>
 <summary>Atualizar uma instalação existente — <code>garraia update</code></summary>
 
 ```bash
@@ -244,7 +275,7 @@ garraia rollback
 
 </details>
 
-As releases atuais (v0.3.4+) publicam 6 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64) com seus archives, pacotes Linux (`.deb`/`.rpm`/AppImage) e os instaladores desktop do Windows (`.msi` + `-setup.exe`, de volta ao pipeline desde 2026-08-30) — os formatos além dos binários x86_64 são best-effort. O `.apk` mobile (Android) foi publicado até a v0.2.1. Tudo nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Desde a v0.3.5, também o Garra Desktop para Linux (`garraia-desktop-linux-x86_64.deb` / `.AppImage`).
+As releases atuais (v0.3.4+) publicam 6 binários CLI (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64/aarch64) com seus archives, pacotes Linux (`.deb`/`.rpm`/AppImage), os instaladores desktop do Windows (`.msi` + `-setup.exe`, de volta ao pipeline desde 2026-08-30) e, a partir da `v0.3.6`, o binário Android aarch64 para Termux (`garraia-android-aarch64`, best-effort — §Android acima) — os formatos além dos binários x86_64 são best-effort. O `.apk` mobile (Android) foi publicado até a v0.2.1. Tudo nas [Versões do GitHub](https://github.com/michelbr84/GarraRUST/releases). Desde a v0.3.5, também o Garra Desktop para Linux (`garraia-desktop-linux-x86_64.deb` / `.AppImage`).
 
 ## Por que GarraIA?
 

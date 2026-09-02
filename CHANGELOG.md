@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Garra no Android (Termux) — Fase 0 do Garra Mobile Local
+  ([ADR 0016](docs/adr/0016-mobile-termux-local-first.md)).** Novo asset
+  best-effort `garraia-android-aarch64` (job `build-android-arm64` no
+  `release.yml`, alvo bionic `aarch64-linux-android` via cargo-ndk — musl
+  proibido no Android por quebrar DNS), branch Termux no `install.sh`
+  (detecção por `$TERMUX_VERSION` ou `$PREFIX` *com.termux*; default
+  `$PREFIX/bin`, sem sudo, skip do preflight glibc, notice sobre o phantom
+  process killer e bateria; nada muda fora do Termux), braço
+  `("android", "aarch64")` no `garra update` e suíte nova
+  `tests/install_sh/detect_platform.sh` no job de shellcheck. Onboarding:
+  `curl install.sh | bash` → `garraia doctor` → `garraia chat`.
+- **`garra doctor` — diagnóstico da instalação numa passada.** Quatro
+  seções (diretórios, config via `config check`, providers com fonte de
+  credencial presence-only, daemon via pidfile+porta) com flags `--json` e
+  `--strict` e exit codes sysexits 0/2/65, no padrão do `config check`.
+  Probes TCP dos daemons locais keyless (ollama/llamacpp) passam pelo
+  guard SSRF (`IpScope::AllowPrivate` — loopback/LAN liberados,
+  link-local/CGNAT/multicast continuam bloqueados); probes são
+  diagnóstico e nunca afetam o exit code.
+- **Provider `llamacpp` keyless no CLI e no gateway.** `garra chat
+  --provider llamacpp` / `garra ask` falam com um llama-server local
+  (default `http://localhost:8080`, `--url` vence a config), `garraia
+  config set-model --provider llamacpp` aceito sem credential, e o boot
+  loop do gateway ganhou o braço espelhando ollama — `config check`
+  continua truthful (lockstep `provider_key_env`).
+
 ## [0.3.5] - 2026-09-01
 
 ### Added

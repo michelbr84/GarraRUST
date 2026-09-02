@@ -55,6 +55,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0013](0013-scheduling-two-tier-recurrence.md) | Recorrência de agendamento em duas camadas (cron no SQLite pessoal + RRULE no workspace) | ✅ accepted | 2026-08-29 | plan 0355 |
 | [0014](0014-anthropic-messages-shim.md) | Superfície Anthropic-compatible no gateway (`POST /v1/messages`) | ✅ accepted | 2026-08-30 | plan 0360 |
 | [0015](0015-linux-packaging-toolchain.md) | Toolchain de empacotamento Linux (nfpm `.deb`/`.rpm` + appimagetool AppImage) | ✅ accepted | 2026-08-31 | plan 0361 |
+| [0016](0016-mobile-termux-local-first.md) | Garra Mobile — Termux como camada de execução (local-first no Android, gerações v0-v3) | ✅ accepted | 2026-09-02 | ADR + release v0.3.6 |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

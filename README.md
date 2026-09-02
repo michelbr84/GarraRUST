@@ -138,7 +138,8 @@ and exits 0 instead of blocking.
 
 Releases ship 6 prebuilt CLI binaries: Linux x86_64/aarch64,
 macOS x86_64/aarch64, Windows x86_64/aarch64 (the three aarch64 builds
-are best-effort) — each also as a `.tar.gz`
+are best-effort) — plus, from `v0.3.6`, an Android aarch64 build for
+Termux (best-effort; see the Android section below) — each also as a `.tar.gz`
 (`.zip` on Windows) containing the binary named plainly `garraia`,
 plus `LICENSE` and `README.md`. From `v0.3.4` they also carry Linux
 packages — `garraia-linux-{x86_64,aarch64}.deb`/`.rpm` and a portable
@@ -203,6 +204,36 @@ The binaries and installers are **not code-signed**, so SmartScreen shows
 "Windows protected your PC" on first run of the desktop MSI — expected, not
 tampering. See [docs/installation.md](docs/installation.md) for the full
 Windows section.
+
+</details>
+
+<details>
+<summary>Install on Android (Termux) — <code>curl | bash</code> inside Termux</summary>
+
+From `v0.3.6` the installer has a Termux branch: run it **inside the
+[Termux](https://github.com/termux/termux-app#installation) app** (the
+F-Droid or GitHub build — the Play Store fork is unsupported) and it
+detects Termux via `$TERMUX_VERSION` / `$PREFIX`, skips the glibc preflight,
+and installs `garraia` into `$PREFIX/bin` (on your PATH, no sudo):
+
+```bash
+pkg install curl
+curl -fsSL https://garraia.org/install.sh | bash
+garraia doctor    # platform, dirs, config, providers, daemon — sysexits
+garraia chat      # cloud provider, or --url http://PC-LAN:8080 for a LAN LLM
+```
+
+The Android binary targets bionic (`aarch64-linux-android`, API 21+,
+built with cargo-ndk in the `build-android-arm64` release job, best-effort)
+— static musl builds are deliberately not shipped because they break DNS
+on Android. `garra update` resolves the `garraia-android-aarch64` asset
+inside Termux. Your LLM can live in the cloud or on your LAN: any
+OpenAI-compatible server (llama.cpp / LM Studio / vLLM / Ollama) works via
+`--url`, and `--provider llamacpp` talks to a llama-server on
+`localhost:8080`. Keep the Termux session in the foreground (or acquire a
+wakelock) — Android's phantom process killer and battery optimization can
+stop long-running background daemons. Strategy and the Termux → native
+roadmap live in [ADR 0016](docs/adr/0016-mobile-termux-local-first.md).
 
 </details>
 
