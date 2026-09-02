@@ -44,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   limitado — mesma lição do `stream_turn` do `garra chat`).
 
 ### Changed
+- **`garraia-auth` migra para argon2 0.6 + pbkdf2 0.13 + password-hash 0.6.1**
+  (GAR-669 slice 3, fecha o alerta Dependabot #430); PHC parsing do `build.rs`
+  ajustado, sem mudança de formato de hash. *(Registrado retroativamente em
+  2026-09-02.)*
 - **Quick Chat evolui para a Chat Bar.** A janelinha centrada do `Ctrl+Space`
   (`quick-chat.html`/`quick_chat.rs`) foi substituída pela barra; o atalho e o
   item da bandeja agora alternam a barra. O cliente WebSocket que estava
@@ -51,6 +55,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ui/ws.js` (uma cópia a menos, e a terceira nunca nasceu).
 
 ### Fixed
+- **CI e instaladores**: `install-endpoints.yml` sobrevive a `errexit` e imprime
+  o código HTTP de cada sonda (#892); `tests/install_ps1/platform.ps1` em ASCII
+  puro para o PSScriptAnalyzer; `set -euo pipefail` no `Get version` do
+  `package-linux`. *(Registrado retroativamente em 2026-09-02.)*
 - **O papagaio do Garra Desktop voltou a aparecer.** O sprite
   `crates/garraia-desktop/ui/assets/parrot-sprite.png` estava no `.gitignore`
   ("binário grande" — na verdade 32KB) e nenhum build de CI executava o
@@ -87,6 +95,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.3.4] - 2026-08-31
 
 ### Added
+- **`garra agents setup|status|link|rollback|web`** (plan 0360): front-end do
+  AgentDeck que provisiona GarraIA, OpenClaw, Hermes e Claude Code com um mesmo
+  provedor+modelo; e **`POST /v1/messages`**, shim Anthropic-compatible no
+  gateway para o Claude Code apontar para o Garra
+  ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)). *(Registrado
+  retroativamente em 2026-09-02.)*
+- **`garra chat` ganha indicador de atividade** (spinner que nunca esconde o
+  cursor, fallback ASCII) e `Ctrl+C` passa a cancelar o turno em vez de matar
+  o processo (#884). *(Retroativo.)*
+- **Interop Hermes ↔ Garra via MCP** (#859) e workflow
+  `codeql-apply-dismissals.yml` (#871). *(Retroativo.)*
 - **Instalador de uma linha para Windows.** Novo `install.ps1`, irmão do
   `install.sh` e em paridade de comportamento com ele:
   `irm https://garraia.org/install.ps1 | iex` detecta a plataforma, resolve a
@@ -219,6 +238,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   job lista cada arquivo de teste explicitamente).
 
 ### Changed
+- **Breaking: MSRV 1.94 → 1.95** — wasmtime 47 → 48 migra a API WASI e exige
+  rustc 1.95 (#865); `ci.yml` ganha o job `MSRV check (1.95)`. *(Retroativo.)*
+- **sqlx 0.9** (#868): `SqlSafeStr` enforçado pelo compilador — `sqlx::query*()`
+  só aceita `&'static str`; `AssertSqlSafe` restrito a alvos de teste (regra 5
+  do CLAUDE.md). *(Retroativo.)*
 - **`rmcp` 1.7 → 2.2**, alinhando os tipos de modelo à spec MCP 2025-11-25
   (upstream `rust-sdk#927`). O SDK dissolveu duas camadas: `Content`
   (`= Annotated<RawContent>`) e o próprio `RawContent` viraram o enum achatado
@@ -271,6 +295,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no lock; reavaliar quando o serenity suportar reqwest 0.13.
 
 ### Security
+- **Guard SSRF centralizado** em `garraia_common::ssrf` (`vet_url` +
+  `pinned_client`): toda requisição HTTP de saída cuja URL vem de request,
+  config editável ou tool call de LLM passa pelo guard (#869, #883, #889; regra
+  14 do CLAUDE.md). *(Retroativo.)*
 - **RUSTSEC-2026-0192 fechado estruturalmente** — na 0.44 o `ttf-parser` passou a ser
   opcional atrás da feature `font_embedding`, que não usamos (nem `FontData` nem
   `add_font`). O `ttf-parser 0.25.1` (não mantido, sem upgrade seguro) saiu do

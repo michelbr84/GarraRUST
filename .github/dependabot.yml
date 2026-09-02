@@ -35,10 +35,10 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    # dtolnay/rust-toolchain@1.94 no ci.yml é o pin de MSRV do workspace,
+    # dtolnay/rust-toolchain@1.95 no ci.yml é o pin de MSRV do workspace,
     # não uma versão de action — o Dependabot tentava "bumpar" para um
     # toolchain Rust inexistente (@1.100, PR #819) e quebrava o job
-    # "MSRV check (1.94)". Bump de MSRV é decisão manual (ci.yml + Cargo.toml
+    # "MSRV check (1.95)". Bump de MSRV é decisão manual (ci.yml + Cargo.toml
     # rust-version + Dockerfile juntos).
     ignore:
       - dependency-name: "dtolnay/rust-toolchain"

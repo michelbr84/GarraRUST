@@ -55,7 +55,7 @@ gateway:
 ```
 
 - **TLS**: os binários release atuais **não** incluem a feature `tls`
-  (compilável com `--features tls` a partir do código). O caminho
+  (compilável a partir do código com `cargo build -p garraia --features garraia-gateway/tls`). O caminho
   suportado hoje é um **reverse proxy com TLS** (Caddy/nginx/Traefik) na
   frente do gateway em loopback — ou seja, muitas vezes o Perfil A + um
   proxy exposto resolve melhor que `0.0.0.0` direto.
@@ -157,5 +157,5 @@ Arquivo completo comentado, validado com `garra config check`:
    default está no roadmap.
 3. "Controle de aplicativos" (GUI/automação de apps) não existe como
    tool — ver a nota em mcp-capacidades.md.
-4. TLS embutido exige build com `--features tls`; binários release
+4. TLS embutido exige build com `--features garraia-gateway/tls`; binários release
    atuais servem HTTP puro (use reverse proxy).

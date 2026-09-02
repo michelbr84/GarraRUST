@@ -4,9 +4,12 @@ Complete reference for GarraIA configuration options.
 
 ## Configuration File Location
 
-GarraIA looks for configuration in:
-1. `./config.yml` (current directory)
-2. `~/.garraia/config.yml` (home directory)
+GarraIA looks for `config.yml` (fallback `config.toml`) in its config directory, resolved as:
+1. `$GARRAIA_CONFIG_DIR` (when set)
+2. `~/.config/garraia` (XDG; the default on new installs)
+3. `~/.garraia` (legacy — only when the XDG directory does not exist)
+
+Run `garraia config check` to see which directory and file are active.
 
 ## Full Configuration Example
 
@@ -123,16 +126,16 @@ agents:
 # Memory Configuration
 memory:
   enabled: true
-  auto_extract: true      # Extract facts automatically
-  extraction_interval: 5   # Minutes between extractions
-  max_facts: 100
+  embedding_provider: ollama-embed   # key of the `embeddings` entry below
+  # shared_continuity: false         # optional; fact extraction runs on every turn (no auto_extract knob)
 
-# Embeddings Configuration
+# Embeddings Configuration (named map — pick one entry via memory.embedding_provider)
 embeddings:
-  provider: ollama
-  model: nomic-embed-text
-  base_url: "http://localhost:11434"
-  dimension: 768
+  ollama-embed:
+    provider: ollama
+    model: nomic-embed-text
+    base_url: "http://localhost:11434"
+    dimensions: 768
 
 # Voice Configuration
 voice:
@@ -270,7 +273,7 @@ requires an explicit `--model` flag.
 ## Hot Reload
 
 Configuration changes in `config.yml` are applied automatically:
-1. Edit `~/.garraia/config.yml`
+1. Edit `<config-dir>/config.yml` (`~/.config/garraia/config.yml` by default)
 2. Changes detected within seconds
 3. No restart required
 
