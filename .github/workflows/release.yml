@@ -222,6 +222,69 @@ jobs:
           name: garraia-windows-aarch64
           path: release/garraia-windows-aarch64.exe
 
+  # Build for Android ARM64 (Termux, bionic dinâmico).
+  #
+  # Best-effort by design: in the `release` job's `needs:` but deliberately
+  # NOT in its `if:` — the same treatment as build-linux-arm64 and
+  # build-windows-aarch64 (sem `continue-on-error`, que o projeto proíbe).
+  # Uma falha aqui deixa a release sem o asset `garraia-android-aarch64`;
+  # nunca a bloqueia. Garra Mobile Fase 0 — ADR 0016.
+  #
+  # Por quê bionic e NÃO musl: musl estático quebra DNS no Android — não
+  # existe /etc/resolv.conf (o resolver embutido do musl leria esse arquivo)
+  # e LD_PRELOAD não intercepta binário estático. O alvo
+  # aarch64-linux-android (bionic dinâmico) fala com o dnsproxyd do Android.
+  #
+  # Toolchain: cargo-ndk seta linker + CC/AR do NDK para as C-deps do grafo
+  # (openssl vendored, rusqlite bundled, sqlite-vec). openssl vendored exige
+  # perl+make — pré-instalados no runner. Termux executa ELF bionic
+  # dinâmico nativamente em $PREFIX/bin (SDK 28, W^X não se aplica).
+  build-android-arm64:
+    name: Build Android ARM64 (Termux)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Pinado por reprodutibilidade: o ubuntu-latest já traz um NDK, mas a
+      # versão do runner muda sem aviso — um bump de NDK não pode quebrar a
+      # release sozinho.
+      ANDROID_NDK_VERSION: 27.3.13750724
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Pin Android NDK
+        run: |
+          set -euo pipefail
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK_VERSION}" >/dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build release
+        # -p 21: platform/minSdkLevel 21 — baseline android do rustc e abaixo
+        # do mínimo do Termux atual (Android 7+/API 24), então roda em todos.
+        # O `--` é a sintaxe documentada do cargo-ndk para repassar args.
+        run: cargo ndk -t arm64-v8a -p 21 -- build --release --package garraia
+
+      - name: Package binary
+        run: |
+          mkdir -p release
+          cp target/aarch64-linux-android/release/garra release/garraia-android-aarch64
+          chmod +x release/garraia-android-aarch64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-android-aarch64
+          path: release/garraia-android-aarch64
+
   # Build the Windows desktop installers (MSI + NSIS).
   #
   # Best-effort by design: this job is in the `release` job's `needs:` so the
@@ -506,6 +569,7 @@ jobs:
       - build-linux-arm64
       - build-windows-x86_64
       - build-windows-aarch64
+      - build-android-arm64
       - build-macos-x86_64
       - build-macos-arm64
       - build-windows-installer
@@ -561,6 +625,11 @@ jobs:
             cp artifacts/garraia-windows-aarch64/garraia-windows-aarch64.exe release/
           else
             echo "::warning ::Windows aarch64 binary not built; release will ship without it."
+          fi
+          if [ -f artifacts/garraia-android-aarch64/garraia-android-aarch64 ]; then
+            cp artifacts/garraia-android-aarch64/garraia-android-aarch64 release/
+          else
+            echo "::warning ::Android aarch64 binary not built; release will ship without it."
           fi
 
           # The Windows desktop installers, when the best-effort job produced
@@ -675,6 +744,7 @@ jobs:
           pack garraia-macos-aarch64      garraia-macos-aarch64  garraia     tar
           pack garraia-windows-x86_64.exe garraia-windows-x86_64 garraia.exe zip
           pack garraia-windows-aarch64.exe garraia-windows-aarch64 garraia.exe zip
+          pack garraia-android-aarch64    garraia-android-aarch64 garraia    tar
 
           rm -rf "$stage"
           echo "--- release/ ---"
@@ -745,10 +815,12 @@ jobs:
             release/garraia-windows-aarch64.exe
             release/garraia-macos-x86_64
             release/garraia-macos-aarch64
+            release/garraia-android-aarch64
             release/garraia-linux-x86_64.tar.gz
             release/garraia-linux-aarch64.tar.gz
             release/garraia-macos-x86_64.tar.gz
             release/garraia-macos-aarch64.tar.gz
+            release/garraia-android-aarch64.tar.gz
             release/garraia-windows-x86_64.zip
             release/garraia-windows-aarch64.zip
             release/garraia-linux-x86_64.deb
