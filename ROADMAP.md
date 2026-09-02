@@ -1020,6 +1020,40 @@ Os adapters existem em `garraia-channels` (features desligadas por default) mas 
 - [ ] IRC
 - [ ] Signal
 
+### 4.5 Garra Mobile Local (Termux → nativo)
+
+Trilho distinto do 4.2 (que é o app Flutter **cliente** do gateway). Aqui o
+core Rust **executa no próprio aparelho**, local-first, com LLM opcional na
+nuvem ou na LAN. Estratégia e gerações v0-v3 definidas em
+[ADR 0016](docs/adr/0016-mobile-termux-local-first.md). Alvo Android é
+**bionic dinâmico** (`aarch64-linux-android` via NDK/cargo-ndk) — musl
+estático proibido (quebra DNS).
+
+- [x] **v0 — Fase 0 (release v0.3.6)**: asset `garraia-android-aarch64` (job
+  best-effort `build-android-arm64` no `release.yml`, openssl vendido);
+  branch Termux no `install.sh` (`$TERMUX_VERSION` / `$PREFIX` *com.termux*
+  → default `$PREFIX/bin`, skip do preflight glibc, notice de phantom
+  process killer); `garra update` resolve o asset no Android
+  (`("android", "aarch64")`); suíte `tests/install_sh/detect_platform.sh`;
+  `garra doctor` (sysexits 0/2/65, `--json`/`--strict`, probe SSRF-vetado
+  dos daemons locais); provider `llamacpp` keyless wired no CLI e no
+  bootstrap do gateway. ✅ 2026-09-02
+- [ ] **v0 follow-up**: usuário validando fim-a-fim em aparelho real
+  (Termux → installer → `garraia doctor` → `garraia chat` na cloud/LAN) —
+  pré-requisito para a v1.
+- [ ] **v1 — Companion Kotlin/Compose**: app novo (decisão do dono) com
+  `com.termux.permission.RUN_COMMAND` + `<queries>` com.termux, setup
+  guiado de `allow-external-apps=true`, stdout/exit via
+  `RUN_COMMAND_PENDING_INTENT` (cap 100KB), detecção do fork Play do Termux
+  com degradação avisada, foreground service "Always On".
+- [ ] **v2 — Híbrido JNI**: core como `cdylib` no APK (NDK); capabilities
+  migram do Termux para APIs Android; F-Droid (runtime com opt-in) ou Play
+  (jniLibs embutidos — nunca download de executável).
+- [ ] **v3 — Nativo**: sem Termux; capabilities 100% Android (CameraX,
+  LocationManager, NotificationManager); descoberta LAN sob as permissões
+  de cada API level (`NEARBY_WIFI_DEVICES` hoje; `ACCESS_LOCAL_NETWORK`
+  blocked-by-default p/ targetSdk 37+ ~2027) — URL manual como UX primária.
+
 **Estimativa fase 4:** 8 / 10 / 14 semanas.
 **Épicos sugeridos:** `GAR-DESK-AAA`, `GAR-MOB-BUILD`, `GAR-MOB-WS`, `GAR-CLI-CHAT`.
 
@@ -1384,6 +1418,8 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 9. **Fase 4.1 — Desktop follow-ups**: DMG notarizado, AppImage aarch64, chave de assinatura + `latest.json` do auto-updater (`docs/releasing.md`).
 
+9. **Fase 4.5 — Garra Mobile Local (ADR 0016)**: v0 entregue na v0.3.6 (asset android + branch Termux no installer + `garra doctor` + `llamacpp`); validar fim-a-fim em aparelho real; então a v1 (companion Kotlin/Compose via RUN_COMMAND).
+
 10. **Fase 5.1 — hardening pendente**: CORS, HSTS, auth por padrão na API local, passthrough da feature `tls` no binário `garraia`.
 
 Trilhas paralelas disponíveis para um segundo dev/agente:
@@ -1398,5 +1434,5 @@ Trilhas paralelas disponíveis para um segundo dev/agente:
 - `deep-research-report.md` — Arquitetura Group Workspace (base da Fase 3).
 - `CLAUDE.md` — Convenções de código e protocolo de sessão.
 - `.garra-estado.md` — handoff da sessão anterior gerado por `garra max-power` (gitignored; ausente em clone novo — use `TODO.md`).
-- `docs/adr/` — 15 ADRs (0001-0015), todas Accepted; índice em `docs/adr/README.md`.
+- `docs/adr/` — 16 ADRs (0001-0016), todas Accepted; índice em `docs/adr/README.md`.
 - OWASP ASVS L2, LGPD arts. 46-49, GDPR arts. 25/32/33, OpenTelemetry spec, RFC 9457 Problem Details, RFC 8446 TLS 1.3, RFC 9106 Argon2.
