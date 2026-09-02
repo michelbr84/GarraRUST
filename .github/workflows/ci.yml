@@ -115,7 +115,7 @@ jobs:
         run: shellcheck tests/install_sh/fixtures/garraia-stub.sh
 
       - name: Run shellcheck on installer unit tests
-        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh tests/install_sh/documented_urls.sh
+        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh tests/install_sh/documented_urls.sh tests/install_sh/detect_platform.sh
 
       - name: Syntax-check the bash test runners
         run: |
@@ -123,6 +123,7 @@ jobs:
           bash -n tests/install_sh/check_glibc.sh
           bash -n tests/install_sh/parse_args.sh
           bash -n tests/install_sh/documented_urls.sh
+          bash -n tests/install_sh/detect_platform.sh
 
       - name: Execute installer bootstrap_phase tests
         run: bash tests/install_sh/bootstrap_phase.sh
@@ -151,6 +152,12 @@ jobs:
       # duas nao podem divergir.
       - name: Execute installer documented-URL tests
         run: bash tests/install_sh/documented_urls.sh
+
+      # Contrato da detecção Android/Termux (Garra Mobile Fase 0, ADR 0016):
+      # uname reporta Linux dentro do Termux, então sem o ramo dedicado o
+      # installer baixaria o asset glibc e morreria no loader.
+      - name: Execute installer detect-platform tests
+        run: bash tests/install_sh/detect_platform.sh
 
   # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
   # entry point, so it gets the same treatment: a blocking lint plus unit tests

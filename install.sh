@@ -27,6 +27,12 @@
 #   GARRAIA_INSTALL_DIR     Override install directory. Must NOT be a
 #                           system path (/bin, /sbin, /usr/bin, /usr/sbin, /etc).
 #
+# Android (Termux): when run inside Termux ($TERMUX_VERSION set, or a
+# *com.termux* $PREFIX), the installer picks the garraia-android-aarch64
+# asset (bionic, built by release.yml's build-android-arm64 job) and
+# installs to $PREFIX/bin — no sudo on Android. Requires official Termux
+# builds (F-Droid/GitHub). See docs/adr/0016.
+#
 #   GARRAIA_SKIP_INIT=1     Skip the auto-run of `garraia init`.
 #   GARRAIA_SKIP_START=1    Skip the auto-run of `garraia start`.
 #                           Both set together → installer prints next-steps
@@ -181,11 +187,28 @@ detect_platform() {
     OS="$(uname -s)"
     ARCH="$(uname -m)"
 
-    case "${OS}" in
-        Linux)  OS_NAME="linux" ;;
-        Darwin) OS_NAME="macos" ;;
-        *)      error "Unsupported OS: ${OS}. Only Linux and macOS are supported." ;;
+    # Termux tem precedência sobre o uname: o Android reporta `uname -s` =
+    # Linux, e sem este ramo o installer baixaria o asset glibc linux e
+    # morreria no loader. $TERMUX_VERSION é exportado por todo shell do
+    # Termux; o case em $PREFIX cobre ambientes em que só o prefixo sobrevive
+    # (su, alguns forks). Fora do Termux o fluxo linux/macos é o de sempre.
+    OS_IS_TERMUX=0
+    if [ -n "${TERMUX_VERSION:-}" ]; then
+        OS_IS_TERMUX=1
+    fi
+    case "${PREFIX:-}" in
+        *com.termux*) OS_IS_TERMUX=1 ;;
     esac
+
+    if [ "${OS_IS_TERMUX}" -eq 1 ]; then
+        OS_NAME="android"
+    else
+        case "${OS}" in
+            Linux)  OS_NAME="linux" ;;
+            Darwin) OS_NAME="macos" ;;
+            *)      error "Unsupported OS: ${OS}. Only Linux, macOS and Android (Termux) are supported." ;;
+        esac
+    fi
 
     case "${ARCH}" in
         x86_64|amd64)  ARCH_NAME="x86_64" ;;
@@ -193,9 +216,9 @@ detect_platform() {
         *)             error "Unsupported architecture: ${ARCH}" ;;
     esac
 
-    # release.yml emits `garraia-{linux,macos}-aarch64` from v0.2.1 onwards
-    # (aligned with `std::env::consts::ARCH` consumed by garraia-cli's
-    # update command). No remapping needed.
+    # release.yml emits `garraia-{linux,macos,android}-aarch64` from v0.2.1
+    # onwards (aligned with `std::env::consts::OS`/`ARCH` consumed by
+    # garraia-cli's update command). No remapping needed.
     ARTIFACT="${BINARY}-${OS_NAME}-${ARCH_NAME}"
     echo "Detected platform: ${OS_NAME}-${ARCH_NAME}"
 }
@@ -350,7 +373,9 @@ select_checksum_line() {
 }
 
 install_binary() {
-    # Priority: $GARRAIA_INSTALL_DIR > ~/.local/bin (if in PATH) > /usr/local/bin
+    # Priority:
+    #   Android/Termux: $GARRAIA_INSTALL_DIR > $PREFIX/bin
+    #   Other OS:       $GARRAIA_INSTALL_DIR > ~/.local/bin (if in PATH) > /usr/local/bin
     if [ -n "${GARRAIA_INSTALL_DIR:-}" ]; then
         case "${GARRAIA_INSTALL_DIR}" in
             /bin*|/sbin*|/usr/bin*|/usr/sbin*|/etc*)
@@ -358,6 +383,11 @@ install_binary() {
                 ;;
         esac
         INSTALL_DIR="${GARRAIA_INSTALL_DIR}"
+    elif [ "${OS_NAME:-}" = "android" ]; then
+        # Termux: $PREFIX/bin está no PATH, é gravável sem root e é onde os
+        # pacotes do Termux instalam. /usr/local/bin seria criado FORA do
+        # PATH (o rootfs do Termux é gravável) — uma armadilha silenciosa.
+        INSTALL_DIR="${PREFIX}/bin"
     elif echo "${PATH}" | tr ':' '\n' | grep -qx "${HOME}/.local/bin"; then
         INSTALL_DIR="${HOME}/.local/bin"
     else
@@ -425,6 +455,7 @@ bootstrap_phase() {
         echo "Starting GarraIA in the foreground. Press Ctrl+C to stop."
         echo "  To run later in background: garraia start -d"
         echo "  Either way, 'garraia status' and 'garraia stop' manage the process."
+        print_termux_notice
         exec "${INSTALL_PATH}" start </dev/tty
     fi
 
@@ -436,6 +467,20 @@ print_next_steps_legacy() {
     echo "Next steps:"
     echo "  garraia init    # interactive setup wizard"
     echo "  garraia start   # start the gateway"
+    print_termux_notice
+}
+
+# Android-only advisory (Garra Mobile Fase 0, ADR 0016): o Android mata
+# processos de longa duração em background (phantom process killer) e
+# congela apps agressivamente por bateria. O gateway funciona melhor no
+# foreground da sessão Termux em que foi iniciado.
+print_termux_notice() {
+    [ "${OS_NAME:-}" = "android" ] || return 0
+    echo ""
+    echo "Termux: Android may kill background processes (phantom process"
+    echo "  killer, battery optimization). If the gateway dies in background,"
+    echo "  keep the Termux session open, run 'termux-wake-lock' and disable"
+    echo "  battery optimization for Termux."
 }
 
 error() {
