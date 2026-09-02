@@ -1,6 +1,10 @@
 # Dependabot configuration — see GAR-590.
-# Tracks: cargo workspace (root), npm test deps (tests/), GitHub Actions, Dockerfiles, and docker-compose.
+# Tracks: cargo workspace (root), npm test deps (tests/), GitHub Actions, and
+# the root Dockerfile.
 # Out of scope: pub (Flutter, no Dependabot support), pip (services/voice, deferred).
+# docker + docker-compose em /deploy/docker foram REMOVIDOS em 2026-09-02:
+# o diretório nunca existiu neste repo (layout do repo privado) e as duas
+# entradas falhavam todo run com dependency_file_not_found (runs #282/#283).
 version: 2
 updates:
   - package-ecosystem: "cargo"
@@ -49,18 +53,6 @@ updates:
 
   - package-ecosystem: "docker"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-
-  - package-ecosystem: "docker"
-    directory: "/deploy/docker"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-
-  - package-ecosystem: "docker-compose"
-    directory: "/deploy/docker"
     schedule:
       interval: "weekly"
       day: "monday"
