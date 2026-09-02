@@ -12,6 +12,42 @@ curtos para a próxima sessão autônoma.
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
+## Concluído em 2026-09-02 (Fase 0 Garra Mobile + fix Dependabot Updates)
+
+- **Fix dos runs falhando do Dependabot Updates (#281-283)**: entradas
+  `docker`/`docker-compose` apontando para `/deploy/docker` (que nunca
+  existiu no repo público — layout do privado) removidas do
+  `.github/dependabot.yml`; bumps `futures 0.3.34` + `toml 1.1.5`
+  pré-aplicados à mão para contornar o bug upstream dependabot-core
+  [#12487](https://github.com/dependabot/dependabot-core/pull/12487)
+  (VersionResolver vs LockfileUpdater em workspaces).
+- **Fase 0 Garra Mobile Local ([ADR 0016](docs/adr/0016-mobile-termux-local-first.md))**
+  na v0.3.6: job `build-android-arm64` no `release.yml` (bionic
+  `aarch64-linux-android` via cargo-ndk; openssl vendido; asset
+  `garraia-android-aarch64` aditivo, regra 15); branch Termux no
+  `install.sh` + suíte `tests/install_sh/detect_platform.sh`; braço
+  `("android", "aarch64")` no `garra update`; `garra doctor` novo
+  subcomando (sysexits 0/2/65, `--json`/`--strict`, probe SSRF-vetado);
+  `llamacpp` keyless wired no CLI (chat/ask/set-model) e no bootstrap do
+  gateway (lockstep `provider_key_env`).
+- **Fix shellcheck herdado de #904**: a prosa "# shellcheck list of the
+  installer job" em `tests/install_sh/detect_platform.sh` era parseada
+  como diretiva (SC1073/SC1072) e derrubava o job Install.sh shellcheck
+  no `main` desde 2026-09-02T17:01Z.
+
+### Próximos passos (Fase 0 → v1)
+
+1. **Release v0.3.6** — validar o job `build-android-arm64` via
+   `workflow_dispatch` antes da tag; tag + GH release com o asset android +
+   `.sha256`; **publish manual do site na Lovable é passo do dono** (regra
+   17 — o merge não muda o que garraia.org serve).
+2. **Aparelho real** (dono): Termux → `curl install.sh | bash` →
+   `garraia doctor` → `garraia chat` na cloud/LAN; depois da tag,
+   `garraia update` dentro do Termux.
+3. **v1 — companion Kotlin/Compose** (ADR 0016): RUN_COMMAND +
+   `allow-external-apps`, cap 100KB no PENDING_INTENT, detecção do fork
+   Play, foreground service.
+
 ## Concluído em 2026-09-02 (auditoria docs ↔ código)
 
 - **Reconciliação de `README.md`, `ROADMAP.md` e `TODO.md` com `main@v0.3.5`**:
