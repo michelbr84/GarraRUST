@@ -5,17 +5,79 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-08-31 (America/New_York)
+**Atualizado:** 2026-09-02 (America/New_York)
 
-## Concluído nesta sessão (2026-08-31 — release v0.3.4 + pacotes Linux + Windows ARM64)
+> O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
+> interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
+> históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
+> permanecem como identificadores históricos.
 
-- **Release v0.3.4 preparada** (plan 0361, ADR 0015): `[Unreleased]` fundido na
+## Concluído em 2026-09-02 (auditoria docs ↔ código)
+
+- **Reconciliação de `README.md`, `ROADMAP.md` e `TODO.md` com `main@v0.3.5`**:
+  662 afirmações verificadas contra código, CI e API do GitHub; 300 corrigidas.
+  Destaques: MSRV 1.94 → 1.95 no badge/Quick Start; `--features tls` não existe
+  no binário (documentado `cargo build -p garraia --features garraia-gateway/tls`);
+  bloco `embeddings:`/`memory.auto_extract` reescrito na forma real do
+  `AppConfig`; transports MCP aceitos no `config.yml` (`stdio`/`http`);
+  matriz de assets ganha os bundles do Garra Desktop; `POST /v1/messages` +
+  `garra agents setup` (plan 0360 / ADR 0014) documentados pela primeira vez;
+  contagens unificadas (22 crates, 33 migrations, 37 tabelas, 32 sob FORCE RLS,
+  6 binários CLI, wasmtime 48). ROADMAP: ~50 checkboxes `[ ]` já entregues
+  marcados com evidência; contradições GAR-410 / GAR-603 / GAR-641 (9/10)
+  resolvidas; §7 e cabeçalho atualizados; nova §4.4 (canais sem wiring).
+- **Docs irmãos sincronizados** no mesmo PR: `README.pt-BR.md`, `CLAUDE.md`,
+  `CHANGELOG.md` ([0.3.4] e [0.3.5] completados), `docs/installation.md`
+  (MSRV + receita Docker que fazia `ENTRYPOINT ["garraia"]` de um binário
+  `garra`), `docs/configuration.md`/`docs/memory.md`/`docs/hardening-gateway.md`
+  (chaves inventadas `auto_extract`/`extraction_interval`/`max_facts`,
+  `--features tls`), `CONTRIBUTING.md` (MSRV, links `linear.app`),
+  `plans/README.md` (linha 0362; 0358 mergeado; 0022-0024 reapontados),
+  `docs/adr/README.md` (data do 0009), `.github/dependabot.yml` (comentário
+  MSRV).
+
+## Concluído em 2026-09-01 (release v0.3.5 — Garra Desktop Linux + Chat Bar)
+
+- **Release v0.3.5 publicada** (plan 0362, Amendment 2026-09-01 do ADR 0015):
+  Release run #13 via `workflow_dispatch` com os 10 jobs verdes (incl. os
+  best-effort `package-linux`, `build-linux-desktop`, `build-windows-aarch64`,
+  `build-windows-installer`), Deploy #12 manual e `install-endpoints.yml` #7
+  verde no mesmo dia. 47 assets, incluindo
+  `garraia-desktop-linux-x86_64.{deb,AppImage}`.
+- **Garra Desktop para Linux** (`.deb` + AppImage x86_64 via bundler Tauri):
+  job best-effort `build-linux-desktop` no `release.yml` + gate
+  `build-linux-bundles` no `desktop.yml`, `scripts/build-desktop-linux.sh`
+  (irmão do `build-installer.ps1`). O `.deb` declara
+  `Provides/Conflicts/Replaces: garraia` porque instala o sidecar em
+  `/usr/bin/garraia`. Docs em `docs/installation.md` §"Garra Desktop on Linux".
+  Antes disso, quem baixava o AppImage esperando o papagaio recebia a CLI.
+- **Garra Chat Bar**: barra flutuante (`chat_bar.rs`, `ui/chat-bar.html`)
+  substitui o quick-chat (`quick_chat.rs`/`quick-chat.html` removidos);
+  `Ctrl+Space`, item da bandeja, posição/visibilidade persistidas em
+  `chat-bar.json`; cliente WebSocket compartilhado em `ui/ws.js`. Uma única
+  sessão `parrot-desktop` com o papagaio.
+- **Streaming no `/ws/parrot`**: frames `{"type":"chunk"}` por delta + o
+  `{"type":"response"}` final autoritativo (`parrot_ws.rs`).
+- **Papagaio visível de novo**: `ui/assets/parrot-sprite.png` estava no
+  `.gitignore` (todo MSI da v0.3.4 embarcava um overlay transparente que ainda
+  comia cliques); commitado + job `assert-ui-assets` no CI.
+- **Deps de segurança**: argon2 0.6 + pbkdf2 0.13 + password-hash 0.6.1 em
+  `garraia-auth` (GAR-669 slice 3, fecha o Dependabot #430; registrado em
+  `docs/security/dependabot-status.md`).
+- **Fixes menores**: `.deb` da CLI volta a carregar LICENSE/README (#897);
+  `install-endpoints.yml` sobrevive a errexit e imprime o código HTTP (#892);
+  `tests/install_ps1/platform.ps1` em ASCII puro para o PSScriptAnalyzer;
+  `set -euo pipefail` no `Get version` do `package-linux`; bumps do dependabot
+  (#894/#895).
+
+## Concluído em 2026-08-31 (release v0.3.4 + pacotes Linux + Windows ARM64)
+
+- **Release v0.3.4 publicada** (plan 0361, ADR 0015): `[Unreleased]` fundido na
   seção `[0.3.4]` do CHANGELOG (data 2026-08-31). Primeira release a exercitar
-  a matriz do plan 0359 (archives, MSI/NSIS, `install.ps1` — a sonda
-  `release-cdn/install.ps1` do `install-endpoints.yml` fica verde com ela).
-  Publicação: `workflow_dispatch` do Release com `version=v0.3.4` + dispatch
-  manual do Deploy (tag via `GITHUB_TOKEN` não dispara workflows de tag-push —
-  documentado no runbook §2/§4).
+  a matriz do plan 0359 (archives, MSI/NSIS, `install.ps1`); 43 assets.
+  Publicação: Release #12 via `workflow_dispatch` (`version=v0.3.4`) + Deploy
+  #11 manual (tag via `GITHUB_TOKEN` não dispara workflows de tag-push —
+  documentado no runbook §2/§4); `install-endpoints.yml` #6 verde em seguida.
 - **Pacotes Linux `.deb`/`.rpm`/AppImage** no novo job best-effort
   `package-linux` do `release.yml`: nfpm 2.47.0 + appimagetool 1.9.1, ambos
   pinados por versão + SHA-256; empacotam os binários já buildados
@@ -40,30 +102,62 @@ curtos para a próxima sessão autônoma.
   (lista aditiva ganha `.deb`/`.rpm`/`.AppImage`); typo do ADR 0014 (plan
   0360, não 0361) corrigido.
 
+## Concluído em 2026-08-27..30 (v0.3.3 + plans 0355-0360)
+
+- **Release v0.3.3** (2026-08-27): primeira com `install.sh` como asset de
+  release (13 assets: 5 binários crus + `install.sh` + `SHA256SUMS`).
+- **wasmtime 47 → 48 + MSRV 1.94 → 1.95** (PR #865, 2026-08-28): migra a API
+  WASI; `ci.yml` ganha o job `MSRV check (1.95)`. *(Badges e docs seguiram em
+  1.94 até 2026-09-02.)*
+- **sqlx 0.9** (PR #868): `SqlSafeStr` enforçado pelo compilador;
+  `AssertSqlSafe` só em alvos de teste (regra 5 do CLAUDE.md).
+- **Guard SSRF centralizado** em `garraia_common::ssrf` (`vet_url` +
+  `pinned_client`; PRs #869/#883/#889; regra 14 do CLAUDE.md).
+- **`garra chat`**: spinner de atividade + `Ctrl+C` cancela o turno em vez de
+  matar o processo (PR #884); default Ollama `qwen3.8:latest` (plan 0357).
+- **ADR 0013** (plan 0355): motor de recorrência RFC 5545 em
+  `garraia-workspace::recurrence` + `tasks_recurrence_worker` (migration 033)
+  e lifecycle dos servidores MCP.
+- **Interop Hermes ↔ Garra via MCP** (PR #859); workflow
+  `codeql-apply-dismissals` (PR #871); `wiki/` sincronizado com o GitHub Wiki
+  (`wiki-sync.yml`); lopdf 0.44 (plan 0356) e rmcp 1.7 → 2.2 (plan 0358, PR
+  #876) destravados em 2026-08-29.
+- **`garra agents setup|status|link|rollback|web`** (plan 0360, front-end do
+  AgentDeck para provisionar GarraIA/OpenClaw/Hermes/Claude Code com um mesmo
+  provedor+modelo) + **shim Anthropic-compatible `POST /v1/messages`**
+  (ADR 0014, 2026-08-30) para o Claude Code apontar para o gateway. *(Ficou fora
+  do README/ROADMAP/CHANGELOG até 2026-09-02.)*
+- **`install.ps1`** (`irm | iex`) + archives `.tar.gz`/`.zip` + MSI/NSIS via
+  `build-installer.ps1` (plan 0359, PR #878, 2026-08-30).
+
 ## Concluído em 2026-08-18 (cleanup total + v0.3.1/v0.3.2)
 
 - **Repo zerado e verificado**: 0 issues abertas, 0 PRs abertos, só a branch
-  `main`. Trigger `garra-routine-trigger.yml` **desativado** (`gh workflow
-  disable`, reversível) — era ele que mantinha 1 issue de tracking rolante.
+  `main` (ainda verdadeiro em 2026-09-02). Trigger `garra-routine-trigger.yml`
+  **desativado** no GitHub (`gh workflow disable`, reversível; o arquivo ainda
+  tem o `schedule` — o estado vive só no GitHub) — era ele que mantinha 1 issue
+  de tracking rolante.
 - **Linear descontinuado**: planejamento interno migrou para o tracker interno.
-  README/ROADMAP/CLAUDE.md/docs atualizados (links mortos removidos; IDs
-  `GAR-xxx` preservados como histórico).
+  README/ROADMAP/CLAUDE.md atualizados (links mortos removidos dos docs de topo;
+  `plans/README.md` e `docs/adr/README.md` mantêm as URLs antigas como índice
+  histórico; IDs `GAR-xxx` preservados).
 - **Fix crítico LGPD** (plan 0354, PR #843): `POST /v1/me/anonymize` retornava
   **500 em toda chamada** desde junho (coluna fantasma `user_identities.login`
   portada do repo interno sem o schema — regra 14). Agora anonimiza
   `provider_sub` + `users.email` + `group_invites.invited_email` com token
   determinístico de UUID completo. Revisado por security-auditor +
   code-reviewer. Era a causa do cargo-mutants vermelho desde 2026-04-28.
-- **Gap estrutural de CI fechado** (PR #843): job `auth-integration` roda os 16
+- **Gap estrutural de CI fechado** (PR #843): job `auth-integration` roda os 15
   binários de integração do garraia-auth (matriz RLS 81 cenários) em todo PR —
   antes o `cargo test --workspace` os pulava silenciosamente
   (`required-features`). Promover a required check: tracker interno #164.
 - **Deps consolidadas** (PR #844): jsonwebtoken 11, validator 0.21, base64
   0.23, serial_test 4, itertools 0.15, uuid/tauri, e **wasmtime 47 em par**
-  (grupo dependabot novo evita o par quebrado). lopdf destravado em 2026-08-29
-  (0.42→0.44 com a feature `time` off, plan 0356) e **rmcp destravado no
-  mesmo dia** (1.7→2.2, `ContentBlock`, plan 0358) — do #163 resta só o salto
-  3.x. h2 0.4.16 (RUSTSEC-2026-0258).
+  (grupo dependabot novo evita o par quebrado; 47 → 48 + MSRV 1.95 vieram no
+  PR #865 em 2026-08-28). lopdf destravado em 2026-08-29 (0.42→0.44 com a
+  feature `time` off, plan 0356) e **rmcp destravado no mesmo dia** (1.7→2.2,
+  `ContentBlock`, plan 0358) — do #163 resta só o salto 3.x. h2 0.4.16
+  (RUSTSEC-2026-0258).
 - **CI higiene** (PR #842): `timeout-minutes` em e2e/playwright (2 runs de 6h
   presos no download do Chromium em 2026-08-17), `Cross.toml` para o build
   ARM64.
@@ -74,7 +168,12 @@ curtos para a próxima sessão autônoma.
   por release asset + jsDelivr (#826); RUSTSEC do `lru` migrado para o tracker
   interno #162 (re-triage ≤ 2026-11-14).
 
-## Concluído em 2026-06-10
+## Histórico (maio–junho 2026, sessões `garra-routine`)
+
+Registro das entregas das sessões autônomas anteriores. Todos os PRs abaixo
+foram mergeados (ver `plans/README.md` para hash e data de cada um).
+
+### 2026-06-10
 
 - GAR-835 / plan 0297 — Docs Tier 2 scaffold: migration 026 + POST/GET /v1/groups/{group_id}/doc-pages:
   - Migration `026_doc_pages.sql`: `doc_pages` table with FORCE RLS, NULLIF fail-closed group
@@ -87,9 +186,8 @@ curtos para a próxima sessão autônoma.
   - `openapi.rs`: paths + schemas registered.
   - ROADMAP §3.8 Tier 2: `doc_pages` schema + 2 API endpoints marked ✅.
   - PR #706 squash-merged 2026-06-10 (`54f88bc`) — 20/20 CI green.
-  - GAR-835 → Done in Linear.
 
-## Concluído em sessões anteriores
+### 2026-06-05..06
 
 - GAR-806 / plan 0269 — GET /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
   - `get_task_comment` handler in `comments.rs`: validates group_id, TasksRead check,
@@ -101,8 +199,7 @@ curtos para a próxima sessão autônoma.
   - 6 unit tests: serializes all fields, nil author_user_id → null, nil edited_at → null,
     edited_at UTC ISO-8601 Z, nil UUID round-trip, task_id preserved.
   - `cargo clippy --workspace` clean (0 warnings). 12 total comments tests pass.
-  - Branch: `routine/202506061830-get-task-comment`.
-
+  - Branch `routine/202506061830-get-task-comment`; squash-merged PR #655 (`760dfd8`) 2026-06-06.
 
 - GAR-800 / plan 0266 — PATCH /v1/groups/{group_id}/task-labels/{label_id}:
   - `PatchTaskLabelRequest { name, color }` + `patch_task_label` handler in `labels.rs`.
@@ -112,7 +209,7 @@ curtos para a próxima sessão autônoma.
   - OpenAPI: `super::tasks::labels::patch_task_label` path + `PatchTaskLabelRequest` schema.
   - 6 unit tests: name-only / color-only / both-absent roundtrip, hex valid/invalid, response nil-UUID.
   - `cargo clippy --workspace` clean; 634 unit tests pass. Branch: `routine/202506060020-task-label-patch`.
-  - PR pending CI.
+  - Merged PR #649 (`28d052a`).
 
 - GAR-798 / plan 0265 — GET /v1/threads/{thread_id}:
   - `get_thread` handler in `chats.rs` (before `patch_thread`): validates group_id, ChatsRead check,
@@ -124,9 +221,9 @@ curtos para a próxima sessão autônoma.
   - 6 unit tests: serializes all fields, nil title → null, nil created_by → null,
     unresolved → null resolved_at, resolved → UTC ISO-8601 Z timestamp, nil UUID round-trip.
   - `cargo clippy --workspace` clean (0 warnings). Branch: `routine/202506051820-get-thread`.
-  - PR pending CI.
+  - Merged PR #646 (`7913904`).
 
-- PR #643 (docs/mark-plan-0263-merged) — merged (20/20 CI green); GAR-794 → Done in Linear.
+- PR #643 (docs/mark-plan-0263-merged) — merged (20/20 CI green); GAR-794 fechado.
 
 - GAR-795 / plan 0264 — PATCH /v1/groups/{group_id}/tasks/{task_id}/comments/{comment_id}:
   - `TaskCommentEdited` variant added to `WorkspaceAuditAction` in `garraia-auth`.
@@ -137,7 +234,6 @@ curtos para a próxima sessão autônoma.
   - 6 unit tests pass. `cargo clippy --workspace` green (622+6 tests, 0 warnings).
   - Closes CRUD gap: POST/GET/DELETE were GAR-520; PATCH was missing.
   - Squash-merged PR #644 (`6974812`) 2026-06-05 — 20/20 CI green.
-  - GAR-795 → Done in Linear.
 
 - GAR-794 / plan 0263 — POST /v1/me/invites/{invite_id}/accept:
   - `accept_my_invite` handler in `me.rs`: UUID-based authenticated accept.
@@ -148,12 +244,10 @@ curtos para a próxima sessão autônoma.
   - 6 unit tests covering: serialization, no-PII fields, role variants, nil UUID round-trip, PendingInviteSummary excludes accepted_at, exactly-3-fields shape.
   - Completes the invite lifecycle: list (GAR-777) → accept (GAR-794) / decline (GAR-783); token-based accept (plan 0019) unchanged.
 
-## Concluído em sessões anteriores
+### 2026-06-02..03
 
 - GAR-777 / plan 0255 — GET /v1/me/invites (caller-scoped pending group invites inbox):
-  - Merged PR #621 (`762d63c`) after CI went 20/20 green.
-  - GAR-777 → Done in Linear.
-  - Bookkeeping PR #624 (docs/mark-plan-0255-merged) open, CI running.
+  - Merged PR #621 (`762d63c`) after CI went 20/20 green; bookkeeping PR #624 (docs/mark-plan-0255-merged) merged.
 
 - GAR-780 / plan 0257 — GET + DELETE /v1/groups/{id}/invites/{invite_id} (invite revocation):
   - Migration 024: `revoked_at` + `revoked_by` columns on `group_invites`; recreated partial unique index to exclude revoked rows (enables re-invite after revocation).
@@ -163,12 +257,9 @@ curtos para a próxima sessão autônoma.
   - `revoke_invite` handler: `UPDATE SET revoked_at = now()`, emits `InviteRevoked` audit event, 204 No Content (404 if already accepted/revoked).
   - Routes in all 3 `mod.rs` branches. OpenAPI paths + schemas (`InviteSummary`, `ListInvitesResponse`).
   - 5 unit tests (serialization, cursor, role round-trip, no `revoked_at` in response).
-  - Squash-merged PR #625 (`46a8658`) 2026-06-03 — 20/20 CI green.
-  - GAR-780 → Done in Linear.
-  - Bookkeeping PR (docs/mark-plan-0257-merged) open.
+  - Squash-merged PR #625 (`46a8658`) 2026-06-03 — 20/20 CI green; bookkeeping PR (docs/mark-plan-0257-merged) merged.
 
-## Concluído em sessões anteriores
-
+### 2026-05-31..06-01
 
 - GAR-767 / plan 0246 — GET /v1/me/files (caller-scoped uploaded-files inbox):
   - `ListMyFilesQuery` struct with `group_id` (required), `after`, `limit`, `folder_id` (optional).
@@ -178,7 +269,7 @@ curtos para a próxima sessão autônoma.
   - Route `.route("/v1/me/files", get(me::list_my_files))` registered in all 3 `mod.rs` branches.
   - OpenAPI annotation + component registration in `openapi.rs`.
   - 8 new unit tests (serialization, limit clamp, folder filter, cursor, large size).
-  - Branch: `routine/202506010015-me-files-inbox`. GAR-767 In Progress → Done pending CI.
+  - Branch `routine/202506010015-me-files-inbox`; merged 2026-06-01 via PR #603.
 
 - GAR-765 / plan 0245 — GET /v1/me/chats (caller-scoped chat membership inbox):
   - `ListMyChatsQuery` struct with `group_id` (required), `after`, `limit`, `type` (optional).
@@ -188,10 +279,9 @@ curtos para a próxima sessão autônoma.
   - Route `.route("/v1/me/chats", get(me::list_my_chats))` registered in `mod.rs`.
   - OpenAPI annotation + component registration in `openapi.rs`.
   - 8 new unit tests (serialization, type filter validation, cursor, muted/last_read_at).
-  - All CI checks expected green (no migration, additive handler only).
-  - Branch: `routine/202605311818-me-chats-inbox`. GAR-765 In Progress → Done.
+  - Branch `routine/202605311818-me-chats-inbox`; merged 2026-05-31 via PR #601 (`2bf1f5b`).
 
-## Concluído em sessões anteriores
+### 2026-05-25..29
 
 - GAR-733 / plan 0215 — Search slice 14 (`types=groups` group name FTS):
   - `SearchResultType::Group` variant; `include_groups: bool` in `ValidatedSearch`.
@@ -199,7 +289,7 @@ curtos para a próxima sessão autônoma.
   - `GroupSearchRow` struct + `fetch_groups()` async (runtime `to_tsvector('simple', g.name)`).
   - Handler block: `if validated.include_groups { ... }` mapping to `SearchResult`.
   - 6 unit tests (scope guards + multi-type combos). No migration needed — FORCE RLS migration 018.
-  - PR #561 squash-merged 2026-05-29 (`1bb2f10`). GAR-733 Done in Linear.
+  - PR #561 squash-merged 2026-05-29 (`1bb2f10`).
 
 - GAR-705 / plan 0187 — Health run 30: all surfaces clean, priority (i). PR #508 squash-merged (`ef040ad`).
 
@@ -210,8 +300,6 @@ curtos para a próxima sessão autônoma.
     asserts `Err(UnknownHashFormat)` + 1 audit row committed + ip populated.
   - Total: 11 integration tests (was 10). Tests-only PR, no production code changes.
   - PR #509 squash-merged (`a1b0fdd`).
-
-## Concluído em sessões anteriores
 
 - GAR-702 / plan 0184 — Health run 28: all surfaces clean, priority (i). PR #504 squash-merged.
 
@@ -233,7 +321,7 @@ curtos para a próxima sessão autônoma.
     quando `types` não inclui `messages`), predicado SQL EXISTS-equality trick.
   - Tests: 5 unit tests novos (slice 4 block), S18/S19/S20 integration scenarios.
   - ROADMAP.md + plans/README.md + TODO.md atualizados.
-  - Branch: `routine/202605250015-search-has-attachment`, PR em revisão.
+  - Branch: `routine/202605250015-search-has-attachment`; merged 2026-05-25 via PR #498 (`be8c880`).
 
 ## Parcialmente concluído
 
@@ -242,80 +330,124 @@ curtos para a próxima sessão autônoma.
     container bindando `0.0.0.0`, rotas `/ping` e `/health`, `PORT`/`HOST`,
     Dockerfile sem REPL, receita local Docker, settings Runpod e distinção
     queue-based vs Load Balancer.
-  - Pendente: smoke Docker local nesta sessão e smoke público
+  - Pendente: smoke Docker local e smoke público
     `https://<ENDPOINT_ID>.api.runpod.ai/ping`.
   - Pendente técnico: suporte a `PORT_HEALTH` separado quando a health port
     precisar diferir de `PORT`; hoje a documentação exige `PORT_HEALTH=PORT`.
+- GAR-641 Garra Learning Agent (9/10): tudo entregue exceto GAR-646 Skill
+  Retriever — `retriever.rs` é stub que retorna erro até a Fase 2.1; o CLI
+  de override (`garra skills approve|lock|rollback|...`) e o módulo
+  `skill_override` também são stubs (só a Web UI faz isso hoje).
+- Desktop auto-updater: `tauri-plugin-updater` ligado (`check_for_updates`/
+  `install_update` na bandeja) mas inerte — sem chave de assinatura e nenhum
+  workflow publica `latest.json` (`docs/releasing.md` §Débito conhecido).
 
 ## Adiado com justificativa
 
-- GAR-372 / Fase 2.1 RAG embeddings: adiado porque a próxima entrega real
-  exige toolchain Rust e testes; o ambiente local desta sessão não tinha
-  `cargo`, `rustc` ou `rustfmt`.
+- GAR-372 / Fase 2.1 RAG embeddings: scaffold do crate `garraia-embeddings`
+  entregue (PR #396, 2026-05-18 — traits + `DeterministicProvider`); faltam o
+  `PgVectorStore` real (sqlx/pgvector sobre `memory_embeddings`), o
+  `MxbaiProvider` (candle, ADR 0001/0002) e o wiring em learning/agents.
+  Adiado por ser o maior slice aberto da Fase 2 e pré-requisito do GAR-646.
 - GAR-374 / Object storage S3-compatible validation: adiado por depender de
-  MinIO/S3/R2/GCS ou CI com serviço externo configurado.
-- GAR-410 / CredentialVault final: adiado por ser item crítico de segurança,
-  amplo e inadequado para alteração sem toolchain local e validação profunda.
-- GAR-504 / benchmark evidence run: adiado por depender de infra externa
-  (droplet/host dedicado).
+  MinIO/S3/R2/GCS ou CI com serviço externo configurado (o `S3Compatible`
+  existe atrás da feature `storage-s3`; nenhum job de CI exercita MinIO).
+- GAR-410 / CredentialVault final: adiado por ser item crítico de segurança e
+  amplo. O que já existe: leitura de secrets centralizada em
+  `garraia-config::auth` (plan 0046) e refactor do `admin/secrets.rs` (plan
+  0133). O que falta: gateway consumindo o cofre como fonte única, rotação de
+  chaves, master key via argon2id. (ROADMAP §1.1 dizia "mergeado em
+  2026-05-17" — corrigido para "parcial" em 2026-09-02.)
+- GAR-504 / benchmark evidence run: o run em VM x86_64 está versionado em
+  `benches/agent-framework-comparison/results/2026-08-28-vm/` e alimenta a
+  tabela do README; só o run de referência no droplet 1 vCPU / 1 GB segue
+  adiado por depender de infra externa.
 - Execução async/provider-backed das native skills GarraMaxPower: adiada para
   slice próprio após decidir o fechamento do épico GAR-492.
 
-## Novas pendências encontradas
+## Pendências abertas
 
-- O repositório não tinha `TODO.md`; manter este arquivo atualizado em toda
-  sessão autônoma daqui para frente.
-- O ambiente local tinha `git`, `node` e `rg`, mas não tinha `cargo`,
-  `rustc`, `rustfmt`, `gitleaks` ou `markdownlint`. Mudanças de runtime devem
-  esperar toolchain local ou depender explicitamente de CI no PR.
-- `ROADMAP.md` ainda contém vários itens antigos marcados como `[ ]` que podem
-  estar parcialmente entregues por PRs anteriores. Próxima limpeza deve
-  reconciliar apenas itens com evidência clara para evitar falsear status.
-- `GAR-492` está em In Review: decidir se fecha como MVP completo ou se mantém
-  aberto somente até abrir follow-ups separados.
+- `ROADMAP.md` continha dezenas de itens `[ ]` já entregues — reconciliado em
+  2026-09-02 apenas onde havia evidência clara (path:line). Itens sem evidência
+  ficaram `[ ]`.
+- Débitos de código encontrados na auditoria de 2026-09-02 (viram itens, não
+  patches na PR de docs):
+  - `sessions.db` cai em `~/.garraia/data/` (`crates/garraia-gateway/src/server.rs:232-241`)
+    enquanto `memory.db` e `memoria/fatos.json` usam o config dir XDG —
+    unificar via `ConfigLoader::default_config_dir()`.
+  - Feature `tls` sem passthrough no binário `garraia`
+    (`crates/garraia-cli/Cargo.toml`) — adicionar `tls = ["garraia-gateway/tls"]`
+    como já existe para `mcp-http`; até lá o README documenta
+    `--features garraia-gateway/tls`.
+  - `docker-compose.turboquant.yml` monta `docs/deployment/config.turboquant.yml`,
+    que não existe no repo.
+  - `benches/agent-framework-comparison/results/2026-08-28-vm/README.md:12`
+    cita checkout `ea06286` enquanto `environment.txt:44` registra `f34cbfa`.
+  - Comentário "16 binários" em `ci.yml:437` (são 15 arquivos em
+    `crates/garraia-auth/tests/`).
+  - `MemoryConfig` não tem `auto_extract`/`extraction_interval`/`max_facts`
+    (a extração roda em todo turno, sem knob) — as docs que prometiam essas
+    chaves foram corrigidas; decidir se viram configuração real.
+  - `.claude/commands/garra-routine.md` (linhas 2/16/44/79) ainda instrui
+    consultar o Linear.
+- `install-endpoints.yml:133-150`: remover o bloco de tolerância
+  `KNOWN_PRE_PS1_TAG="v0.3.3"` e o argumento extra do probe
+  `release-cdn/install.ps1` — o próprio workflow pede isso após a primeira
+  release ≥ v0.3.4 (v0.3.4 e v0.3.5 já publicam `install.ps1`).
+- `GAR-492`: decidir no tracker interno se o épico fecha como MVP completo ou
+  se abre follow-ups (execução provider-backed das native skills, dogfood em
+  bug real com relatório de review).
 
 ## Decisões tomadas
 
-- Não alterar runtime Rust nesta sessão: sem toolchain local, o caminho seguro
-  foi documentação, rastreabilidade e reconciliação de backlog.
-- Marcar GAR-603 como parcialmente concluído, não totalmente fechado: a
-  implementação/documentação está presente, mas falta prova operacional recente
-  em Docker e Runpod público.
-- Criar `TODO.md` como backlog operacional curto, evitando sobrecarregar
+- 2026-09-02: reconciliar docs com código **só** com evidência apontável;
+  manter as seções históricas de maio–junho como registro datado (com a nota
+  sobre o Linear no topo) em vez de apagá-las; bugs de código achados durante
+  a auditoria viram pendências aqui, não patches na PR de docs.
+- 2026-05-24: marcar GAR-603 como parcialmente concluído, não totalmente
+  fechado — a implementação/documentação está presente, mas falta prova
+  operacional recente em Docker e Runpod público.
+- 2026-05-24: criar `TODO.md` como backlog operacional, evitando sobrecarregar
   `ROADMAP.md` com detalhes de sessão.
 
 ## Próximos passos recomendados
 
-1. Conferir o cargo-mutants no próximo agendamento semanal (esperado **verde
-   pela primeira vez** após o fix do baseline no plan 0354).
-2. Promover `Auth Integration (test-support)` a required check do ruleset após
-   ~1 semana sem flakes (tracker interno #164).
-3. Retomar o salto **rmcp 2.2→3.x** quando houver janela (tracker interno
-   #163). O degrau 1.7→2.2 foi entregue em 2026-08-29 (plan 0358); o 3.x mantém
+1. Promover `Auth Integration (test-support)` a required check do ruleset
+   (tracker interno #164): sem flakes conhecidos e o `cargo-mutants` semanal
+   está verde desde 2026-08-24 (runs #21/#22) — manter o monitoramento.
+2. Retomar o salto **rmcp 2.2→3.x** quando houver janela (tracker interno
+   #163). `Cargo.lock` está em 2.2.0; o 3.x mantém
    `ContentBlock`/`Role`/`PromptMessage` e as features que usamos, mas adiciona
    módulos novos (`mrtr`, `request_state`, `service/client/`, `mcp_headers`)
    ainda não auditados. O `@dependabot ignore` de rmcp foi aplicado por
-   comentário em PR, não pelo `.github/dependabot.yml` — mergear o 2.2 **não** o
-   limpa sozinho. lopdf 0.44 entregue em 2026-08-29 (plan 0356) — a feature
-   `time` fica desligada até um release > 0.44.0 trazer o fix do upstream #518.
-4. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14
-   (tracker interno #162).
-5. Ajustar a skill `garra-routine` (`.claude/commands/garra-routine.md`), que
-   ainda instrui consultar o Linear.
-6. Rodar smoke Docker GAR-603:
+   comentário em PR, não pelo `.github/dependabot.yml`. lopdf fica em 0.44 com a
+   feature `time` desligada até um release > 0.44.0 trazer o fix do upstream
+   #518.
+3. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14 —
+   o ignore em `deny.toml`/`.cargo/audit.toml` expira em 2026-11-15 e ainda
+   cita o owner antigo (`#812 / GAR-896`; hoje tracker interno #162).
+4. Limpar o bloco `KNOWN_PRE_PS1_TAG` do `install-endpoints.yml` (ver
+   Pendências) e ajustar `.claude/commands/garra-routine.md` para o tracker
+   interno.
+5. Desktop (ROADMAP §4.1): chave de assinatura + `latest.json` para o
+   `tauri-plugin-updater`; DMG notarizado; AppImage aarch64
+   (`--runtime-file` + segundo pin de runtime).
+6. Fase 2.1 (GAR-372 → GAR-646): `PgVectorStore` + `MxbaiProvider` + wiring do
+   Skill Retriever — único item aberto do épico GAR-641.
+7. Débitos de código da auditoria (ver Pendências): começar por
+   `sessions.db` no config dir e pelo passthrough `tls` no binário — ambos
+   pequenos e com docs já apontando para o comportamento esperado.
+8. Rodar smoke Docker GAR-603:
    `docker build -t garraia:local .`,
    `docker run --rm -p 3888:3888 garraia:local`,
    `curl -fsS http://localhost:3888/ping`,
-   `curl -fsS http://localhost:3888/health`.
-7. Rodar smoke público Runpod quando houver endpoint disponível:
-   `curl -fsS https://<ENDPOINT_ID>.api.runpod.ai/ping`.
-8. Abrir follow-up para `PORT_HEALTH` separado somente se Runpod exigir health
-   listener distinto de `PORT`.
-9. Decidir destino de GAR-492: fechar épico como MVP completo ou abrir issues
-   separadas para dogfood em bug real e execução async/provider-backed.
-10. Preparar ambiente local com Rust toolchain para permitir mudanças de código
-    mais ambiciosas nas próximas sessões.
-11. Pós-merge da v0.3.4: disparar o Release (`version=v0.3.4`), verificar os
-    assets (incl. aditividade dos 5 nomes crus da v0.3.3), disparar o Deploy
-    (`tag=v0.3.4`) e conferir o `install-endpoints.yml` do dia seguinte.
-    Follow-ups registrados: AppImage aarch64 e DMG notarizado (ROADMAP §4.1).
+   `curl -fsS http://localhost:3888/health`;
+   depois o smoke público Runpod `curl -fsS https://<ENDPOINT_ID>.api.runpod.ai/ping`
+   quando houver endpoint. Abrir follow-up para `PORT_HEALTH` separado só se o
+   Runpod exigir listener distinto de `PORT`.
+9. Decidir destino de GAR-492 (ver Pendências).
+10. A cada release, repetir o checklist de sincronia dos docs: versão, badge
+    MSRV, contagens (crates / migrations / tabelas / FORCE RLS / binários /
+    wasmtime), matriz de assets do `release.yml`, bloco novo aqui e no
+    cabeçalho do ROADMAP, `[Unreleased]` do CHANGELOG. Candidato a virar seção
+    do `docs/releasing.md`.
