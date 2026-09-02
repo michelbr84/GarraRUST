@@ -265,7 +265,12 @@ jobs:
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        # Pinado na 3.5.0: a partir da 4.x o `-p` passou a significar
+        # `--package` (seleção de pacote Cargo) e não mais `--platform`
+        # (API level Android) — na 4.1.2 o build do job morre em panic
+        # "unknown package: 21". Na 3.5.0, `-p/--platform <N>` é o API
+        # level que o comando abaixo espera.
+        run: cargo install cargo-ndk --locked --version 3.5.0
 
       - name: Build release
         # -p 21: platform/minSdkLevel 21 — baseline android do rustc e abaixo
