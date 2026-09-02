@@ -49,7 +49,8 @@ fn platform_asset_name() -> Result<&'static str> {
 /// `garraia-windows-aarch64.exe` exists from v0.3.4 onward; a native ARM64
 /// binary asking for it against an older release fails with "no asset for
 /// this platform", which is accurate — those releases only served ARM64 via
-/// the x86_64 binary under emulation.
+/// the x86_64 binary under emulation. `garraia-android-aarch64` (bionic,
+/// Termux) exists from v0.3.6 onward (ADR 0016).
 fn asset_name_for(os: &str, arch: &str) -> Result<&'static str> {
     match (os, arch) {
         ("macos", "aarch64") => Ok("garraia-macos-aarch64"),
@@ -58,6 +59,7 @@ fn asset_name_for(os: &str, arch: &str) -> Result<&'static str> {
         ("linux", "aarch64") => Ok("garraia-linux-aarch64"),
         ("windows", "x86_64") => Ok("garraia-windows-x86_64.exe"),
         ("windows", "aarch64") => Ok("garraia-windows-aarch64.exe"),
+        ("android", "aarch64") => Ok("garraia-android-aarch64"),
         (os, arch) => bail!("unsupported platform: {os}/{arch}"),
     }
 }
@@ -369,6 +371,8 @@ mod tests {
             (("macos", "aarch64"), "garraia-macos-aarch64"),
             (("windows", "x86_64"), "garraia-windows-x86_64.exe"),
             (("windows", "aarch64"), "garraia-windows-aarch64.exe"),
+            // bionic/Termux desde a v0.3.6 (ADR 0016).
+            (("android", "aarch64"), "garraia-android-aarch64"),
         ];
         for ((os, arch), name) in expected {
             assert_eq!(asset_name_for(os, arch).unwrap(), name, "{os}/{arch}");
