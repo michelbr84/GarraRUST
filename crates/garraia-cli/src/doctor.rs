@@ -106,7 +106,8 @@ fn probe_local_daemon(base_url: &str, timeout: Duration) -> ProbeResult {
 /// `$TERMUX_VERSION` exportado por todo shell do Termux, ou `$PREFIX`
 /// apontando para o sandbox `com.termux`.
 fn detect_termux(termux_version: Option<&str>, prefix: Option<&str>) -> bool {
-    termux_version.is_some_and(|v| !v.is_empty()) || prefix.is_some_and(|p| p.contains("com.termux"))
+    termux_version.is_some_and(|v| !v.is_empty())
+        || prefix.is_some_and(|p| p.contains("com.termux"))
 }
 
 fn termux_detected() -> bool {
@@ -222,10 +223,7 @@ fn collect_provider_checks(config: &AppConfig) -> Vec<ProviderCheck> {
 
             let (probe, probe_url) = match resolve_daemon_base_url(kind, entry.base_url.as_deref())
             {
-                Some(url) => (
-                    Some(probe_local_daemon(&url, PROBE_TIMEOUT)),
-                    Some(url),
-                ),
+                Some(url) => (Some(probe_local_daemon(&url, PROBE_TIMEOUT)), Some(url)),
                 None => (None, None),
             };
 
@@ -350,7 +348,10 @@ fn print_human(report: &DoctorReport, strict: bool) {
     println!("  Config         : {}", report.config_dir);
     println!();
 
-    println!("  [1/4] Diretórios ......... {}", ok_or(report.dirs_ok, "FALHA — sem escrita"));
+    println!(
+        "  [1/4] Diretórios ......... {}",
+        ok_or(report.dirs_ok, "FALHA — sem escrita")
+    );
 
     match (&report.config_error, &report.config_check) {
         (Some(err), _) => {
@@ -506,7 +507,10 @@ mod tests {
             resolve_daemon_base_url("llamacpp", Some("http://pc:9090")).as_deref(),
             Some("http://pc:9090")
         );
-        assert_eq!(resolve_daemon_base_url("openrouter", Some("http://x")), None);
+        assert_eq!(
+            resolve_daemon_base_url("openrouter", Some("http://x")),
+            None
+        );
     }
 
     // ─── probe_local_daemon ────────────────────────────────────────────────
@@ -547,7 +551,10 @@ mod tests {
     #[test]
     fn provider_checks_are_key_sorted_and_classify_keyless_locals() {
         let cfg = config_with(&[
-            ("main", llm_entry("openrouter", Some("openrouter/auto"), None)),
+            (
+                "main",
+                llm_entry("openrouter", Some("openrouter/auto"), None),
+            ),
             ("zeta", llm_entry("unknown-kind", None, None)),
             ("local", llm_entry("ollama", Some("qwen3.8:latest"), None)),
             (
@@ -613,7 +620,11 @@ mod tests {
     #[test]
     fn tcp_reachable_false_on_closed_port_and_bad_host() {
         assert!(!tcp_reachable("127.0.0.1", 1, PROBE_TIMEOUT));
-        assert!(!tcp_reachable("host.que.nao.existe.invalid", 80, PROBE_TIMEOUT));
+        assert!(!tcp_reachable(
+            "host.que.nao.existe.invalid",
+            80,
+            PROBE_TIMEOUT
+        ));
     }
 
     #[test]

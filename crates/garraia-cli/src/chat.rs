@@ -1614,8 +1614,8 @@ mod tests {
     #[test]
     fn select_explicit_provider_uses_the_default_table_for_ollama() {
         let cfg = AppConfig::default();
-        let (name, model, _) =
-            select_explicit_provider(&cfg, "ollama", None, None).expect("ollama needs no credential");
+        let (name, model, _) = select_explicit_provider(&cfg, "ollama", None, None)
+            .expect("ollama needs no credential");
         assert_eq!(name, "ollama");
         assert_eq!(model, "qwen3.8:latest");
     }

@@ -13,7 +13,7 @@
 # `detect_platform` in subshells where `uname` is shadowed by a function
 # printing the case's OS/arch and the Termux environment is simulated.
 # Written in POSIX sh (like checksum_format.sh) so it stays in the
-# shellcheck list of the installer job, not just `bash -n`.
+# static-analysis step of the installer job, not just `bash -n`.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
