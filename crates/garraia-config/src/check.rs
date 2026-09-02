@@ -531,9 +531,12 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
 
     // An `llm:` entry whose `provider` the runtime does not recognize is
     // silently dropped with `warn!("unknown LLM provider type")` at boot.
+    // The keyless locals (`ollama`, `llamacpp`) have no env var in the shared
+    // table, so they are whitelisted here explicitly — keep in lockstep with
+    // the boot loop's arms in `garraia-gateway/src/bootstrap/mod.rs`.
     for (name, llm) in &config.llm {
         let known = crate::provider_keys::provider_key_env(&llm.provider).is_some()
-            || matches!(llm.provider.as_str(), "ollama" | "echo");
+            || matches!(llm.provider.as_str(), "ollama" | "llamacpp" | "echo");
         if !known {
             push_err(
                 &mut findings,
