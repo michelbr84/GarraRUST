@@ -18,7 +18,7 @@ use garraia_config::{AppConfig, ConfigCheck, ConfigLoader, LlmProviderConfig, Se
 /// Keeps error output bounded without losing the leading line/column context.
 const PARSE_ERROR_MAX_LEN: usize = 256;
 
-fn truncate_error(raw: String) -> String {
+pub(crate) fn truncate_error(raw: String) -> String {
     if raw.len() <= PARSE_ERROR_MAX_LEN {
         return raw;
     }
@@ -305,8 +305,8 @@ pub(crate) struct SetModelRequest<'a> {
 /// dropped, so switching to a local model does not disable a configured cloud
 /// provider outright.
 pub(crate) fn apply_set_model(config: &mut AppConfig, req: &SetModelRequest<'_>) {
-    let api_key = if req.provider == "ollama" {
-        // Native Ollama needs no credential.
+    let api_key = if req.provider == "ollama" || req.provider == "llamacpp" {
+        // Keyless local daemons: ollama e llama-server não exigem credencial.
         None
     } else {
         // Ollama's OpenAI-compatible endpoint ignores the key but the client
@@ -429,6 +429,16 @@ mod set_model_tests {
     }
 
     #[test]
+    fn native_llamacpp_provider_stays_keyless() {
+        let mut cfg = AppConfig::default();
+        let mut r = req("local-llama", "qwen3-8b");
+        r.provider = "llamacpp";
+        apply_set_model(&mut cfg, &r);
+        assert!(cfg.llm["local-llama"].api_key.is_none());
+        assert_eq!(cfg.llm["local-llama"].provider, "llamacpp");
+    }
+
+    #[test]
     fn rerunning_updates_in_place_without_duplicating() {
         let mut cfg = AppConfig::default();
         apply_set_model(&mut cfg, &req("ollama-launch", "qwen3.8:latest"));
@@ -515,6 +525,8 @@ fn default_base_url(provider: &str) -> Option<&'static str> {
     match provider {
         "openrouter" => Some("https://openrouter.ai/api/v1"),
         "ollama" => Some("http://localhost:11434"),
+        // llama-server's documented default HTTP port.
+        "llamacpp" => Some("http://localhost:8080"),
         "openai" | "anthropic" => None, // provider clients carry their own default
         _ => None,
     }

@@ -5,6 +5,7 @@ mod capability_prompt;
 mod chat;
 mod cli_args;
 mod config_cmd;
+mod doctor;
 mod glob_cmd;
 mod max_power;
 mod mcp_server;
@@ -112,6 +113,17 @@ enum Commands {
 
     /// Show current status
     Status,
+
+    /// Diagnose the installation (platform, dirs, config, providers, daemon)
+    Doctor {
+        /// Emit a machine-readable JSON report instead of human output
+        #[arg(long)]
+        json: bool,
+
+        /// Treat config warnings as errors (exit 2)
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Run the onboarding wizard
     Init,
@@ -601,11 +613,11 @@ fn validate_plugin_path(path_str: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn garraia_dir() -> PathBuf {
+pub(crate) fn garraia_dir() -> PathBuf {
     garraia_config::ConfigLoader::default_config_dir()
 }
 
-fn pid_file_path() -> PathBuf {
+pub(crate) fn pid_file_path() -> PathBuf {
     garraia_dir().join("garraia.pid")
 }
 
@@ -615,7 +627,7 @@ fn log_file_path() -> PathBuf {
 }
 
 /// Read the PID from the PID file.
-fn read_pid() -> Option<u32> {
+pub(crate) fn read_pid() -> Option<u32> {
     let path = pid_file_path();
     std::fs::read_to_string(&path)
         .ok()
@@ -624,13 +636,13 @@ fn read_pid() -> Option<u32> {
 
 /// Check if a process with the given PID is running.
 #[cfg(unix)]
-fn is_process_running(pid: u32) -> bool {
+pub(crate) fn is_process_running(pid: u32) -> bool {
     // Signal 0 checks existence without sending a signal
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 #[cfg(windows)]
-fn is_process_running(pid: u32) -> bool {
+pub(crate) fn is_process_running(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, FALSE, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -655,7 +667,7 @@ fn is_process_running(pid: u32) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn is_process_running(_pid: u32) -> bool {
+pub(crate) fn is_process_running(_pid: u32) -> bool {
     false
 }
 
@@ -926,6 +938,18 @@ fn main() -> Result<()> {
     } = cli.command
     {
         let code = config_cmd::run_config_check(json, strict)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // Fase 0 Garra Mobile (ADR 0016) — `doctor` é o passo de onboarding
+    // (install.sh → doctor → chat), então como o `config check` precisa
+    // sobreviver a config ausente/não-parseável e reportar sysexits em vez
+    // de estourar no `load()` global.
+    if let Commands::Doctor { json, strict } = cli.command {
+        let code = doctor::run_doctor(json, strict)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -1730,6 +1754,10 @@ async fn async_main(
         Commands::Verify { .. } => {
             // Handled in main() before the async runtime starts.
             unreachable!("Commands::Verify is intercepted in main() before async_main");
+        }
+        Commands::Doctor { .. } => {
+            // Handled in main() before the async runtime starts.
+            unreachable!("Commands::Doctor is intercepted in main() before async_main");
         }
     }
 

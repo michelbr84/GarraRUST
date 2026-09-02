@@ -3,8 +3,8 @@ use std::sync::Arc;
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, CohereEmbeddingProvider, FileReadTool,
-    FileWriteTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider,
-    OpenAiProvider, WebFetchTool, WebSearchTool,
+    FileWriteTool, LlamaCppProvider, McpManager, OllamaEmbeddingProvider, OllamaProvider,
+    OpenAiEmbeddingProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -193,6 +193,54 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         .with_client(llm_client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured ollama provider: {name}");
+            }
+            // Keyless local daemon, mirroring the ollama arm: llama-server
+            // exposes the OpenAI-compatible API on its documented default
+            // port 8080 (ADR 0016 — Garra Mobile local-first).
+            "llamacpp" => {
+                let base_url = llm_config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:8080".to_string());
+
+                let addr = base_url
+                    .trim_start_matches("http://")
+                    .trim_start_matches("https://")
+                    .trim_end_matches('/');
+                let sock_addr = if addr.contains(':') {
+                    addr.to_string()
+                } else {
+                    format!("{}:8080", addr)
+                };
+                match std::net::TcpStream::connect_timeout(
+                    &sock_addr
+                        .parse()
+                        .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 8080))),
+                    std::time::Duration::from_secs(2),
+                ) {
+                    Ok(_) => {
+                        info!(
+                            "✅ llama.cpp server reachable at {} — registering provider: {name}",
+                            base_url
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️  llama.cpp server not reachable at {} — provider registered but \
+                             will fail until llama-server starts. Error: {}. \
+                             Run: llama-server -m <model>",
+                            base_url, e
+                        );
+                    }
+                }
+
+                let provider = LlamaCppProvider::new(
+                    llm_config.model.clone(),
+                    llm_config.base_url.clone(),
+                    None,
+                );
+                runtime.register_provider(Arc::new(provider));
+                info!("configured llamacpp provider: {name}");
             }
             "sansa" => {
                 let base_url = llm_config

@@ -283,7 +283,12 @@ pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutc
 
     // 1. Resolve provider.
     let (provider_name, model_name, provider) = if let Some(ref p) = opts.provider_override {
-        match chat::select_explicit_provider(config, p.as_str(), opts.model_override.as_deref()) {
+        match chat::select_explicit_provider(
+            config,
+            p.as_str(),
+            opts.model_override.as_deref(),
+            opts.url_override.as_deref(),
+        ) {
             Ok(triple) => triple,
             Err(e) => {
                 return AskOutcome::Failure(AskError::NoProvider(sanitize_provider_error(

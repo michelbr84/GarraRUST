@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, FileReadTool, FileWriteTool,
-    LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, normalize_ollama_tag,
-    tools::git_diff_tool::GitDiffTool,
+    LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider, OpenAiProvider,
+    normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
@@ -239,8 +239,9 @@ fn decide_default_provider(
 
     let cfg_has_key = cfg.api_key.as_deref().is_some_and(|k| !k.is_empty());
     let credential_ok = match provider_kind {
-        // Local — health-checked by the caller.
-        "ollama" => true,
+        // Local — health-checked by the caller. `llamacpp` talks to a local
+        // llama-server (default http://localhost:8080), keyless like ollama.
+        "ollama" | "llamacpp" => true,
         "anthropic" => env_has_anthropic_key || cfg_has_key,
         // OpenAI-compatible local backends (e.g. LM Studio) commonly omit
         // the api_key and rely on `base_url` reachability. Treat them as
@@ -282,6 +283,10 @@ pub(crate) fn hardcoded_default_model(provider_kind: &str) -> String {
         // context, vision + tools). Kept byte-identical to
         // `garraia_agents::ollama::DEFAULT_MODEL`.
         "ollama" => "qwen3.8:latest",
+        // llama-server serves whatever model it was started with; the
+        // OpenAI-compatible API accepts any string here — `default` matches
+        // `garraia_agents::llama_cpp::DEFAULT_MODEL` byte-for-byte.
+        "llamacpp" => "default",
         "anthropic" => "claude-sonnet-4-5-20250929",
         "openai" => "gpt-4o",
         "openrouter" => "openrouter/auto",
@@ -289,6 +294,19 @@ pub(crate) fn hardcoded_default_model(provider_kind: &str) -> String {
         _ => "auto",
     }
     .to_string()
+}
+
+/// Base URL do `llamacpp` — precedência `--url` > `config.llm["llamacpp"]`.
+///
+/// Retorna `None` quando nenhuma fonte fornece URL e o provider usa o
+/// default interno (`http://localhost:8080`). Extraído como função pura
+/// para que a precedência seja afirmável em teste (o provider devolvido
+/// pelo arm é um `Arc<dyn LlmProvider>` sem downcast).
+fn resolve_llamacpp_base_url(config: &AppConfig, url_override: Option<&str>) -> Option<String> {
+    url_override
+        .filter(|u| !u.is_empty())
+        .map(|u| u.to_string())
+        .or_else(|| config.llm.get("llamacpp").and_then(|c| c.base_url.clone()))
 }
 
 /// GAR-576 — Construct an [`LlmProvider`] from a config-resolved default.
@@ -314,6 +332,13 @@ async fn try_build_default_provider(
                 return None;
             }
             Some(Arc::new(ollama) as Arc<dyn LlmProvider>)
+        }
+        "llamacpp" => {
+            let llama = LlamaCppProvider::new(Some(model.to_string()), cfg.base_url.clone(), None);
+            if !llama.health_check().await.unwrap_or(false) {
+                return None;
+            }
+            Some(Arc::new(llama) as Arc<dyn LlmProvider>)
         }
         "anthropic" => {
             let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")?;
@@ -358,12 +383,17 @@ async fn try_build_default_provider(
 /// per-kind fallback. Unknown `kind` is an error; missing api_key for a
 /// cloud provider is an error.
 ///
+/// `url_override` is the CLI `--url` flag. Today only the `llamacpp` arm
+/// consumes it (the keyless local providers are exactly where an ad-hoc
+/// URL matters most); the cloud arms keep their fixed endpoints.
+///
 /// Shared by `chat::run_chat` and `ask::run_ask` so the explicit-provider
 /// path lives in exactly one place.
 pub(crate) fn select_explicit_provider(
     config: &AppConfig,
     kind: &str,
     model_override: Option<&str>,
+    url_override: Option<&str>,
 ) -> Result<(String, String, Arc<dyn LlmProvider>)> {
     match kind {
         "ollama" => {
@@ -374,6 +404,17 @@ pub(crate) fn select_explicit_provider(
                 "ollama".to_string(),
                 model,
                 Arc::new(ollama) as Arc<dyn LlmProvider>,
+            ))
+        }
+        "llamacpp" => {
+            let model = resolve_provider_model(config, "llamacpp", model_override)
+                .unwrap_or_else(|| hardcoded_default_model("llamacpp"));
+            let base_url = resolve_llamacpp_base_url(config, url_override);
+            let llama = LlamaCppProvider::new(Some(model.clone()), base_url, None);
+            Ok((
+                "llamacpp".to_string(),
+                model,
+                Arc::new(llama) as Arc<dyn LlmProvider>,
             ))
         }
         "anthropic" => {
@@ -434,7 +475,7 @@ pub(crate) fn select_explicit_provider(
             ))
         }
         other => anyhow::bail!(
-            "Provider desconhecido: {other}. Use: ollama, anthropic, openai, openrouter"
+            "Provider desconhecido: {other}. Use: ollama, llamacpp, anthropic, openai, openrouter"
         ),
     }
 }
@@ -910,7 +951,12 @@ pub async fn run_chat(
         // GAR-579: shared with `garra ask` — the explicit-provider path
         // lives in `select_explicit_provider` so chat and ask agree
         // byte-for-byte on construction + model resolution + error msgs.
-        select_explicit_provider(&config, p.as_str(), model_override.as_deref())?
+        select_explicit_provider(
+            &config,
+            p.as_str(),
+            model_override.as_deref(),
+            url_override.as_deref(),
+        )?
     } else {
         detect_provider(
             &config,
@@ -921,7 +967,8 @@ pub async fn run_chat(
         .await
     };
 
-    let mode = if provider_name.contains("ollama") {
+    // Keyless local daemons are the "local" mode; everything else is cloud.
+    let mode = if provider_name.contains("ollama") || provider_name.contains("llamacpp") {
         "local"
     } else {
         "cloud"
@@ -1277,7 +1324,7 @@ mod tests {
     #[test]
     fn select_explicit_provider_echo_needs_no_key() {
         let cfg = AppConfig::default();
-        let (name, model, _provider) = select_explicit_provider(&cfg, "echo", None)
+        let (name, model, _provider) = select_explicit_provider(&cfg, "echo", None, None)
             .expect("echo deve ser selecionável com a feature dev-echo-provider");
         assert_eq!(name, "echo");
         assert_eq!(model, "echo-stub");
@@ -1289,7 +1336,7 @@ mod tests {
     #[test]
     fn select_explicit_provider_echo_rejected_without_feature() {
         let cfg = AppConfig::default();
-        assert!(select_explicit_provider(&cfg, "echo", None).is_err());
+        assert!(select_explicit_provider(&cfg, "echo", None, None).is_err());
     }
 
     // ─── resolve_provider_model ────────────────────────────────────────
@@ -1510,6 +1557,7 @@ mod tests {
     #[test]
     fn hardcoded_default_model_table_is_locked() {
         assert_eq!(hardcoded_default_model("ollama"), "qwen3.8:latest");
+        assert_eq!(hardcoded_default_model("llamacpp"), "default");
         assert_eq!(
             hardcoded_default_model("anthropic"),
             "claude-sonnet-4-5-20250929"
@@ -1567,9 +1615,68 @@ mod tests {
     fn select_explicit_provider_uses_the_default_table_for_ollama() {
         let cfg = AppConfig::default();
         let (name, model, _) =
-            select_explicit_provider(&cfg, "ollama", None).expect("ollama needs no credential");
+            select_explicit_provider(&cfg, "ollama", None, None).expect("ollama needs no credential");
         assert_eq!(name, "ollama");
         assert_eq!(model, "qwen3.8:latest");
+    }
+
+    /// `llamacpp` é o segundo arm keyless: resolução de modelo pela mesma
+    /// tabela e precedência de base_url `--url` > `config.llm["llamacpp"]` >
+    /// default do provider (http://localhost:8080).
+    #[test]
+    fn select_explicit_provider_llamacpp_resolves_model_and_base_url_precedence() {
+        // Sem nada configurado: default da tabela, default do provider.
+        let (name, model, provider) =
+            select_explicit_provider(&AppConfig::default(), "llamacpp", None, None)
+                .expect("llamacpp é keyless");
+        assert_eq!(name, "llamacpp");
+        assert_eq!(model, "default");
+        assert_eq!(provider.provider_id(), "llama-cpp");
+
+        // `--model` vence a config.
+        let cfg = config_with_default(
+            "llamacpp",
+            &[(
+                "llamacpp",
+                make_llm_cfg("llamacpp", Some("qwen3-8b"), None, Some("http://pc:8080")),
+            )],
+        );
+        let (name, model, _) =
+            select_explicit_provider(&cfg, "llamacpp", Some("custom"), None).unwrap();
+        assert_eq!(name, "llamacpp");
+        assert_eq!(model, "custom");
+
+        // Precedência do base_url, afirmável pela função pura do arm:
+        // config alimenta quando não há `--url`; `--url` vence quando há;
+        // string vazia conta como ausente (não apaga a config).
+        assert_eq!(
+            resolve_llamacpp_base_url(&cfg, None).as_deref(),
+            Some("http://pc:8080")
+        );
+        assert_eq!(
+            resolve_llamacpp_base_url(&cfg, Some("http://box:9090")).as_deref(),
+            Some("http://box:9090")
+        );
+        assert_eq!(
+            resolve_llamacpp_base_url(&cfg, Some("")).as_deref(),
+            Some("http://pc:8080")
+        );
+        assert_eq!(resolve_llamacpp_base_url(&AppConfig::default(), None), None);
+    }
+
+    /// Provider desconhecido lista `llamacpp` junto dos demais no bail —
+    /// o contrato de mensagem é o que os testes E2E de onboarding citam.
+    #[test]
+    fn select_explicit_provider_unknown_lists_all_keyless_and_cloud_kinds() {
+        // `expect_err` exige `T: Debug` e o trio de retorno carrega um
+        // `Arc<dyn LlmProvider>` sem Debug — casar com `let Err` direto.
+        let Err(err) = select_explicit_provider(&AppConfig::default(), "fogos", None, None) else {
+            panic!("provider desconhecido deve falhar");
+        };
+        let msg = format!("{err}");
+        for kind in ["ollama", "llamacpp", "anthropic", "openai", "openrouter"] {
+            assert!(msg.contains(kind), "mensagem `{msg}` não cita `{kind}`");
+        }
     }
 
     // ─── stream_turn (regression: bounded-channel deadlock, GAR chat hang) ─

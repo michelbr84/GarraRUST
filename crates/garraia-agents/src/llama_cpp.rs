@@ -173,6 +173,15 @@ impl LlamaCppProvider {
         &self.config
     }
 
+    /// The effective base URL this provider talks to.
+    ///
+    /// Observability getter: lets CLI tests assert base-url precedence
+    /// (`--url` > `config.llm[*].base_url` > default) without reaching into
+    /// the private field.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     fn build_request_body(&self, request: &LlmRequest, stream: bool) -> Value {
         let model = if request.model.is_empty() {
             self.model.clone()
