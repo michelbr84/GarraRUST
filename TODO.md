@@ -54,14 +54,27 @@ tema. Detalhes e rationale no Amendment 2026-09-03 da `docs/adr/0016-mobile-term
   troubleshooting; `docs/mcp.md` e `docs/cli-mcp-server.md` cobrem as duas
   direções de MCP; wiki pt-BR e `docs/index.md` atualizados.
 
+- **Sonda de endpoints rodada, e o diagnóstico de #910 corrigido.** Eu havia
+  atribuído o relato a um `install.sh` estale servido pelo `garraia.org`. Está
+  errado: o `public/install.sh` do repo do site já tem o ramo Termux, e o run
+  manual do `install-endpoints.yml` em `46fe0ff` (o primeiro com a guarda de
+  frescor) passou nos 8 endpoints — *"Todos os endpoints de instalação servem o
+  script correto"*. A timeline fecha contra a hipótese: o site foi atualizado
+  2026-09-03 00:23Z e a issue foi aberta 14:47Z. Explicação provável: o
+  repórter testou antes de a v0.3.6 ser publicada (22:13Z do dia anterior), o
+  que bate com ele descrever o binário em uso como build própria com NDK r27d.
+  Correção postada em #910.
+
 ### Próximos passos
 
 1. Validar em aparelho real (só o dono tem o Samsung A16): `install.sh` →
    `garraia doctor` → `garra-mcp-server` sob host MCP com env filtrado.
-2. Republicar o site no Lovable e disparar o `install-endpoints.yml` manualmente
-   para confirmar que o `garraia.org/install.sh` deixou de estar estale.
-3. Cortar a v0.3.7 com o wrapper e a injeção de `LD_PRELOAD` (a doc já os
-   referencia por essa versão).
+2. Fechar #910 quando o repórter confirmar a instalação, e #911 (não se aplica
+   ao binário `garra`; o job `android` do `ci.yml` mantém o invariante).
+3. Nota de manutenção: o `install.ps1` servido pelo `garraia.org` está ~700
+   chars atrás do `main` (a nota de paridade da regra 16 que entrou no #914).
+   É comentário, não comportamento — o sync diário resolve. Se quiser antes,
+   é um publish manual no Lovable.
 
 ## Concluído em 2026-09-02 (Fase 0 Garra Mobile + fix Dependabot Updates)
 
