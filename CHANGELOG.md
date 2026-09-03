@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-03
+
+Retorno de campo da Fase 0 do Garra Mobile: cinco issues (#909-#913) abertas
+por um usuario rodando a v0.3.6 num Samsung A16 / Android 13 / Termux, com o
+Garra em producao orquestrado por outro agente via MCP. Detalhes e rationale
+no Amendment 2026-09-03 da
+[ADR 0016](docs/adr/0016-mobile-termux-local-first.md).
+
+### Fixed
+- **Filhos MCP no Termux nao ficam mais orfaos (#913).**
+  `apply_parent_death_signal` estava sob `#[cfg(target_os = "linux")]`, e em
+  Rust `target_os = "android"` **nao** e coberto por isso — embora o bionic
+  exponha o mesmo `prctl(PR_SET_PDEATHSIG)`. Na pratica, todo servidor MCP
+  filho spawnado dentro do Termux sobrevivia a morte abrupta do gateway
+  (`crates/garraia-agents/src/mcp/manager.rs`).
+- **Servidores MCP npm/pip voltam a executar no Termux (#913).** No Android o
+  exec de ELF resolve atraves do shim termux-exec; um host que spawna o
+  gateway com ambiente filtrado (`env -i PATH=... HOME=...`) remove
+  `LD_PRELOAD`, e a partir dai todo filho que e script npm/pip morre no
+  shebang `/usr/bin/env node` — caminho que o Termux nao tem. O novo
+  `termux_ld_preload` injeta o shim nos filhos sob `cfg(target_os =
+  "android")`, sem nunca sobrescrever um `LD_PRELOAD` do config do servidor
+  nem herdado do processo, e exigindo o shim de fato instalado
+  (`pkg install termux-exec`).
+
+### Added
+- **Wrapper `garra-mcp-server` para hosts MCP externos (#909).** Quando um
+  host spawna `garraia mcp-server` com ambiente filtrado, o exec falha
+  **antes** de o processo existir — nenhuma correcao dentro do binario
+  alcanca o caso. O `install.sh` passa a escrever
+  `$PREFIX/bin/garra-mcp-server` no ramo Android: um wrapper que exporta o
+  shim (quando instalado) e faz exec do CLI. Aponte o host para ele em vez de
+  `garraia mcp-server`. Shebang com caminho absoluto do Termux de proposito —
+  `/usr/bin/env` nao existe la. Arquivo novo e aditivo: nenhum asset de
+  release e tocado.
+- **Bloco Termux acionavel no `garra doctor` (#909/#911/#913).** Sete
+  verificacoes com o passo seguinte de cada item que falta: trust store TLS em
+  uso, `SSL_CERT_FILE` (cobrado apenas quando ha Postgres configurado,
+  detectado por presenca de env var e nunca pelo valor), termux-exec,
+  `LD_PRELOAD` herdado, wrapper MCP instalado e `$PREFIX/bin` no PATH. So
+  aparece dentro do Termux e nao altera exit code — diagnostico nao e
+  veredito.
+
+### Changed
+- **Job `android` no CI, e o alvo deixa de quebrar so na tag.** Ate aqui
+  `aarch64-linux-android` era compilado apenas no `release.yml`, entao uma
+  quebra do target so aparecia **depois** de a tag ser empurrada — foi assim
+  que o bug do cargo-ndk 4.x (`-p` deixou de ser `--platform` e virou
+  `--package`) derrubou o job android da v0.3.6. O job novo roda
+  `cargo ndk check` em cada PR.
+- **Guarda contra `rustls-platform-verifier` no grafo Android (#911).** Esse
+  crate entra em panic fora da JVM (`Expect rustls-platform-verifier to be
+  initialized`, `android.rs:90`), e num binario standalone do Termux nao
+  existe Context Java nenhum. Hoje ele fica fora do grafo do `garra` por
+  acidente feliz de features — o `reqwest 0.13` que o traz so ativa a feature
+  `rustls` via `tauri-plugin-updater`, e `garraia-desktop` nunca e buildado
+  para Android. Um bump que ative essa feature em qualquer ponto do grafo do
+  CLI quebraria **todo** o HTTPS no Termux em runtime, silenciosamente; a
+  guarda e o alarme. (Registrando o corolario: todo o HTTPS do `garra` usa
+  webpki-roots compilados no binario, entao `SSL_CERT_FILE` nao afeta esse
+  trafego — a excecao e TLS de Postgres, via `sqlx`/native-roots.)
+- **Sonda de endpoints valida o frescor do `install.sh` servido (#910).** Dois
+  modos de falha ja derrubaram a rota publica do instalador (HTML da home em
+  HTTP 200; depois 404 puro). Este e o terceiro e o unico que passava em todas
+  as guardas existentes: o endpoint existe, responde 200, tem shebang, parseia
+  em `sh -n` — e esta velho. O `install-endpoints.yml` passou a checar um
+  marcador de frescor no corpo servido.
+- **Asset Android ausente virou `::error` no `release.yml`.** O job segue
+  best-effort e a release nao aborta, mas a consequencia nao e "um download a
+  menos": o `install.sh` resolve `garraia-android-aarch64` por nome exato,
+  entao uma tag sem o asset quebra a instalacao no Termux por completo.
+- **Documentacao Termux ponta a ponta (#912).** `docs/installation.md` — o doc
+  canonico, para onde o README aponta — nao tinha uma unica mencao a Android
+  ou Termux. Ganhou `### Android (Termux)` no Quick Install, a linha que
+  faltava na tabela de assets, `### Build on Termux (fallback)` com o override
+  de LTO (o `[profile.release]` usa `lto = true`, e num aparelho intermediario
+  o linker e morto por OOM com um `Signal 9` pelado, sem nada apontando para
+  memoria) e tres secoes de troubleshooting. `docs/mcp.md` e
+  `docs/cli-mcp-server.md` cobrem as duas direcoes de MCP, que sao problemas
+  distintos com correcoes distintas.
+
 ## [0.3.6] - 2026-09-02
 
 ### Added
