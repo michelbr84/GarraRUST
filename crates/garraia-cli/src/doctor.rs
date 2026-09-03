@@ -117,6 +117,147 @@ fn termux_detected() -> bool {
     )
 }
 
+/// Um item do bloco Termux: o que foi observado e, quando não-OK, o passo
+/// seguinte. Espelha a forma `next_step` de `/api/diagnostics`.
+#[derive(Debug, Serialize)]
+pub(crate) struct TermuxItem {
+    pub label: &'static str,
+    pub ok: bool,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<&'static str>,
+}
+
+/// Bloco de diagnóstico só emitido dentro do Termux. Puramente informativo:
+/// nada aqui altera o exit code, pela mesma razão que os probes de provider
+/// não alteram — diagnóstico não é veredito.
+#[derive(Debug, Serialize)]
+pub(crate) struct TermuxCheck {
+    pub items: Vec<TermuxItem>,
+}
+
+/// Entradas de ambiente do bloco Termux, agrupadas para manter
+/// `collect_termux_check` puro (e portanto afirmável em qualquer runner).
+pub(crate) struct TermuxEnv<'a> {
+    pub prefix: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub ld_preload: Option<&'a str>,
+    pub ssl_cert_file: Option<&'a str>,
+    /// `true` quando a config tem um caminho que fala TLS com Postgres.
+    pub uses_postgres: bool,
+}
+
+/// Caminho do shim termux-exec, relativo a `$PREFIX`.
+const TERMUX_EXEC_LIB: &str = "lib/libtermux-exec.so";
+
+/// Monta o bloco Termux. `exists` é parâmetro para o teste não depender do
+/// filesystem do runner.
+pub(crate) fn collect_termux_check<F>(env: &TermuxEnv<'_>, exists: F) -> TermuxCheck
+where
+    F: Fn(&std::path::Path) -> bool,
+{
+    let mut items = Vec::new();
+
+    // Trust store. Está aqui porque a suposição contrária custou caro numa
+    // issue: o `garra` fala HTTPS por reqwest com `rustls-tls`, cujos roots
+    // são os do webpki COMPILADOS no binário — não há leitura de trust store
+    // do sistema, e portanto `SSL_CERT_FILE` não afeta esse tráfego.
+    items.push(TermuxItem {
+        label: "Trust store TLS",
+        ok: true,
+        detail: "webpki-roots embutidos no binário (SSL_CERT_FILE não afeta HTTPS do garra)"
+            .to_string(),
+        next_step: None,
+    });
+
+    // A exceção: o driver de Postgres usa native-roots, que LÊ o trust store
+    // do sistema. Só vira aviso quando há Postgres configurado.
+    if env.uses_postgres {
+        let set = env.ssl_cert_file.is_some_and(|v| !v.is_empty());
+        items.push(TermuxItem {
+            label: "SSL_CERT_FILE (Postgres)",
+            ok: set,
+            detail: if set {
+                "definido — TLS de Postgres usa os CAs do Termux".to_string()
+            } else {
+                "não definido — só o TLS de Postgres depende disso".to_string()
+            },
+            next_step: (!set).then_some(
+                "export SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem (pkg install ca-certificates)",
+            ),
+        });
+    }
+
+    // termux-exec: sem ele, todo filho MCP que é script npm/pip morre no
+    // shebang `/usr/bin/env`, e hosts MCP externos não conseguem nem exec.
+    let shim = env
+        .prefix
+        .map(|p| std::path::Path::new(p).join(TERMUX_EXEC_LIB));
+    let shim_ok = shim.as_deref().is_some_and(&exists);
+    items.push(TermuxItem {
+        label: "termux-exec",
+        ok: shim_ok,
+        detail: match (&shim, shim_ok) {
+            (Some(p), true) => format!("{} presente", p.display()),
+            (Some(p), false) => format!("{} ausente", p.display()),
+            (None, _) => "$PREFIX não definido".to_string(),
+        },
+        next_step: (!shim_ok).then_some(
+            "pkg install termux-exec (corrige shebangs de npm/pip e o exec de servidores MCP)",
+        ),
+    });
+
+    // LD_PRELOAD é informativo: o gateway injeta o shim nos filhos MCP
+    // sozinho, então a ausência aqui não é falha.
+    let preload = env.ld_preload.filter(|v| !v.is_empty());
+    items.push(TermuxItem {
+        label: "LD_PRELOAD",
+        ok: true,
+        detail: match preload {
+            Some(v) => format!("herdado: {v}"),
+            None => "não definido — o gateway injeta o shim nos filhos MCP".to_string(),
+        },
+        next_step: None,
+    });
+
+    // Wrapper de MCP. Escrito pelo install.sh; um host externo aponta para
+    // ele porque o exec com env filtrado falha sem o preload.
+    let wrapper = env
+        .prefix
+        .map(|p| std::path::Path::new(p).join("bin/garra-mcp-server"));
+    let wrapper_ok = wrapper.as_deref().is_some_and(&exists);
+    items.push(TermuxItem {
+        label: "Wrapper MCP",
+        ok: wrapper_ok,
+        detail: match (&wrapper, wrapper_ok) {
+            (Some(p), true) => format!("{} instalado", p.display()),
+            (Some(p), false) => format!("{} ausente", p.display()),
+            (None, _) => "$PREFIX não definido".to_string(),
+        },
+        next_step: (!wrapper_ok)
+            .then_some("reinstale via install.sh para obter $PREFIX/bin/garra-mcp-server"),
+    });
+
+    // $PREFIX/bin no PATH — onde o install.sh põe o binário.
+    let bin_dir = env.prefix.map(|p| format!("{p}/bin"));
+    let on_path = match (&bin_dir, env.path) {
+        (Some(dir), Some(path)) => path.split(':').any(|e| e == dir),
+        _ => false,
+    };
+    items.push(TermuxItem {
+        label: "$PREFIX/bin no PATH",
+        ok: on_path,
+        detail: match &bin_dir {
+            Some(dir) if on_path => format!("{dir} presente no PATH"),
+            Some(dir) => format!("{dir} fora do PATH"),
+            None => "$PREFIX não definido".to_string(),
+        },
+        next_step: (!on_path).then_some("export PATH=\"$PREFIX/bin:$PATH\" no seu ~/.profile"),
+    });
+
+    TermuxCheck { items }
+}
+
 /// Base URL com que um daemon local deve ser sondado, ou `None` para
 /// providers que não são daemon local. Defaults espelham os arms de boot do
 /// gateway (`garraia-gateway/src/bootstrap/mod.rs`).
@@ -177,6 +318,9 @@ pub(crate) struct DoctorReport {
     pub config_check: Option<ConfigCheck>,
     pub providers: Vec<ProviderCheck>,
     pub daemon: DaemonCheck,
+    /// Bloco Termux — só presente dentro do Termux (issues #909/#911/#913).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termux_check: Option<TermuxCheck>,
 }
 
 /// Um provider é keyless-local (e portanto sondável) quando o tipo é um dos
@@ -308,6 +452,21 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         }
     };
 
+    // Ambiente do bloco Termux. Lido uma vez aqui para manter
+    // `collect_termux_check` puro. `uses_postgres` é presence-only — o valor
+    // da URL (que carrega credencial) nunca sai daqui.
+    let prefix_env = std::env::var("PREFIX").ok();
+    let path_env = std::env::var("PATH").ok();
+    let ld_preload_env = std::env::var("LD_PRELOAD").ok();
+    let ssl_cert_env = std::env::var("SSL_CERT_FILE").ok();
+    let uses_postgres = [
+        "GARRAIA_LOGIN_DATABASE_URL",
+        "GARRAIA_SIGNUP_DATABASE_URL",
+        "GARRAIA_APP_DATABASE_URL",
+    ]
+    .iter()
+    .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+
     let report = DoctorReport {
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
@@ -319,6 +478,18 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         config_check,
         providers,
         daemon: check_daemon(&gateway.0, gateway.1),
+        termux_check: termux_detected().then(|| {
+            collect_termux_check(
+                &TermuxEnv {
+                    prefix: prefix_env.as_deref(),
+                    path: path_env.as_deref(),
+                    ld_preload: ld_preload_env.as_deref(),
+                    ssl_cert_file: ssl_cert_env.as_deref(),
+                    uses_postgres,
+                },
+                |path| path.exists(),
+            )
+        }),
     };
 
     let exit_code = compute_doctor_exit_code(&report, strict);
@@ -434,6 +605,22 @@ fn print_human(report: &DoctorReport, strict: bool) {
     };
     println!("  [4/4] Daemon ............. {daemon_status}");
 
+    if let Some(termux) = &report.termux_check {
+        println!();
+        println!("  Termux ..................");
+        for item in &termux.items {
+            println!(
+                "        {} {} — {}",
+                if item.ok { "OK  " } else { "aviso" },
+                item.label,
+                item.detail
+            );
+            if let Some(step) = item.next_step {
+                println!("          → {step}");
+            }
+        }
+    }
+
     let code = compute_doctor_exit_code(report, strict);
     println!();
     println!(
@@ -476,6 +663,156 @@ mod tests {
             cfg.llm.insert((*k).to_string(), v.clone());
         }
         cfg
+    }
+
+    // ─── collect_termux_check ──────────────────────────────────────────────
+
+    const TERMUX_PREFIX: &str = "/data/data/com.termux/files/usr";
+
+    fn termux_env() -> TermuxEnv<'static> {
+        TermuxEnv {
+            prefix: Some(TERMUX_PREFIX),
+            path: Some("/data/data/com.termux/files/usr/bin:/system/bin"),
+            ld_preload: None,
+            ssl_cert_file: None,
+            uses_postgres: false,
+        }
+    }
+
+    fn item<'a>(check: &'a TermuxCheck, label: &str) -> &'a TermuxItem {
+        check
+            .items
+            .iter()
+            .find(|i| i.label == label)
+            .unwrap_or_else(|| panic!("item {label} ausente"))
+    }
+
+    /// O bloco existe para desfazer uma suposição que já custou caro numa
+    /// issue: o HTTPS do `garra` não lê trust store do sistema.
+    #[test]
+    fn termux_check_states_the_trust_store_is_embedded() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        let trust = item(&check, "Trust store TLS");
+        assert!(trust.ok);
+        assert!(trust.detail.contains("webpki-roots"));
+        assert!(trust.detail.contains("SSL_CERT_FILE"));
+        assert!(trust.next_step.is_none());
+    }
+
+    /// `SSL_CERT_FILE` só é cobrado quando há Postgres: é o único caminho
+    /// (sqlx, native-roots) que de fato lê o trust store do sistema.
+    #[test]
+    fn termux_check_only_asks_for_ssl_cert_file_when_postgres_is_configured() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        assert!(
+            !check
+                .items
+                .iter()
+                .any(|i| i.label.starts_with("SSL_CERT_FILE")),
+            "sem Postgres o item não deve aparecer"
+        );
+
+        let env = TermuxEnv {
+            uses_postgres: true,
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        let ssl = item(&check, "SSL_CERT_FILE (Postgres)");
+        assert!(!ssl.ok);
+        assert!(ssl.next_step.is_some_and(|s| s.contains("cert.pem")));
+
+        let env = TermuxEnv {
+            uses_postgres: true,
+            ssl_cert_file: Some("/etc/tls/cert.pem"),
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        assert!(item(&check, "SSL_CERT_FILE (Postgres)").ok);
+    }
+
+    /// termux-exec ausente é acionável — é o que quebra shebangs de npm/pip
+    /// e o exec de servidores MCP.
+    #[test]
+    fn termux_check_flags_a_missing_termux_exec_shim() {
+        let check = collect_termux_check(&termux_env(), |_| false);
+        let shim = item(&check, "termux-exec");
+        assert!(!shim.ok);
+        assert!(shim.detail.contains("libtermux-exec.so"));
+        assert!(
+            shim.next_step
+                .is_some_and(|s| s.contains("pkg install termux-exec"))
+        );
+
+        let check = collect_termux_check(&termux_env(), |_| true);
+        assert!(item(&check, "termux-exec").ok);
+    }
+
+    /// `LD_PRELOAD` ausente NÃO é falha: o gateway injeta o shim nos filhos
+    /// MCP por conta própria.
+    #[test]
+    fn termux_check_reports_ld_preload_without_calling_it_a_failure() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        let preload = item(&check, "LD_PRELOAD");
+        assert!(preload.ok);
+        assert!(preload.next_step.is_none());
+
+        let env = TermuxEnv {
+            ld_preload: Some("/lib/x.so"),
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        assert!(item(&check, "LD_PRELOAD").detail.contains("/lib/x.so"));
+    }
+
+    #[test]
+    fn termux_check_flags_a_missing_mcp_wrapper() {
+        let wrapper = format!("{TERMUX_PREFIX}/bin/garra-mcp-server");
+        let check = collect_termux_check(&termux_env(), |p| p.display().to_string() == wrapper);
+        assert!(item(&check, "Wrapper MCP").ok);
+
+        let check = collect_termux_check(&termux_env(), |_| false);
+        let w = item(&check, "Wrapper MCP");
+        assert!(!w.ok);
+        assert!(w.next_step.is_some_and(|s| s.contains("install.sh")));
+    }
+
+    /// Match exato de componente do PATH: um prefixo como
+    /// `/data/data/com.termux/files/usr/bin-old` não pode contar como acerto.
+    #[test]
+    fn termux_check_matches_path_entries_exactly() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        assert!(item(&check, "$PREFIX/bin no PATH").ok);
+
+        for path in [
+            "/system/bin:/usr/bin",
+            "/data/data/com.termux/files/usr/bin-old",
+            "/prefix/data/data/com.termux/files/usr/bin",
+        ] {
+            let env = TermuxEnv {
+                path: Some(path),
+                ..termux_env()
+            };
+            let check = collect_termux_check(&env, |_| true);
+            let p = item(&check, "$PREFIX/bin no PATH");
+            assert!(!p.ok, "PATH {path:?} não deveria contar como acerto");
+            assert!(p.next_step.is_some());
+        }
+    }
+
+    /// Sem `$PREFIX` nada explode — o doctor precisa sobreviver a ambiente
+    /// degradado, como já sobrevive a config ausente.
+    #[test]
+    fn termux_check_survives_a_missing_prefix() {
+        let env = TermuxEnv {
+            prefix: None,
+            path: None,
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        assert_eq!(check.items.len(), 5);
+        for label in ["termux-exec", "Wrapper MCP", "$PREFIX/bin no PATH"] {
+            assert!(!item(&check, label).ok);
+        }
     }
 
     // ─── detect_termux ─────────────────────────────────────────────────────
@@ -612,6 +949,7 @@ mod tests {
                 gateway_port: 3888,
                 port_listening: false,
             },
+            termux_check: None,
         };
         assert_eq!(compute_doctor_exit_code(&report, false), 65);
         assert_eq!(compute_doctor_exit_code(&report, true), 65);
