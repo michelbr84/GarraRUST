@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -335,6 +336,22 @@ impl McpManager {
             c
         };
 
+        // Termux (issues #909/#913): on Android an ELF exec goes through the
+        // termux-exec shim, and a host that spawns the gateway with a filtered
+        // environment strips `LD_PRELOAD` — after which every MCP child that is
+        // an npm/pip script dies on its `/usr/bin/...` shebang. Injected before
+        // the config overlay below so an explicit `env.LD_PRELOAD` still wins.
+        #[cfg(target_os = "android")]
+        if let Some(preload) = termux_ld_preload(
+            env,
+            std::env::var("PREFIX").ok().as_deref(),
+            std::env::var("LD_PRELOAD").ok().as_deref(),
+            |path| path.exists(),
+        ) {
+            tracing::debug!(server = %name, "Termux: injecting LD_PRELOAD (termux-exec) into MCP child");
+            cmd.env("LD_PRELOAD", preload);
+        }
+
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -346,7 +363,7 @@ impl McpManager {
         }
 
         // Containment: children must not outlive an abruptly-killed gateway.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         apply_parent_death_signal(&mut cmd);
 
         let transport = TokioChildProcess::new(cmd)
@@ -1079,12 +1096,62 @@ fn is_tool_allowed(allowed: &[String], tool_name: &str) -> bool {
     allowed.is_empty() || allowed.iter().any(|t| t == tool_name)
 }
 
+/// Path of the termux-exec shim, relative to `$PREFIX`.
+///
+/// Only ever read on Android; kept out of `cfg` so the decision function below
+/// stays compilable — and therefore testable — on every host CI runs on.
+const TERMUX_EXEC_LIB: &str = "lib/libtermux-exec.so";
+
+/// Decide the `LD_PRELOAD` an MCP child needs to exec inside Termux.
+///
+/// On Android an ELF exec only resolves correctly through the termux-exec
+/// shim. A host that spawns the gateway with a filtered environment (`env -i
+/// PATH=… HOME=…`, which is good security hygiene) drops `LD_PRELOAD`, and
+/// from there every MCP child that is an npm/pip script fails on its
+/// `/usr/bin/env node` shebang — the path Termux does not have (issue #913).
+///
+/// Pure on purpose: every input is a parameter, including the existence probe,
+/// so the whole decision table is asserted in unit tests on a Linux runner.
+///
+/// Returns `None` — i.e. changes nothing — whenever:
+/// * the server's own config sets `LD_PRELOAD` (the operator always wins), or
+/// * the gateway process already inherited a non-empty `LD_PRELOAD`, or
+/// * `$PREFIX` does not look like a Termux sandbox, or
+/// * the shim is not actually installed (`pkg install termux-exec`).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn termux_ld_preload<F>(
+    server_env: &HashMap<String, String>,
+    prefix: Option<&str>,
+    inherited_ld_preload: Option<&str>,
+    lib_exists: F,
+) -> Option<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    if server_env.contains_key("LD_PRELOAD") {
+        return None;
+    }
+    if inherited_ld_preload.is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    // Same heuristic as `install.sh:detect_platform` and
+    // `garraia-cli::doctor::detect_termux` — kept in lockstep deliberately.
+    let prefix = prefix.filter(|p| p.contains("com.termux"))?;
+    let lib = Path::new(prefix).join(TERMUX_EXEC_LIB);
+    lib_exists(&lib).then(|| lib.to_string_lossy().into_owned())
+}
+
 /// Ask the kernel to signal the child when its parent (the gateway) dies.
 ///
 /// Without this, `kill -9` on the gateway — or any exit that skips the
 /// graceful shutdown path — leaves every MCP child running with no parent to
-/// reap it. Linux-only; other platforms rely on the shutdown path.
-#[cfg(target_os = "linux")]
+/// reap it. Other platforms rely on the shutdown path.
+///
+/// Android is listed explicitly because `target_os = "android"` is NOT covered
+/// by `target_os = "linux"` in Rust, even though bionic exposes the same
+/// `prctl(PR_SET_PDEATHSIG)`. Without the extra arm every MCP child spawned
+/// inside Termux was orphaned when the gateway died (issue #913).
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn apply_parent_death_signal(cmd: &mut Command) {
     // SAFETY: `prctl` is async-signal-safe and only affects the child.
     unsafe {
@@ -1119,6 +1186,88 @@ fn apply_memory_limit(cmd: &mut Command, limit_mb: u64) {
 
 #[cfg(test)]
 mod tests {
+    use super::{TERMUX_EXEC_LIB, termux_ld_preload};
+    use std::collections::HashMap;
+
+    const TERMUX_PREFIX: &str = "/data/data/com.termux/files/usr";
+
+    fn server_env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// The whole point of the injection: inside Termux, with the shim
+    /// installed and nothing else asking for a preload, MCP children get one.
+    #[test]
+    fn termux_ld_preload_injects_the_shim_when_nothing_else_set_it() {
+        let got = termux_ld_preload(&server_env(&[]), Some(TERMUX_PREFIX), None, |_| true);
+        assert_eq!(got, Some(format!("{TERMUX_PREFIX}/{TERMUX_EXEC_LIB}")));
+    }
+
+    /// An empty inherited value is not a preload — Termux hosts that export
+    /// `LD_PRELOAD=` would otherwise silently opt out of the fix.
+    #[test]
+    fn termux_ld_preload_treats_an_empty_inherited_value_as_unset() {
+        let got = termux_ld_preload(&server_env(&[]), Some(TERMUX_PREFIX), Some(""), |_| true);
+        assert!(got.is_some());
+    }
+
+    /// The operator always wins: an explicit `env.LD_PRELOAD` on the server
+    /// config is never second-guessed, even inside Termux.
+    #[test]
+    fn termux_ld_preload_never_overrides_the_server_config() {
+        let env = server_env(&[("LD_PRELOAD", "/custom/lib.so")]);
+        let got = termux_ld_preload(&env, Some(TERMUX_PREFIX), None, |_| true);
+        assert_eq!(got, None);
+    }
+
+    /// Same for a preload the gateway itself was started with — appending to
+    /// it is the caller's decision, not ours.
+    #[test]
+    fn termux_ld_preload_never_overrides_an_inherited_value() {
+        let got = termux_ld_preload(
+            &server_env(&[]),
+            Some(TERMUX_PREFIX),
+            Some("/other/lib.so"),
+            |_| true,
+        );
+        assert_eq!(got, None);
+    }
+
+    /// Off Termux nothing is injected, whatever the platform reports.
+    #[test]
+    fn termux_ld_preload_is_inert_outside_termux() {
+        for prefix in [None, Some("/usr"), Some("/home/me/.local")] {
+            let got = termux_ld_preload(&server_env(&[]), prefix, None, |_| true);
+            assert_eq!(got, None, "prefix {prefix:?} must not trigger injection");
+        }
+    }
+
+    /// `pkg install termux-exec` is a prerequisite, not an assumption:
+    /// pointing `LD_PRELOAD` at a file that is not there buys nothing and
+    /// makes the child's failure harder to read.
+    #[test]
+    fn termux_ld_preload_requires_the_shim_to_exist() {
+        let got = termux_ld_preload(&server_env(&[]), Some(TERMUX_PREFIX), None, |_| false);
+        assert_eq!(got, None);
+    }
+
+    /// The probe is handed the full path so a caller cannot accidentally test
+    /// `$PREFIX` itself for existence.
+    #[test]
+    fn termux_ld_preload_probes_the_full_shim_path() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let _ = termux_ld_preload(&server_env(&[]), Some(TERMUX_PREFIX), None, |p| {
+            seen.borrow_mut().push(p.display().to_string());
+            true
+        });
+        assert_eq!(
+            seen.into_inner(),
+            vec![format!("{TERMUX_PREFIX}/{TERMUX_EXEC_LIB}")]
+        );
+    }
 
     #[test]
     fn validate_mcp_url_allows_local_servers() {
