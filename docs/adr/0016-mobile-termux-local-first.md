@@ -135,3 +135,55 @@ O `install.sh` servido por `garraia.org` é cópia estática sincronizada do
 o que `irm https://garraia.org/install.sh` serve até o publish do dono. Até
 lá, o Termux resolve o script pelos mirrors diretos (GitHub release CDN,
 raw, jsDelivr) documentados no README.
+
+---
+
+## Amendment 2026-09-03 — o que o campo devolveu (issues #909–#913)
+
+Cinco issues de um único usuário rodando a v0.3.6 num Samsung A16 (Android 13,
+Termux), com o Garra em produção orquestrado por outro agente via MCP. O
+retorno confirmou a v0 e corrigiu duas premissas.
+
+**`rustls-platform-verifier` está fora do grafo do `garra`, e agora sob
+guarda.** O reporter viu o panic conhecido do crate (`Expect
+rustls-platform-verifier to be initialized`, `android.rs:90`) — ele exige um
+Context JNI que não existe num binário standalone. Não é o nosso binário:
+
+```
+cargo tree -p garraia --target aarch64-linux-android --invert rustls-platform-verifier
+# error: package ID specification `rustls-platform-verifier` did not match any packages
+```
+
+O crate entra no `Cargo.lock` só via `reqwest 0.13`, cuja feature `rustls` é
+ativada pelo `tauri-plugin-updater` do `garraia-desktop` — que nunca é
+buildado para Android. É um acidente feliz de resolução de features, não uma
+decisão, então virou uma guarda no `ci.yml` (job `android`).
+
+Corolário que vale escrever: **`SSL_CERT_FILE` não afeta o HTTPS do `garra`.**
+Todo o tráfego vai por `reqwest 0.12` com `rustls-tls`, cujos roots são os do
+webpki compilados no binário; nenhum trust store do sistema é lido. A única
+exceção é o `sqlx` (native-roots), ou seja TLS de Postgres. O `garra doctor`
+passou a dizer isso explicitamente.
+
+**O exec do Termux é problema do pai, não do processo.** Hosts MCP externos
+spawnam com ambiente filtrado e removem `LD_PRELOAD`; sem ele o exec de ELF
+falha *antes* de o binário rodar, então nenhuma correção dentro do `garraia`
+alcança o caso. Duas peças, em camadas diferentes:
+
+- `install.sh` escreve `$PREFIX/bin/garra-mcp-server` (wrapper que exporta o
+  shim e faz exec do CLI) — é o `command` que um host externo deve usar;
+- `McpManager::connect` injeta `LD_PRELOAD` nos filhos MCP sob
+  `cfg(target_os = "android")`, o que cobre a direção cliente (servidores
+  npm/pip com shebang `/usr/bin/env`). Nunca sobrescreve um valor explícito.
+
+**Bug de cfg encontrado no caminho:** `apply_parent_death_signal` era
+`#[cfg(target_os = "linux")]`, e `target_os = "android"` **não** é coberto por
+isso em Rust — todo filho MCP no Termux ficava órfão. O bionic expõe o mesmo
+`prctl(PR_SET_PDEATHSIG)`.
+
+**Sobre distribuição:** o relato "o binário de release não roda no Termux" era
+sobre uma v0.3.6 que *já publica* `garraia-android-aarch64`. A causa é a do
+Amendment acima — um `install.sh` estale servido pelo `garraia.org`, cujo
+publish é manual. A sonda do `install-endpoints.yml` ganhou uma guarda de
+frescor para o modo de falha que passava em todas as outras: endpoint que
+existe, responde 200, parseia — e está velho.

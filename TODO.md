@@ -5,12 +5,63 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-02 (America/New_York)
+**Atualizado:** 2026-09-03 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-03 (Termux hardening — issues #909-#913)
+
+Retorno de campo da Fase 0 (v0.3.6) num Samsung A16 / Android 13 / Termux, com
+o Garra em produção orquestrado por outro agente via MCP. Cinco issues, um só
+tema. Detalhes e rationale no Amendment 2026-09-03 da `docs/adr/0016-mobile-termux-local-first.md`.
+
+- **Containment de filhos MCP no Android corrigido** (#913): `apply_parent_death_signal`
+  era `#[cfg(target_os = "linux")]` em `crates/garraia-agents/src/mcp/manager.rs:1088`,
+  e `target_os = "android"` **não** é coberto por isso em Rust — todo filho MCP
+  no Termux ficava órfão quando o gateway morria. O bionic expõe o mesmo `prctl`.
+- **`LD_PRELOAD` injetado nos filhos MCP no Android** (#913): novo
+  `termux_ld_preload` em `manager.rs`, puro (a sonda de existência é parâmetro),
+  com 7 unit tests. Sem ele, servidor npm/pip morre no shebang `/usr/bin/env`.
+  Nunca sobrescreve valor explícito do config nem herdado.
+- **Wrapper `$PREFIX/bin/garra-mcp-server`** (#909): `install_termux_mcp_wrapper`
+  no `install.sh`; o exec falha *antes* de o processo existir, então a correção
+  tem de estar no pai. 7 casos novos em `tests/install_sh/detect_platform.sh`
+  (21 passando). Ausência de espelho em `install.ps1` justificada por escrito
+  nos dois cabeçalhos (regra 16).
+- **Bloco Termux acionável no `garra doctor`** (#909/#911/#913):
+  `collect_termux_check` em `crates/garraia-cli/src/doctor.rs` — trust store,
+  `SSL_CERT_FILE` (só quando há Postgres), termux-exec, `LD_PRELOAD`, wrapper,
+  `$PREFIX/bin` no PATH. Cada item não-OK imprime o passo seguinte. Não altera
+  exit code. 7 unit tests.
+- **#911 apurado como não-aplicável ao `garra`, e sob guarda**: `cargo tree -p
+  garraia --target aarch64-linux-android --invert rustls-platform-verifier`
+  devolve "did not match any packages". O crate só entra via `reqwest 0.13`
+  ativado pelo `tauri-plugin-updater` do `garraia-desktop`, nunca buildado para
+  Android. Novo job `android` no `.github/workflows/ci.yml` com a guarda
+  (verificada nos dois sentidos) + `cargo ndk check`, fechando também o gap de
+  o target só compilar na tag — que foi como o bug do cargo-ndk 4.x escapou.
+- **#910 apurado como já entregue**: a v0.3.6 publica `garraia-android-aarch64`
+  (51 MB, confirmado na API). A causa do relato é `install.sh` estale servido
+  pelo `garraia.org` (publish manual, regra 17). Guarda de frescor na sonda do
+  `install-endpoints.yml` (verificada contra o `install.sh` da v0.3.5), e a
+  ausência do asset no `release.yml` virou `::error` em vez de `::warning`.
+- **Documentação Termux ponta a ponta** (#912): `docs/installation.md` ganhou
+  `### Android (Termux)`, linha na tabela de assets, `### Build on Termux
+  (fallback)` com o override de LTO/OOM (`Signal 9`), e três seções de
+  troubleshooting; `docs/mcp.md` e `docs/cli-mcp-server.md` cobrem as duas
+  direções de MCP; wiki pt-BR e `docs/index.md` atualizados.
+
+### Próximos passos
+
+1. Validar em aparelho real (só o dono tem o Samsung A16): `install.sh` →
+   `garraia doctor` → `garra-mcp-server` sob host MCP com env filtrado.
+2. Republicar o site no Lovable e disparar o `install-endpoints.yml` manualmente
+   para confirmar que o `garraia.org/install.sh` deixou de estar estale.
+3. Cortar a v0.3.7 com o wrapper e a injeção de `LD_PRELOAD` (a doc já os
+   referencia por essa versão).
 
 ## Concluído em 2026-09-02 (Fase 0 Garra Mobile + fix Dependabot Updates)
 
