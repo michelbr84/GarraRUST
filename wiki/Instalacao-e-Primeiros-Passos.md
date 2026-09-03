@@ -25,6 +25,29 @@ curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/inst
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
 ```
 
+## Instalação em 1 comando (Android / Termux)
+
+A partir da `v0.3.6`. Rode **dentro do app [Termux](https://github.com/termux/termux-app#installation)** — a build do F-Droid ou do GitHub; o fork da Play Store é outro app, sem a permissão `RUN_COMMAND`, e não é suportado.
+
+```bash
+pkg install curl termux-exec
+curl -fsSL https://garraia.org/install.sh | bash
+garraia doctor    # plataforma, dirs, config, providers, daemon + bloco Termux
+garraia chat      # provider de nuvem, ou --url http://PC-NA-LAN:8080
+```
+
+Dentro do Termux o `uname -s` responde `Linux`, então o instalador detecta o Android por `$TERMUX_VERSION` ou por um `$PREFIX` com `com.termux`. Nesse ramo ele baixa o `garraia-android-aarch64` (bionic, API 21+) em vez do `garraia-linux-aarch64` (glibc, que **não** roda no Android), pula o preflight de glibc, instala em `$PREFIX/bin` (no PATH, sem `sudo`) e escreve o wrapper `$PREFIX/bin/garra-mcp-server` para hosts MCP externos.
+
+**Mantenha a sessão viva.** O phantom process killer e a otimização de bateria do Android matam processos longos em background: rode `termux-wake-lock`, isente o Termux da otimização de bateria e prefira o gateway no foreground da sessão que o iniciou.
+
+**Se o binário baixar e não executar**, o `install.sh` que rodou é anterior à v0.3.6 (o `garraia.org` serve uma cópia estática publicada manualmente, que pode atrasar em relação ao `main`). Use o espelho que acompanha a fonte:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | bash
+```
+
+Detalhes, build a partir do fonte no aparelho (atenção ao LTO/OOM) e troubleshooting de MCP: [`docs/installation.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/installation.md) e [ADR 0016](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0016-mobile-termux-local-first.md).
+
 ## Instalação em 1 comando (Windows)
 
 ```powershell

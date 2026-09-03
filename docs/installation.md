@@ -127,6 +127,47 @@ still download by hand if you need an older version.
 built best-effort, so a given release may ship without it. The MSI is not a
 prerequisite for the CLI; the one-liner above is the supported path.
 
+### Android (Termux)
+
+From `v0.3.6` the installer has an Android branch. Run it **inside the
+[Termux](https://github.com/termux/termux-app#installation) app** — the F-Droid
+or GitHub build; the Play Store fork is a different app that removed the
+`RUN_COMMAND` permission and is not supported.
+
+```bash
+pkg install curl termux-exec
+curl -fsSL https://garraia.org/install.sh | bash
+garraia doctor    # platform, dirs, config, providers, daemon + a Termux block
+garraia chat      # a cloud provider, or --url http://PC-ON-LAN:8080
+```
+
+`uname -s` reports `Linux` inside Termux, so the installer detects Android
+through `$TERMUX_VERSION` (exported by every Termux shell) or a `*com.termux*`
+`$PREFIX`. On that branch it:
+
+- downloads `garraia-android-aarch64` (bionic, `aarch64-linux-android`, API
+  21+) instead of the glibc `garraia-linux-aarch64`, which does **not** run on
+  Android;
+- skips the glibc preflight — Termux has no glibc loader to interrogate;
+- installs into `$PREFIX/bin`, which is on `PATH` and writable without `sudo`
+  (`/usr/local/bin` would be created *outside* `PATH`, a silent trap);
+- writes `$PREFIX/bin/garra-mcp-server`, a wrapper for external MCP hosts (see
+  [MCP servers under Termux](#mcp-servers-under-termux) below).
+
+`garra update` resolves the same asset from inside Termux, so self-update works
+normally.
+
+**Keep the session alive.** Android's phantom process killer and battery
+optimization stop long-running background processes. Run `termux-wake-lock`,
+exempt Termux from battery optimization, and prefer keeping the gateway in the
+foreground of the Termux session that started it. `garraia start -d` works, but
+Android may still reap it; a real "always on" needs the companion app on the
+v1 rung of [ADR 0016](adr/0016-mobile-termux-local-first.md).
+
+**Static musl builds are deliberately not shipped.** A static musl binary
+breaks DNS on Android: there is no `/etc/resolv.conf`, musl's internal resolver
+never reaches `dnsproxyd`, and `LD_PRELOAD` cannot intercept a static binary.
+
 ### Garra Desktop on Linux
 
 From `v0.3.5` releases also carry the desktop app (parrot overlay + chat bar)
@@ -185,6 +226,41 @@ cargo build --release
 # Or with plugin support
 cargo build --release --features plugins
 ```
+
+### Build on Termux (fallback)
+
+Building on the device is a **fallback**, not the supported path — the release
+asset above is. Use it when you need an unreleased commit, or on a device the
+published binary does not cover.
+
+```bash
+pkg install rust clang pkg-config openssl ca-certificates git
+
+# Termux ships its own CA bundle; without this, TLS fails with a generic error
+# during the build (crates.io fetches) rather than anything that names certs.
+export SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem
+
+# LTO is the difference between "slow" and "impossible" here. The workspace
+# release profile sets `lto = true` + `codegen-units = 1`, and on a mid-range
+# phone the linker gets OOM-killed -- the symptom is a bare `Signal 9`, with no
+# error message pointing at memory. Override both:
+CARGO_PROFILE_RELEASE_LTO=false \
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+  cargo build --release --package garraia
+
+install -m 755 target/release/garra "$PREFIX/bin/garraia"
+```
+
+Budget for it: on a device with under 4 GB of RAM expect **30-60 minutes** and
+set up swap first. Even with LTO off, the link step is the peak. Keep the
+session in the foreground (`termux-wake-lock`) — a build backgrounded long
+enough gets killed by the phantom process killer, which also reads as an
+unexplained `Signal 9`.
+
+Note that a source build does **not** produce `$PREFIX/bin/garra-mcp-server`;
+that wrapper is written by `install.sh`. See
+[MCP servers under Termux](#mcp-servers-under-termux) for how to create it by
+hand.
 
 ### Install
 
@@ -356,6 +432,7 @@ Download from [GitHub Releases](https://github.com/michelbr84/GarraRUST/releases
 | macOS | aarch64 (Apple Silicon) | `garraia-macos-aarch64` | `garraia-macos-aarch64.tar.gz` |
 | Windows | x86_64 | `garraia-windows-x86_64.exe` | `garraia-windows-x86_64.zip` |
 | Windows | aarch64 (ARM64, from `v0.3.4`) | `garraia-windows-aarch64.exe` | `garraia-windows-aarch64.zip` |
+| Android (Termux) | aarch64 (from `v0.3.6`) | `garraia-android-aarch64` | `garraia-android-aarch64.tar.gz` |
 
 Plus, on Windows only, the desktop installers
 `garraia-desktop-windows-x86_64.msi` and
@@ -441,6 +518,101 @@ irm https://cdn.jsdelivr.net/gh/michelbr84/GarraRUST@main/install.ps1 | iex
 Inside the installer itself, downloads retry automatically and the release
 tag is resolved from the `github.com` redirect (not the API), so the 429
 surface is limited to that very first fetch of the script.
+
+### Termux: the downloaded binary does not run
+
+The symptom is that the installer downloads, the checksum verifies, and running
+`garraia` fails anyway. That means an `install.sh` **older than v0.3.6** ran: it
+had no Android branch, so `uname -s` reporting `Linux` made it fetch the glibc
+`garraia-linux-aarch64`, which Android's bionic loader cannot run.
+
+`https://garraia.org/install.sh` is a static copy in a separate repository,
+synced on a daily cron and published manually — so it can lag behind `main` by
+a day or more. If you hit this, fetch from a channel that tracks the source
+directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | bash
+```
+
+Confirm before running: `grep -c TERMUX_VERSION install.sh` must be non-zero.
+
+### Termux: TLS, `SSL_CERT_FILE` and certificates
+
+**`SSL_CERT_FILE` does not affect the CLI's HTTPS traffic.** `garra` talks to
+LLM providers, GitHub and every other endpoint through `reqwest` with the
+`rustls-tls` feature, whose roots are the webpki (Mozilla) set **compiled into
+the binary**. No system trust store is read, so nothing to point at and nothing
+to configure — TLS works on a fresh Termux install with no setup.
+
+Two real exceptions:
+
+- **Postgres.** The `sqlx` driver uses native roots, so TLS to a Postgres
+  server does read the system store. Export
+  `SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem` (`pkg install ca-certificates`).
+  `garraia doctor` raises this only when a `GARRAIA_*_DATABASE_URL` is set.
+- **Building from source.** `cargo` fetching crates.io is a separate process
+  with its own trust store — see the build section above.
+
+If you are debugging a `rustls-platform-verifier` panic (`Expect
+rustls-platform-verifier to be initialized`, `android.rs:90`): that crate needs
+a JNI Context that does not exist outside the JVM, and it is **not** in the
+`garra` binary. Verify with
+`cargo tree -p garraia --target aarch64-linux-android --invert rustls-platform-verifier`,
+which reports "did not match any packages"; CI asserts it stays that way. A
+panic with that message comes from a different binary on the device.
+
+### MCP servers under Termux
+
+Two distinct failures, with distinct fixes.
+
+**1. Garra as an MCP *server*, spawned by an external host.** MCP hosts spawn
+their servers with a filtered environment (`env -i PATH=… HOME=…`), which drops
+`LD_PRELOAD`. On Android the ELF exec resolves through the termux-exec shim, so
+without it the exec fails before `garraia` runs at all — nothing inside the
+binary can recover from that. Point the host at the wrapper `install.sh`
+installs:
+
+```json
+{ "mcpServers": { "garra": { "command": "/data/data/com.termux/files/usr/bin/garra-mcp-server" } } }
+```
+
+Equivalent, if you would rather configure the host directly:
+
+```json
+{ "mcpServers": { "garra": {
+    "command": "garraia", "args": ["mcp-server"],
+    "env": { "LD_PRELOAD": "/data/data/com.termux/files/usr/lib/libtermux-exec.so" }
+} } }
+```
+
+After a source build the wrapper does not exist; recreate it with:
+
+```bash
+cat > "$PREFIX/bin/garra-mcp-server" <<EOF
+#!$PREFIX/bin/sh
+# \$PREFIX is baked in as a default on purpose: the host that runs this
+# wrapper is the one filtering the environment, so PREFIX may be unset too.
+PREFIX="\${PREFIX:-$PREFIX}"
+if [ -f "\${PREFIX}/lib/libtermux-exec.so" ] && [ -z "\${LD_PRELOAD:-}" ]; then
+    LD_PRELOAD="\${PREFIX}/lib/libtermux-exec.so"
+    export LD_PRELOAD
+fi
+exec "$PREFIX/bin/garraia" mcp-server "\$@"
+EOF
+chmod +x "$PREFIX/bin/garra-mcp-server"
+```
+
+**2. Garra as an MCP *client*, spawning `npx`/`python` servers.** Packages
+installed manually through npm/pip carry `/usr/bin/env` shebangs, a path Termux
+does not have, and the child dies with
+`env: 'node': No such file or directory`. Run `pkg install termux-exec` — from
+`v0.3.7` the gateway injects `LD_PRELOAD` into MCP children on Android by
+itself, but the shim still has to be installed. For a binary you installed by
+hand, `termux-fix-shebang <file>` rewrites the shebang in place.
+
+`garraia doctor` checks the shim, the wrapper, `$PREFIX/bin` on `PATH` and the
+trust store in one pass, and prints the next step for whatever is missing.
 
 ### Port already in use
 

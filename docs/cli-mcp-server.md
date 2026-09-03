@@ -221,6 +221,45 @@ Schema validation rejected the call. Check:
 - `system_prompt` ≤ 8 KiB.
 - No unknown properties in the arguments object.
 
+### Termux: the host cannot start the server at all
+
+`Connection closed` with no output, or `Permission denied` — and
+`garra mcp-server` works fine when you run it yourself in the Termux shell.
+
+MCP hosts spawn their servers with a filtered environment (`env -i PATH=…
+HOME=…`, good security hygiene), which drops `LD_PRELOAD`. On Android the ELF
+exec resolves through the termux-exec shim, so without it the exec fails
+**before** `garraia` runs — there is no point inside the process at which it
+could repair this, which is why the fix lives in the parent.
+
+Reproduce:
+
+```bash
+env -i PATH=$PATH HOME=$HOME garraia mcp-server                        # fails
+LD_PRELOAD=$PREFIX/lib/libtermux-exec.so garraia mcp-server            # works
+```
+
+From `v0.3.7`, `install.sh` writes `$PREFIX/bin/garra-mcp-server` on the
+Android branch: a wrapper that exports the shim (when installed) and execs the
+CLI. Point the host at it:
+
+```json
+{ "mcpServers": { "garra": { "command": "/data/data/com.termux/files/usr/bin/garra-mcp-server" } } }
+```
+
+Or configure the host's environment directly, which is equivalent:
+
+```json
+{ "mcpServers": { "garra": {
+    "command": "garraia", "args": ["mcp-server"],
+    "env": { "LD_PRELOAD": "/data/data/com.termux/files/usr/lib/libtermux-exec.so" }
+} } }
+```
+
+`pkg install termux-exec` is a prerequisite either way. After a build from
+source the wrapper does not exist — `docs/installation.md` has the snippet to
+recreate it. `garraia doctor` checks for both the shim and the wrapper.
+
 ## Security notes
 
 - **In-process only**. The tool handler calls `ask::ask_oneshot`
