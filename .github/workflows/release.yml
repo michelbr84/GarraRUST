@@ -634,7 +634,13 @@ jobs:
           if [ -f artifacts/garraia-android-aarch64/garraia-android-aarch64 ]; then
             cp artifacts/garraia-android-aarch64/garraia-android-aarch64 release/
           else
-            echo "::warning ::Android aarch64 binary not built; release will ship without it."
+            # ::error, not ::warning, even though the job stays best-effort and
+            # this does NOT abort the release. The consequence is not "one
+            # fewer download": install.sh's Termux branch resolves this exact
+            # asset name, so a release without it makes `curl | bash` inside
+            # Termux fail outright (issue #910). A ::warning was invisible in
+            # the run summary next to Dependabot noise; an annotation is not.
+            echo "::error ::Android aarch64 binary not built. The release will ship WITHOUT it, and install.sh inside Termux resolves garraia-android-aarch64 by exact name -- Android installs will fail on this tag. Re-run build-android-arm64 and re-publish before announcing."
           fi
 
           # The Windows desktop installers, when the best-effort job produced

@@ -160,6 +160,33 @@ Verify server is running:
 garraia mcp list
 ```
 
+### Server won't start on Termux (Android)
+
+`env: 'node': No such file or directory`, or a child that dies immediately
+with `Permission denied`.
+
+Servers installed manually through npm/pip carry `/usr/bin/env` shebangs, and
+Termux has no `/usr/bin`. The fix is the termux-exec shim, which rewrites those
+paths at exec time:
+
+```bash
+pkg install termux-exec
+```
+
+From `v0.3.7` the gateway also injects
+`LD_PRELOAD=$PREFIX/lib/libtermux-exec.so` into MCP children on Android when
+nothing else set it — but the shim still has to be installed for that to mean
+anything. An explicit `env.LD_PRELOAD` on the server's config is never
+overridden.
+
+For a single binary you installed by hand, `termux-fix-shebang <file>` rewrites
+its shebang in place instead.
+
+`garraia doctor` reports whether the shim is present, along with the rest of
+the Termux environment. The reverse direction — an external MCP host failing to
+start `garra mcp-server` — is a different problem with a different fix; see
+[`docs/cli-mcp-server.md`](cli-mcp-server.md).
+
 ### Connection timeout
 
 Increase timeout in config:
