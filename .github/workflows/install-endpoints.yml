@@ -54,6 +54,12 @@ jobs:
           failures=0
           workdir="$(mktemp -d)"
 
+          # Marcador de frescor do install.sh servido — ver a guarda em
+          # probe(). `TERMUX_VERSION` entrou com o ramo Android da v0.3.6
+          # (ADR 0016) e é o ramo cuja ausência quebra silenciosamente uma
+          # plataforma inteira.
+          FRESHNESS_MARKER="TERMUX_VERSION"
+
           # fail <label> <mode> <mensagem> — ::error e conta, ou ::warning.
           fail() {
             if [ "$2" = "warn" ]; then
@@ -121,6 +127,26 @@ jobs:
               if [ "${sh_status}" -ne 0 ]; then
                 fail "${label}" "${on_fail}" \
                   "corpo não passa em 'sh -n' (truncado/corrompido?)"
+                echo "::endgroup::"; return 0
+              fi
+
+              # Guarda de FRESCOR, e o terceiro modo de falha desta rota.
+              #
+              # Os dois primeiros apagões eram sobre o endpoint existir
+              # (HTML em 200; depois 404 puro). Este é sobre ele existir e
+              # estar VELHO: o garraia.org serve uma cópia estática do
+              # public/ do repo do site, sincronizada por cron diário e
+              # publicada MANUALMENTE no Lovable. Um install.sh de antes do
+              # ramo Termux passa em shebang, em 'sh -n' e em HTTP 200 — e
+              # ainda assim entrega o binário glibc para quem está no
+              # Termux, que não roda no Android (issue #910).
+              #
+              # ${FRESHNESS_MARKER} é a evidência mais recente de que a
+              # cópia servida acompanhou o main. Ao adicionar um ramo novo
+              # e load-bearing ao install.sh, mova o marcador para ele.
+              if ! grep -q "${FRESHNESS_MARKER}" "${body_file}"; then
+                fail "${label}" "${on_fail}" \
+                  "corpo é um install.sh DESATUALIZADO — sem '${FRESHNESS_MARKER}' (o publish do site é manual; republique no Lovable)"
                 echo "::endgroup::"; return 0
               fi
             fi

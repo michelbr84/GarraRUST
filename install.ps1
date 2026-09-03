@@ -74,6 +74,16 @@ $script:Repo = 'michelbr84/GarraRUST'
 # The installed command is `garraia`, while `cargo build` produces `garra`.
 # The drift is intentional and documented in README.md; install.sh:57 makes the
 # same choice via BINARY="garraia".
+#
+# DELIBERATE PARITY GAP (CLAUDE.md rule 16). install.sh has one more install
+# step with no counterpart here: install_termux_mcp_wrapper, which drops a
+# `garra-mcp-server` shell wrapper next to the binary on Android. It exports
+# LD_PRELOAD=$PREFIX/lib/libtermux-exec.so before exec'ing the CLI, because an
+# external MCP host spawns its servers with a filtered environment and Termux
+# needs that shim for the ELF exec itself to succeed (issue #909). Windows has
+# no analogue: CreateProcess resolves .cmd shims natively (see the `cmd /c`
+# branch in garraia-agents' MCP manager), there is no preload mechanism in the
+# exec path, and no $PREFIX sandbox. Nothing to mirror -- not an omission.
 $script:Binary = 'garraia'
 $script:UserAgent = 'garraia-install-ps1'
 

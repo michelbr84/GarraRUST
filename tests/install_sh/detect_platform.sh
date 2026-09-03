@@ -197,6 +197,96 @@ fi
 rm -f "${gate_out}"
 
 echo ""
+echo "== detect_platform: garra-mcp-server wrapper (issue #909) =="
+
+# The wrapper is what makes `garraia mcp-server` reachable from an external MCP
+# host: hosts spawn with a filtered environment, LD_PRELOAD is dropped, and the
+# ELF exec then fails inside Termux before the binary runs. Nothing inside
+# `garraia` can recover from that, so the contract lives here.
+wrapper_dir="${tmp_root}/wrapper"
+rc=0
+(
+    export OS_NAME="android"
+    export PREFIX="${fake_prefix}"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR="${wrapper_dir}"
+    export VERSION="vTEST"
+    install_binary
+) >/dev/null 2>&1 || rc=$?
+wrapper="${wrapper_dir}/garra-mcp-server"
+if [ "${rc}" -ne 0 ]; then
+    fail "install_binary writes the MCP wrapper on android — exit ${rc}"
+elif [ -x "${wrapper}" ]; then
+    pass "install_binary writes the MCP wrapper on android"
+else
+    fail "install_binary writes the MCP wrapper on android — missing ${wrapper}"
+fi
+
+# Shebang must be an absolute Termux path: /usr/bin/env does not exist in
+# Termux, which is the same breakage the wrapper works around.
+if [ -f "${wrapper}" ] && head -1 "${wrapper}" | grep -q "^#!${fake_prefix}/bin/sh$"; then
+    pass "MCP wrapper shebang is an absolute Termux path"
+else
+    fail "MCP wrapper shebang is an absolute Termux path — got: $(head -1 "${wrapper}" 2>/dev/null)"
+fi
+
+# The three load-bearing lines: the shim export, the guard that keeps the
+# wrapper usable without termux-exec, and the exec into the real binary.
+if grep -q 'libtermux-exec.so' "${wrapper}" 2>/dev/null; then
+    pass "MCP wrapper exports the termux-exec shim"
+else
+    fail "MCP wrapper exports the termux-exec shim"
+fi
+if grep -q 'exec "'"${wrapper_dir}"'/garraia" mcp-server' "${wrapper}" 2>/dev/null; then
+    pass "MCP wrapper execs the installed binary"
+else
+    fail "MCP wrapper execs the installed binary — got: $(grep '^exec' "${wrapper}" 2>/dev/null)"
+fi
+
+# A caller-supplied LD_PRELOAD is never clobbered by the wrapper.
+if grep -q 'LD_PRELOAD:-' "${wrapper}" 2>/dev/null; then
+    pass "MCP wrapper leaves an inherited LD_PRELOAD alone"
+else
+    fail "MCP wrapper leaves an inherited LD_PRELOAD alone"
+fi
+
+# Reinstalling must not append or fail — the installer is re-run on upgrades.
+rc=0
+(
+    export OS_NAME="android"
+    export PREFIX="${fake_prefix}"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR="${wrapper_dir}"
+    export VERSION="vTEST"
+    install_binary
+) >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ] && [ "$(grep -c '^exec ' "${wrapper}")" -eq 1 ]; then
+    pass "MCP wrapper install is idempotent"
+else
+    fail "MCP wrapper install is idempotent — exit ${rc}, exec lines $(grep -c '^exec ' "${wrapper}")"
+fi
+
+# Off Android the wrapper must not exist: it is meaningless anywhere the exec
+# path is not Termux's, and a stray file on PATH is worse than none.
+linux_dir="${tmp_root}/linux"
+rc=0
+(
+    export OS_NAME="linux"
+    export ARTIFACT="garraia-android-aarch64"
+    export GARRAIA_TMPDIR="${tmp_root}"
+    export GARRAIA_INSTALL_DIR="${linux_dir}"
+    export VERSION="vTEST"
+    install_binary
+) >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ] && [ ! -e "${linux_dir}/garra-mcp-server" ]; then
+    pass "MCP wrapper is not installed off android"
+else
+    fail "MCP wrapper is not installed off android — exit ${rc}"
+fi
+
+echo ""
 echo "== detect_platform: android notices and glibc skip =="
 
 # The Termux advisory only prints on android.
