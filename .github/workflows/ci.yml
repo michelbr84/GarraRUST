@@ -716,6 +716,78 @@ jobs:
           SWAGGER_UI_DOWNLOAD_URL: file:///tmp/swagger-ui-cache/v5.17.14.zip
         run: cargo +1.95 check --workspace --exclude garraia-desktop --locked
 
+  # Android/Termux (ADR 0016, issues #910/#911/#913).
+  #
+  # Por que existe: até aqui `aarch64-linux-android` só era compilado no
+  # release.yml, então uma quebra do target só aparecia DEPOIS de a tag ser
+  # empurrada — foi exatamente assim que o bug do cargo-ndk 4.x (`-p` virou
+  # `--package`) derrubou o job android da v0.3.6. Este job move a descoberta
+  # para o PR. `check`, não `build`: basta type-checar o target para pegar
+  # regressões de cfg (`target_os = "android"` NÃO é coberto por
+  # `target_os = "linux"`), e um link completo não caberia no tempo de PR.
+  android:
+    name: Android (Termux) check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust with the Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # A guarda do issue #911, e a razão pela qual ela roda ANTES do NDK:
+      # `cargo tree --target` é resolução de dependências, não compilação, e
+      # portanto não precisa de toolchain do target. Barata e independente.
+      #
+      # O que ela protege: `rustls-platform-verifier` entra em panic fora da
+      # JVM ("Expect rustls-platform-verifier to be initialized",
+      # android.rs:90), e num binário standalone do Termux não existe Context
+      # Java nenhum. Hoje ele fica fora do grafo do `garra` por acidente
+      # feliz de features — o `reqwest 0.13` que o traz só é ativado com a
+      # feature `rustls` pelo tauri-plugin-updater, e `garraia-desktop` nunca
+      # é buildado para Android. Um bump de dependência que ative essa
+      # feature em qualquer lugar do grafo do CLI quebraria TODO o HTTPS no
+      # Termux em runtime, silenciosamente. Esta guarda é o alarme.
+      #
+      # Guarda POSITIVA de propósito: a forma tentadora
+      # (`if cargo tree --invert <crate>; then falhar; fi`) depende do comando
+      # sair não-zero com "did not match any packages", e passaria calada em
+      # qualquer OUTRA falha (rede, target ausente, lock inválido). Aqui a
+      # árvore inteira TEM de resolver antes de qualquer conclusão.
+      - name: Assert the Android CLI graph has no rustls-platform-verifier
+        run: |
+          set -euo pipefail
+          cargo tree --package garraia --target aarch64-linux-android \
+            --edges normal --locked > android-graph.txt
+          if grep -q 'rustls-platform-verifier' android-graph.txt; then
+            echo "::error ::rustls-platform-verifier entrou no grafo Android do binario garra. Ele entra em panic fora da JVM (issue #911) e quebraria todo o HTTPS no Termux. Veja quem o puxa com: cargo tree -p garraia --target aarch64-linux-android --invert rustls-platform-verifier"
+            exit 1
+          fi
+          echo "OK: rustls-platform-verifier ausente do grafo Android."
+
+      - name: Pin Android NDK
+        env:
+          ANDROID_NDK_VERSION: 27.3.13750724
+        run: |
+          set -euo pipefail
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK_VERSION}" >/dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        # Pin 3.5.0 em lockstep com release.yml: na 4.x o `-p` do cargo-ndk
+        # deixou de ser `--platform` (API level) e virou `--package` do Cargo,
+        # e o build morre em panic `unknown package: 21`. Bumpar aqui exige
+        # bumpar lá e trocar a flag nos dois.
+        run: cargo install cargo-ndk --locked --version 3.5.0
+
+      - name: cargo ndk check
+        run: cargo ndk -t arm64-v8a -p 21 -- check --release --package garraia --locked
+
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:
     name: E2E Tests
