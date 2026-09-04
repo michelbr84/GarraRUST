@@ -149,9 +149,11 @@ pub async fn admin_create_mcp(
 /// config, and updates the registry status. Returns 404 if the server is not
 /// registered, 503 if no MCP manager is wired, or 502 if the reconnect fails.
 ///
-/// Note: AgentRuntime tool list is updated at startup and is not patched here;
-/// the restarted server's tools are available immediately through the McpManager
-/// for calls made via the tool-call path.
+/// Issue #924: the restarted server's tools are also re-registered into
+/// `AgentRuntime`. This used to be an admitted gap — the note here said the
+/// runtime list "is updated at startup and is not patched", which meant a
+/// restarted server's tools were reachable through `McpManager::call_tool`
+/// (admin, CLI) but invisible to `tool_definitions()`, i.e. to the LLM.
 pub async fn admin_restart_mcp(
     State(state): State<AdminState>,
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
@@ -267,6 +269,10 @@ pub async fn admin_restart_mcp(
         Ok(()) => {
             // Count discovered tools and sync registry status.
             let tool_count = manager.tool_info(&server_name).await.len();
+
+            // Issue #924: push the new inventory into the runtime too, so the
+            // LLM sees exactly what the registry just reported.
+            state.app_state.agents.sync_mcp_tools(manager).await;
             state
                 .app_state
                 .mcp_registry
