@@ -5,12 +5,74 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-03 (America/New_York)
+**Atualizado:** 2026-09-04 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Em andamento 2026-09-04 — de-flake do boot do gateway (PR #916)
+
+Depois do merge do #915 (`chore(release): v0.3.7`) quatro jobs ficaram
+vermelhos na `main` em `6f4ec06`: `Test (ubuntu-latest)`, `Coverage`,
+`E2E Tests` e `Playwright E2E`, mais o `Security Gate (BOLA)`.
+
+**Não é regressão do #915** — aquele commit tocou 4 arquivos e nenhum `.rs`, e
+a árvore idêntica (`f8109bb`) passou 20/20 no PR minutos antes.
+
+**Não é flake.** O re-run (attempt 2) falhou nos mesmos quatro jobs e nos
+mesmos passos — `Start gateway` estourando 35 s duas vezes, `Run tests` e
+`Generate lcov coverage`. Isso corrige a leitura inicial: um flake seria
+intermitente; um download de npm dentro do orçamento de boot falha de forma
+consistente assim que o registry fica lento.
+
+### Causa raiz
+
+`crates/garraia-gateway/src/server.rs:97` chama
+`McpPersistenceService::provision_filesystem_if_missing()` no boot, que grava
+uma entrada MCP com `command: "npx"` e `args: ["-y",
+"@modelcontextprotocol/server-filesystem", …]`. O boot seguinte spawna esse
+servidor, e o `-y` **baixa o pacote do npm na primeira execução** — dentro do
+caminho crítico do start.
+
+O `projects_test.rs` faz `config.mcp.clear()` justamente para não depender de
+MCP; o provisionamento desfazia isso pelas costas, gravando no config dir
+temporário do próprio teste.
+
+### Correções (PR #916)
+
+1. Opt-out `GARRAIA_DISABLE_MCP_AUTOPROVISION` em
+   `provision_filesystem_if_missing()`, cobrindo os dois call sites
+   (`server.rs:97` e `state.rs:219`), + 3 unit tests.
+2. `GARRAIA_DISABLE_MCP_AUTOPROVISION=1` nos passos "Start gateway" do
+   `E2E Tests` e do `Playwright E2E` no `ci.yml`.
+3. Opt-out nos 5 fixtures que sobem o gateway.
+4. **Config dir isolado** em `rest_v1_me.rs` e `router_smoke_test.rs`, os dois
+   únicos que subiam o gateway sem desviar `GARRAIA_CONFIG_DIR` — liam o config
+   dir REAL do desenvolvedor (XDG: `~/.config/garraia`). O opt-out sozinho não
+   os salvava: ele impede *gravar* a entrada, não *spawnar* servidores de um
+   `mcp.json` que já exista. O `skins_test.rs` já fazia esse desvio, com o
+   comentário "Point config dir to a temp location to avoid loading real MCP
+   configs" — o problema era conhecido ali e nunca foi propagado.
+5. O fixture do `projects_test.rs` deixou de engolir o erro de `server.run()`
+   (`let _ =`) e o laço de espera passou a `panic!` com o erro de boot em vez
+   de retornar em silêncio e produzir um `ConnectionRefused` sem contexto.
+
+Medição local com o `mcp.json` poluído presente e o cache do npx frio:
+`rest_v1_me` FAILED em 40,56 s → ok em 0,27 s. Os quatro fixtures no mesmo
+pior caso: 22 testes, 0 falhas, nenhuma linha `Secure MCP Filesystem Server
+running on stdio`.
+
+### Fora de escopo, para um PR seguinte
+
+- Migrar `projects_test.rs` para `build_router_for_test` + `oneshot`
+  (`server.rs:766`, já existe sob `#[cfg(feature = "test-helpers")]`) — sem
+  socket nenhum. É a solução estrutural.
+- Reavaliar os `#[ignore]` de `auth_test.rs:71` e `gateway_integration.rs:70,82`,
+  marcados com "server.run() exits silently on startup in CI … Deferred to the
+  gateway-test-fixture follow-up PR". O #916 **é** aquele follow-up; os ignores
+  podem cair depois que a causa comum estiver corrigida na `main`.
 
 ## Concluído em 2026-09-03 (Termux hardening — issues #909-#913)
 
