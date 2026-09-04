@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Segundo lote de retorno de campo do mesmo usuario da v0.3.6/v0.3.7 (Samsung
+A16 / Android 13 / Termux, agora na v0.3.8): issues #920-#925.
+
+### Added
+- **Wrapper `garra-mcp-server-linker` no Termux (#920).** "O exec falha no
+  Termux" sao na verdade duas falhas com o mesmo sintoma: (A) o host MCP nao
+  consegue exec'ar o wrapper *script*, e (B) o wrapper roda e o exec interno do
+  ELF falha. O `LD_PRELOAD` da v0.3.7 cobre B — e so quando o shim esta
+  instalado. O wrapper novo entrega o ELF ao loader do Android
+  (`/system/bin/linker64`, com fallback no caminho do apex), que mapeia o
+  binario sem shim e sem `LD_PRELOAD` nenhum.
+
+  **A nao tem solucao dentro de um wrapper**, porque o wrapper tambem precisa
+  ser exec'ado, e o CHANGELOG nao finge que tem: para A o host aponta
+  `command: /system/bin/linker64` e passa o binario como argumento — a config
+  que o relator validou fim a fim com `env -i`. Documentada em
+  `docs/installation.md` e `docs/cli-mcp-server.md`, e impressa pelo
+  `garraia doctor` com o caminho real preenchido.
+
+  Arquivo separado do wrapper existente por decisao de teste: a suite afirma
+  `grep -c '^exec '` == 1 em cada um, o que faz uma futura fusao dos dois
+  derrubar os testes em vez de apagar o fallback em silencio.
+  `detect_platform.sh` 21 -> 28 casos.
+- **Bloco Termux do `doctor` ganha "Wrapper MCP (loader)" (#920)**, com a
+  receita do `linker64` pronta para colar. `TermuxItem.next_step` passa de
+  `&'static str` para `String` para poder nomear o caminho real; a forma
+  serializada de `doctor --json` nao muda.
+
+### Fixed
+- **O aviso de secret de auth ausente passa a ser acionavel (#925).** Ele dizia
+  o que estava errado sem dizer se importava. Num gateway local single-user nao
+  importa: console web, `/ws`, `/v1/chat/completions`, `mcp-server`, CLI e
+  canais nao passam por `/auth/*`. Ja `/chat` (mobile, via `MobileAuth`, que
+  resolve o secret por `AppState::jwt_signing_secret`), o TOTP e o workspace
+  multi-tenant caem junto. A mensagem agora diz as duas coisas.
+
+  Diz tambem o que **nao** e verdade: setar so `GARRAIA_JWT_SECRET` destrava
+  nada, porque `AuthConfig::from_env` e all-or-nothing sobre quatro variaveis e
+  o secret so e ligado depois que os dois pools Postgres passam no guard de
+  role. Uma primeira versao desta mensagem prometia o contrario e teria mandado
+  o operador para um beco sem saida; um teste agora fixa a honestidade.
+
+  `/api/diagnostics` ja sugeria uma correcao para a mesma condicao, em outras
+  palavras e sem o comando; as duas superficies passam a dizer a mesma coisa.
+  Nenhum campo novo em `Finding` — o texto e anexado a `message`, e o prefixo
+  `"none of GARRAIA_JWT_SECRET"` e preservado porque ha teste sobre ele.
+- **`docs/auth-config.md` ganha a secao "Minimal local auth" (#925)** com as
+  duas tabelas (o que fica de pe, o que cai) e a nota sobre a passphrase do
+  cofre ser tambem o ultimo fallback do JWT — entao quem rodou o `garraia init`
+  e escolheu o cofre pode ja ter um secret sem saber. `docs/index.md` nao
+  linkava esse documento de lugar nenhum; passa a linkar.
+
 ## [0.3.8] - 2026-09-04
 
 Corrige uma falha de boot do gateway que deixou a `main` vermelha logo apos a

@@ -248,7 +248,11 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if jwt_configured {
             None
         } else {
-            Some("Set GARRAIA_JWT_SECRET to a >=32-byte random value.")
+            Some(
+                "Optional on a local single-user gateway. To enable auth you need all \
+                 four auth env vars plus Postgres, not this one alone; start with \
+                 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32). See docs/auth-config.md.",
+            )
         },
     });
 
