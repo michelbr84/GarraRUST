@@ -248,7 +248,10 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if jwt_configured {
             None
         } else {
-            Some("Set GARRAIA_JWT_SECRET to a >=32-byte random value.")
+            Some(
+                "export GARRAIA_JWT_SECRET=$(openssl rand -hex 32) — \
+                 optional on a local single-user gateway. See docs/auth-config.md.",
+            )
         },
     });
 
