@@ -31,6 +31,10 @@ async fn start_test_gateway_with_skins_dir(skins_dir: &str) -> String {
     let tmp_config = tempfile::tempdir().expect("create temp config dir");
     // SAFETY: we are in a test and no other threads are reading these env vars yet.
     unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
         std::env::set_var("GARRAIA_CONFIG_DIR", tmp_config.path().to_str().unwrap());
         std::env::set_var("GARRAIA_SKINS_DIR", skins_dir);
     }
@@ -74,6 +78,10 @@ async fn start_test_gateway_bound_to_wildcard(skins_dir: &str) -> String {
     let tmp_config = tempfile::tempdir().expect("create temp config dir");
     // SAFETY: we are in a test and no other threads are reading these env vars yet.
     unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
         std::env::set_var("GARRAIA_CONFIG_DIR", tmp_config.path().to_str().unwrap());
         std::env::set_var("GARRAIA_SKINS_DIR", skins_dir);
     }

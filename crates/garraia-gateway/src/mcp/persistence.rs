@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::{McpConfig, McpRuntimeRegistry, is_sensitive_key};
 
@@ -69,6 +69,13 @@ impl McpPersistenceService {
         &self.path
     }
 
+    /// Env var that opts a boot out of first-run MCP provisioning.
+    ///
+    /// Set it to `1` (or any non-empty value) when the gateway must come up
+    /// without touching the network. See
+    /// [`provision_filesystem_if_missing`](Self::provision_filesystem_if_missing).
+    pub const DISABLE_AUTOPROVISION_ENV: &'static str = "GARRAIA_DISABLE_MCP_AUTOPROVISION";
+
     /// Seed `mcp.json` with a Filesystem MCP entry when the file does not exist yet.
     ///
     /// This is a first-run convenience: new installations get local filesystem
@@ -77,7 +84,39 @@ impl McpPersistenceService {
     ///
     /// The allowed root is the user's home directory (`$HOME` / `%USERPROFILE%`),
     /// falling back to the parent of `~/.garraia/` if the env var is absent.
+    ///
+    /// # Por que existe um opt-out
+    ///
+    /// A entrada provisionada roda `npx -y @modelcontextprotocol/server-filesystem`,
+    /// e o `-y` **baixa o pacote do npm na primeira execução**. Como o boot do
+    /// gateway spawna os servidores MCP logo em seguida (`build_mcp_tools`), num
+    /// ambiente de cache frio esse download entra no caminho crítico do start.
+    ///
+    /// Em CI isso já custou uma `main` vermelha: o primeiro
+    /// `start_test_gateway()` de `projects_test.rs` estourou os 30 s do laço de
+    /// espera enquanto o npm baixava, e o teste seguinte bateu numa porta
+    /// fechada com um `ConnectionRefused` que não dizia nada sobre a causa. Os
+    /// jobs `E2E Tests` e `Playwright` caíram no mesmo passo "Start gateway".
+    ///
+    /// Pior: um teste que faz `config.mcp.clear()` para se isolar de MCP tinha
+    /// esse isolamento desfeito aqui, porque a provisão grava no config dir
+    /// temporário do próprio teste.
+    ///
+    /// Por isso [`DISABLE_AUTOPROVISION_ENV`](Self::DISABLE_AUTOPROVISION_ENV):
+    /// quem sobe o gateway sabendo que não vai exercitar MCP declara isso e o
+    /// boot deixa de depender da rede. Não muda nada para o usuário final — o
+    /// default segue provisionando.
     pub fn provision_filesystem_if_missing(&self) {
+        if std::env::var_os(Self::DISABLE_AUTOPROVISION_ENV)
+            .is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            debug!(
+                "mcp: auto-provisionamento desligado por {}",
+                Self::DISABLE_AUTOPROVISION_ENV
+            );
+            return;
+        }
+
         if self.path.exists() {
             return;
         }
@@ -401,5 +440,70 @@ mod tests {
         let loaded = svc.load().expect("reload");
         assert_eq!(loaded.mcp_servers.len(), 1);
         assert!(loaded.mcp_servers.contains_key("my-server"));
+    }
+
+    /// O default segue provisionando — o opt-out não pode mudar o que o
+    /// usuário final vê num primeiro boot.
+    #[test]
+    #[serial_test::serial]
+    fn provision_writes_the_filesystem_entry_by_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        // SAFETY: teste serializado; ninguém mais lê esta var em paralelo.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing();
+
+        let loaded = McpPersistenceService::new(&path).load().expect("load");
+        let fs = loaded
+            .mcp_servers
+            .get("filesystem")
+            .expect("entrada filesystem provisionada");
+        assert_eq!(fs.command.as_deref(), Some("npx"));
+    }
+
+    /// Com o opt-out ligado o boot não grava nada — e portanto não spawna
+    /// `npx -y`, que baixa do npm na primeira execução. É o que mantém o start
+    /// do gateway fora da rede em CI (ver o doc de
+    /// `provision_filesystem_if_missing`).
+    #[test]
+    #[serial_test::serial]
+    fn provision_is_skipped_when_the_opt_out_is_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        // SAFETY: teste serializado; ninguém mais lê esta var em paralelo.
+        unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, "1") };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing();
+
+        assert!(
+            !path.exists(),
+            "opt-out ligado deve deixar o mcp.json inexistente"
+        );
+
+        // SAFETY: idem.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+    }
+
+    /// `0` e vazio são "desligado" — senão um `export VAR=` de shell viraria
+    /// opt-out acidental.
+    #[test]
+    #[serial_test::serial]
+    fn opt_out_treats_zero_and_empty_as_disabled() {
+        for value in ["0", ""] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("mcp.json");
+            // SAFETY: teste serializado.
+            unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, value) };
+
+            McpPersistenceService::new(&path).provision_filesystem_if_missing();
+
+            assert!(
+                path.exists(),
+                "valor {value:?} nao deve contar como opt-out"
+            );
+        }
+        // SAFETY: idem.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
     }
 }

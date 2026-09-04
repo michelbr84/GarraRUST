@@ -36,6 +36,16 @@ async fn start_test_gateway_with_config_dir(config_dir: &str) -> String {
     // thread is reading these env vars concurrently.
     unsafe {
         std::env::set_var("GARRAIA_CONFIG_DIR", config_dir);
+        // O boot provisiona um MCP `npx -y @modelcontextprotocol/server-filesystem`
+        // quando mcp.json nao existe — e aqui ele nunca existe, porque o config dir
+        // e um tempdir novo. O `-y` baixa do npm na primeira execucao, o que ja
+        // estourou o orcamento de espera deste fixture em CI. Estes testes nao
+        // exercitam MCP (o config ja faz `mcp.clear()`), entao o boot nao deve
+        // depender da rede.
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
     }
 
     tokio::spawn(async move {
