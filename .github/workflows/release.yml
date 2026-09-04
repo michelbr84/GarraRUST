@@ -284,6 +284,48 @@ jobs:
           cp target/aarch64-linux-android/release/garra release/garraia-android-aarch64
           chmod +x release/garraia-android-aarch64
 
+      - name: Assert the binary is a bionic ELF, not glibc
+        # Issue #910: "o instalador baixa, checksum passa, e a execucao falha".
+        # O checksum NAO protege contra isto — ele confere porque o arquivo e
+        # exatamente o que foi publicado; ele so nao roda. O que falha e o
+        # loader: um binario glibc com nome de Android pede
+        # /lib/ld-linux-aarch64.so.1, que nao existe no bionic.
+        #
+        # O passo de verificacao la embaixo (job `release`) so checa se o asset
+        # EXISTE. Nada checava a plataforma dele, e o job `Android (Termux)
+        # check` do ci.yml roda `cargo ndk check`, que compila sem produzir
+        # binario para inspecionar. Entao um erro de target atravessava o
+        # pipeline inteiro e so aparecia no aparelho do usuario.
+        #
+        # Consequencia deliberada: este job e best-effort (esta em `needs:` do
+        # job `release`, mas nao no `if:`). Se esta guarda disparar, o job cai,
+        # o asset nao sobe, e o `::error` de asset ausente ja existente avisa.
+        # Isso e o desejado — publicar NENHUM asset Android e melhor que
+        # publicar um glibc renomeado: o install.sh da 404 explicito em vez de
+        # instalar algo que morre no exec.
+        run: |
+          set -euo pipefail
+          bin=release/garraia-android-aarch64
+
+          # `readelf -p .interp` imprime "  [     0]  /system/bin/linker64";
+          # o ultimo campo e o caminho do loader.
+          interp="$(readelf -p .interp "${bin}" | awk '/\[/ { print $NF }')"
+          machine="$(readelf -h "${bin}" | awk -F: '/Machine:/ { gsub(/^ +/, "", $2); print $2 }')"
+
+          echo "interpreter: ${interp}"
+          echo "machine:     ${machine}"
+
+          rc=0
+          if [ "${interp}" != "/system/bin/linker64" ]; then
+            echo "::error ::Asset Android com loader errado: esperado /system/bin/linker64 (bionic), encontrado '${interp}'. Um binario glibc com nome de Android passa no checksum e morre no exec dentro do Termux — exatamente a issue #910. Verifique o target do cargo-ndk (aarch64-linux-android) no passo 'Build release'."
+            rc=1
+          fi
+          if [ "${machine}" != "AArch64" ]; then
+            echo "::error ::Asset Android com arquitetura errada: esperado AArch64, encontrado '${machine}'."
+            rc=1
+          fi
+          exit "${rc}"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
