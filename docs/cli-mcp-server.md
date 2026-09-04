@@ -260,6 +260,51 @@ Or configure the host's environment directly, which is equivalent:
 source the wrapper does not exist — `docs/installation.md` has the snippet to
 recreate it. `garraia doctor` checks for both the shim and the wrapper.
 
+### Termux: still `Permission denied` with the wrapper
+
+The wrapper above assumes two things that a hard-filtering host breaks: that the
+host can exec a *script*, and that the shim is what the inner exec needs. Issue
+#920 hit both, on Android 13 with `env -i PATH=… HOME=…`:
+
+```bash
+# the host cannot exec the wrapper script at all
+env -i PATH=$PATH HOME=$HOME $PREFIX/bin/garra-mcp-server
+# failed to run command 'garra-mcp-server': Permission denied
+
+# or the wrapper runs, and the inner exec dies
+# garra-mcp-server: 8: exec: /data/data/…/garraia: Permission denied
+```
+
+Hand the ELF to the Android dynamic loader instead. It maps the binary directly,
+so neither termux-exec nor `LD_PRELOAD` is involved:
+
+```bash
+/system/bin/linker64 $PREFIX/bin/garraia mcp-server                    # works, no env at all
+```
+
+From `v0.3.9`, `install.sh` also writes `$PREFIX/bin/garra-mcp-server-linker`,
+which wraps exactly that:
+
+```json
+{ "mcpServers": { "garra": { "command": "/data/data/com.termux/files/usr/bin/garra-mcp-server-linker" } } }
+```
+
+That wrapper is still a script, so it cannot help with the first failure above.
+When the host cannot exec a script at all, put the loader in `command` and let
+the binary be an argument — no wrapper in between. This is the configuration
+verified end to end in issue #920, with the MCP handshake and `garra_ask`
+working under a fully filtered environment:
+
+```json
+{ "mcpServers": { "garra": {
+    "command": "/system/bin/linker64",
+    "args": ["/data/data/com.termux/files/usr/bin/garraia", "mcp-server"]
+} } }
+```
+
+`/apex/com.android.runtime/bin/linker64` is the fallback path on Android 10+.
+`garraia doctor` prints this recipe with your real install path filled in.
+
 ## Security notes
 
 - **In-process only**. The tool handler calls `ask::ask_oneshot`
