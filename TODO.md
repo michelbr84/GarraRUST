@@ -12,6 +12,58 @@ curtos para a próxima sessão autônoma.
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
+## Concluído em 2026-09-04 — #910 fechada + guarda de plataforma do asset Android
+
+Fechava-se o lote Termux (#909-#913). A #910 pedia três coisas, **todas já
+entregues** quando foi reexaminada: asset `garraia-android-aarch64` publicado
+(desde a v0.3.6), `install.sh` detectando Termux (`install.sh:196-234`, por
+`$TERMUX_VERSION` **ou** `$PREFIX` *com.termux*, com precedência sobre o
+`uname`) e build-from-source documentado (`docs/installation.md:230-263`).
+
+Ficou aberta aguardando confirmação do relator, que não respondeu a nenhum dos
+dois comentários. Fechada como `completed` com a evidência do artefato
+publicado — não do código:
+
+```
+garraia-android-aarch64: ... interpreter /system/bin/linker64   (bionic)
+garraia-linux-aarch64:   ... interpreter /lib/ld-linux-aarch64.so.1  (glibc)
+```
+
+### A lacuna que o report expôs e ninguém tinha fechado
+
+A frase do relator — *"o instalador baixa, checksum passa, e a execução
+falha"* — descreve uma falha que passava por **todas** as verificações: o
+checksum confere justamente porque o arquivo é o publicado; ele só não roda na
+plataforma certa.
+
+O `release.yml` checava se o asset Android **existe** (`::error` de ausente),
+nunca se ele **é** Android. E o job `Android (Termux) check` do `ci.yml` roda
+`cargo ndk check`, que compila sem produzir binário para inspecionar. Um erro
+de target atravessaria o pipeline inteiro e apareceria só no aparelho do
+usuário.
+
+Novo passo em `release.yml`, job `build-android-arm64`, entre o empacotamento
+e o upload: assere via `readelf` que o interpreter é `/system/bin/linker64` e a
+machine é `AArch64`. Testado nos dois sentidos contra os binários reais da
+v0.3.7 — o par ideal, mesma arquitetura e loaders diferentes:
+
+```
+garraia-android-aarch64 -> exit 0
+garraia-linux-aarch64   -> exit 1   (o bug da #910 reconstruído)
+```
+
+Consequência deliberada: o job é best-effort (está em `needs:` do job
+`release`, não no `if:`). Se a guarda disparar, o asset não sobe e o `::error`
+de ausente avisa — publicar nenhum asset Android é melhor que publicar um
+glibc renomeado, porque aí o `install.sh` dá 404 explícito em vez de instalar
+algo que morre no `exec`.
+
+É o mesmo padrão da guarda de frescor do `install.sh`, escrita por causa desta
+mesma issue: o endpoint respondia 200, tinha shebang, parseava em `sh -n` — e
+estava errado mesmo assim.
+
+**Backlog aberto pelo lote:** zero issues abertas no repo após esta.
+
 ## Em andamento 2026-09-04 — de-flake do boot do gateway (PR #916)
 
 Depois do merge do #915 (`chore(release): v0.3.7`) quatro jobs ficaram
