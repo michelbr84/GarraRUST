@@ -187,6 +187,74 @@ all-`Ok` arm). Consequences:
 
 ---
 
+## 4.1 Minimal local auth — is the 503 a problem?
+
+Almost always: **no.** `garraia doctor` and `garraia config check` warn that no
+JWT secret is set, and issue #925 was filed because the warning did not say
+whether it mattered. It usually does not.
+
+**What keeps working with no auth secret at all:**
+
+| Surface | Why it is unaffected |
+| --- | --- |
+| Web Console (`/`, `webchat.html`) | the `/api/*` console endpoints are auth-free by design |
+| WebSocket chat (`/ws`) | authenticates with the gateway API key, not a JWT |
+| `POST /v1/chat/completions` | OpenAI-compatible surface, same API-key path |
+| `garra mcp-server` (stdio) | in-process, no HTTP auth in the path at all |
+| `garra chat` / `garra ask` | local CLI, talks to the runtime directly |
+| Telegram / Discord / Slack / WhatsApp | channel adapters carry their own allowlist |
+
+**What is actually down:**
+
+| Surface | Symptom |
+| --- | --- |
+| `/auth/*`, `/v1/auth/*` | `503 {"error": "auth not configured"}` |
+| `POST /chat`, `GET /chat/history` (mobile app) | `MobileAuth` resolves the secret through `AppState::jwt_signing_secret()`, so these fail closed too |
+| TOTP enrolment/verification | same extractor |
+| The multi-tenant workspace (`/v1/groups`, `/v1/me`, …) | needs a real identity |
+
+So the rule of thumb: **a single-user gateway on `127.0.0.1`, driven from the
+CLI, the web console, an MCP host or a chat channel, never touches the auth
+stack.** Leaving the warning standing is a legitimate steady state — it is
+fail-*closed*, not degraded.
+
+### If you do want auth on
+
+The one trap worth stating plainly: **setting the JWT secret alone unlocks
+nothing.** `AuthConfig::from_env` is all-or-nothing over four variables, and the
+signing secret is only wired after both Postgres pools connect and pass their
+role guard (§4 above). A half-configured deployment answers 503 exactly like an
+unconfigured one — which is why `config check` has a separate "all-or-nothing"
+warning that lists what is still missing.
+
+The full path is §7 (*Provisioning the Postgres roles*). The secrets themselves
+are generated the same way as everywhere else in this document:
+
+```bash
+export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)
+export GARRAIA_REFRESH_HMAC_SECRET=$(openssl rand -hex 32)
+```
+
+Persist them the way your service manager does — a systemd `EnvironmentFile`, a
+`.env` your shell profile sources, or your container runtime's secret store.
+**Never commit them**, and note that `garraia config check` only ever reports
+their *presence*, never their value.
+
+### The vault-passphrase confusion
+
+`garraia init` prints an `export` line for the **vault passphrase** when you
+choose to store provider API keys in the encrypted vault. That variable is for
+the credential vault — but it is *also* the last fallback for the JWT signing
+secret (§3.2.1, issue #824). Two consequences worth knowing:
+
+- If you ran the wizard and chose the vault, you may already have a JWT secret
+  without realising it, and the "none of …" warning will not fire.
+- Reusing one passphrase for both is not recommended beyond a single-user local
+  install: rotating the vault passphrase then invalidates every issued token.
+  Set the JWT secret explicitly to decouple them.
+
+---
+
 ## 5. `config check` integration
 
 `garraia config check` (plan 0035 / GAR-379 slice 1) validates the
@@ -198,7 +266,11 @@ all-`Ok` arm). Consequences:
   or smaller than `access_token_ttl_secs`.
 - **Warning** when none of `GARRAIA_JWT_SECRET`,
   `GarraIA_VAULT_PASSPHRASE` or `GARRAIA_VAULT_PASSPHRASE` is set
-  (auth flow will 503).
+  (auth flow will 503). Since issue #925 the message also says which
+  surfaces stay up, which go down with it, and that this one variable is
+  not enough on its own — see [§4.1](#41-minimal-local-auth--is-the-503-a-problem).
+  The `"none of GARRAIA_JWT_SECRET"` prefix is asserted on by tests in
+  `check.rs`; extend the message, never rewrite its opening.
 - **Warning** when a JWT secret env var **is** set but any of
   `GARRAIA_REFRESH_HMAC_SECRET`, `GARRAIA_LOGIN_DATABASE_URL`,
   `GARRAIA_SIGNUP_DATABASE_URL` is missing — `AuthConfig::from_env` is

@@ -36,7 +36,16 @@ garraia doctor    # plataforma, dirs, config, providers, daemon + bloco Termux
 garraia chat      # provider de nuvem, ou --url http://PC-NA-LAN:8080
 ```
 
-Dentro do Termux o `uname -s` responde `Linux`, então o instalador detecta o Android por `$TERMUX_VERSION` ou por um `$PREFIX` com `com.termux`. Nesse ramo ele baixa o `garraia-android-aarch64` (bionic, API 21+) em vez do `garraia-linux-aarch64` (glibc, que **não** roda no Android), pula o preflight de glibc, instala em `$PREFIX/bin` (no PATH, sem `sudo`) e escreve o wrapper `$PREFIX/bin/garra-mcp-server` para hosts MCP externos.
+Dentro do Termux o `uname -s` responde `Linux`, então o instalador detecta o Android por `$TERMUX_VERSION` ou por um `$PREFIX` com `com.termux`. Nesse ramo ele baixa o `garraia-android-aarch64` (bionic, API 21+) em vez do `garraia-linux-aarch64` (glibc, que **não** roda no Android), pula o preflight de glibc, instala em `$PREFIX/bin` (no PATH, sem `sudo`) e escreve dois wrappers para hosts MCP externos: `$PREFIX/bin/garra-mcp-server` (exporta o shim do termux-exec) e `$PREFIX/bin/garra-mcp-server-linker` (exec via loader do Android, para hosts que filtram o ambiente a ponto de quebrar o primeiro).
+
+**Host MCP que insiste em `Permission denied`?** Aponte-o direto para o loader, sem wrapper no meio — é a configuração validada no aparelho com ambiente 100% filtrado (issue #920):
+
+```json
+{ "mcpServers": { "garra": {
+    "command": "/system/bin/linker64",
+    "args": ["/data/data/com.termux/files/usr/bin/garraia", "mcp-server"]
+} } }
+```
 
 **Mantenha a sessão viva.** O phantom process killer e a otimização de bateria do Android matam processos longos em background: rode `termux-wake-lock`, isente o Termux da otimização de bateria e prefira o gateway no foreground da sessão que o iniciou.
 

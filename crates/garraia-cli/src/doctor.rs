@@ -125,7 +125,7 @@ pub(crate) struct TermuxItem {
     pub ok: bool,
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_step: Option<&'static str>,
+    pub next_step: Option<String>,
 }
 
 /// Bloco de diagnóstico só emitido dentro do Termux. Puramente informativo:
@@ -182,9 +182,10 @@ where
             } else {
                 "não definido — só o TLS de Postgres depende disso".to_string()
             },
-            next_step: (!set).then_some(
-                "export SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem (pkg install ca-certificates)",
-            ),
+            next_step: (!set).then(|| {
+                "export SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem (pkg install ca-certificates)"
+                    .to_string()
+            }),
         });
     }
 
@@ -202,9 +203,10 @@ where
             (Some(p), false) => format!("{} ausente", p.display()),
             (None, _) => "$PREFIX não definido".to_string(),
         },
-        next_step: (!shim_ok).then_some(
-            "pkg install termux-exec (corrige shebangs de npm/pip e o exec de servidores MCP)",
-        ),
+        next_step: (!shim_ok).then(|| {
+            "pkg install termux-exec (corrige shebangs de npm/pip e o exec de servidores MCP)"
+                .to_string()
+        }),
     });
 
     // LD_PRELOAD é informativo: o gateway injeta o shim nos filhos MCP
@@ -234,8 +236,46 @@ where
             (Some(p), false) => format!("{} ausente", p.display()),
             (None, _) => "$PREFIX não definido".to_string(),
         },
-        next_step: (!wrapper_ok)
-            .then_some("reinstale via install.sh para obter $PREFIX/bin/garra-mcp-server"),
+        next_step: (!wrapper_ok).then(|| {
+            "reinstale via install.sh para obter $PREFIX/bin/garra-mcp-server".to_string()
+        }),
+    });
+
+    // Wrapper de loader (#920). O wrapper acima ainda perde um caso: sob um
+    // ambiente 100% filtrado o host pode nem conseguir exec'ar o *script*, e
+    // aí nenhum wrapper salva — só apontar o host direto para o loader.
+    //
+    // Deliberadamente foge da convenção "next_step só quando !ok": a receita
+    // do loader é útil mesmo com o wrapper instalado, porque ela cobre um modo
+    // de falha que o wrapper não cobre. É o único item do bloco assim.
+    let linker_wrapper = env
+        .prefix
+        .map(|p| std::path::Path::new(p).join("bin/garra-mcp-server-linker"));
+    let linker_wrapper_ok = linker_wrapper.as_deref().is_some_and(&exists);
+    let binary_path = env
+        .prefix
+        .map(|p| format!("{p}/bin/garraia"))
+        .unwrap_or_else(|| "$PREFIX/bin/garraia".to_string());
+    items.push(TermuxItem {
+        label: "Wrapper MCP (loader)",
+        ok: linker_wrapper_ok,
+        detail: match (&linker_wrapper, linker_wrapper_ok) {
+            (Some(p), true) => format!("{} instalado", p.display()),
+            (Some(p), false) => format!("{} ausente", p.display()),
+            (None, _) => "$PREFIX não definido".to_string(),
+        },
+        next_step: Some(if linker_wrapper_ok {
+            format!(
+                "se o host filtra o ambiente por completo, aponte-o direto ao loader: \
+                 command=/system/bin/linker64 args=[\"{binary_path}\", \"mcp-server\"]"
+            )
+        } else {
+            format!(
+                "reinstale via install.sh para obter $PREFIX/bin/garra-mcp-server-linker; \
+                 ou aponte o host direto ao loader: command=/system/bin/linker64 \
+                 args=[\"{binary_path}\", \"mcp-server\"]"
+            )
+        }),
     });
 
     // $PREFIX/bin no PATH — onde o install.sh põe o binário.
@@ -252,7 +292,8 @@ where
             Some(dir) => format!("{dir} fora do PATH"),
             None => "$PREFIX não definido".to_string(),
         },
-        next_step: (!on_path).then_some("export PATH=\"$PREFIX/bin:$PATH\" no seu ~/.profile"),
+        next_step: (!on_path)
+            .then(|| "export PATH=\"$PREFIX/bin:$PATH\" no seu ~/.profile".to_string()),
     });
 
     TermuxCheck { items }
@@ -615,7 +656,7 @@ fn print_human(report: &DoctorReport, strict: bool) {
                 item.label,
                 item.detail
             );
-            if let Some(step) = item.next_step {
+            if let Some(step) = &item.next_step {
                 println!("          → {step}");
             }
         }
@@ -719,7 +760,11 @@ mod tests {
         let check = collect_termux_check(&env, |_| true);
         let ssl = item(&check, "SSL_CERT_FILE (Postgres)");
         assert!(!ssl.ok);
-        assert!(ssl.next_step.is_some_and(|s| s.contains("cert.pem")));
+        assert!(
+            ssl.next_step
+                .as_deref()
+                .is_some_and(|s| s.contains("cert.pem"))
+        );
 
         let env = TermuxEnv {
             uses_postgres: true,
@@ -740,6 +785,7 @@ mod tests {
         assert!(shim.detail.contains("libtermux-exec.so"));
         assert!(
             shim.next_step
+                .as_deref()
                 .is_some_and(|s| s.contains("pkg install termux-exec"))
         );
 
@@ -773,7 +819,49 @@ mod tests {
         let check = collect_termux_check(&termux_env(), |_| false);
         let w = item(&check, "Wrapper MCP");
         assert!(!w.ok);
-        assert!(w.next_step.is_some_and(|s| s.contains("install.sh")));
+        assert!(
+            w.next_step
+                .as_deref()
+                .is_some_and(|s| s.contains("install.sh"))
+        );
+    }
+
+    /// A receita do loader (#920) é o único caminho que sobrevive a um host
+    /// que filtra o ambiente por completo — nem o wrapper script sobrevive a
+    /// isso. Por isso ela aparece com o wrapper instalado *e* sem ele.
+    #[test]
+    fn termux_check_always_offers_the_loader_recipe() {
+        let linker = format!("{TERMUX_PREFIX}/bin/garra-mcp-server-linker");
+        let check = collect_termux_check(&termux_env(), |p| p.display().to_string() == linker);
+        let ok_item = item(&check, "Wrapper MCP (loader)");
+        assert!(ok_item.ok);
+        let step = ok_item.next_step.as_deref().expect("receita do loader");
+        assert!(step.contains("/system/bin/linker64"));
+        assert!(step.contains(&format!("{TERMUX_PREFIX}/bin/garraia")));
+
+        let check = collect_termux_check(&termux_env(), |_| false);
+        let missing = item(&check, "Wrapper MCP (loader)");
+        assert!(!missing.ok);
+        let step = missing.next_step.as_deref().expect("receita do loader");
+        assert!(step.contains("install.sh"));
+        assert!(step.contains("/system/bin/linker64"));
+    }
+
+    /// O wrapper do #909 e o do #920 são arquivos distintos: se um dia
+    /// colapsarem num só, o fallback do modo de falha B some sem aviso.
+    #[test]
+    fn termux_check_keeps_the_two_mcp_wrappers_distinct() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        assert!(
+            item(&check, "Wrapper MCP")
+                .detail
+                .ends_with("garra-mcp-server instalado")
+        );
+        assert!(
+            item(&check, "Wrapper MCP (loader)")
+                .detail
+                .ends_with("garra-mcp-server-linker instalado")
+        );
     }
 
     /// Match exato de componente do PATH: um prefixo como
@@ -809,10 +897,22 @@ mod tests {
             ..termux_env()
         };
         let check = collect_termux_check(&env, |_| true);
-        assert_eq!(check.items.len(), 5);
-        for label in ["termux-exec", "Wrapper MCP", "$PREFIX/bin no PATH"] {
+        assert_eq!(check.items.len(), 6);
+        for label in [
+            "termux-exec",
+            "Wrapper MCP",
+            "Wrapper MCP (loader)",
+            "$PREFIX/bin no PATH",
+        ] {
             assert!(!item(&check, label).ok);
         }
+        // Sem $PREFIX a receita do loader ainda sai, com o placeholder no lugar
+        // do caminho — é o que o usuário digitaria de qualquer forma.
+        let step = item(&check, "Wrapper MCP (loader)")
+            .next_step
+            .as_deref()
+            .expect("receita do loader");
+        assert!(step.contains("$PREFIX/bin/garraia"));
     }
 
     // ─── detect_termux ─────────────────────────────────────────────────────
