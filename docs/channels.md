@@ -25,6 +25,49 @@ channels:
 - Typing indicators
 - Group chat support
 - User allowlisting
+- Proactive sends (`telegram_send` tool) — see below
+
+### Proactive messages (`telegram_send`)
+
+From `v0.3.9` the agent can *start* a Telegram message instead of only
+replying: a scheduled reminder, "the backup finished", the answer to a
+long-running task, or a notification another agent asked for over MCP.
+
+**Replying into the current chat needs no configuration.** With no `chat_id`,
+the tool sends into the chat the conversation already belongs to — the person
+on the other end started it and is already receiving messages there.
+
+**Sending to a chat the model names explicitly is deny-by-default.** The
+operator has to list those chats:
+
+```yaml
+channels:
+  telegram:
+    enabled: true
+    bot_token: "YOUR_BOT_TOKEN"
+    proactive_chat_ids: [123456789, -1001234567890]
+```
+
+Group and supergroup ids are negative. The list is read on every send, so
+removing an id takes effect without restarting the gateway. Entries that are
+not numbers are ignored rather than coerced — a typo narrows the list, never
+widens it.
+
+This list is deliberately **separate** from the user allowlist
+(`~/.garraia/allowlist.json`). That one decides who may talk *to* the bot and
+has an `open` mode meaning "everyone"; a mode like that would be dangerous for
+deciding who the bot may message unprompted. An empty `proactive_chat_ids`
+means "refuse", never "allow all".
+
+**Rate limit:** 5 proactive messages per conversation per minute. The agent's
+generic tool budget allows far more calls than that, and its loop detector only
+catches *identical* repeated calls — so a confused or manipulated agent could
+otherwise send dozens of distinct messages. A refused send does not consume the
+quota.
+
+Scheduled tasks (`schedule_heartbeat`, `schedule_recurring`) use the same
+delivery path. Before `v0.3.9` their Telegram delivery silently failed, because
+nothing ever wrote the chat address into the outgoing message (issue #921).
 
 ### Commands
 
