@@ -53,15 +53,34 @@ async fn start_test_gateway() -> TestEnv {
     // SAFETY: we are in a test and no other threads are reading this env var yet.
     unsafe {
         std::env::set_var("GARRAIA_CONFIG_DIR", tmp.path().to_str().unwrap());
+        // O boot provisiona um MCP `npx -y @modelcontextprotocol/server-filesystem`
+        // quando mcp.json nao existe — e aqui ele nunca existe, porque o config dir
+        // e um tempdir novo. O `-y` baixa do npm na primeira execucao, o que ja
+        // estourou o orcamento de espera deste fixture em CI. Estes testes nao
+        // exercitam MCP (o config ja faz `mcp.clear()`), entao o boot nao deve
+        // depender da rede.
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
         std::env::set_var(
             garraia_gateway::project_root::ROOTS_ENV,
             root.to_str().unwrap(),
         );
     }
 
+    // O erro de boot precisa sobreviver ao spawn. Antes isto era
+    // `let _ = server.run().await;`, e uma falha de start virava silêncio: o
+    // laço abaixo esgotava o orçamento, `start_test_gateway` retornava assim
+    // mesmo, e o teste morria muito depois num `ConnectionRefused` que não
+    // dizia nada sobre a causa. Foi como a `main` ficou vermelha em 6f4ec06.
+    let boot_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let boot_error_tx = std::sync::Arc::clone(&boot_error);
     tokio::spawn(async move {
         let server = GatewayServer::new(config);
-        let _ = server.run().await;
+        if let Err(e) = server.run().await {
+            *boot_error_tx.lock().expect("boot error mutex") = Some(e.to_string());
+        }
     });
 
     // Wait for the server to actually accept TCP connections
@@ -70,6 +89,7 @@ async fn start_test_gateway() -> TestEnv {
         .build()
         .expect("build reqwest client");
 
+    let mut ready = false;
     for _ in 0..60 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if client
@@ -78,9 +98,21 @@ async fn start_test_gateway() -> TestEnv {
             .await
             .is_ok()
         {
+            ready = true;
             break;
         }
     }
+
+    // Esgotar o orçamento é falha, e falha aqui — não 40 linhas adiante.
+    assert!(
+        ready,
+        "gateway nao subiu em 30s na porta {port}. Erro de boot: {}",
+        boot_error
+            .lock()
+            .expect("boot error mutex")
+            .clone()
+            .unwrap_or_else(|| "nenhum (o start ainda estava em andamento)".to_string())
+    );
 
     TestEnv {
         base: format!("http://127.0.0.1:{port}"),
