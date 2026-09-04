@@ -187,3 +187,57 @@ Amendment acima — um `install.sh` estale servido pelo `garraia.org`, cujo
 publish é manual. A sonda do `install-endpoints.yml` ganhou uma guarda de
 frescor para o modo de falha que passava em todas as outras: endpoint que
 existe, responde 200, parseia — e está velho.
+
+---
+
+## Amendment 2026-09-04 — o exec do Termux tem dois modos de falha, não um
+
+Segundo lote de campo do mesmo usuário (issues #920–#925, v0.3.8). A #920 é
+retorno direto sobre o wrapper que o Amendment anterior introduziu: ele **não
+fechou o caso**, e a razão é que "o exec falha no Termux" são na verdade duas
+falhas com o mesmo sintoma.
+
+```
+A. o host não consegue exec'ar o wrapper *script*
+   timeout: failed to run command 'garra-mcp-server': Permission denied
+
+B. o wrapper roda e o exec interno do ELF falha
+   garra-mcp-server: 8: exec: /data/.../garraia: Permission denied
+```
+
+O `LD_PRELOAD` do Amendment anterior endereça B — e só quando o shim está
+instalado. **A não tem solução dentro de um wrapper**, porque o wrapper também
+precisa ser exec'ado: qualquer script que escrevêssemos herda a mesma falha.
+Foi o próprio relator que achou o caminho que sobrevive aos dois:
+
+```bash
+/system/bin/linker64 /data/data/com.termux/files/usr/bin/garraia mcp-server
+```
+
+O loader dinâmico do Android mapeia o ELF direto — sem shim, sem `LD_PRELOAD`,
+sem nenhuma variável de ambiente. Validado por ele fim a fim (handshake MCP +
+`garra_ask`) com `env -i`.
+
+Consequência para a decisão, em duas camadas com escopos honestos:
+
+- `install.sh` escreve um **segundo** wrapper, `garra-mcp-server-linker`, que
+  cobre B sem depender do termux-exec. Arquivo separado do primeiro, não uma
+  linha a mais nele: a suíte afirma `grep -c '^exec '` == 1 em cada um, o que
+  faz uma futura fusão dos dois derrubar os testes em vez de apagar o fallback
+  em silêncio.
+- Para **A**, a resposta é documental e não tem wrapper: o host aponta
+  `command: /system/bin/linker64` e passa o binário como argumento. É o que
+  `docs/installation.md`, `docs/cli-mcp-server.md` e o `garraia doctor` agora
+  dizem — o doctor com o caminho real preenchido.
+
+A generalização que vale guardar: **no Termux, `command:` apontando para
+qualquer coisa nossa é frágil por construção.** A única invocação que não
+depende de nada do Termux é a que usa um binário do sistema Android como
+`argv[0]`. Wrappers são conveniência para o caso comum, não a garantia.
+
+A #925, do mesmo lote, é a contrapartida em diagnóstico: o aviso de
+`GARRAIA_JWT_SECRET` ausente dizia o que estava errado sem dizer se importava.
+Num gateway local single-user não importa — o console web, `/ws`,
+`/v1/chat/completions`, o `mcp-server` e os canais não passam por `/auth/*` —,
+mas `/chat` (mobile, via `MobileAuth`) e o workspace multi-tenant passam. O
+aviso passa a dizer as duas coisas e o comando de correção.
