@@ -28,13 +28,35 @@ fn random_port() -> u16 {
 /// because `std::env::remove_var` is marked unsafe for multi-threaded
 /// programs — acceptable here because this runs before the server task
 /// is spawned, so no other thread touches the env block.
-fn clear_auth_env() {
+///
+/// Tambem desvia `GARRAIA_CONFIG_DIR` para um tempdir. Sem isso o boot le o
+/// config dir REAL do desenvolvedor (XDG: `~/.config/garraia`) e spawna os
+/// servidores MCP que estiverem la — inclusive um `npx -y ...` que baixa do
+/// npm. O `TempDir` devolvido precisa ser mantido vivo pelo chamador ate o
+/// fim do teste; se cair antes, o diretorio some debaixo do gateway.
+#[must_use]
+fn clear_auth_env() -> tempfile::TempDir {
+    let config_dir = tempfile::tempdir().expect("create temp config dir");
     unsafe {
+        std::env::set_var(
+            "GARRAIA_CONFIG_DIR",
+            config_dir.path().to_str().expect("temp path is utf-8"),
+        );
+        // O boot provisiona um MCP `npx -y @modelcontextprotocol/server-filesystem`
+        // quando mcp.json nao existe, e o `-y` baixa do npm na primeira
+        // execucao — dentro do caminho critico do start. Foi o que estourou
+        // os tres aumentos sucessivos de orcamento documentados abaixo
+        // (10s -> 20s -> 40s): o problema nunca foi o orcamento.
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
         std::env::remove_var("GARRAIA_JWT_SECRET");
         std::env::remove_var("GARRAIA_REFRESH_HMAC_SECRET");
         std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
         std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
     }
+    config_dir
 }
 
 // `#[serial]` isolates this test from any other that reads or mutates
@@ -44,16 +66,26 @@ fn clear_auth_env() {
 #[tokio::test]
 #[serial]
 async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() {
-    clear_auth_env();
+    // Mantido vivo ate o fim do teste: e o `GARRAIA_CONFIG_DIR` do gateway.
+    let _config_dir = clear_auth_env();
 
     let port = random_port();
     let mut config = AppConfig::default();
     config.gateway.port = port;
     config.memory.enabled = false;
+    // Este teste so exercita `/v1/me`; MCP nao tem papel nenhum aqui e
+    // spawnar servidor no boot so adiciona latencia e rede.
+    config.mcp.clear();
 
+    // O erro de boot precisa chegar na mensagem de panico la embaixo; sem
+    // isto o teste so diz "gateway never came up", sem o porque.
+    let boot_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let boot_error_tx = std::sync::Arc::clone(&boot_error);
     tokio::spawn(async move {
         let server = GatewayServer::new(config);
-        let _ = server.run().await;
+        if let Err(e) = server.run().await {
+            *boot_error_tx.lock().expect("boot error mutex") = Some(e.to_string());
+        }
     });
 
     // Wait for the listener to actually bind. Gateway bootstrap pulls
@@ -94,7 +126,14 @@ async fn get_v1_me_fails_soft_with_503_problem_details_when_auth_unconfigured() 
                 let _ = err;
                 continue;
             }
-            Err(err) => panic!("gateway never came up: {err}"),
+            Err(err) => panic!(
+                "gateway never came up: {err}. Erro de boot: {}",
+                boot_error
+                    .lock()
+                    .expect("boot error mutex")
+                    .clone()
+                    .unwrap_or_else(|| "nenhum (start ainda em andamento)".to_string())
+            ),
         }
     };
 

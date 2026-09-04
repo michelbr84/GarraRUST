@@ -21,6 +21,30 @@ async fn router_build_does_not_panic() {
     let mut config = AppConfig::default();
     config.gateway.port = port;
     config.memory.enabled = false;
+    config.mcp.clear();
+
+    // Sem um config dir proprio o boot le o do desenvolvedor (XDG:
+    // `~/.config/garraia`) e spawna os servidores MCP que estiverem la.
+    // Mantido vivo ate o fim do teste.
+    let _config_dir = tempfile::tempdir().expect("create temp config dir");
+
+    // Preventivo, nao corretivo: este teste nao espera o gateway subir, entao
+    // nao falha por boot lento como os outros. Mas sem o opt-out o boot
+    // spawna `npx -y @modelcontextprotocol/server-filesystem` — download do
+    // npm e escrita no ~/.garraia real — para um teste que so quer saber se o
+    // router monta.
+    // SAFETY: cada arquivo de teste e seu proprio binario; os dois testes
+    // deste escrevem o mesmo valor.
+    unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+        std::env::set_var(
+            "GARRAIA_CONFIG_DIR",
+            _config_dir.path().to_str().expect("temp path is utf-8"),
+        );
+    }
 
     // This will panic if any route uses legacy `/:` or `/*` patterns
     // without the `without_v07_checks()` escape hatch.
@@ -38,11 +62,27 @@ async fn router_build_does_not_panic() {
 /// Test with voice enabled configuration
 #[tokio::test]
 async fn router_build_with_voice_does_not_panic() {
+    // Mantido vivo ate o fim do teste: ver a nota no teste acima.
+    let _config_dir = tempfile::tempdir().expect("create temp config dir");
+
+    // SAFETY: ver a nota no teste acima.
+    unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+        std::env::set_var(
+            "GARRAIA_CONFIG_DIR",
+            _config_dir.path().to_str().expect("temp path is utf-8"),
+        );
+    }
+
     let port = random_port();
     let mut config = AppConfig::default();
     config.gateway.port = port;
     config.memory.enabled = false;
     config.voice.enabled = true;
+    config.mcp.clear();
 
     // This will panic if any route uses legacy patterns
     tokio::spawn(async move {

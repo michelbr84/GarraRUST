@@ -894,6 +894,13 @@ jobs:
       - name: Start gateway in background
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-e2e
+          # O boot provisiona um MCP `npx -y @modelcontextprotocol/server-filesystem`
+          # quando mcp.json nao existe — e aqui nunca existe, porque o config dir
+          # e novo a cada run. O `-y` baixa do npm na primeira execucao, DENTRO do
+          # orcamento de 30s abaixo. Foi assim que este passo caiu na main em
+          # 6f4ec06 (~36s ate o timeout). O e2e nao exercita MCP, entao o start
+          # nao deve depender da rede.
+          GARRAIA_DISABLE_MCP_AUTOPROVISION: "1"
         run: |
           # Loopback, not 0.0.0.0: both jobs reach the gateway via
           # http://localhost:3888 on this same runner, so binding every
@@ -1038,6 +1045,11 @@ jobs:
         working-directory: .
         env:
           GARRAIA_CONFIG_DIR: /tmp/garraia-test-config
+          # Mesma razao do job e2e: sem isto o boot spawna `npx -y
+          # @modelcontextprotocol/server-filesystem` e o download do npm entra
+          # no caminho critico do start. Este passo caiu por isso na main em
+          # 6f4ec06. As specs Playwright do admin nao exercitam MCP server real.
+          GARRAIA_DISABLE_MCP_AUTOPROVISION: "1"
         run: |
           # Loopback, not 0.0.0.0: both jobs reach the gateway via
           # http://localhost:3888 on this same runner, so binding every
