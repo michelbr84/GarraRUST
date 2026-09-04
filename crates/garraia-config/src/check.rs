@@ -752,8 +752,9 @@ fn validate_auth(
              is set; /auth/* and /v1/auth/* will respond 503 until one is provided. A local \
              single-user gateway can leave it unset: the web console, /ws, /v1/chat/completions, \
              mcp-server and the channels do not use it — the mobile app (/chat) and the \
-             multi-tenant workspace do. To enable them: \
-             export GARRAIA_JWT_SECRET=$(openssl rand -hex 32). See docs/auth-config.md."
+             multi-tenant workspace do. Enabling them takes all four auth env vars plus \
+             Postgres, not this one alone (docs/auth-config.md section 7); start with \
+             export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)."
                 .into(),
         );
     }
@@ -1947,6 +1948,10 @@ mod tests {
         // `MobileAuth` resolves through `AppState::jwt_signing_secret`.
         assert!(hit.message.contains("/chat"));
         assert!(hit.message.contains("docs/auth-config.md"));
+        // Honesty guard: setting only this var unlocks nothing (§4 — the wiring
+        // is all-or-nothing over four vars AND both Postgres pools). The message
+        // must not read as "export this and you are done".
+        assert!(hit.message.contains("not this one alone"));
 
         restore_auth_env(snapshot);
     }
