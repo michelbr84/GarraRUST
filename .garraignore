@@ -1,6 +1,8 @@
 # .garraignore — regras de exclusão para o scanner de arquivos do agente GarraIA
 # Sintaxe idêntica ao .gitignore, com suporte a extglob (!(pat), *(pat), +(pat), @(pat), ?(pat))
-# Afeta apenas a varredura do agente (file_read, repo_search, list_dir), NÃO o git.
+# Afeta apenas a varredura do agente (repo_search, list_dir), NÃO o git.
+# NÃO afeta o `file_read`, que lê um caminho explícito pedido pelo modelo e
+# nunca consultou este arquivo (a menção anterior a ele aqui era incorreta).
 
 # ─── Build / artefatos gerados ─────────────────────────────────────────────
 target/
