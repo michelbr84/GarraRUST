@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-04
+
+Corrige uma falha de boot do gateway que deixou a `main` vermelha logo apos a
+v0.3.7, e fecha a lacuna de verificacao que a issue #910 expos no pipeline de
+release.
+
+### Fixed
+- **O boot do gateway nao baixa mais do npm no caminho critico (#916).**
+  `McpPersistenceService::provision_filesystem_if_missing()` gravava, no
+  primeiro start, uma entrada MCP com `command: "npx"` e
+  `args: ["-y", "@modelcontextprotocol/server-filesystem", ...]`. O boot
+  seguinte spawnava esse servidor, e o `-y` **baixa o pacote do npm na
+  primeira execucao** — dentro do orcamento de start. Em runner de CI, com
+  cache do npm frio, isso estourava os 35 s do passo "Start gateway" e
+  derrubava quatro jobs de forma deterministica (o re-run falhou nos mesmos
+  jobs e nos mesmos passos). Novo opt-out explicito
+  `GARRAIA_DISABLE_MCP_AUTOPROVISION`, cobrindo os dois call sites
+  (`server.rs` e `state.rs`).
+- **Fixtures de teste deixam de ler o config dir real da maquina (#916).**
+  `rest_v1_me.rs` e `router_smoke_test.rs` eram os dois unicos que subiam o
+  gateway sem desviar `GARRAIA_CONFIG_DIR`, entao liam o `~/.config/garraia`
+  do desenvolvedor e spawnavam os servidores MCP que estivessem la. O opt-out
+  sozinho nao os salvava: ele impede *gravar* a entrada, nao *spawnar*
+  servidores de um `mcp.json` que ja exista. Medido com o `mcp.json` poluido
+  presente e o cache do npx frio, o `rest_v1_me` foi de 40,56 s em falha para
+  0,27 s passando.
+- **O fixture do `projects_test.rs` nao engole mais o erro de boot.** O
+  `let _ = server.run()` descartava qualquer falha de start, e o laco de
+  espera retornava em silencio ao esgotar o orcamento, empurrando a falha
+  para um `ConnectionRefused` sem contexto la na frente.
+
+### Added
+- **Guarda de plataforma do asset Android no `release.yml`.** O pipeline
+  checava se `garraia-android-aarch64` **existe**, nunca se ele **e** Android.
+  Um binario glibc com o nome do asset Android passa no checksum — o arquivo e
+  exatamente o que foi publicado — e morre no `exec` dentro do Termux, que e
+  literalmente o relato da issue #910. Novo passo entre o empacotamento e o
+  upload assere via `readelf` que o interpreter e `/system/bin/linker64` e que
+  a machine e `AArch64`. Se disparar, o asset nao sobe e o `::error` de asset
+  ausente ja existente avisa: publicar nenhum binario Android e melhor que
+  publicar um glibc renomeado.
+- **`SOUL.md` e `SOUL.EN.md` (#917).**
+
 ## [0.3.7] - 2026-09-03
 
 Retorno de campo da Fase 0 do Garra Mobile: cinco issues (#909-#913) abertas
