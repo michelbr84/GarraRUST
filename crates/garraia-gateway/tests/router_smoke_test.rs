@@ -22,6 +22,20 @@ async fn router_build_does_not_panic() {
     config.gateway.port = port;
     config.memory.enabled = false;
 
+    // Preventivo, nao corretivo: este teste nao espera o gateway subir, entao
+    // nao falha por boot lento como os outros. Mas sem o opt-out o boot
+    // spawna `npx -y @modelcontextprotocol/server-filesystem` — download do
+    // npm e escrita no ~/.garraia real — para um teste que so quer saber se o
+    // router monta.
+    // SAFETY: cada arquivo de teste e seu proprio binario; os dois testes
+    // deste escrevem o mesmo valor.
+    unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+    }
+
     // This will panic if any route uses legacy `/:` or `/*` patterns
     // without the `without_v07_checks()` escape hatch.
     tokio::spawn(async move {
@@ -38,6 +52,14 @@ async fn router_build_does_not_panic() {
 /// Test with voice enabled configuration
 #[tokio::test]
 async fn router_build_with_voice_does_not_panic() {
+    // SAFETY: ver a nota no teste acima.
+    unsafe {
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+    }
+
     let port = random_port();
     let mut config = AppConfig::default();
     config.gateway.port = port;
