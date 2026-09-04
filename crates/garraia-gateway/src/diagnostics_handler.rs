@@ -249,8 +249,9 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             None
         } else {
             Some(
-                "export GARRAIA_JWT_SECRET=$(openssl rand -hex 32) — \
-                 optional on a local single-user gateway. See docs/auth-config.md.",
+                "Optional on a local single-user gateway. To enable auth you need all \
+                 four auth env vars plus Postgres, not this one alone; start with \
+                 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32). See docs/auth-config.md.",
             )
         },
     });
