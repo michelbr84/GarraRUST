@@ -88,7 +88,7 @@ impl GatewayServer {
         let tls_cert = self.config.gateway.tls_cert_path.clone();
         let tls_key = self.config.gateway.tls_key_path.clone();
 
-        let mut agents = build_agent_runtime(&self.config);
+        let agents = build_agent_runtime(&self.config);
 
         // Provision the default mcp.json BEFORE building tools. This used to
         // happen only inside AppState::new (below), i.e. after build_mcp_tools
@@ -96,17 +96,19 @@ impl GatewayServer {
         // came up with zero MCP tools.
         crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing();
 
-        // Connect MCP servers and register their tools
-        let (mcp_manager, mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
-        let mcp_tool_count = mcp_tools.len();
-        let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name().to_string()).collect();
-        for tool in mcp_tools {
-            agents.register_tool(tool);
-        }
+        // Connect MCP servers, then let the runtime pull their tools from the
+        // manager. Issue #924: the boot path used to register the flat
+        // `mcp_tools` vec directly, which left those tools indistinguishable
+        // from native ones — so nothing could later replace them when a server
+        // reconnected with a different inventory. Going through
+        // `sync_mcp_tools` tags each tool with its server and makes boot use
+        // the *same* code path as the health monitor and the admin handlers.
+        let (mcp_manager, _mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
+        let mcp_tool_count = agents.sync_mcp_tools(&mcp_manager).await;
         if mcp_tool_count > 0 {
             info!(
                 mcp_tools = mcp_tool_count,
-                tools = ?mcp_tool_names,
+                tools = ?agents.tool_names(),
                 "MCP tools registered into AgentRuntime"
             );
         } else {
@@ -247,16 +249,18 @@ impl GatewayServer {
                 state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(
                     &store,
                 ))));
-                // Arc::get_mut is safe here: agents has rc=1 (AppState not yet
-                // wrapped in Arc<AppState> and no RestV1FullState clone exists).
-                if let Some(a) = Arc::get_mut(&mut state.agents) {
-                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
+                // Issue #924: `register_tool` takes `&self` now, so this no
+                // longer needs `Arc::get_mut` — which used to skip registering
+                // the schedule tools entirely, with only a `warn!`, whenever
+                // the Arc had picked up a second owner.
+                state
+                    .agents
+                    .register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
                         Arc::clone(&store),
                     )));
-                    a.register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
-                } else {
-                    warn!("schedule tools not registered: agents Arc has multiple owners");
-                }
+                state
+                    .agents
+                    .register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
                 info!("session store opened at {}", sessions_db.display());
             }
             Err(e) => {
@@ -519,8 +523,10 @@ impl GatewayServer {
             crate::health::spawn_periodic_checks(Arc::clone(&state), health_cache);
         }
 
-        // Spawn MCP health monitor for auto-reconnect
-        mcp_manager_arc.spawn_health_monitor();
+        // Spawn MCP health monitor for auto-reconnect. Issue #924: it now
+        // carries the runtime, so a reconnect also restores the server's tools
+        // into `AgentRuntime` instead of only into `McpManager::connections`.
+        mcp_manager_arc.spawn_health_monitor_with_runtime(Some(Arc::clone(&state.agents)));
 
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();
