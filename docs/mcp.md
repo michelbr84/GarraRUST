@@ -144,6 +144,35 @@ garraia health
 
 Check MCP status in health output.
 
+### Tool inventory stays in sync with the runtime
+
+A reconnect restores the server's tools into the **agent runtime**, not just
+into the connection pool. Before `v0.3.9` it did not (issue #924): the runtime's
+tool list was written once during boot and then frozen, so a server that
+connected late — or reconnected, or was added through the admin API — showed up
+as `connected` with N tools while the agent could not call any of them. They
+still worked through `garraia mcp call` and the admin UI, which build the call
+on demand, so the failure looked like a cosmetic counter bug.
+
+`GET /api/mcp/tools` reports the breakdown that makes this checkable:
+
+```json
+{
+  "runtime_tool_count": 20,
+  "native_tool_count": 6,
+  "mcp_tool_count": 14,
+  "runtime_tools_detailed": [
+    { "name": "bash", "source": "native" },
+    { "name": "filesystem__read_file", "source": "mcp", "server": "filesystem" }
+  ],
+  "mcp_servers": [{ "server": "filesystem", "tool_count": 14, "connected": true }]
+}
+```
+
+`GET /api/mcp/health` adds `runtime_in_sync_with_manager`. If it is ever
+`false`, the runtime and the connection pool disagree — report it, because the
+sync runs on every health tick and should converge within 30 seconds.
+
 ## Troubleshooting
 
 ### Server won't start
@@ -158,6 +187,14 @@ garraia logs | grep mcp
 Verify server is running:
 ```bash
 garraia mcp list
+```
+
+If `garraia mcp call` reaches the tool but the **agent** says it has no such
+tool, compare the two counts — that asymmetry is exactly what issue #924 was:
+
+```bash
+curl -s localhost:3888/api/mcp/tools | jq '{runtime: .mcp_tool_count, servers: .mcp_servers}'
+curl -s localhost:3888/api/mcp/health | jq '.runtime_in_sync_with_manager'
 ```
 
 ### Server won't start on Termux (Android)
