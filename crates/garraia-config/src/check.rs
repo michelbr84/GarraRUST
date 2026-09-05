@@ -372,6 +372,27 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         );
     }
 
+    // Security finding from the GarraRUST #930 investigation: the middleware
+    // that was supposed to implement this flag (`require_session_auth` in the
+    // gateway's session_auth.rs) is not wired into any router layer, so the
+    // flag protects nothing while the hardening docs claimed it guards
+    // /api/*. The gateway refuses to boot with it set (fail loud beats a
+    // silent lie); this finding says the same thing where operators actually
+    // look first. Error, not Warning: `garra start` will refuse this exact
+    // config, and `config check` passing on a config that cannot boot would
+    // be its own lie.
+    if config.gateway.session_tokens_required {
+        push_err(
+            &mut findings,
+            "gateway.session_tokens_required",
+            "gateway.session_tokens_required: true is set, but this flag is NOT implemented — \
+             no HTTP route validates session tokens today, and the gateway refuses to start \
+             with it enabled rather than pretend to be protected. Fix: remove the flag (or \
+             set it to false); this changes nothing about actual behavior."
+                .into(),
+        );
+    }
+
     // Timeouts: 0 means "no timeout" for reqwest/tokio — warn (user probably meant something else).
     if config.timeouts.llm.default_secs == 0 {
         push_warn(
@@ -1154,6 +1175,33 @@ mod tests {
         assert!(
             !findings.iter().any(|f| f.severity == Severity::Error),
             "default config produced errors: {findings:?}"
+        );
+    }
+
+    /// Achado da investigação da #930: o flag não é implementado no gateway
+    /// (`require_session_auth` nunca vai a um layer), então tê-lo ligado é
+    /// acreditar numa proteção inexistente. Error — o `garra start` recusa
+    /// essa mesma config, e um `config check` verde numa config que não sobe
+    /// seria uma segunda mentira.
+    #[test]
+    fn inert_session_tokens_flag_is_error() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.session_tokens_required = true;
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "gateway.session_tokens_required")
+            .expect("flag ligado deve produzir finding");
+        assert!(matches!(hit.severity, Severity::Error));
+        assert!(
+            hit.message.contains("NOT implemented"),
+            "msg = {}",
+            hit.message
+        );
+        assert!(
+            hit.message.contains("remove the flag"),
+            "msg = {}",
+            hit.message
         );
     }
 
