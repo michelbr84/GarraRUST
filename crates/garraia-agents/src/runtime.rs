@@ -485,12 +485,19 @@ impl AgentRuntime {
         };
 
         let query_embedding = self.embed_query(query_text).await;
+        // O filtro por modelo só faz sentido acompanhando um embedding (#954):
+        // sem vetor de consulta, o recall é textual e não deve ser estreitado.
+        let embedding_model = query_embedding
+            .is_some()
+            .then(|| self.embedding_model())
+            .flatten();
 
         memory
             .recall(RecallQuery {
                 tenant_id: None,
                 query_text: Some(query_text.to_string()),
                 query_embedding,
+                embedding_model,
                 session_id: session_id.map(|s| s.to_string()),
                 continuity_key: continuity_key.map(|s| s.to_string()),
                 limit,
