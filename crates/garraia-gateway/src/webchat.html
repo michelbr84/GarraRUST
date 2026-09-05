@@ -3078,6 +3078,9 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
 // ─── State ───────────────────────────────────────────────────────────
 const State = {
   session: localStorage.getItem('garraia.session_id') || '',
+  // Issue #922: proof that this browser owns `session`. The server rotates it
+  // on every successful resume, so the stored value is single-use.
+  sessionToken: localStorage.getItem('garraia.session_token') || '',
   gatewayKey: localStorage.getItem('garraia.gateway_key') || '',
   selectedProvider: localStorage.getItem('garraia.provider') || '',
   authRequired: false,
@@ -3866,7 +3869,14 @@ function connect() {
   State.socket.onopen = () => {
     setConnected(true);
     if (State.session) {
-      State.socket.send(JSON.stringify({ type: 'resume', session_id: State.session }));
+      // Issue #922: the token has to travel with the resume. Without it the
+      // server can only re-adopt a session that is still in memory, so a
+      // gateway restart silently started the conversation over — the history
+      // was on disk the whole time, just unreachable without proof of
+      // ownership.
+      const frame = { type: 'resume', session_id: State.session };
+      if (State.sessionToken) frame.session_token = State.sessionToken;
+      State.socket.send(JSON.stringify(frame));
     } else {
       State.socket.send(JSON.stringify({ type: 'init' }));
     }
@@ -3902,10 +3912,19 @@ function setSession(id) {
   sessionEl.title = State.session;
 }
 
+function setSessionToken(token) {
+  State.sessionToken = token || '';
+  if (State.sessionToken) localStorage.setItem('garraia.session_token', State.sessionToken);
+  else localStorage.removeItem('garraia.session_token');
+}
+
 function handleServerEvent(raw) {
   let evt;
   try { evt = JSON.parse(raw); } catch { appendSystemMsg('[RAW] ' + raw); return; }
   if (evt.session_id) setSession(evt.session_id);
+  // Both `connected` and `resumed` carry a fresh token; the server revokes the
+  // old one on resume, so keeping the newest is the only correct behaviour.
+  if (evt.session_token) setSessionToken(evt.session_token);
 
   switch (evt.type) {
     case 'connected':

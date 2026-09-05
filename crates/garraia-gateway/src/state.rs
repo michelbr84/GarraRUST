@@ -736,6 +736,29 @@ impl AppState {
         }
     }
 
+    /// Re-adopt a session id that is no longer in memory.
+    ///
+    /// Issue #922: `resume_session` only looks at the in-memory `sessions`
+    /// map, so a gateway restart — or the TTL sweep — ended continuity even
+    /// though `sessions.db` still held the whole conversation. The client sent
+    /// `resume`, the lookup missed, and it got a fresh UUID whose hydration
+    /// then found nothing. That is the `history_msgs=0` in the report.
+    ///
+    /// **Only call this after a session token has validated to this exact
+    /// id.** Existence in the database is not authorization: session ids are
+    /// UUIDs that appear in logs and client storage, and adopting one on
+    /// request alone would let anyone who learned an id resume someone else's
+    /// conversation. The token is the proof of ownership; this function
+    /// deliberately takes no part in checking it, so the caller cannot forget
+    /// that it must.
+    pub fn adopt_verified_session(&self, session_id: &str) {
+        self.create_session_with_id(session_id.to_string());
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.connected = true;
+            session.last_active = Instant::now();
+        }
+    }
+
     /// Remove sessions that have been disconnected longer than the TTL.
     pub fn cleanup_expired_sessions(&self) -> usize {
         self.cleanup_expired_sessions_at(Instant::now())
@@ -825,6 +848,74 @@ pub type SharedState = Arc<AppState>;
 mod tests {
     use super::*;
     use garraia_agents::AgentRuntime;
+
+    // ─── issue #922: continuidade sobrevive à perda da sessão em memória ───
+
+    fn state_with_store(dir: &std::path::Path) -> AppState {
+        let store = SessionStore::open(&dir.join("sessions.db")).expect("abrir store");
+        let store = Arc::new(Mutex::new(store));
+        let mut st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        st.set_session_store(Arc::clone(&store));
+        st.set_chat_session_manager(Arc::new(ChatSessionManager::new(store)));
+        st
+    }
+
+    /// O mecanismo em que os dois lados da #922 se apoiam: um turno
+    /// persistido volta por `hydrate_session_history` + `session_history`
+    /// numa instância **nova**, sem nada em memória. Se este par quebrar, a
+    /// correção do `mobile_chat` e a re-adoção no WS voltam a entregar vazio.
+    #[tokio::test]
+    async fn a_persisted_turn_comes_back_in_a_fresh_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = "sessao-de-teste";
+
+        {
+            let st = state_with_store(dir.path());
+            st.persist_turn(sid, Some("mobile"), Some("u1"), "oi", "olá!")
+                .await;
+        } // instância morre — como num restart do gateway
+
+        let fresh = state_with_store(dir.path());
+        assert!(
+            fresh.session_history(sid).is_empty(),
+            "sem hidratar, a sessão nova não sabe de nada"
+        );
+
+        fresh
+            .hydrate_session_history(sid, Some("mobile"), Some("u1"))
+            .await;
+        let history = fresh.session_history(sid);
+        assert_eq!(history.len(), 2, "histórico = {history:?}");
+        let texts: Vec<&str> = history
+            .iter()
+            .filter_map(|m| match &m.content {
+                garraia_agents::MessagePart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"oi"), "textos = {texts:?}");
+        assert!(texts.contains(&"olá!"), "textos = {texts:?}");
+    }
+
+    /// `adopt_verified_session` traz o id de volta para a memória sem inventar
+    /// histórico — quem carrega o histórico é a hidratação, logo em seguida.
+    #[test]
+    fn adopting_a_session_marks_it_connected_and_empty() {
+        let st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        assert!(!st.resume_session("s-nova"), "não existe ainda");
+
+        st.adopt_verified_session("s-nova");
+        assert!(st.resume_session("s-nova"), "agora existe e retoma");
+        assert!(st.session_history("s-nova").is_empty());
+    }
     use garraia_channels::ChannelRegistry;
     use garraia_config::AppConfig;
 

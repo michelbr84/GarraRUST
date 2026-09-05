@@ -95,7 +95,16 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 id
             } else if let Some((resume_id, resume_token)) = try_parse_resume_with_token(&text) {
                 // GAR-202: If a token is provided, validate it before resuming.
-                let token_ok = if let (Some(t), Some(manager)) =
+                //
+                // `token_verified` and `token_ok` are NOT the same thing, and
+                // issue #922 turns on the difference. `token_ok` stays
+                // permissive (no token → fall through to the in-memory
+                // existence check, preserving the old behaviour for clients
+                // that never sent one). `token_verified` is the strict form:
+                // a token was presented AND it belongs to this exact session.
+                // Only the strict form authorizes re-adopting a session that
+                // is no longer in memory.
+                let token_verified = if let (Some(t), Some(manager)) =
                     (&resume_token, state.chat_session_manager.as_ref())
                 {
                     let idle = state.current_config().gateway.session_idle_secs;
@@ -107,10 +116,33 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         .as_deref()
                         == Some(resume_id.as_str())
                 } else {
-                    true // no token provided — fall through to session existence check
+                    false
+                };
+                let token_ok = token_verified || resume_token.is_none();
+
+                // Issue #922: a gateway restart (or the TTL sweep) empties the
+                // in-memory map while `sessions.db` still holds the whole
+                // conversation. The client sent `resume`, this lookup missed,
+                // and it silently got a fresh UUID whose hydration then found
+                // nothing — the reported `history_msgs=0`. With a token that
+                // proves ownership, re-adopt the id instead; the hydration in
+                // `process_text_message` then loads the history from disk.
+                //
+                // Existence in the database is deliberately NOT enough on its
+                // own: session ids are UUIDs that show up in logs and client
+                // storage, and adopting one on request alone would let anyone
+                // who learned an id resume someone else's conversation.
+                let resumed = if state.resume_session(&resume_id) {
+                    token_ok
+                } else if token_verified {
+                    info!("re-adopting session from store: {}", resume_id);
+                    state.adopt_verified_session(&resume_id);
+                    true
+                } else {
+                    false
                 };
 
-                if token_ok && state.resume_session(&resume_id) {
+                if resumed {
                     info!("resumed WebSocket session: {}", resume_id);
 
                     // Send resume-ack with history length
@@ -459,7 +491,79 @@ fn parse_user_message(raw: &str) -> (String, Option<String>, Option<String>, Opt
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WS_TEXT_BYTES, parse_user_message, text_message_too_large};
+    use super::{
+        MAX_WS_TEXT_BYTES, parse_user_message, text_message_too_large, try_parse_resume_with_token,
+    };
+
+    /// Reproduz a decisão de autorização do handler de `resume` (#922) sem
+    /// subir um socket: a tabela é o contrato, e o caso perigoso é o da
+    /// última linha — id conhecido, sem token, sessão fora da memória.
+    fn resume_decision(
+        in_memory: bool,
+        token_present: bool,
+        token_valid_for_this_session: bool,
+    ) -> (bool, bool) {
+        let token_verified = token_present && token_valid_for_this_session;
+        let token_ok = token_verified || !token_present;
+        if in_memory {
+            (token_ok, false)
+        } else if token_verified {
+            (true, true) // re-adotada a partir do store
+        } else {
+            (false, false)
+        }
+    }
+
+    #[test]
+    fn resume_in_memory_keeps_working_without_a_token() {
+        // Comportamento pré-existente, preservado: cliente antigo que nunca
+        // mandou token continua retomando enquanto a sessão está viva.
+        assert_eq!(resume_decision(true, false, false), (true, false));
+    }
+
+    #[test]
+    fn resume_in_memory_is_refused_by_a_token_for_another_session() {
+        // Apresentar um token errado é pior que não apresentar nenhum.
+        assert_eq!(resume_decision(true, true, false), (false, false));
+        assert_eq!(resume_decision(true, true, true), (true, false));
+    }
+
+    /// O coração da #922: sessão fora da memória (gateway reiniciou, ou o TTL
+    /// varreu) volta do disco — mas só com prova de posse.
+    #[test]
+    fn evicted_session_is_readopted_only_with_a_valid_token() {
+        assert_eq!(resume_decision(false, true, true), (true, true));
+    }
+
+    /// **Sem token, um id conhecido não retoma nada.** Session ids são UUIDs
+    /// que aparecem em log e no storage do cliente; adotar um a pedido deixaria
+    /// qualquer um que descobrisse um id entrar na conversa alheia. Este é o
+    /// teste que impede a "correção" tentadora de aceitar existência no banco
+    /// como autorização.
+    #[test]
+    fn evicted_session_is_not_readopted_without_proof_of_ownership() {
+        assert_eq!(resume_decision(false, false, false), (false, false));
+        assert_eq!(resume_decision(false, true, false), (false, false));
+    }
+
+    /// O frame de resume aceita token opcional — o cliente antigo (que só
+    /// manda session_id) tem de continuar parseando.
+    #[test]
+    fn resume_frame_parses_with_and_without_a_token() {
+        let (id, tok) = try_parse_resume_with_token(r#"{"type":"resume","session_id":"s1"}"#)
+            .expect("sem token deve parsear");
+        assert_eq!(id, "s1");
+        assert!(tok.is_none());
+
+        let (id, tok) = try_parse_resume_with_token(
+            r#"{"type":"resume","session_id":"s1","session_token":"t1"}"#,
+        )
+        .expect("com token deve parsear");
+        assert_eq!(id, "s1");
+        assert_eq!(tok.as_deref(), Some("t1"));
+
+        assert!(try_parse_resume_with_token(r#"{"type":"init"}"#).is_none());
+    }
 
     #[test]
     fn text_message_size_guard_uses_strict_upper_bound() {
