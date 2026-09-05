@@ -9,6 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Inicio da Trilha B — epico #944 (Garra Terminal UX v2), Fase 1.
 
 ### Changed
+- **O console interativo fica limpo por default (#933).** O subscriber unico
+  escrevia o mesmo fluxo em `garraia.log` e no stderr, entao todo INFO de
+  registro de provider/tools/sessao competia com o spinner e com a resposta
+  streamada do chat. Agora sao dois layers com filtros independentes: o
+  arquivo segue com tudo no nivel pedido (`--log-level`, elevado por
+  `--debug`) e o stderr mostra so WARN+ — `--verbose` (flag global nova) traz
+  o INFO operacional conciso e `--debug` espelha o arquivo. `RUST_LOG` setado
+  e valido continua vencendo os dois lados, como sempre (GAR-138). A redacao
+  (regra absoluta 6) permanece nos dois caminhos, com teste que varre o fonte
+  para impedir a regressao de redigir so uma metade.
+
+  Ficam **fora** do console limpo, por serem canal de log e nao console:
+  `start`/`restart` (journald le o stderr do foreground) e `mcp-server` (o
+  host MCP loga o stderr do filho — `docs/cli-mcp-server.md` §Stdio
+  invariants). Esses espelham o arquivo como antes.
 - **O indicador de atividade ganha janela de aparicao e cronometro (#936).**
   Resposta quase instantanea nao pisca mais spinner nenhum: os primeiros
   ~270ms (3 ticks de 90ms) avancam o estado sem pintar nada, entao nao ha

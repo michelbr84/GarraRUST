@@ -144,6 +144,7 @@ mod tests {
         assert_injects(&["garra", "-m", "qwen3.8"]);
         assert_injects(&["garra", "--model=qwen3.8"]);
         assert_injects(&["garra", "--debug"]);
+        assert_injects(&["garra", "--verbose"]);
         assert_injects(&["garra", "--log-level", "debug"]);
         assert_injects(&["garra", "--log-level=debug"]);
         assert_injects(&["garra", "--provider", "ollama", "--model", "qwen3.8"]);
