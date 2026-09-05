@@ -40,7 +40,9 @@ metrics = "0.24"
 # Telegram (for voice handler)
 teloxide = { workspace = true }
 
-tokio = { workspace = true }
+# Issue #928: `test-util` dá o `start_paused` dos testes do retry de canal —
+# o backoff exponencial é inobservável contra relógio real.
+tokio = { workspace = true, features = ["test-util"] }
 dotenvy = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
