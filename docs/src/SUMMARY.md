@@ -49,6 +49,7 @@
 # Operações
 
 - [Runbook de Produção](./production-runbook.md)
+- [Persona da Hera (agente nomeado)](../hera-persona.md)
 
 ---
 
