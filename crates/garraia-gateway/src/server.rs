@@ -97,6 +97,40 @@ fn channel_retry_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(BASE_SECS.saturating_mul(exp).min(CAP_SECS))
 }
 
+/// Refuse to boot while `gateway.session_tokens_required` is set.
+///
+/// Security finding from the #930 investigation: the middleware that was
+/// supposed to implement this flag (`require_session_auth`,
+/// `session_auth.rs`) has never been wired into any router layer — the flag
+/// is a no-op for HTTP, while `docs/hardening-gateway.md` and both READMEs
+/// told operators it protects the `/api/*` surface. An operator who followed
+/// the hardening guide believed they were protected and were not.
+///
+/// Refusing beats the two alternatives. Booting with a warning keeps the lie
+/// alive for anyone not reading logs; silently *enabling* the auth would
+/// break every local integration that relies on today's open access — the
+/// opposite surprise, delivered to different people. The refusal names the
+/// one-line way out, so nobody is stranded: removing the flag changes
+/// nothing about the gateway's actual behavior.
+///
+/// Free function rather than a method so the decision is testable without
+/// constructing a `GatewayServer` (which wants a full `AppConfig` anyway,
+/// but `run()` cannot be called twice and binds sockets).
+fn refuse_inert_auth_flag(config: &AppConfig) -> Result<()> {
+    if config.gateway.session_tokens_required {
+        return Err(garraia_common::Error::Config(
+            "gateway.session_tokens_required: true is set, but this flag is NOT implemented: \
+             no HTTP route validates session tokens today, so it would protect nothing while \
+             claiming to. Refusing to start rather than pretend. Fix: remove the flag (or set \
+             it to false) in your config file — this changes nothing about actual behavior, \
+             it only stops asserting a protection that does not exist. Track the real \
+             implementation in the GarraRUST issue tracker."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 impl GatewayServer {
     pub fn new(config: AppConfig) -> Self {
         Self {
@@ -143,6 +177,10 @@ impl GatewayServer {
         if let Err(e) = dotenvy::dotenv() {
             tracing::debug!("no .env file loaded: {e}");
         }
+
+        // Security finding from the #930 investigation: refuse to boot with a
+        // hardening flag that does not do what its documentation promised.
+        refuse_inert_auth_flag(&self.config)?;
 
         let addr = format!("{}:{}", self.config.gateway.host, self.config.gateway.port);
         let tls_cert = self.config.gateway.tls_cert_path.clone();
@@ -1460,5 +1498,27 @@ mod tests {
             state.channels.read().await.get("flaky-telegram").is_some(),
             "canal deveria ter sido registrado após os retries"
         );
+    }
+
+    /// O flag ligado tem de impedir o boot, e a mensagem tem de nomear a
+    /// saída — a alternativa (subir com warning) manteria a mentira viva para
+    /// quem não lê log.
+    #[test]
+    fn inert_auth_flag_refuses_to_boot() {
+        let mut config = AppConfig::default();
+        config.gateway.session_tokens_required = true;
+
+        let err = refuse_inert_auth_flag(&config).expect_err("flag ligado deve recusar");
+        let msg = err.to_string();
+        assert!(msg.contains("session_tokens_required"), "msg = {msg}");
+        assert!(msg.contains("NOT implemented"), "msg = {msg}");
+        // A saída de uma linha tem de estar na própria mensagem.
+        assert!(msg.contains("remove the flag"), "msg = {msg}");
+    }
+
+    /// Quem roda hoje (default `false`) não pode ser afetado.
+    #[test]
+    fn default_config_boots() {
+        assert!(refuse_inert_auth_flag(&AppConfig::default()).is_ok());
     }
 }
