@@ -75,15 +75,21 @@ $script:Repo = 'michelbr84/GarraRUST'
 # The drift is intentional and documented in README.md; install.sh:57 makes the
 # same choice via BINARY="garraia".
 #
-# DELIBERATE PARITY GAP (CLAUDE.md rule 16). install.sh has one more install
-# step with no counterpart here: install_termux_mcp_wrapper, which drops a
-# `garra-mcp-server` shell wrapper next to the binary on Android. It exports
-# LD_PRELOAD=$PREFIX/lib/libtermux-exec.so before exec'ing the CLI, because an
-# external MCP host spawns its servers with a filtered environment and Termux
-# needs that shim for the ELF exec itself to succeed (issue #909). Windows has
-# no analogue: CreateProcess resolves .cmd shims natively (see the `cmd /c`
-# branch in garraia-agents' MCP manager), there is no preload mechanism in the
-# exec path, and no $PREFIX sandbox. Nothing to mirror -- not an omission.
+# DELIBERATE PARITY GAP (CLAUDE.md rule 16). install.sh has two more install
+# steps with no counterpart here, both Android-only MCP wrappers dropped next
+# to the binary:
+#   - install_termux_mcp_wrapper -> `garra-mcp-server`, which exports
+#     LD_PRELOAD=$PREFIX/lib/libtermux-exec.so before exec'ing the CLI, because
+#     an external MCP host spawns its servers with a filtered environment and
+#     Termux needs that shim for the ELF exec itself to succeed (issue #909).
+#   - install_termux_mcp_linker_wrapper -> `garra-mcp-server-linker`, which
+#     execs the ELF through /system/bin/linker64 instead. The shim wrapper
+#     still loses when the inner exec is what fails; the Android loader maps
+#     the binary with no shim and no LD_PRELOAD at all (issue #920).
+# Windows has no analogue for either: CreateProcess resolves .cmd shims
+# natively (see the `cmd /c` branch in garraia-agents' MCP manager), there is
+# no preload mechanism in the exec path, no Android loader to call directly,
+# and no $PREFIX sandbox. Nothing to mirror -- not an omission.
 $script:Binary = 'garraia'
 $script:UserAgent = 'garraia-install-ps1'
 

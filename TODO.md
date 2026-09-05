@@ -12,6 +12,79 @@ curtos para a próxima sessão autônoma.
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
+## Em andamento 2026-09-04 — segundo lote de campo (#920-#925), 4 PRs
+
+Seis issues novas do mesmo relator (Samsung A16 / Android 13 / Termux, v0.3.8
+de release, Garra em produção orquestrado pelo Hermes via MCP). Como no lote
+anterior, **a verificação mudou o diagnóstico de 4 das 6** — daí o lote não ter
+virado seis PRs mecânicos.
+
+Ordem escolhida (há duas dependências reais de código, não é preferência):
+
+| PR | Issues | Estado |
+| --- | --- | --- |
+| 1 | #920 + #925 | **entregue** — instalador, doctor, docs |
+| 2 | #923 + #924 | a fazer — superfície de tools do agente |
+| 3 | #921 | a fazer — depende do PR2 |
+| 4 | #922 | a fazer — depende do PR3 |
+
+PR2 antes do PR3 porque corrigir a #924 direito torna a lista de tools do
+runtime mutável, o que elimina a janela de `Arc::get_mut` em `server.rs:252` —
+hoje o único ponto onde a tool da #921 caberia. PR3 antes do PR4 porque os dois
+editam o `metadata` de `state.rs:580-583`/`683-686`.
+
+### O que a verificação mudou
+
+- **#924 não é contador.** As tools MCP entram no `AgentRuntime` só no boot
+  (`server.rs:99-117`) e o runtime congela dentro de um `Arc` na linha 117. Se o
+  connect do boot falha e o health monitor reconecta depois, `list_servers()`
+  passa a reportar 14/connected e o runtime nunca recebe nada — e o
+  tool-calling do LLM lê `tool_definitions()`. É capacidade, não cosmética. O
+  doc comment de `router.rs:1306` ("includes MCP tools") hoje é falso.
+- **#923 não é sandbox.** Produção passa `allowed_directories: None`. A causa é
+  não haver expansão de `~` em lugar nenhum, `working_dir` ser ignorado, e o
+  erro não nomear o caminho — foi por isso que o agente disse ao usuário que o
+  arquivo "não existia".
+- **#921 tem pré-requisito morto.** `Channel::send_message` do Telegram exige
+  `telegram_chat_id` no metadata, e nada no repo escreve essa chave (2 hits,
+  ambos leituras). `execute_scheduled_task` (`server.rs:1015-1024`) já falha em
+  silêncio hoje: **a entrega de heartbeats agendados para Telegram está
+  quebrada e ninguém tinha percebido.**
+- **#922 são dois bugs.** O do REST é uma linha: `mobile_chat.rs:142` passa
+  `&[]` sob um comentário factualmente falso ("history already hydrated into
+  runtime session" — o `AgentRuntime` não guarda histórico).
+
+### PR1 (entregue): #920 + #925
+
+**#920 — o wrapper do #909 não fechou o caso, e a razão importa.** "O exec
+falha no Termux" são duas falhas com o mesmo sintoma: (A) o host não consegue
+exec'ar o wrapper *script*; (B) o wrapper roda e o exec interno do ELF falha. O
+`LD_PRELOAD` do lote anterior cobre B. **A é insolúvel dentro de um wrapper**,
+porque o wrapper também precisa ser exec'ado.
+
+A generalização, agora no ADR 0016: no Termux, `command:` apontando para
+qualquer coisa nossa é frágil por construção; a única invocação que não depende
+de nada do Termux é a que usa um binário do sistema Android como `argv[0]`
+(`/system/bin/linker64 $PREFIX/bin/garraia mcp-server`). O `install.sh` escreve
+`garra-mcp-server-linker` para B; para A a resposta é documental, e o `doctor`
+imprime a receita com o caminho real preenchido.
+
+**#925 — e um erro meu corrigido no meio do caminho.** A primeira versão da
+mensagem dizia "para habilitar: export GARRAIA_JWT_SECRET=…". O §4 do
+`docs/auth-config.md` desmente: `AuthConfig::from_env` é all-or-nothing sobre
+quatro variáveis e o secret só é ligado depois que os dois pools Postgres
+passam no guard de role. Setar só ela destrava **nada** — a mensagem mandaria o
+usuário para um beco sem saída. Um teste fixa essa honestidade.
+
+Raio de alcance verificado (não chutado): `MobileAuth`
+(`mobile_auth.rs:107`) resolve o secret via `AppState::jwt_signing_secret`, logo
+`/chat` e o TOTP caem junto com `/auth/*`; console web, `/ws`,
+`/v1/chat/completions`, `mcp-server` e os canais seguem de pé.
+
+Validação: 2201 testes passando; a única falha é a ambiental de sempre
+(`migration_001_applies_and_schema_is_sane`, sem `/var/run/docker.sock`), em
+crate que o diff não toca. `detect_platform.sh` 21 → 28.
+
 ## Concluído em 2026-09-04 — #910 fechada + guarda de plataforma do asset Android
 
 Fechava-se o lote Termux (#909-#913). A #910 pedia três coisas, **todas já

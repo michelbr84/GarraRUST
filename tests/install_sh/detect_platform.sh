@@ -287,6 +287,78 @@ else
 fi
 
 echo ""
+echo "== detect_platform: garra-mcp-server-linker wrapper (issue #920) =="
+
+# Issue #920 reported two distinct failures under `env -i PATH=... HOME=...`,
+# and the LD_PRELOAD wrapper above only covers one of them:
+#
+#   A. the host cannot exec the wrapper *script* ("failed to run command")
+#   B. the script runs and the inner exec of the ELF fails
+#
+# This second wrapper covers B by handing the ELF to the Android loader, which
+# needs neither termux-exec nor LD_PRELOAD. A is unfixable from a script and is
+# answered by documentation (`command: /system/bin/linker64`) instead.
+#
+# install_binary already ran three times above (twice into wrapper_dir for the
+# idempotency check, once into linux_dir), so the artifacts to assert on exist.
+linker_wrapper="${wrapper_dir}/garra-mcp-server-linker"
+if [ -x "${linker_wrapper}" ]; then
+    pass "install_binary writes the loader wrapper on android"
+else
+    fail "install_binary writes the loader wrapper on android — missing ${linker_wrapper}"
+fi
+
+# Same shebang contract as the sibling wrapper: /usr/bin/env is absent in Termux.
+if [ -f "${linker_wrapper}" ] && head -1 "${linker_wrapper}" | grep -q "^#!${fake_prefix}/bin/sh$"; then
+    pass "loader wrapper shebang is an absolute Termux path"
+else
+    fail "loader wrapper shebang is an absolute Termux path — got: $(head -1 "${linker_wrapper}" 2>/dev/null)"
+fi
+
+# Both loader paths are tried: /system/bin/linker64 exists on every Android,
+# and the apex path is the one Android 10+ actually resolves through.
+if grep -q '/system/bin/linker64' "${linker_wrapper}" 2>/dev/null &&
+    grep -q '/apex/com.android.runtime/bin/linker64' "${linker_wrapper}" 2>/dev/null; then
+    pass "loader wrapper tries both linker64 locations"
+else
+    fail "loader wrapper tries both linker64 locations"
+fi
+
+# The load-bearing line: the loader is the argv[0], the installed binary its
+# first argument. Getting this backwards is the whole bug the issue reported.
+# shellcheck disable=SC2016  # $garra_linker is literal in the generated wrapper
+if grep -q 'exec "$garra_linker" "'"${wrapper_dir}"'/garraia" mcp-server' "${linker_wrapper}" 2>/dev/null; then
+    pass "loader wrapper execs the installed binary through the loader"
+else
+    fail "loader wrapper execs the installed binary through the loader — got: $(grep 'garra_linker' "${linker_wrapper}" 2>/dev/null | tail -1)"
+fi
+
+# It must not export LD_PRELOAD: the entire point is that the loader path does
+# not need the shim. If this ever starts matching, the two wrappers collapsed
+# into one and the fallback for failure mode B is gone.
+if grep -q 'libtermux-exec.so' "${linker_wrapper}" 2>/dev/null; then
+    fail "loader wrapper does not depend on the termux-exec shim"
+else
+    pass "loader wrapper does not depend on the termux-exec shim"
+fi
+
+# Reinstall is idempotent, and the only column-0 exec is the degrade path —
+# the loader exec lives inside the `for` loop. Same assertion shape as the
+# sibling wrapper so a future edit that merges the two files trips both.
+if [ "$(grep -c '^exec ' "${linker_wrapper}")" -eq 1 ]; then
+    pass "loader wrapper install is idempotent"
+else
+    fail "loader wrapper install is idempotent — exec lines $(grep -c '^exec ' "${linker_wrapper}")"
+fi
+
+# Off Android it must not exist, for the same reason as the sibling wrapper.
+if [ ! -e "${linux_dir}/garra-mcp-server-linker" ]; then
+    pass "loader wrapper is not installed off android"
+else
+    fail "loader wrapper is not installed off android"
+fi
+
+echo ""
 echo "== detect_platform: android notices and glibc skip =="
 
 # The Termux advisory only prints on android.

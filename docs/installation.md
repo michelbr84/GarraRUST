@@ -151,7 +151,10 @@ through `$TERMUX_VERSION` (exported by every Termux shell) or a `*com.termux*`
 - skips the glibc preflight — Termux has no glibc loader to interrogate;
 - installs into `$PREFIX/bin`, which is on `PATH` and writable without `sudo`
   (`/usr/local/bin` would be created *outside* `PATH`, a silent trap);
-- writes `$PREFIX/bin/garra-mcp-server`, a wrapper for external MCP hosts (see
+- writes `$PREFIX/bin/garra-mcp-server` and
+  `$PREFIX/bin/garra-mcp-server-linker`, two wrappers for external MCP hosts —
+  the second execs through the Android loader, for hosts that filter the
+  environment hard enough to break the first (see
   [MCP servers under Termux](#mcp-servers-under-termux) below).
 
 `garra update` resolves the same asset from inside Termux, so self-update works
@@ -257,10 +260,10 @@ session in the foreground (`termux-wake-lock`) — a build backgrounded long
 enough gets killed by the phantom process killer, which also reads as an
 unexplained `Signal 9`.
 
-Note that a source build does **not** produce `$PREFIX/bin/garra-mcp-server`;
-that wrapper is written by `install.sh`. See
-[MCP servers under Termux](#mcp-servers-under-termux) for how to create it by
-hand.
+Note that a source build does **not** produce `$PREFIX/bin/garra-mcp-server`
+nor `$PREFIX/bin/garra-mcp-server-linker`; both wrappers are written by
+`install.sh`. See [MCP servers under Termux](#mcp-servers-under-termux) for how
+to create them by hand.
 
 ### Install
 
@@ -603,6 +606,58 @@ EOF
 chmod +x "$PREFIX/bin/garra-mcp-server"
 ```
 
+**1b. The host filters the environment so hard the wrapper itself will not
+run.** Some hosts spawn with a *completely* stripped environment
+(`env -i PATH=… HOME=…`). Two things can then fail, and they look alike:
+
+```
+# the host cannot exec the wrapper script at all
+timeout: failed to run command 'garra-mcp-server': Permission denied
+
+# or the wrapper runs, and the inner exec of the ELF fails
+garra-mcp-server: 8: exec: /data/data/…/garraia: Permission denied
+```
+
+The Android dynamic loader sidesteps both: it maps the ELF directly, with no
+termux-exec shim and no `LD_PRELOAD` anywhere. `install.sh` writes a second
+wrapper for the inner-exec case:
+
+```json
+{ "mcpServers": { "garra": { "command": "/data/data/com.termux/files/usr/bin/garra-mcp-server-linker" } } }
+```
+
+If even that fails to start — the wrapper is a script too, so the first failure
+above still applies to it — point the host at the loader itself, with nothing in
+between. This is the configuration verified end to end on Android 13 with a
+100% filtered environment (issue #920):
+
+```json
+{ "mcpServers": { "garra": {
+    "command": "/system/bin/linker64",
+    "args": ["/data/data/com.termux/files/usr/bin/garraia", "mcp-server"]
+} } }
+```
+
+`/system/bin/linker64` exists on every 64-bit Android;
+`/apex/com.android.runtime/bin/linker64` is the equivalent on Android 10+ if
+the first is missing. Use the 64-bit loader — the release asset is
+`aarch64`-only.
+
+After a source build the loader wrapper does not exist either; recreate it with:
+
+```bash
+cat > "$PREFIX/bin/garra-mcp-server-linker" <<EOF
+#!$PREFIX/bin/sh
+for garra_linker in /system/bin/linker64 /apex/com.android.runtime/bin/linker64; do
+    if [ -x "\$garra_linker" ]; then
+        exec "\$garra_linker" "$PREFIX/bin/garraia" mcp-server "\$@"
+    fi
+done
+exec "$PREFIX/bin/garraia" mcp-server "\$@"
+EOF
+chmod +x "$PREFIX/bin/garra-mcp-server-linker"
+```
+
 **2. Garra as an MCP *client*, spawning `npx`/`python` servers.** Packages
 installed manually through npm/pip carry `/usr/bin/env` shebangs, a path Termux
 does not have, and the child dies with
@@ -611,8 +666,9 @@ does not have, and the child dies with
 itself, but the shim still has to be installed. For a binary you installed by
 hand, `termux-fix-shebang <file>` rewrites the shebang in place.
 
-`garraia doctor` checks the shim, the wrapper, `$PREFIX/bin` on `PATH` and the
-trust store in one pass, and prints the next step for whatever is missing.
+`garraia doctor` checks the shim, both wrappers, `$PREFIX/bin` on `PATH` and
+the trust store in one pass, and prints the next step for whatever is missing —
+including the ready-to-paste `linker64` command and args for your install.
 
 ### Port already in use
 
