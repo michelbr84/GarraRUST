@@ -529,6 +529,15 @@ impl GatewayServer {
             state
                 .agents
                 .register_tool(Box::new(crate::tools::TelegramSendTool::new(&state)));
+            // Issue #929: conversa entre agentes via A2A. Também registrada
+            // incondicionalmente — com `agent.a2a_peers` vazio a tool recusa
+            // todo envio nomeando a config, o que responde melhor ao modelo
+            // do que simplesmente não existir (foi o modo de falha da issue:
+            // o agente inventou um comando de shell porque nada dizia qual
+            // era a via oficial).
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::A2aSendTool::new(&state)));
         }
 
         // Spawn background tasks

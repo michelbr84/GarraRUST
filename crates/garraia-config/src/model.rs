@@ -472,6 +472,13 @@ pub struct AgentConfig {
     /// with a retryable error (429, 502, 503). Example: ["openrouter", "anthropic"]
     #[serde(default)]
     pub fallback_providers: Vec<String>,
+    /// Issue #929: base URLs of A2A peers the `a2a_send` tool may talk to
+    /// (e.g. `["http://127.0.0.1:8787"]` for a local Hermes). Deny-by-default:
+    /// an empty list means the tool refuses every send. Matched by exact
+    /// normalized base URL (scheme + host + port), never by prefix, and each
+    /// call is additionally vetted by the SSRF guard (CLAUDE.md rule 14).
+    #[serde(default)]
+    pub a2a_peers: Vec<String>,
     /// GAR-187: When true, bash commands matching CONFIRM_LIST require user approval
     /// before execution. The agent loop pauses and waits for "sim"/"yes" before proceeding.
     /// Default: false (opt-in).

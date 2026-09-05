@@ -6,6 +6,8 @@
 //! `garraia-agents → garraia-channels` edge. Such tools implement
 //! `garraia_agents::Tool` here instead and close over `Arc<AppState>`.
 
+pub mod a2a_send_tool;
 pub mod channel_send_tool;
 
+pub use a2a_send_tool::A2aSendTool;
 pub use channel_send_tool::TelegramSendTool;

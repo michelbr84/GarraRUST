@@ -118,17 +118,44 @@ impl ProactiveTargets {
 /// The clock is a parameter, not a call to `Instant::now()` inside: the
 /// interesting cases are the window boundary and the reset, and neither is
 /// testable against a real clock.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SendBudget {
     inner: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    limit: u32,
+    window: std::time::Duration,
 }
 
-/// Sends allowed per session per window.
+/// Sends allowed per session per window (the Telegram default).
 pub const MAX_SENDS_PER_WINDOW: u32 = 5;
-/// Length of the rolling window.
+/// Length of the rolling window (the Telegram default).
 pub const SEND_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
+impl Default for SendBudget {
+    fn default() -> Self {
+        Self::with_limits(MAX_SENDS_PER_WINDOW, SEND_WINDOW)
+    }
+}
+
 impl SendBudget {
+    /// Issue #929: the same anti-amplification shape serves any per-session
+    /// ceiling — the A2A tool wants a different rate than Telegram, not a
+    /// different mechanism.
+    /// `window` must be positive: with `Duration::ZERO` the reset condition
+    /// (`elapsed >= window`) is always true and every call would clear the
+    /// counter — rate limiting silently off. Asserted because a zero here is
+    /// always a caller bug, never a configuration.
+    pub fn with_limits(limit: u32, window: std::time::Duration) -> Self {
+        assert!(
+            window > std::time::Duration::ZERO,
+            "SendBudget window must be positive; ZERO disables rate limiting"
+        );
+        Self {
+            inner: std::sync::Mutex::new(std::collections::HashMap::new()),
+            limit,
+            window,
+        }
+    }
+
     /// Charge one send against `session`. `Err(used)` when the ceiling is hit.
     ///
     /// Fails **open** if the mutex is poisoned — a panic elsewhere must not
@@ -142,18 +169,18 @@ impl SendBudget {
 
         // Opportunistic sweep: without it a long-lived gateway accumulates one
         // entry per session that ever sent, forever.
-        map.retain(|_, (start, _)| now.duration_since(*start) < SEND_WINDOW);
+        map.retain(|_, (start, _)| now.duration_since(*start) < self.window);
 
         let entry = map.entry(session.to_string()).or_insert((now, 0));
-        if now.duration_since(entry.0) >= SEND_WINDOW {
+        if now.duration_since(entry.0) >= self.window {
             *entry = (now, 0);
         }
 
-        if entry.1 >= MAX_SENDS_PER_WINDOW {
+        if entry.1 >= self.limit {
             return Err(entry.1);
         }
         entry.1 += 1;
-        Ok(MAX_SENDS_PER_WINDOW - entry.1)
+        Ok(self.limit - entry.1)
     }
 }
 
@@ -308,6 +335,14 @@ mod tests {
         }
         assert!(b.try_consume("noisy", t0).is_err());
         assert!(b.try_consume("other", t0).is_ok());
+    }
+
+    /// Auditoria do a2a_send (INFO): janela zero desligaria o rate limiting
+    /// em silêncio — tem de ser bug de chamador, nunca configuração.
+    #[test]
+    #[should_panic(expected = "window must be positive")]
+    fn zero_window_panics() {
+        let _ = SendBudget::with_limits(5, std::time::Duration::ZERO);
     }
 
     /// Entradas velhas não podem crescer sem limite num gateway longevo.

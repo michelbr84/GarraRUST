@@ -22,6 +22,17 @@ impl A2AClient {
         }
     }
 
+    /// Constrói o cliente sobre um `reqwest::Client` fornecido.
+    ///
+    /// Issue #929: o chamador que recebe a URL de uma tool call de LLM é
+    /// obrigado (regra 14 do CLAUDE.md) a vetá-la com `garraia_common::ssrf`
+    /// e a usar o client PINADO nos IPs vetados — e a requisição precisa
+    /// sair por *aquele* client, não por um `Client::new()` cru. Este
+    /// construtor é o que torna isso possível sem duplicar o protocolo.
+    pub fn with_client(http: Client) -> Self {
+        Self { http }
+    }
+
     /// Busca o Agent Card no endpoint well-known do agente remoto.
     ///
     /// Espera que o agente exponha:

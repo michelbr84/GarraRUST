@@ -107,24 +107,47 @@ Estado atual no código:
 | Peça | Estado |
 |---|---|
 | Servidor A2A (`GET /.well-known/agent.json`, `POST /a2a/tasks`, get/cancel) | ✅ Completo e **multi-turno stateful** (sessão `a2a:{task_id}`) — `crates/garraia-gateway/src/a2a.rs` |
-| Cliente A2A (`A2AClient`: fetch card, create/get/cancel task) | ⚠️ Implementado (`crates/garraia-agents/src/a2a/client.rs`) mas **sem call site** — nenhum comando/tool o usa |
+| Cliente A2A (`A2AClient`: fetch card, create/get/cancel task) | ✅ Consumido pela tool **`a2a_send`** (issue #929) — `crates/garraia-gateway/src/tools/a2a_send_tool.rs` |
 | Auth nas rotas A2A | ⚠️ Nenhuma (bind loopback é a única proteção) — hardening necessário antes de expor |
 
-Ou seja: outro agente já consegue **conversar com o Garra hoje** por
-HTTP+JSON puro, com contexto preservado entre turnos (ver teste §4). O
-que falta para o Garra **iniciar** conversas é plugar o `A2AClient`.
+Os dois lados funcionam hoje: outro agente conversa **com** o Garra por
+HTTP+JSON puro (contexto preservado entre turnos, ver teste §4), e o
+Garra **inicia** conversas pela tool `a2a_send` (issue #929).
 
-**Proposta de follow-up** (issue dedicada; fora deste PR):
-1. Tool `a2a_send(url, message, task_id?)` no runtime do agente, usando
-   o `A2AClient` existente — o LLM do Garra decide quando falar com o
-   par e recebe a resposta como resultado da tool.
-2. Comando `garra a2a talk <url>` para conversa supervisionada via CLI.
-3. Guardrails obrigatórios: máximo de turnos por conversa, timeout por
-   turno, critério de parada explícito (objetivo atingido/sem progresso)
-   e allowlist de URLs de pares — dois agentes em loop sem teto é
-   incidente esperando data.
-4. Hardening do servidor A2A (token de pareamento igual aos canais)
-   antes de qualquer bind fora do loopback.
+### `a2a_send(url, message, task_id?)`
+
+Habilite listando os pares permitidos — sem isso a tool recusa tudo:
+
+```yaml
+agent:
+  a2a_peers:
+    - "http://127.0.0.1:8787"   # Hermes local
+```
+
+O match é por base URL normalizada **exata** (scheme + host + porta) —
+`http://hermes.local.evil.com` não casa com `http://hermes.local` — e a
+lista é lida a cada chamada, então revogar um par vale sem restart.
+Guardrails embutidos, todos deny-by-default:
+
+- **SSRF guard** (regra 14): mesmo par listado passa por `vet_url` +
+  client pinado nos IPs vetados (`IpScope::AllowPrivate`: LAN/loopback
+  sim; link-local/CGNAT/multicast, nunca). Allowlist de config não
+  substitui o pin — um DNS que mude de resposta entre a config e a
+  chamada é exatamente o ataque que o pin torna inerte.
+- **Teto de turnos**: 10 por sessão a cada 10 minutos. Recusa não
+  consome cota. Dois agentes em loop sem teto é incidente com data.
+- **Timeout por turno**: 120s (o par também roda um LLM).
+- A resposta volta com o `task_id`; repassá-lo continua a mesma
+  conversa (sessão `a2a:{task_id}` do lado servidor).
+
+**Follow-ups que continuam abertos** (fora do escopo da #929):
+1. Comando `garra a2a talk <url>` para conversa supervisionada via CLI.
+2. Critério de parada semântico (objetivo atingido/sem progresso) — o
+   teto de turnos é o piso mecânico, não a política.
+3. Hardening do servidor A2A (token de pareamento igual aos canais)
+   antes de qualquer bind fora do loopback — as rotas seguem sem auth,
+   e a tool nova torna a topologia de loop menos teórica: trate isso
+   antes de expor qualquer um dos lados fora da máquina.
 
 Com (1) dos dois lados — o Hermes já tem tool-calling — a conversa
 autônoma vira: um lado abre task A2A no outro, alterna turnos até o
