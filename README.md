@@ -475,10 +475,14 @@ the comparison section above for the evidence trail).
   loud warning, never a broken boot.
 - **Channels are deny-by-default** — per-channel allowlists; unknown
   users must present a pairing code; unauthorized messages are dropped.
-- **Local API binds 127.0.0.1 by default** — enable `gateway.api_key`
-  and/or `session_tokens_required: true` to require auth on it
-  (opt-in today; hardening this default is tracked on the roadmap).
-  The `HOST` env var can override the bind — mind your container config.
+- **Local API binds 127.0.0.1 by default** — `gateway.api_key` gates the
+  `/ws` WebSocket handshake (and only it); the REST surface has no
+  api-key auth today, so protect it with topology (loopback, firewall,
+  reverse proxy). `session_tokens_required` is NOT implemented and the
+  gateway refuses to start with it set, rather than claim a protection
+  that does not exist. Hardening these defaults is tracked on the
+  roadmap. The `HOST` env var can override the bind — mind your
+  container config.
 - **256-bit session tokens** — HttpOnly, SameSite=Strict cookie (or
   Bearer/`X-Session-Key`), rotated on resume, TTL + idle timeout.
 - **Two auth stacks, stated plainly** — Auth v1 (`/v1/auth/*`): 15-minute
