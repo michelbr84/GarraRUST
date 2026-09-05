@@ -132,6 +132,15 @@ pub async fn chat(
         .hydrate_session_history(&session_id, Some("mobile"), Some(&user_id))
         .await;
 
+    // Issue #922: this used to pass `&[]` under the comment "history already
+    // hydrated into runtime session". That was factually wrong — `AgentRuntime`
+    // keeps no per-session history; the slice the caller passes *is* the
+    // history. So the hydration above ran, filled `AppState.sessions`, and the
+    // result was thrown away one line later: every REST turn started from
+    // zero, which is the `history_msgs=0` in the report. `api.rs:170-173` had
+    // it right all along and is the shape copied here.
+    let history = state.session_history(&session_id);
+
     // Process the message through the agent runtime.
     let persona = garra_persona(&state);
     let result: Result<String, _> = state
@@ -139,7 +148,7 @@ pub async fn chat(
         .process_message_with_agent_config(
             &session_id,
             &req.message,
-            &[], // history already hydrated into runtime session
+            &history,
             Some(&session_id),
             Some(&user_id),
             None,           // provider: use default
@@ -242,6 +251,38 @@ pub async fn history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #922: o handler hidratava o histórico e passava `&[]` uma linha
+    /// depois, sob um comentário que afirmava que o runtime já o guardava —
+    /// o que é falso, o `AgentRuntime` não tem histórico por sessão. O bug
+    /// sobreviveu porque *parecia* certo lendo só aquela linha.
+    ///
+    /// Varredura de fonte, no mesmo espírito do teste do `spinner.rs`: um
+    /// teste de comportamento aqui exigiria subir o gateway com JWT válido, e
+    /// o que precisa ser travado é justamente uma linha que volta com
+    /// facilidade num refactor.
+    #[test]
+    fn chat_handler_never_passes_an_empty_history() {
+        let source = include_str!("mobile_chat.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("há código antes do módulo de teste");
+        let call = production
+            .split("process_message_with_agent_config")
+            .nth(1)
+            .expect("o handler chama process_message_with_agent_config");
+        // Os primeiros argumentos, até o fecho da chamada.
+        let args = &call[..call.find(".await").unwrap_or(call.len())];
+        assert!(
+            !args.contains("&[]"),
+            "o histórico hidratado tem de ser passado, não descartado: {args}"
+        );
+        assert!(
+            args.contains("&history"),
+            "esperado `&history` vindo de `state.session_history`: {args}"
+        );
+    }
 
     #[test]
     fn persona_prefers_config_over_env_and_default() {
