@@ -1303,11 +1303,23 @@ async fn list_mcp_servers(
     axum::Json(serde_json::json!({ "servers": servers }))
 }
 
-/// GET /api/mcp/tools — list all tools currently registered in AgentRuntime (includes MCP tools).
+/// GET /api/mcp/tools — every tool currently registered in `AgentRuntime`,
+/// tagged with where it came from, plus per-server MCP counts.
+///
+/// Issue #924: the doc comment here used to claim "(includes MCP tools)" and
+/// was wrong whenever a server connected after boot — `runtime_tools` listed
+/// only the natives while `mcp_servers[].tool_count` reported the MCP ones,
+/// and the two numbers disagreed with no way to tell why. `runtime_tools` is
+/// now kept in sync by `AgentRuntime::sync_mcp_tools`, and each entry carries
+/// `source` (`native` | `mcp`) plus the originating `server`, so a mismatch is
+/// legible instead of mysterious.
 async fn list_mcp_runtime_tools(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
+    let inventory = state.agents.tool_inventory();
     let all_tools = state.agents.tool_names();
+    let native_count = inventory.iter().filter(|t| t.source == "native").count();
+    let mcp_count = inventory.len() - native_count;
     let mcp_server_tools: Vec<serde_json::Value> = if let Some(mgr) = &state.mcp_manager_arc {
         mgr.list_servers()
             .await
@@ -1325,8 +1337,13 @@ async fn list_mcp_runtime_tools(
     };
 
     axum::Json(serde_json::json!({
+        // Back-compat: existing consumers (webchat.html) read these two.
         "runtime_tools": all_tools,
         "runtime_tool_count": all_tools.len(),
+        // Issue #924: the breakdown that makes the total checkable.
+        "runtime_tools_detailed": inventory,
+        "native_tool_count": native_count,
+        "mcp_tool_count": mcp_count,
         "mcp_servers": mcp_server_tools,
     }))
 }
@@ -1355,6 +1372,16 @@ async fn mcp_health(
     };
 
     let all_runtime_tools = state.agents.tool_names();
+    // Issue #924: `total_mcp_tools_available` (from the manager) and the
+    // runtime's own MCP count are the two numbers that silently diverged.
+    // Reporting both, plus whether they agree, turns a confusing payload into
+    // a diagnosis.
+    let runtime_mcp_tool_count = state
+        .agents
+        .tool_inventory()
+        .iter()
+        .filter(|t| t.source == "mcp")
+        .count();
     let overall_status = if servers.is_empty() {
         "no_mcp_configured"
     } else if servers
@@ -1376,6 +1403,8 @@ async fn mcp_health(
         "servers": servers,
         "total_mcp_tools_available": total_mcp_tools,
         "runtime_tool_count": all_runtime_tools.len(),
+        "runtime_mcp_tool_count": runtime_mcp_tool_count,
+        "runtime_in_sync_with_manager": runtime_mcp_tool_count == total_mcp_tools,
         "runtime_tools": all_runtime_tools,
     }))
 }

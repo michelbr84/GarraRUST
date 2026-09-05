@@ -88,7 +88,7 @@ impl GatewayServer {
         let tls_cert = self.config.gateway.tls_cert_path.clone();
         let tls_key = self.config.gateway.tls_key_path.clone();
 
-        let mut agents = build_agent_runtime(&self.config);
+        let agents = build_agent_runtime(&self.config);
 
         // Provision the default mcp.json BEFORE building tools. This used to
         // happen only inside AppState::new (below), i.e. after build_mcp_tools
@@ -96,17 +96,19 @@ impl GatewayServer {
         // came up with zero MCP tools.
         crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing();
 
-        // Connect MCP servers and register their tools
-        let (mcp_manager, mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
-        let mcp_tool_count = mcp_tools.len();
-        let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|t| t.name().to_string()).collect();
-        for tool in mcp_tools {
-            agents.register_tool(tool);
-        }
+        // Connect MCP servers, then let the runtime pull their tools from the
+        // manager. Issue #924: the boot path used to register the flat
+        // `mcp_tools` vec directly, which left those tools indistinguishable
+        // from native ones — so nothing could later replace them when a server
+        // reconnected with a different inventory. Going through
+        // `sync_mcp_tools` tags each tool with its server and makes boot use
+        // the *same* code path as the health monitor and the admin handlers.
+        let (mcp_manager, _mcp_tools, mcp_failures) = build_mcp_tools(&self.config).await;
+        let mcp_tool_count = agents.sync_mcp_tools(&mcp_manager).await;
         if mcp_tool_count > 0 {
             info!(
                 mcp_tools = mcp_tool_count,
-                tools = ?mcp_tool_names,
+                tools = ?agents.tool_names(),
                 "MCP tools registered into AgentRuntime"
             );
         } else {
@@ -247,16 +249,18 @@ impl GatewayServer {
                 state.set_chat_session_manager(Arc::new(ChatSessionManager::new(Arc::clone(
                     &store,
                 ))));
-                // Arc::get_mut is safe here: agents has rc=1 (AppState not yet
-                // wrapped in Arc<AppState> and no RestV1FullState clone exists).
-                if let Some(a) = Arc::get_mut(&mut state.agents) {
-                    a.register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
+                // Issue #924: `register_tool` takes `&self` now, so this no
+                // longer needs `Arc::get_mut` — which used to skip registering
+                // the schedule tools entirely, with only a `warn!`, whenever
+                // the Arc had picked up a second owner.
+                state
+                    .agents
+                    .register_tool(Box::new(garraia_agents::ScheduleHeartbeat::new(
                         Arc::clone(&store),
                     )));
-                    a.register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
-                } else {
-                    warn!("schedule tools not registered: agents Arc has multiple owners");
-                }
+                state
+                    .agents
+                    .register_tool(Box::new(garraia_agents::ScheduleRecurring::new(store)));
                 info!("session store opened at {}", sessions_db.display());
             }
             Err(e) => {
@@ -499,6 +503,34 @@ impl GatewayServer {
 
         let state = Arc::new(state);
 
+        // Issue #921: the proactive-send tool needs `AppState.channels` and the
+        // session store, so it can only be built once the state is shared —
+        // which is exactly why it lives in this crate and not in
+        // `garraia-agents`. Registering it here is possible at all because
+        // #924 made `register_tool` take `&self`; before that, this point was
+        // past the `Arc::get_mut` window.
+        //
+        // Registered unconditionally: the tool itself reports "canal telegram
+        // não está registrado" when there is no adapter, which is a better
+        // answer for the model than the tool silently not existing. It is what
+        // the reporter hit — the agent said it had no way to send, and could
+        // not tell whether that was configuration or capability.
+        {
+            // Diagnostic only: the tool re-reads the allowlist from
+            // `current_config()` on every call, so a change takes effect
+            // without a gateway restart (security audit finding, LOW).
+            let targets = crate::channel_send::ProactiveTargets::from_config(&state.config);
+            if !targets.is_empty() {
+                info!(
+                    chats = targets.len(),
+                    "telegram_send: explicit-target allowlist configured"
+                );
+            }
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::TelegramSendTool::new(&state)));
+        }
+
         // Spawn background tasks
         state.spawn_session_cleanup();
         state.spawn_token_cleanup(); // GAR-202
@@ -519,8 +551,10 @@ impl GatewayServer {
             crate::health::spawn_periodic_checks(Arc::clone(&state), health_cache);
         }
 
-        // Spawn MCP health monitor for auto-reconnect
-        mcp_manager_arc.spawn_health_monitor();
+        // Spawn MCP health monitor for auto-reconnect. Issue #924: it now
+        // carries the runtime, so a reconnect also restores the server's tools
+        // into `AgentRuntime` instead of only into `McpManager::connections`.
+        mcp_manager_arc.spawn_health_monitor_with_runtime(Some(Arc::clone(&state.agents)));
 
         // Spawn log file tailer for WebSocket streaming
         let log_tx = state.log_tx.clone();
@@ -993,6 +1027,32 @@ async fn execute_scheduled_task(
         )
         .await?;
 
+    // Issue #921: `task.session_metadata` is written by `AppState::persist_turn`
+    // as `{}` or `{"continuity_key": …}` — it never carried a channel address,
+    // so step 4 below has been failing on every scheduled Telegram task with
+    // "missing telegram_chat_id in metadata", swallowed by a `tracing::error!`.
+    // The address lives in `chat_session_keys`, written by `resolve_session`;
+    // this is the first code that reads it back.
+    let external_id = match (&state.chat_session_manager, channel_type.as_str()) {
+        (Some(mgr), "telegram") => mgr
+            .external_key_for(&task.session_id, garraia_db::ChatSource::Telegram)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    session = %task.session_id,
+                    error = %e,
+                    "scheduled task: failed to resolve channel address"
+                );
+                None
+            }),
+        _ => None,
+    };
+    let outgoing_metadata = crate::channel_send::with_channel_address(
+        &task.session_metadata,
+        channel_type,
+        external_id.as_deref(),
+    );
+
     let response_msg = Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: SessionId::from_string(&task.session_id),
@@ -1001,7 +1061,7 @@ async fn execute_scheduled_task(
         direction: MessageDirection::Outgoing,
         content: MessageContent::Text(response_text.clone()),
         timestamp: chrono::Utc::now(),
-        metadata: task.session_metadata.clone(),
+        metadata: outgoing_metadata,
     };
 
     // 3. Persist assistant response regardless of outbound channel availability.
@@ -1019,7 +1079,16 @@ async fn execute_scheduled_task(
     // 4. Best-effort delivery to channel adapter.
     if let Some(channel) = state.channels.read().await.get(channel_type.as_str()) {
         if let Err(e) = channel.send_message(&response_msg).await {
-            tracing::error!("Failed to send scheduled response: {e}");
+            // Issue #921: this used to fire on *every* scheduled Telegram task
+            // and nobody noticed, because the response was already persisted
+            // above and the task counted as done. Log the address resolution
+            // alongside the error so the next failure is diagnosable.
+            tracing::error!(
+                session = %task.session_id,
+                channel = %channel_type,
+                addressed = external_id.is_some(),
+                "Failed to send scheduled response: {e}"
+            );
         }
     } else {
         tracing::warn!(
