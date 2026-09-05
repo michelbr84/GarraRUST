@@ -14,6 +14,7 @@ mod migrate_workspace;
 mod repo_workflow;
 mod spinner;
 mod team;
+mod tracing_setup;
 mod update;
 mod verify;
 mod wizard;
@@ -25,7 +26,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use garraia_security::{RedactingMakeWriter, RedactingWriter};
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Initialize OpenTelemetry tracing + Prometheus metrics if enabled.
 ///
@@ -57,11 +58,15 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Log level (trace, debug, info, warn, error)
+    /// Log level for the persistent log file (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
 
-    /// Enable debug mode (shortcut for --log-level debug with verbose output)
+    /// Show concise operational info (provider, model, tools) on the console
+    #[arg(long, global = true)]
+    verbose: bool,
+
+    /// Enable debug mode: full tracing on the console and in the log file
     #[arg(long, global = true)]
     debug: bool,
 }
@@ -849,6 +854,18 @@ fn kill_and_wait(pid: u32) -> bool {
 /// Derived from the clap tree rather than hand-written so it cannot drift:
 /// the union of value-taking *global* args and the value-taking args of the
 /// injected subcommand — exactly the flags that may legally precede it.
+/// Subcomandos cujo stderr é canal de log, não console interativo (#933):
+/// `start`/`restart` rodam o gateway em foreground com o journal do systemd
+/// preso ao stderr, e o host MCP loga o stderr do `mcp-server`
+/// (`docs/cli-mcp-server.md` §Stdio invariants). Eles seguem espelhando o
+/// arquivo; só os comandos interativos/one-shot ganham o console limpo.
+fn stderr_is_log_channel(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Start { .. } | Commands::Restart { .. } | Commands::McpServer
+    )
+}
+
 fn value_taking_flags() -> Vec<String> {
     fn push(out: &mut Vec<String>, arg: &clap::Arg) {
         if !matches!(arg.get_action(), ArgAction::Set | ArgAction::Append) {
@@ -896,7 +913,14 @@ fn main() -> Result<()> {
     }
 
     // Init tracing for non-daemon mode (daemon reconfigures after fork)
-    let init_tracing = |level: &str| {
+    let console = if stderr_is_log_channel(&cli.command) {
+        // Espelha o arquivo, como antes do #933: journald / host MCP leem o
+        // stderr desses subcomandos como log operacional.
+        tracing_setup::ConsoleMode::Debug
+    } else {
+        tracing_setup::console_mode(cli.debug, cli.verbose)
+    };
+    let init_tracing = move |level: &str| {
         let log_dir = garraia_dir();
         std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| {
             eprintln!("Warning: failed to create log directory: {}", e);
@@ -912,22 +936,21 @@ fn main() -> Result<()> {
         //   RUST_LOG=garraia_gateway=debug,garraia_voice=trace
         //   RUST_LOG=garraia_agents::tools=debug
         // GAR-214: GARRAIA_LOG_FORMAT=json emits structured JSON lines (stdout/file)
-        let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-        if std::env::var("GARRAIA_LOG_FORMAT").as_deref() == Ok("json") {
-            tracing_subscriber::fmt()
-                .json()
-                .with_env_filter(env_filter)
-                .with_writer(file_appender.and(RedactingWriter::stderr()))
-                .with_ansi(false)
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .with_writer(file_appender.and(RedactingWriter::stderr()))
-                .with_ansi(false)
-                .init();
-        }
+        // #933: arquivo e stderr são layers com filtros independentes — o
+        // arquivo fica com tudo no nível pedido, o console com WARN+ por
+        // default (--verbose = INFO operacional, --debug = espelha o arquivo).
+        let rust_log = std::env::var("RUST_LOG").ok();
+        let (file_dirs, stderr_dirs) =
+            tracing_setup::filter_directives(rust_log.as_deref(), level, console);
+        let json = std::env::var("GARRAIA_LOG_FORMAT").as_deref() == Ok("json");
+        tracing_setup::build_subscriber(
+            file_appender,
+            RedactingWriter::stderr(),
+            &file_dirs,
+            &stderr_dirs,
+            json,
+        )
+        .init();
     };
 
     // GAR-379 / plan 0035 — `config check` must survive an unparseable config
@@ -1696,7 +1719,9 @@ async fn async_main(
             yes,
         } => {
             // Without a tracing subscriber, --debug/RUST_LOG silently produce
-            // nothing in chat mode (logs go to file + stderr, like Ask).
+            // nothing in chat mode. Since #933 the file gets everything while
+            // stderr stays WARN+ unless --verbose/--debug asks for more — the
+            // interactive console no longer competes with INFO records.
             init_tracing(&effective_level);
             chat::run_chat(config, provider, model, url, timeout_secs, yes).await?;
         }
@@ -1711,9 +1736,9 @@ async fn async_main(
             yes,
         } => {
             // GAR-579: ask is non-interactive; tracing init kept off the
-            // stdout/stderr path (`init_tracing` writes to file + stderr
-            // and would pollute machine-readable output when --json is on).
-            // We still initialize because other crates may log warnings.
+            // stdout path. Since #933 stderr only carries WARN+ by default,
+            // so machine-readable --json output on stdout stays clean while
+            // real warnings from other crates remain visible.
             init_tracing(&effective_level);
             let code = ask::run_ask(
                 config,
@@ -1744,7 +1769,9 @@ async fn async_main(
         Commands::McpServer => {
             // GAR-583: MCP server over stdio exposing `garra_ask` tool.
             // Tracing init writes to stderr (RedactingWriter), keeping
-            // stdout reserved for the JSON-RPC channel (rmcp's job).
+            // stdout reserved for the JSON-RPC channel (rmcp's job). O
+            // stderr daqui é canal de log do host MCP, então fica fora do
+            // console limpo do #933 — ver `stderr_is_log_channel`.
             init_tracing(&effective_level);
             mcp_server::run_mcp_server(config).await?;
         }
