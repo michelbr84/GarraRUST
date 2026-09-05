@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Inicio da Trilha B — epico #944 (Garra Terminal UX v2), Fase 1.
+
+### Changed
+- **O indicador de atividade ganha janela de aparicao e cronometro (#936).**
+  Resposta quase instantanea nao pisca mais spinner nenhum: os primeiros
+  ~270ms (3 ticks de 90ms) avancam o estado sem pintar nada, entao nao ha
+  flash a limpar. Espera longa ganha o tempo decorrido na linha (`4.7s`, a
+  partir de ~2,5s, junto da primeira rotacao de mensagem). As mensagens
+  passam a intercalar 3 profissionais para 1 com a personalidade do Garra
+  (exatamente as quatro que a issue cita), com teste fixando razao e
+  espacamento. Tudo derivado de **ticks**, nunca de relogio — o
+  `SpinnerState` continua puro, renderizado como braco do `tokio::select!`
+  (nunca task propria), cursor nunca escondido, fallback ASCII cobrindo
+  quadro, texto e cronometro. Os testes de timing do chat migram para tempo
+  virtual (`start_paused`) porque a janela de aparicao tornaria margens de
+  30ms flake garantido em runner carregado.
+
 ## [0.3.9] - 2026-09-05
 
 Dois lotes de retorno de campo do mesmo usuario da v0.3.6/v0.3.7 (Samsung
