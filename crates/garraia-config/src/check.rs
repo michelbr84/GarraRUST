@@ -731,11 +731,31 @@ fn validate_auth(
     // Cross-check: if NO env var is set, the gateway will run in
     // fail-soft mode and /auth/* + /v1/auth/* will answer 503. Surface
     // as a warning so operators see the state clearly in `config check`.
+    //
+    // Issue #925: the bare state was not actionable — it named neither the
+    // fix nor the blast radius, so a single-user local operator could not
+    // tell whether it was safe to ignore (it is). The message now answers
+    // both. The `"none of GARRAIA_JWT_SECRET"` prefix is load-bearing: the
+    // all-or-nothing test below asserts on that exact substring, and so does
+    // `partial_auth_env_yields_all_or_nothing_warning`. Append, never rewrite.
+    //
+    // The blast radius is verified, not guessed: `MobileAuth`
+    // (`garraia-gateway/src/mobile_auth.rs:107`) resolves the secret through
+    // `AppState::jwt_signing_secret`, so `/chat` and TOTP go down with
+    // `/auth/*`. The web console, `/ws`, `/v1/chat/completions`, `mcp-server`
+    // and the channel adapters authenticate differently and stay up.
     if !jwt_env_set {
         push_warn(
             findings,
             "auth",
-            "none of GARRAIA_JWT_SECRET, GarraIA_VAULT_PASSPHRASE or GARRAIA_VAULT_PASSPHRASE is set; /auth/* and /v1/auth/* will respond 503 until one is provided".into(),
+            "none of GARRAIA_JWT_SECRET, GarraIA_VAULT_PASSPHRASE or GARRAIA_VAULT_PASSPHRASE \
+             is set; /auth/* and /v1/auth/* will respond 503 until one is provided. A local \
+             single-user gateway can leave it unset: the web console, /ws, /v1/chat/completions, \
+             mcp-server and the channels do not use it — the mobile app (/chat) and the \
+             multi-tenant workspace do. Enabling them takes all four auth env vars plus \
+             Postgres, not this one alone (docs/auth-config.md section 7); start with \
+             export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)."
+                .into(),
         );
     }
 
@@ -1887,6 +1907,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Issue #925: the operator asked three questions the bare warning did not
+    /// answer — is it safe to ignore, how do I fix it, and what breaks without
+    /// it. All three have to survive a reword.
+    #[test]
+    fn missing_auth_env_warning_is_actionable() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let snapshot = auth_env_snapshot();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            for var in [
+                "GARRAIA_JWT_SECRET",
+                "GarraIA_VAULT_PASSPHRASE",
+                "GARRAIA_VAULT_PASSPHRASE",
+                "GARRAIA_REFRESH_HMAC_SECRET",
+                "GARRAIA_LOGIN_DATABASE_URL",
+                "GARRAIA_SIGNUP_DATABASE_URL",
+            ] {
+                std::env::remove_var(var);
+            }
+        }
+
+        let findings = validate(&AppConfig::default());
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "auth" && f.message.contains("none of GARRAIA_JWT_SECRET"))
+            .expect("no auth secret at all must warn");
+        assert!(matches!(hit.severity, Severity::Warning));
+        // The fix, verbatim enough to paste.
+        assert!(hit.message.contains("openssl rand -hex 32"));
+        // "Is it safe to ignore?" — yes, locally, and the message says which
+        // surfaces keep working so the answer is checkable, not a reassurance.
+        assert!(hit.message.contains("single-user"));
+        assert!(hit.message.contains("mcp-server"));
+        // "What stops working?" — the mobile app is the non-obvious one:
+        // `MobileAuth` resolves through `AppState::jwt_signing_secret`.
+        assert!(hit.message.contains("/chat"));
+        assert!(hit.message.contains("docs/auth-config.md"));
+        // Honesty guard: setting only this var unlocks nothing (§4 — the wiring
+        // is all-or-nothing over four vars AND both Postgres pools). The message
+        // must not read as "export this and you are done".
+        assert!(hit.message.contains("not this one alone"));
+
+        restore_auth_env(snapshot);
     }
 
     #[test]
