@@ -8,14 +8,16 @@
 gateway:
   # Perfil A (recomendado): só a própria máquina alcança o gateway.
   # Para expor na rede (Perfil B), veja docs/hardening-gateway.md §1 —
-  # api_key + session_tokens_required + allowed_origins são OBRIGATÓRIOS.
+  # api_key + allowed_origins são OBRIGATÓRIOS (api_key protege o /ws;
+  # a superfície REST depende de topologia: firewall/reverse proxy).
   host: "127.0.0.1"
   port: 3888
 
   # Auth do gateway (opt-in hoje; ligue mesmo em loopback se a máquina é
   # compartilhada). Valor LITERAL — gere com: openssl rand -hex 32
   # api_key: "TROQUE-POR-TOKEN-FORTE"
-  session_tokens_required: true
+  # session_tokens_required: NÃO adicione — o flag não está implementado e o
+  # gateway RECUSA subir com ele em `true` (investigação da issue #930).
   session_ttl_secs: 86400      # validade do token de sessão (1 dia)
   session_idle_secs: 3600      # corte por inatividade (1h)
 

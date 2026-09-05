@@ -44,7 +44,9 @@ gateway:
   # Valor LITERAL no arquivo (não há interpolação de env no config —
   # gere com `openssl rand -hex 32` e proteja o arquivo com chmod 0600):
   api_key: "<token-forte-aqui>"
-  session_tokens_required: true   # exige token de sessão nas rotas /api/*
+  # NÃO adicione `session_tokens_required: true`: o flag NÃO está implementado
+  # (nenhuma rota HTTP valida token de sessão hoje) e o gateway RECUSA subir
+  # com ele ligado, em vez de fingir proteção. Ver "Limitações conhecidas" §2.
   session_ttl_secs: 86400         # validade do token (1 dia)
   session_idle_secs: 3600         # corte por inatividade (1h)
   allowed_origins:                # vazio = allow-all; liste explicitamente
@@ -152,9 +154,15 @@ Arquivo completo comentado, validado com `garra config check`:
 1. `gateway.api_key` só aceita valor literal no arquivo — não há
    interpolação de env no config (a linha `GARRAIA_API_KEY` do
    `.env.example` é aspiracional; suportá-la de verdade é follow-up).
-2. Auth do gateway local é **opt-in** hoje (`api_key`/
-   `session_tokens_required` desligados por default) — endurecer esse
-   default está no roadmap.
+2. Auth do gateway local: **só o WebSocket `/ws` tem gate hoje**, e só
+   quando `gateway.api_key` está definido. As rotas REST (`/api/*`,
+   `/v1/chat/completions`, `/v1/messages`, `/a2a/*`) não têm autenticação
+   por api_key — proteja-as por topologia (loopback, firewall, reverse
+   proxy). `session_tokens_required` **não está implementado**: o
+   middleware nunca foi ligado ao router, e desde a investigação da
+   issue #930 o gateway recusa subir com o flag em `true` em vez de
+   afirmar uma proteção inexistente. Endurecer esses defaults está no
+   roadmap.
 3. "Controle de aplicativos" (GUI/automação de apps) não existe como
    tool — ver a nota em mcp-capacidades.md.
 4. TLS embutido exige build com `--features garraia-gateway/tls`; binários release
