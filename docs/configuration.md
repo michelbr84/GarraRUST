@@ -110,18 +110,30 @@ agent:
     - web_search
 
 # Multi-agent Configuration
+# Named agents are resolved via `agent_router` (explicit agent_id > channel
+# setting > "default" agent). Each entry maps to `NamedAgentConfig`:
+#   provider, model, system_prompt, max_tokens, max_context_tokens, tools
 agents:
   assistant:
-    name: "General Assistant"
-    priority: 1
-    model: openai
+    provider: openai
     system_prompt: "You are a helpful general assistant."
-    
+    max_tokens: 4096
+
   coder:
-    name: "Code Expert"
-    priority: 2
-    model: openai
+    provider: openai
     system_prompt: "You are an expert programmer."
+    tools: [bash, file_read, file_write]
+
+  # Exemplo: agente nomeado "hera" com persona própria (docs/operacao/hera-persona.md).
+  # A persona é o system_prompt; a memória usa o tenant padrão até existir
+  # tenant por agente (issue #965 — conversa entre agentes via A2A).
+  hera:
+    provider: ollama-local
+    system_prompt: |
+      Você é a Hera: a assistente pessoal desta instalação do Garra.
+      Português do Brasil. Frases curtas. Responda primeiro, explique depois.
+      Você não tem internet, calendário, email nem ferramentas.
+      Não invente fato pessoal. "Não sei" é resposta completa.
 
 # Memory Configuration
 memory:
