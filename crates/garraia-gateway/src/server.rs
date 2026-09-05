@@ -503,6 +503,34 @@ impl GatewayServer {
 
         let state = Arc::new(state);
 
+        // Issue #921: the proactive-send tool needs `AppState.channels` and the
+        // session store, so it can only be built once the state is shared —
+        // which is exactly why it lives in this crate and not in
+        // `garraia-agents`. Registering it here is possible at all because
+        // #924 made `register_tool` take `&self`; before that, this point was
+        // past the `Arc::get_mut` window.
+        //
+        // Registered unconditionally: the tool itself reports "canal telegram
+        // não está registrado" when there is no adapter, which is a better
+        // answer for the model than the tool silently not existing. It is what
+        // the reporter hit — the agent said it had no way to send, and could
+        // not tell whether that was configuration or capability.
+        {
+            // Diagnostic only: the tool re-reads the allowlist from
+            // `current_config()` on every call, so a change takes effect
+            // without a gateway restart (security audit finding, LOW).
+            let targets = crate::channel_send::ProactiveTargets::from_config(&state.config);
+            if !targets.is_empty() {
+                info!(
+                    chats = targets.len(),
+                    "telegram_send: explicit-target allowlist configured"
+                );
+            }
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::TelegramSendTool::new(&state)));
+        }
+
         // Spawn background tasks
         state.spawn_session_cleanup();
         state.spawn_token_cleanup(); // GAR-202
@@ -999,6 +1027,32 @@ async fn execute_scheduled_task(
         )
         .await?;
 
+    // Issue #921: `task.session_metadata` is written by `AppState::persist_turn`
+    // as `{}` or `{"continuity_key": …}` — it never carried a channel address,
+    // so step 4 below has been failing on every scheduled Telegram task with
+    // "missing telegram_chat_id in metadata", swallowed by a `tracing::error!`.
+    // The address lives in `chat_session_keys`, written by `resolve_session`;
+    // this is the first code that reads it back.
+    let external_id = match (&state.chat_session_manager, channel_type.as_str()) {
+        (Some(mgr), "telegram") => mgr
+            .external_key_for(&task.session_id, garraia_db::ChatSource::Telegram)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    session = %task.session_id,
+                    error = %e,
+                    "scheduled task: failed to resolve channel address"
+                );
+                None
+            }),
+        _ => None,
+    };
+    let outgoing_metadata = crate::channel_send::with_channel_address(
+        &task.session_metadata,
+        channel_type,
+        external_id.as_deref(),
+    );
+
     let response_msg = Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: SessionId::from_string(&task.session_id),
@@ -1007,7 +1061,7 @@ async fn execute_scheduled_task(
         direction: MessageDirection::Outgoing,
         content: MessageContent::Text(response_text.clone()),
         timestamp: chrono::Utc::now(),
-        metadata: task.session_metadata.clone(),
+        metadata: outgoing_metadata,
     };
 
     // 3. Persist assistant response regardless of outbound channel availability.
@@ -1025,7 +1079,16 @@ async fn execute_scheduled_task(
     // 4. Best-effort delivery to channel adapter.
     if let Some(channel) = state.channels.read().await.get(channel_type.as_str()) {
         if let Err(e) = channel.send_message(&response_msg).await {
-            tracing::error!("Failed to send scheduled response: {e}");
+            // Issue #921: this used to fire on *every* scheduled Telegram task
+            // and nobody noticed, because the response was already persisted
+            // above and the task counted as done. Log the address resolution
+            // alongside the error so the next failure is diagnosable.
+            tracing::error!(
+                session = %task.session_id,
+                channel = %channel_type,
+                addressed = external_id.is_some(),
+                "Failed to send scheduled response: {e}"
+            );
         }
     } else {
         tracing::warn!(
