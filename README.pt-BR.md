@@ -785,7 +785,7 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Cofre de credenciais criptografadas (opt-in)** - AES-256-GCM em `~/.config/garraia/credentials/vault.json`, chave derivada via PBKDF2-HMAC-SHA256 (600k iterações) de `GARRAIA_VAULT_PASSPHRASE`. Dito com clareza: o default recomendado do wizard `garra init` grava as chaves de provider em `config.yml` (modo 0600, texto puro); escolha a opção do cofre e exporte a passphrase a cada start para ter criptografia em repouso. Tornar o cofre o default está no roadmap.
 - **Tokens MCP protegidos por vault** - Variáveis de ambiente sensíveis dos servidores MCP (`API_KEY`, `TOKEN`, `SECRET`, etc.) são automaticamente movidas para o vault no primeiro `save`. O `mcp.json` armazena apenas referências `vault:mcp.<server>.<key>`. Sem `GARRAIA_VAULT_PASSPHRASE`, salva em plaintext com aviso — nunca quebra o boot.
 - **Tokens de sessão criptograficamente seguros** - Cada sessão WebSocket recebe um token de 256 bits (URL-safe base64). Suportados via cookie `garraia_session` (HttpOnly, SameSite=Strict), header `Authorization: Bearer` ou `X-Session-Key`. TTL e idle-timeout configuráveis. Rotação automática no resume.
-- **Canais deny-by-default** - Usuários desconhecidos nos canais de mensageria precisam apresentar código de pareamento. A API local (WS/HTTP) faz bind em `127.0.0.1` e é aberta por default — habilite `gateway.api_key` e/ou `session_tokens_required: true` para exigir auth nela (endurecer esse default está no roadmap).
+- **Canais deny-by-default** - Usuários desconhecidos nos canais de mensageria precisam apresentar código de pareamento. A API local (WS/HTTP) faz bind em `127.0.0.1` e é aberta por default — `gateway.api_key` protege o handshake do WebSocket `/ws` (e só ele); a superfície REST não tem auth por api_key hoje, proteja-a por topologia (loopback, firewall, reverse proxy). `session_tokens_required` NÃO está implementado e o gateway recusa subir com ele ligado, em vez de afirmar uma proteção que não existe (endurecer esses defaults está no roadmap).
 - **Listas de permissões por usuário** - Listas de permissões por canal controlam quem pode interagir com o agente. Mensagens não autorizadas são descartadas silenciosamente.
 - **Filtragem heurística de entrada** - Saneamento de caracteres de controle + triagem por palavras-chave de frases comuns de prompt injection nos canais de chat e no WebSocket. É heurística, não garantia — trate prompt injection como problema em aberto, como todo framework deveria.
 - **Confirmação de comandos arriscados** - `tool_confirmation_enabled: true` pausa o agente antes de executar comandos bash destrutivos (`rm -r`, `git reset --hard`, `drop database`, etc.) e aguarda aprovação do usuário ("sim"/"yes"). Default: `false` (opt-in).
@@ -824,7 +824,8 @@ gateway:
   # GAR-202: tokens de sessão — TTL, idle timeout e exigência de autenticação
   session_ttl_secs: 86400       # validade do token (1 dia). Padrão: 86400
   session_idle_secs: 3600       # timeout por inatividade (1h). Padrão: 3600
-  session_tokens_required: false # exige token nas rotas /api/* . Padrão: false
+  # session_tokens_required: NÃO implementado — o gateway recusa subir com
+  # `true` (ver docs/hardening-gateway.md, Limitações conhecidas §2).
 
 llm:
   # ATENÇÃO sobre `api_key`: a resolução é vault > config > variável de ambiente.
