@@ -5,14 +5,30 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-04 (America/New_York)
+**Atualizado:** 2026-09-05 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
-## Em andamento 2026-09-04 — segundo lote de campo (#920-#925), 4 PRs
+## Em andamento 2026-09-05 — pós-v0.3.9: Trilha B (épico #944) e novo lote de memória
+
+A v0.3.9 fecha os dois lotes de campo (#920-#925 e #928-#930). Estado:
+
+| Trilha | Estado |
+| --- | --- |
+| A operacional (#928-#930) | **fechada** — #945 e #946 merged; **#947 (a2a_send) fechado sem merge pelo dono** — a direção de conversa entre agentes migrou para a #965 (agentes nomeados via `agent_router`, não URL); #929 segue aberta aguardando essa direção |
+| B — épico #944 Terminal UX v2 | Fase 1 em voo: **B-PR1 (#933, sinks de tracing + `--verbose`)** pronto em `claude/6-issues-strategy-5mufs3-b1`; **B-PR2 (#936, spinner com janela de aparição + cronômetro)** pronto em `…-b2`; PRs abrem após o corte da v0.3.9. Depois: B-PR3 (#934+#935), ADR 0017 antes do #942 |
+| C — memória semântica (novo) | 18 issues novas do dono (#948-#964 embeddings/memória + #965 A2A nomeado) abertas em 2026-09-05, **fora do plano aprovado** — prioridade entre B e C é decisão do dono |
+
+Pendências registradas sem issue: `/ws/parrot` sem auth; rotas A2A do
+servidor sem auth (loopback é a única proteção); `server.rs` >1500 linhas
+(candidato a refactor); `timeouts.channels` (só se o retry do #946 não
+bastar); `openclaw_bridge.rs` morto no disco; #928 aguarda journal do
+binário Rust do relator.
+
+## Concluído 2026-09-04/05 — segundo lote de campo (#920-#925), 4 PRs
 
 Seis issues novas do mesmo relator (Samsung A16 / Android 13 / Termux, v0.3.8
 de release, Garra em produção orquestrado pelo Hermes via MCP). Como no lote
@@ -23,10 +39,10 @@ Ordem escolhida (há duas dependências reais de código, não é preferência):
 
 | PR | Issues | Estado |
 | --- | --- | --- |
-| 1 | #920 + #925 | **entregue** — instalador, doctor, docs |
-| 2 | #923 + #924 | a fazer — superfície de tools do agente |
-| 3 | #921 | a fazer — depende do PR2 |
-| 4 | #922 | a fazer — depende do PR3 |
+| 1 | #920 + #925 | **entregue** (#926) — instalador, doctor, docs |
+| 2 | #923 + #924 | **entregue** (#927) — superfície de tools do agente |
+| 3 | #921 | **entregue** (#931) — telegram_send + entrega agendada |
+| 4 | #922 | **entregue** (#932) — continuidade WS/REST + âncora CodeQL |
 
 PR2 antes do PR3 porque corrigir a #924 direito torna a lista de tools do
 runtime mutável, o que elimina a janela de `Arc::get_mut` em `server.rs:252` —

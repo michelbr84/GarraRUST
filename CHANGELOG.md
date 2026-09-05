@@ -4,10 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.9] - 2026-09-05
 
-Segundo lote de retorno de campo do mesmo usuario da v0.3.6/v0.3.7 (Samsung
-A16 / Android 13 / Termux, agora na v0.3.8): issues #920-#925.
+Dois lotes de retorno de campo do mesmo usuario da v0.3.6/v0.3.7 (Samsung
+A16 / Android 13 / Termux, com o Garra orquestrado pelo Hermes via MCP):
+issues #920-#925 (4 PRs: #926/#927/#931/#932) e #928-#930 (#945/#946), mais
+a persona da Hera (#966). Como nos lotes anteriores, a verificacao mudou o
+diagnostico da maioria dos relatos — o detalhe esta no corpo de cada PR — e
+achou um bug de seguranca que ninguem reportou (#945).
 
 ### Added
 - **Wrapper `garra-mcp-server-linker` no Termux (#920).** "O exec falha no
@@ -33,6 +37,26 @@ A16 / Android 13 / Termux, agora na v0.3.8): issues #920-#925.
   receita do `linker64` pronta para colar. `TermuxItem.next_step` passa de
   `&'static str` para `String` para poder nomear o caminho real; a forma
   serializada de `doctor --json` nao muda.
+- **Tool `telegram_send` de envio proativo (#921).** O agente pode *iniciar*
+  uma mensagem no Telegram (lembrete agendado, "o backup terminou", resposta
+  de tarefa longa) em vez de so responder. Deny-by-default: responder no chat
+  corrente nao pede config; mandar para um chat que o modelo *nomeia* exige o
+  id em `channels.telegram.proactive_chat_ids` — lista separada de proposito
+  do allowlist de usuarios (que tem modo `open`, perigoso demais para decidir
+  quem o bot pode procurar sozinho). Vazia = recusa tudo; lida a cada envio
+  (revogacao sem restart). Rate limit de 5 mensagens/conversa/minuto
+  (`SendBudget`); recusa nao consome cota. Documentada em `docs/channels.md`.
+
+  De quebra, a investigacao achou que **a entrega Telegram de tarefas
+  agendadas estava silenciosamente quebrada** — nada no repo escrevia
+  `telegram_chat_id` no metadata que `Channel::send_message` exige — e o
+  mesmo caminho novo de enderecamento (`ProactiveTargets`/
+  `with_channel_address`) conserta os heartbeats.
+- **Persona: o Garra conhece a Hera e a Forja (#966).** Port do plan 0274
+  adaptado ao `agent_router`/`NamedAgentConfig`; a persona explica que a
+  conversa direta entre agentes ainda nao esta disponivel (issue #965).
+  `docs/configuration.md` corrige o exemplo de `agents:` para o formato real
+  e `docs/hera-persona.md` entra na doc.
 
 ### Fixed
 - **O aviso de secret de auth ausente passa a ser acionavel (#925).** Ele dizia
@@ -57,6 +81,52 @@ A16 / Android 13 / Termux, agora na v0.3.8): issues #920-#925.
   cofre ser tambem o ultimo fallback do JWT — entao quem rodou o `garraia init`
   e escolheu o cofre pode ja ter um secret sem saber. `docs/index.md` nao
   linkava esse documento de lugar nenhum; passa a linkar.
+- **`file_read`/`file_write` resolvem caminhos como o usuario espera (#923).**
+  Nao era sandbox (producao roda com `allowed_directories: None`): nao havia
+  expansao de `~`/`$HOME` em lugar nenhum, o `working_dir` da sessao era
+  ignorado e o erro nao nomeava o caminho tentado — foi assim que o agente
+  disse ao usuario que um arquivo existente "nao existia". Novos resolvers
+  puros (`expand_home` + `resolve_tool_path`, com `PathOrigin` dizendo qual
+  regra decidiu), e o erro agora carrega o caminho resolvido + o pedido +
+  a dica. `..` continua rejeitado no input cru, antes de qualquer expansao.
+- **Tools MCP nao congelam mais no snapshot do boot (#924).** A lista de
+  tools do `AgentRuntime` era escrita uma vez no boot e congelava num `Arc`:
+  servidor que conectasse depois (reconexao do health monitor, admin API)
+  aparecia `connected` com N tools e o LLM nao conseguia chamar nenhuma —
+  `garraia mcp call` funcionava, o que disfarcava o bug de capacidade como
+  bug de contador. Agora `tools: RwLock<Vec<RegisteredTool>>` com
+  `ToolSource` (`native` vs `mcp{server}`), sync a cada tick do health
+  monitor, e `GET /api/mcp/tools` expoe o breakdown +
+  `runtime_in_sync_with_manager` no `/api/mcp/health` para isso ser
+  checavel de fora.
+- **Continuidade de conversa no WS e no REST mobile (#922).** Dois bugs: o
+  handler REST passava `&[]` como historico sob um comentario falso ("history
+  already hydrated into runtime session" — o runtime nao guarda historico), e
+  o `/ws` so retomava sessao durável com token *presente*, nao *verificado*
+  (`token_verified` ≠ `token_ok`). O webchat passa a persistir e reenviar o
+  `session_token`. Teste-guarda varre o fonte do handler para o `&[]` nao
+  voltar.
+- **`gateway.session_tokens_required: true` recusa o boot em vez de mentir
+  (#945, achado de verificacao — sem issue).** `require_session_auth` era
+  codigo morto (nunca ia a `.layer()`), entao o flag era no-op para HTTP —
+  e tres documentos, incluindo o guia de hardening e o
+  `config.hardened.example.yml` oficial, afirmavam o contrario. Quem seguiu
+  o guia acreditava estar protegido e nao estava. Agora o boot falha alto
+  nomeando a saida em uma linha, `config check` reporta Error, e os seis
+  lugares que mentiam foram corrigidos (`gateway.api_key` protege so o
+  `/ws`; docs dizem exatamente isso).
+- **Telegram reconecta no boot em vez de emudecer para sempre (#946/#928).**
+  `TelegramChannel::connect()` nao tinha retry: 5s de rede movel ruim na
+  hora errada custavam o canal ate restart manual — enquanto o *polling* do
+  teloxide ja reconectava para sempre (1s→64s). Falha de boot agora vira
+  retry em background (exponencial 2s→cap 60s, a forma do OpenClaw), sem
+  teto de tentativas de proposito, registrando o canal quando conectar.
+  O resto do relato da #928 (strings de log do CPython, unit systemd
+  `portao-despachante`) nao e deste repositorio — detalhe no PR e na issue.
+- **Ancora #115 do ledger CodeQL reapontada (#932).** O shift de +54 linhas
+  do #921 em `session_store.rs` moveu a linha ancorada; o fix reaponta linha
+  e referencias internas sem tocar o `sink_snippet` (que o script proibe
+  editar para "passar").
 
 ## [0.3.8] - 2026-09-04
 
