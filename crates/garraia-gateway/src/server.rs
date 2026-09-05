@@ -37,6 +37,66 @@ pub struct GatewayServer {
     telemetry_config: Option<garraia_telemetry::TelemetryConfig>,
 }
 
+/// Keep trying to connect a channel that failed at boot (issue #928).
+///
+/// The asymmetry this fixes: once connected, the Telegram polling loop
+/// already survives network loss — teloxide retries `getUpdates` forever
+/// with 1s→64s exponential backoff. Only the *first* connect had no second
+/// chance, so a transient failure in exactly the wrong five seconds left
+/// the channel silent until a human restarted the gateway. Slack, OpenClaw
+/// and iMessage all reconnect; Telegram was the odd one out.
+///
+/// Retries forever, like the polling loop it hands over to: the operator's
+/// intent in configuring the channel is "be on Telegram when the network
+/// allows", and there is no correct number of failures after which that
+/// intent expires. The cap keeps the pressure constant (one attempt per
+/// minute) instead of growing unbounded.
+fn spawn_channel_connect_retry(
+    state: Arc<AppState>,
+    mut channel: Box<dyn garraia_channels::Channel>,
+) {
+    tokio::spawn(async move {
+        let mut attempt: u32 = 0;
+        loop {
+            let delay = channel_retry_delay(attempt);
+            tokio::time::sleep(delay).await;
+            match channel.connect().await {
+                Ok(()) => {
+                    info!(
+                        channel = channel.channel_type(),
+                        attempts = attempt + 1,
+                        "channel connected after boot-time retry"
+                    );
+                    state.channels.write().await.register(channel);
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        channel = channel.channel_type(),
+                        attempt = attempt + 1,
+                        next_retry_secs = channel_retry_delay(attempt + 1).as_secs(),
+                        "channel reconnect failed: {e}"
+                    );
+                    attempt = attempt.saturating_add(1);
+                }
+            }
+        }
+    });
+}
+
+/// Backoff for [`spawn_channel_connect_retry`]: 2s, 4s, 8s, … capped at 60s.
+///
+/// Same shape as the OpenClaw client's reconnect loop
+/// (`openclaw/client.rs`), which is the most complete of the three channel
+/// reconnect implementations. Pure so the boundary cases (growth, the cap,
+/// and no overflow at absurd attempt counts) are testable without a clock.
+fn channel_retry_delay(attempt: u32) -> std::time::Duration {
+    const BASE_SECS: u64 = 2;
+    const CAP_SECS: u64 = 60;
+    let exp = 2u64.saturating_pow(attempt.min(32));
+    std::time::Duration::from_secs(BASE_SECS.saturating_mul(exp).min(CAP_SECS))
+}
+
 /// Refuse to boot while `gateway.session_tokens_required` is set.
 ///
 /// Security finding from the #930 investigation: the middleware that was
@@ -664,13 +724,22 @@ impl GatewayServer {
             }
         });
 
-        // Start configured Telegram channels
+        // Start configured Telegram channels.
+        //
+        // Issue #928: a boot-time connect failure used to be terminal — one
+        // `warn!` and the channel stayed mute until a manual restart, while a
+        // failure *during* polling gets teloxide's own infinite exponential
+        // backoff. Five seconds of bad mobile network at boot cost the whole
+        // channel. Now the failed channel keeps retrying in the background
+        // with the same backoff shape the OpenClaw client uses.
         let telegram_channels = build_telegram_channels(&state.config, &state);
         for mut channel in telegram_channels {
-            if let Err(e) = channel.connect().await {
-                warn!("telegram channel failed to connect: {e}");
-            } else {
-                state.channels.write().await.register(channel);
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("telegram channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
             }
         }
 
@@ -1357,6 +1426,79 @@ async fn build_storage_wiring(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A borda que importa: cresce exponencialmente, satura no teto, e não
+    /// estoura com contagens absurdas de tentativa.
+    #[test]
+    fn retry_delay_grows_and_caps() {
+        assert_eq!(channel_retry_delay(0).as_secs(), 2);
+        assert_eq!(channel_retry_delay(1).as_secs(), 4);
+        assert_eq!(channel_retry_delay(3).as_secs(), 16);
+        assert_eq!(channel_retry_delay(5).as_secs(), 60, "teto");
+        assert_eq!(channel_retry_delay(u32::MAX).as_secs(), 60, "sem overflow");
+    }
+
+    /// Canal que falha N vezes e então conecta — o cenário da #928 em
+    /// miniatura: rede ruim nos primeiros segundos do boot.
+    struct FlakyChannel {
+        fails_left: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_channels::Channel for FlakyChannel {
+        fn channel_type(&self) -> &str {
+            "flaky-telegram"
+        }
+        fn display_name(&self) -> &str {
+            "Flaky"
+        }
+        async fn connect(&mut self) -> Result<()> {
+            if self.fails_left.fetch_sub(1, Ordering::SeqCst) > 1 {
+                Err(garraia_common::Error::Channel("network down".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn disconnect(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn send_message(&self, _m: &Message) -> Result<()> {
+            Ok(())
+        }
+        fn status(&self) -> garraia_channels::ChannelStatus {
+            garraia_channels::ChannelStatus::Connected
+        }
+    }
+
+    /// O comportamento que a #928 pedia sem saber: uma falha transitória de
+    /// boot não pode mais custar o canal — o retry de fundo acaba
+    /// registrando-o no `ChannelRegistry`, de onde `send_message` o alcança.
+    #[tokio::test(start_paused = true)]
+    async fn boot_retry_eventually_registers_the_channel() {
+        let state = Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+        ));
+
+        // Falha 3 vezes (2s + 4s + 8s de backoff), conecta na 4ª.
+        let channel = FlakyChannel {
+            fails_left: Arc::new(AtomicUsize::new(4)),
+        };
+        spawn_channel_connect_retry(Arc::clone(&state), Box::new(channel));
+
+        // Com o relógio pausado, cada advance dispara o sleep pendente.
+        for _ in 0..8 {
+            tokio::time::advance(std::time::Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            state.channels.read().await.get("flaky-telegram").is_some(),
+            "canal deveria ter sido registrado após os retries"
+        );
+    }
 
     /// O flag ligado tem de impedir o boot, e a mensagem tem de nomear a
     /// saída — a alternativa (subir com warning) manteria a mentira viva para
