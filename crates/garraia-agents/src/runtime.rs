@@ -26,6 +26,40 @@ use crate::providers::{
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
+/// Where a registered tool came from. Issue #924: without this the runtime
+/// cannot tell a native tool from an MCP one, so it cannot replace just the
+/// MCP half when a server reconnects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSource {
+    Native,
+    Mcp { server: String },
+}
+
+struct RegisteredTool {
+    tool: Arc<dyn Tool>,
+    source: ToolSource,
+}
+
+/// What one `replace_mcp_tools` call changed. Returned so callers can log a
+/// real delta instead of "sync ran".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolSyncDelta {
+    pub removed: usize,
+    pub added: usize,
+}
+
+/// One row of [`AgentRuntime::tool_inventory`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolInventoryEntry {
+    pub name: String,
+    pub description: String,
+    /// `"native"` or `"mcp"`.
+    pub source: String,
+    /// The MCP server this tool came from, when `source == "mcp"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+}
+
 /// GAR-187: Detect if the user is approving a pending tool confirmation.
 ///
 /// Returns `true` when:
@@ -119,7 +153,17 @@ pub struct AgentRuntime {
     default_provider: RwLock<Option<String>>,
     memory: Option<Arc<dyn MemoryProvider>>,
     embeddings: Option<Arc<dyn EmbeddingProvider>>,
-    tools: Vec<Box<dyn Tool>>,
+    /// Issue #924: era `Vec<Box<dyn Tool>>` e congelava no boot, quando o
+    /// `AgentRuntime` entra num `Arc`. As tools MCP so eram registradas ali;
+    /// se o connect do boot falhasse e o health monitor reconectasse depois,
+    /// `list_servers()` passava a reportar o servidor conectado com N tools e
+    /// o runtime seguia sem nenhuma delas — inclusive para o
+    /// `tool_definitions()` que alimenta o tool-calling do LLM.
+    ///
+    /// `RwLock` da mutabilidade interior (registro pos-`Arc`), e `Arc<dyn Tool>`
+    /// e o que permite `find_tool` devolver algo proprio em vez de um
+    /// emprestimo preso ao guard.
+    tools: RwLock<Vec<RegisteredTool>>,
     system_prompt: Option<String>,
     /// Plan 0250 (GAR-771): default persona used when `system_prompt` is unset.
     /// `Friendly` gives Garra a warm default voice; `Neutral` restores the
@@ -149,7 +193,7 @@ impl AgentRuntime {
             default_provider: RwLock::new(None),
             memory: None,
             embeddings: None,
-            tools: Vec::new(),
+            tools: RwLock::new(Vec::new()),
             system_prompt: None,
             persona_mode: crate::persona::PersonaMode::default(),
             persona_lang: crate::persona::Lang::default(),
@@ -333,10 +377,12 @@ impl AgentRuntime {
     }
 
     /// Return (name, description) pairs for all registered tools.
-    pub fn list_tool_info(&self) -> Vec<(&str, &str)> {
+    pub fn list_tool_info(&self) -> Vec<(String, String)> {
         self.tools
+            .read()
+            .unwrap()
             .iter()
-            .map(|t| (t.name(), t.description()))
+            .map(|r| (r.tool.name().to_string(), r.tool.description().to_string()))
             .collect()
     }
 
@@ -452,32 +498,128 @@ impl AgentRuntime {
             .await
     }
 
-    pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
+    /// Register a natively-built tool. Takes `&self` since #924 — the runtime
+    /// is behind an `Arc` by the time some tools exist.
+    pub fn register_tool(&self, tool: Box<dyn Tool>) {
         info!("registered tool: {}", tool.name());
-        self.tools.push(tool);
+        self.tools.write().unwrap().push(RegisteredTool {
+            tool: Arc::from(tool),
+            source: ToolSource::Native,
+        });
+    }
+
+    /// Replace every tool sourced from `server` with `tools`.
+    ///
+    /// Idempotent by construction: calling it twice with the same inventory
+    /// leaves the same list, which is what makes it safe to run on every
+    /// health-monitor tick. A server that disconnected and came back with a
+    /// smaller tool list shrinks correctly instead of accumulating stale
+    /// entries — `find_tool` is a linear scan where duplicates would silently
+    /// shadow each other.
+    pub fn replace_mcp_tools(&self, server: &str, tools: Vec<Box<dyn Tool>>) -> ToolSyncDelta {
+        let mut guard = self.tools.write().unwrap();
+        let before = guard.len();
+        guard.retain(|r| !matches!(&r.source, ToolSource::Mcp { server: s } if s == server));
+        let removed = before - guard.len();
+        let added = tools.len();
+        for tool in tools {
+            guard.push(RegisteredTool {
+                tool: Arc::from(tool),
+                source: ToolSource::Mcp {
+                    server: server.to_string(),
+                },
+            });
+        }
+        ToolSyncDelta { removed, added }
+    }
+
+    /// Pull the MCP half of the tool list from the manager and make the
+    /// runtime match it.
+    ///
+    /// Issue #924: this is the one function that closes the gap. Before it,
+    /// MCP tools reached the runtime exactly once — in `Server::run`, before
+    /// the runtime went into an `Arc` — so a server that connected late (or
+    /// reconnected, or was added through the admin API) had live tools that
+    /// `list_servers()` reported and `tool_definitions()` did not, which means
+    /// the LLM could not call them. Calling this from the boot path, the health
+    /// monitor and the admin handlers keeps all three honest.
+    ///
+    /// Safe to call on every tick: `replace_mcp_tools` is idempotent per
+    /// server, and servers absent from the manager keep whatever they had —
+    /// a read failure must not silently strip working tools.
+    #[cfg(feature = "mcp")]
+    pub async fn sync_mcp_tools(&self, manager: &Arc<crate::mcp::McpManager>) -> usize {
+        let by_server = manager.tools_by_server().await;
+        let mut total = 0;
+        for (server, tools) in by_server {
+            let count = tools.len();
+            let delta = self.replace_mcp_tools(&server, tools);
+            total += count;
+            if delta.removed != delta.added {
+                info!(
+                    server = %server,
+                    removed = delta.removed,
+                    added = delta.added,
+                    "MCP tool inventory changed in AgentRuntime"
+                );
+            }
+        }
+        total
     }
 
     /// GAR-159: List names of all registered tools (for API endpoints and diagnostics).
-    pub fn tool_names(&self) -> Vec<&str> {
-        self.tools.iter().map(|t| t.name()).collect()
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools
+            .read()
+            .unwrap()
+            .iter()
+            .map(|r| r.tool.name().to_string())
+            .collect()
     }
 
-    fn tool_definitions(&self) -> Vec<ToolDefinition> {
+    /// Issue #924: name + origin for every registered tool, so an API can say
+    /// which tools are native and which came from which MCP server instead of
+    /// reporting a bare count that disagrees with `list_servers()`.
+    pub fn tool_inventory(&self) -> Vec<ToolInventoryEntry> {
         self.tools
+            .read()
+            .unwrap()
             .iter()
-            .map(|t| ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: t.input_schema(),
+            .map(|r| ToolInventoryEntry {
+                name: r.tool.name().to_string(),
+                description: r.tool.description().to_string(),
+                source: match &r.source {
+                    ToolSource::Native => "native".to_string(),
+                    ToolSource::Mcp { .. } => "mcp".to_string(),
+                },
+                server: match &r.source {
+                    ToolSource::Native => None,
+                    ToolSource::Mcp { server } => Some(server.clone()),
+                },
             })
             .collect()
     }
 
-    fn find_tool(&self, name: &str) -> Option<&dyn Tool> {
+    fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
+            .read()
+            .unwrap()
             .iter()
-            .find(|t| t.name() == name)
-            .map(|t| t.as_ref())
+            .map(|r| ToolDefinition {
+                name: r.tool.name().to_string(),
+                description: r.tool.description().to_string(),
+                input_schema: r.tool.input_schema(),
+            })
+            .collect()
+    }
+
+    fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools
+            .read()
+            .unwrap()
+            .iter()
+            .find(|r| r.tool.name() == name)
+            .map(|r| Arc::clone(&r.tool))
     }
 
     /// Run the full conversation loop: recall context, call LLM, execute tools, return response.
@@ -1802,6 +1944,153 @@ impl Default for AgentRuntime {
 mod tests {
     use super::*;
 
+    // ─── issue #924: o inventario de tools nao pode congelar no boot ───────
+
+    use crate::tools::{ToolContext, ToolOutput};
+    use async_trait::async_trait;
+
+    struct StubTool(&'static str);
+
+    #[async_trait]
+    impl Tool for StubTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _c: &ToolContext,
+            _i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            Ok(ToolOutput::success("ok"))
+        }
+    }
+
+    fn stub(name: &'static str) -> Box<dyn Tool> {
+        Box::new(StubTool(name))
+    }
+
+    /// O cenario exato do relato: o boot registra so as nativas porque o
+    /// connect do servidor MCP perdeu a corrida, o servidor conecta depois, e
+    /// o runtime tem de acabar com as duas metades — nao com seis tools e um
+    /// servidor reportando catorze.
+    #[test]
+    fn late_connecting_server_still_lands_in_the_runtime() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
+        rt.register_tool(stub("file_read"));
+        assert_eq!(rt.tool_names().len(), 2);
+
+        // O health monitor reconecta e sincroniza.
+        let delta = rt.replace_mcp_tools(
+            "filesystem",
+            vec![stub("filesystem__read_file"), stub("filesystem__list_dir")],
+        );
+        assert_eq!(delta.removed, 0);
+        assert_eq!(delta.added, 2);
+
+        assert_eq!(rt.tool_names().len(), 4);
+        // E, o que importa de verdade: o LLM as ve.
+        let defs: Vec<String> = rt.tool_definitions().into_iter().map(|d| d.name).collect();
+        assert!(defs.contains(&"filesystem__read_file".to_string()));
+        assert!(rt.find_tool("filesystem__list_dir").is_some());
+    }
+
+    /// Idempotencia: rodar a cada 30s nao pode acumular duplicatas. Como
+    /// `find_tool` e uma varredura linear, duplicatas se sombreariam em
+    /// silencio em vez de dar erro.
+    #[test]
+    fn repeated_sync_does_not_duplicate() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
+
+        for _ in 0..5 {
+            rt.replace_mcp_tools("fs", vec![stub("fs__a"), stub("fs__b")]);
+        }
+
+        assert_eq!(rt.tool_names().len(), 3);
+        assert_eq!(rt.tool_names().iter().filter(|n| *n == "fs__a").count(), 1);
+    }
+
+    /// Um servidor que volta com inventario menor tem de encolher, e nunca
+    /// levar junto as tools nativas nem as de outro servidor.
+    #[test]
+    fn sync_is_scoped_to_one_server_and_can_shrink() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
+        rt.replace_mcp_tools("fs", vec![stub("fs__a"), stub("fs__b"), stub("fs__c")]);
+        rt.replace_mcp_tools("git", vec![stub("git__log")]);
+        assert_eq!(rt.tool_names().len(), 5);
+
+        let delta = rt.replace_mcp_tools("fs", vec![stub("fs__a")]);
+        assert_eq!(delta.removed, 3);
+        assert_eq!(delta.added, 1);
+
+        let names = rt.tool_names();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"bash".to_string()), "nativa preservada");
+        assert!(
+            names.contains(&"git__log".to_string()),
+            "outro servidor intacto"
+        );
+        assert!(
+            !names.contains(&"fs__b".to_string()),
+            "tool sumida foi removida"
+        );
+    }
+
+    /// Um servidor que desaparece por completo esvazia so a propria fatia.
+    #[test]
+    fn empty_inventory_clears_only_that_server() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
+        rt.replace_mcp_tools("fs", vec![stub("fs__a")]);
+
+        let delta = rt.replace_mcp_tools("fs", Vec::new());
+        assert_eq!(delta.removed, 1);
+        assert_eq!(delta.added, 0);
+        assert_eq!(rt.tool_names(), vec!["bash".to_string()]);
+    }
+
+    /// O inventario distingue origem — e o que torna as duas contagens da API
+    /// conferiveis em vez de misteriosas.
+    #[test]
+    fn inventory_reports_source_and_server() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
+        rt.replace_mcp_tools("filesystem", vec![stub("filesystem__read_file")]);
+
+        let inv = rt.tool_inventory();
+        let native = inv.iter().find(|t| t.name == "bash").unwrap();
+        assert_eq!(native.source, "native");
+        assert!(native.server.is_none());
+
+        let mcp = inv
+            .iter()
+            .find(|t| t.name == "filesystem__read_file")
+            .unwrap();
+        assert_eq!(mcp.source, "mcp");
+        assert_eq!(mcp.server.as_deref(), Some("filesystem"));
+    }
+
+    /// `register_tool` toma `&self`: o runtime ja esta dentro de um `Arc`
+    /// quando as tools de schedule sao registradas, e antes disso o
+    /// `Arc::get_mut` pulava o registro em silencio se o rc fosse > 1.
+    #[test]
+    fn registration_works_through_a_shared_arc() {
+        let rt = Arc::new(AgentRuntime::new());
+        let clone = Arc::clone(&rt);
+        assert_eq!(Arc::strong_count(&rt), 2);
+
+        clone.register_tool(stub("schedule_heartbeat"));
+        assert!(rt.find_tool("schedule_heartbeat").is_some());
+    }
+
     /// Test that AgentRuntime can be created with an empty/default config without crashing.
     /// This test verifies the "empty config" scenario is handled safely.
     #[test]
@@ -1814,7 +2103,7 @@ mod tests {
         assert!(runtime.default_provider.read().unwrap().is_none());
         assert!(runtime.memory.is_none());
         assert!(runtime.embeddings.is_none());
-        assert!(runtime.tools.is_empty());
+        assert!(runtime.tool_names().is_empty());
         assert!(runtime.system_prompt.is_none());
         assert!(runtime.max_tokens.is_none());
         assert!(runtime.max_context_tokens.is_none());

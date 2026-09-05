@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use std::path::PathBuf;
 
+use super::tool_context::{process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 const MAX_BYTES_ESCRITA: usize = 1024 * 1024; // 1MB
@@ -76,11 +77,7 @@ impl Tool for FileWriteTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let path_str = input
             .get("path")
             .and_then(|v| v.as_str())
@@ -104,15 +101,24 @@ impl Tool for FileWriteTool {
             )));
         }
 
-        // Normalize path cross-platform using PathBuf (handles / vs \ on Windows)
-        let path = PathBuf::from(path_str);
+        // Issue #923: expande `~`, junta relativo ao `working_dir` da sessão e
+        // rejeita `..` — a mesma resolução do `file_read`. Um write no lugar
+        // errado é a metade pior do bug: uma leitura que erra o alvo aparece,
+        // um write que cai no CWD do processo do gateway, não.
+        let resolved = resolve_tool_path(
+            path_str,
+            context.working_dir.as_deref(),
+            process_home_dir().as_deref(),
+        )?;
+        let described = resolved.describe();
+        let path = resolved.path;
         self.validate_path(&path)?;
 
         // Cria diretórios pai se necessário
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| Error::Agent(format!("falha ao criar diretórios: {e}")))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                Error::Agent(format!("falha ao criar diretórios para {described}: {e}"))
+            })?;
         }
 
         // Check if file exists and is readonly before attempting write
@@ -124,10 +130,11 @@ impl Tool for FileWriteTool {
                             path = path_str,
                             "file_write: arquivo é somente-leitura (readonly)"
                         );
+                        let shown = path.display();
                         return Ok(ToolOutput::error(format!(
-                            "arquivo '{}' é somente-leitura (readonly). \
+                            "arquivo {} é somente-leitura (readonly). \
                              Remova a proteção com: attrib -R \"{}\" (Windows) ou chmod u+w \"{}\" (Linux)",
-                            path_str, path_str, path_str
+                            described, shown, shown
                         )));
                     }
                 }
@@ -175,7 +182,7 @@ impl Tool for FileWriteTool {
                     error = %e,
                     "file_write: falha ao escrever arquivo"
                 );
-                Error::Agent(format!("falha ao escrever arquivo '{}': {}", path_str, e))
+                Error::Agent(format!("falha ao escrever {described}: {e}"))
             })?;
 
         tracing::info!(
@@ -187,7 +194,7 @@ impl Tool for FileWriteTool {
         Ok(ToolOutput::success(format!(
             "escreveu {} bytes em {}",
             content.len(),
-            path_str
+            path.display()
         )))
     }
 }

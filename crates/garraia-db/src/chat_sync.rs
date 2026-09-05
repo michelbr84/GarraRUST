@@ -188,6 +188,20 @@ impl ChatSessionManager {
         store.get_session_by_external_key(source.as_str(), external_id)
     }
 
+    /// The external id this session maps to for `source`, if any.
+    ///
+    /// Issue #921: this is what a proactive send needs — given a session,
+    /// which chat should the message go to. `resolve_session` writes the row;
+    /// until now nothing read it back.
+    pub async fn external_key_for(
+        &self,
+        session_id: &str,
+        source: ChatSource,
+    ) -> Result<Option<String>> {
+        let store = self.store.lock().await;
+        store.get_external_key_for_session_source(session_id, source.as_str())
+    }
+
     /// Create a new session without external key mapping
     pub async fn create_session(&self, channel_id: &str, user_id: &str) -> Result<String> {
         let store = self.store.lock().await;

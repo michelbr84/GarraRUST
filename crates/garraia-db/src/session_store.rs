@@ -610,6 +610,60 @@ impl SessionStore {
         Ok(result)
     }
 
+    /// Reverse of [`Self::get_session_by_external_key`]: `(source, external_id)`
+    /// for a session, if one was ever mapped.
+    ///
+    /// Issue #921: the forward direction is what routes an inbound Telegram
+    /// message to a session. The reverse is what a *proactive* send needs —
+    /// given a session, which chat does it belong to. The
+    /// `idx_session_keys_session` index for exactly this lookup already
+    /// existed; nothing had ever queried it.
+    ///
+    /// A session can carry at most one key per source (the UNIQUE index is on
+    /// `(source, external_id)`, not on `session_id`), so a session bridged
+    /// across two channels would have two rows. Returning the first by
+    /// `rowid` keeps the result deterministic; callers that care about a
+    /// specific channel pass it to [`Self::get_external_key_for_session_source`].
+    pub fn get_external_key_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT source, external_id FROM chat_session_keys \
+                 WHERE session_id = ?1 ORDER BY rowid LIMIT 1",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare reverse key query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .ok();
+
+        Ok(result)
+    }
+
+    /// The external id a session maps to for one specific source.
+    pub fn get_external_key_for_session_source(
+        &self,
+        session_id: &str,
+        source: &str,
+    ) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT external_id FROM chat_session_keys \
+                 WHERE session_id = ?1 AND source = ?2 ORDER BY rowid LIMIT 1",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare reverse key query: {e}")))?;
+
+        let result = stmt
+            .query_row(params![session_id, source], |row| row.get(0))
+            .ok();
+
+        Ok(result)
+    }
+
     /// Delete a session key mapping.
     pub fn delete_session_key(&self, source: &str, external_id: &str) -> Result<()> {
         self.conn

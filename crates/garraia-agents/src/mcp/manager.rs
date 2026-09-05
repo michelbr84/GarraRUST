@@ -645,6 +645,36 @@ impl McpManager {
             .collect()
     }
 
+    /// Build `Tool` trait objects for **every** connected server, each with its
+    /// own configured timeout.
+    ///
+    /// Issue #924: `take_tools` needs a timeout the caller has to know, which
+    /// is why the boot path was the only place that ever called it — nothing
+    /// else had the per-server config at hand. This reads the timeout from the
+    /// live connection, so any caller can resync without carrying config
+    /// around. Together with `AgentRuntime::replace_mcp_tools` it makes the
+    /// manager the single source of truth for the MCP half of the tool list.
+    pub async fn tools_by_server(self: &Arc<Self>) -> Vec<(String, Vec<Box<dyn Tool>>)> {
+        let names: Vec<(String, Duration)> = {
+            let conns = self.connections.read().await;
+            conns
+                .iter()
+                .map(|(name, conn)| {
+                    (
+                        name.clone(),
+                        Duration::from_secs(conn.params.timeout_secs()),
+                    )
+                })
+                .collect()
+        };
+
+        let mut out = Vec::with_capacity(names.len());
+        for (name, timeout) in names {
+            out.push((name.clone(), self.take_tools(&name, timeout).await));
+        }
+        out
+    }
+
     /// List all connected servers with their tool counts.
     pub async fn list_servers(&self) -> Vec<(String, usize, bool)> {
         let conns = self.connections.read().await;
@@ -823,6 +853,20 @@ impl McpManager {
     /// reconnects with exponential backoff. It does not send MCP `ping`s —
     /// liveness comes from `McpConnection::is_alive`.
     pub fn spawn_health_monitor(self: &Arc<Self>) {
+        self.spawn_health_monitor_with_runtime(None);
+    }
+
+    /// Health monitor that also keeps an `AgentRuntime`'s MCP tool inventory
+    /// in sync after every reconnect pass (issue #924).
+    ///
+    /// Reconnecting repopulated `connections` and nothing else: the runtime's
+    /// tool list was written once at boot and then frozen inside an `Arc`, so
+    /// a server that came back had tools the LLM could not see. Passing the
+    /// runtime here means recovery is complete instead of half-done.
+    pub fn spawn_health_monitor_with_runtime(
+        self: &Arc<Self>,
+        runtime: Option<Arc<crate::AgentRuntime>>,
+    ) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -832,6 +876,9 @@ impl McpManager {
             loop {
                 interval.tick().await;
                 manager.check_and_reconnect().await;
+                if let Some(rt) = runtime.as_ref() {
+                    rt.sync_mcp_tools(&manager).await;
+                }
             }
         });
     }
