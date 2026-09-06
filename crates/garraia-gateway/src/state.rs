@@ -794,6 +794,47 @@ impl AppState {
         });
     }
 
+    /// A chave de sessao do Telegram, resolvida do mesmo jeito em todo lugar.
+    ///
+    /// # Por que isto e uma funcao, e nao tres copias
+    ///
+    /// O GAR-202 migrou a execucao de `telegram-{chat_id}` — adivinhavel — para
+    /// uma chave UUID do `ChatSessionManager`. A migracao pegou o caminho de
+    /// execucao (`bootstrap/telegram.rs`) e **nao pegou a camada de comandos**,
+    /// que continuou montando a string antiga em tres lugares.
+    ///
+    /// O efeito era um recurso que parecia funcionar e nao funcionava: `/mode
+    /// code` gravava numa linha do banco que a execucao nunca lia, e `/mode`
+    /// sem argumento lia da chave errada — o usuario via "modo atual: ask"
+    /// logo depois de setar `code`. Idem `/model`. So nao aparecia quando o
+    /// `chat_session_manager` era `None`, que e o caminho de fallback.
+    ///
+    /// Duplicar a resolucao foi o que permitiu a divergencia, entao a correcao
+    /// e ter **um** lugar. Quem precisar da chave chama aqui.
+    ///
+    /// O fallback para `telegram-{chat_id}` fica: e o que a execucao faz quando
+    /// nao ha manager, e divergir dela seria recriar o mesmo bug ao contrario.
+    ///
+    /// # O `user_id` nao muda a chave, mas muda o dono
+    ///
+    /// `resolve_session` procura por `(source, external_id)` — o `chat_id`
+    /// sozinho ja acha a sessao. O `user_id` so e usado no `upsert` de
+    /// **criacao**, para registrar de quem ela e. Passar `None` numa primeira
+    /// interacao criaria a sessao com dono `"anonymous"`, entao quem tem o id
+    /// em maos passa; quem nao tem, passa `None` sem mudar qual sessao e
+    /// encontrada.
+    pub async fn telegram_session_id(&self, chat_id: i64, user_id: Option<i64>) -> String {
+        match &self.chat_session_manager {
+            Some(mgr) => {
+                let hints = garraia_db::SessionHints::from_telegram(chat_id, user_id);
+                mgr.resolve_session(&hints)
+                    .await
+                    .unwrap_or_else(|_| format!("telegram-{chat_id}"))
+            }
+            None => format!("telegram-{chat_id}"),
+        }
+    }
+
     /// GAR-202: Spawn a background task that cleans up expired session tokens every 5 min.
     pub fn spawn_token_cleanup(self: &Arc<Self>) {
         let Some(manager) = self.chat_session_manager.clone() else {
@@ -846,6 +887,57 @@ pub type SharedState = Arc<AppState>;
 
 #[cfg(test)]
 mod tests {
+
+    /// A chave de sessao do Telegram e montada **num lugar so**.
+    ///
+    /// Este teste existe porque a divergencia ja aconteceu: o GAR-202 migrou a
+    /// execucao para chave UUID e deixou a camada de comandos montando
+    /// `telegram-{chat_id}` a mao, em tres lugares. O resultado foi `/mode` e
+    /// `/model` gravando numa linha que o runtime nunca lia — recurso que
+    /// parece funcionar e nao funciona.
+    ///
+    /// Varre o fonte porque e o unico jeito de pegar a proxima copia antes de
+    /// ela divergir: um teste de comportamento so falharia depois de alguem
+    /// reintroduzir o bug e alguem mais notar.
+    #[test]
+    fn a_chave_do_telegram_e_montada_num_lugar_so() {
+        use std::path::Path;
+
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut infratores = Vec::new();
+
+        fn varrer(dir: &Path, infratores: &mut Vec<String>) {
+            let Ok(entradas) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entradas.flatten() {
+                let caminho = e.path();
+                if caminho.is_dir() {
+                    varrer(&caminho, infratores);
+                } else if caminho.extension().is_some_and(|x| x == "rs") {
+                    let Ok(texto) = std::fs::read_to_string(&caminho) else {
+                        continue;
+                    };
+                    // `state.rs` e a fonte unica; o resto nao pode montar.
+                    if caminho.file_name().is_some_and(|f| f == "state.rs") {
+                        continue;
+                    }
+                    if texto.contains("format!(\"telegram-{") {
+                        infratores.push(caminho.display().to_string());
+                    }
+                }
+            }
+        }
+
+        varrer(&raiz, &mut infratores);
+        assert!(
+            infratores.is_empty(),
+            "a chave de sessao do Telegram foi montada fora do \
+             `AppState::telegram_session_id`, que e como o GAR-202 ficou pela \
+             metade: {infratores:?}"
+        );
+    }
+
     use super::*;
     use garraia_agents::AgentRuntime;
 
