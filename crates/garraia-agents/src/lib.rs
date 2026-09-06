@@ -23,6 +23,7 @@ pub mod provider_resilience;
 pub mod providers;
 pub mod runtime;
 pub mod tools;
+pub mod turn_events;
 
 pub use agent_mode::{
     AutoRouter, LlmRouter, ModeProfileExt, ModeSelectionMethod, SessionModeMetadata,
@@ -70,6 +71,7 @@ pub use tools::{
     RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus,
     Tool, ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
 };
+pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output};
 
 #[cfg(feature = "mcp")]
 pub use mcp::{McpManager, McpPromptInfo, McpResourceInfo, McpToolInfo};

@@ -3242,6 +3242,7 @@ dependencies = [
  "futures",
  "garraia-common",
  "garraia-db",
+ "garraia-security",
  "libc",
  "reqwest 0.12.28",
  "rmcp",
