@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     embedding_model TEXT,
     embedding_dimensions INTEGER,
     metadata TEXT DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    ttl_expires_at TEXT,
+    pinned_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_session_created_at
@@ -39,7 +41,27 @@ CREATE INDEX IF NOT EXISTS idx_memory_tenant
 
 CREATE INDEX IF NOT EXISTS idx_memory_tenant_session
     ON memory_entries(tenant_id, session_id, created_at);
+
+-- Parcial: so as entradas COM prazo entram. Numa base onde quase nada tem
+-- TTL, o indice inteiro caberia em uma pagina.
+CREATE INDEX IF NOT EXISTS idx_memory_ttl
+    ON memory_entries(ttl_expires_at) WHERE ttl_expires_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memory_pinned
+    ON memory_entries(pinned_at) WHERE pinned_at IS NOT NULL;
 ";
+
+/// Colunas de retencao (#959), adicionadas a bancos que ja existem.
+///
+/// Forward-only e aditivo, como manda a regra 9 do CLAUDE.md — e o SQLite
+/// nao tem `ADD COLUMN IF NOT EXISTS`, entao cada `ALTER` roda solto e o
+/// erro de "duplicate column name" e ignorado pelo chamador. Um banco novo
+/// ja nasce com as colunas pelo `CREATE TABLE` acima; este bloco existe so
+/// para os que nao nasceram.
+pub const MEMORY_RETENTION_COLUMNS: [&str; 2] = [
+    "ALTER TABLE memory_entries ADD COLUMN ttl_expires_at TEXT;",
+    "ALTER TABLE memory_entries ADD COLUMN pinned_at TEXT;",
+];
 
 pub const MEMORY_SCHEMA_V1: Migration = Migration {
     version: 1,

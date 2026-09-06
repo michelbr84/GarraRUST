@@ -114,6 +114,8 @@ fn entry_json(entry: &MemoryEntry) -> serde_json::Value {
         "has_embedding": entry.embedding.is_some(),
         "embedding_model": entry.embedding_model,
         "embedding_dimensions": entry.embedding_dimensions,
+        "pinned_at": entry.pinned_at.map(|t| t.to_rfc3339()),
+        "ttl_expires_at": entry.ttl_expires_at.map(|t| t.to_rfc3339()),
     })
 }
 
@@ -132,8 +134,21 @@ fn entry_line(entry: &MemoryEntry, distancia: Option<f64>) -> String {
         Some(d) => format!("  d={d:.4}"),
         None => String::new(),
     };
+    // Marcas de retencao: fixada nunca e apagada, vencida ja saiu do recall.
+    let mut marcas = String::new();
+    if entry.pinned_at.is_some() {
+        marcas.push_str("  [fixada]");
+    }
+    if entry
+        .ttl_expires_at
+        .is_some_and(|prazo| prazo <= chrono::Utc::now())
+    {
+        marcas.push_str("  [vencida]");
+    } else if let Some(prazo) = entry.ttl_expires_at {
+        marcas.push_str(&format!("  [vence {}]", prazo.format("%Y-%m-%d")));
+    }
     format!(
-        "{}  {}  [{}]  ({}){}\n    {}",
+        "{}  {}  [{}]  ({}){}{marcas}\n    {}",
         entry.created_at.format("%Y-%m-%d %H:%M:%SZ"),
         entry.id,
         vetor,
@@ -188,6 +203,8 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
             "entries_with_embedding": report.entries_with_embedding,
             "entries_without_embedding": report.entries_without_embedding,
             "entries_missing_model": report.entries_missing_model,
+            "entries_pinned": report.entries_pinned,
+            "entries_expired": report.entries_expired,
             "map_rows": report.map_rows,
             "vec_rows_by_table": report.vec_rows_by_table
                 .iter()
@@ -213,6 +230,8 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
     println!("  com vetor:        {}", report.entries_with_embedding);
     println!("  sem vetor:        {}", report.entries_without_embedding);
     println!("  vetor sem modelo: {}", report.entries_missing_model);
+    println!("Fixadas:            {}", report.entries_pinned);
+    println!("Vencidas:           {}", report.entries_expired);
     println!("Linhas no mapa:     {}", report.map_rows);
     for (table, rows) in &report.vec_rows_by_table {
         println!("  {table}: {rows}");
@@ -252,6 +271,13 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
             "\n{} entrada(s) sem vetor. Elas so entram no recall pelo caminho textual;\n\
              `garra memory reindex` repovoa o indice.",
             report.entries_without_embedding
+        );
+    }
+    if report.entries_expired > 0 {
+        println!(
+            "\n{} entrada(s) ja passaram do prazo. Elas nao aparecem mais no recall;\n\
+             `garra memory compact` (ou a retencao automatica) as apaga do banco.",
+            report.entries_expired
         );
     }
     if report.entries_missing_model > 0 {
@@ -552,6 +578,95 @@ pub async fn run_reindex(
     Ok(EXIT_OK)
 }
 
+/// `garra memory pin` — protege uma entrada da compactacao (#959).
+///
+/// Nao ha confirmacao: fixar e soltar sao reversiveis e nao apagam nada. O
+/// que a politica de retencao apaga sem perguntar e o que **nao** esta fixado.
+pub async fn run_pin(config: &AppConfig, id: String, unpin: bool) -> Result<i32> {
+    let store = match open_store(config) {
+        Opened::Store(store, _) => *store,
+        Opened::Absent(path) => {
+            report_no_store(&path);
+            return Ok(EXIT_OK);
+        }
+        Opened::Failed => return Ok(EXIT_IOERR),
+    };
+
+    if store.set_pinned(&id, !unpin).context("failed to set pin")? {
+        if unpin {
+            println!("Entrada {id} solta: volta a valer a politica de retencao.");
+        } else {
+            println!("Entrada {id} fixada: a compactacao nunca vai apaga-la.");
+        }
+        Ok(EXIT_OK)
+    } else {
+        eprintln!("error: nenhuma entrada com o id {id}");
+        Ok(EXIT_USAGE)
+    }
+}
+
+/// `garra memory ttl` — define ou limpa o prazo de validade (#959).
+///
+/// Prazo vencido nao apaga na hora: a entrada some do recall imediatamente e
+/// a proxima compactacao a remove. E o que torna a operacao reversivel
+/// enquanto a compactacao nao roda.
+pub async fn run_ttl(
+    config: &AppConfig,
+    id: String,
+    days: Option<i64>,
+    clear: bool,
+) -> Result<i32> {
+    if clear && days.is_some() {
+        eprintln!("error: --clear e <DAYS> sao mutuamente exclusivos");
+        return Ok(EXIT_USAGE);
+    }
+
+    let prazo = if clear {
+        None
+    } else {
+        let Some(days) = days else {
+            eprintln!("error: informe o numero de dias, ou --clear para remover o prazo");
+            return Ok(EXIT_USAGE);
+        };
+        // Mesma guarda do `compact`: `Duration::days` entra em panico com
+        // numero absurdo, e um prazo negativo tem significado (vencer agora),
+        // entao so o extremo e recusado.
+        let Some(instante) = Utc::now().checked_add_signed(
+            Duration::try_days(days)
+                .ok_or_else(|| anyhow::anyhow!("numero de dias fora do calendario"))?,
+        ) else {
+            eprintln!("error: {days} dias nao cabem no calendario");
+            return Ok(EXIT_USAGE);
+        };
+        Some(instante)
+    };
+
+    let store = match open_store(config) {
+        Opened::Store(store, _) => *store,
+        Opened::Absent(path) => {
+            report_no_store(&path);
+            return Ok(EXIT_OK);
+        }
+        Opened::Failed => return Ok(EXIT_IOERR),
+    };
+
+    if store.set_ttl(&id, prazo).context("failed to set ttl")? {
+        match prazo {
+            Some(t) if t <= Utc::now() => println!(
+                "Entrada {id} vence em {} — ja no passado, entao ela sai do recall agora e \
+                 a proxima compactacao a apaga.",
+                t.format("%Y-%m-%d %H:%M:%SZ")
+            ),
+            Some(t) => println!("Entrada {id} vence em {}.", t.format("%Y-%m-%d %H:%M:%SZ")),
+            None => println!("Prazo da entrada {id} removido: ela nao vence mais."),
+        }
+        Ok(EXIT_OK)
+    } else {
+        eprintln!("error: nenhuma entrada com o id {id}");
+        Ok(EXIT_USAGE)
+    }
+}
+
 /// `garra memory delete` — apaga uma entrada pelo id, junto do vetor.
 pub async fn run_delete(config: &AppConfig, id: String, yes: bool) -> Result<i32> {
     let store = match open_store(config) {
@@ -725,6 +840,120 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(code, EXIT_USAGE);
+    }
+
+    #[tokio::test]
+    async fn pin_e_ttl_de_id_inexistente_sao_erro_de_uso() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+
+        assert_eq!(
+            run_pin(&config, "nao-existe".to_string(), false)
+                .await
+                .expect("pin"),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            run_ttl(&config, "nao-existe".to_string(), Some(30), false)
+                .await
+                .expect("ttl"),
+            EXIT_USAGE
+        );
+    }
+
+    /// Fixar protege da compactacao: e o contrato inteiro do `pin`.
+    ///
+    /// A compactacao vem do store com um corte 5s no futuro, nao do
+    /// `--older-than-days 0` da CLI: o `datetime()` do SQLite trunca no
+    /// segundo, entao uma entrada criada no mesmo segundo do corte nao e
+    /// "anterior" a ele e o teste passaria pelo motivo errado.
+    #[tokio::test]
+    async fn entrada_fixada_sobrevive_ao_compact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        let id = {
+            let store = MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+            store.remember(entrada("importante")).await.expect("insere")
+        };
+
+        assert_eq!(
+            run_pin(&config, id.clone(), false).await.expect("pin"),
+            EXIT_OK
+        );
+        {
+            let store = MemoryStore::open(&config.memory_db_path()).expect("reabre");
+            let report = store
+                .compact(Utc::now() + Duration::seconds(5))
+                .await
+                .expect("compact");
+            assert_eq!(report.deleted_entries, 0, "a fixada foi apagada");
+            assert_eq!(store.integrity_report().expect("report").entries_pinned, 1);
+        }
+
+        // Solta, a mesma compactacao leva.
+        assert_eq!(run_pin(&config, id, true).await.expect("unpin"), EXIT_OK);
+        let store = MemoryStore::open(&config.memory_db_path()).expect("reabre");
+        let report = store
+            .compact(Utc::now() + Duration::seconds(5))
+            .await
+            .expect("compact");
+        assert_eq!(report.deleted_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn ttl_com_clear_e_dias_juntos_e_erro_de_uso() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let code = run_ttl(&config_em(dir.path()), "x".to_string(), Some(1), true)
+            .await
+            .expect("ttl");
+        assert_eq!(code, EXIT_USAGE);
+    }
+
+    #[tokio::test]
+    async fn ttl_sem_dias_e_sem_clear_e_erro_de_uso() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let code = run_ttl(&config_em(dir.path()), "x".to_string(), None, false)
+            .await
+            .expect("ttl");
+        assert_eq!(code, EXIT_USAGE);
+    }
+
+    /// Prazo no passado esconde do recall sem apagar — invisivel nao e
+    /// apagada, e por isso o `--clear` reverte.
+    #[tokio::test]
+    async fn ttl_vencido_esconde_do_recall_e_clear_reverte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        let id = {
+            let store = MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+            store.remember(entrada("efemera")).await.expect("insere")
+        };
+
+        assert_eq!(
+            run_ttl(&config, id.clone(), Some(-1), false)
+                .await
+                .expect("ttl"),
+            EXIT_OK
+        );
+        {
+            let store = MemoryStore::open(&config.memory_db_path()).expect("reabre");
+            let report = store.integrity_report().expect("report");
+            assert_eq!(report.entries_total, 1, "vencida ainda esta no banco");
+            assert_eq!(report.entries_expired, 1);
+            assert!(
+                store.recent_entries(10).expect("lista").is_empty(),
+                "vencida nao pode voltar no recall"
+            );
+        }
+
+        assert_eq!(
+            run_ttl(&config, id, None, true).await.expect("clear"),
+            EXIT_OK
+        );
+        let store = MemoryStore::open(&config.memory_db_path()).expect("reabre");
+        assert_eq!(store.integrity_report().expect("report").entries_expired, 0);
+        assert_eq!(store.recent_entries(10).expect("lista").len(), 1);
     }
 
     #[tokio::test]

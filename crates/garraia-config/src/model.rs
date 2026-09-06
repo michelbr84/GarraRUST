@@ -447,6 +447,10 @@ pub struct MemoryConfig {
 
     #[serde(default)]
     pub shared_continuity: bool,
+
+    /// Politica de retencao da memoria do agente (#956, #959).
+    #[serde(default)]
+    pub retention: RetentionConfig,
 }
 
 impl Default for MemoryConfig {
@@ -455,8 +459,64 @@ impl Default for MemoryConfig {
             enabled: default_memory_enabled(),
             embedding_provider: None,
             shared_continuity: false,
+            retention: RetentionConfig::default(),
         }
     }
+}
+
+/// Quando o gateway apaga memoria velha sozinho (#956).
+///
+/// **Desligada por padrao, de proposito.** O `compact()` existe desde sempre e
+/// nunca rodou em producao; liga-lo por default numa atualizacao apagaria
+/// memoria de quem so quis atualizar a versao — e memoria e o ativo que este
+/// projeto mais preza. Enquanto estiver desligada o gateway avisa no boot,
+/// uma vez, quantas entradas existem e como ligar: o operador ganha o sinal
+/// sem pagar com dado.
+///
+/// Entrada fixada (`pinned_at`) nunca e apagada, com a politica ligada ou nao.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Idade a partir da qual uma entrada nao-fixada e apagada. Faixa aceita
+    /// (1..=3650) cobrada pelo `garra config check`.
+    #[serde(default = "default_retention_max_age_days")]
+    pub max_age_days: u32,
+
+    /// De quanto em quanto tempo a varredura roda. Faixa aceita (1..=720).
+    #[serde(default = "default_retention_interval_hours")]
+    pub interval_hours: u32,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_age_days: default_retention_max_age_days(),
+            interval_hours: default_retention_interval_hours(),
+        }
+    }
+}
+
+/// Faixa aceita para `memory.retention.max_age_days`. O teto de 10 anos nao e
+/// arbitrario: acima disso o numero deixa de ser politica e vira "nunca", que
+/// se escreve com `enabled: false`.
+pub const RETENTION_MAX_AGE_MIN_DAYS: u32 = 1;
+pub const RETENTION_MAX_AGE_MAX_DAYS: u32 = 3650;
+
+/// Faixa aceita para `memory.retention.interval_hours` (1 hora a 30 dias).
+pub const RETENTION_INTERVAL_MIN_HOURS: u32 = 1;
+pub const RETENTION_INTERVAL_MAX_HOURS: u32 = 720;
+
+/// 90 dias: o mesmo default do `garra memory compact`, para o automatico e o
+/// manual nao discordarem sobre o que e "velho".
+fn default_retention_max_age_days() -> u32 {
+    90
+}
+
+fn default_retention_interval_hours() -> u32 {
+    24
 }
 
 /// Plan 0250 (GAR-771): default voice Garra uses when no `system_prompt` is set.

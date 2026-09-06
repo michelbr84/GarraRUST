@@ -377,6 +377,33 @@ enum MemoryCommands {
         json: bool,
     },
 
+    /// Pin an entry so retention never deletes it (#959).
+    Pin {
+        id: String,
+
+        /// Release the pin instead, putting the entry back under the policy.
+        #[arg(long)]
+        unpin: bool,
+    },
+
+    /// Set or clear an entry's expiry (#959).
+    ///
+    /// An expired entry leaves recall immediately and is deleted by the next
+    /// compaction — invisible first, gone later, so the change is reversible
+    /// until compaction runs.
+    Ttl {
+        id: String,
+
+        /// Days from now. Negative expires it in the past (hides it now),
+        /// which is why the argument accepts a leading `-`.
+        #[arg(allow_negative_numbers = true)]
+        days: Option<i64>,
+
+        /// Remove the expiry instead.
+        #[arg(long)]
+        clear: bool,
+    },
+
     /// Delete one entry by id, along with its vector.
     Delete {
         id: String,
@@ -1869,6 +1896,12 @@ async fn async_main(
                     dry_run,
                     json,
                 } => memory_cmd::run_reindex(&config, limit, batch_size, dry_run, json).await?,
+                MemoryCommands::Pin { id, unpin } => {
+                    memory_cmd::run_pin(&config, id, unpin).await?
+                }
+                MemoryCommands::Ttl { id, days, clear } => {
+                    memory_cmd::run_ttl(&config, id, days, clear).await?
+                }
                 MemoryCommands::Delete { id, yes } => {
                     memory_cmd::run_delete(&config, id, yes).await?
                 }

@@ -617,6 +617,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
+    validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
 
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
@@ -657,6 +658,77 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Politica de retencao da memoria do agente (#956, #959).
+///
+/// A retencao apaga dado do usuario, entao a validacao e mais dura do que o
+/// normal: uma faixa errada aqui nao produz um erro em runtime, produz uma
+/// varredura que apaga o que nao devia — ou que nunca roda e deixa o operador
+/// achando que roda.
+fn validate_retention(
+    memory: &crate::model::MemoryConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::{
+        RETENTION_INTERVAL_MAX_HOURS, RETENTION_INTERVAL_MIN_HOURS, RETENTION_MAX_AGE_MAX_DAYS,
+        RETENTION_MAX_AGE_MIN_DAYS,
+    };
+
+    let r = &memory.retention;
+
+    if r.max_age_days < RETENTION_MAX_AGE_MIN_DAYS || r.max_age_days > RETENTION_MAX_AGE_MAX_DAYS {
+        push_err(
+            findings,
+            "memory.retention.max_age_days",
+            format!(
+                "memory.retention.max_age_days ({}) must be in [{RETENTION_MAX_AGE_MIN_DAYS}, {RETENTION_MAX_AGE_MAX_DAYS}] days",
+                r.max_age_days
+            ),
+        );
+    }
+
+    if r.interval_hours < RETENTION_INTERVAL_MIN_HOURS
+        || r.interval_hours > RETENTION_INTERVAL_MAX_HOURS
+    {
+        push_err(
+            findings,
+            "memory.retention.interval_hours",
+            format!(
+                "memory.retention.interval_hours ({}) must be in [{RETENTION_INTERVAL_MIN_HOURS}, {RETENTION_INTERVAL_MAX_HOURS}] hours",
+                r.interval_hours
+            ),
+        );
+    }
+
+    // Politica ligada com a memoria desligada nao apaga nada — mas quem
+    // escreveu a config acha que apaga.
+    if r.enabled && !memory.enabled {
+        push_warn(
+            findings,
+            "memory.retention.enabled",
+            "memory.retention.enabled=true but memory.enabled=false; the retention sweep never runs"
+                .into(),
+        );
+    }
+
+    // Uma varredura mais rara que a propria janela deixa dado vencido vivo por
+    // ate um intervalo inteiro depois do prazo. Nao e erro, e surpresa.
+    if r.enabled && u64::from(r.interval_hours) > u64::from(r.max_age_days) * 24 {
+        push_warn(
+            findings,
+            "memory.retention.interval_hours",
+            format!(
+                "memory.retention.interval_hours ({}) is longer than max_age_days ({} days = {} hours); \
+                 entries can outlive the window by a full interval",
+                r.interval_hours,
+                r.max_age_days,
+                u64::from(r.max_age_days) * 24
+            ),
+        );
+    }
 }
 
 fn validate_auth(
