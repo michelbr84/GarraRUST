@@ -521,6 +521,16 @@ impl GatewayServer {
             debug!("uploads_expiration_worker skipped (no AppPool wired)");
         }
 
+        // Tamanho da memoria no `/metrics` (#957). Sobe **sempre** que ha
+        // memoria, e nao junto da retencao: aquele worker so existe quando
+        // `memory.retention.enabled` e true, que e off por padrao, e os gauges
+        // ficariam mortos para quase todo mundo. Ver o docblock do modulo.
+        if let Some(memory) = state.agents.memory_provider() {
+            let handle = crate::memory_gauge_worker::spawn_memory_gauge_worker(memory);
+            std::mem::forget(handle);
+            debug!("memory_gauge_worker spawned");
+        }
+
         // Retencao da memoria do agente (#956): o `compact()` existia e nunca
         // rodava em producao — a memoria crescia sem teto e o recall degradava
         // com ela. A varredura nasce DESLIGADA de proposito; quando esta

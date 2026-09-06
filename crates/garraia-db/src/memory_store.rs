@@ -158,6 +158,28 @@ pub struct EmbeddingBreakdownRow {
     pub entries: usize,
 }
 
+/// Contagens baratas para os gauges do `/metrics` (#957).
+///
+/// Deliberadamente **nao** e o [`IntegrityReport`]. Aquele existe para o
+/// `garra memory stats`, roda sob demanda e faz um `SELECT id FROM
+/// memory_entries` inteiro mais a varredura de orfaos — trabalho justificado
+/// quando alguem pede um diagnostico, e desperdicio a cada poucos minutos num
+/// worker de gauge.
+///
+/// Aqui sao tres `count(*)`. As consultas sao **as mesmas** que o
+/// `integrity_report` usa, de proposito: se divergirem, o numero do painel e o
+/// do `garra memory stats` passam a discordar, e nao ha nada pior para quem
+/// esta diagnosticando do que dois numeros que deviam ser iguais e nao sao.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MemoryGauges {
+    pub entries_with_embedding: usize,
+    pub entries_without_embedding: usize,
+    /// Linhas no `vec_id_map` — a ligacao entre entrada e vetor. Zero quando
+    /// nao ha vector store, o que e diferente de "indice vazio" e por isso
+    /// merece o `knn_enabled` ao lado quando alguem for interpretar.
+    pub vector_index_rows: usize,
+}
+
 #[async_trait]
 pub trait MemoryProvider: Send + Sync {
     async fn remember(&self, entry: NewMemoryEntry) -> Result<String>;
@@ -170,6 +192,9 @@ pub trait MemoryProvider: Send + Sync {
     ) -> Result<Vec<MemoryEntry>>;
     async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport>;
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize>;
+
+    /// Contagens para os gauges (#957). Ver [`MemoryGauges`].
+    async fn gauge_snapshot(&self) -> Result<MemoryGauges>;
 }
 
 /// A condicao de compactacao (#959), escrita **inteira** nas duas sentencas.
@@ -1240,6 +1265,62 @@ impl MemoryProvider for MemoryStore {
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize> {
         self.delete_session_memory(session_id).await
     }
+
+    async fn gauge_snapshot(&self) -> Result<MemoryGauges> {
+        // O bloco existe para **soltar o guard do banco principal** antes de
+        // tocar o vector store, que tem mutex proprio (apontado pela auditoria
+        // do #957).
+        //
+        // Segurar os dois nao trava hoje — nenhum caminho adquire na ordem
+        // inversa, e o `compact` solta o principal antes do `cleanup_vectors`.
+        // Mas segurar o principal durante a consulta vetorial bloqueia todo
+        // `recall` e `remember` concorrente pelo tempo dela, e deixa armada a
+        // ordem que o proximo caminho com locking invertido transformaria em
+        // deadlock. Um gauge de 5 em 5 minutos nao vale esse risco.
+        let (total, with_embedding) = {
+            let conn = self.connection()?;
+
+            // As duas consultas sao **identicas** as do `integrity_report`,
+            // palavra por palavra. Se alguem mudar uma, tem de mudar a outra:
+            // o teste `gauge_e_stats_contam_a_mesma_coisa` cobra.
+            let total: i64 = conn
+                .query_row("SELECT count(*) FROM memory_entries", [], |row| row.get(0))
+                .map_err(|e| Error::Database(format!("failed to count entries: {e}")))?;
+            let with_embedding: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM memory_entries WHERE embedding IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| Error::Database(format!("failed to count embedded entries: {e}")))?;
+            (total, with_embedding)
+        };
+
+        let vector_index_rows = match &self.vector_store {
+            Some(vs) => vs.index_inventory()?.map_rows,
+            None => 0,
+        };
+
+        // `with_embedding > total` e impossivel: as duas contagens saem da
+        // mesma guarda, entao nada escreveu entre elas. Se acontecer, e
+        // corrupcao no banco — e um `.max(0)` mudo publicaria zero como se
+        // fosse resposta. Dizer alto e o unico jeito de alguem descobrir.
+        if with_embedding > total {
+            tracing::warn!(
+                total,
+                with_embedding,
+                "contagem de memoria inconsistente: entradas com vetor excedem o total. \
+                 Isso indica corrupcao no banco — rode `garra memory stats` para o \
+                 relatorio de integridade."
+            );
+        }
+
+        Ok(MemoryGauges {
+            entries_with_embedding: with_embedding as usize,
+            entries_without_embedding: (total - with_embedding).max(0) as usize,
+            vector_index_rows,
+        })
+    }
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
@@ -1446,6 +1527,73 @@ mod tests {
             embedding_model: Some("unit-test".to_string()),
             metadata: serde_json::json!({}),
         }
+    }
+
+    /// O gauge e o `garra memory stats` tem de contar a mesma coisa.
+    ///
+    /// Sao dois caminhos de codigo com as mesmas consultas, escritas duas
+    /// vezes — e duas copias divergem. Este teste e o que cobra: se alguem
+    /// mudar o predicado num lugar so, o numero do painel passa a discordar do
+    /// numero do diagnostico, e nao ha nada pior para quem esta investigando
+    /// do que dois numeros que deviam ser iguais.
+    #[tokio::test]
+    async fn gauge_e_stats_contam_a_mesma_coisa() {
+        use super::MemoryProvider;
+
+        let store = MemoryStore::in_memory().expect("store");
+        // Duas com vetor, uma sem.
+        store
+            .remember(entry(
+                "s1",
+                None,
+                "com vetor um",
+                MemoryRole::User,
+                Some(vec![0.1; 8]),
+            ))
+            .await
+            .expect("remember");
+        store
+            .remember(entry(
+                "s1",
+                None,
+                "com vetor dois",
+                MemoryRole::User,
+                Some(vec![0.2; 8]),
+            ))
+            .await
+            .expect("remember");
+        store
+            .remember(entry("s1", None, "sem vetor", MemoryRole::User, None))
+            .await
+            .expect("remember");
+
+        let gauge = store.gauge_snapshot().await.expect("gauge");
+        let report = store.integrity_report().expect("report");
+
+        assert_eq!(
+            gauge.entries_with_embedding, report.entries_with_embedding,
+            "gauge e stats discordam em entries_with_embedding"
+        );
+        assert_eq!(
+            gauge.entries_without_embedding, report.entries_without_embedding,
+            "gauge e stats discordam em entries_without_embedding"
+        );
+        assert_eq!(gauge.entries_with_embedding, 2);
+        assert_eq!(gauge.entries_without_embedding, 1);
+    }
+
+    /// Sem vector store o indice reporta zero, e nao falha. Zero aqui quer
+    /// dizer "nao ha indice", que e diferente de "indice vazio" — quem le o
+    /// painel precisa do `knn_enabled` ao lado para distinguir.
+    #[tokio::test]
+    async fn gauge_sem_vector_store_reporta_zero_sem_falhar() {
+        use super::MemoryProvider;
+
+        let store = MemoryStore::in_memory().expect("store");
+        let gauge = store.gauge_snapshot().await.expect("gauge");
+        assert_eq!(gauge.vector_index_rows, 0);
+        assert_eq!(gauge.entries_with_embedding, 0);
+        assert_eq!(gauge.entries_without_embedding, 0);
     }
 
     /// O `remember_sync` grava a linha e insere no indice em best-effort:

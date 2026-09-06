@@ -148,6 +148,9 @@ memória (#957):
 | `garraia_memory_embed_failures_total{provider,operation}` | **A que mais importa** — ver abaixo |
 | `garraia_memory_recall_latency_seconds` | O recall inteiro, embedding + busca |
 | `garraia_memory_ingested_total{outcome}` | Turnos por desfecho: `embedded`, `noise`, `no_provider`, `failed` |
+| `garraia_memory_entries{has_embedding}` | Quantas entradas existem, com e sem vetor |
+| `garraia_memory_vector_index_size` | Linhas no índice vetorial |
+| `garraia_memory_gauge_errors_total` | Leituras dos dois gauges acima que falharam |
 
 A de falha é a que merece alerta. Falha de embedding era **silenciosa**: a
 entrada ia para o banco sem vetor e ficava invisível para a busca semântica
@@ -158,6 +161,17 @@ descobrir que o provedor caiu **antes** de o recall degradar.
 `no_provider` e `failed` são desfechos separados porque são a diferença entre
 "ninguém configurou" e "configurou e está quebrado", que é a primeira pergunta
 de quem opera.
+
+**Os dois últimos merecem ser lidos juntos.** `garraia_memory_entries{has_embedding="true"}`
+e `garraia_memory_vector_index_size` deveriam ser iguais — a distância entre
+eles é o sinal. Uma entrada com vetor na coluna mas fora do índice não aparece
+na busca semântica, e isso era invisível até alguém rodar `garra memory stats`.
+Como gauge, vira tendência — que é o que faz alguém pensar em rodar.
+
+Eles são publicados por um worker próprio, que sobe **sempre** que há memória.
+Não são um braço do worker de retenção: aquele só existe quando
+`memory.retention.enabled` é `true`, que é o padrão desligado, e os gauges
+ficariam mortos para quase toda instalação.
 
 Detalhes e consultas PromQL em [telemetry.md](../telemetry.md).
 
@@ -184,7 +198,3 @@ DELETE /api/memory                 # limpa
   de fatos; não há inserção manual pela CLI.
 - **O retriever do `garraia-learning` é um stub.** A busca semântica de
   *skills* (distinta da memória de conversa) espera a Fase 2.1 — ver ADR 0002.
-- **Os gauges de tamanho do índice** (`garraia_memory_entries`,
-  `garraia_memory_vector_index_size`) estão na #957 e ainda não foram
-  entregues: precisam de um worker próprio, porque pendurá-los no worker de
-  retenção os deixaria mortos para quem não liga a retenção — que é o padrão.
