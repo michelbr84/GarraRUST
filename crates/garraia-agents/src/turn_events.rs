@@ -279,11 +279,25 @@ fn sanear_controles(texto: &str, preservar_quebras: bool) -> String {
             '\n' | '\t' if preservar_quebras => out.push(c),
             '\t' | '\n' => out.push(' '),
 
-            // O `\r` sai **sempre**, inclusive na saida completa. Sozinho ele
-            // devolve o cursor ao inicio da linha, que e exatamente a primitiva
-            // de sobrescrever texto ja impresso que o #995 fechou. Num `\r\n`
-            // legitimo tira-lo deixa o `\n`, que e o que se quer.
-            '\r' if preservar_quebras => {}
+            // O `\r` nunca sobrevive: sozinho ele devolve o cursor ao inicio da
+            // linha, que e a primitiva de sobrescrever texto ja impresso que o
+            // #995 fechou.
+            //
+            // Mas na saida completa ele vira **quebra de linha**, e nao sumico.
+            // A auditoria do #938 deu o caso que decide isso: uma barra de
+            // progresso emite `10%\r20%\r100%`, e apaga-lo produzia
+            // `10%20%100%` — um amontoado que o leitor nao distingue de uma
+            // saida que era assim mesmo. Como quebra, cada estado vira sua
+            // linha, que e o que o programa quis desenhar.
+            //
+            // O `\r\n` legitimo continua virando um `\n` so: o `\r` e engolido
+            // porque o `\n` seguinte ja faz o trabalho.
+            '\r' if preservar_quebras => {
+                if chars.peek() == Some(&'\n') {
+                    continue;
+                }
+                out.push('\n');
+            }
             '\r' => out.push(' '),
 
             '\u{1b}' => match chars.peek() {
@@ -509,13 +523,21 @@ mod tests {
 
     /// O `\r` sai mesmo na saida completa: sozinho ele devolve o cursor ao
     /// inicio da linha, que e a primitiva de sobrescrever texto ja impresso.
+    /// O `\r` sai, mas vira quebra em vez de sumir.
+    ///
+    /// A auditoria do #938 apontou o caso que decide: apagando, uma barra de
+    /// progresso vira `10%20%100%`, um amontoado indistinguivel de uma saida
+    /// que era assim mesmo. Como quebra, cada estado vira sua linha.
     #[test]
-    fn saida_completa_ainda_tira_o_retorno_de_carro() {
-        let capturado = capture_tool_output("progresso 10%\rprogresso 100%");
+    fn retorno_de_carro_vira_quebra_e_nao_sumico() {
+        let capturado = capture_tool_output("10%\r20%\r100%");
         assert!(!capturado.contains('\r'), "CR sobreviveu: {capturado:?}");
-        assert_eq!(capturado, "progresso 10%progresso 100%");
-        // E o `\r\n` legitimo vira `\n`, sem perder a quebra.
+        assert_eq!(capturado, "10%\n20%\n100%");
+
+        // O `\r\n` legitimo vira UM `\n`, nao dois — senao toda saida de
+        // Windows viria com o dobro das linhas.
         assert_eq!(capture_tool_output("um\r\ndois"), "um\ndois");
+        assert_eq!(capture_tool_output("a\r\nb\r\nc"), "a\nb\nc");
     }
 
     /// O corte preserva comeco E fim: so o fim perderia o que estava sendo

@@ -42,6 +42,20 @@ const MAX_ENTRADAS: usize = 20;
 ///
 /// Meio mega e o bastante para varias saidas grandes e pequeno o bastante para
 /// nao aparecer no consumo do processo.
+///
+/// # O acoplamento que este numero tem, e que nao aparece no tipo
+///
+/// Apontado pela auditoria do #938. Quem chama `registrar` em producao passa
+/// sempre o resultado de `garraia_agents::turn_events::capture_tool_output`,
+/// que ja capa cada saida em 64 KiB. E de la que vem a garantia de que uma
+/// entrada sozinha nunca estoura este teto — **nao** deste modulo.
+///
+/// Se alguem subir o cap de la acima deste valor, o guard `len > 1` do
+/// `registrar` passa a ser o unico impedindo que uma saida gigante entre e
+/// saia na mesma chamada, deixando o `/tool` vazio logo depois do comando.
+/// O guard existe justamente para esse dia; o teste
+/// `entrada_unica_gigante_sobrevive` o exercita chamando `registrar` direto,
+/// que e um caminho que a API normal nao produz hoje.
 const MAX_BYTES: usize = 512 * 1024;
 
 /// Uma chamada de ferramenta guardada.

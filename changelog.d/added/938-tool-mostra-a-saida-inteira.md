@@ -27,5 +27,9 @@
   aceite explicito da issue e daria para errar, porque o resumo ja era seguro e
   dava para achar que a saida crua tambem era. A diferenca e so de forma —
   quebra de linha e tabulacao sobrevivem, porque sao a estrutura do texto que o
-  usuario pediu para ler; o `\r` continua saindo, porque sozinho ele devolve o
-  cursor ao inicio da linha e e a primitiva de sobrescrever texto ja impresso.
+  usuario pediu para ler; o `\r` nao sobrevive, porque sozinho ele devolve o
+  cursor ao inicio da linha e e a primitiva de sobrescrever texto ja impresso —
+  mas na saida completa ele vira **quebra de linha** em vez de sumir, senao uma
+  barra de progresso (`10%\r20%\r100%`) viraria `10%20%100%`, um amontoado que
+  o leitor nao distingue de uma saida que era assim mesmo. Idem backspace,
+  tabulacao vertical e form feed, que viram marcador visivel.
