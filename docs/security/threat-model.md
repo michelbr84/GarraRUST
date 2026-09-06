@@ -251,12 +251,20 @@ segurança.
 | **S** Spoofing | Conteúdo de terceiro reposiciona o cursor e sobrescreve linhas, forjando saída que parece do Garra — o usuário autoriza uma ação com base em tela falsificada. | Todo controle C0/C1/DEL removido antes de chegar ao renderer (#995). | — |
 | **T** Tampering | `\x1b[2J` limpa a tela; OSC troca o título da janela; `\x1b[?25l` deixa o terminal sem cursor após a sessão. | Idem. | — |
 
-**Superfície irmã ainda aberta:** o texto do **modelo** (`write_delta`) segue
-indo cru ao terminal — issue #996. Não foi corrigido junto porque exige
-saneador **com estado**: o texto é streaming, e uma sequência pode chegar
-partida entre dois deltas, cada metade inofensiva isolada. Gravidade menor
-(exige induzir o modelo a emitir a sequência, tipicamente via injeção de
-prompt) mas mesma classe.
+**A superfície irmã foi fechada em seguida (#996):** o texto do **modelo**
+(`write_delta`) também ia cru ao terminal, e o mesmo vale para aviso, erro e
+dica, que carregam corpo de erro de provedor. A correção é separada porque
+precisa de **estado**: o texto é streaming, e uma sequência pode chegar partida
+entre dois deltas, cada metade inofensiva isolada — um filtro sem estado
+deixaria as duas passarem, e o terminal vê a concatenação. O `AnsiFilter`
+(`crates/garraia-cli/src/ui/ansi_filter.rs`) guarda a posição dentro da
+sequência entre chamadas, e há teste varrendo **todos** os cortes possíveis de
+uma carga hostil.
+
+Cor do modelo fica bloqueada de propósito. A alternativa — permitir SGR e
+bloquear o resto — passaria por cima do `NO_COLOR`: cor vinda do modelo não
+sabe se o usuário a desligou, se a saída vai para um pipe, ou se o terminal é
+legado. Quem decide cor é o `TerminalRenderer`, olhando `Capabilities`.
 
 ---
 
