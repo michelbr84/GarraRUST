@@ -199,14 +199,102 @@ fn campo(input: &serde_json::Value, chave: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Redige segredo e trunca — nessa ordem, sempre.
+/// Redige segredo, tira controle de terminal e trunca — nessa ordem, sempre.
 ///
 /// Truncar antes de redigir poderia cortar uma chave ao meio e deixar o
-/// prefixo passar pelo regex sem casar.
+/// prefixo passar pelo regex sem casar. E truncar antes de tirar os controles
+/// poderia deixar meia sequencia passar pela mesma razao.
 fn sanear(texto: &str) -> String {
     let redigido = garraia_security::redact_secrets(texto.trim());
-    let uma_linha = redigido.replace(['\n', '\r'], " ");
-    truncar(&uma_linha, SUMMARY_MAX_CHARS)
+    let sem_controle = sanear_controles(&redigido);
+    truncar(&sem_controle, SUMMARY_MAX_CHARS)
+}
+
+/// Tira do texto tudo que o terminal interpretaria como comando (#995).
+///
+/// Saida de ferramenta **nao e conteudo confiavel**: e o que o agente leu de
+/// um arquivo, baixou de uma pagina ou o que um comando escreveu. Ate o #995
+/// esse texto ia direto para o terminal, e um `README` de repositorio clonado
+/// conseguia limpar a tela do usuario com `\x1b[2J`, trocar o titulo da janela
+/// com OSC, ou reposicionar o cursor para sobrescrever linhas ja impressas —
+/// forjando texto que parece ter vindo do proprio Garra.
+///
+/// O caso mais pontudo era `\x1b[?25l`: o projeto tem invariante explicita de
+/// que essa sequencia nao e emitida em lugar nenhum, para que nenhum caminho
+/// de saida deixe o terminal sem cursor. Saida de ferramenta a violava.
+///
+/// # A seguranca nao depende do reconhecimento de sequencia
+///
+/// Esta e a parte que importa entender antes de mexer aqui. **Tirar o `ESC` ja
+/// neutraliza**: sem ele, `[2J` e texto inerte, que o terminal imprime como
+/// tres caracteres em vez de executar. Todo controle C0, C1 e DEL sai, sem
+/// excecao — e essa regra por caractere, nao por padrao, e o que fecha o
+/// buraco. Reconhecer "sequencias ANSI" com regex e um jogo que se perde: ha
+/// CSI, OSC, DCS, formas de dois caracteres, com e sem terminador.
+///
+/// O reconhecimento que existe abaixo serve so para **legibilidade**. Saida
+/// colorida e comum e legitima — `cargo test` emite `\x1b[32mok\x1b[0m` —, e
+/// trocar so o `ESC` por um marcador deixaria `\u{fffd}[32mok\u{fffd}[0m` na
+/// tela, que e ruido para o caso normal. Entao quando a sequencia e
+/// reconhecivel ela sai inteira, e o resultado fica limpo.
+///
+/// A consequencia de o reconhecimento errar e **cosmetica, nao de seguranca**:
+/// uma sequencia exotica que o parser nao entenda perde o `ESC` do mesmo jeito
+/// e sobra como texto literal feio. E o modo de falhar que se quer.
+fn sanear_controles(texto: &str) -> String {
+    let mut out = String::with_capacity(texto.len());
+    let mut chars = texto.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            // Separadores viram espaco em vez de sumir: num resumo de uma
+            // linha eles separam palavras, e apaga-los grudaria tokens que o
+            // usuario precisa ler separados.
+            '\t' | '\n' | '\r' => out.push(' '),
+
+            '\u{1b}' => match chars.peek() {
+                // CSI: `ESC [` ... byte final na faixa 0x40-0x7e. Cobre cor,
+                // movimento de cursor, limpeza de tela, `?25l`.
+                Some('[') => {
+                    chars.next();
+                    for f in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&f) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: `ESC ]` ... BEL ou ST (`ESC \`). E onde mora a troca de
+                // titulo de janela e o hyperlink.
+                Some(']') => {
+                    chars.next();
+                    while let Some(f) = chars.next() {
+                        if f == '\u{7}' {
+                            break;
+                        }
+                        if f == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Sequencia de dois caracteres (`ESC c` reseta o terminal) ou
+                // um `ESC` solto no fim do texto. Em ambos o `ESC` sai.
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+
+            // Todo o resto que o terminal trataria como comando. Marcar em vez
+            // de apagar deixa visivel que algo foi removido — apagar em
+            // silencio faria a tentativa de injecao parecer texto normal.
+            c if c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) => out.push('\u{fffd}'),
+
+            c => out.push(c),
+        }
+    }
+
+    out
 }
 
 /// Corta por **caractere**, nunca por byte — comando e caminho carregam
@@ -224,6 +312,79 @@ fn truncar(texto: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Saida de ferramenta nao pode escrever comando no terminal (#995).
+    ///
+    /// Os tres casos sao os do mundo real: limpar a tela, esconder o cursor
+    /// (que viola invariante explicita do projeto) e trocar o titulo da
+    /// janela por OSC.
+    #[test]
+    fn saida_nao_injeta_sequencia_no_terminal() {
+        for (bruto, o_que_e) in [
+            ("\u{1b}[2Jlimpou", "limpa a tela"),
+            ("\u{1b}[?25lescondeu", "esconde o cursor"),
+            (
+                "\u{1b}]0;titulo novo\u{7}trocou",
+                "troca o titulo (OSC/BEL)",
+            ),
+            ("\u{1b}]0;titulo\u{1b}\\trocou", "troca o titulo (OSC/ST)"),
+            ("\u{1b}creset", "reseta o terminal"),
+        ] {
+            let saida = summarize_tool_output(bruto, true);
+            assert!(
+                !saida.contains('\u{1b}'),
+                "ESC sobreviveu ao resumo ({o_que_e}): {saida:?}"
+            );
+            assert!(
+                !saida.chars().any(|c| c.is_control()),
+                "controle sobreviveu ao resumo ({o_que_e}): {saida:?}"
+            );
+        }
+    }
+
+    /// O mesmo vale para o input — o `command` do bash tambem vem de fora.
+    #[test]
+    fn input_nao_injeta_sequencia_no_terminal() {
+        let input = json!({ "command": "echo \u{1b}[2J" });
+        let saida = summarize_tool_input("bash", &input);
+        assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+    }
+
+    /// Saida colorida e comum e legitima. O reconhecimento de sequencia existe
+    /// para que o caso normal fique limpo em vez de virar `\u{fffd}[32m`.
+    #[test]
+    fn saida_colorida_fica_legivel() {
+        let saida = summarize_tool_output("\u{1b}[32mtest result: ok\u{1b}[0m", true);
+        assert_eq!(saida, "test result: ok");
+    }
+
+    /// Um controle que nao faz parte de sequencia reconhecivel vira marcador
+    /// visivel, e nao sumico silencioso: a tentativa de injecao tem de
+    /// aparecer.
+    #[test]
+    fn controle_solto_vira_marcador_visivel() {
+        let saida = summarize_tool_output("antes\u{0}depois", true);
+        assert_eq!(saida, "antes\u{fffd}depois");
+    }
+
+    /// Sanear nao pode quebrar texto legitimo com acento.
+    #[test]
+    fn acento_atravessa_intacto() {
+        let saida = summarize_tool_output("compilação concluída com açúcar", true);
+        assert_eq!(saida, "compilação concluída com açúcar");
+    }
+
+    /// A ordem importa: redigir, sanear, truncar. Um segredo seguido de ESC
+    /// tem de sair redigido **e** sem o controle.
+    #[test]
+    fn segredo_e_controle_saem_os_dois() {
+        let saida = summarize_tool_output("sk-ant-api03-aaaaaaaaaaaaaaaaaaaa\u{1b}[2J", true);
+        assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+        assert!(
+            !saida.contains("sk-ant-api03-aaaaaaaaaaaaaaaaaaaa"),
+            "segredo sobreviveu: {saida:?}"
+        );
+    }
 
     #[test]
     fn resume_o_comando_do_bash() {

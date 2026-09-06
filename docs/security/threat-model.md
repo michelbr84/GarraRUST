@@ -220,6 +220,46 @@ só tem `agent_id`, então o campo é descartado pelo serde. Não era superfíci
 viva; o guard existe para o dia em que a rota mudar, e
 `post_sessions_does_not_expose_working_dir_today` fixa esse estado.
 
+## 5.75. Saída de ferramenta escrita no terminal (#995)
+
+O `garra chat` imprime, a cada chamada de ferramenta, uma linha com o que ela
+fez e uma com o que devolveu (#937). Esse texto **não é confiável**: é o que o
+agente leu de um arquivo, baixou de uma página, ou o que um comando escreveu.
+Um `README` de repositório clonado é conteúdo de terceiro chegando ao terminal
+do usuário.
+
+Até o #995 ele chegava com os caracteres de controle intactos, o que dava a
+quem controlasse a saída: limpar a tela (`\x1b[2J`), esconder o cursor
+(`\x1b[?25l`, violando invariante explícita do projeto), trocar o título da
+janela (OSC), e reposicionar o cursor para sobrescrever linhas já impressas —
+**forjando texto que parece ter vindo do próprio Garra**, que é a consequência
+que importa: o usuário decide o que autorizar lendo essa tela.
+
+A sanitização mora no `garraia-agents`, junto da redação de segredo, mantendo
+a fronteira do ADR 0017 — o renderer recebe texto pronto e só decide como
+desenhar. Ordem obrigatória: **redige, saneia, trunca**; truncar antes deixaria
+meia sequência (ou meio segredo) passar.
+
+A garantia vem da regra **por caractere**, não do reconhecimento de sequência:
+todo controle C0, C1 e DEL sai, e sem `ESC` o `[2J` restante é texto inerte.
+O parser de CSI/OSC que existe é para legibilidade — saída colorida é comum e
+legítima —, e se ele errar numa sequência exótica a falha é cosmética, não de
+segurança.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **S** Spoofing | Conteúdo de terceiro reposiciona o cursor e sobrescreve linhas, forjando saída que parece do Garra — o usuário autoriza uma ação com base em tela falsificada. | Todo controle C0/C1/DEL removido antes de chegar ao renderer (#995). | — |
+| **T** Tampering | `\x1b[2J` limpa a tela; OSC troca o título da janela; `\x1b[?25l` deixa o terminal sem cursor após a sessão. | Idem. | — |
+
+**Superfície irmã ainda aberta:** o texto do **modelo** (`write_delta`) segue
+indo cru ao terminal — issue #996. Não foi corrigido junto porque exige
+saneador **com estado**: o texto é streaming, e uma sequência pode chegar
+partida entre dois deltas, cada metade inofensiva isolada. Gravidade menor
+(exige induzir o modelo a emitir a sequência, tipicamente via injeção de
+prompt) mas mesma classe.
+
+---
+
 ## 5.8. `/metrics` — o que a observabilidade conta sobre a instalação (#957)
 
 O endpoint Prometheus é autenticado (`metrics_auth.rs`: loopback por padrão,
