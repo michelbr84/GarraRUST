@@ -19,6 +19,17 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   devolver memorias de outro tenant. O fetch agora reescopa os quatro filtros
   (tenant, sessao, continuidade e modelo) e ha teste garantindo que linha de
   outro tenant nunca volta pelo KNN.
+- **Corpo de erro de provider de embeddings deixa de poder ir cru para o log
+  (achado da auditoria deste lote).** Enquanto o runtime engolia esses erros
+  com `.ok()`, o corpo da resposta HTTP nunca chegava a lugar nenhum; a
+  correcao do #948 passou a loga-los, e corpo de erro nao e conteudo
+  confiavel — a OpenAI ecoa de volta a chave que voce mandou quando ela esta
+  errada, e um endpoint self-hosted pode devolver o request inteiro. Agora os
+  tres providers sanitizam na origem: 401 e 403 perdem o corpo por completo
+  (o status, que e o que o operador precisa, fica), e os demais sao truncados
+  e tem tokens de formato conhecido raspados. Teste ponta a ponta contra um
+  servidor que devolve 401 com a chave no corpo garante que ela nao aparece na
+  mensagem de erro.
 
 ### Fixed
 - **Limpeza do indice vetorial: janela de corrida fechada e delecao atomica
@@ -46,6 +57,35 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   tabelas `vec_embeddings_*` (inclusive dimensoes antigas, #954) e o
   `vec_id_map` — com filtro que exclui as shadow tables internas do vec0
   (`_info`/`_chunks`/`_rowids`), que um LIKE ingenuo pegaria junto.
+- **Embeddings ganham timeout proprio, retry e validacao de dimensao
+  (#962, #961).** O bootstrap reusava o timeout do LLM — 120s para uma chamada
+  que responde em milissegundos, entao um Ollama travado segurava o turno
+  inteiro do agente, que espera o `query_embedding` para montar o recall.
+  Agora ha `timeouts.embeddings` proprio (default 30s) e um envelope
+  `ResilientEmbeddingProvider` em volta dos tres providers: repete falha
+  transitoria com backoff (transporte, 429, 5xx) e nunca repete o que nao
+  melhora repetindo (4xx, corpo que nao decodifica). O mesmo envelope valida
+  a dimensao devolvida contra `embeddings.<nome>.dimensions` — campo que era
+  parseado e nunca consumido por ninguem — e **recusa** o vetor divergente em
+  vez de grava-lo: cada dimensao cria uma tabela `vec_embeddings_N` propria, e
+  um modelo trocado sem atualizar a config fazia o recall procurar na tabela
+  errada, perdendo em silencio tudo o que ja estava indexado.
+- **A memoria para de perder embedding em silencio (#948).** `embed_document`
+  e `embed_query` engoliam o erro com `.ok()`: a entrada era gravada sem
+  vetor, ficava invisivel para a busca semantica para sempre, e nada no log
+  dizia que tinha acontecido. Agora cada falha vira `warn!` nomeando provider,
+  modelo e consequencia. E `embedding_model` deixa de ser gravado quando nao
+  ha vetor — a coluna descreve o vetor, entao preenche-la sem vetor fazia a
+  linha mentir, e com o filtro de modelo do #954 ativo essa mentira ainda
+  custava o eixo semantico da entrada.
+- **O ramo openai do bootstrap para de inventar a chave (#948).** Ele usava o
+  literal `"no-key"` para qualquer endpoint e nem procurava a credencial no
+  ambiente ou no cofre, so no arquivo de config. Contra a OpenAI oficial isso
+  e 401 em toda chamada de embedding — silencioso, porque o erro era engolido
+  logo adiante. Agora a chave passa pelo mesmo `resolve_api_key` dos demais
+  providers, endpoint proprio (LM Studio, vLLM, gateway interno) segue sem
+  credencial e sem mandar `Authorization` vazio, e endpoint oficial sem chave
+  e pulado com aviso em vez de subir quebrado.
 
 ### Added
 - **`IntegrityReport.entries_missing_model` e o teste de dimensao divergente
@@ -65,6 +105,15 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   `garra memory stats` (#950). `in_memory_with_vectors()` liga o caminho KNN
   em testes; 7 testes novos cobrem isolamento, mistura de modelos, orfaos e
   idempotencia da delecao.
+- **Health check do provider de embeddings no boot (#951).** O
+  `health_check()` existia no trait desde sempre e **nunca era chamado**: o
+  boot logava "configured ollama embedding provider" e seguia, mesmo com o
+  Ollama desligado. Agora o boot pergunta e avisa alto quando nao ha resposta,
+  dizendo o que vai acontecer (memorias novas sem vetor, recall textual) e o
+  que fazer depois (reindexar). Avisa, nao derruba: memoria semantica e
+  opcional, e recusar subir por causa dela deixaria o usuario sem chat nenhum.
+  `AgentRuntime::embedding_provider()` expoe o provider ativo — a mesma porta
+  que a reindexacao da CLI (#953) vai usar.
 
 ### Changed
 - **Quatro testes de KNN deixam de passar em vazio (divida da auditoria do
@@ -101,6 +150,12 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   quadro, texto e cronometro. Os testes de timing do chat migram para tempo
   virtual (`start_paused`) porque a janela de aparicao tornaria margens de
   30ms flake garantido em runner carregado.
+- **O lote de embeddings do Ollama passa a ser paralelo.** O endpoint dele e
+  um-texto-por-request e o loop era serial: reindexar as ~7k entradas de uma
+  base real seriam 7k idas e voltas encadeadas. Agora sao lotes de 4, com
+  teste garantindo que a saida mantem a ordem dos textos de entrada —
+  embaralhar ali corromperia a memoria em silencio, porque o chamador casa
+  vetor com texto por indice.
 
 ## [0.3.9] - 2026-09-05
 

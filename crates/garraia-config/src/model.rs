@@ -544,6 +544,16 @@ fn default_stt_timeout() -> u64 {
 fn default_mcp_timeout() -> u64 {
     60
 }
+fn default_embeddings_timeout() -> u64 {
+    30
+}
+/// Secao inteira, nao so o numero: `TypeTimeout::default()` devolve o default
+/// do LLM (120s), que e justamente o que este campo existe para nao herdar.
+fn default_embeddings_timeout_section() -> TypeTimeout {
+    TypeTimeout {
+        default_secs: default_embeddings_timeout(),
+    }
+}
 fn default_health_timeout() -> u64 {
     5
 }
@@ -575,6 +585,12 @@ pub struct TimeoutConfig {
     pub mcp: TypeTimeout,
     #[serde(default)]
     pub health: TypeTimeout,
+    /// Timeout proprio dos providers de embeddings (#962). Antes o bootstrap
+    /// reusava o do LLM — 120s para uma chamada que normalmente responde em
+    /// milissegundos, entao um Ollama travado segurava o turno inteiro do
+    /// agente, que espera o `query_embedding` para o recall.
+    #[serde(default = "default_embeddings_timeout_section")]
+    pub embeddings: TypeTimeout,
 }
 
 impl Default for TimeoutConfig {
@@ -595,6 +611,7 @@ impl Default for TimeoutConfig {
             health: TypeTimeout {
                 default_secs: default_health_timeout(),
             },
+            embeddings: default_embeddings_timeout_section(),
         }
     }
 }
@@ -800,6 +817,22 @@ pub struct McpServerConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+
+    /// #962: o timeout de embeddings tem default proprio (30s) e NAO herda
+    /// o do LLM (120s) — herdar era exatamente o bug, porque uma chamada que
+    /// responde em milissegundos segurava o turno por dois minutos.
+    #[test]
+    fn embeddings_timeout_defaults_to_thirty_seconds_not_the_llm_timeout() {
+        let padrao = super::TimeoutConfig::default();
+        assert_eq!(padrao.embeddings.default_secs, 30);
+        assert_eq!(padrao.llm.default_secs, 120);
+
+        // E o default vale tambem quando a secao `timeouts:` existe sem ele.
+        let config: AppConfig = serde_yaml::from_str("timeouts:\n  llm:\n    default_secs: 90\n")
+            .expect("yaml should parse");
+        assert_eq!(config.timeouts.llm.default_secs, 90);
+        assert_eq!(config.timeouts.embeddings.default_secs, 30);
+    }
 
     #[test]
     fn app_config_defaults_include_memory_block() {
