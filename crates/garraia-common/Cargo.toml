@@ -12,6 +12,17 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+# Facade de metricas (src/metrics.rs, #957). Deliberadamente o facade e NAO o
+# `garraia-telemetry`: quem emite as metricas da memoria e o `garraia-agents`,
+# que o `garraia-cli` linka — depender da telemetria arrastaria OpenTelemetry,
+# OTLP, tonic, axum e tower para dentro do binario da CLI, que nao usa nada
+# disso. O facade e o padrao do ecossistema: biblioteca emite, binario instala
+# o recorder. Sem recorder (o caso da CLI) cada macro e um no-op.
+#
+# Nao e opcional, ao contrario do `reqwest` acima: o facade sao dois ponteiros
+# atomicos e nenhuma dependencia de peso, entao um feature gate custaria mais
+# em complexidade do que economiza em arvore.
+metrics = { workspace = true }
 url = { workspace = true }
 async-trait = { workspace = true }
 toml = { workspace = true }

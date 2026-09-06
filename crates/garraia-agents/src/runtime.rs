@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use futures::future::join_all;
 use futures::{Stream, StreamExt};
-use garraia_common::{Error, Result};
+use garraia_common::{Error, Result, metrics};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -514,6 +514,12 @@ impl AgentRuntime {
             return Ok(Vec::new());
         };
 
+        // #957: mede o recall **inteiro** — o embedding da consulta mais a
+        // busca —, porque e isso que o usuario espera. Medir so a busca
+        // esconderia o caso que mais dói: o provider de embeddings lento
+        // fazendo o recall demorar antes mesmo de o banco ser tocado.
+        let inicio = std::time::Instant::now();
+
         let query_embedding = self.embed_query(query_text).await;
         // O filtro por modelo só faz sentido acompanhando um embedding (#954):
         // sem vetor de consulta, o recall é textual e não deve ser estreitado.
@@ -522,7 +528,7 @@ impl AgentRuntime {
             .then(|| self.embedding_model())
             .flatten();
 
-        memory
+        let resultado = memory
             .recall(RecallQuery {
                 tenant_id: None,
                 query_text: Some(query_text.to_string()),
@@ -532,7 +538,14 @@ impl AgentRuntime {
                 continuity_key: continuity_key.map(|s| s.to_string()),
                 limit,
             })
-            .await
+            .await;
+
+        // Medido tambem quando falha: um recall que morre em 30s de timeout e
+        // exatamente a latencia que o operador precisa ver. Contar so o
+        // sucesso faria o painel melhorar quando o sistema piora.
+        metrics::record_recall_latency(inicio.elapsed().as_secs_f64());
+
+        resultado
     }
 
     /// Register a natively-built tool. Takes `&self` since #924 — the runtime
@@ -2044,6 +2057,7 @@ impl AgentRuntime {
     /// que se grava e sempre longo.
     async fn embed_turn_unless_noise(&self, text: &str, papel: &str) -> Option<Vec<f32>> {
         if self.noise_policy.is_noise(text) {
+            metrics::inc_ingested(metrics::IngestOutcome::Noise);
             debug!(
                 papel,
                 chars = text.chars().count(),
@@ -2053,18 +2067,53 @@ impl AgentRuntime {
             );
             return None;
         }
-        self.embed_document(text).await
+
+        // #957: o desfecho e contado **aqui**, e nao dentro do
+        // `embed_document`, porque so este nivel sabe distinguir os quatro
+        // casos. La embaixo, "sem provider" e "provider falhou" saem os dois
+        // como `None` — e sao a diferenca entre "ninguem configurou" e
+        // "configurou e esta quebrado", que e exatamente o que o operador
+        // precisa separar.
+        if self.embeddings.is_none() {
+            metrics::inc_ingested(metrics::IngestOutcome::NoProvider);
+            return None;
+        }
+
+        let vetor = self.embed_document(text).await;
+        metrics::inc_ingested(if vetor.is_some() {
+            metrics::IngestOutcome::Embedded
+        } else {
+            metrics::IngestOutcome::Failed
+        });
+        vetor
     }
 
     async fn embed_document(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
+        // #957: a medicao cerca a chamada ao provider e nada mais. Incluir o
+        // que vem antes ou depois faria o histograma medir o GarraIA em vez de
+        // medir o provider, que e a pergunta que o operador tem.
+        let inicio = std::time::Instant::now();
         match provider.embed_documents(&[text.to_string()]).await {
-            Ok(mut vectors) => vectors.pop(),
+            Ok(mut vectors) => {
+                metrics::record_embed_latency(
+                    provider.provider_id(),
+                    metrics::EmbedOp::Document,
+                    inicio.elapsed().as_secs_f64(),
+                );
+                vectors.pop()
+            }
             Err(e) => {
                 // O `.ok()` que existia aqui era o primeiro elo da cadeia de
                 // perda silenciosa do #948: a entrada era gravada sem vetor,
                 // ficava invisivel para a busca semantica para sempre, e nada
                 // no log dizia que tinha acontecido.
+                //
+                // O #948 tirou o silencio do log; o #957 tira do painel. Log
+                // conta o caso, metrica conta a tendencia — e e a tendencia
+                // que faz alguem descobrir que o provider caiu antes de o
+                // recall degradar.
+                metrics::inc_embed_failure(provider.provider_id(), metrics::EmbedOp::Document);
                 warn!(
                     provider = provider.provider_id(),
                     model = provider.model(),
@@ -2079,9 +2128,18 @@ impl AgentRuntime {
 
     async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
+        let inicio = std::time::Instant::now();
         match provider.embed_query(text).await {
-            Ok(vector) => Some(vector),
+            Ok(vector) => {
+                metrics::record_embed_latency(
+                    provider.provider_id(),
+                    metrics::EmbedOp::Query,
+                    inicio.elapsed().as_secs_f64(),
+                );
+                Some(vector)
+            }
             Err(e) => {
+                metrics::inc_embed_failure(provider.provider_id(), metrics::EmbedOp::Query);
                 warn!(
                     provider = provider.provider_id(),
                     model = provider.model(),
@@ -2147,6 +2205,241 @@ impl Default for AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── #957: as metricas da memoria ─────────────────────────────────────
+
+    /// Nome + labels de tudo que foi emitido enquanto `f` rodava.
+    ///
+    /// O recorder e **thread-local**, nao global, de proposito: o recorder
+    /// global do ecossistema `metrics` so pode ser instalado uma vez por
+    /// processo, e um teste que o instalasse quebraria todos os outros que
+    /// rodam em paralelo. `#[tokio::test]` usa o runtime `current_thread`,
+    /// entao o guard cobre o bloco inteiro sem risco de a task migrar de
+    /// thread no meio.
+    async fn metricas_emitidas<F, Fut>(f: F) -> Vec<String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let guard = ::metrics::set_default_local_recorder(&recorder);
+        f().await;
+        drop(guard);
+
+        let mut nomes: Vec<String> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .map(|(chave, _, _, _)| {
+                let key = chave.key();
+                let mut labels: Vec<String> = key
+                    .labels()
+                    .map(|l| format!("{}={}", l.key(), l.value()))
+                    .collect();
+                labels.sort();
+                if labels.is_empty() {
+                    key.name().to_string()
+                } else {
+                    format!("{}{{{}}}", key.name(), labels.join(","))
+                }
+            })
+            .collect();
+        nomes.sort();
+        nomes
+    }
+
+    /// O caso que a issue #957 descreve: falha de embedding era silenciosa. O
+    /// #948 tirou o silencio do log; isto tira do painel.
+    #[tokio::test]
+    async fn falha_de_embedding_vira_contador() {
+        struct SempreFalha;
+
+        #[async_trait]
+        impl crate::embeddings::EmbeddingProvider for SempreFalha {
+            fn provider_id(&self) -> &str {
+                "provider-de-teste"
+            }
+            fn model(&self) -> &str {
+                "modelo"
+            }
+            async fn embed_documents(
+                &self,
+                _t: &[String],
+            ) -> garraia_common::Result<Vec<Vec<f32>>> {
+                Err(garraia_common::Error::Agent("fora do ar".into()))
+            }
+            async fn embed_query(&self, _t: &str) -> garraia_common::Result<Vec<f32>> {
+                Err(garraia_common::Error::Agent("fora do ar".into()))
+            }
+            async fn health_check(&self) -> garraia_common::Result<bool> {
+                Ok(false)
+            }
+        }
+
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        rt.set_embedding_provider(Arc::new(SempreFalha));
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn("s1", None, None, "meu nome e Michel e moro na Florida", "")
+                .await
+                .expect("remember_turn");
+        })
+        .await;
+
+        assert!(
+            emitidas.iter().any(|m| m
+                == "garraia_memory_embed_failures_total{operation=document,provider=provider-de-teste}"),
+            "falha nao virou contador: {emitidas:?}"
+        );
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m == "garraia_memory_ingested_total{outcome=failed}"),
+            "desfecho `failed` nao foi contado: {emitidas:?}"
+        );
+    }
+
+    /// Os quatro desfechos precisam ser distinguiveis. `no_provider` e
+    /// `failed` sao a diferenca entre "ninguem configurou" e "configurou e
+    /// esta quebrado" — a pergunta que o operador faz primeiro.
+    #[tokio::test]
+    async fn sem_provider_e_desfecho_proprio_nao_falha() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        // Sem `set_embedding_provider`.
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn("s1", None, None, "um fato de verdade para lembrar", "")
+                .await
+                .expect("remember_turn");
+        })
+        .await;
+
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m == "garraia_memory_ingested_total{outcome=no_provider}"),
+            "{emitidas:?}"
+        );
+        assert!(
+            !emitidas.iter().any(|m| m.contains("embed_failures")),
+            "sem provider nao e falha do provider: {emitidas:?}"
+        );
+    }
+
+    /// Ruido tem desfecho proprio (#952). Sem isso, o operador veria o total
+    /// de entradas sem vetor subir e nao teria como saber se e defeito ou
+    /// politica.
+    #[tokio::test]
+    async fn ruido_tem_desfecho_proprio_e_nao_chama_o_provider() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let embeddings = Arc::new(ContandoEmbeddings(std::sync::atomic::AtomicUsize::new(0)));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        rt.set_embedding_provider(embeddings.clone());
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn("s1", None, None, "oi", "bom dia")
+                .await
+                .expect("remember_turn");
+        })
+        .await;
+
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m == "garraia_memory_ingested_total{outcome=noise}"),
+            "{emitidas:?}"
+        );
+        assert_eq!(chamadas(&embeddings), 0, "ruido nao pode ir ao provider");
+        assert!(
+            !emitidas.iter().any(|m| m.contains("embed_latency")),
+            "nao houve chamada, nao pode haver latencia: {emitidas:?}"
+        );
+    }
+
+    /// O caminho feliz: latencia medida por provider e por operacao, e o
+    /// desfecho contado como `embedded`.
+    #[tokio::test]
+    async fn sucesso_mede_latencia_por_provider_e_operacao() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        rt.set_embedding_provider(Arc::new(ContandoEmbeddings(
+            std::sync::atomic::AtomicUsize::new(0),
+        )));
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn("s1", None, None, "um fato de verdade para lembrar", "")
+                .await
+                .expect("remember_turn");
+            rt.recall_context("quem sou eu", Some("s1"), None, 5)
+                .await
+                .expect("recall");
+        })
+        .await;
+
+        assert!(
+            emitidas.iter().any(|m| m
+                == "garraia_memory_embed_latency_seconds{operation=document,provider=contando}"),
+            "{emitidas:?}"
+        );
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m
+                    == "garraia_memory_embed_latency_seconds{operation=query,provider=contando}"),
+            "a consulta do recall nao foi medida: {emitidas:?}"
+        );
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m == "garraia_memory_recall_latency_seconds"),
+            "{emitidas:?}"
+        );
+        assert!(
+            emitidas
+                .iter()
+                .any(|m| m == "garraia_memory_ingested_total{outcome=embedded}"),
+            "{emitidas:?}"
+        );
+    }
+
+    /// Nenhuma label pode carregar id de sessao, de usuario ou conteudo — e a
+    /// explosao de cardinalidade que o docblock do `garraia-telemetry` descreve.
+    #[tokio::test]
+    async fn nenhuma_label_carrega_identificador_ou_conteudo() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        rt.set_embedding_provider(Arc::new(ContandoEmbeddings(
+            std::sync::atomic::AtomicUsize::new(0),
+        )));
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn(
+                "sessao-secreta-42",
+                None,
+                Some("usuario-secreto"),
+                "minha senha do banco e 1234",
+                "",
+            )
+            .await
+            .expect("remember_turn");
+        })
+        .await;
+
+        for m in &emitidas {
+            for proibido in ["sessao-secreta", "usuario-secreto", "senha", "1234"] {
+                assert!(!m.contains(proibido), "label vazou {proibido:?}: {m}");
+            }
+        }
+        assert!(!emitidas.is_empty(), "o teste precisa ter emitido algo");
+    }
 
     // ─── #952: ruido nao merece vetor ─────────────────────────────────────
 
