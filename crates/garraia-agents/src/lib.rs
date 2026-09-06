@@ -31,6 +31,7 @@ pub use anthropic::AnthropicProvider;
 pub use echo::EchoProvider;
 pub use embeddings::{
     CohereEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider,
+    ResilientEmbeddingProvider,
 };
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};

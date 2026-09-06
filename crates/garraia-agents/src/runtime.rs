@@ -386,6 +386,16 @@ impl AgentRuntime {
             .collect()
     }
 
+    /// O provider de embeddings ativo, se houver.
+    ///
+    /// Existe para o boot poder chamar `health_check()` (#951) — que ate
+    /// aqui era codigo morto, declarado no trait e nunca invocado — e para a
+    /// reindexacao da CLI (#953) reusar exatamente o mesmo provider que o
+    /// runtime usa, em vez de construir um segundo por fora.
+    pub fn embedding_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
+        self.embeddings.clone()
+    }
+
     pub fn set_embedding_provider(&mut self, embeddings: Arc<dyn EmbeddingProvider>) {
         self.embeddings = Some(embeddings);
         info!("embedding provider attached to agent runtime");
@@ -436,6 +446,7 @@ impl AgentRuntime {
 
         if !user_input.trim().is_empty() {
             let user_embedding = self.embed_document(user_input).await;
+            let user_embedding_model = self.embedding_model_for(&user_embedding);
             memory
                 .remember(NewMemoryEntry {
                     tenant_id: "default".to_string(),
@@ -446,7 +457,7 @@ impl AgentRuntime {
                     role: MemoryRole::User,
                     content: user_input.to_string(),
                     embedding: user_embedding,
-                    embedding_model: self.embedding_model(),
+                    embedding_model: user_embedding_model,
                     metadata: serde_json::json!({ "kind": "turn_user" }),
                 })
                 .await?;
@@ -454,6 +465,7 @@ impl AgentRuntime {
 
         if !assistant_output.trim().is_empty() {
             let assistant_embedding = self.embed_document(assistant_output).await;
+            let assistant_embedding_model = self.embedding_model_for(&assistant_embedding);
             memory
                 .remember(NewMemoryEntry {
                     tenant_id: "default".to_string(),
@@ -464,7 +476,7 @@ impl AgentRuntime {
                     role: MemoryRole::Assistant,
                     content: assistant_output.to_string(),
                     embedding: assistant_embedding,
-                    embedding_model: self.embedding_model(),
+                    embedding_model: assistant_embedding_model,
                     metadata: serde_json::json!({ "kind": "turn_assistant" }),
                 })
                 .await?;
@@ -1094,6 +1106,7 @@ impl AgentRuntime {
                             if let Some(memory) = &self.memory {
                                 // Store fact in memory with embedding
                                 let embedding = self.embed_document(&content).await;
+                                let fact_embedding_model = self.embedding_model_for(&embedding);
                                 let _ = memory
                                     .remember(NewMemoryEntry {
                                         tenant_id: "default".to_string(),
@@ -1104,7 +1117,7 @@ impl AgentRuntime {
                                         role: MemoryRole::User,
                                         content,
                                         embedding,
-                                        embedding_model: self.embedding_model(),
+                                        embedding_model: fact_embedding_model,
                                         metadata: serde_json::json!({ "kind": "learned_fact" }),
                                     })
                                     .await;
@@ -1895,22 +1908,56 @@ impl AgentRuntime {
 
     async fn embed_document(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
-        provider
-            .embed_documents(&[text.to_string()])
-            .await
-            .ok()
-            .and_then(|mut v| v.pop())
+        match provider.embed_documents(&[text.to_string()]).await {
+            Ok(mut vectors) => vectors.pop(),
+            Err(e) => {
+                // O `.ok()` que existia aqui era o primeiro elo da cadeia de
+                // perda silenciosa do #948: a entrada era gravada sem vetor,
+                // ficava invisivel para a busca semantica para sempre, e nada
+                // no log dizia que tinha acontecido.
+                warn!(
+                    provider = provider.provider_id(),
+                    model = provider.model(),
+                    "memoria: embedding do documento falhou; a entrada vai ser gravada \
+                     sem vetor e so volta a ser encontravel por busca semantica depois \
+                     de uma reindexacao (#948): {e}"
+                );
+                None
+            }
+        }
     }
 
     async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
-        provider.embed_query(text).await.ok()
+        match provider.embed_query(text).await {
+            Ok(vector) => Some(vector),
+            Err(e) => {
+                warn!(
+                    provider = provider.provider_id(),
+                    model = provider.model(),
+                    "memoria: embedding da consulta falhou; o recall deste turno cai \
+                     para o caminho textual, sem semantica (#948): {e}"
+                );
+                None
+            }
+        }
     }
 
     fn embedding_model(&self) -> Option<String> {
         self.embeddings
             .as_ref()
             .map(|provider| provider.model().to_string())
+    }
+
+    /// Modelo a gravar ao lado de um embedding.
+    ///
+    /// `None` quando nao ha vetor: a coluna `embedding_model` descreve o
+    /// vetor, entao preenche-la sem vetor faz a linha mentir — a entrada
+    /// parece indexada por um modelo e nao esta. Com o filtro de modelo do
+    /// #954 ativo, essa mentira ainda fazia a entrada perder o eixo semantico
+    /// sem que ninguem entendesse por que.
+    fn embedding_model_for(&self, embedding: &Option<Vec<f32>>) -> Option<String> {
+        embedding.as_ref().and_then(|_| self.embedding_model())
     }
 
     /// Simple chat completion for use by memory extractor
