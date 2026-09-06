@@ -518,6 +518,37 @@ impl MemoryStore {
     /// em lotes sucessivos avança de forma previsível em vez de reprocessar
     /// as mesmas linhas.
     pub fn entries_missing_embeddings(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        self.entries_missing_embeddings_after(limit, None)
+    }
+
+    /// A mesma fila, retomada **depois** de uma posicao conhecida.
+    ///
+    /// Existe por causa do #952: a reindexacao pula entradas que a politica
+    /// de ruido recusa, e uma entrada pulada **continua** com
+    /// `embedding IS NULL` — ou seja, continua na fila. Sem avancar, o lote
+    /// seguinte devolveria as mesmas linhas para sempre.
+    ///
+    /// A posicao e a **chave** da ultima linha vista (`created_at`, `id`), e
+    /// nao um `OFFSET` numerico. A diferenca importa porque a fila muda
+    /// debaixo do laco: o `memory_retention_worker` do gateway roda em
+    /// paralelo e apaga entradas vencidas. Com `OFFSET`, uma delecao entre
+    /// dois lotes encolhe a fila **antes** do ponteiro e o lote seguinte
+    /// pula uma entrada legitima — que ficaria sem vetor sem ninguem
+    /// perceber, ate a proxima reindexacao manual. Um cursor por chave nao
+    /// se move quando outra linha some, e ainda troca o custo O(offset) do
+    /// `OFFSET` do SQLite por uma comparacao.
+    ///
+    /// A ordenacao inclui `id` de proposito: `created_at` tem granularidade
+    /// de segundo e empata com facilidade, e sob empate a ordem entre duas
+    /// linhas seria indefinida entre uma consulta e a proxima. Com
+    /// `(created_at, id)` a ordem e total, estavel, e a comparacao do cursor
+    /// usa **a mesma** expressao `datetime(created_at)` da ordenacao — se
+    /// usasse outra, o corte e a ordem discordariam nos empates.
+    pub fn entries_missing_embeddings_after(
+        &self,
+        limit: usize,
+        after: Option<(DateTime<Utc>, &str)>,
+    ) -> Result<Vec<MemoryEntry>> {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
@@ -530,13 +561,23 @@ impl MemoryStore {
                    -- que a proxima compactacao apaga e chamada de provider
                    -- paga por trabalho que vai para o lixo (#959).
                    AND (ttl_expires_at IS NULL OR datetime(ttl_expires_at) > datetime('now'))
-                 ORDER BY datetime(created_at) ASC
-                 LIMIT ?",
+                   -- Cursor: NULL na primeira pagina (o ramo `?2 IS NULL`
+                   -- devolve a fila inteira).
+                   AND (?2 IS NULL
+                        OR datetime(created_at) > datetime(?2)
+                        OR (datetime(created_at) = datetime(?2) AND id > ?3))
+                 ORDER BY datetime(created_at) ASC, id ASC
+                 LIMIT ?1",
             )
             .map_err(|e| Error::Database(format!("failed to prepare reindex scan: {e}")))?;
 
+        let (cursor_ts, cursor_id) = match after {
+            Some((ts, id)) => (Some(ts.to_rfc3339()), Some(id.to_string())),
+            None => (None, None),
+        };
+
         let rows = stmt
-            .query_map(params![limit as i64], row_to_entry)
+            .query_map(params![limit as i64, cursor_ts, cursor_id], row_to_entry)
             .map_err(|e| Error::Database(format!("failed to scan entries to reindex: {e}")))?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1743,6 +1784,96 @@ mod tests {
         let fila = store.entries_missing_embeddings(10).expect("fila");
         assert_eq!(fila.len(), 1, "a vencida entrou na fila: {fila:?}");
         assert_eq!(fila[0].content, "vigente");
+    }
+
+    /// O cursor da fila e uma **chave**, nao um `OFFSET` numerico — e a
+    /// diferenca so aparece quando alguem apaga uma linha no meio.
+    ///
+    /// Achado pela auditoria de seguranca do #952: o gateway roda um
+    /// `memory_retention_worker` em paralelo, e o `garra memory reindex`
+    /// pagina a fila. Com `OFFSET`, uma delecao **antes** do ponteiro encolhe
+    /// a fila e a pagina seguinte comeca uma linha adiante — uma entrada
+    /// legitima ficaria sem vetor sem ninguem perceber, ate a proxima
+    /// reindexacao manual. Este teste reproduz exatamente essa corrida.
+    #[tokio::test]
+    async fn cursor_da_fila_sobrevive_a_delecao_concorrente() {
+        let store = MemoryStore::in_memory().expect("store");
+        for i in 0..6 {
+            store
+                .remember(entry(
+                    "s1",
+                    None,
+                    &format!("entrada {i}"),
+                    MemoryRole::User,
+                    None,
+                ))
+                .await
+                .expect("insere");
+        }
+
+        // A ordem da fila e `(datetime(created_at), id)`. Como as seis
+        // nascem no mesmo segundo, quem manda e o `id` (UUID) — entao o
+        // teste pergunta ao banco qual e a ordem em vez de supor.
+        let ordem = store.entries_missing_embeddings(10).expect("ordem");
+        assert_eq!(ordem.len(), 6);
+
+        // Primeira pagina: duas entradas.
+        let pagina1 = store.entries_missing_embeddings(2).expect("pagina 1");
+        assert_eq!(pagina1.len(), 2);
+        let ultima = pagina1.last().expect("ultima");
+        let cursor = (ultima.created_at, ultima.id.clone());
+
+        // A retencao apaga uma entrada JA VISTA, atras do cursor. Com
+        // `OFFSET 2` a fila teria encolhido e a pagina 2 comecaria uma linha
+        // adiante, pulando `ordem[2]` para sempre.
+        assert!(store.delete_entry(&pagina1[0].id).expect("apaga"));
+
+        let pagina2 = store
+            .entries_missing_embeddings_after(2, Some((cursor.0, cursor.1.as_str())))
+            .expect("pagina 2");
+        assert_eq!(pagina2.len(), 2);
+        assert_eq!(
+            pagina2[0].id, ordem[2].id,
+            "a delecao atras do cursor deslocou a pagina e pulou uma entrada"
+        );
+        assert_eq!(pagina2[1].id, ordem[3].id);
+    }
+
+    /// A fila e percorrida ate o fim sem repetir nem pular, mesmo com o lote
+    /// menor que o total e com `created_at` empatado no segundo — que e o
+    /// caso normal, ja que varias entradas nascem no mesmo segundo.
+    #[tokio::test]
+    async fn cursor_percorre_a_fila_inteira_sem_repetir_nem_pular() {
+        let store = MemoryStore::in_memory().expect("store");
+        for i in 0..7 {
+            store
+                .remember(entry(
+                    "s1",
+                    None,
+                    &format!("entrada {i}"),
+                    MemoryRole::User,
+                    None,
+                ))
+                .await
+                .expect("insere");
+        }
+
+        let mut vistas: Vec<String> = Vec::new();
+        let mut cursor: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+        loop {
+            let lote = store
+                .entries_missing_embeddings_after(3, cursor.as_ref().map(|(t, i)| (*t, i.as_str())))
+                .expect("lote");
+            let Some(ultima) = lote.last() else { break };
+            cursor = Some((ultima.created_at, ultima.id.clone()));
+            vistas.extend(lote.iter().map(|e| e.content.clone()));
+        }
+
+        assert_eq!(vistas.len(), 7, "repetiu ou pulou: {vistas:?}");
+        let mut unicas = vistas.clone();
+        unicas.sort();
+        unicas.dedup();
+        assert_eq!(unicas.len(), 7, "houve repeticao: {vistas:?}");
     }
 
     #[tokio::test]
