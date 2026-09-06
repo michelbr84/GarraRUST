@@ -377,6 +377,25 @@ enum MemoryCommands {
         json: bool,
     },
 
+    /// Snapshot the memory database, consistently, with retention (#955).
+    ///
+    /// Uses SQLite's `VACUUM INTO`, not `cp`: the database runs in WAL mode,
+    /// so a file copy misses transactions still in the `-wal` and produces a
+    /// backup that looks fine and is incomplete.
+    Backup {
+        /// Where to write. Defaults to `<data_dir>/backups`.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<std::path::PathBuf>,
+
+        /// Delete our own older backups after writing the new one.
+        /// Omit to keep every backup forever.
+        #[arg(long, value_name = "DAYS")]
+        keep_days: Option<i64>,
+
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Pin an entry so retention never deletes it (#959).
     Pin {
         id: String,
@@ -1896,6 +1915,11 @@ async fn async_main(
                     dry_run,
                     json,
                 } => memory_cmd::run_reindex(&config, limit, batch_size, dry_run, json).await?,
+                MemoryCommands::Backup {
+                    dir,
+                    keep_days,
+                    json,
+                } => memory_cmd::run_backup(&config, dir, keep_days, json).await?,
                 MemoryCommands::Pin { id, unpin } => {
                     memory_cmd::run_pin(&config, id, unpin).await?
                 }
