@@ -32,6 +32,15 @@ pub struct MemoryEntry {
     pub embedding_dimensions: Option<usize>,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
+    /// Prazo de validade (#959). Passado esse instante a entrada some do
+    /// recall — mesmo antes de a compactacao rodar — e a proxima compactacao
+    /// a apaga. `None` = sem prazo.
+    #[serde(default)]
+    pub ttl_expires_at: Option<DateTime<Utc>>,
+    /// Quando foi fixada (#959). Entrada fixada **nunca** e apagada pela
+    /// compactacao, por mais antiga que fique. `None` = nao fixada.
+    #[serde(default)]
+    pub pinned_at: Option<DateTime<Utc>>,
 }
 
 /// Insert shape for new memory records before persistence assigns ID/timestamps.
@@ -124,6 +133,11 @@ pub struct IntegrityReport {
     /// este contador é o único sinal que o operador tem. Zera com reindex
     /// (#953).
     pub entries_missing_model: usize,
+    /// Entradas fixadas — as que a compactacao nunca apaga (#959).
+    pub entries_pinned: usize,
+    /// Entradas com prazo ja vencido. Elas ja nao aparecem no recall; ficam
+    /// no banco ate a proxima compactacao (#959).
+    pub entries_expired: usize,
     /// Linhas em `vec_id_map`.
     pub map_rows: usize,
     /// `(tabela, linhas)` por tabela `vec_embeddings_*` existente.
@@ -157,6 +171,21 @@ pub trait MemoryProvider: Send + Sync {
     async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport>;
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize>;
 }
+
+/// A condicao de compactacao (#959), escrita **inteira** nas duas sentencas.
+///
+/// Nao ha `format!` montando SQL aqui de proposito (regra absoluta 5): as duas
+/// sao literais estaticas e o unico valor vai por bind. O preco e a repeticao
+/// da clausula, e o `where_clauses_stay_in_sync` cobra que ela seja identica
+/// nas duas — se divergirem, o DELETE apaga linha que o SELECT nao listou e o
+/// vetor dela fica orfao no indice.
+const COMPACT_SELECT_SQL: &str = "SELECT id FROM memory_entries WHERE pinned_at IS NULL \
+     AND (datetime(created_at) < datetime(?1) \
+          OR (ttl_expires_at IS NOT NULL AND datetime(ttl_expires_at) <= datetime('now')))";
+
+const COMPACT_DELETE_SQL: &str = "DELETE FROM memory_entries WHERE pinned_at IS NULL \
+     AND (datetime(created_at) < datetime(?1) \
+          OR (ttl_expires_at IS NOT NULL AND datetime(ttl_expires_at) <= datetime('now')))";
 
 /// Backing store for long-term and session-scoped memory data.
 pub struct MemoryStore {
@@ -240,7 +269,14 @@ impl MemoryStore {
     /// tabelas `vec_embeddings_*` (#960). Não conserta nada — conta e nomeia
     /// divergências para o operador (e para a CLI `garra memory stats`).
     pub fn integrity_report(&self) -> Result<IntegrityReport> {
-        let (entries_total, entries_with_embedding, entries_missing_model, live_ids) = {
+        let (
+            entries_total,
+            entries_with_embedding,
+            entries_missing_model,
+            entries_pinned,
+            entries_expired,
+            live_ids,
+        ) = {
             let conn = self.connection()?;
             let total: i64 = conn
                 .query_row("SELECT count(*) FROM memory_entries", [], |row| row.get(0))
@@ -262,6 +298,22 @@ impl MemoryStore {
                 .map_err(|e| {
                     Error::Database(format!("failed to count entries missing model: {e}"))
                 })?;
+            let pinned: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM memory_entries WHERE pinned_at IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| Error::Database(format!("failed to count pinned entries: {e}")))?;
+            let expired: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM memory_entries
+                     WHERE ttl_expires_at IS NOT NULL
+                       AND datetime(ttl_expires_at) <= datetime('now')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| Error::Database(format!("failed to count expired entries: {e}")))?;
             let mut stmt = conn
                 .prepare("SELECT id FROM memory_entries")
                 .map_err(|e| Error::Database(format!("failed to prepare id scan: {e}")))?;
@@ -274,6 +326,8 @@ impl MemoryStore {
                 total as usize,
                 with_embedding as usize,
                 missing_model as usize,
+                pinned as usize,
+                expired as usize,
                 ids,
             )
         };
@@ -293,6 +347,8 @@ impl MemoryStore {
             entries_with_embedding,
             entries_without_embedding: entries_total - entries_with_embedding,
             entries_missing_model,
+            entries_pinned,
+            entries_expired,
             map_rows,
             vec_rows_by_table,
             orphan_map_entries,
@@ -307,6 +363,21 @@ impl MemoryStore {
         let _ = conn.execute_batch(
             "ALTER TABLE memory_entries ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';",
         );
+
+        // Colunas de retencao (#959) num banco que ja existia. Mesmo padrao do
+        // `tenant_id` acima, e pela mesma razao: o SQLite nao tem
+        // `ADD COLUMN IF NOT EXISTS`, entao a segunda execucao devolve
+        // "duplicate column name" — que aqui e sucesso, nao falha.
+        //
+        // **Antes** do `execute_batch` abaixo, nao depois: o schema V1 cria um
+        // indice sobre `ttl_expires_at`, e num banco que ja existe o
+        // `CREATE TABLE IF NOT EXISTS` e no-op — a coluna so aparece por este
+        // `ALTER`. Invertida, a ordem quebrava toda instalacao existente na
+        // atualizacao, com `no such column: ttl_expires_at`. Coberto por
+        // `banco_antigo_ganha_as_colunas_de_retencao_na_abertura`.
+        for sql in crate::migrations::MEMORY_RETENTION_COLUMNS {
+            let _ = conn.execute_batch(sql);
+        }
 
         conn.execute_batch(MEMORY_SCHEMA_V1.sql)
             .map_err(|e| Error::Database(format!("memory migration failed: {e}")))?;
@@ -348,6 +419,16 @@ impl MemoryStore {
         self.recent_entries_sync(None, Some(continuity_key), limit)
     }
 
+    /// Apaga o que passou do prazo ou ficou velho demais.
+    ///
+    /// Duas condicoes, unidas por `OR` (#959):
+    ///
+    /// - **vencida** — `ttl_expires_at` no passado, por mais nova que seja;
+    /// - **velha** — criada antes de `before`.
+    ///
+    /// E uma excecao que vence as duas: **entrada fixada nunca e apagada**.
+    /// E para isso que o pin existe — proteger o que importa de uma politica
+    /// de retencao que nao sabe o que importa.
     pub async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport> {
         // Coletar os ids ANTES de deletar (são eles que limpam o índice
         // vetorial, #960) e SOB O MESMO guard do DELETE: soltar o mutex entre
@@ -357,7 +438,7 @@ impl MemoryStore {
         let (doomed, deleted) = {
             let conn = self.connection()?;
             let mut stmt = conn
-                .prepare("SELECT id FROM memory_entries WHERE datetime(created_at) < datetime(?)")
+                .prepare(COMPACT_SELECT_SQL)
                 .map_err(|e| Error::Database(format!("failed to prepare compact scan: {e}")))?;
             let ids: Vec<String> = stmt
                 .query_map(params![before.to_rfc3339()], |row| row.get(0))
@@ -367,10 +448,7 @@ impl MemoryStore {
             drop(stmt);
 
             let deleted = conn
-                .execute(
-                    "DELETE FROM memory_entries WHERE datetime(created_at) < datetime(?)",
-                    params![before.to_rfc3339()],
-                )
+                .execute(COMPACT_DELETE_SQL, params![before.to_rfc3339()])
                 .map_err(|e| Error::Database(format!("failed to compact memory entries: {e}")))?;
             (ids, deleted)
         };
@@ -445,9 +523,13 @@ impl MemoryStore {
             .prepare(
                 "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role,
                         content, embedding, embedding_model, embedding_dimensions, metadata,
-                        created_at
+                        created_at, ttl_expires_at, pinned_at
                  FROM memory_entries
                  WHERE embedding IS NULL
+                   -- Vencida nao entra na fila: gerar vetor para uma entrada
+                   -- que a proxima compactacao apaga e chamada de provider
+                   -- paga por trabalho que vai para o lixo (#959).
+                   AND (ttl_expires_at IS NULL OR datetime(ttl_expires_at) > datetime('now'))
                  ORDER BY datetime(created_at) ASC
                  LIMIT ?",
             )
@@ -566,6 +648,9 @@ impl MemoryStore {
                 .prepare(
                     "SELECT id FROM memory_entries
                      WHERE embedding IS NOT NULL
+                       -- Mesma razao do `entries_missing_embeddings`: nao
+                       -- devolver ao indice o vetor de uma entrada vencida.
+                       AND (ttl_expires_at IS NULL OR datetime(ttl_expires_at) > datetime('now'))
                      ORDER BY datetime(created_at) ASC",
                 )
                 .map_err(|e| Error::Database(format!("failed to prepare index repair: {e}")))?;
@@ -673,6 +758,44 @@ impl MemoryStore {
     /// Entradas mais recentes, sem filtro de sessão — o que a CLI lista.
     pub fn recent_entries(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
         self.query_candidates_with_tenant_sync(None, None, None, None, limit)
+    }
+
+    /// Define (ou remove, com `None`) o prazo de validade de uma entrada.
+    ///
+    /// Devolve `false` se o id nao existe. Um prazo no passado nao apaga a
+    /// entrada na hora: ela some do recall imediatamente e a proxima
+    /// compactacao a remove — a separacao entre "invisivel" e "apagada" e o
+    /// que torna o TTL reversivel enquanto o `compact` nao roda.
+    pub fn set_ttl(&self, id: &str, expires_at: Option<DateTime<Utc>>) -> Result<bool> {
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE memory_entries SET ttl_expires_at = ? WHERE id = ?",
+                params![expires_at.map(|t| t.to_rfc3339()), id],
+            )
+            .map_err(|e| Error::Database(format!("failed to set ttl: {e}")))?;
+        Ok(updated > 0)
+    }
+
+    /// Fixa (ou solta) uma entrada. Fixada nunca e apagada pela **compactacao**.
+    ///
+    /// O alcance do pin e exatamente esse, e vale ser explicito sobre o que
+    /// ele **nao** cobre: [`Self::delete_entry`] e
+    /// [`Self::delete_session_memory`] apagam entrada fixada sem perguntar.
+    /// Sao deleoes que alguem pediu nominalmente — o pin protege da politica
+    /// automatica, que apaga sem saber o que esta apagando, nao da mao do
+    /// operador.
+    ///
+    /// Devolve `false` se o id nao existe.
+    pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<bool> {
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE memory_entries SET pinned_at = ? WHERE id = ?",
+                params![pinned.then(|| Utc::now().to_rfc3339()), id],
+            )
+            .map_err(|e| Error::Database(format!("failed to set pin: {e}")))?;
+        Ok(updated > 0)
     }
 
     /// Apaga uma entrada pelo id, junto do vetor e do mapeamento.
@@ -892,13 +1015,20 @@ impl MemoryStore {
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role, content,
-                    embedding, embedding_model, embedding_dimensions, metadata, created_at
+                    embedding, embedding_model, embedding_dimensions, metadata, created_at,
+                    ttl_expires_at, pinned_at
              FROM memory_entries
              WHERE id IN ({placeholders})
                AND (? IS NULL OR tenant_id = ?)
                AND (? IS NULL OR session_id = ?)
                AND (? IS NULL OR continuity_key = ?)
-               AND (? IS NULL OR embedding_model = ?)"
+               AND (? IS NULL OR embedding_model = ?)
+               -- Expirada nao volta pelo caminho KNN tambem (#959). O indice
+               -- vec0 nao conhece prazo — so distancia —, entao sem esta linha
+               -- uma entrada vencida voltaria pelo KNN enquanto o caminho SQL
+               -- a filtrava. E a mesma classe de furo que o #971 fechou para
+               -- tenant.
+               AND (ttl_expires_at IS NULL OR datetime(ttl_expires_at) > datetime('now'))"
         );
 
         let mut stmt = conn
@@ -967,12 +1097,16 @@ impl MemoryStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role, content,
-                        embedding, embedding_model, embedding_dimensions, metadata, created_at
+                        embedding, embedding_model, embedding_dimensions, metadata, created_at,
+                        ttl_expires_at, pinned_at
                  FROM memory_entries
                  WHERE (?1 IS NULL OR tenant_id = ?1)
                    AND (?2 IS NULL OR session_id = ?2)
                    AND (?3 IS NULL OR continuity_key = ?3)
                    AND (?4 IS NULL OR lower(content) LIKE '%' || lower(?4) || '%')
+                   -- Entrada vencida sai do recall na hora, sem esperar a
+                   -- compactacao rodar (#959).
+                   AND (ttl_expires_at IS NULL OR datetime(ttl_expires_at) > datetime('now'))
                  ORDER BY datetime(created_at) DESC
                  LIMIT ?5",
             )
@@ -1051,6 +1185,19 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
         rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e.to_string())))
     })?;
 
+    // Um timestamp ilegivel nestas duas colunas nao derruba a leitura da
+    // entrada — recusar a linha inteira tiraria o conteudo da vista do
+    // operador por causa de uma coluna auxiliar. Vira `None` e sai um `warn!`.
+    //
+    // Sobre o pin, vale ser exato: **a protecao nao depende deste parse**. A
+    // compactacao filtra por `pinned_at IS NULL` no SQL, e uma string
+    // ilegivel nao e NULL — a entrada continua protegida. O que o `None` aqui
+    // causa e so a CLI mostrar como nao-fixada uma entrada que esta fixada, e
+    // e essa discrepancia que o aviso denuncia.
+    let id_para_aviso: String = row.get(0)?;
+    let ttl_expires_at = parse_optional_timestamp(row.get(13)?, "ttl_expires_at", &id_para_aviso);
+    let pinned_at = parse_optional_timestamp(row.get(14)?, "pinned_at", &id_para_aviso);
+
     Ok(MemoryEntry {
         id: row.get(0)?,
         tenant_id: row.get(1)?,
@@ -1065,7 +1212,34 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
         embedding_dimensions: row.get::<_, Option<i64>>(10)?.map(|d| d as usize),
         metadata,
         created_at,
+        ttl_expires_at,
+        pinned_at,
     })
+}
+
+/// Le um timestamp opcional, avisando quando a coluna existe e nao parseia.
+///
+/// O aviso carrega o id da entrada e o nome da coluna — nunca o conteudo dela
+/// (regra absoluta 6). O id e o unico jeito de o operador achar a linha para
+/// consertar.
+fn parse_optional_timestamp(
+    raw: Option<String>,
+    coluna: &str,
+    entry_id: &str,
+) -> Option<DateTime<Utc>> {
+    let raw = raw?;
+    match parse_timestamp(&raw) {
+        Ok(ts) => Some(ts),
+        Err(_) => {
+            tracing::warn!(
+                entry_id,
+                coluna,
+                "coluna de retencao com timestamp ilegivel; tratada como ausente na leitura \
+                 (a protecao do pin, que e feita em SQL, nao depende deste parse)"
+            );
+            None
+        }
+    }
 }
 
 fn clamp_limit(limit: usize) -> usize {
@@ -1307,6 +1481,309 @@ mod tests {
         assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 2);
         assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 1);
         assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 0);
+    }
+
+    /// As duas sentencas da compactacao precisam ter a MESMA clausula: se
+    /// divergirem, o DELETE apaga linha que o SELECT nao listou e o vetor
+    /// dela fica orfao no indice — o achado M1 da auditoria, na outra
+    /// direcao.
+    #[test]
+    fn compact_where_clauses_stay_in_sync() {
+        let select = super::COMPACT_SELECT_SQL
+            .split_once("WHERE ")
+            .expect("SELECT tem WHERE")
+            .1;
+        let delete = super::COMPACT_DELETE_SQL
+            .split_once("WHERE ")
+            .expect("DELETE tem WHERE")
+            .1;
+        assert_eq!(select, delete);
+    }
+
+    /// Fixar protege da compactacao — e e para isso que o pin existe.
+    #[tokio::test]
+    async fn compact_nunca_apaga_entrada_fixada() {
+        let store = MemoryStore::in_memory().expect("store");
+        let fixada = store
+            .remember(entry("s1", None, "importante", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        store
+            .remember(entry("s1", None, "descartavel", MemoryRole::User, None))
+            .await
+            .expect("insere");
+
+        assert!(store.set_pinned(&fixada, true).expect("fixa"));
+
+        // Corte no futuro: sem o pin, as duas iriam embora.
+        let report = store
+            .compact(Utc::now() + Duration::seconds(5))
+            .await
+            .expect("compact");
+
+        assert_eq!(report.deleted_entries, 1);
+        let restantes = store.recent_entries(10).expect("lista");
+        assert_eq!(restantes.len(), 1);
+        assert_eq!(restantes[0].id, fixada);
+        assert!(restantes[0].pinned_at.is_some());
+    }
+
+    /// Soltar o pin devolve a entrada a politica de retencao.
+    #[tokio::test]
+    async fn soltar_o_pin_devolve_a_entrada_a_compactacao() {
+        let store = MemoryStore::in_memory().expect("store");
+        let id = store
+            .remember(entry("s1", None, "temporaria", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        assert!(store.set_pinned(&id, true).expect("fixa"));
+        assert!(store.set_pinned(&id, false).expect("solta"));
+
+        let report = store
+            .compact(Utc::now() + Duration::seconds(5))
+            .await
+            .expect("compact");
+        assert_eq!(report.deleted_entries, 1);
+    }
+
+    /// Entrada vencida sai do recall **na hora**, sem esperar a compactacao —
+    /// e sai tanto pelo caminho textual quanto pelo KNN.
+    #[tokio::test]
+    async fn entrada_vencida_some_do_recall_antes_de_ser_apagada() {
+        let store = MemoryStore::in_memory_with_vectors().expect("store com vetores");
+        assert!(store.knn_enabled());
+
+        let vencida = store
+            .remember(entry(
+                "s1",
+                None,
+                "segredo vencido",
+                MemoryRole::User,
+                Some(vec![0.1, 0.2, 0.3, 0.4]),
+            ))
+            .await
+            .expect("insere");
+        store
+            .remember(entry(
+                "s1",
+                None,
+                "segredo vigente",
+                MemoryRole::User,
+                Some(vec![0.1, 0.2, 0.3, 0.41]),
+            ))
+            .await
+            .expect("insere");
+
+        assert!(
+            store
+                .set_ttl(&vencida, Some(Utc::now() - Duration::hours(1)))
+                .expect("define prazo")
+        );
+
+        // Caminho KNN: o indice vec0 nao conhece prazo, entao a filtragem tem
+        // de estar no fetch dos candidatos.
+        let semantico = store
+            .recall(RecallQuery {
+                tenant_id: None,
+                query_text: None,
+                query_embedding: Some(vec![0.1, 0.2, 0.3, 0.4]),
+                embedding_model: Some("unit-test".to_string()),
+                session_id: None,
+                continuity_key: None,
+                limit: 10,
+            })
+            .await
+            .expect("recall");
+        assert!(
+            semantico.iter().all(|e| e.id != vencida),
+            "entrada vencida voltou pelo KNN"
+        );
+
+        // Caminho textual.
+        let textual = store
+            .recall(RecallQuery {
+                tenant_id: None,
+                query_text: Some("segredo".to_string()),
+                query_embedding: None,
+                embedding_model: None,
+                session_id: None,
+                continuity_key: None,
+                limit: 10,
+            })
+            .await
+            .expect("recall");
+        assert!(
+            textual.iter().all(|e| e.id != vencida),
+            "entrada vencida voltou pelo caminho textual"
+        );
+
+        // Ainda esta no banco — invisivel nao e apagada.
+        let report = store.integrity_report().expect("report");
+        assert_eq!(report.entries_total, 2);
+        assert_eq!(report.entries_expired, 1);
+    }
+
+    /// A compactacao apaga a vencida mesmo que ela seja novissima.
+    #[tokio::test]
+    async fn compact_apaga_vencida_por_mais_nova_que_seja() {
+        let store = MemoryStore::in_memory().expect("store");
+        let vencida = store
+            .remember(entry("s1", None, "vencida", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        store
+            .remember(entry("s1", None, "vigente", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        assert!(
+            store
+                .set_ttl(&vencida, Some(Utc::now() - Duration::seconds(1)))
+                .expect("define prazo")
+        );
+
+        // Corte no passado: pela idade, nenhuma das duas sairia.
+        let report = store
+            .compact(Utc::now() - Duration::days(365))
+            .await
+            .expect("compact");
+
+        assert_eq!(report.deleted_entries, 1);
+        let restantes = store.recent_entries(10).expect("lista");
+        assert_eq!(restantes.len(), 1);
+        assert_eq!(restantes[0].content, "vigente");
+    }
+
+    /// Prazo futuro nao esconde nada, e limpar o prazo e reversivel.
+    #[tokio::test]
+    async fn prazo_futuro_nao_esconde_e_limpar_reverte() {
+        let store = MemoryStore::in_memory().expect("store");
+        let id = store
+            .remember(entry("s1", None, "viva", MemoryRole::User, None))
+            .await
+            .expect("insere");
+
+        assert!(
+            store
+                .set_ttl(&id, Some(Utc::now() + Duration::days(30)))
+                .expect("prazo futuro")
+        );
+        assert_eq!(store.recent_entries(10).expect("lista").len(), 1);
+        assert_eq!(store.integrity_report().expect("report").entries_expired, 0);
+
+        assert!(
+            store
+                .set_ttl(&id, Some(Utc::now() - Duration::seconds(1)))
+                .expect("prazo passado")
+        );
+        assert_eq!(store.integrity_report().expect("report").entries_expired, 1);
+
+        assert!(store.set_ttl(&id, None).expect("limpa o prazo"));
+        assert_eq!(store.integrity_report().expect("report").entries_expired, 0);
+    }
+
+    /// Entrada vencida nao entra na fila de reindexacao: gerar vetor para o
+    /// que a proxima compactacao apaga e pagar chamada de provider por
+    /// trabalho que vai para o lixo.
+    #[tokio::test]
+    async fn vencida_fica_fora_da_fila_de_reindexacao() {
+        let store = MemoryStore::in_memory().expect("store");
+        let vencida = store
+            .remember(entry("s1", None, "vencida", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        store
+            .remember(entry("s1", None, "vigente", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        assert!(
+            store
+                .set_ttl(&vencida, Some(Utc::now() - Duration::seconds(1)))
+                .expect("prazo")
+        );
+
+        let fila = store.entries_missing_embeddings(10).expect("fila");
+        assert_eq!(fila.len(), 1, "a vencida entrou na fila: {fila:?}");
+        assert_eq!(fila[0].content, "vigente");
+    }
+
+    #[tokio::test]
+    async fn set_ttl_e_set_pinned_devolvem_false_para_id_inexistente() {
+        let store = MemoryStore::in_memory().expect("store");
+        assert!(!store.set_ttl("nao-existe", None).expect("set_ttl"));
+        assert!(!store.set_pinned("nao-existe", true).expect("set_pinned"));
+    }
+
+    /// Um banco criado por uma versao anterior — sem `ttl_expires_at` nem
+    /// `pinned_at` — tem de abrir e ganhar as colunas.
+    ///
+    /// Regressao real, achada num teste fim a fim e invisivel para os testes
+    /// em memoria (que sempre criam banco novo, onde o `CREATE TABLE` ja traz
+    /// as colunas): o schema V1 cria um indice sobre `ttl_expires_at`, e num
+    /// banco existente o `CREATE TABLE IF NOT EXISTS` e no-op. Com os `ALTER`
+    /// rodando depois do batch, toda instalacao existente quebrava na
+    /// atualizacao com `no such column: ttl_expires_at`.
+    #[test]
+    fn banco_antigo_ganha_as_colunas_de_retencao_na_abertura() {
+        let dir = std::env::temp_dir().join(format!(
+            "garraia-memory-upgrade-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relogio")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("cria dir");
+        let db = dir.join("memory.db");
+
+        // Schema de antes do #959, escrito a mao: e a unica forma de afirmar
+        // o caminho de atualizacao sem guardar um arquivo binario no repo.
+        {
+            let conn = rusqlite::Connection::open(&db).expect("cria banco antigo");
+            conn.execute_batch(
+                "CREATE TABLE memory_entries (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    session_id TEXT NOT NULL,
+                    channel_id TEXT,
+                    user_id TEXT,
+                    continuity_key TEXT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    embedding BLOB,
+                    embedding_model TEXT,
+                    embedding_dimensions INTEGER,
+                    metadata TEXT DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .expect("schema antigo");
+            conn.execute(
+                "INSERT INTO memory_entries (id, tenant_id, session_id, role, content, created_at)
+                 VALUES ('legado', 'default', 's1', 'user', 'memoria de antes', datetime('now'))",
+                [],
+            )
+            .expect("linha legada");
+        }
+
+        let store = MemoryStore::open(&db).expect("abrir banco antigo nao pode falhar");
+
+        // A linha antiga sobreviveu, e as colunas novas existem e sao nulas.
+        let entradas = store.recent_entries(10).expect("lista");
+        assert_eq!(entradas.len(), 1);
+        assert_eq!(entradas[0].content, "memoria de antes");
+        assert!(entradas[0].ttl_expires_at.is_none());
+        assert!(entradas[0].pinned_at.is_none());
+
+        // E as colunas sao utilizaveis.
+        assert!(store.set_pinned("legado", true).expect("fixa"));
+        assert_eq!(store.integrity_report().expect("report").entries_pinned, 1);
+
+        // Reabrir de novo tambem tem de funcionar (o ALTER ja rodou).
+        drop(store);
+        let store = MemoryStore::open(&db).expect("segunda abertura");
+        assert_eq!(store.integrity_report().expect("report").entries_total, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

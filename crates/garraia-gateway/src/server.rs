@@ -521,6 +521,42 @@ impl GatewayServer {
             debug!("uploads_expiration_worker skipped (no AppPool wired)");
         }
 
+        // Retencao da memoria do agente (#956): o `compact()` existia e nunca
+        // rodava em producao — a memoria crescia sem teto e o recall degradava
+        // com ela. A varredura nasce DESLIGADA de proposito; quando esta
+        // assim, o boot diz uma vez quantas entradas existem e como ligar, para
+        // o operador ter o sinal sem pagar com dado apagado numa atualizacao.
+        if let Some(memory) = state.agents.memory_provider() {
+            match crate::memory_retention_worker::MemoryRetentionConfig::from_app_config(
+                &state.config,
+            ) {
+                Some(retention) => {
+                    let horas = retention.interval.as_secs() / 3600;
+                    let dias = retention.max_age_days;
+                    let plural_dias = if dias == 1 { "dia" } else { "dias" };
+                    let plural_horas = if horas == 1 { "hora" } else { "horas" };
+                    let handle = crate::memory_retention_worker::spawn_memory_retention_worker(
+                        memory, retention,
+                    );
+                    // Detach: a varredura vive enquanto o processo viver, como
+                    // o worker de uploads do plan 0047.
+                    std::mem::forget(handle);
+                    info!(
+                        "memory_retention_worker spawned: apaga entradas nao-fixadas com mais \
+                         de {dias} {plural_dias}, a cada {horas} {plural_horas}"
+                    );
+                }
+                None if state.config.memory.enabled => {
+                    info!(
+                        "retencao da memoria desligada (memory.retention.enabled=false): a \
+                         memoria cresce sem teto. Ligue em config.yml ou rode \
+                         `garra memory compact` quando quiser."
+                    );
+                }
+                None => {}
+            }
+        }
+
         // Start config hot-reload watcher
         let config_path = garraia_config::ConfigLoader::default_config_dir().join("config.yml");
 
