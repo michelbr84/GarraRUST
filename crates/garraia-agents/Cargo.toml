@@ -38,6 +38,14 @@ mcp-http = ["mcp", "rmcp?/transport-streamable-http-client-reqwest"]
 dev-echo-provider = []
 
 [dev-dependencies]
+# #957: so para os testes de metrica. O `DebuggingRecorder` + `with_local_recorder`
+# instalam um recorder **thread-local**, o que permite afirmar que o runtime
+# emitiu de fato — sem tocar no recorder global, que so pode ser instalado uma
+# vez por processo e quebraria testes em paralelo.
+metrics-util = { version = "0.20", features = ["debugging"] }
+# O facade, para o teste poder instalar o recorder local. Em codigo de
+# producao este crate emite via `garraia_common::metrics`, nao direto.
+metrics = { workspace = true }
 tempfile = "3"
 axum = { workspace = true }
 tokio-stream = { workspace = true }

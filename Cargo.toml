@@ -61,6 +61,10 @@ clap = { version = "4", features = ["derive", "env"] }
 # Logging / Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Facade de metricas (#957). Mesma versao que o `garraia-telemetry` ja usa —
+# duas versoes do facade na arvore dariam dois recorders globais, e o que o
+# gateway instala nao veria o que o agents emite.
+metrics = "0.24"
 
 # Error handling
 thiserror = "2"

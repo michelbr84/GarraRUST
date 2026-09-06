@@ -196,6 +196,55 @@ garraia_telemetry::inc_errors(kind);
 garraia_telemetry::set_active_sessions(n);
 ```
 
+### 6.0 Memory metrics (#957)
+
+Four more, emitted by the agent runtime whenever the memory system is in use:
+
+| Metric | Type | Description |
+|---|---|---|
+| `garraia_memory_embed_latency_seconds{provider, operation}` | histogram | Time spent inside the embeddings provider. `operation` is `document` (ingestion, batched) or `query` (recall, on the critical path) |
+| `garraia_memory_embed_failures_total{provider, operation}` | counter | Embedding calls that failed |
+| `garraia_memory_recall_latency_seconds` | histogram | Whole recall — query embedding **plus** the search |
+| `garraia_memory_ingested_total{outcome}` | counter | Turns ingested, by outcome: `embedded`, `noise`, `no_provider`, `failed` |
+
+**The one to alert on** is `garraia_memory_embed_failures_total`. Issue #948
+described embedding failure as *silent*: the entry was stored without a vector
+and became invisible to semantic search forever. #948 made it loud in the log;
+this makes it visible as a trend — and it is the trend that lets someone notice
+the provider went down *before* recall degrades.
+
+**`no_provider` and `failed` are deliberately different outcomes.** They are the
+difference between "nobody configured embeddings" and "it is configured and
+broken", which is the first question an operator asks. `noise` exists because of
+the ingestion filter (#952): without it, the count of entries without a vector
+would climb and nobody could tell defect from policy.
+
+Useful queries:
+
+```promql
+# Falha de embedding por minuto, por provider
+rate(garraia_memory_embed_failures_total[5m])
+
+# p95 do recall (o que o usuario espera)
+histogram_quantile(0.95, rate(garraia_memory_recall_latency_seconds_bucket[5m]))
+
+# Fracao dos turnos que o filtro de ruido descartou
+rate(garraia_memory_ingested_total{outcome="noise"}[1h])
+  / ignoring(outcome) group_left sum without(outcome) (rate(garraia_memory_ingested_total[1h]))
+```
+
+Unlike the four baseline metrics, these are emitted through
+`garraia_common::metrics`, not `garraia_telemetry` — the crates that emit them
+(`garraia-agents`) are linked by the CLI, which must not pull in the
+OpenTelemetry/OTLP/axum stack. They use the `metrics` facade directly: library
+emits, binary installs the recorder. In the CLI, where no recorder is
+installed, every call is a cheap no-op.
+
+Every label comes from a **closed set** — `provider` is a provider id,
+`operation` and `outcome` are enums rendered as `&'static str`. There is no path
+by which a session id, a user id or memory content reaches a label; a test
+asserts exactly that.
+
 The `/metrics` endpoint binds to `127.0.0.1` only by default. To expose it to a remote Prometheus scraper, set `GARRAIA_METRICS_BIND` explicitly (e.g., `0.0.0.0:9464`) **and** configure either `GARRAIA_METRICS_TOKEN` or `GARRAIA_METRICS_ALLOW` per §6.1 below. Without one of those the dedicated listener refuses to spawn (fail-closed startup) and the embedded route returns `503` for every non-loopback caller.
 
 ## 6.1 Security (plan 0024 / GAR-412)

@@ -1,6 +1,7 @@
 pub mod error;
 pub mod handoff;
 pub mod message;
+pub mod metrics;
 pub mod safety_gate;
 #[cfg(feature = "ssrf")]
 pub mod ssrf;
@@ -11,6 +12,7 @@ pub use handoff::{
     HandoffAction, HandoffActionKind, HandoffError, HandoffState, RedactedString, redact,
 };
 pub use message::{Message, MessageContent, MessageDirection};
+pub use metrics::{EmbedOp, IngestOutcome};
 pub use safety_gate::{SafetyDenied, is_risky, safety_gate};
 #[cfg(feature = "ssrf")]
 pub use ssrf::{
