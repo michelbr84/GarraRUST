@@ -142,18 +142,24 @@ impl VectorStore {
             return Ok(());
         }
 
-        let conn = self.connection()?;
+        let mut conn = self.connection()?;
         let table_name = format!("vec_embeddings_{dimensions}");
         let blob = embedding_to_blob(embedding);
 
-        // Upsert into the ID mapping table
-        conn.execute(
+        // Transação: sem ela, um vetor recusado pelo vec0 (dimensão divergente,
+        // #961) deixaria o mapeamento já gravado para trás — órfão instantâneo
+        // no `vec_id_map`, exatamente o que o #960 cobra.
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::Database(format!("failed to begin vec insert tx: {e}")))?;
+
+        tx.execute(
             "INSERT OR IGNORE INTO vec_id_map (entry_id) VALUES (?)",
             params![id],
         )
         .map_err(|e| Error::Database(format!("failed to insert vec id mapping: {e}")))?;
 
-        let rowid: i64 = conn
+        let rowid: i64 = tx
             .query_row(
                 "SELECT rowid FROM vec_id_map WHERE entry_id = ?",
                 params![id],
@@ -161,11 +167,14 @@ impl VectorStore {
             )
             .map_err(|e| Error::Database(format!("failed to get vec rowid: {e}")))?;
 
-        conn.execute(
+        tx.execute(
             &format!("INSERT OR REPLACE INTO [{table_name}] (rowid, embedding) VALUES (?, ?)"),
             params![rowid, blob],
         )
         .map_err(|e| Error::Database(format!("failed to insert vec embedding: {e}")))?;
+
+        tx.commit()
+            .map_err(|e| Error::Database(format!("failed to commit vec insert tx: {e}")))?;
 
         Ok(())
     }
@@ -181,20 +190,26 @@ impl VectorStore {
             return Ok(0);
         }
 
-        let conn = self.connection()?;
+        let mut conn = self.connection()?;
+        // Transação: as N tabelas dimensionais e o vec_id_map mudam juntos —
+        // falhar no meio deixaria vetor sem mapeamento, invisível até para o
+        // integrity_report (achado L3 da auditoria).
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::Database(format!("failed to begin vec delete tx: {e}")))?;
 
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT rowid FROM vec_id_map WHERE entry_id IN ({placeholders})"
-            ))
-            .map_err(|e| Error::Database(format!("failed to prepare vec rowid lookup: {e}")))?;
-        let rowids: Vec<i64> = stmt
-            .query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))
-            .map_err(|e| Error::Database(format!("failed to look up vec rowids: {e}")))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| Error::Database(format!("failed to collect vec rowids: {e}")))?;
-        drop(stmt);
+        let rowids: Vec<i64> = {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT rowid FROM vec_id_map WHERE entry_id IN ({placeholders})"
+                ))
+                .map_err(|e| Error::Database(format!("failed to prepare vec rowid lookup: {e}")))?;
+            stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))
+                .map_err(|e| Error::Database(format!("failed to look up vec rowids: {e}")))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("failed to collect vec rowids: {e}")))?
+        };
 
         if rowids.is_empty() {
             return Ok(0);
@@ -208,20 +223,23 @@ impl VectorStore {
         // Identificadores de tabela vêm do próprio sqlite_master (origem
         // fechada, padrão vec_embeddings_<n> criado por ensure_vec_table);
         // os valores (rowids) são inteiros nossos, não input externo.
-        for table in vec_table_names(&conn)? {
-            conn.execute(
+        for table in vec_table_names(&tx)? {
+            tx.execute(
                 &format!("DELETE FROM [{table}] WHERE rowid IN ({rowid_list})"),
                 [],
             )
             .map_err(|e| Error::Database(format!("failed to delete vec rows: {e}")))?;
         }
 
-        let removed = conn
+        let removed = tx
             .execute(
                 &format!("DELETE FROM vec_id_map WHERE entry_id IN ({placeholders})"),
                 rusqlite::params_from_iter(ids.iter()),
             )
             .map_err(|e| Error::Database(format!("failed to delete vec id mappings: {e}")))?;
+
+        tx.commit()
+            .map_err(|e| Error::Database(format!("failed to commit vec delete tx: {e}")))?;
 
         Ok(removed)
     }
@@ -430,5 +448,40 @@ mod tests {
 
         // Idempotente: repetir não erra nem remove nada.
         assert_eq!(store.delete_embeddings(&["dim2"]).unwrap(), 0);
+    }
+
+    /// #960 item 2: vetor com dimensão diferente da tabela não entra — e a
+    /// recusa não pode deixar rastro. É a rede que segura o #961 (provider
+    /// que troca de modelo e devolve outra dimensão) no nível do índice.
+    #[test]
+    fn wrong_dimension_rejected() {
+        let store = VectorStore::in_memory().expect("should open in-memory vector store");
+        assert!(
+            store.vec_enabled(),
+            "o sqlite-vec e compilado no binario (rusqlite bundled): sem ele \
+             este teste passaria em vazio"
+        );
+
+        store.ensure_vec_table(3).unwrap();
+        store
+            .insert_embedding("certo", &[1.0, 0.0, 0.0], 3)
+            .unwrap();
+
+        let recusado = store.insert_embedding("torto", &[1.0, 0.0], 3);
+        assert!(
+            recusado.is_err(),
+            "vetor de 2 dimensoes nao pode entrar numa tabela float[3]: {recusado:?}"
+        );
+
+        // E o indice segue integro: nem vetor meio-gravado, nem mapeamento orfao.
+        let inventory = store.index_inventory().unwrap();
+        assert_eq!(
+            inventory.map_rows, 1,
+            "a recusa nao pode deixar mapeamento para tras: {inventory:?}"
+        );
+        assert!(
+            store.orphan_map_entries(&["certo"]).unwrap().is_empty(),
+            "nenhum mapeamento sobra alem do insert valido"
+        );
     }
 }
