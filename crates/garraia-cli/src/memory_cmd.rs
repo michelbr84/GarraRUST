@@ -578,6 +578,200 @@ pub async fn run_reindex(
     Ok(EXIT_OK)
 }
 
+/// Prefixo dos arquivos que este comando cria — e o **unico** que a retencao
+/// de backups apaga.
+const BACKUP_PREFIX: &str = "memory-";
+const BACKUP_SUFFIX: &str = ".db";
+
+/// Onde os backups moram por padrao.
+fn default_backup_dir(config: &AppConfig) -> PathBuf {
+    config.resolved_data_dir().join("backups")
+}
+
+/// Nome do arquivo de backup para um instante.
+///
+/// Timestamp em **UTC** e ordenavel como texto:
+/// `memory-20260906T054500123Z.db`. Nome de arquivo e artefato de maquina,
+/// entao segue a regra de timestamp tecnico do projeto, nao a de data
+/// narrativa.
+///
+/// Milissegundo, e nao segundo: com precisao de segundo, `garra memory backup`
+/// duas vezes seguidas (ou num laco de script) colidia, e o `VACUUM INTO`
+/// recusa sobrescrever — com razao. O operador via um erro em vez de um
+/// backup. Descoberto rodando o comando duas vezes de verdade.
+pub(crate) fn backup_file_name(agora: DateTime<Utc>) -> String {
+    format!(
+        "{BACKUP_PREFIX}{}{BACKUP_SUFFIX}",
+        agora.format("%Y%m%dT%H%M%S%3fZ")
+    )
+}
+
+/// O arquivo e um backup criado por nos?
+///
+/// A retencao apaga arquivo, entao a pergunta precisa ser estreita: so o que
+/// tem o nosso prefixo E o nosso sufixo. Qualquer outra coisa no diretorio —
+/// um backup manual do operador, um `.db` copiado a mao — fica.
+pub(crate) fn is_our_backup(nome: &str) -> bool {
+    nome.starts_with(BACKUP_PREFIX) && nome.ends_with(BACKUP_SUFFIX)
+}
+
+/// `garra memory backup` — retrato consistente do banco, com retencao (#955).
+pub async fn run_backup(
+    config: &AppConfig,
+    dir: Option<PathBuf>,
+    keep_days: Option<i64>,
+    json: bool,
+) -> Result<i32> {
+    let store = match open_store(config) {
+        Opened::Store(store, _) => *store,
+        Opened::Absent(path) => {
+            report_no_store(&path);
+            return Ok(EXIT_OK);
+        }
+        Opened::Failed => return Ok(EXIT_IOERR),
+    };
+
+    let destino_dir = dir.unwrap_or_else(|| default_backup_dir(config));
+    std::fs::create_dir_all(&destino_dir)
+        .with_context(|| format!("failed to create backup dir {}", destino_dir.display()))?;
+
+    let agora = Utc::now();
+    let destino = destino_dir.join(backup_file_name(agora));
+
+    let bytes = match store.backup_to(&destino) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // Erro de backup e operacional (disco cheio, permissao, nome ja
+            // existente), nao defeito de programa: sai com mensagem e codigo,
+            // nao com backtrace.
+            eprintln!("error: nao foi possivel escrever o backup: {e}");
+            return Ok(EXIT_IOERR);
+        }
+    };
+
+    // A retencao roda DEPOIS do backup novo existir. Se ela rodasse antes e o
+    // backup falhasse, o operador ficaria com menos copias do que tinha.
+    let apagados = match keep_days {
+        Some(dias) => prune_backups(&destino_dir, agora, dias, &destino)?,
+        None => Vec::new(),
+    };
+
+    if json {
+        let payload = serde_json::json!({
+            "path": destino.display().to_string(),
+            "bytes": bytes,
+            "pruned": apagados.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(EXIT_OK);
+    }
+
+    println!("Backup: {} ({})", destino.display(), formata_bytes(bytes));
+    if !apagados.is_empty() {
+        println!(
+            "Apagados {} backup(s) mais velhos que {} dia(s).",
+            apagados.len(),
+            keep_days.unwrap_or_default()
+        );
+    }
+    println!();
+    println!("Para restaurar:");
+    println!("  1. pare o gateway  (`garra stop`)");
+    println!(
+        "  2. troque o banco  (`cp {} {}`)",
+        destino.display(),
+        config.memory_db_path().display()
+    );
+    println!(
+        "  3. apague o WAL    (`rm -f {}-wal {}-shm`)",
+        config.memory_db_path().display(),
+        config.memory_db_path().display()
+    );
+    println!("  4. suba de novo    (`garra start`)");
+    println!("     O passo 3 e o que costuma ser esquecido: um `-wal` antigo ao lado");
+    println!("     de um banco restaurado reintroduz o que voce acabou de descartar.");
+
+    Ok(EXIT_OK)
+}
+
+/// Apaga backups nossos mais velhos que `keep_days`, pela data no **nome**.
+///
+/// Pelo nome, e nao pelo mtime: copiar o diretorio de backups para outra
+/// maquina renova todo mtime e apagaria tudo na primeira execucao seguinte.
+/// O nome carrega o instante real da copia.
+///
+/// Nunca apaga o backup recem-criado, nem arquivo que nao case com o nosso
+/// padrao.
+fn prune_backups(
+    dir: &Path,
+    agora: DateTime<Utc>,
+    keep_days: i64,
+    recem_criado: &Path,
+) -> Result<Vec<PathBuf>> {
+    if keep_days < 0 {
+        return Ok(Vec::new());
+    }
+    let Some(corte) = cutoff_from_days(agora, keep_days) else {
+        return Ok(Vec::new());
+    };
+
+    let mut apagados = Vec::new();
+    let entradas = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read backup dir {}", dir.display()))?;
+
+    for entrada in entradas {
+        let entrada = entrada.context("failed to read backup dir entry")?;
+        let caminho = entrada.path();
+        if caminho == recem_criado {
+            continue;
+        }
+        let Some(nome) = caminho.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_our_backup(nome) {
+            continue;
+        }
+        let Some(quando) = backup_timestamp(nome) else {
+            // Nome com o nosso prefixo mas timestamp ilegivel: nao apaga.
+            // Na duvida sobre a idade, o lado seguro e manter.
+            continue;
+        };
+        if quando < corte {
+            std::fs::remove_file(&caminho)
+                .with_context(|| format!("failed to remove old backup {}", caminho.display()))?;
+            apagados.push(caminho);
+        }
+    }
+
+    Ok(apagados)
+}
+
+/// Le o instante de volta do nome do arquivo. `None` quando nao parseia.
+pub(crate) fn backup_timestamp(nome: &str) -> Option<DateTime<Utc>> {
+    let miolo = nome
+        .strip_prefix(BACKUP_PREFIX)?
+        .strip_suffix(BACKUP_SUFFIX)?;
+    chrono::NaiveDateTime::parse_from_str(miolo, "%Y%m%dT%H%M%S%3fZ")
+        .ok()
+        // Nomes gravados antes da mudanca para milissegundo continuam legiveis:
+        // a retencao precisa saber a idade deles para poder apaga-los.
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(miolo, "%Y%m%dT%H%M%SZ").ok())
+        .map(|naive| naive.and_utc())
+}
+
+fn formata_bytes(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const KIB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// `garra memory pin` — protege uma entrada da compactacao (#959).
 ///
 /// Nao ha confirmacao: fixar e soltar sao reversiveis e nao apagam nada. O
@@ -840,6 +1034,171 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(code, EXIT_USAGE);
+    }
+
+    // ── #955: backup ─────────────────────────────────────────────────────
+
+    #[test]
+    fn nome_do_backup_e_ordenavel_e_utc() {
+        let t = chrono::DateTime::parse_from_rfc3339("2026-09-06T05:45:00Z")
+            .expect("data")
+            .with_timezone(&Utc);
+        assert_eq!(backup_file_name(t), "memory-20260906T054500000Z.db");
+        // Ida e volta: a retencao le a idade de volta do nome.
+        assert_eq!(backup_timestamp(&backup_file_name(t)), Some(t));
+    }
+
+    /// A retencao apaga arquivo, entao ela so pode reconhecer o que criou.
+    #[test]
+    fn so_reconhece_como_backup_o_que_tem_nosso_padrao() {
+        assert!(is_our_backup("memory-20260906T054500000Z.db"));
+        assert!(!is_our_backup("memory.db"));
+        assert!(!is_our_backup("backup-do-operador.db"));
+        assert!(!is_our_backup("memory-20260906T054500000Z.db.tmp"));
+        assert!(!is_our_backup("notas.txt"));
+    }
+
+    #[test]
+    fn timestamp_ilegivel_no_nome_vira_none() {
+        assert_eq!(backup_timestamp("memory-nao-e-data.db"), None);
+        assert_eq!(backup_timestamp("outro-20260906T054500000Z.db"), None);
+    }
+
+    /// Nome do formato antigo (segundo, sem milissegundo) continua legivel —
+    /// a retencao precisa saber a idade dele para poder apaga-lo.
+    #[test]
+    fn ainda_le_o_nome_do_formato_antigo() {
+        let t = chrono::DateTime::parse_from_rfc3339("2026-09-06T05:45:00Z")
+            .expect("data")
+            .with_timezone(&Utc);
+        assert_eq!(backup_timestamp("memory-20260906T054500Z.db"), Some(t));
+    }
+
+    /// Dois backups seguidos nao podem colidir. Com precisao de segundo eles
+    /// colidiam, e o segundo morria com erro em vez de escrever.
+    #[tokio::test]
+    async fn dois_backups_seguidos_nao_colidem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+        let copias = dir.path().join("copias");
+
+        for _ in 0..3 {
+            let code = run_backup(&config, Some(copias.clone()), None, false)
+                .await
+                .expect("backup");
+            assert_eq!(code, EXIT_OK, "um dos backups seguidos falhou");
+        }
+
+        let nossos = std::fs::read_dir(&copias)
+            .expect("le")
+            .filter_map(|e| e.ok())
+            .filter(|e| is_our_backup(&e.file_name().to_string_lossy()))
+            .count();
+        assert_eq!(nossos, 3, "os backups colidiram");
+    }
+
+    #[tokio::test]
+    async fn backup_escreve_o_arquivo_e_ele_reabre() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        {
+            let store = MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+            store.remember(entrada("preciosa")).await.expect("insere");
+        }
+
+        let destino = dir.path().join("copias");
+        let code = run_backup(&config, Some(destino.clone()), None, false)
+            .await
+            .expect("backup");
+        assert_eq!(code, EXIT_OK);
+
+        let arquivos: Vec<_> = std::fs::read_dir(&destino)
+            .expect("le dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(arquivos.len(), 1, "{arquivos:?}");
+        assert!(is_our_backup(&arquivos[0]), "{arquivos:?}");
+
+        let copia = MemoryStore::open(&destino.join(&arquivos[0])).expect("a copia abre");
+        assert_eq!(copia.integrity_report().expect("report").entries_total, 1);
+    }
+
+    /// A retencao nao pode encostar em arquivo que nao e nosso, nem no
+    /// backup que acabou de ser criado.
+    #[tokio::test]
+    async fn retencao_apaga_so_backup_nosso_e_velho() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+
+        let copias = dir.path().join("copias");
+        std::fs::create_dir_all(&copias).expect("cria dir");
+
+        // Velho e nosso: sai.
+        let velho = copias.join("memory-20200101T000000Z.db");
+        std::fs::write(&velho, b"antigo").expect("escreve");
+        // Nosso mas recente: fica.
+        let recente = copias.join(backup_file_name(Utc::now() - Duration::days(1)));
+        std::fs::write(&recente, b"recente").expect("escreve");
+        // Velho mas nao e nosso: fica.
+        let alheio = copias.join("backup-do-operador.db");
+        std::fs::write(&alheio, b"nao e meu").expect("escreve");
+        // Nosso prefixo com data ilegivel: fica (na duvida sobre a idade,
+        // manter).
+        let ilegivel = copias.join("memory-sei-la-quando.db");
+        std::fs::write(&ilegivel, b"?").expect("escreve");
+
+        let code = run_backup(&config, Some(copias.clone()), Some(14), false)
+            .await
+            .expect("backup");
+        assert_eq!(code, EXIT_OK);
+
+        assert!(!velho.exists(), "o backup velho nosso devia ter saido");
+        assert!(recente.exists(), "apagou um backup recente");
+        assert!(alheio.exists(), "apagou arquivo que nao e nosso");
+        assert!(ilegivel.exists(), "apagou arquivo de idade desconhecida");
+
+        // E o recem-criado continua la.
+        let nossos = std::fs::read_dir(&copias)
+            .expect("le")
+            .filter_map(|e| e.ok())
+            .filter(|e| is_our_backup(&e.file_name().to_string_lossy()))
+            .count();
+        assert_eq!(nossos, 3, "recem-criado + recente + ilegivel");
+    }
+
+    /// Sem `--keep-days` nao se apaga nada — nunca por acidente.
+    #[tokio::test]
+    async fn sem_keep_days_nao_apaga_nada() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        MemoryStore::open(&config.memory_db_path()).expect("cria o banco");
+
+        let copias = dir.path().join("copias");
+        std::fs::create_dir_all(&copias).expect("cria dir");
+        let velho = copias.join("memory-20200101T000000Z.db");
+        std::fs::write(&velho, b"antigo").expect("escreve");
+
+        run_backup(&config, Some(copias), None, false)
+            .await
+            .expect("backup");
+        assert!(velho.exists(), "apagou sem --keep-days");
+    }
+
+    #[tokio::test]
+    async fn backup_sem_banco_nao_cria_nada() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_em(dir.path());
+        let copias = dir.path().join("copias");
+
+        let code = run_backup(&config, Some(copias.clone()), None, false)
+            .await
+            .expect("backup");
+
+        assert_eq!(code, EXIT_OK);
+        assert!(!copias.exists(), "criou diretorio de backup sem ter banco");
     }
 
     #[tokio::test]

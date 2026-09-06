@@ -41,6 +41,7 @@
   - [Superfícies de Ataque](./security/attack-surfaces.md)
   - [Checklist de Segurança](./security/checklist.md)
 - [Memória e Contexto](./memory.md)
+- [Backup e restauração da memória](./memory-backup.md)
 - [Modos de Operação](./modes.md)
 - [Modos de Continuação](./continue-modes.md)
 
