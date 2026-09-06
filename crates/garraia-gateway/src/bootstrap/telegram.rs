@@ -88,14 +88,7 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                 }
 
                 // GAR-202: Resolve session via UUID-based key (replaces guessable telegram-{chat_id})
-                let session_id = if let Some(mgr) = &state.chat_session_manager {
-                    let hints = garraia_db::SessionHints::from_telegram(chat_id, None);
-                    mgr.resolve_session(&hints)
-                        .await
-                        .unwrap_or_else(|_| format!("telegram-{chat_id}"))
-                } else {
-                    format!("telegram-{chat_id}")
-                };
+                let session_id = state.telegram_session_id(chat_id, None).await;
                 state
                     .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                     .await;
@@ -290,16 +283,11 @@ pub fn build_telegram_channels(
                         }
                     }
 
-                    // GAR-202: UUID-based session ID (replaces guessable telegram-{chat_id})
-                    let session_id = if let Some(mgr) = &state.chat_session_manager {
-                        let uid_i64 = user_id.parse::<i64>().ok();
-                        let hints = garraia_db::SessionHints::from_telegram(chat_id, uid_i64);
-                        mgr.resolve_session(&hints)
-                            .await
-                            .unwrap_or_else(|_| format!("telegram-{chat_id}"))
-                    } else {
-                        format!("telegram-{chat_id}")
-                    };
+                    // GAR-202: chave UUID, resolvida no unico lugar que a
+                    // monta (`AppState::telegram_session_id`).
+                    let session_id = state
+                        .telegram_session_id(chat_id, user_id.parse::<i64>().ok())
+                        .await;
 
                     let text = garraia_security::InputValidator::sanitize(&text);
                     if garraia_security::InputValidator::check_prompt_injection(&text) {
