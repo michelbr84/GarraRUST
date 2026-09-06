@@ -206,6 +206,9 @@ Four more, emitted by the agent runtime whenever the memory system is in use:
 | `garraia_memory_embed_failures_total{provider, operation}` | counter | Embedding calls that failed |
 | `garraia_memory_recall_latency_seconds` | histogram | Whole recall — query embedding **plus** the search |
 | `garraia_memory_ingested_total{outcome}` | counter | Turns ingested, by outcome: `embedded`, `noise`, `no_provider`, `failed` |
+| `garraia_memory_entries{has_embedding}` | gauge | Entries in memory, with and without a vector |
+| `garraia_memory_vector_index_size` | gauge | Rows in the vector index (`vec_id_map`) |
+| `garraia_memory_gauge_errors_total` | counter | Failed reads of the two gauges above |
 
 **The one to alert on** is `garraia_memory_embed_failures_total`. Issue #948
 described embedding failure as *silent*: the entry was stored without a vector
@@ -219,6 +222,24 @@ broken", which is the first question an operator asks. `noise` exists because of
 the ingestion filter (#952): without it, the count of entries without a vector
 would climb and nobody could tell defect from policy.
 
+**The two gauges are meant to be read together, and the gap between them is
+the signal**: an entry with a vector in its column but missing from the index
+does not show up in semantic search. That was invisible until someone ran
+`garra memory stats` — which only reports when asked. As a gauge it becomes a
+trend, which is what prompts the asking.
+
+The error counter exists because of the worst failure mode a gauge has: when
+the read stops working, the value does **not** disappear — Prometheus keeps
+serving the last one as if it were current, and nobody can tell "database
+unreachable" from "the base really is that size". Alert on
+`rate(garraia_memory_gauge_errors_total[15m]) > 0` to make that silence
+audible.
+
+They come from a dedicated worker (`memory_gauge_worker`) that starts whenever
+memory exists and resamples every 5 minutes. It is **not** a branch of the
+retention worker: that one only runs with `memory.retention.enabled=true`,
+which is off by default, so the gauges would be dead on almost every install.
+
 Useful queries:
 
 ```promql
@@ -227,6 +248,9 @@ rate(garraia_memory_embed_failures_total[5m])
 
 # p95 do recall (o que o usuario espera)
 histogram_quantile(0.95, rate(garraia_memory_recall_latency_seconds_bucket[5m]))
+
+# Entradas com vetor que nao estao no indice — deveria ser sempre 0
+garraia_memory_entries{has_embedding="true"} - garraia_memory_vector_index_size
 
 # Fracao dos turnos que o filtro de ruido descartou
 rate(garraia_memory_ingested_total{outcome="noise"}[1h])

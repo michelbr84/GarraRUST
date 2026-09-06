@@ -20,6 +20,7 @@ pub mod logs_handler;
 pub mod mcp;
 pub mod mcp_commands;
 pub mod mcp_marketplace;
+pub mod memory_gauge_worker;
 pub mod memory_handler;
 pub mod memory_retention_worker;
 pub mod metrics_auth;
