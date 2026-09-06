@@ -52,6 +52,55 @@ pub(crate) fn shorten_path(p: &Path) -> String {
     format!("{head}…{tail}")
 }
 
+/// A marca inteira, sob demanda (#935).
+///
+/// O mascote saiu da abertura do `garra chat`, que passou a ser um cabecalho
+/// de tres linhas — ele ocupava doze linhas de terminal em toda sessao para
+/// dizer o que cabe em duas. Continua aqui, atras de um comando explicito,
+/// porque identidade de produto nao se joga fora: so deixa de ser cobrada de
+/// quem so quer conversar.
+pub fn print_about() {
+    const CYAN: &str = "\x1b[36m";
+    const YELLOW: &str = "\x1b[33m";
+    const GREEN: &str = "\x1b[32m";
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    let version = env!("CARGO_PKG_VERSION");
+
+    println!();
+    println!("{CYAN}{BOLD}╭──────────────────────────────────────────────╮{RESET}");
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}   {YELLOW}{BOLD}\\) /  o o  \\ (/{RESET}   {GREEN}{BOLD}GarraIA v{version}{RESET}         {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
+    println!("{CYAN}{BOLD}╰──────────────────────────────────────────────╯{RESET}");
+    println!();
+    println!("  {DIM}Assistente de IA pessoal, escrito em Rust.{RESET}");
+    println!("  {DIM}Tudo local: conversas, memoria, config e credenciais.{RESET}");
+    println!();
+    println!("  {BOLD}garra{RESET}          conversar");
+    println!("  {BOLD}garra start{RESET}    subir o gateway");
+    println!("  {BOLD}garra doctor{RESET}   diagnosticar a instalacao");
+    println!("  {BOLD}garra --help{RESET}   todos os comandos");
+    println!();
+}
+
 /// Print the startup banner with Ferris and config summary.
 pub fn print_banner(host: &str, port: u16, config: &AppConfig, config_dir: &Path) {
     let version = env!("CARGO_PKG_VERSION");

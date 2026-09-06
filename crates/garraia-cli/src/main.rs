@@ -5,6 +5,7 @@ mod capability_prompt;
 mod chat;
 mod cli_args;
 mod config_cmd;
+mod conversation;
 mod doctor;
 mod glob_cmd;
 mod max_power;
@@ -93,6 +94,9 @@ enum Commands {
         #[arg(long)]
         with_voice: bool,
     },
+
+    /// Show the full GarraIA banner and what each command does
+    About,
 
     /// Stop the running daemon
     Stop,
@@ -1159,6 +1163,10 @@ async fn async_main(
                 .with_telemetry_config(Some(telemetry_config));
             server.run().await?;
         }
+        Commands::About => {
+            banner::print_about();
+        }
+
         Commands::Stop => {
             init_tracing(&effective_level);
             stop_daemon(config.gateway.port)?;
