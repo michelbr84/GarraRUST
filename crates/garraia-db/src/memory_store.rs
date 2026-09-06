@@ -112,12 +112,18 @@ pub struct CompactionReport {
 /// Íntegro quando: `map_rows == entries_with_embedding` (com KNN ligado),
 /// cada tabela `vec_embeddings_*` soma o mesmo total e `orphan_map_entries`
 /// está vazio. `entries_without_embedding > 0` não é corrupção — é a fila de
-/// reindexação (#953).
+/// reindexação (#953), e `entries_missing_model > 0` é a fila legada.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegrityReport {
     pub entries_total: usize,
     pub entries_with_embedding: usize,
     pub entries_without_embedding: usize,
+    /// Entradas COM vetor gravado mas **sem** `embedding_model` — legado de
+    /// antes do #954. Elas perdem o eixo semântico do score (0.7) sempre que
+    /// o recall chega com um modelo definido, e o caminho SQL não avisa nada:
+    /// este contador é o único sinal que o operador tem. Zera com reindex
+    /// (#953).
+    pub entries_missing_model: usize,
     /// Linhas em `vec_id_map`.
     pub map_rows: usize,
     /// `(tabela, linhas)` por tabela `vec_embeddings_*` existente.
@@ -222,7 +228,7 @@ impl MemoryStore {
     /// tabelas `vec_embeddings_*` (#960). Não conserta nada — conta e nomeia
     /// divergências para o operador (e para a CLI `garra memory stats`).
     pub fn integrity_report(&self) -> Result<IntegrityReport> {
-        let (entries_total, entries_with_embedding, live_ids) = {
+        let (entries_total, entries_with_embedding, entries_missing_model, live_ids) = {
             let conn = self.connection()?;
             let total: i64 = conn
                 .query_row("SELECT count(*) FROM memory_entries", [], |row| row.get(0))
@@ -234,6 +240,16 @@ impl MemoryStore {
                     |row| row.get(0),
                 )
                 .map_err(|e| Error::Database(format!("failed to count embedded entries: {e}")))?;
+            let missing_model: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM memory_entries
+                     WHERE embedding IS NOT NULL AND embedding_model IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    Error::Database(format!("failed to count entries missing model: {e}"))
+                })?;
             let mut stmt = conn
                 .prepare("SELECT id FROM memory_entries")
                 .map_err(|e| Error::Database(format!("failed to prepare id scan: {e}")))?;
@@ -242,7 +258,12 @@ impl MemoryStore {
                 .map_err(|e| Error::Database(format!("failed to scan entry ids: {e}")))?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| Error::Database(format!("failed to collect entry ids: {e}")))?;
-            (total as usize, with_embedding as usize, ids)
+            (
+                total as usize,
+                with_embedding as usize,
+                missing_model as usize,
+                ids,
+            )
         };
 
         let (map_rows, vec_rows_by_table, orphan_map_entries) = match &self.vector_store {
@@ -259,6 +280,7 @@ impl MemoryStore {
             entries_total,
             entries_with_embedding,
             entries_without_embedding: entries_total - entries_with_embedding,
+            entries_missing_model,
             map_rows,
             vec_rows_by_table,
             orphan_map_entries,
@@ -315,9 +337,12 @@ impl MemoryStore {
     }
 
     pub async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport> {
-        // Coletar os ids ANTES de deletar: são eles que limpam o índice
-        // vetorial (#960 — deletar entrada não pode deixar vetor órfão).
-        let doomed = {
+        // Coletar os ids ANTES de deletar (são eles que limpam o índice
+        // vetorial, #960) e SOB O MESMO guard do DELETE: soltar o mutex entre
+        // os dois abriria uma janela TOCTOU em que uma inserção concorrente
+        // casando a condição seria deletada sem entrar na lista de limpeza
+        // (achado M1 da auditoria).
+        let (doomed, deleted) = {
             let conn = self.connection()?;
             let mut stmt = conn
                 .prepare("SELECT id FROM memory_entries WHERE datetime(created_at) < datetime(?)")
@@ -327,16 +352,15 @@ impl MemoryStore {
                 .map_err(|e| Error::Database(format!("failed to scan compact targets: {e}")))?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| Error::Database(format!("failed to collect compact targets: {e}")))?;
-            ids
-        };
+            drop(stmt);
 
-        let deleted = {
-            let conn = self.connection()?;
-            conn.execute(
-                "DELETE FROM memory_entries WHERE datetime(created_at) < datetime(?)",
-                params![before.to_rfc3339()],
-            )
-            .map_err(|e| Error::Database(format!("failed to compact memory entries: {e}")))?
+            let deleted = conn
+                .execute(
+                    "DELETE FROM memory_entries WHERE datetime(created_at) < datetime(?)",
+                    params![before.to_rfc3339()],
+                )
+                .map_err(|e| Error::Database(format!("failed to compact memory entries: {e}")))?;
+            (ids, deleted)
         };
 
         self.cleanup_vectors(&doomed);
@@ -348,7 +372,8 @@ impl MemoryStore {
     }
 
     pub async fn delete_session_memory(&self, session_id: &str) -> Result<usize> {
-        let doomed = {
+        // SELECT e DELETE sob o mesmo guard — ver o comentário em `compact`.
+        let (doomed, deleted) = {
             let conn = self.connection()?;
             let mut stmt = conn
                 .prepare("SELECT id FROM memory_entries WHERE session_id = ?")
@@ -358,16 +383,15 @@ impl MemoryStore {
                 .map_err(|e| Error::Database(format!("failed to scan delete targets: {e}")))?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| Error::Database(format!("failed to collect delete targets: {e}")))?;
-            ids
-        };
+            drop(stmt);
 
-        let deleted = {
-            let conn = self.connection()?;
-            conn.execute(
-                "DELETE FROM memory_entries WHERE session_id = ?",
-                params![session_id],
-            )
-            .map_err(|e| Error::Database(format!("failed to delete session memory: {e}")))?
+            let deleted = conn
+                .execute(
+                    "DELETE FROM memory_entries WHERE session_id = ?",
+                    params![session_id],
+                )
+                .map_err(|e| Error::Database(format!("failed to delete session memory: {e}")))?;
+            (ids, deleted)
         };
 
         self.cleanup_vectors(&doomed);
@@ -509,12 +533,22 @@ impl MemoryStore {
         query: &RecallQuery,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>> {
+        // Quantos candidatos perderam o eixo semântico por modelo divergente.
+        // Entrada legada (modelo NULL) cai aqui e some do ranking sem nenhum
+        // outro aviso — o contador durável está no `integrity_report`.
+        let mut demoted_other_model = 0usize;
+
         let mut scored: Vec<(f32, MemoryEntry)> = candidates
             .into_iter()
             .map(|entry| {
                 // Cosseno entre modelos diferentes não significa nada (#954):
                 // com filtro de modelo na query, entrada de outro modelo pontua
                 // 0.0 no eixo semântico e compete só por texto/recência.
+                // `(None, _) => true` e deliberado: query sem modelo declarado
+                // e chamada legada ou so-texto, e ali o comportamento antigo
+                // (comparar com o que houver) vale mais que recusar tudo. Quem
+                // manda o modelo — todo recall do runtime desde o #954 — cai
+                // nos dois primeiros bracos e fica protegido.
                 let same_model = match (&query.embedding_model, &entry.embedding_model) {
                     (Some(wanted), Some(got)) => wanted == got,
                     (Some(_), None) => false,
@@ -524,7 +558,12 @@ impl MemoryStore {
                     (Some(needle), Some(candidate)) if same_model => {
                         cosine_similarity(needle, candidate)
                     }
-                    _ => 0.0,
+                    _ => {
+                        if !same_model && entry.embedding.is_some() {
+                            demoted_other_model += 1;
+                        }
+                        0.0
+                    }
                 };
                 let text_score = text_match_score(query.query_text.as_deref(), &entry.content);
                 let recency_score = recency_score(entry.created_at);
@@ -538,6 +577,15 @@ impl MemoryStore {
                 (score, entry)
             })
             .collect();
+
+        if demoted_other_model > 0 {
+            tracing::debug!(
+                demoted = demoted_other_model,
+                model = query.embedding_model.as_deref().unwrap_or("<nenhum>"),
+                "recall: candidatos com vetor de outro modelo (ou legado sem \
+                 modelo) pontuaram 0.0 no eixo semantico"
+            );
+        }
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
 
@@ -1056,10 +1104,12 @@ mod tests {
     async fn knn_recall_never_leaks_other_tenants() {
         let store =
             MemoryStore::in_memory_with_vectors().expect("failed to create in-memory store");
-        if !store.knn_enabled() {
-            eprintln!("sqlite-vec not available, skipping KNN isolation test");
-            return;
-        }
+        assert!(
+            store.knn_enabled(),
+            "o sqlite-vec e compilado no binario (rusqlite bundled): sem ele \
+             este teste de isolamento nao exercitaria o caminho KNN e passaria \
+             em vazio"
+        );
 
         let mut ours = entry(
             "session-a",
@@ -1107,10 +1157,10 @@ mod tests {
     async fn knn_recall_respects_session_filter() {
         let store =
             MemoryStore::in_memory_with_vectors().expect("failed to create in-memory store");
-        if !store.knn_enabled() {
-            eprintln!("sqlite-vec not available, skipping KNN session test");
-            return;
-        }
+        assert!(
+            store.knn_enabled(),
+            "sem sqlite-vec este teste nao exercitaria o caminho KNN"
+        );
 
         store
             .remember(entry(
@@ -1157,10 +1207,10 @@ mod tests {
     async fn delete_session_memory_removes_vectors_and_mapping() {
         let store =
             MemoryStore::in_memory_with_vectors().expect("failed to create in-memory store");
-        if !store.knn_enabled() {
-            eprintln!("sqlite-vec not available, skipping orphan test");
-            return;
-        }
+        assert!(
+            store.knn_enabled(),
+            "sem sqlite-vec nao ha indice para ficar orfao — teste em vazio"
+        );
 
         store
             .remember(entry(
@@ -1197,10 +1247,10 @@ mod tests {
     async fn compact_removes_vectors_too() {
         let store =
             MemoryStore::in_memory_with_vectors().expect("failed to create in-memory store");
-        if !store.knn_enabled() {
-            eprintln!("sqlite-vec not available, skipping compact orphan test");
-            return;
-        }
+        assert!(
+            store.knn_enabled(),
+            "sem sqlite-vec nao ha indice para o compact limpar — teste em vazio"
+        );
 
         store
             .remember(entry(
@@ -1268,6 +1318,55 @@ mod tests {
             let report = store.integrity_report().expect("report");
             assert_eq!(report.orphan_map_entries, vec!["fantasma".to_string()]);
         }
+    }
+
+    /// M2 da auditoria: entrada legada (vetor gravado antes do #954, sem
+    /// modelo registrado) perde o eixo semântico em silêncio quando o recall
+    /// chega com modelo. O relatório conta essa fila para o operador.
+    #[tokio::test]
+    async fn integrity_report_counts_legacy_entries_without_model() {
+        let store = MemoryStore::in_memory().expect("failed to create in-memory memory store");
+
+        let mut legada = entry(
+            "session-a",
+            None,
+            "vetor sem modelo",
+            MemoryRole::User,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        legada.embedding_model = None;
+        store.remember(legada).await.expect("remember");
+
+        store
+            .remember(entry(
+                "session-a",
+                None,
+                "vetor com modelo",
+                MemoryRole::User,
+                Some(vec![0.0, 1.0, 0.0]),
+            ))
+            .await
+            .expect("remember");
+
+        store
+            .remember(entry(
+                "session-a",
+                None,
+                "sem vetor nenhum",
+                MemoryRole::User,
+                None,
+            ))
+            .await
+            .expect("remember");
+
+        let report = store.integrity_report().expect("report");
+        assert_eq!(report.entries_total, 3);
+        assert_eq!(report.entries_with_embedding, 2);
+        assert_eq!(report.entries_without_embedding, 1);
+        assert_eq!(
+            report.entries_missing_model, 1,
+            "só a entrada com vetor E sem modelo conta como legado"
+        );
     }
 
     #[tokio::test]

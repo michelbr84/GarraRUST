@@ -21,6 +21,17 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   outro tenant nunca volta pelo KNN.
 
 ### Fixed
+- **Limpeza do indice vetorial: janela de corrida fechada e delecao atomica
+  (divida da auditoria do #971).** `compact` e `delete_session_memory`
+  coletavam os ids condenados e deletavam sob guards diferentes do mutex: uma
+  insercao concorrente que casasse a condicao era apagada sem entrar na lista
+  de limpeza, deixando vetor orfao no indice. Os dois passos passam a dividir
+  um guard so. `VectorStore::delete_embeddings` ganhou transacao — as N
+  tabelas `vec_embeddings_*` e o `vec_id_map` mudam juntos ou nao mudam; sem
+  ela, falhar no meio deixava vetor sem mapeamento, invisivel ate para o
+  `integrity_report`. `insert_embedding` tambem virou transacional: um vetor
+  recusado pelo vec0 por dimensao divergente (#961) deixava o mapeamento ja
+  gravado para tras, criando orfao instantaneo.
 - **Recall filtra por `embedding_model` (#954).** Cosseno entre espacos
   vetoriais de modelos diferentes nao significa nada, mesmo com a mesma
   dimensao. `RecallQuery` ganha `embedding_model` (o runtime envia o modelo
@@ -37,6 +48,16 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   (`_info`/`_chunks`/`_rowids`), que um LIKE ingenuo pegaria junto.
 
 ### Added
+- **`IntegrityReport.entries_missing_model` e o teste de dimensao divergente
+  fecham a #960.** O contador conta entradas COM vetor e SEM
+  `embedding_model` — o legado de antes do #954, que perde o eixo semantico
+  (0.7 do score) sempre que o recall chega com modelo definido, sem nenhum
+  aviso no caminho SQL; um `debug!` por recall complementa, contando os
+  candidatos rebaixados por modelo divergente. A reindexacao (#953) zera essa
+  fila. O teste novo garante que vetor de tamanho diferente do da tabela nao
+  entra e que a recusa nao deixa rastro no `vec_id_map` — com ele, os quatro
+  testes de integridade que a issue propos estao no lugar (os outros tres
+  vieram no #971).
 - **`MemoryStore::integrity_report()` (#960).** Conta entradas com/sem
   embedding (a fila de reindexacao do #953), linhas por tabela vetorial e
   mapeamentos orfaos — a verificacao que em 2026-09-05 precisou de script
@@ -46,6 +67,12 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   idempotencia da delecao.
 
 ### Changed
+- **Quatro testes de KNN deixam de passar em vazio (divida da auditoria do
+  #971).** Eles faziam `return` silencioso quando o sqlite-vec nao carregava —
+  inclusive os dois de isolamento de tenant, que assim jamais exercitariam o
+  caminho que existem para proteger. Agora afirmam `knn_enabled()`: o
+  sqlite-vec e compilado no binario (`rusqlite` com `bundled`), entao ausencia
+  dele e defeito de build, nao ambiente aceitavel.
 - **O console interativo fica limpo por default (#933).** O subscriber unico
   escrevia o mesmo fluxo em `garraia.log` e no stderr, entao todo INFO de
   registro de provider/tools/sessao competia com o spinner e com a resposta
