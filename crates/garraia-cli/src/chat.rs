@@ -16,6 +16,7 @@ use garraia_agents::{
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
 
+use crate::ui::tool_log::{Busca, ToolLog};
 use crate::ui::{TerminalRenderer, UiEvent};
 use garraia_agents::TurnEvent;
 
@@ -784,6 +785,7 @@ async fn stream_turn<F, T, E>(
     timeout: std::time::Duration,
     out: &mut (impl io::Write + ?Sized),
     renderer: &mut TerminalRenderer,
+    tool_log: &mut ToolLog,
     cancel: &tokio::sync::Notify,
 ) -> TurnOutcome<T, E>
 where
@@ -828,7 +830,7 @@ where
                 renderer.handle(UiEvent::ActivityTick, out);
             }
             maybe = rx.recv(), if rx_open => match maybe {
-                Some(evento) => render_turn_event(&evento, renderer, out),
+                Some(evento) => render_turn_event(&evento, renderer, tool_log, out),
                 None => rx_open = false,
             },
         }
@@ -839,7 +841,7 @@ where
     drop(call);
     if rx_open {
         while let Some(evento) = rx.recv().await {
-            render_turn_event(&evento, renderer, out);
+            render_turn_event(&evento, renderer, tool_log, out);
         }
     }
 
@@ -860,6 +862,7 @@ where
 fn render_turn_event(
     evento: &TurnEvent,
     renderer: &mut TerminalRenderer,
+    tool_log: &mut ToolLog,
     out: &mut (impl io::Write + ?Sized),
 ) {
     let ui = match evento {
@@ -870,12 +873,21 @@ fn render_turn_event(
             duration,
             success,
             summary,
-        } => UiEvent::ToolFinished {
-            name,
-            duration: *duration,
-            success: *success,
-            summary,
-        },
+            output,
+        } => {
+            // Guardar acontece **aqui**, e nao no renderer, porque o renderer
+            // desenha e nao lembra (ADR 0017). O indice volta para a linha
+            // desenhada: sem ele o usuario veria "/tool" no `/help` e nao teria
+            // como saber qual numero pedir.
+            let indice = tool_log.registrar(name, summary, *success, *duration, output.clone());
+            UiEvent::ToolFinished {
+                name,
+                duration: *duration,
+                success: *success,
+                summary,
+                indice: Some(indice),
+            }
+        }
     };
     renderer.handle(ui, out);
 }
@@ -994,6 +1006,9 @@ pub async fn run_chat(
 
     let session_id = format!("cli-{}", uuid::Uuid::new_v4());
     let mut history: Vec<ChatMessage> = Vec::new();
+    // A saida completa das ferramentas do turno, para o `/tool` (#938).
+    // Limitada em entradas e em bytes — ver `ui::tool_log`.
+    let mut tool_log = ToolLog::new();
     // Semente do indicador de atividade: roda a mensagem de abertura a
     // cada turno, para dois envios seguidos não começarem com a mesma frase.
     let mut turn_index: usize = 0;
@@ -1076,6 +1091,8 @@ pub async fn run_chat(
                 println!("  /clear             Limpar historico");
                 println!("  /history           Mostrar historico");
                 println!("  /context           Diretorio e projeto detectados");
+                println!("  /tool              Listar saidas de ferramenta guardadas");
+                println!("  /tool <n>          Ver a saida inteira de uma chamada");
                 println!("  /exit              Sair");
                 continue;
             }
@@ -1091,6 +1108,64 @@ pub async fn run_chat(
                     println!("{DIM}Projeto:   nenhum marcador detectado{RESET}");
                 } else {
                     println!("{DIM}Projeto:   {dir_context}{RESET}");
+                }
+                continue;
+            }
+            // A saida completa das ferramentas (#938). O resumo de uma linha
+            // do #937 deixou a conversa legivel; sem isto ele so teria
+            // escondido a causa da falha.
+            "/tool" | "/tools" | "/saida" => {
+                if tool_log.vazio() {
+                    println!("{DIM}Nenhuma ferramenta foi chamada ainda nesta sessao.{RESET}");
+                } else {
+                    println!("{DIM}Saidas guardadas (use /tool <n> para ver inteira):{RESET}");
+                    for e in tool_log.listar() {
+                        let marca = if e.sucesso { " " } else { "!" };
+                        let detalhe: String = e.detalhe.chars().take(52).collect();
+                        println!("  {marca}#{:<3} {:<12} {}", e.indice, e.ferramenta, detalhe);
+                    }
+                }
+                continue;
+            }
+            _ if input.starts_with("/tool ") || input.starts_with("/saida ") => {
+                let arg = input
+                    .split_once(' ')
+                    .map(|(_, resto)| resto.trim())
+                    .unwrap_or("");
+                match arg.trim_start_matches('#').parse::<usize>() {
+                    Ok(n) => match tool_log.buscar(n) {
+                        Busca::Achou(e) => {
+                            let estado = if e.sucesso { "ok" } else { "falhou" };
+                            println!(
+                                "{DIM}#{} {} · {} · {}{RESET}",
+                                e.indice,
+                                e.ferramenta,
+                                estado,
+                                crate::ui::format_duration(e.duracao)
+                            );
+                            if !e.detalhe.is_empty() {
+                                println!("{DIM}{}{RESET}", e.detalhe);
+                            }
+                            println!();
+                            // A saida ja veio redigida e saneada do
+                            // `garraia-agents`; aqui e so imprimir.
+                            println!("{}", e.saida);
+                        }
+                        // Expirada e inexistente sao mensagens diferentes de
+                        // proposito: "saiu do registro" e acionavel (rode de
+                        // novo), "nunca existiu" quer dizer que o numero esta
+                        // errado.
+                        Busca::Expirada => println!(
+                            "{DIM}A saida #{n} ja saiu do registro — so as mais \
+                             recentes ficam guardadas. Rode o comando de novo \
+                             para ve-la.{RESET}"
+                        ),
+                        Busca::Inexistente => println!(
+                            "{DIM}Nao ha saida #{n}. Use /tool para ver as \
+                             disponiveis.{RESET}"
+                        ),
+                    },
+                    Err(_) => println!("{DIM}Uso: /tool <numero>. Ex.: /tool 3{RESET}"),
                 }
                 continue;
             }
@@ -1219,6 +1294,7 @@ pub async fn run_chat(
             std::time::Duration::from_secs(timeout_secs),
             &mut stdout,
             &mut renderer,
+            &mut tool_log,
             &cancel,
         )
         .await;
@@ -1715,6 +1791,7 @@ mod tests {
                 std::time::Duration::from_secs(30),
                 &mut out,
                 &mut test_renderer(test_spinner()),
+                &mut ToolLog::new(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1751,6 +1828,7 @@ mod tests {
                 std::time::Duration::from_millis(50),
                 &mut out,
                 &mut test_renderer(None),
+                &mut ToolLog::new(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1805,6 +1883,7 @@ mod tests {
                 duration: std::time::Duration::from_millis(6300),
                 success: true,
                 summary: "148 passed".into(),
+                output: String::new(),
             })
             .await
             .map_err(|_| "receiver dropped")?;
@@ -1823,6 +1902,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, ""),
+                &mut ToolLog::new(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1830,9 +1910,13 @@ mod tests {
         .expect("stream_turn nao pode travar");
 
         assert_eq!(outcome, TurnOutcome::Done(Ok("pronto".to_string())));
+        // O `| #0` no fim da linha e o ponteiro do #938: a saida inteira
+        // ficou guardada e este e o numero que o usuario digita no `/tool`.
+        // Afirma-lo aqui, no caminho real do `stream_turn`, e o que prova que
+        // o indice atravessa a ponte `TurnEvent` -> `ToolLog` -> `UiEvent`.
         assert_eq!(
             String::from_utf8(out).expect("utf8"),
-            "vou rodar os testes. * Bash cargo test\n  |- 148 passed | 6.3s\npassou tudo."
+            "vou rodar os testes. * Bash cargo test\n  |- 148 passed | 6.3s | #0\npassou tudo."
         );
     }
 
@@ -1913,6 +1997,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -1954,6 +2039,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -1994,6 +2080,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -2027,6 +2114,7 @@ mod tests {
                 std::time::Duration::from_millis(700),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+                &mut ToolLog::new(),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -2069,6 +2157,7 @@ mod tests {
                 std::time::Duration::from_secs(30),
                 &mut out,
                 &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+                &mut ToolLog::new(),
                 &cancel,
             ),
         )
@@ -2104,6 +2193,7 @@ mod tests {
             &mut out,
             // exatamente o que `Capabilities::detect` devolve num pipe: sem animacao
             &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, "garra > "),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -2142,6 +2232,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &mut out,
             &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -2167,6 +2258,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &mut out,
             &mut test_renderer(None),
+            &mut ToolLog::new(),
             &tokio::sync::Notify::new(),
         )
         .await;
