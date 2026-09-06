@@ -220,6 +220,43 @@ só tem `agent_id`, então o campo é descartado pelo serde. Não era superfíci
 viva; o guard existe para o dia em que a rota mudar, e
 `post_sessions_does_not_expose_working_dir_today` fixa esse estado.
 
+## 5.8. `/metrics` — o que a observabilidade conta sobre a instalação (#957)
+
+O endpoint Prometheus é autenticado (`metrics_auth.rs`: loopback por padrão,
+token ou allowlist para expor remotamente, fail-closed no boot). O que segue
+não é uma falha desse controle — é o que um leitor **legítimo** do `/metrics`
+passa a saber, e que não estava escrito em lugar nenhum.
+
+As métricas de memória do #957 carregam a label `provider` com o id do
+provedor de embeddings em uso (`ollama`, `openai`, `cohere`), e o desfecho
+`no_provider` denuncia a **ausência** de configuração. Isso é topologia: quem
+lê o `/metrics` sabe qual provedor atacar, e sabe se a memória semântica está
+sequer ligada. Somando com `garraia_memory_ingested_total`, também se infere
+volume de uso.
+
+**Decisão: a label fica.** Mascarar o provider (como o `config check` faz com
+secrets, reportando `configured: true` em vez do valor) destruiria a utilidade
+da métrica — "qual provedor está falhando" é exatamente a pergunta que ela
+existe para responder, e com um provedor só ela viraria uma constante. O
+controle correto para topologia é o mesmo de sempre: **não exponha o
+`/metrics` para quem não deveria ver a topologia.** Por isso o endpoint é
+loopback por padrão e o listener dedicado se recusa a subir sem token ou
+allowlist.
+
+O que **não** está lá, e é o que importa: nenhum id de sessão, id de usuário,
+conteúdo de memória ou nome de modelo. O nome do modelo ficou de fora
+deliberadamente — vem da config do usuário, então além de cardinalidade
+ilimitada seria mais um detalhe de infraestrutura publicado. As labels são
+enums Rust que viram `&'static str`, o que faz disso uma garantia de
+compilação e não de convenção; há teste afirmando que todo valor de `provider`
+vem de conjunto fechado.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **I** Information disclosure | Leitor do `/metrics` (scraper legítimo, ou credencial de scraper vazada) descobre qual provedor de embeddings está configurado, se há algum, e o volume de turnos ingeridos. | Endpoint loopback por padrão; listener remoto exige token ou allowlist, fail-closed no boot (plan 0024). Nenhuma label carrega PII, conteúdo ou nome de modelo. | Aceito: mascarar `provider` inutilizaria a métrica. Revisar se o `/metrics` algum dia for exposto a um scraper multi-tenant. |
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

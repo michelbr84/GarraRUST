@@ -2094,15 +2094,44 @@ impl AgentRuntime {
         // que vem antes ou depois faria o histograma medir o GarraIA em vez de
         // medir o provider, que e a pergunta que o operador tem.
         let inicio = std::time::Instant::now();
-        match provider.embed_documents(&[text.to_string()]).await {
-            Ok(mut vectors) => {
-                metrics::record_embed_latency(
-                    provider.provider_id(),
-                    metrics::EmbedOp::Document,
-                    inicio.elapsed().as_secs_f64(),
+        let resultado = provider.embed_documents(&[text.to_string()]).await;
+
+        // Mede sucesso **e** falha, pela mesma razao que o `recall_context`:
+        // uma chamada que morre em 30s de timeout e exatamente a latencia que
+        // o operador precisa ver. Registrar so o ramo `Ok` faria a p95
+        // melhorar durante uma rajada de timeout, que e quando o painel mais
+        // precisa piorar. (Apontado pela auditoria do #957: a primeira versao
+        // media so o sucesso aqui e os dois no recall, e a assimetria nao
+        // tinha defesa.)
+        //
+        // Sem label de desfecho: o contador de falha ao lado ja responde
+        // "quantas falharam", e separar o histograma em duas series faria a
+        // pergunta que importa — "quanto o provider esta demorando" — exigir
+        // somar as duas de volta.
+        metrics::record_embed_latency(
+            provider.provider_id(),
+            metrics::EmbedOp::Document,
+            inicio.elapsed().as_secs_f64(),
+        );
+
+        match resultado {
+            // Lote vazio conta como falha, e nao como `None` silencioso.
+            // Nenhum dos tres providers reais devolve lote vazio para uma
+            // entrada, mas tratar isso como sucesso-sem-vetor produziria um
+            // `ingested_total{outcome=failed}` sem par em
+            // `embed_failures_total`, e o operador veria dois numeros que nao
+            // fecham. Apontado pela auditoria do #957.
+            Ok(vectors) if vectors.is_empty() => {
+                metrics::inc_embed_failure(provider.provider_id(), metrics::EmbedOp::Document);
+                warn!(
+                    provider = provider.provider_id(),
+                    model = provider.model(),
+                    "memoria: o provider de embeddings devolveu lote vazio para um \
+                     texto; a entrada vai ser gravada sem vetor (#948)"
                 );
-                vectors.pop()
+                None
             }
+            Ok(mut vectors) => vectors.pop(),
             Err(e) => {
                 // O `.ok()` que existia aqui era o primeiro elo da cadeia de
                 // perda silenciosa do #948: a entrada era gravada sem vetor,
@@ -2129,15 +2158,17 @@ impl AgentRuntime {
     async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
         let inicio = std::time::Instant::now();
-        match provider.embed_query(text).await {
-            Ok(vector) => {
-                metrics::record_embed_latency(
-                    provider.provider_id(),
-                    metrics::EmbedOp::Query,
-                    inicio.elapsed().as_secs_f64(),
-                );
-                Some(vector)
-            }
+        let resultado = provider.embed_query(text).await;
+
+        // Sucesso e falha, como no `embed_document` e pelo mesmo motivo.
+        metrics::record_embed_latency(
+            provider.provider_id(),
+            metrics::EmbedOp::Query,
+            inicio.elapsed().as_secs_f64(),
+        );
+
+        match resultado {
+            Ok(vector) => Some(vector),
             Err(e) => {
                 metrics::inc_embed_failure(provider.provider_id(), metrics::EmbedOp::Query);
                 warn!(
@@ -2300,6 +2331,14 @@ mod tests {
                 .any(|m| m == "garraia_memory_ingested_total{outcome=failed}"),
             "desfecho `failed` nao foi contado: {emitidas:?}"
         );
+        // A latencia da tentativa que falhou tambem entra: e o timeout que o
+        // operador precisa ver. Antes da auditoria do #957 este ramo nao era
+        // medido, e a p95 melhorava durante uma rajada de falha.
+        assert!(
+            emitidas.iter().any(|m| m
+                == "garraia_memory_embed_latency_seconds{operation=document,provider=provider-de-teste}"),
+            "a tentativa que falhou nao foi medida: {emitidas:?}"
+        );
     }
 
     /// Os quatro desfechos precisam ser distinguiveis. `no_provider` e
@@ -2406,6 +2445,60 @@ mod tests {
                 .iter()
                 .any(|m| m == "garraia_memory_ingested_total{outcome=embedded}"),
             "{emitidas:?}"
+        );
+    }
+
+    /// Todo valor da label `provider` tem de vir do conjunto conhecido.
+    ///
+    /// A primeira versao deste teste afirmava **ausencia** — que nenhuma label
+    /// contivesse certas strings proibidas —, e a auditoria do #957 mostrou
+    /// que isso passa vazio: um provider futuro que devolvesse id dinamico sem
+    /// nenhuma daquelas strings teria cardinalidade ilimitada e o teste
+    /// continuaria verde. Afirmar **presenca** num conjunto fechado e o que
+    /// realmente cobra a invariante.
+    #[tokio::test]
+    async fn label_de_provider_vem_de_conjunto_fechado() {
+        // Os tres de producao mais os de teste deste arquivo. Um provider novo
+        // tem de entrar aqui de proposito, o que e o ponto: a lista e a
+        // revisao.
+        const CONHECIDOS: &[&str] = &["ollama", "openai", "cohere", "contando"];
+
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+        rt.set_embedding_provider(Arc::new(ContandoEmbeddings(
+            std::sync::atomic::AtomicUsize::new(0),
+        )));
+
+        let emitidas = metricas_emitidas(|| async {
+            rt.remember_turn("s1", None, None, "um fato de verdade para lembrar", "")
+                .await
+                .expect("remember_turn");
+            rt.recall_context("quem sou eu", Some("s1"), None, 5)
+                .await
+                .expect("recall");
+        })
+        .await;
+
+        let mut viu_provider = false;
+        for m in &emitidas {
+            let Some(inicio) = m.find("provider=") else {
+                continue;
+            };
+            viu_provider = true;
+            let resto = &m[inicio + "provider=".len()..];
+            let valor = resto
+                .split([',', '}'])
+                .next()
+                .expect("split sempre devolve ao menos um pedaco");
+            assert!(
+                CONHECIDOS.contains(&valor),
+                "label `provider` fora do conjunto fechado: {valor:?} em {m}"
+            );
+        }
+        assert!(
+            viu_provider,
+            "o teste precisa ter visto ao menos um provider"
         );
     }
 
