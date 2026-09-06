@@ -3,9 +3,9 @@ use std::sync::Arc;
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, CohereEmbeddingProvider, EmbeddingProvider,
-    FileReadTool, FileWriteTool, LlamaCppProvider, McpManager, OllamaEmbeddingProvider,
-    OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider, ResilientEmbeddingProvider,
-    WebFetchTool, WebSearchTool,
+    FileReadTool, FileWriteTool, LlamaCppProvider, McpManager, NoisePolicy,
+    OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
+    ResilientEmbeddingProvider, WebFetchTool, WebSearchTool,
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -651,6 +651,23 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         runtime.set_context_policy(policy);
     }
 
+    // #952: o que nao merece vetor na ingestao.
+    {
+        let policy = noise_policy_from_config(config);
+        if policy.is_enabled() {
+            info!(
+                min_chars = policy.min_chars(),
+                extras = config.memory.ingestion.extra_noise_phrases.len(),
+                "filtro de ruido da memoria ativo: turno curto ou puramente \
+                 social e gravado sem vetor (#952). Desligue em \
+                 `memory.ingestion.filter_noise` se quiser embeddar tudo."
+            );
+        } else {
+            info!("filtro de ruido da memoria desligado por config (#952)");
+        }
+        runtime.set_noise_policy(policy);
+    }
+
     // Wire tools_model: model override used when tools are present (e.g. avoids openrouter/free
     // which may not support function calling).
     if let Some(ref tm) = config.agent.tools_model {
@@ -1078,6 +1095,17 @@ pub async fn build_mcp_tools(
 /// Devolve `None` quando `memory.embedding_provider` nao aponta para nenhuma
 /// entrada de `embeddings:`, ou quando o provider apontado nao pode ser
 /// construido (sem credencial contra endpoint oficial, tipo desconhecido).
+/// A politica de ruido da ingestao (#952), a partir da config.
+///
+/// Publica pela mesma razao que [`build_embedding_provider`]: o `garra memory
+/// reindex` precisa da **mesma** politica que a ingestao usou. Com politicas
+/// divergentes, o reindex reembeddaria exatamente as entradas que a ingestao
+/// acabou de pular — e o operador pagaria provider para desfazer o filtro.
+pub fn noise_policy_from_config(config: &AppConfig) -> NoisePolicy {
+    let i = &config.memory.ingestion;
+    NoisePolicy::new(i.filter_noise, i.min_chars, &i.extra_noise_phrases)
+}
+
 pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingProvider>> {
     let embed_name = config.memory.embedding_provider.as_ref()?;
     let embed_config = config.embeddings.get(embed_name)?;
@@ -1268,5 +1296,60 @@ mod tests {
         );
         // Should not panic — unknown providers are logged and skipped
         let _runtime = build_agent_runtime(&config);
+    }
+
+    // ─── #952: a politica de ruido, config <-> agents ─────────────────────
+
+    /// `garraia-agents` nao depende de `garraia-config` (de proposito: a
+    /// politica chega la como dado puro), entao o piso de caracteres e a
+    /// faixa aceita existem escritos **duas vezes**. Este crate e o unico
+    /// que ve os dois lados, e este teste e o que impede os dois numeros de
+    /// divergirem em silencio — o sintoma seria um `config check` aceitando
+    /// um valor que a politica trata de outro jeito.
+    #[test]
+    fn os_dois_lados_da_politica_de_ruido_concordam_nos_numeros() {
+        assert_eq!(
+            garraia_agents::DEFAULT_MIN_CHARS,
+            garraia_config::model::IngestionConfig::default().min_chars,
+            "default do piso divergiu entre garraia-agents e garraia-config"
+        );
+        assert_eq!(
+            garraia_agents::MIN_CHARS_MAX,
+            garraia_config::model::INGESTION_MIN_CHARS_MAX,
+            "teto do piso divergiu entre garraia-agents e garraia-config"
+        );
+    }
+
+    /// A config default tem que produzir a politica default. Se o bootstrap
+    /// deixasse de ler alguma chave, o gateway rodaria com uma politica e o
+    /// `garra memory reindex` com outra — e o reindex desfaria o filtro.
+    #[test]
+    fn config_default_produz_a_politica_default() {
+        let config = AppConfig::default();
+        assert_eq!(
+            noise_policy_from_config(&config),
+            garraia_agents::NoisePolicy::default()
+        );
+    }
+
+    #[test]
+    fn filter_noise_false_desliga_a_politica() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.filter_noise = false;
+        let policy = noise_policy_from_config(&config);
+        assert!(!policy.is_enabled());
+        assert!(!policy.is_noise("oi"));
+    }
+
+    #[test]
+    fn extras_da_config_chegam_na_politica() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.extra_noise_phrases = vec!["salve familia".to_string()];
+        let policy = noise_policy_from_config(&config);
+        assert!(policy.is_noise("Salve, familia!"));
+        assert!(
+            policy.is_noise("bom dia"),
+            "a lista padrao continua valendo"
+        );
     }
 }
