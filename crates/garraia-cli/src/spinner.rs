@@ -20,6 +20,11 @@
 //! não no stdout global. É isso que permite afirmar, em teste, que a saída
 //! não-TTY não contém um único quadro de animação.
 //!
+//! Latência e tempo decorrido (#936) também são derivados de **ticks**, nunca
+//! de relógio: o spinner só fica visível depois de [`SHOW_DELAY_TICKS`]
+//! (resposta rápida não pisca nada) e o rótulo `4.7s` aparece depois de
+//! [`ELAPSED_AFTER_TICKS`], calculado como `ticks × FRAME_INTERVAL_MS`.
+//!
 //! # Invariantes
 //!
 //! - O cursor **nunca** é escondido. Não emitimos `\x1b[?25l` em lugar nenhum,
@@ -43,23 +48,30 @@ const FRAMES_ASCII: &[&str] = &["<   >", "</  >", "<// >", "<///>", "< //>", "< 
 
 /// Mensagens de atividade em PT-BR. Curtas, variadas e sem prometer nada sobre
 /// o conteúdo da resposta.
+///
+/// A lista é **intercalada de propósito** (#936): três mensagens profissionais
+/// para cada uma com a personalidade do Garra (as quatro citadas na própria
+/// issue). A rotação é sequencial, então a proporção 3:1 sai da ordem da
+/// lista — nada de `rand`. O teste
+/// `personality_messages_stay_in_the_minority_and_spread_out` fixa a razão e
+/// o espaçamento.
 const MESSAGES_UNICODE: &[&str] = &[
+    "Processando…",
+    "Gerando a resposta…",
+    "Consultando o modelo…",
     "Afiando as garras…",
-    "Caçando uma boa resposta…",
+    "Analisando o pedido…",
     "Organizando os tokens…",
-    "Consultando os neurônios de silício…",
+    "Reunindo o contexto…",
+    "Caçando uma boa resposta…",
+    "Preparando a resposta…",
+    "Verificando os detalhes…",
+    "Compondo o texto…",
     "Farejando bugs…",
-    "Desembaraçando pensamentos digitais…",
-    "Procurando a ponta do código…",
+    "Revisando a resposta…",
+    "Trabalhando nisso…",
+    "Quase lá…",
     "Servindo café aos transistores…",
-    "Convencendo os bits a cooperarem…",
-    "Preparando o bote…",
-    "Seguindo o rastro…",
-    "Alinhando as vírgulas…",
-    "Puxando o fio da meada…",
-    "Espreitando a resposta…",
-    "Domando os ponteiros…",
-    "Lendo as entrelinhas…",
 ];
 
 /// As mesmas mensagens sem acento e sem reticências tipográficas.
@@ -70,22 +82,22 @@ const MESSAGES_UNICODE: &[&str] = &[
 /// inteiro — quadro E texto. Índice a índice, o mesmo texto de
 /// `MESSAGES_UNICODE`.
 const MESSAGES_ASCII: &[&str] = &[
+    "Processando...",
+    "Gerando a resposta...",
+    "Consultando o modelo...",
     "Afiando as garras...",
-    "Cacando uma boa resposta...",
+    "Analisando o pedido...",
     "Organizando os tokens...",
-    "Consultando os neuronios de silicio...",
+    "Reunindo o contexto...",
+    "Cacando uma boa resposta...",
+    "Preparando a resposta...",
+    "Verificando os detalhes...",
+    "Compondo o texto...",
     "Farejando bugs...",
-    "Desembaracando pensamentos digitais...",
-    "Procurando a ponta do codigo...",
+    "Revisando a resposta...",
+    "Trabalhando nisso...",
+    "Quase la...",
     "Servindo cafe aos transistores...",
-    "Convencendo os bits a cooperarem...",
-    "Preparando o bote...",
-    "Seguindo o rastro...",
-    "Alinhando as virgulas...",
-    "Puxando o fio da meada...",
-    "Espreitando a resposta...",
-    "Domando os ponteiros...",
-    "Lendo as entrelinhas...",
 ];
 
 /// Quadros por segundo do desenho da garra.
@@ -94,6 +106,17 @@ pub const FRAME_INTERVAL_MS: u64 = 90;
 /// Quantos quadros uma mensagem dura antes de rodar para a próxima
 /// (`28 * 90ms` ≈ 2,5 s).
 const FRAMES_PER_MESSAGE: usize = 28;
+
+/// Ticks antes do primeiro quadro visível (`3 * 90ms` ≈ 270 ms, dentro da
+/// janela de ~250-350 ms do #936). Resposta que chega antes disso nunca
+/// produz um quadro — sem flash para limpar. Derivado de ticks, não de
+/// relógio: o estado continua puro.
+const SHOW_DELAY_TICKS: usize = 3;
+
+/// Ticks até o tempo decorrido entrar na linha (`28 * 90ms` ≈ 2,5 s — junto
+/// da primeira rotação de mensagem, de propósito: espera curta não precisa de
+/// cronômetro, espera longa ganha os dois sinais de vida de uma vez).
+const ELAPSED_AFTER_TICKS: usize = FRAMES_PER_MESSAGE;
 
 /// Largura assumida quando o terminal não sabe informar a dele.
 const FALLBACK_WIDTH: usize = 80;
@@ -162,9 +185,33 @@ impl SpinnerState {
         self.style.messages()[self.message]
     }
 
+    /// O quadro atual pode ir para a tela? Falso durante a janela de aparição
+    /// (#936): resposta rápida termina antes e o usuário nunca vê um flash.
+    pub fn visible(&self) -> bool {
+        self.ticks >= SHOW_DELAY_TICKS
+    }
+
+    /// Tempo decorrido derivado dos ticks (`ticks × 90ms`), com uma casa
+    /// decimal — `"4.7s"`. `None` antes de [`ELAPSED_AFTER_TICKS`].
+    ///
+    /// É o tempo **animado**, não um relógio: sob `MissedTickBehavior::Delay`
+    /// ele pode ficar aquém do relógio de parede se o runtime engasgar. A
+    /// troca é deliberada — manter `SpinnerState` puro e testável vale mais
+    /// que precisão de cronômetro num rótulo de espera.
+    pub fn elapsed_label(&self) -> Option<String> {
+        if self.ticks < ELAPSED_AFTER_TICKS {
+            return None;
+        }
+        let tenths = (self.ticks as u64 * FRAME_INTERVAL_MS) / 100;
+        Some(format!("{}.{}s", tenths / 10, tenths % 10))
+    }
+
     /// Linha completa, já truncada para `width` colunas.
     pub fn line(&self, width: usize) -> String {
-        let raw = format!("{} {}", self.frame(), self.message());
+        let raw = match self.elapsed_label() {
+            Some(elapsed) => format!("{} {} {}", self.frame(), self.message(), elapsed),
+            None => format!("{} {}", self.frame(), self.message()),
+        };
         // O marcador de corte segue o estilo: "…" só é seguro onde o resto
         // do texto também é.
         let ellipsis = match self.style {
@@ -206,15 +253,23 @@ impl Spinner {
         }
     }
 
-    /// Desenha o quadro atual e avança o estado.
+    /// Desenha o quadro atual (se a janela de aparição já passou) e avança o
+    /// estado.
     ///
     /// Escreve `\r` + a linha + `\x1b[K` (apaga até o fim da linha), de modo que
     /// uma mensagem curta nunca deixe cauda de uma mensagem longa anterior.
+    ///
+    /// Durante os primeiros [`SHOW_DELAY_TICKS`] o estado avança mas nada é
+    /// escrito (#936): resposta quase instantânea não pisca spinner nenhum, e
+    /// `painted` continua falso — então o [`Spinner::clear`] desses turnos
+    /// também não escreve nada.
     pub fn render_frame(&mut self, out: &mut (impl io::Write + ?Sized)) {
-        let line = self.state.line(self.width);
-        let _ = write!(out, "\r\x1b[2m{line}\x1b[0m\x1b[K");
-        let _ = out.flush();
-        self.painted = true;
+        if self.state.visible() {
+            let line = self.state.line(self.width);
+            let _ = write!(out, "\r\x1b[2m{line}\x1b[0m\x1b[K");
+            let _ = out.flush();
+            self.painted = true;
+        }
         self.state.tick();
     }
 
@@ -413,15 +468,27 @@ mod tests {
         }
     }
 
+    /// Spinner já além da janela de aparição, pronto para pintar no próximo
+    /// `render_frame`. O caminho dentro da janela tem testes próprios.
+    fn spinner_past_show_delay(style: SpinnerStyle) -> Spinner {
+        let mut spinner = Spinner::new(style, 80, 0);
+        let mut sink: Vec<u8> = Vec::new();
+        for _ in 0..SHOW_DELAY_TICKS {
+            spinner.render_frame(&mut sink);
+        }
+        assert!(sink.is_empty(), "a janela de aparição não pode pintar");
+        spinner
+    }
+
     #[test]
     fn render_frame_writes_a_frame_then_clear_removes_it() {
-        let mut spinner = Spinner::new(SpinnerStyle::Ascii, 80, 0);
+        let mut spinner = spinner_past_show_delay(SpinnerStyle::Ascii);
         let mut out: Vec<u8> = Vec::new();
 
         spinner.render_frame(&mut out);
         let painted = String::from_utf8(out.clone()).unwrap();
         assert!(painted.starts_with('\r'), "quadro começa com CR");
-        assert!(painted.contains("<   >"), "quadro desenhado: {painted:?}");
+        assert!(painted.contains("///"), "quadro desenhado: {painted:?}");
 
         out.clear();
         spinner.clear(&mut out);
@@ -430,7 +497,7 @@ mod tests {
 
     #[test]
     fn clear_is_idempotent() {
-        let mut spinner = Spinner::new(SpinnerStyle::Ascii, 80, 0);
+        let mut spinner = spinner_past_show_delay(SpinnerStyle::Ascii);
         let mut out: Vec<u8> = Vec::new();
         spinner.render_frame(&mut out);
 
@@ -442,6 +509,26 @@ mod tests {
         out.clear();
         spinner.clear(&mut out);
         assert!(out.is_empty(), "segundo clear não escreve nada");
+    }
+
+    /// #936: nada aparece dentro da janela de aparição, e um turno que termina
+    /// ali dentro também não gera limpeza — não há o que limpar.
+    #[test]
+    fn nothing_is_painted_during_the_show_delay() {
+        let mut spinner = Spinner::new(SpinnerStyle::Ascii, 80, 0);
+        let mut out: Vec<u8> = Vec::new();
+        for _ in 0..SHOW_DELAY_TICKS {
+            spinner.render_frame(&mut out);
+        }
+        assert!(out.is_empty(), "pintou dentro da janela: {out:?}");
+
+        // Resposta rápida: o clear de um spinner nunca pintado é um no-op.
+        spinner.clear(&mut out);
+        assert!(out.is_empty(), "limpou o que nunca foi pintado");
+
+        // O tick seguinte à janela pinta.
+        spinner.render_frame(&mut out);
+        assert!(!out.is_empty(), "primeiro quadro após a janela");
     }
 
     #[test]
@@ -517,5 +604,76 @@ mod tests {
         let total = seen.len();
         seen.dedup();
         assert_eq!(seen.len(), total, "mensagem duplicada na lista");
+    }
+
+    /// #936: profissional na maioria, personalidade na minoria — e espalhada.
+    /// As quatro frases de personalidade são exatamente as que a issue cita.
+    #[test]
+    fn personality_messages_stay_in_the_minority_and_spread_out() {
+        const GARRA_FLAVOR: [&str; 4] = [
+            "Afiando as garras…",
+            "Caçando uma boa resposta…",
+            "Farejando bugs…",
+            "Servindo café aos transistores…",
+        ];
+        let positions: Vec<usize> = MESSAGES_UNICODE
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| GARRA_FLAVOR.contains(m))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(positions.len(), GARRA_FLAVOR.len(), "as 4 têm de estar lá");
+        assert!(
+            positions.len() * 4 <= MESSAGES_UNICODE.len(),
+            "personalidade acima de 1/4 da lista"
+        );
+        // Rotação é sequencial, então "espalhada" = nunca duas adjacentes,
+        // inclusive na volta da lista.
+        for pair in positions.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= 2,
+                "personalidade adjacente: {positions:?}"
+            );
+        }
+        let wrap_gap = MESSAGES_UNICODE.len() - positions.last().unwrap() + positions[0];
+        assert!(
+            wrap_gap >= 2,
+            "personalidade adjacente na volta: {positions:?}"
+        );
+    }
+
+    /// #936: o cronômetro só aparece em espera longa, e cresce com os ticks.
+    #[test]
+    fn elapsed_label_appears_only_after_the_threshold() {
+        let mut state = SpinnerState::new(SpinnerStyle::Unicode, 0);
+        for _ in 0..(ELAPSED_AFTER_TICKS - 1) {
+            assert_eq!(state.elapsed_label(), None, "cedo demais para cronômetro");
+            state.tick();
+        }
+        state.tick();
+        // 28 ticks × 90ms = 2520ms → "2.5s"; derivado de ticks, sem relógio.
+        assert_eq!(state.elapsed_label().as_deref(), Some("2.5s"));
+        assert!(state.line(80).ends_with("2.5s"), "{}", state.line(80));
+
+        for _ in 0..25 {
+            state.tick();
+        }
+        // 53 ticks × 90ms = 4770ms → "4.7s".
+        assert_eq!(state.elapsed_label().as_deref(), Some("4.7s"));
+    }
+
+    /// A linha com cronômetro continua respeitando a largura do terminal.
+    #[test]
+    fn elapsed_line_is_still_truncated_to_width() {
+        let mut state = SpinnerState::new(SpinnerStyle::Ascii, 0);
+        for _ in 0..(ELAPSED_AFTER_TICKS * 3) {
+            state.tick();
+        }
+        assert!(state.elapsed_label().is_some());
+        for width in [MIN_WIDTH, 20, 30] {
+            let line = state.line(width);
+            assert!(line.chars().count() <= width, "estourou {width}: {line:?}");
+            assert!(line.is_ascii(), "cronômetro quebrou o fallback: {line:?}");
+        }
     }
 }

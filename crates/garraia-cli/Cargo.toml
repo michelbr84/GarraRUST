@@ -77,6 +77,9 @@ mcp-http = ["garraia-gateway/mcp-http", "garraia-agents/mcp-http"]
 [dev-dependencies]
 tempfile = "3"
 testcontainers = "0.27"
+# #936 — os testes do indicador de atividade usam tempo virtual
+# (`start_paused`) para a janela de aparição de ~270ms ser determinística.
+tokio = { workspace = true, features = ["test-util"] }
 # Integration tests run as their own bin crates, so they need explicit
 # access to some deps from the test file. Reuse workspace pins.
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
