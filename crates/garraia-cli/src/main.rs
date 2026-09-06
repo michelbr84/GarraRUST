@@ -9,6 +9,7 @@ mod doctor;
 mod glob_cmd;
 mod max_power;
 mod mcp_server;
+mod memory_cmd;
 mod migrate;
 mod migrate_workspace;
 mod repo_workflow;
@@ -244,6 +245,16 @@ enum Commands {
         yes: bool,
     },
 
+    /// Inspect, repair, and prune the semantic memory (#950).
+    ///
+    /// Opens the same `memory.db` the gateway uses (`AppConfig::memory_db_path`)
+    /// and, when a subcommand needs one, the same embedding provider — so what
+    /// `reindex` writes is exactly what the agent's recall reads back.
+    Memory {
+        #[command(subcommand)]
+        action: MemoryCommands,
+    },
+
     /// Inspect, validate, and diagnose the effective configuration
     Config {
         #[command(subcommand)]
@@ -310,6 +321,79 @@ enum Commands {
         /// Defaults to the current working directory.
         #[arg(long, value_name = "DIR")]
         workspace: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCommands {
+    /// Counts plus the vector-index integrity report (#960).
+    Stats {
+        /// Emit machine-readable JSON instead of the human-friendly report.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List the most recent entries, newest first.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Only entries stored without a vector — the `reindex` queue.
+        #[arg(long)]
+        no_embedding: bool,
+
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Search the memory through the same recall the agent uses.
+    ///
+    /// Semantic when an embedding provider is configured; textual otherwise.
+    /// The output says which of the two ran.
+    Search {
+        query: String,
+
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Re-embed the entries stored without a vector (#953).
+    Reindex {
+        /// Cap on how many entries to process. Omit to drain the queue.
+        #[arg(long)]
+        limit: Option<usize>,
+
+        #[arg(long, default_value_t = garraia_agents::DEFAULT_REINDEX_BATCH_SIZE)]
+        batch_size: usize,
+
+        /// Report what would be done without calling the provider or writing.
+        #[arg(long)]
+        dry_run: bool,
+
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Delete one entry by id, along with its vector.
+    Delete {
+        id: String,
+
+        /// Skip the confirmation prompt (required when stdin is not a TTY).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Delete every entry older than N days, along with their vectors.
+    Compact {
+        #[arg(long, default_value_t = 90)]
+        older_than_days: i64,
+
+        /// Skip the confirmation prompt (required when stdin is not a TTY).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -1759,6 +1843,40 @@ async fn async_main(
                 yes,
             )
             .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Memory { action } => {
+            // O console limpo do #933 vale aqui: a saida do subcomando e o
+            // relatorio, e o tracing so entra quando o operador pede.
+            if cli.verbose || cli.debug {
+                init_tracing(&effective_level);
+            }
+            let code = match action {
+                MemoryCommands::Stats { json } => memory_cmd::run_stats(&config, json).await?,
+                MemoryCommands::List {
+                    limit,
+                    no_embedding,
+                    json,
+                } => memory_cmd::run_list(&config, limit, no_embedding, json).await?,
+                MemoryCommands::Search { query, limit, json } => {
+                    memory_cmd::run_search(&config, query, limit, json).await?
+                }
+                MemoryCommands::Reindex {
+                    limit,
+                    batch_size,
+                    dry_run,
+                    json,
+                } => memory_cmd::run_reindex(&config, limit, batch_size, dry_run, json).await?,
+                MemoryCommands::Delete { id, yes } => {
+                    memory_cmd::run_delete(&config, id, yes).await?
+                }
+                MemoryCommands::Compact {
+                    older_than_days,
+                    yes,
+                } => memory_cmd::run_compact(&config, older_than_days, yes).await?,
+            };
             if code != 0 {
                 std::process::exit(code);
             }

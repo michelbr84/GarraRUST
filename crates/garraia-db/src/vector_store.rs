@@ -275,21 +275,30 @@ impl VectorStore {
     /// Base do relatório de órfãos: o chamador (MemoryStore) passa os ids
     /// vivos de `memory_entries`.
     pub fn orphan_map_entries(&self, live_ids: &[&str]) -> Result<Vec<String>> {
-        let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare("SELECT entry_id FROM vec_id_map")
-            .map_err(|e| Error::Database(format!("failed to prepare orphan scan: {e}")))?;
-        let all: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| Error::Database(format!("failed to scan vec_id_map: {e}")))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| Error::Database(format!("failed to collect vec_id_map: {e}")))?;
-
+        let all = self.mapped_ids()?;
         let live: std::collections::HashSet<&str> = live_ids.iter().copied().collect();
         Ok(all
             .into_iter()
             .filter(|id| !live.contains(id.as_str()))
             .collect())
+    }
+
+    /// Todos os `entry_id` presentes no `vec_id_map`.
+    ///
+    /// A pergunta "quais entradas estão indexadas?" só pode ser feita a esta
+    /// conexão: em produção o índice mora no mesmo arquivo, mas nos testes
+    /// (`MemoryStore::in_memory_with_vectors`) ele é um segundo banco em
+    /// memória, e um `JOIN` a partir da conexão da memória não enxergaria a
+    /// tabela.
+    pub fn mapped_ids(&self) -> Result<Vec<String>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare("SELECT entry_id FROM vec_id_map")
+            .map_err(|e| Error::Database(format!("failed to prepare vec_id_map scan: {e}")))?;
+        stmt.query_map([], |row| row.get(0))
+            .map_err(|e| Error::Database(format!("failed to scan vec_id_map: {e}")))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect vec_id_map: {e}")))
     }
 
     /// KNN search: find the nearest `limit` embeddings to `query`.
