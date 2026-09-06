@@ -416,6 +416,97 @@ impl MemoryStore {
         }
     }
 
+    /// Entradas gravadas **sem vetor** — a fila de reindexação (#953).
+    ///
+    /// O critério é só `embedding IS NULL`. A issue propunha exigir também
+    /// `embedding_model IS NULL`, mas isso perderia exatamente as entradas
+    /// mais antigas: até o #948 o modelo era gravado mesmo sem vetor, então
+    /// as linhas legadas têm um modelo que mente. Filtrar por ele deixaria
+    /// justamente elas de fora da reindexação.
+    ///
+    /// Ordena da mais antiga para a mais nova: numa base grande, reindexar
+    /// em lotes sucessivos avança de forma previsível em vez de reprocessar
+    /// as mesmas linhas.
+    pub fn entries_missing_embeddings(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role,
+                        content, embedding, embedding_model, embedding_dimensions, metadata,
+                        created_at
+                 FROM memory_entries
+                 WHERE embedding IS NULL
+                 ORDER BY datetime(created_at) ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare reindex scan: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![limit as i64], row_to_entry)
+            .map_err(|e| Error::Database(format!("failed to scan entries to reindex: {e}")))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect entries to reindex: {e}")))
+    }
+
+    /// Grava o vetor de uma entrada que estava sem, e a indexa (#953).
+    ///
+    /// Devolve `false` quando o id não existe — a entrada pode ter sido
+    /// apagada entre a listagem e a gravação, e isso não é erro.
+    ///
+    /// O modelo é gravado **junto** com o vetor, nunca antes: é a mesma regra
+    /// que o #948 estabeleceu na ingestão, e ela vale aqui pelo mesmo motivo
+    /// — a coluna descreve o vetor.
+    pub fn set_embedding(&self, id: &str, embedding: &[f32], model: &str) -> Result<bool> {
+        let blob = embedding_to_blob(embedding);
+        let dims = embedding.len();
+
+        let updated = {
+            let conn = self.connection()?;
+            conn.execute(
+                "UPDATE memory_entries
+                 SET embedding = ?, embedding_model = ?, embedding_dimensions = ?
+                 WHERE id = ?",
+                params![blob, model, dims as i64, id],
+            )
+            .map_err(|e| Error::Database(format!("failed to write embedding: {e}")))?
+        };
+
+        if updated == 0 {
+            return Ok(false);
+        }
+
+        if let Some(vs) = &self.vector_store {
+            vs.ensure_vec_table(dims)?;
+            vs.insert_embedding(id, embedding, dims)?;
+        }
+
+        Ok(true)
+    }
+
+    /// Entradas mais recentes, sem filtro de sessão — o que a CLI lista.
+    pub fn recent_entries(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        self.query_candidates_with_tenant_sync(None, None, None, None, limit)
+    }
+
+    /// Apaga uma entrada pelo id, junto do vetor e do mapeamento.
+    ///
+    /// Devolve `false` se o id não existia.
+    pub fn delete_entry(&self, id: &str) -> Result<bool> {
+        let deleted = {
+            let conn = self.connection()?;
+            conn.execute("DELETE FROM memory_entries WHERE id = ?", params![id])
+                .map_err(|e| Error::Database(format!("failed to delete entry: {e}")))?
+        };
+
+        if deleted == 0 {
+            return Ok(false);
+        }
+
+        self.cleanup_vectors(&[id.to_string()]);
+        Ok(true)
+    }
+
     fn remember_sync(&self, entry: NewMemoryEntry) -> Result<String> {
         if entry.content.trim().is_empty() {
             return Err(Error::Database("memory content cannot be empty".into()));

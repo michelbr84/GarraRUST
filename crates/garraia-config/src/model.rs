@@ -419,6 +419,25 @@ pub struct EmbeddingProviderConfig {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+impl AppConfig {
+    /// Diretorio de dados efetivo: o configurado, ou `<config_dir>/data`.
+    pub fn resolved_data_dir(&self) -> std::path::PathBuf {
+        self.data_dir
+            .clone()
+            .unwrap_or_else(|| crate::ConfigLoader::default_config_dir().join("data"))
+    }
+
+    /// Caminho do banco da memoria semantica.
+    ///
+    /// Fonte **unica**: o gateway e a CLI (`garra memory`) precisam abrir
+    /// exatamente o mesmo arquivo. Duas copias desta resolucao divergiriam no
+    /// dia em que uma delas mudasse, e o sintoma seria o pior possivel — a CLI
+    /// relatando uma memoria vazia enquanto o agente conversa com outra.
+    pub fn memory_db_path(&self) -> std::path::PathBuf {
+        self.resolved_data_dir().join("memory.db")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default = "default_memory_enabled")]

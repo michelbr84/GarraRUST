@@ -577,166 +577,26 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
     // --- Memory ---
     if config.memory.enabled {
-        let data_dir = config
-            .data_dir
-            .clone()
-            .unwrap_or_else(|| garraia_config::ConfigLoader::default_config_dir().join("data"));
+        let data_dir = config.resolved_data_dir();
 
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             warn!("failed to create data directory: {e}");
         }
 
-        let memory_db_path = data_dir.join("memory.db");
+        // Mesma resolucao que a CLI usa (`garra memory`) — ver
+        // `AppConfig::memory_db_path`.
+        let memory_db_path = config.memory_db_path();
         match MemoryStore::open(&memory_db_path) {
             Ok(store) => {
                 let store = Arc::new(store);
                 runtime.set_memory_provider(store);
                 info!("memory store opened at {}", memory_db_path.display());
 
-                // Attach embedding provider if configured
-                if let Some(embed_name) = &config.memory.embedding_provider
-                    && let Some(embed_config) = config.embeddings.get(embed_name)
-                {
-                    // Timeout proprio, nao mais o do LLM (#962): 120s para uma
-                    // chamada que responde em milissegundos significava que um
-                    // Ollama travado segurava o turno inteiro do agente, que
-                    // espera o `query_embedding` para montar o recall.
-                    let embed_client = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(
-                            config.timeouts.embeddings.default_secs,
-                        ))
-                        .build()
-                        .unwrap_or_default();
-
-                    let built: Option<Arc<dyn EmbeddingProvider>> =
-                        match embed_config.provider.as_str() {
-                            // =====================================
-                            // COHERE
-                            // =====================================
-                            "cohere" => {
-                                let api_key = resolve_api_key(
-                                    embed_config.api_key.as_deref(),
-                                    "COHERE_API_KEY",
-                                    "COHERE_API_KEY",
-                                );
-
-                                if let Some(key) = api_key {
-                                    Some(Arc::new(
-                                        CohereEmbeddingProvider::new(
-                                            key,
-                                            embed_config.model.clone(),
-                                            embed_config.base_url.clone(),
-                                        )
-                                        .with_client(embed_client.clone()),
-                                    ))
-                                } else {
-                                    warn!("skipping cohere embedding provider: no API key");
-                                    None
-                                }
-                            }
-
-                            // =====================================
-                            // OLLAMA (ADICIONE ESTE BLOCO)
-                            // =====================================
-                            "ollama" => Some(Arc::new(
-                                OllamaEmbeddingProvider::new(
-                                    embed_config.model.clone(),
-                                    embed_config.base_url.clone(),
-                                )
-                                .with_client(embed_client.clone()),
-                            )),
-
-                            // =====================================
-                            // OPENAI-COMPATIBLE (LM Studio, OpenAI, etc.)
-                            // =====================================
-                            "openai" => {
-                                // Antes daqui saia o literal "no-key" para qualquer
-                                // endpoint. Contra a OpenAI oficial isso e um 401 em
-                                // toda chamada — e o erro era engolido logo adiante
-                                // (#948), entao a memoria simplesmente parava de ser
-                                // indexada sem ninguem saber. E a chave nem era
-                                // procurada no ambiente, so no arquivo de config.
-                                let api_key = resolve_api_key(
-                                    embed_config.api_key.as_deref(),
-                                    KEY_ENV_VAR_OPENAI,
-                                    KEY_ENV_VAR_OPENAI,
-                                );
-                                let self_hosted = is_self_hosted_openai_endpoint(
-                                    embed_config.base_url.as_deref(),
-                                );
-
-                                match (api_key, self_hosted) {
-                                    (Some(key), _) => Some(Arc::new(
-                                        OpenAiEmbeddingProvider::new(
-                                            key,
-                                            embed_config.model.clone(),
-                                            embed_config.base_url.clone(),
-                                        )
-                                        .with_client(embed_client.clone()),
-                                    )),
-                                    // LM Studio, vLLM, gateway interno: nao pedem
-                                    // credencial, e mandar um bearer vazio faz alguns
-                                    // recusarem. O provider omite o header nesse caso.
-                                    (None, true) => {
-                                        info!(
-                                            "openai embedding provider '{embed_name}': endpoint \
-                                         proprio sem credencial configurada, seguindo sem \
-                                         autenticacao"
-                                        );
-                                        Some(Arc::new(
-                                            OpenAiEmbeddingProvider::new(
-                                                String::new(),
-                                                embed_config.model.clone(),
-                                                embed_config.base_url.clone(),
-                                            )
-                                            .with_client(embed_client.clone()),
-                                        ))
-                                    }
-                                    (None, false) => {
-                                        warn!(
-                                            "skipping openai embedding provider '{embed_name}': \
-                                         sem chave no config, no cofre nem no ambiente, e o \
-                                         endpoint e o oficial da OpenAI — subir assim daria \
-                                         401 em toda chamada de embedding"
-                                        );
-                                        None
-                                    }
-                                }
-                            }
-
-                            // =====================================
-                            // UNKNOWN
-                            // =====================================
-                            other => {
-                                warn!("unknown embedding provider type: {other}");
-                                None
-                            }
-                        };
-
-                    if let Some(inner) = built {
-                        let provider_id = inner.provider_id().to_string();
-                        let model = inner.model().to_string();
-
-                        // Toda saida de embeddings passa a ter retry com backoff
-                        // e validacao de dimensao (#962, #961) — um envelope so
-                        // para os tres providers, em vez de tres copias da mesma
-                        // logica.
-                        let resilient = ResilientEmbeddingProvider::new(inner)
-                            .with_expected_dimensions(embed_config.dimensions);
-                        runtime.set_embedding_provider(Arc::new(resilient));
-
-                        match embed_config.dimensions {
-                            Some(dims) => info!(
-                                "configured {provider_id} embedding provider: {embed_name} \
-                                 (modelo {model}, {dims} dimensoes validadas)"
-                            ),
-                            None => info!(
-                                "configured {provider_id} embedding provider: {embed_name} \
-                                 (modelo {model}; sem `dimensions` na config, o vetor \
-                                 devolvido nao e validado — ver #961)"
-                            ),
-                        }
-                    }
+                // Attach embedding provider if configured. A construcao mora
+                // em `build_embedding_provider` para a CLI reusar o mesmo
+                // provider sem subir um runtime (#953).
+                if let Some(provider) = build_embedding_provider(config) {
+                    runtime.set_embedding_provider(provider);
                 }
             }
             Err(e) => {
@@ -1204,6 +1064,156 @@ pub async fn build_mcp_tools(
 }
 
 /// Build a voice handler for Telegram that processes voice messages.
+/// Constroi o provider de embeddings declarado na config, ja envelopado no
+/// [`ResilientEmbeddingProvider`] (#962, #961).
+///
+/// Extraido de [`build_agent_runtime`] para que a CLI possa pedir **o mesmo**
+/// provider que o gateway usa sem subir um runtime inteiro (e sem abrir uma
+/// segunda conexao no `memory.db`) — `garra memory reindex` (#953) grava
+/// vetores que o recall do gateway vai ler, entao os dois lados precisam
+/// concordar na resolucao da chave, no timeout proprio e na dimensao validada.
+/// Construir um segundo provider por fora era exatamente a divergencia
+/// silenciosa que este projeto ja pagou caro.
+///
+/// Devolve `None` quando `memory.embedding_provider` nao aponta para nenhuma
+/// entrada de `embeddings:`, ou quando o provider apontado nao pode ser
+/// construido (sem credencial contra endpoint oficial, tipo desconhecido).
+pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingProvider>> {
+    let embed_name = config.memory.embedding_provider.as_ref()?;
+    let embed_config = config.embeddings.get(embed_name)?;
+
+    let embed_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            config.timeouts.embeddings.default_secs,
+        ))
+        .build()
+        .unwrap_or_default();
+
+    let built: Option<Arc<dyn EmbeddingProvider>> = match embed_config.provider.as_str() {
+        // =====================================
+        // COHERE
+        // =====================================
+        "cohere" => {
+            let api_key = resolve_api_key(
+                embed_config.api_key.as_deref(),
+                "COHERE_API_KEY",
+                "COHERE_API_KEY",
+            );
+
+            if let Some(key) = api_key {
+                Some(Arc::new(
+                    CohereEmbeddingProvider::new(
+                        key,
+                        embed_config.model.clone(),
+                        embed_config.base_url.clone(),
+                    )
+                    .with_client(embed_client.clone()),
+                ))
+            } else {
+                warn!("skipping cohere embedding provider: no API key");
+                None
+            }
+        }
+
+        // =====================================
+        // OLLAMA (ADICIONE ESTE BLOCO)
+        // =====================================
+        "ollama" => Some(Arc::new(
+            OllamaEmbeddingProvider::new(embed_config.model.clone(), embed_config.base_url.clone())
+                .with_client(embed_client.clone()),
+        )),
+
+        // =====================================
+        // OPENAI-COMPATIBLE (LM Studio, OpenAI, etc.)
+        // =====================================
+        "openai" => {
+            // Antes daqui saia o literal "no-key" para qualquer
+            // endpoint. Contra a OpenAI oficial isso e um 401 em
+            // toda chamada — e o erro era engolido logo adiante
+            // (#948), entao a memoria simplesmente parava de ser
+            // indexada sem ninguem saber. E a chave nem era
+            // procurada no ambiente, so no arquivo de config.
+            let api_key = resolve_api_key(
+                embed_config.api_key.as_deref(),
+                KEY_ENV_VAR_OPENAI,
+                KEY_ENV_VAR_OPENAI,
+            );
+            let self_hosted = is_self_hosted_openai_endpoint(embed_config.base_url.as_deref());
+
+            match (api_key, self_hosted) {
+                (Some(key), _) => Some(Arc::new(
+                    OpenAiEmbeddingProvider::new(
+                        key,
+                        embed_config.model.clone(),
+                        embed_config.base_url.clone(),
+                    )
+                    .with_client(embed_client.clone()),
+                )),
+                // LM Studio, vLLM, gateway interno: nao pedem
+                // credencial, e mandar um bearer vazio faz alguns
+                // recusarem. O provider omite o header nesse caso.
+                (None, true) => {
+                    info!(
+                        "openai embedding provider '{embed_name}': endpoint \
+                         proprio sem credencial configurada, seguindo sem \
+                         autenticacao"
+                    );
+                    Some(Arc::new(
+                        OpenAiEmbeddingProvider::new(
+                            String::new(),
+                            embed_config.model.clone(),
+                            embed_config.base_url.clone(),
+                        )
+                        .with_client(embed_client.clone()),
+                    ))
+                }
+                (None, false) => {
+                    warn!(
+                        "skipping openai embedding provider '{embed_name}': \
+                         sem chave no config, no cofre nem no ambiente, e o \
+                         endpoint e o oficial da OpenAI — subir assim daria \
+                         401 em toda chamada de embedding"
+                    );
+                    None
+                }
+            }
+        }
+
+        // =====================================
+        // UNKNOWN
+        // =====================================
+        other => {
+            warn!("unknown embedding provider type: {other}");
+            None
+        }
+    };
+
+    let inner = built?;
+    let provider_id = inner.provider_id().to_string();
+    let model = inner.model().to_string();
+
+    // Toda saida de embeddings passa a ter retry com backoff
+    // e validacao de dimensao (#962, #961) — um envelope so
+    // para os tres providers, em vez de tres copias da mesma
+    // logica.
+    let resilient =
+        ResilientEmbeddingProvider::new(inner).with_expected_dimensions(embed_config.dimensions);
+
+    match embed_config.dimensions {
+        Some(dims) => info!(
+            "configured {provider_id} embedding provider: {embed_name} \
+             (modelo {model}, {dims} dimensoes validadas)"
+        ),
+        None => info!(
+            "configured {provider_id} embedding provider: {embed_name} \
+             (modelo {model}; sem `dimensions` na config, o vetor \
+             devolvido nao e validado — ver #961)"
+        ),
+    }
+
+    Some(Arc::new(resilient))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
