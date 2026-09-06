@@ -46,16 +46,91 @@ pub struct ExecutionBudget {
     historico_assinaturas: VecDeque<AssinaturaFerramenta>,
 }
 
+/// Timeout por execução de ferramenta, em segundos, quando nada é
+/// configurado.
+pub const TIMEOUT_PADRAO_SECS: u64 = 30;
+
+/// Nome da variável que sobrescreve o timeout.
+pub const ENV_TOOL_TIMEOUT: &str = "GARRA_TOOL_TIMEOUT_SECS";
+
+/// Acima disto o valor quase certamente é engano — ver [`timeout_configurado`].
+const TIMEOUT_SUSPEITO_SECS: u64 = 3600;
+
+/// O timeout efetivo: a variável de ambiente quando válida, senão o padrão.
+///
+/// # Por que existe (#981)
+///
+/// 30s fixos matam ferramenta que chama LLM por dentro. Um MCP que faz
+/// sumarização ou um `ask` aninhado passa disso legitimamente, e o agente
+/// recebia `tool timeout` como se fosse falha da ferramenta — o erro apontava
+/// para o lugar errado.
+///
+/// # Por que uma variável de ambiente, e não uma chave de config
+///
+/// O `garraia-agents` **não depende do `garraia-config`**, e criar essa
+/// dependência só para um `u64` acoplaria o crate de agentes ao carregador de
+/// configuração inteiro. O preço da env var é ela nascer invisível ao
+/// `garra config check` — pago em separado: o `check` agora reporta o valor
+/// efetivo, então o operador descobre sem ler código.
+///
+/// # Valor inválido avisa, em vez de sumir
+///
+/// `GARRA_TOOL_TIMEOUT_SECS=abc` ou `=0` volta ao padrão **e loga**. Cair no
+/// padrão em silêncio faria alguém configurar, ver o comportamento antigo, e
+/// não ter como saber por quê.
+///
+/// Valor absurdo (acima de 1h) é **aceito com aviso**, não rejeitado: quem
+/// escreve `30000` provavelmente quis milissegundos, e um turno de 8 horas é o
+/// tipo de coisa que se descobre tarde. Mas se a pessoa quer mesmo, o número é
+/// dela.
+pub fn timeout_configurado() -> u64 {
+    let bruto = match std::env::var(ENV_TOOL_TIMEOUT) {
+        Ok(v) => v,
+        Err(_) => return TIMEOUT_PADRAO_SECS,
+    };
+    interpretar_timeout(bruto.trim())
+}
+
+/// A decisão em si, separada da leitura do ambiente para poder ser testada
+/// sem mexer em estado global do processo.
+fn interpretar_timeout(bruto: &str) -> u64 {
+    match bruto.parse::<u64>() {
+        Ok(0) => {
+            tracing::warn!(
+                "{ENV_TOOL_TIMEOUT}=0 nao faz sentido (toda ferramenta falharia \
+                 imediatamente); usando o padrao de {TIMEOUT_PADRAO_SECS}s"
+            );
+            TIMEOUT_PADRAO_SECS
+        }
+        Ok(v) if v > TIMEOUT_SUSPEITO_SECS => {
+            tracing::warn!(
+                "{ENV_TOOL_TIMEOUT}={v} passa de uma hora por ferramenta. Se a \
+                 intencao era milissegundos, o valor esta 1000x maior. Usando \
+                 {v}s como pedido."
+            );
+            v
+        }
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(
+                "{ENV_TOOL_TIMEOUT}={bruto:?} nao e um numero de segundos; \
+                 usando o padrao de {TIMEOUT_PADRAO_SECS}s"
+            );
+            TIMEOUT_PADRAO_SECS
+        }
+    }
+}
+
 impl ExecutionBudget {
     /// Cria um orçamento com valores padrão:
     /// - 10 chamadas por turno
     /// - 50 chamadas por tarefa
-    /// - 30 segundos de timeout por ferramenta
+    /// - [`TIMEOUT_PADRAO_SECS`] de timeout por ferramenta, salvo override
     pub fn padrao() -> Self {
         Self {
             max_per_turn: 10,
             max_per_task: 50,
-            tool_timeout_secs: 30,
+            tool_timeout_secs: timeout_configurado(),
             current_turn_calls: 0,
             current_task_calls: 0,
             historico_assinaturas: VecDeque::with_capacity(JANELA_LOOP),
@@ -149,6 +224,47 @@ impl ExecutionBudget {
 
 #[cfg(test)]
 mod tests {
+    use super::{TIMEOUT_PADRAO_SECS, interpretar_timeout};
+
+    /// O caso que motivou a issue: ferramenta que chama LLM por dentro passa
+    /// de 30s legitimamente.
+    #[test]
+    fn valor_valido_e_respeitado() {
+        assert_eq!(interpretar_timeout("180"), 180);
+        assert_eq!(interpretar_timeout("  180  ".trim()), 180);
+    }
+
+    #[test]
+    fn sem_override_usa_o_padrao() {
+        // `timeout_configurado` sem a env var; nao mexe em estado global.
+        assert_eq!(TIMEOUT_PADRAO_SECS, 30);
+    }
+
+    /// Valor invalido volta ao padrao **e avisa**. Cair no padrao em silencio
+    /// faria alguem configurar, ver o comportamento antigo e nao ter como
+    /// saber por que.
+    #[test]
+    fn valor_invalido_volta_ao_padrao() {
+        assert_eq!(interpretar_timeout("abc"), TIMEOUT_PADRAO_SECS);
+        assert_eq!(interpretar_timeout(""), TIMEOUT_PADRAO_SECS);
+        assert_eq!(interpretar_timeout("-5"), TIMEOUT_PADRAO_SECS);
+        assert_eq!(interpretar_timeout("1.5"), TIMEOUT_PADRAO_SECS);
+    }
+
+    /// Zero faria toda ferramenta falhar na hora — nao e configuracao, e
+    /// engano.
+    #[test]
+    fn zero_volta_ao_padrao() {
+        assert_eq!(interpretar_timeout("0"), TIMEOUT_PADRAO_SECS);
+    }
+
+    /// Valor absurdo e **aceito**, com aviso. Quem escreve 30000
+    /// provavelmente quis milissegundos, mas se quer mesmo, o numero e dele.
+    #[test]
+    fn valor_absurdo_e_aceito_com_aviso() {
+        assert_eq!(interpretar_timeout("30000"), 30000);
+    }
+
     use super::*;
     use serde_json::json;
 
