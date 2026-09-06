@@ -74,7 +74,16 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap()
                 .downcast_ref::<AppState>()
                 .unwrap();
-            let session_id = format!("telegram-{}", ctx.chat_id); // Note: Discord uses strings, but chat_id is i64 here... we'll just use it for telegram for now
+            // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
+            // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
+            // runtime nunca lia — ver `AppState::telegram_session_id`.
+            let session_id = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    state
+                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                        .await
+                })
+            }); // Note: Discord uses strings, but chat_id is i64 here... we'll just use it for telegram for now
             if let Some(mut session) = state.sessions.get_mut(&session_id) {
                 session.history.clear();
             }
@@ -96,7 +105,16 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap()
                 .downcast_ref::<AppState>()
                 .unwrap();
-            let session_id = format!("telegram-{}", ctx.chat_id);
+            // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
+            // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
+            // runtime nunca lia — ver `AppState::telegram_session_id`.
+            let session_id = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    state
+                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                        .await
+                })
+            });
             if ctx.args.is_empty() {
                 let current = state.channel_models.get(&session_id);
                 if let Some(m) = current {
@@ -328,7 +346,16 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 .unwrap()
                 .downcast_ref::<AppState>()
                 .unwrap();
-            let session_id = format!("telegram-{}", ctx.chat_id);
+            // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
+            // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
+            // runtime nunca lia — ver `AppState::telegram_session_id`.
+            let session_id = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    state
+                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                        .await
+                })
+            });
 
             if ctx.args.is_empty() {
                 // Show current mode
