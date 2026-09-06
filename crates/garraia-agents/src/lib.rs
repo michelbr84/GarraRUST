@@ -11,6 +11,7 @@ pub mod embeddings;
 pub mod execution_budget;
 pub mod llama_cpp;
 pub mod memory_extractor;
+pub mod memory_noise;
 pub mod memory_reindex;
 pub mod modes;
 pub mod multi_agent;
@@ -37,8 +38,10 @@ pub use embeddings::{
 };
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};
+pub use memory_noise::{DEFAULT_MIN_CHARS, DEFAULT_NOISE_PHRASES, MIN_CHARS_MAX, NoisePolicy};
 pub use memory_reindex::{
-    DEFAULT_REINDEX_BATCH_SIZE, ReindexOptions, ReindexReport, reindex_missing_embeddings,
+    DEFAULT_REINDEX_BATCH_SIZE, ReindexOptions, ReindexReport, preview_reindex,
+    reindex_missing_embeddings,
 };
 pub use modes::{
     AgentMode, ModeContext, ModeEngine, ModeLimits, ModeLlmConfig, ModeProfile, ToolPolicy,

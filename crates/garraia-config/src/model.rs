@@ -451,6 +451,10 @@ pub struct MemoryConfig {
     /// Politica de retencao da memoria do agente (#956, #959).
     #[serde(default)]
     pub retention: RetentionConfig,
+
+    /// O que merece vetor na ingestao (#952).
+    #[serde(default)]
+    pub ingestion: IngestionConfig,
 }
 
 impl Default for MemoryConfig {
@@ -460,8 +464,67 @@ impl Default for MemoryConfig {
             embedding_provider: None,
             shared_continuity: false,
             retention: RetentionConfig::default(),
+            ingestion: IngestionConfig::default(),
         }
     }
+}
+
+/// Filtro de ruido na ingestao da memoria semantica (#952).
+///
+/// **Ligado por padrao**, ao contrario da retencao — e a diferenca e o que
+/// esta em jogo. A retencao **apaga** memoria, entao so roda quando o
+/// operador pede. Este filtro nao apaga nada: a entrada continua gravada,
+/// continua no historico e continua achavel pelo recall textual; o que ela
+/// nao ganha e um vetor. Desligar a chave e reindexar devolve o vetor.
+///
+/// O que ele nao faz: limpar o que ja esta no indice. Vetor de "oi" gravado
+/// antes desta versao continua la. Isto e um filtro de ingestao, e limpar o
+/// passado apaga dado — decisao do operador, via `garra memory compact`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionConfig {
+    /// `false` restaura o comportamento anterior ao #952: todo turno nao
+    /// vazio recebe vetor.
+    #[serde(default = "default_filter_noise")]
+    pub filter_noise: bool,
+
+    /// Piso de caracteres uteis (ja sem acento, pontuacao e emoji) abaixo do
+    /// qual o conteudo nao recebe vetor. `0` desliga so o piso; a lista de
+    /// frases segue valendo. Faixa aceita (0..=40) cobrada pelo
+    /// `garra config check`.
+    #[serde(default = "default_ingestion_min_chars")]
+    pub min_chars: usize,
+
+    /// Frases que, sozinhas, sao o conteudo inteiro de uma entrada de ruido.
+    /// **Somam** a lista embutida, nunca a substituem: uma lista escrita a
+    /// mao nao pode apagar a cobertura padrao numa atualizacao.
+    #[serde(default)]
+    pub extra_noise_phrases: Vec<String>,
+}
+
+impl Default for IngestionConfig {
+    fn default() -> Self {
+        Self {
+            filter_noise: default_filter_noise(),
+            min_chars: default_ingestion_min_chars(),
+            extra_noise_phrases: Vec::new(),
+        }
+    }
+}
+
+/// Faixa aceita para `memory.ingestion.min_chars`. O teto nao e arbitrario:
+/// acima disso a chave deixa de ser "filtro de ruido" e vira uma politica de
+/// o que lembrar, que ninguem consegue prever pelo nome.
+pub const INGESTION_MIN_CHARS_MAX: usize = 40;
+
+fn default_filter_noise() -> bool {
+    true
+}
+
+/// Quatro. O mesmo default do `garraia-agents::memory_noise`, e a razao esta
+/// documentada la: a lista de frases faz o trabalho de precisao, entao o piso
+/// pode ficar baixo o bastante para nao derrubar um fato curto de verdade.
+fn default_ingestion_min_chars() -> usize {
+    4
 }
 
 /// Quando o gateway apaga memoria velha sozinho (#956).

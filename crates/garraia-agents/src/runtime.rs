@@ -13,7 +13,7 @@ use garraia_common::{Error, Result};
 use garraia_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
@@ -185,6 +185,8 @@ pub struct AgentRuntime {
     /// Model to use when tools are available and the default model may not support function calling.
     /// Overrides model_override for any request that has tools registered.
     tools_model: RwLock<Option<String>>,
+    /// #952: o que nao merece vetor. Ver `crate::memory_noise`.
+    noise_policy: crate::memory_noise::NoisePolicy,
 }
 
 impl AgentRuntime {
@@ -206,6 +208,7 @@ impl AgentRuntime {
             fallback_providers_list: RwLock::new(Vec::new()),
             context_policy: ContextPolicy::default(),
             tools_model: RwLock::new(None),
+            noise_policy: crate::memory_noise::NoisePolicy::default(),
         }
     }
 
@@ -253,6 +256,18 @@ impl AgentRuntime {
     /// GAR-208: Return a reference to the current context policy.
     pub fn context_policy(&self) -> &ContextPolicy {
         &self.context_policy
+    }
+
+    /// #952: define o que nao merece vetor na ingestao.
+    pub fn set_noise_policy(&mut self, policy: crate::memory_noise::NoisePolicy) {
+        self.noise_policy = policy;
+    }
+
+    /// #952: a politica em vigor. A CLI precisa dela para reindexar com o
+    /// **mesmo** criterio da ingestao — sem isso o `garra memory reindex`
+    /// reembeddaria exatamente o ruido que a ingestao acabou de pular.
+    pub fn noise_policy(&self) -> &crate::memory_noise::NoisePolicy {
+        &self.noise_policy
     }
 
     /// GAR-210: Set the ordered fallback provider list (tried on 429/5xx).
@@ -446,7 +461,7 @@ impl AgentRuntime {
         }
 
         if !user_input.trim().is_empty() {
-            let user_embedding = self.embed_document(user_input).await;
+            let user_embedding = self.embed_turn_unless_noise(user_input, "user").await;
             let user_embedding_model = self.embedding_model_for(&user_embedding);
             memory
                 .remember(NewMemoryEntry {
@@ -465,7 +480,9 @@ impl AgentRuntime {
         }
 
         if !assistant_output.trim().is_empty() {
-            let assistant_embedding = self.embed_document(assistant_output).await;
+            let assistant_embedding = self
+                .embed_turn_unless_noise(assistant_output, "assistant")
+                .await;
             let assistant_embedding_model = self.embedding_model_for(&assistant_embedding);
             memory
                 .remember(NewMemoryEntry {
@@ -2016,6 +2033,29 @@ impl AgentRuntime {
         Ok(())
     }
 
+    /// Embedding de um turno, a menos que a politica de ruido recuse (#952).
+    ///
+    /// A entrada e gravada de qualquer jeito: o que se decide aqui e se ela
+    /// entra no indice vetorial. Recusar cedo tambem poupa uma ida ao
+    /// provider por "ok" — que numa conversa longa nao e pouco.
+    ///
+    /// Vale so para turno. Fato extraido (`[FACT] ...`) nao passa por aqui:
+    /// ele ja e sinal filtrado por um LLM com limiar de confianca, e o texto
+    /// que se grava e sempre longo.
+    async fn embed_turn_unless_noise(&self, text: &str, papel: &str) -> Option<Vec<f32>> {
+        if self.noise_policy.is_noise(text) {
+            debug!(
+                papel,
+                chars = text.chars().count(),
+                "memoria: turno gravado sem vetor por ser ruido para a busca \
+                 semantica (#952); a entrada continua no historico e no recall \
+                 textual. Ajuste em `memory.ingestion`."
+            );
+            return None;
+        }
+        self.embed_document(text).await
+    }
+
     async fn embed_document(&self, text: &str) -> Option<Vec<f32>> {
         let provider = self.embeddings.as_ref()?;
         match provider.embed_documents(&[text.to_string()]).await {
@@ -2107,6 +2147,162 @@ impl Default for AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── #952: ruido nao merece vetor ─────────────────────────────────────
+
+    /// Provider de embeddings que conta quantas vezes foi chamado.
+    ///
+    /// O contador e metade do teste: a politica nao so evita gravar o vetor,
+    /// ela evita **pedir** o vetor. Numa conversa longa, uma ida ao provider
+    /// por "ok" nao e pouco.
+    struct ContandoEmbeddings(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl crate::embeddings::EmbeddingProvider for ContandoEmbeddings {
+        fn provider_id(&self) -> &str {
+            "contando"
+        }
+        fn model(&self) -> &str {
+            "modelo-de-teste"
+        }
+        async fn embed_documents(&self, texts: &[String]) -> garraia_common::Result<Vec<Vec<f32>>> {
+            self.0
+                .fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+            Ok(texts.iter().map(|_| vec![0.25, 0.5, 0.75]).collect())
+        }
+        async fn embed_query(&self, _text: &str) -> garraia_common::Result<Vec<f32>> {
+            Ok(vec![0.25, 0.5, 0.75])
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    async fn runtime_com_memoria(
+        policy: crate::memory_noise::NoisePolicy,
+    ) -> (
+        AgentRuntime,
+        Arc<garraia_db::MemoryStore>,
+        Arc<ContandoEmbeddings>,
+    ) {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let embeddings = Arc::new(ContandoEmbeddings(std::sync::atomic::AtomicUsize::new(0)));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store.clone());
+        rt.set_embedding_provider(embeddings.clone());
+        rt.set_noise_policy(policy);
+        (rt, store, embeddings)
+    }
+
+    fn chamadas(e: &ContandoEmbeddings) -> usize {
+        e.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// O sintoma da issue: "oi" era gravado **com** vetor e disputava o
+    /// top-K com memoria de verdade.
+    #[tokio::test]
+    async fn turno_de_ruido_e_gravado_sem_vetor_e_sem_ida_ao_provider() {
+        let (rt, store, embeddings) =
+            runtime_com_memoria(crate::memory_noise::NoisePolicy::default()).await;
+
+        rt.remember_turn("s1", None, None, "oi", "bom dia")
+            .await
+            .expect("remember_turn");
+
+        assert_eq!(chamadas(&embeddings), 0, "pediu vetor para ruido");
+        let r = store.integrity_report().expect("report");
+        assert_eq!(r.entries_with_embedding, 0);
+        assert_eq!(r.entries_without_embedding, 2, "as duas seguem gravadas");
+    }
+
+    /// O outro lado da moeda, e o que impede o filtro de virar perda de
+    /// memoria: conteudo de verdade continua ganhando vetor.
+    #[tokio::test]
+    async fn turno_de_verdade_continua_ganhando_vetor() {
+        let (rt, store, embeddings) =
+            runtime_com_memoria(crate::memory_noise::NoisePolicy::default()).await;
+
+        rt.remember_turn(
+            "s1",
+            None,
+            None,
+            "meu nome e Michel e eu moro na Florida",
+            "anotado: voce se chama Michel e mora na Florida",
+        )
+        .await
+        .expect("remember_turn");
+
+        assert_eq!(chamadas(&embeddings), 2);
+        let r = store.integrity_report().expect("report");
+        assert_eq!(r.entries_with_embedding, 2);
+        assert_eq!(r.map_rows, 2, "as duas entraram no indice vetorial");
+    }
+
+    /// Um turno pode ter uma metade de ruido e outra de conteudo. Elas sao
+    /// decididas separadamente — a pergunta "ok" nao pode derrubar a resposta
+    /// que veio depois dela.
+    #[tokio::test]
+    async fn as_duas_metades_do_turno_sao_decididas_em_separado() {
+        let (rt, store, embeddings) =
+            runtime_com_memoria(crate::memory_noise::NoisePolicy::default()).await;
+
+        rt.remember_turn(
+            "s1",
+            None,
+            None,
+            "ok",
+            "o gateway sobe na porta 3888 e le a config de ~/.garraia",
+        )
+        .await
+        .expect("remember_turn");
+
+        assert_eq!(chamadas(&embeddings), 1);
+        let r = store.integrity_report().expect("report");
+        assert_eq!(r.entries_with_embedding, 1);
+        assert_eq!(r.entries_without_embedding, 1);
+    }
+
+    /// Desligar a politica devolve o comportamento anterior ao #952, inteiro.
+    #[tokio::test]
+    async fn politica_desligada_embedda_ate_o_ruido() {
+        let (rt, store, embeddings) =
+            runtime_com_memoria(crate::memory_noise::NoisePolicy::disabled()).await;
+
+        rt.remember_turn("s1", None, None, "oi", "bom dia")
+            .await
+            .expect("remember_turn");
+
+        assert_eq!(chamadas(&embeddings), 2);
+        assert_eq!(
+            store
+                .integrity_report()
+                .expect("report")
+                .entries_with_embedding,
+            2
+        );
+    }
+
+    /// A coluna `embedding_model` descreve o vetor. Uma entrada pulada por
+    /// ruido nao tem vetor, entao nao pode sair dizendo por qual modelo foi
+    /// indexada — foi essa mentira que o #948 corrigiu, e o filtro novo nao
+    /// pode reintroduzi-la.
+    #[tokio::test]
+    async fn entrada_pulada_nao_finge_ter_modelo() {
+        let (rt, store, _) = runtime_com_memoria(crate::memory_noise::NoisePolicy::default()).await;
+
+        rt.remember_turn("s1", None, None, "ok", "valeu")
+            .await
+            .expect("remember_turn");
+
+        for entrada in store.recent_entries(10).expect("recent") {
+            assert!(entrada.embedding.is_none());
+            assert!(
+                entrada.embedding_model.is_none(),
+                "linha sem vetor anunciando modelo: {:?}",
+                entrada.embedding_model
+            );
+        }
+    }
 
     // ─── issue #924: o inventario de tools nao pode congelar no boot ───────
 

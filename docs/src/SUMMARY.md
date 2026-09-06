@@ -42,6 +42,7 @@
   - [Checklist de Segurança](./security/checklist.md)
 - [Memória e Contexto](./memory.md)
 - [Backup e restauração da memória](./memory-backup.md)
+- [Filtro de ruído na ingestão](./memory-ingestion.md)
 - [Modos de Operação](./modes.md)
 - [Modos de Continuação](./continue-modes.md)
 

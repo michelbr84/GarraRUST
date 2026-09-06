@@ -504,7 +504,11 @@ pub async fn run_reindex(
 
     // No dry-run nao ha chamada de provider, entao exigir um seria recusar a
     // pergunta "quanto tem para fazer?" justamente a quem ainda nao configurou.
-    let provider = garraia_gateway::bootstrap::build_embedding_provider(config);
+    let provider = if dry_run {
+        None
+    } else {
+        garraia_gateway::bootstrap::build_embedding_provider(config)
+    };
     if provider.is_none() && !dry_run {
         eprintln!(
             "error: nenhum provider de embeddings configurado — sem ele nao ha como\n\
@@ -517,23 +521,20 @@ pub async fn run_reindex(
     let options = ReindexOptions {
         batch_size,
         max_entries: limit,
-        dry_run,
+        // A **mesma** politica da ingestao, construida da mesma config (#952).
+        // Um default local aqui reembeddaria justamente o ruido que a
+        // ingestao pulou.
+        noise: garraia_gateway::bootstrap::noise_policy_from_config(config),
     };
 
     let report = match &provider {
+        // Dry-run nao chama provider: a fila vem do banco e a politica de
+        // ruido responde o resto. Por isso `preview_reindex` nao pede um —
+        // exigi-lo so para descarta-lo seria uma assinatura que mente.
+        None => garraia_agents::preview_reindex(&store, &options)?,
         Some(p) => reindex_missing_embeddings(&store, p.as_ref(), options)
             .await
             .context("reindex failed")?,
-        // Dry-run sem provider: a fila e derivada do banco, e o relatorio de
-        // integridade responde sozinho.
-        None => garraia_agents::ReindexReport {
-            pending_before: store.integrity_report()?.entries_without_embedding,
-            index_repaired: 0,
-            reindexed: 0,
-            vanished: 0,
-            stopped_early: false,
-            dry_run: true,
-        },
     };
 
     if json {
@@ -542,6 +543,8 @@ pub async fn run_reindex(
             "index_repaired": report.index_repaired,
             "reindexed": report.reindexed,
             "vanished": report.vanished,
+            "skipped_noise": report.skipped_noise,
+            "would_reindex": report.would_reindex,
             "stopped_early": report.stopped_early,
             "dry_run": report.dry_run,
         });
@@ -549,13 +552,29 @@ pub async fn run_reindex(
     } else if report.dry_run {
         println!(
             "{} entrada(s) sem vetor seriam reprocessadas (dry-run: nada foi gravado).",
-            report.pending_before
+            report.would_reindex
         );
+        if report.skipped_noise > 0 {
+            println!(
+                "Outras {} ficam sem vetor de proposito, por serem ruido para a\n\
+                 busca semantica (#952) — elas seguem contadas em `stats` como\n\
+                 \"sem vetor\".\n\
+                 Ajuste ou desligue em `memory.ingestion`.",
+                report.skipped_noise
+            );
+        }
     } else {
         println!(
             "Fila inicial: {} | reindexadas: {} | sumiram no caminho: {}",
             report.pending_before, report.reindexed, report.vanished
         );
+        if report.skipped_noise > 0 {
+            println!(
+                "{} entrada(s) foram puladas por serem ruido (#952) e continuam\n\
+                 sem vetor de proposito. Ajuste ou desligue em `memory.ingestion`.",
+                report.skipped_noise
+            );
+        }
         if report.index_repaired > 0 {
             println!(
                 "Alem dessas, {} entrada(s) ja tinham vetor na coluna e voltaram \

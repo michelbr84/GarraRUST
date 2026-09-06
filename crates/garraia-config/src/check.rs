@@ -618,6 +618,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
+    validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
 
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
@@ -727,6 +728,82 @@ fn validate_retention(
                 r.max_age_days,
                 u64::from(r.max_age_days) * 24
             ),
+        );
+    }
+}
+
+/// Filtro de ruido na ingestao (#952).
+///
+/// Ao contrario da retencao, nada aqui apaga dado — o pior caso e uma
+/// entrada gravada sem vetor. Por isso as checagens sao sobre coerencia e
+/// surpresa, nao sobre perda: o operador precisa saber quando escreveu uma
+/// chave que nao tem efeito, e quando escolheu um piso que vai engolir
+/// conteudo de verdade.
+fn validate_ingestion(
+    memory: &crate::model::MemoryConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::INGESTION_MIN_CHARS_MAX;
+
+    let i = &memory.ingestion;
+
+    if i.min_chars > INGESTION_MIN_CHARS_MAX {
+        push_err(
+            findings,
+            "memory.ingestion.min_chars",
+            format!(
+                "memory.ingestion.min_chars ({}) must be in [0, {INGESTION_MIN_CHARS_MAX}]",
+                i.min_chars
+            ),
+        );
+    }
+
+    // Um piso alto nao e erro de sintaxe, e uma escolha com consequencia que
+    // so aparece meses depois, quando o agente nao lembra de algo curto. So
+    // avisa dentro da faixa: com o valor ja recusado acima, repetir a mesma
+    // chave como aviso e ruido em cima de um erro que o operador ja leu.
+    if i.filter_noise && i.min_chars > 12 && i.min_chars <= INGESTION_MIN_CHARS_MAX {
+        push_warn(
+            findings,
+            "memory.ingestion.min_chars",
+            format!(
+                "memory.ingestion.min_chars ({}) is high; short facts like \"moro em SP\" \
+                 (10 chars) stop getting an embedding and become findable only by text search",
+                i.min_chars
+            ),
+        );
+    }
+
+    // Chave escrita com o filtro desligado nao tem efeito nenhum. Silencio
+    // aqui vira "configurei e nao funcionou".
+    let piso_padrao = crate::model::IngestionConfig::default().min_chars;
+    if !i.filter_noise && (!i.extra_noise_phrases.is_empty() || i.min_chars != piso_padrao) {
+        push_warn(
+            findings,
+            "memory.ingestion.filter_noise",
+            "memory.ingestion.filter_noise=false; min_chars and extra_noise_phrases have no effect"
+                .into(),
+        );
+    }
+
+    // Frase em branco na lista nao casa com nada util e quase sempre e um
+    // item sobrando do YAML.
+    if i.extra_noise_phrases.iter().any(|p| p.trim().is_empty()) {
+        push_warn(
+            findings,
+            "memory.ingestion.extra_noise_phrases",
+            "memory.ingestion.extra_noise_phrases contains an empty entry; it is ignored".into(),
+        );
+    }
+
+    if i.filter_noise && !memory.enabled {
+        push_warn(
+            findings,
+            "memory.ingestion.filter_noise",
+            "memory.ingestion.filter_noise=true but memory.enabled=false; nothing is ingested"
+                .into(),
         );
     }
 }
@@ -1094,6 +1171,95 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    // ─── #952: filtro de ruido na ingestao ────────────────────────────────
+
+    fn achados_de(config: &AppConfig, campo: &str) -> Vec<Finding> {
+        validate(config)
+            .into_iter()
+            .filter(|f| f.field == campo)
+            .collect()
+    }
+
+    #[test]
+    fn ingestao_default_nao_produz_achado() {
+        let config = AppConfig::default();
+        assert!(
+            validate(&config)
+                .iter()
+                .all(|f| !f.field.starts_with("memory.ingestion")),
+            "a config default nao pode reclamar de si mesma"
+        );
+    }
+
+    #[test]
+    fn min_chars_acima_do_teto_e_erro() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.min_chars = crate::model::INGESTION_MIN_CHARS_MAX + 1;
+        let achados = achados_de(&config, "memory.ingestion.min_chars");
+        assert!(
+            achados.iter().any(|f| f.severity == Severity::Error),
+            "{achados:?}"
+        );
+    }
+
+    /// Piso alto nao e erro de sintaxe — e uma escolha cuja consequencia so
+    /// aparece meses depois, quando o agente nao lembra de algo curto.
+    #[test]
+    fn min_chars_alto_avisa_sem_barrar() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.min_chars = 20;
+        let achados = achados_de(&config, "memory.ingestion.min_chars");
+        assert!(achados.iter().any(|f| f.severity == Severity::Warning));
+        assert!(!achados.iter().any(|f| f.severity == Severity::Error));
+    }
+
+    /// Chave escrita com o filtro desligado nao faz nada. Silencio aqui vira
+    /// "configurei e nao funcionou".
+    /// Valor fora da faixa ja e erro; repetir a mesma chave como aviso e
+    /// ruido em cima de um erro que o operador acabou de ler.
+    #[test]
+    fn valor_fora_da_faixa_nao_vem_com_aviso_redundante() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.min_chars = 999;
+        let achados = achados_de(&config, "memory.ingestion.min_chars");
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn chave_sem_efeito_com_o_filtro_desligado_avisa() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.filter_noise = false;
+        config.memory.ingestion.extra_noise_phrases = vec!["salve".to_string()];
+        let achados = achados_de(&config, "memory.ingestion.filter_noise");
+        assert!(achados.iter().any(|f| f.severity == Severity::Warning));
+    }
+
+    /// Desligar o filtro sem escrever mais nada e uma escolha legitima e
+    /// silenciosa — o aviso acima nao pode disparar aqui.
+    #[test]
+    fn filtro_desligado_sozinho_nao_avisa() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.filter_noise = false;
+        assert!(achados_de(&config, "memory.ingestion.filter_noise").is_empty());
+    }
+
+    #[test]
+    fn frase_em_branco_na_lista_avisa() {
+        let mut config = AppConfig::default();
+        config.memory.ingestion.extra_noise_phrases = vec!["  ".to_string()];
+        let achados = achados_de(&config, "memory.ingestion.extra_noise_phrases");
+        assert!(achados.iter().any(|f| f.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn filtro_ligado_com_memoria_desligada_avisa() {
+        let mut config = AppConfig::default();
+        config.memory.enabled = false;
+        let achados = achados_de(&config, "memory.ingestion.filter_noise");
+        assert!(achados.iter().any(|f| f.severity == Severity::Warning));
     }
 
     #[test]
