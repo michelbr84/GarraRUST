@@ -7,6 +7,9 @@ description = "LLM agent runtime and orchestration for GarraIA"
 
 [dependencies]
 garraia-common = { workspace = true, features = ["ssrf"] }
+# #937: o resumo de ferramenta passa por `redact_secrets` na origem, para
+# nenhum consumidor de `TurnEvent` precisar lembrar de redigir.
+garraia-security = { workspace = true }
 garraia-db = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

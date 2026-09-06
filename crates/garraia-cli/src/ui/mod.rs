@@ -69,7 +69,39 @@ pub enum UiEvent<'a> {
     /// aponta o proximo passo. Sem linha em branco antes, porque ela pertence
     /// a mensagem que acabou de sair.
     Hint(&'a str),
+
+    /// Uma ferramenta comecou (#937). `detail` ja vem redigido e truncado do
+    /// `garraia-agents` — o renderer nao ve input cru de ferramenta.
+    ToolStarted { name: &'a str, detail: &'a str },
+
+    /// Uma ferramenta terminou (#937).
+    ToolFinished {
+        name: &'a str,
+        duration: std::time::Duration,
+        success: bool,
+        /// Uma linha sobre o resultado, ja redigida e truncada.
+        summary: &'a str,
+    },
 }
+
+/// Glifos do ciclo de vida de ferramenta (#937), por estado.
+///
+/// O par Unicode/ASCII anda junto com o resto da interface: num terminal sem
+/// UTF-8 o `●` viraria mojibake exatamente como o `❯` viraria.
+struct ToolGlyphs {
+    ok: &'static str,
+    fail: &'static str,
+}
+
+const TOOL_GLYPHS_UNICODE: ToolGlyphs = ToolGlyphs {
+    ok: "\u{25cf}",
+    fail: "\u{d7}",
+};
+const TOOL_GLYPHS_ASCII: ToolGlyphs = ToolGlyphs { ok: "*", fail: "x" };
+
+/// O ramo da arvore que liga o resultado a linha da ferramenta.
+const BRANCH_UNICODE: &str = "  \u{2514}\u{2500} ";
+const BRANCH_ASCII: &str = "  |- ";
 
 /// O que este terminal aguenta, decidido **uma vez so**.
 ///
@@ -157,7 +189,16 @@ pub struct TerminalRenderer {
     caps: Capabilities,
     spinner: Option<Spinner>,
     assistant_prefix: String,
+    /// O rotulo `Garra` ja saiu neste turno? Uma vez so, sempre.
     prefix_written: bool,
+    /// A linha de atividade pode ser desenhada agora?
+    ///
+    /// Separado do `prefix_written` de proposito (#937): o primeiro token
+    /// entrega a linha para a resposta, mas quando uma **ferramenta termina**
+    /// o modelo volta a pensar e a animacao deve voltar — sem que o rotulo
+    /// seja reimpresso. Era o "retomar o spinner depois da tool" que ficou de
+    /// fora do #936 por nao haver evento para ouvir.
+    animating: bool,
 }
 
 impl TerminalRenderer {
@@ -167,6 +208,7 @@ impl TerminalRenderer {
             caps,
             spinner,
             prefix_written: false,
+            animating: true,
         }
     }
 
@@ -187,6 +229,7 @@ impl TerminalRenderer {
             spinner,
             assistant_prefix: prefix.into(),
             prefix_written: false,
+            animating: true,
         }
     }
 
@@ -195,6 +238,7 @@ impl TerminalRenderer {
     pub fn begin_turn(&mut self, spinner: Option<Spinner>) {
         self.spinner = spinner;
         self.prefix_written = false;
+        self.animating = true;
     }
 
     /// Ha animacao rodando neste turno? O `select!` usa isto para nao armar o
@@ -213,13 +257,20 @@ impl TerminalRenderer {
                 self.write_notice(text, conversation::YELLOW, true, out)
             }
             UiEvent::Hint(text) => self.write_notice(text, conversation::DIM, false, out),
+            UiEvent::ToolStarted { name, detail } => self.write_tool_started(name, detail, out),
+            UiEvent::ToolFinished {
+                name,
+                duration,
+                success,
+                summary,
+            } => self.write_tool_finished(name, duration, success, summary, out),
         }
     }
 
     /// Um quadro da animacao — e so antes do primeiro token: depois disso a
     /// linha pertence a resposta, e um quadro colidiria com ela.
     fn tick(&mut self, out: &mut (impl io::Write + ?Sized)) {
-        if self.prefix_written {
+        if !self.animating {
             return;
         }
         if let Some(s) = self.spinner.as_mut() {
@@ -237,6 +288,8 @@ impl TerminalRenderer {
         }
         let _ = write!(out, "{delta}");
         let _ = out.flush();
+        // A linha agora pertence a resposta.
+        self.animating = false;
     }
 
     /// Fim do turno: limpeza **incondicional**, valendo para sucesso, erro do
@@ -256,6 +309,106 @@ impl TerminalRenderer {
             self.prefix_written = true;
         }
         let _ = out.flush();
+    }
+
+    /// `● Bash cargo test` — a ferramenta comecou.
+    ///
+    /// A animacao e limpa antes, sempre: e o criterio de aceite "spinner is
+    /// cleared before a tool event is rendered" da #937, e sem isso o quadro
+    /// da garra ficaria colado na linha da ferramenta.
+    ///
+    /// O glifo do inicio e o mesmo do sucesso de proposito. A alternativa —
+    /// um `◐` que depois vira `●` na mesma linha — exigiria reescrever uma
+    /// linha ja rolada, e este terminal e de fluxo, nao de tela cheia
+    /// (ADR 0017, opcao B rejeitada). O resultado aparece na linha seguinte.
+    fn write_tool_started(
+        &mut self,
+        name: &str,
+        detail: &str,
+        out: &mut (impl io::Write + ?Sized),
+    ) {
+        if let Some(s) = self.spinner.as_mut() {
+            s.clear(out);
+        }
+        // Enquanto a ferramenta roda, quem ocupa a tela e ela.
+        self.animating = false;
+        let glifo = self.tool_glyphs().ok;
+        let rotulo = tool_label(name);
+        let linha = if detail.is_empty() {
+            format!("{glifo} {rotulo}")
+        } else {
+            format!("{glifo} {rotulo} {detail}")
+        };
+        if self.caps.interactive {
+            let _ = writeln!(out, "{}{linha}{}", conversation::DIM, conversation::RESET);
+        } else {
+            let _ = writeln!(out, "{linha}");
+        }
+        let _ = out.flush();
+    }
+
+    /// `  └─ 148 passed · 6.3s` — o resultado, pendurado na linha anterior.
+    ///
+    /// Em falha, o glifo muda e a linha inteira sai na cor de aviso: e o par
+    /// "estados visualmente distintos" + "falha mostra o trecho mais
+    /// relevante" da #937.
+    fn write_tool_finished(
+        &mut self,
+        name: &str,
+        duration: std::time::Duration,
+        success: bool,
+        summary: &str,
+        out: &mut (impl io::Write + ?Sized),
+    ) {
+        if let Some(s) = self.spinner.as_mut() {
+            s.clear(out);
+        }
+        // Ferramenta terminou: o modelo volta a pensar, entao a animacao volta.
+        self.animating = true;
+        let glifos = self.tool_glyphs();
+        let ramo = if self.caps.unicode {
+            BRANCH_UNICODE
+        } else {
+            BRANCH_ASCII
+        };
+        let separador = if self.caps.unicode { " · " } else { " | " };
+        let tempo = format_duration(duration);
+
+        // Sucesso e so o resultado pendurado; falha repete o nome, porque a
+        // linha de inicio pode estar longe depois de uma saida longa.
+        let (corpo, cor) = if success {
+            let corpo = if summary.is_empty() {
+                tempo.clone()
+            } else {
+                format!("{summary}{separador}{tempo}")
+            };
+            (format!("{ramo}{corpo}"), conversation::DIM)
+        } else {
+            let corpo = if summary.is_empty() {
+                format!("falhou{separador}{tempo}")
+            } else {
+                format!("{summary}{separador}{tempo}")
+            };
+            (
+                format!("{} {} {ramo}{corpo}", glifos.fail, tool_label(name)),
+                conversation::YELLOW,
+            )
+        };
+
+        if self.caps.interactive {
+            let _ = writeln!(out, "{cor}{corpo}{}", conversation::RESET);
+        } else {
+            let _ = writeln!(out, "{corpo}");
+        }
+        let _ = out.flush();
+    }
+
+    fn tool_glyphs(&self) -> ToolGlyphs {
+        if self.caps.unicode {
+            TOOL_GLYPHS_UNICODE
+        } else {
+            TOOL_GLYPHS_ASCII
+        }
     }
 
     /// Aviso, erro ou dica. `blank_line_before` separa a mensagem do que veio
@@ -278,6 +431,42 @@ impl TerminalRenderer {
         }
         let _ = out.flush();
     }
+}
+
+/// Nome da ferramenta como o usuario le: `bash` vira `Bash`, `file_read`
+/// vira `Read`.
+///
+/// Mapa explicito em vez de titlecase automatico: `file_read` viraria
+/// "File Read", e o que o operador reconhece e "Read". Ferramenta sem entrada
+/// aqui aparece com o nome cru — honesto, e o pior caso e feio, nao errado.
+fn tool_label(name: &str) -> String {
+    match name {
+        "bash" => "Bash".to_string(),
+        "file_read" => "Read".to_string(),
+        "file_write" => "Write".to_string(),
+        "repo_search" => "Search".to_string(),
+        "web_search" => "Web".to_string(),
+        "web_fetch" => "Fetch".to_string(),
+        "git_diff" => "Diff".to_string(),
+        "list_dir" => "List".to_string(),
+        "run_tests" => "Tests".to_string(),
+        outro => outro.to_string(),
+    }
+}
+
+/// Duracao em uma casa decimal para segundos, inteiro para milissegundos:
+/// `6.3s`, `840ms`. Acima de um minuto, `1m03s`.
+fn format_duration(d: std::time::Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        return format!("{ms}ms");
+    }
+    let total_s = d.as_secs();
+    if total_s < 60 {
+        let decimos = (ms / 100) % 10;
+        return format!("{total_s}.{decimos}s");
+    }
+    format!("{}m{:02}s", total_s / 60, total_s % 60)
 }
 
 #[cfg(test)]
@@ -315,6 +504,16 @@ mod tests {
                 UiEvent::ActivityTick,
                 UiEvent::ActivityTick,
                 UiEvent::TextDelta("oi"),
+                UiEvent::ToolStarted {
+                    name: "bash",
+                    detail: "cargo test",
+                },
+                UiEvent::ToolFinished {
+                    name: "bash",
+                    duration: std::time::Duration::from_millis(6300),
+                    success: true,
+                    summary: "148 passed",
+                },
                 UiEvent::Warning("cuidado"),
                 UiEvent::Error("quebrou"),
                 UiEvent::TurnFinished,
@@ -453,6 +652,212 @@ mod tests {
             caps.style().user_prompt().trim_end(),
             "\x1b[32m\x1b[1m>\x1b[0m"
         );
+    }
+
+    // ── #937: ciclo de vida de ferramenta ────────────────────────────────
+
+    /// O formato que a issue desenha: linha de inicio, resultado pendurado.
+    #[test]
+    fn ferramenta_bem_sucedida_desenha_inicio_e_resultado() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[
+                UiEvent::ToolStarted {
+                    name: "bash",
+                    detail: "cargo test",
+                },
+                UiEvent::ToolFinished {
+                    name: "bash",
+                    duration: std::time::Duration::from_millis(6300),
+                    success: true,
+                    summary: "148 passed",
+                },
+            ],
+        );
+        assert_eq!(saida, "* Bash cargo test\n  |- 148 passed | 6.3s\n");
+    }
+
+    #[test]
+    fn ferramenta_bem_sucedida_em_unicode() {
+        let caps = Capabilities {
+            interactive: false,
+            unicode: true,
+            animation: false,
+            width: 80,
+        };
+        let saida = render(
+            caps,
+            &[
+                UiEvent::ToolStarted {
+                    name: "file_read",
+                    detail: "src/runtime.rs",
+                },
+                UiEvent::ToolFinished {
+                    name: "file_read",
+                    duration: std::time::Duration::from_millis(40),
+                    success: true,
+                    summary: "",
+                },
+            ],
+        );
+        assert_eq!(
+            saida,
+            "\u{25cf} Read src/runtime.rs\n  \u{2514}\u{2500} 40ms\n"
+        );
+    }
+
+    /// Falha muda o glifo E repete o nome: depois de uma saida longa, a linha
+    /// de inicio pode estar fora da tela.
+    #[test]
+    fn ferramenta_que_falha_muda_o_glifo_e_repete_o_nome() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ToolFinished {
+                name: "bash",
+                duration: std::time::Duration::from_millis(4200),
+                success: false,
+                summary: "error: exit 101",
+            }],
+        );
+        assert_eq!(saida, "x Bash   |- error: exit 101 | 4.2s\n");
+    }
+
+    #[test]
+    fn falha_sem_resumo_ainda_diz_que_falhou() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ToolFinished {
+                name: "bash",
+                duration: std::time::Duration::from_secs(2),
+                success: false,
+                summary: "",
+            }],
+        );
+        assert!(saida.contains("falhou"), "{saida:?}");
+    }
+
+    /// Criterio de aceite da #937: a animacao e limpa antes do evento.
+    #[test]
+    fn animacao_e_limpa_antes_do_evento_de_ferramenta() {
+        let caps = rich();
+        let mut renderer = TerminalRenderer::new(caps, caps.spinner(0));
+        let mut out: Vec<u8> = Vec::new();
+        for _ in 0..10 {
+            renderer.handle(UiEvent::ActivityTick, &mut out);
+        }
+        out.clear();
+        renderer.handle(
+            UiEvent::ToolStarted {
+                name: "bash",
+                detail: "ls",
+            },
+            &mut out,
+        );
+        let saida = String::from_utf8(out).expect("UTF-8");
+        assert!(
+            saida.starts_with("\r\x1b[2K"),
+            "nao limpou a animacao antes: {saida:?}"
+        );
+    }
+
+    /// A animacao para enquanto a ferramenta roda — a tela e dela.
+    #[test]
+    fn animacao_para_enquanto_a_ferramenta_roda() {
+        let caps = rich();
+        let mut renderer = TerminalRenderer::new(caps, caps.spinner(0));
+        let mut out: Vec<u8> = Vec::new();
+        for _ in 0..10 {
+            renderer.handle(UiEvent::ActivityTick, &mut out);
+        }
+        renderer.handle(
+            UiEvent::ToolStarted {
+                name: "bash",
+                detail: "ls",
+            },
+            &mut out,
+        );
+        out.clear();
+        for _ in 0..10 {
+            renderer.handle(UiEvent::ActivityTick, &mut out);
+        }
+        assert!(out.is_empty(), "animou por cima da ferramenta: {out:?}");
+    }
+
+    /// E volta quando ela termina — o "retomar o spinner depois da tool" que
+    /// ficou de fora do #936 por nao haver evento para ouvir.
+    #[test]
+    fn animacao_volta_depois_que_a_ferramenta_termina() {
+        let caps = rich();
+        let mut renderer = TerminalRenderer::new(caps, caps.spinner(0));
+        let mut out: Vec<u8> = Vec::new();
+
+        // Texto primeiro: a linha passa a ser da resposta e a animacao para.
+        renderer.handle(UiEvent::TextDelta("vou rodar os testes"), &mut out);
+        out.clear();
+        for _ in 0..10 {
+            renderer.handle(UiEvent::ActivityTick, &mut out);
+        }
+        assert!(out.is_empty(), "animou por cima da resposta");
+
+        renderer.handle(
+            UiEvent::ToolFinished {
+                name: "bash",
+                duration: std::time::Duration::from_secs(1),
+                success: true,
+                summary: "ok",
+            },
+            &mut out,
+        );
+        out.clear();
+        for _ in 0..10 {
+            renderer.handle(UiEvent::ActivityTick, &mut out);
+        }
+        assert!(
+            !out.is_empty(),
+            "a animacao nao voltou depois da ferramenta"
+        );
+    }
+
+    /// E o rotulo `Garra` continua saindo uma vez so — retomar a animacao
+    /// nao pode reimprimi-lo.
+    #[test]
+    fn retomar_a_animacao_nao_reimprime_o_rotulo() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[
+                UiEvent::TextDelta("antes "),
+                UiEvent::ToolFinished {
+                    name: "bash",
+                    duration: std::time::Duration::from_secs(1),
+                    success: true,
+                    summary: "ok",
+                },
+                UiEvent::TextDelta("depois"),
+                UiEvent::TurnFinished,
+            ],
+        );
+        assert_eq!(saida.matches("Garra").count(), 1, "{saida:?}");
+    }
+
+    #[test]
+    fn rotulo_de_ferramenta_e_o_que_o_operador_reconhece() {
+        assert_eq!(tool_label("bash"), "Bash");
+        assert_eq!(tool_label("file_read"), "Read");
+        assert_eq!(tool_label("file_write"), "Write");
+        assert_eq!(tool_label("repo_search"), "Search");
+        // Ferramenta sem entrada aparece com o nome cru, nao com um erro.
+        assert_eq!(tool_label("ferramenta_nova"), "ferramenta_nova");
+    }
+
+    #[test]
+    fn duracao_muda_de_unidade_conforme_a_escala() {
+        use std::time::Duration;
+        assert_eq!(format_duration(Duration::from_millis(40)), "40ms");
+        assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
+        assert_eq!(format_duration(Duration::from_millis(1000)), "1.0s");
+        assert_eq!(format_duration(Duration::from_millis(6300)), "6.3s");
+        assert_eq!(format_duration(Duration::from_secs(59)), "59.0s");
+        assert_eq!(format_duration(Duration::from_secs(63)), "1m03s");
     }
 
     #[test]

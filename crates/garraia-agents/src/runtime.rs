@@ -25,6 +25,7 @@ use crate::providers::{
     StreamEvent, ToolDefinition,
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
+use crate::turn_events::{TurnSink, summarize_tool_input, summarize_tool_output};
 
 /// Where a registered tool came from. Issue #924: without this the runtime
 /// cannot tell a native tool from an MCP one, so it cannot replace just the
@@ -1273,12 +1274,79 @@ impl AgentRuntime {
             model = tracing::field::Empty,
         )
     )]
+    #[allow(clippy::too_many_arguments)]
     pub async fn process_message_streaming_with_agent_config(
         &self,
         session_id: &str,
         user_text: &str,
         conversation_history: &[ChatMessage],
         delta_tx: mpsc::Sender<String>,
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        provider_id: Option<&str>,
+        model_override: Option<&str>,
+        system_prompt_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<String> {
+        self.stream_turn_with_sink(
+            session_id,
+            user_text,
+            conversation_history,
+            TurnSink::Text(delta_tx),
+            continuity_key,
+            user_id,
+            provider_id,
+            model_override,
+            system_prompt_override,
+            max_tokens_override,
+        )
+        .await
+    }
+
+    /// Como [`Self::process_message_streaming`], mas entregando o **fluxo
+    /// completo** do turno: texto e ciclo de vida das ferramentas (#937).
+    ///
+    /// Existe para o `garra chat` poder desenhar o que o agente esta fazendo
+    /// sem ler log. Os outros chamadores continuam no caminho de texto e nao
+    /// pagam nada por isto — ver [`TurnSink`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn process_message_streaming_with_events(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        events_tx: mpsc::Sender<crate::turn_events::TurnEvent>,
+        continuity_key: Option<&str>,
+        user_id: Option<&str>,
+        provider_id: Option<&str>,
+        model_override: Option<&str>,
+        system_prompt_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<String> {
+        self.stream_turn_with_sink(
+            session_id,
+            user_text,
+            conversation_history,
+            TurnSink::Events(events_tx),
+            continuity_key,
+            user_id,
+            provider_id,
+            model_override,
+            system_prompt_override,
+            max_tokens_override,
+        )
+        .await
+    }
+
+    /// O turno em si. Um sink so, entao a ordem entre texto e evento de
+    /// ferramenta e a ordem de emissao (ver `turn_events`).
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_turn_with_sink(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        conversation_history: &[ChatMessage],
+        sink: TurnSink,
         continuity_key: Option<&str>,
         user_id: Option<&str>,
         provider_id: Option<&str>,
@@ -1459,7 +1527,7 @@ impl AgentRuntime {
                         match event? {
                             StreamEvent::TextDelta(text) => {
                                 response_text.push_str(&text);
-                                let _ = delta_tx.send(text).await;
+                                sink.text(text).await;
                             }
                             StreamEvent::ToolUseStart { id, name, .. } => {
                                 current_tool = Some((id, name, String::new()));
@@ -1564,6 +1632,17 @@ impl AgentRuntime {
                             return Err(Error::Agent(format!("tool loop detected: {}", name)));
                         }
 
+                        // #937: este e o caminho de streaming nativo; o de
+                        // fallback tem a instrumentacao equivalente logo
+                        // adiante. Os dois precisam dela — o Ollama, provedor
+                        // padrao do projeto, nao implementa `stream_complete`
+                        // e cai justamente no outro.
+                        if sink.wants_tool_events() {
+                            sink.tool_started(name, summarize_tool_input(name, &input))
+                                .await;
+                        }
+                        let iniciado_em = std::time::Instant::now();
+
                         // executa com timeout
                         let output = match self.find_tool(name) {
                             Some(tool) => {
@@ -1577,6 +1656,17 @@ impl AgentRuntime {
                             }
                             None => ToolOutput::error(format!("unknown tool: {}", name)),
                         };
+
+                        if sink.wants_tool_events() {
+                            let ok = !output.is_error;
+                            sink.tool_finished(
+                                name,
+                                iniciado_em.elapsed(),
+                                ok,
+                                summarize_tool_output(&output.content, ok),
+                            )
+                            .await;
+                        }
 
                         // GAR-187: pause agent loop if tool requires user confirmation
                         if output.requires_confirmation {
@@ -1602,7 +1692,7 @@ impl AgentRuntime {
 
                     // GAR-187: if confirmation needed, send prompt via stream and return
                     if let Some(confirmation_msg) = confirmation_response {
-                        let _ = delta_tx.send(confirmation_msg.clone()).await;
+                        sink.text(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
                         return Ok(full_response);
                     }
@@ -1610,7 +1700,7 @@ impl AgentRuntime {
                     // Add separator between iterations
                     if !full_response.is_empty() {
                         full_response.push_str("\n\n");
-                        let _ = delta_tx.send("\n\n".to_string()).await;
+                        sink.text("\n\n".to_string()).await;
                     }
                 }
                 Err(_) => {
@@ -1633,7 +1723,7 @@ impl AgentRuntime {
 
                     if !has_tool_use {
                         let final_text = extract_text(&response.content);
-                        let _ = delta_tx.send(final_text.clone()).await;
+                        sink.text(final_text.clone()).await;
                         full_response.push_str(&final_text);
 
                         if let Err(e) = self
@@ -1678,6 +1768,15 @@ impl AgentRuntime {
                                 return Err(Error::Agent(format!("tool loop detected: {}", name)));
                             }
 
+                            // #937: o resumo do input so e montado quando alguem
+                            // vai desenha-lo. `summarize_tool_input` ja redige
+                            // segredo na origem.
+                            if sink.wants_tool_events() {
+                                sink.tool_started(name, summarize_tool_input(name, input))
+                                    .await;
+                            }
+                            let iniciado_em = std::time::Instant::now();
+
                             // executa com timeout
                             let output = match self.find_tool(name) {
                                 Some(tool) => {
@@ -1696,6 +1795,17 @@ impl AgentRuntime {
                                 }
                                 None => ToolOutput::error(format!("unknown tool: {}", name)),
                             };
+
+                            if sink.wants_tool_events() {
+                                let ok = !output.is_error;
+                                sink.tool_finished(
+                                    name,
+                                    iniciado_em.elapsed(),
+                                    ok,
+                                    summarize_tool_output(&output.content, ok),
+                                )
+                                .await;
+                            }
 
                             // GAR-187: pause if tool requires user confirmation
                             if output.requires_confirmation {
@@ -1722,7 +1832,7 @@ impl AgentRuntime {
 
                     // GAR-187: if confirmation needed, send prompt via stream and return
                     if let Some(confirmation_msg) = confirmation_response {
-                        let _ = delta_tx.send(confirmation_msg.clone()).await;
+                        sink.text(confirmation_msg.clone()).await;
                         full_response.push_str(&confirmation_msg);
                         return Ok(full_response);
                     }

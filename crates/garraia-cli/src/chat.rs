@@ -17,6 +17,7 @@ use garraia_config::AppConfig;
 use tokio::sync::mpsc;
 
 use crate::ui::{TerminalRenderer, UiEvent};
+use garraia_agents::TurnEvent;
 
 use std::path::Path;
 
@@ -779,7 +780,7 @@ enum TurnOutcome<T, E> {
 /// aperta Ctrl+C durante o turno.
 async fn stream_turn<F, T, E>(
     call: F,
-    mut rx: mpsc::Receiver<String>,
+    mut rx: mpsc::Receiver<TurnEvent>,
     timeout: std::time::Duration,
     out: &mut (impl io::Write + ?Sized),
     renderer: &mut TerminalRenderer,
@@ -827,7 +828,7 @@ where
                 renderer.handle(UiEvent::ActivityTick, out);
             }
             maybe = rx.recv(), if rx_open => match maybe {
-                Some(delta) => renderer.handle(UiEvent::TextDelta(&delta), out),
+                Some(evento) => render_turn_event(&evento, renderer, out),
                 None => rx_open = false,
             },
         }
@@ -837,8 +838,8 @@ where
     // a timeout — tokio::pin! would keep it alive and hang the drain below.
     drop(call);
     if rx_open {
-        while let Some(delta) = rx.recv().await {
-            renderer.handle(UiEvent::TextDelta(&delta), out);
+        while let Some(evento) = rx.recv().await {
+            render_turn_event(&evento, renderer, out);
         }
     }
 
@@ -848,6 +849,35 @@ where
     renderer.handle(UiEvent::TurnFinished, out);
 
     result
+}
+
+/// Traduz o que o runtime **contou** para o que o terminal **desenha**.
+///
+/// É a fronteira que a ADR 0017 fixa: `garraia-agents` fala `TurnEvent` e não
+/// conhece renderer nenhum; o `ui` fala `UiEvent` e não conhece runtime. Esta
+/// função de três linhas é toda a ponte, e é de propósito que ela seja
+/// pequena — se um dia precisar de lógica, a lógica está no lado errado.
+fn render_turn_event(
+    evento: &TurnEvent,
+    renderer: &mut TerminalRenderer,
+    out: &mut (impl io::Write + ?Sized),
+) {
+    let ui = match evento {
+        TurnEvent::TextDelta(texto) => UiEvent::TextDelta(texto),
+        TurnEvent::ToolStarted { name, detail } => UiEvent::ToolStarted { name, detail },
+        TurnEvent::ToolFinished {
+            name,
+            duration,
+            success,
+            summary,
+        } => UiEvent::ToolFinished {
+            name,
+            duration: *duration,
+            success: *success,
+            summary,
+        },
+    };
+    renderer.handle(ui, out);
 }
 
 /// Run the interactive chat REPL.
@@ -1157,7 +1187,7 @@ pub async fn run_chat(
         renderer.begin_turn(caps.spinner(turn_index));
         turn_index = turn_index.wrapping_add(1);
 
-        let (tx, rx) = mpsc::channel::<String>(100);
+        let (tx, rx) = mpsc::channel::<TurnEvent>(100);
 
         // The runtime appends the user message on top of the given history
         // (runtime.rs), so `history` must NOT contain it yet — it is pushed
@@ -1166,12 +1196,20 @@ pub async fn run_chat(
         let session_clone = session_id.clone();
         let model_clone = model_name.clone();
 
-        let call = runtime.process_message_streaming(
+        // #937: o chat pede o fluxo completo — texto e ciclo de vida das
+        // ferramentas. Os outros consumidores do runtime seguem no caminho
+        // de texto e nao pagam nada por isto.
+        let call = runtime.process_message_streaming_with_events(
             &session_clone,
             &input,
             &history_clone,
             tx,
+            None,
+            None,
+            None,
             Some(&model_clone),
+            None,
+            None,
         );
         let mut stdout = io::stdout();
         turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1656,10 +1694,10 @@ mod tests {
     /// 5s outer timeout turns a regression into a failure instead of a hang.
     #[tokio::test]
     async fn stream_turn_drains_concurrently_without_deadlock() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(2);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(2);
         let call = async move {
             for i in 0..300 {
-                tx.send(format!("d{i} "))
+                tx.send(TurnEvent::TextDelta(format!("d{i} ")))
                     .await
                     .map_err(|_| "receiver dropped")?;
             }
@@ -1694,9 +1732,9 @@ mod tests {
     /// already-buffered deltas must still be flushed before returning None.
     #[tokio::test]
     async fn stream_turn_times_out_and_flushes_buffered_deltas() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
-            tx.send("partial ".to_string())
+            tx.send(TurnEvent::TextDelta("partial ".to_string()))
                 .await
                 .map_err(|_| "receiver dropped")?;
             // Never completes: simulates a stalled provider/SSE stream.
@@ -1744,6 +1782,58 @@ mod tests {
             animation: true,
             width: 80,
         }
+    }
+
+    /// A ponte `TurnEvent` -> `UiEvent` no caminho real do `stream_turn`
+    /// (#937): o runtime conta, o renderer desenha, e a ordem entre texto e
+    /// ferramenta e a ordem de emissao — que e o motivo de haver um canal so.
+    #[tokio::test]
+    async fn stream_turn_desenha_texto_e_ferramenta_na_ordem_emitida() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
+        let call = async move {
+            tx.send(TurnEvent::TextDelta("vou rodar os testes. ".into()))
+                .await
+                .map_err(|_| "receiver dropped")?;
+            tx.send(TurnEvent::ToolStarted {
+                name: "bash".into(),
+                detail: "cargo test".into(),
+            })
+            .await
+            .map_err(|_| "receiver dropped")?;
+            tx.send(TurnEvent::ToolFinished {
+                name: "bash".into(),
+                duration: std::time::Duration::from_millis(6300),
+                success: true,
+                summary: "148 passed".into(),
+            })
+            .await
+            .map_err(|_| "receiver dropped")?;
+            tx.send(TurnEvent::TextDelta("passou tudo.".into()))
+                .await
+                .map_err(|_| "receiver dropped")?;
+            Ok::<String, &'static str>("pronto".to_string())
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_turn(
+                call,
+                rx,
+                std::time::Duration::from_secs(5),
+                &mut out,
+                &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, ""),
+                &tokio::sync::Notify::new(),
+            ),
+        )
+        .await
+        .expect("stream_turn nao pode travar");
+
+        assert_eq!(outcome, TurnOutcome::Done(Ok("pronto".to_string())));
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "vou rodar os testes. * Bash cargo test\n  |- 148 passed | 6.3s\npassou tudo."
+        );
     }
 
     /// Renderer sem rótulo: estes testes afirmam o texto do modelo e os
@@ -1806,11 +1896,11 @@ mod tests {
     /// é flake garantido; pausado, cada tick cai no instante exato.
     #[tokio::test(start_paused = true)]
     async fn spinner_runs_before_the_first_token() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             // Latência de provedor: vários quadros cabem aqui antes do 1o token.
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            tx.send("resposta".to_string())
+            tx.send(TurnEvent::TextDelta("resposta".to_string()))
                 .await
                 .map_err(|_| "receiver dropped")?;
             Ok::<String, &'static str>("resposta".to_string())
@@ -1845,13 +1935,13 @@ mod tests {
     /// depois que a resposta começa a sair.
     #[tokio::test(start_paused = true)]
     async fn spinner_is_cleared_before_streamed_output() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            tx.send("alpha ".to_string())
+            tx.send(TurnEvent::TextDelta("alpha ".to_string()))
                 .await
                 .map_err(|_| "receiver dropped")?;
-            tx.send("beta".to_string())
+            tx.send(TurnEvent::TextDelta("beta".to_string()))
                 .await
                 .map_err(|_| "receiver dropped")?;
             Ok::<String, &'static str>("alpha beta".to_string())
@@ -1890,7 +1980,7 @@ mod tests {
     /// Erro do provedor precisa limpar a animação — nada de spinner órfão.
     #[tokio::test(start_paused = true)]
     async fn spinner_is_cleaned_up_on_provider_error() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             drop(tx);
@@ -1921,7 +2011,7 @@ mod tests {
     /// Timeout também limpa.
     #[tokio::test(start_paused = true)]
     async fn spinner_is_cleaned_up_on_timeout() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             let _keep = tx;
             std::future::pending::<()>().await;
@@ -1954,7 +2044,7 @@ mod tests {
     /// prompt — sem matar o processo e sem deixar o cursor escondido.
     #[tokio::test(start_paused = true)]
     async fn cancellation_stops_and_cleans_up_the_spinner() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             let _keep = tx;
             // Provedor que nunca responde: só o cancelamento tira a gente daqui.
@@ -1997,10 +2087,10 @@ mod tests {
     /// `None` e a saída tem de ser byte a byte igual à de antes do spinner.
     #[tokio::test]
     async fn non_tty_output_contains_no_animation_frames() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            tx.send("resposta limpa".to_string())
+            tx.send(TurnEvent::TextDelta("resposta limpa".to_string()))
                 .await
                 .map_err(|_| "receiver dropped")?;
             Ok::<String, &'static str>("resposta limpa".to_string())
@@ -2035,10 +2125,10 @@ mod tests {
     /// duplicação de linha quando o provedor entrega token a token.
     #[tokio::test]
     async fn prefix_is_written_exactly_once_across_many_deltas() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(4);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(4);
         let call = async move {
             for i in 0..50 {
-                tx.send(format!("t{i}"))
+                tx.send(TurnEvent::TextDelta(format!("t{i}")))
                     .await
                     .map_err(|_| "receiver dropped")?;
             }
@@ -2064,7 +2154,7 @@ mod tests {
     /// Errors from the call are passed through untouched.
     #[tokio::test]
     async fn stream_turn_propagates_call_error() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        let (tx, rx) = tokio::sync::mpsc::channel::<TurnEvent>(8);
         let call = async move {
             drop(tx);
             Err::<String, &'static str>("provider exploded")
