@@ -613,6 +613,45 @@ impl MemoryStore {
         }
     }
 
+    /// Copia o banco inteiro para `dest`, consistente (#955).
+    ///
+    /// Usa `VACUUM INTO`, e não `cp`. A diferença importa: o banco roda em
+    /// WAL, então copiar o arquivo com `cp` pega uma foto sem as transações
+    /// que ainda estão no `-wal`, e o resultado é um backup que parece bom e
+    /// está incompleto. O `VACUUM INTO` lê sob uma transação e escreve o
+    /// estado **commitado** inteiro — sem precisar de checkpoint, sem parar o
+    /// gateway. De brinde, compacta: páginas livres não vão junto.
+    ///
+    /// **O índice vetorial vai junto.** Foi verificado, não presumido: uma
+    /// sonda contra um banco com `vec_embeddings_*` real confirmou que as
+    /// tabelas virtuais vec0, as sombras delas e o `vec_id_map` chegam
+    /// íntegros do outro lado — a cópia reabre com o mesmo
+    /// `integrity_report`. Era o risco de verdade aqui; o WAL, que a issue
+    /// levantou, o `VACUUM INTO` já resolve sozinho.
+    ///
+    /// Devolve o tamanho do arquivo gerado, em bytes.
+    ///
+    /// Falha se `dest` já existir — é o SQLite que exige, e é a regra certa:
+    /// um backup que sobrescreve outro em silêncio é um backup a menos.
+    pub fn backup_to(&self, dest: &Path) -> Result<u64> {
+        if dest.exists() {
+            return Err(Error::Database(format!(
+                "backup destination already exists: {}",
+                dest.display()
+            )));
+        }
+
+        {
+            let conn = self.connection()?;
+            conn.execute("VACUUM INTO ?", params![dest.to_string_lossy()])
+                .map_err(|e| Error::Database(format!("failed to back up memory database: {e}")))?;
+        }
+
+        std::fs::metadata(dest)
+            .map(|m| m.len())
+            .map_err(|e| Error::Database(format!("backup written but not readable: {e}")))
+    }
+
     /// Reinsere no indice os vetores que ja estao na coluna mas nao no mapa.
     ///
     /// Este e o estado que o `remember_sync` produz na operacao normal: ele
@@ -1782,6 +1821,118 @@ mod tests {
         drop(store);
         let store = MemoryStore::open(&db).expect("segunda abertura");
         assert_eq!(store.integrity_report().expect("report").entries_total, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Diretorio temporario proprio, apagado no fim do teste.
+    fn dir_temporario(rotulo: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "garraia-memory-{rotulo}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relogio")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("cria dir");
+        dir
+    }
+
+    /// O backup tem de trazer o indice vetorial junto — e o que separa uma
+    /// copia utilizavel de um arquivo que reabre vazio de vetor.
+    #[tokio::test]
+    async fn backup_preserva_entradas_e_indice_vetorial() {
+        let dir = dir_temporario("backup");
+        let origem = dir.join("memory.db");
+        let destino = dir.join("backup.db");
+
+        {
+            let store = MemoryStore::open(&origem).expect("abre");
+            assert!(
+                store.knn_enabled(),
+                "sem sqlite-vec o teste nao afirma o que existe para afirmar"
+            );
+            store
+                .remember(entry(
+                    "s1",
+                    None,
+                    "com vetor",
+                    MemoryRole::User,
+                    Some(vec![0.1, 0.2, 0.3, 0.4]),
+                ))
+                .await
+                .expect("insere");
+            store
+                .remember(entry("s1", None, "sem vetor", MemoryRole::User, None))
+                .await
+                .expect("insere");
+
+            let bytes = store.backup_to(&destino).expect("backup");
+            assert!(bytes > 0, "backup vazio");
+        }
+
+        let copia = MemoryStore::open(&destino).expect("a copia tem de abrir");
+        let report = copia.integrity_report().expect("report");
+        assert_eq!(report.entries_total, 2);
+        assert_eq!(report.entries_with_embedding, 1);
+        assert_eq!(report.map_rows, 1, "o vec_id_map nao veio no backup");
+        assert_eq!(
+            report.vec_rows_by_table,
+            vec![("vec_embeddings_4".to_string(), 1)],
+            "a tabela vec0 nao veio no backup"
+        );
+        assert!(report.orphan_map_entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Um backup que sobrescreve outro em silencio e um backup a menos.
+    #[tokio::test]
+    async fn backup_recusa_sobrescrever_arquivo_existente() {
+        let dir = dir_temporario("backup-existente");
+        let origem = dir.join("memory.db");
+        let destino = dir.join("ja-existe.db");
+        std::fs::write(&destino, b"nao me apague").expect("escreve");
+
+        let store = MemoryStore::open(&origem).expect("abre");
+        let erro = store.backup_to(&destino).expect_err("deveria recusar");
+        assert!(
+            format!("{erro}").contains("already exists"),
+            "mensagem inesperada: {erro}"
+        );
+        assert_eq!(
+            std::fs::read(&destino).expect("le"),
+            b"nao me apague",
+            "o arquivo existente foi tocado"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A copia e independente: escrever na origem depois do backup nao mexe
+    /// nele.
+    #[tokio::test]
+    async fn backup_e_um_retrato_do_momento() {
+        let dir = dir_temporario("backup-retrato");
+        let origem = dir.join("memory.db");
+        let destino = dir.join("backup.db");
+
+        let store = MemoryStore::open(&origem).expect("abre");
+        store
+            .remember(entry("s1", None, "antes", MemoryRole::User, None))
+            .await
+            .expect("insere");
+        store.backup_to(&destino).expect("backup");
+
+        store
+            .remember(entry("s1", None, "depois", MemoryRole::User, None))
+            .await
+            .expect("insere");
+
+        assert_eq!(store.integrity_report().expect("report").entries_total, 2);
+        let copia = MemoryStore::open(&destino).expect("abre copia");
+        assert_eq!(copia.integrity_report().expect("report").entries_total, 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
