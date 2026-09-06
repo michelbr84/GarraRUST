@@ -833,7 +833,9 @@ enum TurnOutcome<T, E> {
 /// bloqueante — justamente para não quebrar a drenagem concorrente descrita
 /// acima: `rx` continua sendo consumido enquanto a garra gira. `None`
 /// desativa a animação por completo (stdout redirecionado, `NO_COLOR`, etc.)
-/// e nesse caso nem um byte de spinner chega ao `out`.
+/// e nesse caso nem um byte de spinner chega ao `out`. A aparição tem uma
+/// janela de ~270ms e o tempo decorrido entra em espera longa — ambos
+/// derivados dos ticks dentro de `SpinnerState`, não de relógio (#936).
 ///
 /// `prefix` (o rótulo `garra >`) é escrito exatamente uma vez, imediatamente
 /// antes do primeiro delta — ou na saída, se nenhum delta chegar. Ele não pode
@@ -858,8 +860,10 @@ where
     let mut rx_open = true;
     let mut prefix_written = false;
 
-    // O primeiro tick de `interval` dispara imediatamente, então a garra
-    // aparece assim que o turno começa, sem esperar um período.
+    // O primeiro tick de `interval` dispara imediatamente; quem segura a
+    // aparição é o próprio estado do spinner (#936): os primeiros ticks caem
+    // dentro da janela de ~270ms e não pintam nada, então resposta rápida
+    // não pisca spinner nenhum.
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
         crate::spinner::FRAME_INTERVAL_MS,
     ));
@@ -1816,12 +1820,16 @@ mod tests {
 
     /// O indicador tem de aparecer ANTES do primeiro token, que é exatamente a
     /// janela em que o REPL parecia congelado no `garra >`.
-    #[tokio::test]
+    ///
+    /// Tempo virtual (`start_paused`): a janela de aparição de ~270ms (#936)
+    /// torna o real-time frouxo demais — 30ms de margem num runner carregado
+    /// é flake garantido; pausado, cada tick cai no instante exato.
+    #[tokio::test(start_paused = true)]
     async fn spinner_runs_before_the_first_token() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
         let call = async move {
             // Latência de provedor: vários quadros cabem aqui antes do 1o token.
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             tx.send("resposta".to_string())
                 .await
                 .map_err(|_| "receiver dropped")?;
@@ -1856,11 +1864,11 @@ mod tests {
 
     /// A linha do spinner é apagada antes do texto, e nenhum quadro sobrevive
     /// depois que a resposta começa a sair.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spinner_is_cleared_before_streamed_output() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
         let call = async move {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             tx.send("alpha ".to_string())
                 .await
                 .map_err(|_| "receiver dropped")?;
@@ -1902,11 +1910,11 @@ mod tests {
     }
 
     /// Erro do provedor precisa limpar a animação — nada de spinner órfão.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spinner_is_cleaned_up_on_provider_error() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
         let call = async move {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             drop(tx);
             Err::<String, &'static str>("provider exploded")
         };
@@ -1934,7 +1942,7 @@ mod tests {
     }
 
     /// Timeout também limpa.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spinner_is_cleaned_up_on_timeout() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
         let call = async move {
@@ -1949,7 +1957,7 @@ mod tests {
             stream_turn(
                 call,
                 rx,
-                std::time::Duration::from_millis(300),
+                std::time::Duration::from_millis(700),
                 &mut out,
                 test_spinner(),
                 "garra > ",
@@ -1968,7 +1976,7 @@ mod tests {
 
     /// Ctrl+C durante a espera: cancela o turno, limpa a animação e devolve o
     /// prompt — sem matar o processo e sem deixar o cursor escondido.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cancellation_stops_and_cleans_up_the_spinner() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
         let call = async move {
