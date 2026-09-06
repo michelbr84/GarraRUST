@@ -23,82 +23,15 @@ const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const DIM: &str = "\x1b[2m";
-const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
 /// Print the Garra chat banner.
-pub fn print_chat_banner(provider: &str, model: &str, mode: &str) {
-    let version = env!("CARGO_PKG_VERSION");
-    println!();
-    println!("{CYAN}{BOLD}╭──────────────────────────────────────────────╮{RESET}");
-    println!(
-        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}   {YELLOW}{BOLD}\\) /  o o  \\ (/{RESET}   {GREEN}{BOLD}GarraIA v{version}{RESET}         {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}  {DIM}Provider:{RESET} {GREEN}{provider:<15}{RESET} {DIM}Mode:{RESET} {GREEN}{mode:<8}{RESET}  {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}  {DIM}Model:{RESET}    {GREEN}{model:<33}{RESET} {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
-    );
-    println!(
-        "{CYAN}{BOLD}│{RESET}  {DIM}/help  /model  /provider  /clear  /exit{RESET}  {CYAN}{BOLD}│{RESET}"
-    );
-    println!("{CYAN}{BOLD}╰──────────────────────────────────────────────╯{RESET}");
-    println!();
-}
 
 /// Scan the current directory for project markers and build a context summary.
 fn scan_directory_context(cwd: &str) -> String {
     let p = Path::new(cwd);
-    let mut markers = Vec::new();
-
-    // Rust
-    if p.join("Cargo.toml").exists() {
-        markers.push("Rust (Cargo)");
-    }
-    // Node.js
-    if p.join("package.json").exists() {
-        markers.push("Node.js");
-    }
-    // Python
-    if p.join("pyproject.toml").exists() || p.join("requirements.txt").exists() {
-        markers.push("Python");
-    }
-    // Flutter/Dart
-    if p.join("pubspec.yaml").exists() {
-        markers.push("Flutter/Dart");
-    }
-    // Go
-    if p.join("go.mod").exists() {
-        markers.push("Go");
-    }
-    // Java/Kotlin
-    if p.join("pom.xml").exists() || p.join("build.gradle").exists() {
-        markers.push("Java/Kotlin");
-    }
-    // Docker
-    if p.join("Dockerfile").exists() || p.join("docker-compose.yml").exists() {
-        markers.push("Docker");
-    }
-    // Git
+    // Mesma tabela que o cabecalho usa (#935) — duas copias divergiriam.
+    let mut markers = crate::conversation::project_markers(p);
     if p.join(".git").exists() {
         markers.push("Git repo");
     }
@@ -986,11 +919,33 @@ pub async fn run_chat(
     // Scan directory for context
     let dir_context = scan_directory_context(&cwd);
 
-    print_chat_banner(&provider_name, &model_name, mode);
-    println!("{DIM}  Diretorio: {cwd}{RESET}");
-    if !dir_context.is_empty() {
-        println!("{DIM}  Projeto:   {dir_context}{RESET}");
-    }
+    // Cabecalho compacto (#935): tres linhas no lugar do quadro de doze com o
+    // mascote — que nao sumiu, so deixou de ser cobrado em toda abertura
+    // (`garra about` mostra ele inteiro). A listagem de arquivos que saia aqui
+    // continua indo para o prompt do sistema, onde serve para alguma coisa, e
+    // a inspecao detalhada virou o `/context`.
+    let style = crate::conversation::Style::detect();
+    let cwd_path = std::path::Path::new(&cwd);
+    let markers = crate::conversation::project_markers(cwd_path);
+    // `openrouter/auto` no lugar de `auto`: modelo sem provider e ambiguo.
+    let model_display = if model_name.contains('/') {
+        model_name.clone()
+    } else {
+        format!("{provider_name}/{model_name}")
+    };
+    let header = crate::conversation::Header {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        model: model_display,
+        mode: mode.to_string(),
+        cwd: crate::banner::shorten_path(cwd_path),
+        branch: crate::conversation::git_branch(cwd_path),
+        project: (!markers.is_empty()).then(|| markers.join(", ")),
+    };
+    println!();
+    print!(
+        "{}",
+        header.render(style, crate::conversation::terminal_width())
+    );
     println!();
 
     // Build runtime with filesystem tools
@@ -1074,7 +1029,7 @@ pub async fn run_chat(
 
     loop {
         // Prompt
-        print!("{GREEN}{BOLD}voce >{RESET} ");
+        print!("{}", style.user_prompt());
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -1107,7 +1062,23 @@ pub async fn run_chat(
                 println!("  /models            Listar modelos disponiveis");
                 println!("  /clear             Limpar historico");
                 println!("  /history           Mostrar historico");
+                println!("  /context           Diretorio e projeto detectados");
                 println!("  /exit              Sair");
+                continue;
+            }
+            // A inspecao detalhada de diretorio saiu do cabecalho de abertura
+            // (#935) e mora aqui: quem quer ver, pede.
+            "/context" | "/contexto" => {
+                println!("{DIM}Diretorio: {cwd}{RESET}");
+                match crate::conversation::git_branch(std::path::Path::new(&cwd)) {
+                    Some(branch) => println!("{DIM}Ramo:      {branch}{RESET}"),
+                    None => println!("{DIM}Ramo:      (fora de um repositorio git){RESET}"),
+                }
+                if dir_context.is_empty() {
+                    println!("{DIM}Projeto:   nenhum marcador detectado{RESET}");
+                } else {
+                    println!("{DIM}Projeto:   {dir_context}{RESET}");
+                }
                 continue;
             }
             "/history" | "/historico" => {
@@ -1227,7 +1198,7 @@ pub async fn run_chat(
             std::time::Duration::from_secs(timeout_secs),
             &mut stdout,
             spinner,
-            &format!("{CYAN}{BOLD}garra >{RESET} "),
+            &style.assistant_prefix(),
             &cancel,
         )
         .await;
