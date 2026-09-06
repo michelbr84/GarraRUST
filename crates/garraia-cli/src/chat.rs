@@ -16,6 +16,8 @@ use garraia_agents::{
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
 
+use crate::ui::{TerminalRenderer, UiEvent};
+
 use std::path::Path;
 
 /// ANSI color helpers
@@ -29,7 +31,7 @@ const RESET: &str = "\x1b[0m";
 fn scan_directory_context(cwd: &str) -> String {
     let p = Path::new(cwd);
     // Mesma tabela que o cabecalho usa (#935) — duas copias divergiriam.
-    let mut markers = crate::conversation::project_markers(p);
+    let mut markers = crate::ui::project_markers(p);
     if p.join(".git").exists() {
         markers.push("Git repo");
     }
@@ -780,8 +782,7 @@ async fn stream_turn<F, T, E>(
     mut rx: mpsc::Receiver<String>,
     timeout: std::time::Duration,
     out: &mut (impl io::Write + ?Sized),
-    mut spinner: Option<crate::spinner::Spinner>,
-    prefix: &str,
+    renderer: &mut TerminalRenderer,
     cancel: &tokio::sync::Notify,
 ) -> TurnOutcome<T, E>
 where
@@ -789,34 +790,24 @@ where
 {
     let mut call = Box::pin(tokio::time::timeout(timeout, call));
     let mut rx_open = true;
-    let mut prefix_written = false;
 
     // O primeiro tick de `interval` dispara imediatamente; quem segura a
     // aparição é o próprio estado do spinner (#936): os primeiros ticks caem
     // dentro da janela de ~270ms e não pintam nada, então resposta rápida
     // não pisca spinner nenhum.
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
-        crate::spinner::FRAME_INTERVAL_MS,
+        crate::ui::FRAME_INTERVAL_MS,
     ));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    // `write_delta` centraliza a ordem obrigatória: apagar o spinner, escrever
-    // o prefixo uma única vez, só então o texto do modelo. Sem isso o rótulo
-    // sairia no meio da resposta ou colidiria com um quadro da animação.
-    macro_rules! write_delta {
-        ($delta:expr) => {{
-            if let Some(s) = spinner.as_mut() {
-                s.clear(out);
-            }
-            if !prefix_written {
-                let _ = write!(out, "{prefix}");
-                prefix_written = true;
-            }
-            let _ = write!(out, "{}", $delta);
-            let _ = out.flush();
-        }};
-    }
-
+    // A ordem obrigatória — apagar a animação, escrever o rótulo uma única
+    // vez, só então o texto do modelo — mora no `TerminalRenderer` desde o
+    // #942 (ADR 0017). Aqui só se diz *o que aconteceu*.
+    //
+    // O renderer é chamado **de dentro deste `select!`**, nunca de uma task
+    // própria: o canal é limitado e o produtor usa `send().await`, então um
+    // receptor que só drena quando sobra tempo trava o runtime. Foi o
+    // travamento original do `garra chat`, e é o invariante 1 da ADR 0017.
     let result = loop {
         tokio::select! {
             r = &mut call => break match r {
@@ -832,16 +823,11 @@ where
             // sem ninguém escutando engoliria o Ctrl+C no prompt `voce >` — o
             // usuário ficaria sem como sair. Um dono único resolve os dois casos.
             _ = cancel.notified() => break TurnOutcome::Cancelled,
-            _ = ticker.tick(), if spinner.is_some() => {
-                // Só anima antes do primeiro token: depois disso a linha
-                // pertence à resposta e um quadro colidiria com ela.
-                if !prefix_written
-                    && let Some(s) = spinner.as_mut() {
-                        s.render_frame(out);
-                    }
+            _ = ticker.tick(), if renderer.has_animation() => {
+                renderer.handle(UiEvent::ActivityTick, out);
             }
             maybe = rx.recv(), if rx_open => match maybe {
-                Some(delta) => write_delta!(delta),
+                Some(delta) => renderer.handle(UiEvent::TextDelta(&delta), out),
                 None => rx_open = false,
             },
         }
@@ -852,19 +838,14 @@ where
     drop(call);
     if rx_open {
         while let Some(delta) = rx.recv().await {
-            write_delta!(delta);
+            renderer.handle(UiEvent::TextDelta(&delta), out);
         }
     }
 
-    // Limpeza incondicional: vale para sucesso, erro do provedor, timeout,
-    // Ctrl+C e cancelamento. `clear` é idempotente, então repetir é barato.
-    if let Some(s) = spinner.as_mut() {
-        s.clear(out);
-    }
-    if !prefix_written {
-        let _ = write!(out, "{prefix}");
-    }
-    let _ = out.flush();
+    // Fim de turno incondicional: vale para sucesso, erro do provedor,
+    // timeout, Ctrl+C e cancelamento. O renderer limpa a animação (idempotente)
+    // e garante que o rótulo saiu.
+    renderer.handle(UiEvent::TurnFinished, out);
 
     result
 }
@@ -922,28 +903,28 @@ pub async fn run_chat(
     // (`garra about` mostra ele inteiro). A listagem de arquivos que saia aqui
     // continua indo para o prompt do sistema, onde serve para alguma coisa, e
     // a inspecao detalhada virou o `/context`.
-    let style = crate::conversation::Style::detect();
+    // O que este terminal aguenta, decidido uma vez só (#942): antes a
+    // conversa e a animação decidiam separado e podiam discordar.
+    let caps = crate::ui::Capabilities::detect();
+    let style = caps.style();
     let cwd_path = std::path::Path::new(&cwd);
-    let markers = crate::conversation::project_markers(cwd_path);
+    let markers = crate::ui::project_markers(cwd_path);
     // `openrouter/auto` no lugar de `auto`: modelo sem provider e ambiguo.
     let model_display = if model_name.contains('/') {
         model_name.clone()
     } else {
         format!("{provider_name}/{model_name}")
     };
-    let header = crate::conversation::Header {
+    let header = crate::ui::Header {
         version: env!("CARGO_PKG_VERSION").to_string(),
         model: model_display,
         mode: mode.to_string(),
         cwd: crate::banner::shorten_path(cwd_path),
-        branch: crate::conversation::git_branch(cwd_path),
+        branch: crate::ui::git_branch(cwd_path),
         project: (!markers.is_empty()).then(|| markers.join(", ")),
     };
     println!();
-    print!(
-        "{}",
-        header.render(style, crate::conversation::terminal_width())
-    );
+    print!("{}", header.render(style, caps.width));
     println!();
 
     // Build runtime with filesystem tools
@@ -986,6 +967,10 @@ pub async fn run_chat(
     // Semente do indicador de atividade: roda a mensagem de abertura a
     // cada turno, para dois envios seguidos não começarem com a mesma frase.
     let mut turn_index: usize = 0;
+    // Um renderer para a sessao inteira; cada turno o rearma com a animacao
+    // daquele turno (#942). O rotulo `Garra` e a ordem de escrita passam a ser
+    // responsabilidade dele — ver ADR 0017.
+    let mut renderer = TerminalRenderer::new(caps, None);
 
     // Dono único do SIGINT.
     //
@@ -1068,7 +1053,7 @@ pub async fn run_chat(
             // (#935) e mora aqui: quem quer ver, pede.
             "/context" | "/contexto" => {
                 println!("{DIM}Diretorio: {cwd}{RESET}");
-                match crate::conversation::git_branch(std::path::Path::new(&cwd)) {
+                match crate::ui::git_branch(std::path::Path::new(&cwd)) {
                     Some(branch) => println!("{DIM}Ramo:      {branch}{RESET}"),
                     None => println!("{DIM}Ramo:      (fora de um repositorio git){RESET}"),
                 }
@@ -1169,7 +1154,7 @@ pub async fn run_chat(
         // `stream_turn`, que o escreve junto do primeiro token. O indicador de
         // atividade ocupa esta linha enquanto o modelo pensa, e limpá-la
         // apagaria o rótulo se ele já estivesse na tela.
-        let spinner = crate::spinner::detect(turn_index);
+        renderer.begin_turn(caps.spinner(turn_index));
         turn_index = turn_index.wrapping_add(1);
 
         let (tx, rx) = mpsc::channel::<String>(100);
@@ -1195,8 +1180,7 @@ pub async fn run_chat(
             rx,
             std::time::Duration::from_secs(timeout_secs),
             &mut stdout,
-            spinner,
-            &style.assistant_prefix(),
+            &mut renderer,
             &cancel,
         )
         .await;
@@ -1204,14 +1188,20 @@ pub async fn run_chat(
 
         match outcome {
             TurnOutcome::TimedOut => {
-                println!(
-                    "\n{YELLOW}Tempo esgotado apos {timeout_secs}s. A resposta foi descartada; \
-                     tente de novo ou aumente com --timeout-secs.{RESET}"
+                renderer.handle(
+                    UiEvent::Warning(&format!(
+                        "Tempo esgotado apos {timeout_secs}s. A resposta foi descartada; \
+                         tente de novo ou aumente com --timeout-secs."
+                    )),
+                    &mut stdout,
                 );
             }
             TurnOutcome::Cancelled => {
                 // Ctrl+C aborta o turno, não a sessão: o histórico segue vivo.
-                println!("\n{DIM}Cancelado. Manda outra ou /exit para sair.{RESET}");
+                renderer.handle(
+                    UiEvent::Hint("Cancelado. Manda outra ou /exit para sair."),
+                    &mut stdout,
+                );
             }
             TurnOutcome::Done(Ok(full_response)) => {
                 // Deltas were already printed live during streaming
@@ -1227,15 +1217,21 @@ pub async fn run_chat(
                 });
             }
             TurnOutcome::Done(Err(e)) => {
-                println!("\n{YELLOW}Erro: {e}{RESET}");
+                let err_str = format!("{e}");
+                renderer.handle(UiEvent::Error(&format!("Erro: {err_str}")), &mut stdout);
 
                 // Hint for common errors
-                let err_str = format!("{e}");
                 if err_str.contains("Connection refused") || err_str.contains("connect") {
-                    println!("{DIM}Dica: Ollama nao esta rodando. Inicie com: ollama serve{RESET}");
+                    renderer.handle(
+                        UiEvent::Hint("Dica: Ollama nao esta rodando. Inicie com: ollama serve"),
+                        &mut stdout,
+                    );
                 } else if err_str.contains("401") || err_str.contains("Unauthorized") {
-                    println!(
-                        "{DIM}Dica: API key invalida. Verifique ANTHROPIC_API_KEY ou OPENAI_API_KEY{RESET}"
+                    renderer.handle(
+                        UiEvent::Hint(
+                            "Dica: API key invalida. Verifique ANTHROPIC_API_KEY ou OPENAI_API_KEY",
+                        ),
+                        &mut stdout,
                     );
                 }
             }
@@ -1680,8 +1676,7 @@ mod tests {
                 rx,
                 std::time::Duration::from_secs(30),
                 &mut out,
-                test_spinner(),
-                "",
+                &mut test_renderer(test_spinner()),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1717,8 +1712,7 @@ mod tests {
                 rx,
                 std::time::Duration::from_millis(50),
                 &mut out,
-                None,
-                "",
+                &mut test_renderer(None),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1733,12 +1727,29 @@ mod tests {
 
     /// Spinner determinístico para teste: estilo ASCII (comparável byte a byte)
     /// e largura fixa, sem depender do terminal do runner de CI.
-    fn test_spinner() -> Option<crate::spinner::Spinner> {
-        Some(crate::spinner::Spinner::new(
-            crate::spinner::SpinnerStyle::Ascii,
+    fn test_spinner() -> Option<crate::ui::Spinner> {
+        Some(crate::ui::Spinner::new(
+            crate::ui::SpinnerStyle::Ascii,
             80,
             0,
         ))
+    }
+
+    /// Capacidades fixas para teste, no mesmo espírito do `test_spinner`:
+    /// ASCII e largura 80, sem perguntar nada ao terminal do runner.
+    fn test_caps() -> crate::ui::Capabilities {
+        crate::ui::Capabilities {
+            interactive: true,
+            unicode: false,
+            animation: true,
+            width: 80,
+        }
+    }
+
+    /// Renderer sem rótulo: estes testes afirmam o texto do modelo e os
+    /// quadros da animação, não o `Garra` — que tem teste próprio em `ui`.
+    fn test_renderer(spinner: Option<crate::ui::Spinner>) -> TerminalRenderer {
+        TerminalRenderer::with_prefix(test_caps(), spinner, "")
     }
 
     /// Remove as sequências ANSI de `raw`, preservando os `\r`.
@@ -1811,8 +1822,7 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            test_spinner(),
-            "garra > ",
+            &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -1853,8 +1863,7 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            test_spinner(),
-            "garra > ",
+            &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -1894,8 +1903,7 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            test_spinner(),
-            "garra > ",
+            &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -1928,8 +1936,7 @@ mod tests {
                 rx,
                 std::time::Duration::from_millis(700),
                 &mut out,
-                test_spinner(),
-                "garra > ",
+                &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &tokio::sync::Notify::new(),
             ),
         )
@@ -1971,8 +1978,7 @@ mod tests {
                 rx,
                 std::time::Duration::from_secs(30),
                 &mut out,
-                test_spinner(),
-                "garra > ",
+                &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
                 &cancel,
             ),
         )
@@ -2006,8 +2012,8 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            None, // exatamente o que `spinner::detect` devolve num pipe
-            "garra > ",
+            // exatamente o que `Capabilities::detect` devolve num pipe: sem animacao
+            &mut TerminalRenderer::with_prefix(crate::ui::Capabilities::PLAIN, None, "garra > "),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -2045,8 +2051,7 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            test_spinner(),
-            "garra > ",
+            &mut TerminalRenderer::with_prefix(test_caps(), test_spinner(), "garra > "),
             &tokio::sync::Notify::new(),
         )
         .await;
@@ -2071,8 +2076,7 @@ mod tests {
             rx,
             std::time::Duration::from_secs(5),
             &mut out,
-            None,
-            "",
+            &mut test_renderer(None),
             &tokio::sync::Notify::new(),
         )
         .await;
