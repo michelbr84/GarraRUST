@@ -3,6 +3,7 @@
 //! `garraia chat` or just `garra` opens a local-first AI assistant
 //! that streams responses from Ollama (offline) or cloud providers (online).
 
+use garraia_agents::exec_context::ExecContext;
 use std::future::Future;
 use std::io::{self, BufRead, Write as _};
 use std::sync::Arc;
@@ -1282,6 +1283,9 @@ pub async fn run_chat(
         // #937: o chat pede o fluxo completo — texto e ciclo de vida das
         // ferramentas. Os outros consumidores do runtime seguem no caminho
         // de texto e nao pagam nada por isto.
+        // Ligado a uma variavel porque o `call` e um future que vive alem
+        // desta expressao — um temporario seria descartado antes do `await`.
+        let exec = ExecContext::with_working_dir(Some(cwd.clone()));
         let call = runtime.process_message_streaming_with_events(
             &session_clone,
             &input,
@@ -1293,6 +1297,11 @@ pub async fn run_chat(
             Some(&model_clone),
             None,
             None,
+            // #980: o diretorio do projeto resolve caminho relativo das
+            // ferramentas de arquivo. **Nao e sandbox** — ver o docblock do
+            // `ExecContext::working_dir`. O CLI nao tem `/mode`, entao o modo
+            // fica `None`, que quer dizer "sem politica".
+            &exec,
         );
         let mut stdout = io::stdout();
         turn_active.store(true, std::sync::atomic::Ordering::SeqCst);

@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
+use garraia_agents::exec_context::ExecContext;
 use garraia_agents::{AgentMode, ContentBlock, MessagePart, ModeEngine};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -192,6 +193,7 @@ pub async fn send_message(
                 body.model.as_deref(),
                 ac.system_prompt.as_deref(),
                 ac.max_tokens,
+                &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
             )
             .await
     } else if body.model.is_some() {
@@ -207,6 +209,7 @@ pub async fn send_message(
                 body.model.as_deref(),
                 None,
                 None,
+                &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
             )
             .await
     } else {

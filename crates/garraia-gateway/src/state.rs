@@ -794,6 +794,21 @@ impl AppState {
         });
     }
 
+    /// O modo que o usuario escolheu para esta sessao, se escolheu (#982).
+    ///
+    /// `None` quer dizer **nao escolheu**, e nao "modo Ask": ver
+    /// `garraia_agents::exec_context::ExecContext::agent_mode`. Tratar os dois
+    /// como a mesma coisa quebraria `file_write` por padrao em todo canal.
+    ///
+    /// Existe para os oito chamadores nao repetirem a danca de destravar o
+    /// store — foi a repeticao que deixou o `/mode` gravando numa chave e a
+    /// execucao lendo outra por meses.
+    pub async fn agent_mode_for(&self, session_id: &str) -> Option<String> {
+        let store = self.session_store.as_ref()?;
+        let store = store.lock().await;
+        store.get_agent_mode(session_id).ok().flatten()
+    }
+
     /// A chave de sessao do Telegram, resolvida do mesmo jeito em todo lugar.
     ///
     /// # Por que isto e uma funcao, e nao tres copias

@@ -1,4 +1,7 @@
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::response::Response;
+use futures::{SinkExt, StreamExt};
 /// WebSocket handler for the Garra Desktop overlay — GET /ws/parrot
 ///
 /// Protocol (all messages are JSON):
@@ -19,9 +22,7 @@ use axum::extract::State;
 ///
 /// The desktop always uses the fixed session ID "parrot-desktop" so history
 /// persists across gateway restarts and overlay reconnections.
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
-use futures::{SinkExt, StreamExt};
+use garraia_agents::exec_context::ExecContext;
 use tracing::{info, warn};
 
 use crate::state::SharedState;
@@ -100,6 +101,9 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
         let (delta_tx, delta_rx) = tokio::sync::mpsc::channel::<String>(100);
         let agents = state.agents.clone();
         let text_for_agent = user_text.clone();
+        // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
+        // pelo tempo do turno inteiro.
+        let exec = ExecContext::with_mode(state.agent_mode_for(SESSION_ID).await);
         let task = tokio::spawn(async move {
             agents
                 .process_message_streaming_with_agent_config(
@@ -113,6 +117,7 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
                     None, // use default model
                     None,
                     None,
+                    &exec,
                 )
                 .await
         });
