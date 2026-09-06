@@ -690,6 +690,8 @@ pub async fn run_backup(
     println!("  4. suba de novo    (`garra start`)");
     println!("     O passo 3 e o que costuma ser esquecido: um `-wal` antigo ao lado");
     println!("     de um banco restaurado reintroduz o que voce acabou de descartar.");
+    println!("     E o gateway TEM de estar parado antes dele — apagar o `-wal` com");
+    println!("     conexao viva corrompe o banco.");
 
     Ok(EXIT_OK)
 }

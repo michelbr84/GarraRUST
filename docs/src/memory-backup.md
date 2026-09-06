@@ -44,11 +44,21 @@ garantias que valem saber:
 
 Sem `--keep-days`, nada é apagado.
 
+Use um diretório **dedicado**. O `--dir` aceita qualquer caminho, e a retenção
+varre o que estiver lá: um arquivo alheio que por acaso se chame
+`memory-<data>Z.db` seria apagado junto. O padrão (`<data_dir>/backups`) já é
+dedicado.
+
 ## Restaurar
+
+> **O gateway tem de estar parado antes do passo 3.** O SQLite mantém o
+> `-wal` aberto enquanto houver conexão viva; apagá-lo com o gateway rodando
+> **corrompe o banco**. Se o `garra stop` não confirmar, confira antes de
+> seguir.
 
 ```bash
 garra stop
-cp ~/.config/garraia/data/backups/memory-20260906T054500Z.db \
+cp ~/.config/garraia/data/backups/memory-20260906T054500123Z.db \
    ~/.config/garraia/data/memory.db
 rm -f ~/.config/garraia/data/memory.db-wal ~/.config/garraia/data/memory.db-shm
 garra start
@@ -56,8 +66,9 @@ garra start
 
 **O terceiro passo é o que costuma ser esquecido.** Um `-wal` antigo ao lado
 de um banco restaurado reintroduz exatamente o que você acabou de descartar.
-O próprio `garra memory backup` imprime esses quatro passos ao terminar, já
-com os caminhos da sua instalação.
+O nome do arquivo acima é um exemplo — use o que o `garra memory backup`
+imprimiu (ele mostra os quatro passos ao terminar, já com os caminhos da sua
+instalação), ou `ls` no diretório de backups.
 
 Depois de subir, confira:
 
