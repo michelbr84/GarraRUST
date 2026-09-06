@@ -40,6 +40,7 @@
 
 pub mod conversation;
 pub mod spinner;
+pub mod tool_log;
 
 use std::io;
 
@@ -81,6 +82,11 @@ pub enum UiEvent<'a> {
         success: bool,
         /// Uma linha sobre o resultado, ja redigida e truncada.
         summary: &'a str,
+        /// O numero que o usuario digita no `/tool N` para ver a saida
+        /// inteira (#938). `None` quando nada guardou a saida — sem registro
+        /// nao ha o que oferecer, e imprimir um numero morto seria pior do
+        /// que nao imprimir nenhum.
+        indice: Option<usize>,
     },
 }
 
@@ -263,7 +269,8 @@ impl TerminalRenderer {
                 duration,
                 success,
                 summary,
-            } => self.write_tool_finished(name, duration, success, summary, out),
+                indice,
+            } => self.write_tool_finished(name, duration, success, summary, indice, out),
         }
     }
 
@@ -358,6 +365,7 @@ impl TerminalRenderer {
         duration: std::time::Duration,
         success: bool,
         summary: &str,
+        indice: Option<usize>,
         out: &mut (impl io::Write + ?Sized),
     ) {
         if let Some(s) = self.spinner.as_mut() {
@@ -393,6 +401,15 @@ impl TerminalRenderer {
                 format!("{} {} {ramo}{corpo}", glifos.fail, tool_label(name)),
                 conversation::YELLOW,
             )
+        };
+
+        // O ponteiro para a saida inteira (#938). Curto de proposito: ele
+        // aparece em **toda** linha de ferramenta, entao qualquer coisa mais
+        // longa que `#7` viraria ruido repetido a cada chamada. O `/help`
+        // explica o que fazer com o numero; aqui basta ele existir.
+        let corpo = match indice {
+            Some(i) => format!("{corpo}{separador}#{i}"),
+            None => corpo,
         };
 
         if self.caps.interactive {
@@ -456,7 +473,7 @@ fn tool_label(name: &str) -> String {
 
 /// Duracao em uma casa decimal para segundos, inteiro para milissegundos:
 /// `6.3s`, `840ms`. Acima de um minuto, `1m03s`.
-fn format_duration(d: std::time::Duration) -> String {
+pub(crate) fn format_duration(d: std::time::Duration) -> String {
     let ms = d.as_millis();
     if ms < 1000 {
         return format!("{ms}ms");
@@ -513,6 +530,7 @@ mod tests {
                     duration: std::time::Duration::from_millis(6300),
                     success: true,
                     summary: "148 passed",
+                    indice: None,
                 },
                 UiEvent::Warning("cuidado"),
                 UiEvent::Error("quebrou"),
@@ -671,6 +689,7 @@ mod tests {
                     duration: std::time::Duration::from_millis(6300),
                     success: true,
                     summary: "148 passed",
+                    indice: None,
                 },
             ],
         );
@@ -697,6 +716,7 @@ mod tests {
                     duration: std::time::Duration::from_millis(40),
                     success: true,
                     summary: "",
+                    indice: None,
                 },
             ],
         );
@@ -717,6 +737,7 @@ mod tests {
                 duration: std::time::Duration::from_millis(4200),
                 success: false,
                 summary: "error: exit 101",
+                indice: None,
             }],
         );
         assert_eq!(saida, "x Bash   |- error: exit 101 | 4.2s\n");
@@ -731,6 +752,7 @@ mod tests {
                 duration: std::time::Duration::from_secs(2),
                 success: false,
                 summary: "",
+                indice: None,
             }],
         );
         assert!(saida.contains("falhou"), "{saida:?}");
@@ -805,6 +827,7 @@ mod tests {
                 duration: std::time::Duration::from_secs(1),
                 success: true,
                 summary: "ok",
+                indice: None,
             },
             &mut out,
         );
@@ -831,12 +854,48 @@ mod tests {
                     duration: std::time::Duration::from_secs(1),
                     success: true,
                     summary: "ok",
+                    indice: None,
                 },
                 UiEvent::TextDelta("depois"),
                 UiEvent::TurnFinished,
             ],
         );
         assert_eq!(saida.matches("Garra").count(), 1, "{saida:?}");
+    }
+
+    /// O numero tem de aparecer na linha: sem ele o `/tool <n>` do `/help`
+    /// seria uma instrucao sem como ser seguida (#938).
+    #[test]
+    fn a_linha_da_ferramenta_mostra_o_numero_para_inspecionar() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ToolFinished {
+                name: "bash",
+                duration: std::time::Duration::from_millis(6300),
+                success: true,
+                summary: "148 passed",
+                indice: Some(7),
+            }],
+        );
+        assert!(saida.contains("#7"), "sem o numero: {saida:?}");
+        assert!(saida.contains("148 passed"), "perdeu o resumo: {saida:?}");
+    }
+
+    /// Sem registro nao ha numero — imprimir um numero morto seria pior do
+    /// que nao imprimir nenhum.
+    #[test]
+    fn sem_indice_a_linha_nao_inventa_numero() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ToolFinished {
+                name: "bash",
+                duration: std::time::Duration::from_millis(100),
+                success: true,
+                summary: "ok",
+                indice: None,
+            }],
+        );
+        assert!(!saida.contains('#'), "inventou numero: {saida:?}");
     }
 
     #[test]

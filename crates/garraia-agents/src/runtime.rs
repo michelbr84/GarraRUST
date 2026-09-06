@@ -25,7 +25,9 @@ use crate::providers::{
     StreamEvent, ToolDefinition,
 };
 use crate::tools::{Tool, ToolContext, ToolOutput};
-use crate::turn_events::{TurnSink, summarize_tool_input, summarize_tool_output};
+use crate::turn_events::{
+    TurnSink, capture_tool_output, summarize_tool_input, summarize_tool_output,
+};
 
 /// Where a registered tool came from. Issue #924: without this the runtime
 /// cannot tell a native tool from an MCP one, so it cannot replace just the
@@ -1694,6 +1696,7 @@ impl AgentRuntime {
                                 iniciado_em.elapsed(),
                                 ok,
                                 summarize_tool_output(&output.content, ok),
+                                capture_tool_output(&output.content),
                             )
                             .await;
                         }
@@ -1833,6 +1836,7 @@ impl AgentRuntime {
                                     iniciado_em.elapsed(),
                                     ok,
                                     summarize_tool_output(&output.content, ok),
+                                    capture_tool_output(&output.content),
                                 )
                                 .await;
                             }
