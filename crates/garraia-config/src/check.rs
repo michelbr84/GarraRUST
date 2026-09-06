@@ -143,6 +143,16 @@ const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
     "GARRAIA_TRUSTED_PROXIES",
     "GARRAIA_UPLOAD_HMAC_SECRET",
     "GARRAIA_VAULT_PASSPHRASE",
+    // Prefixo `GARRA_`, e nao `GARRAIA_`: e o nome que a #981 propos e que ja
+    // esta em uso por quem configurou. Renomear por simetria quebraria essas
+    // instalacoes, entao a assimetria fica — e fica anotada.
+    //
+    // Sobrescreve o timeout por execucao de ferramenta (default 30s), para
+    // ferramenta que chama LLM por dentro. Esta aqui porque o
+    // `garraia-agents` nao depende do `garraia-config`: sem esta entrada, o
+    // knob existiria e seria invisivel ao `garra config check`. Ver
+    // `garraia_agents::execution_budget::timeout_configurado`.
+    "GARRA_TOOL_TIMEOUT_SECS",
     // Plan 0046 slice 3: legacy mixed-case alias accepted by
     // `AuthConfig::from_env` as a fallback for `GARRAIA_JWT_SECRET`.
     // Distinct from the all-caps `GARRAIA_VAULT_PASSPHRASE` used by
