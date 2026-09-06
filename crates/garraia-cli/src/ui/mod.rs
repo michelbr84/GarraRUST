@@ -40,6 +40,7 @@
 
 pub mod ansi_filter;
 pub mod conversation;
+pub mod error_card;
 pub mod spinner;
 pub mod tool_log;
 
@@ -64,13 +65,29 @@ pub enum UiEvent<'a> {
     /// nao precisa saber qual: o que ele deve fazer e o mesmo nos quatro.
     TurnFinished,
     /// Aviso dirigido ao usuario. Nao e log.
+    ///
+    /// Uma linha, para algo que a pessoa precisa **saber**. Falha que a pessoa
+    /// precisa **resolver** e [`UiEvent::ErrorCard`] — o #941 removeu a
+    /// variante `Error` de uma linha justamente porque, depois do cartao, ela
+    /// nao tinha mais caso proprio: um erro sem proximo passo e um cartao de
+    /// acoes vazias, e ganha do texto solto por nomear o componente.
     Warning(&'a str),
-    /// Erro dirigido ao usuario. Nao e log.
-    Error(&'a str),
     /// Sugestao discreta logo abaixo de um aviso ou erro — a "Dica:" que
     /// aponta o proximo passo. Sem linha em branco antes, porque ela pertence
     /// a mensagem que acabou de sair.
     Hint(&'a str),
+
+    /// Uma falha com nome e proximo passo (#941).
+    ///
+    /// Variante propria, e nao um `Error` com texto ja montado, pelo mesmo
+    /// motivo do `ToolFinished`: quem sabe **o que houve** e o CLI, quem sabe
+    /// **como desenhar** e o renderer. Um cartao pre-formatado do outro lado
+    /// da fronteira ignoraria `Capabilities` — largura, cor, Unicode.
+    ErrorCard {
+        titulo: &'a str,
+        detalhe: &'a str,
+        acoes: &'a [String],
+    },
 
     /// Uma ferramenta comecou (#937). `detail` ja vem redigido e truncado do
     /// `garraia-agents` — o renderer nao ve input cru de ferramenta.
@@ -268,10 +285,13 @@ impl TerminalRenderer {
             UiEvent::ActivityTick => self.tick(out),
             UiEvent::TextDelta(delta) => self.write_delta(delta, out),
             UiEvent::TurnFinished => self.finish(out),
-            UiEvent::Warning(text) | UiEvent::Error(text) => {
-                self.write_notice(text, conversation::YELLOW, true, out)
-            }
+            UiEvent::Warning(text) => self.write_notice(text, conversation::YELLOW, true, out),
             UiEvent::Hint(text) => self.write_notice(text, conversation::DIM, false, out),
+            UiEvent::ErrorCard {
+                titulo,
+                detalhe,
+                acoes,
+            } => self.write_error_card(titulo, detalhe, acoes, out),
             UiEvent::ToolStarted { name, detail } => self.write_tool_started(name, detail, out),
             UiEvent::ToolFinished {
                 name,
@@ -450,6 +470,66 @@ impl TerminalRenderer {
 
     /// Aviso, erro ou dica. `blank_line_before` separa a mensagem do que veio
     /// antes; a dica nao a quer, porque pertence a mensagem logo acima.
+    /// O cartao de erro do #941.
+    ///
+    /// ```text
+    /// × openrouter nao respondeu a tempo
+    ///
+    ///   Timeout apos 120s.
+    ///
+    ///   Tente:
+    ///     Tente de novo — pode ter sido carga momentanea
+    ///     --timeout-secs <n> para esperar mais
+    /// ```
+    ///
+    /// O glifo segue o mesmo par Unicode/ASCII da falha de ferramenta, e a cor
+    /// so sai quando `Capabilities` permite — o cartao respeita `NO_COLOR` e
+    /// pipe como todo o resto.
+    ///
+    /// A animacao e limpa antes, como em todo evento que escreve: e o criterio
+    /// "errors do not corrupt spinner/tool rendering" da issue.
+    fn write_error_card(
+        &mut self,
+        titulo: &str,
+        detalhe: &str,
+        acoes: &[String],
+        out: &mut (impl io::Write + ?Sized),
+    ) {
+        if let Some(s) = self.spinner.as_mut() {
+            s.clear(out);
+        }
+        // Um erro encerra o turno: nao ha mais o que animar.
+        self.animating = false;
+
+        let glifo = if self.caps.unicode { "\u{d7}" } else { "x" };
+        let (cor, dim, reset) = if self.caps.interactive {
+            (conversation::YELLOW, conversation::DIM, conversation::RESET)
+        } else {
+            ("", "", "")
+        };
+
+        // Saneia aqui tambem, e nao so na origem. O `ErrorCard::from_error` ja
+        // redige e saneia, mas confiar nisso deixaria um jeito de errar: quem
+        // montar um cartao a mao com texto de provedor vazaria. E a mesma
+        // regra que o `write_notice` ja segue, e o custo e nulo — sao tres
+        // strings curtas, e sanear duas vezes nao muda nada.
+        let titulo = ansi_filter::AnsiFilter::sanitize_once(titulo);
+        let detalhe = ansi_filter::AnsiFilter::sanitize_once(detalhe);
+
+        let _ = writeln!(out, "\n{cor}{glifo} {titulo}{reset}");
+        if !detalhe.is_empty() {
+            let _ = writeln!(out, "\n  {dim}{detalhe}{reset}");
+        }
+        if !acoes.is_empty() {
+            let _ = writeln!(out, "\n  {dim}Tente:{reset}");
+            for a in acoes {
+                let a = ansi_filter::AnsiFilter::sanitize_once(a);
+                let _ = writeln!(out, "    {dim}{a}{reset}");
+            }
+        }
+        let _ = out.flush();
+    }
+
     fn write_notice(
         &mut self,
         text: &str,
@@ -557,7 +637,11 @@ mod tests {
                     indice: None,
                 },
                 UiEvent::Warning("cuidado"),
-                UiEvent::Error("quebrou"),
+                UiEvent::ErrorCard {
+                    titulo: "quebrou",
+                    detalhe: "detalhe",
+                    acoes: &["faca isso".to_string()],
+                },
                 UiEvent::TurnFinished,
             ],
         );
@@ -949,11 +1033,43 @@ mod tests {
             Capabilities::PLAIN,
             &[
                 UiEvent::Warning("cuidado\u{1b}[2J"),
-                UiEvent::Error("falhou\u{1b}[?25l"),
                 UiEvent::Hint("dica\u{1b}]0;x\u{7}"),
             ],
         );
         assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+    }
+
+    /// O cartao saneia no renderer tambem, e nao so na origem: quem montar um
+    /// a mao com texto de provedor nao pode conseguir escrever no terminal.
+    #[test]
+    fn o_cartao_saneia_os_tres_campos() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ErrorCard {
+                titulo: "quebrou\u{1b}[2J",
+                detalhe: "porque\u{1b}[?25l",
+                acoes: &["tente\u{1b}]0;x\u{7}isso".to_string()],
+            }],
+        );
+        assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+        assert!(saida.contains("quebrou"), "perdeu o titulo: {saida:?}");
+        assert!(saida.contains("tenteisso"), "perdeu a acao: {saida:?}");
+    }
+
+    /// Sem acoes o cartao nao imprime a secao vazia — "Tente:" sem nada
+    /// embaixo seria promessa nao cumprida.
+    #[test]
+    fn cartao_sem_acoes_nao_mostra_secao_vazia() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[UiEvent::ErrorCard {
+                titulo: "quebrou",
+                detalhe: "sem ideia do que fazer",
+                acoes: &[],
+            }],
+        );
+        assert!(!saida.contains("Tente:"), "secao vazia: {saida:?}");
+        assert!(saida.contains("sem ideia"), "perdeu o detalhe: {saida:?}");
     }
 
     /// Um `ESC` pendurado no fim de um turno nao pode engolir o primeiro

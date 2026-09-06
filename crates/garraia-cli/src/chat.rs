@@ -16,6 +16,7 @@ use garraia_agents::{
 use garraia_config::AppConfig;
 use tokio::sync::mpsc;
 
+use crate::ui::error_card::ErrorCard;
 use crate::ui::tool_log::{Busca, ToolLog};
 use crate::ui::{TerminalRenderer, UiEvent};
 use garraia_agents::TurnEvent;
@@ -1210,8 +1211,15 @@ pub async fn run_chat(
                     && !models.is_empty()
                     && !models.contains(&resolved)
                 {
-                    println!(
-                        "{YELLOW}Aviso: '{resolved}' nao aparece em /models deste provider.{RESET}"
+                    // Migrado do `println!` com cor incondicional para o
+                    // renderer (#941): assim este aviso respeita `NO_COLOR` e
+                    // pipe como o resto da interface, que era exatamente a
+                    // divida que o plano de migracao da ADR 0017 registra.
+                    renderer.handle(
+                        UiEvent::Warning(&format!(
+                            "'{resolved}' nao aparece em /models deste provider."
+                        )),
+                        &mut io::stdout(),
                     );
                 }
                 model_name = resolved;
@@ -1302,11 +1310,13 @@ pub async fn run_chat(
 
         match outcome {
             TurnOutcome::TimedOut => {
+                let cartao = ErrorCard::timeout_local(timeout_secs);
                 renderer.handle(
-                    UiEvent::Warning(&format!(
-                        "Tempo esgotado apos {timeout_secs}s. A resposta foi descartada; \
-                         tente de novo ou aumente com --timeout-secs."
-                    )),
+                    UiEvent::ErrorCard {
+                        titulo: &cartao.titulo,
+                        detalhe: &cartao.detalhe,
+                        acoes: &cartao.acoes,
+                    },
                     &mut stdout,
                 );
             }
@@ -1331,23 +1341,22 @@ pub async fn run_chat(
                 });
             }
             TurnOutcome::Done(Err(e)) => {
-                let err_str = format!("{e}");
-                renderer.handle(UiEvent::Error(&format!("Erro: {err_str}")), &mut stdout);
-
-                // Hint for common errors
-                if err_str.contains("Connection refused") || err_str.contains("connect") {
-                    renderer.handle(
-                        UiEvent::Hint("Dica: Ollama nao esta rodando. Inicie com: ollama serve"),
-                        &mut stdout,
-                    );
-                } else if err_str.contains("401") || err_str.contains("Unauthorized") {
-                    renderer.handle(
-                        UiEvent::Hint(
-                            "Dica: API key invalida. Verifique ANTHROPIC_API_KEY ou OPENAI_API_KEY",
-                        ),
-                        &mut stdout,
-                    );
-                }
+                // O #941 tirou daqui o `err_str.contains(...)` solto: a
+                // classificacao e as acoes moram em `ui::error_card`, onde sao
+                // testaveis sem terminal, e cobrem oito classes em vez de duas.
+                //
+                // A mensagem crua **nao** some: classe desconhecida cai num
+                // cartao generico que a mostra inteira. Trocar um erro feio por
+                // um erro invisivel seria pior.
+                let cartao = ErrorCard::from_error(&format!("{e}"), &provider_name);
+                renderer.handle(
+                    UiEvent::ErrorCard {
+                        titulo: &cartao.titulo,
+                        detalhe: &cartao.detalhe,
+                        acoes: &cartao.acoes,
+                    },
+                    &mut stdout,
+                );
             }
         }
 
