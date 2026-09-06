@@ -377,6 +377,19 @@ benches/
 - Imperativo: "adiciona feature" (não "adicionada feature")
 - Limite 72 chars no assunto
 
+### Changelog
+
+- **NUNCA** editar o `CHANGELOG.md` direto num PR de feature/fix. Cada PR
+  deixa um fragmento em `changelog.d/<seção>/<numero>-<slug>.md` — arquivos
+  diferentes nunca conflitam, e era a colisão na seção `[Unreleased]` que
+  fazia todo par de PRs paralelos precisar de um merge de resolução.
+- Seções válidas: `added`, `changed`, `deprecated`, `removed`, `fixed`,
+  `security` (Keep a Changelog 1.1.0). Texto sem acento, como o resto do
+  `CHANGELOG.md`.
+- `python3 scripts/changelog/assemble.py --check` valida os fragmentos;
+  `--write` é **passo de release** (`docs/releasing.md` §1.3), não de PR.
+- Ver `changelog.d/README.md`.
+
 ## Regras absolutas
 
 1. **NUNCA** commitar `.env`, credenciais ou tokens
