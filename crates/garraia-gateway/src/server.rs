@@ -15,6 +15,7 @@ use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_mcp_tools,
     build_slack_channels, build_telegram_channels, build_whatsapp_channels,
+    warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -187,6 +188,9 @@ impl GatewayServer {
         let tls_key = self.config.gateway.tls_key_path.clone();
 
         let agents = build_agent_runtime(&self.config);
+        // `build_agent_runtime` e sincrono; o health check do provider de
+        // embeddings precisa de await, entao acontece aqui (#951).
+        warn_if_embeddings_unhealthy(&agents).await;
 
         // Provision the default mcp.json BEFORE building tools. This used to
         // happen only inside AppState::new (below), i.e. after build_mcp_tools
