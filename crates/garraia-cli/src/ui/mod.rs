@@ -38,6 +38,7 @@
 //!   faz os dois explicitamente — a duplicacao e intencional e visivel, porque
 //!   unificar foi o que fez o console virar despejo de INFO (#933).
 
+pub mod ansi_filter;
 pub mod conversation;
 pub mod spinner;
 pub mod tool_log;
@@ -205,11 +206,18 @@ pub struct TerminalRenderer {
     /// seja reimpresso. Era o "retomar o spinner depois da tool" que ficou de
     /// fora do #936 por nao haver evento para ouvir.
     animating: bool,
+    /// Filtro de sequencia de terminal para o texto que vem de fora (#996).
+    ///
+    /// Vive no renderer, e nao numa funcao solta, porque **precisa de estado**:
+    /// o texto do modelo e streaming e uma sequencia pode chegar partida entre
+    /// dois deltas, cada metade inofensiva sozinha. Ver `ansi_filter`.
+    filtro: ansi_filter::AnsiFilter,
 }
 
 impl TerminalRenderer {
     pub fn new(caps: Capabilities, spinner: Option<Spinner>) -> Self {
         Self {
+            filtro: ansi_filter::AnsiFilter::new(),
             assistant_prefix: caps.style().assistant_prefix(),
             caps,
             spinner,
@@ -236,6 +244,7 @@ impl TerminalRenderer {
             assistant_prefix: prefix.into(),
             prefix_written: false,
             animating: true,
+            filtro: ansi_filter::AnsiFilter::new(),
         }
     }
 
@@ -293,7 +302,11 @@ impl TerminalRenderer {
             let _ = write!(out, "{}", self.assistant_prefix);
             self.prefix_written = true;
         }
-        let _ = write!(out, "{delta}");
+        // O texto do modelo nao pode escrever comando no terminal (#996). O
+        // filtro tem estado porque a sequencia pode chegar partida entre dois
+        // deltas — ver `ansi_filter`.
+        let seguro = self.filtro.push(delta);
+        let _ = write!(out, "{seguro}");
         let _ = out.flush();
         // A linha agora pertence a resposta.
         self.animating = false;
@@ -310,6 +323,13 @@ impl TerminalRenderer {
     fn finish(&mut self, out: &mut (impl io::Write + ?Sized)) {
         if let Some(s) = self.spinner.as_mut() {
             s.clear(out);
+        }
+        // Fecha o filtro **antes** do rotulo: um `\r` no fim do ultimo delta
+        // ainda deve virar quebra, e um `ESC` pendurado nao pode atravessar
+        // para o turno seguinte e engolir o primeiro caractere dele (#996).
+        let pendente = self.filtro.finish();
+        if !pendente.is_empty() {
+            let _ = write!(out, "{pendente}");
         }
         if !self.prefix_written {
             let _ = write!(out, "{}", self.assistant_prefix);
@@ -441,6 +461,10 @@ impl TerminalRenderer {
             s.clear(out);
         }
         let separador = if blank_line_before { "\n" } else { "" };
+        // Aviso e erro tambem carregam texto de fora — a mensagem de erro de
+        // um provedor, por exemplo, e corpo de resposta HTTP. Nao e streaming,
+        // entao vai sem estado (#996).
+        let text = ansi_filter::AnsiFilter::sanitize_once(text);
         if self.caps.interactive {
             let _ = writeln!(out, "{separador}{color}{text}{}", conversation::RESET);
         } else {
@@ -896,6 +920,53 @@ mod tests {
             }],
         );
         assert!(!saida.contains('#'), "inventou numero: {saida:?}");
+    }
+
+    /// O modelo nao escreve comando no terminal, e a sequencia partida entre
+    /// deltas e o caso que so o renderer com estado cobre (#996).
+    #[test]
+    fn o_texto_do_modelo_nao_injeta_sequencia_partida() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[
+                UiEvent::TextDelta("tudo bem\u{1b}"),
+                UiEvent::TextDelta("[2Jainda aqui"),
+                UiEvent::TurnFinished,
+            ],
+        );
+        assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+        assert!(
+            saida.contains("tudo bemainda aqui"),
+            "perdeu texto: {saida:?}"
+        );
+    }
+
+    /// Aviso e erro tambem carregam texto de fora — corpo de erro de provedor,
+    /// por exemplo.
+    #[test]
+    fn aviso_e_erro_tambem_sao_saneados() {
+        let saida = render(
+            Capabilities::PLAIN,
+            &[
+                UiEvent::Warning("cuidado\u{1b}[2J"),
+                UiEvent::Error("falhou\u{1b}[?25l"),
+                UiEvent::Hint("dica\u{1b}]0;x\u{7}"),
+            ],
+        );
+        assert!(!saida.contains('\u{1b}'), "ESC sobreviveu: {saida:?}");
+    }
+
+    /// Um `ESC` pendurado no fim de um turno nao pode engolir o primeiro
+    /// caractere do turno seguinte.
+    #[test]
+    fn esc_pendurado_nao_atravessa_o_fim_do_turno() {
+        let mut r = TerminalRenderer::new(Capabilities::PLAIN, None);
+        let mut out: Vec<u8> = Vec::new();
+        r.handle(UiEvent::TextDelta("fim do turno\u{1b}"), &mut out);
+        r.handle(UiEvent::TurnFinished, &mut out);
+        out.clear();
+        r.handle(UiEvent::TextDelta("Novo turno"), &mut out);
+        assert_eq!(String::from_utf8(out).expect("utf8"), "Novo turno");
     }
 
     #[test]
