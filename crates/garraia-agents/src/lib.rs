@@ -11,6 +11,7 @@ pub mod embeddings;
 pub mod execution_budget;
 pub mod llama_cpp;
 pub mod memory_extractor;
+pub mod memory_reindex;
 pub mod modes;
 pub mod multi_agent;
 pub mod ollama;
@@ -35,6 +36,9 @@ pub use embeddings::{
 };
 pub use execution_budget::ExecutionBudget;
 pub use llama_cpp::{KvCacheType, LlamaCppConfig, LlamaCppProvider};
+pub use memory_reindex::{
+    DEFAULT_REINDEX_BATCH_SIZE, ReindexOptions, ReindexReport, reindex_missing_embeddings,
+};
 pub use modes::{
     AgentMode, ModeContext, ModeEngine, ModeLimits, ModeLlmConfig, ModeProfile, ToolPolicy,
 };

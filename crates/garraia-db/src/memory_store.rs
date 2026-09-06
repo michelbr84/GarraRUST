@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use garraia_common::{Error, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::path::Path;
@@ -130,6 +130,18 @@ pub struct IntegrityReport {
     pub vec_rows_by_table: Vec<(String, usize)>,
     /// Ids mapeados no índice sem entrada correspondente em `memory_entries`.
     pub orphan_map_entries: Vec<String>,
+}
+
+/// Uma linha do agrupamento por modelo do `garra memory stats` (#950).
+///
+/// `embedding_model: None` com `embedding_dimensions: None` é a fila de
+/// reindexação; `None` com dimensão preenchida é o legado de antes do #954 —
+/// vetor gravado sem registrar quem o produziu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingBreakdownRow {
+    pub embedding_model: Option<String>,
+    pub embedding_dimensions: Option<usize>,
+    pub entries: usize,
 }
 
 #[async_trait]
@@ -414,6 +426,271 @@ impl MemoryStore {
         if let Err(e) = vs.delete_embeddings(&id_refs) {
             tracing::warn!("failed to clean up vectors for deleted entries: {e}");
         }
+    }
+
+    /// Entradas gravadas **sem vetor** — a fila de reindexação (#953).
+    ///
+    /// O critério é só `embedding IS NULL`. A issue propunha exigir também
+    /// `embedding_model IS NULL`, mas isso perderia exatamente as entradas
+    /// mais antigas: até o #948 o modelo era gravado mesmo sem vetor, então
+    /// as linhas legadas têm um modelo que mente. Filtrar por ele deixaria
+    /// justamente elas de fora da reindexação.
+    ///
+    /// Ordena da mais antiga para a mais nova: numa base grande, reindexar
+    /// em lotes sucessivos avança de forma previsível em vez de reprocessar
+    /// as mesmas linhas.
+    pub fn entries_missing_embeddings(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, tenant_id, session_id, channel_id, user_id, continuity_key, role,
+                        content, embedding, embedding_model, embedding_dimensions, metadata,
+                        created_at
+                 FROM memory_entries
+                 WHERE embedding IS NULL
+                 ORDER BY datetime(created_at) ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare reindex scan: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![limit as i64], row_to_entry)
+            .map_err(|e| Error::Database(format!("failed to scan entries to reindex: {e}")))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect entries to reindex: {e}")))
+    }
+
+    /// Grava o vetor de uma entrada que estava sem, e a indexa (#953).
+    ///
+    /// Devolve `false` quando o id não existe — a entrada pode ter sido
+    /// apagada entre a listagem e a gravação, e isso não é erro.
+    ///
+    /// O modelo é gravado **junto** com o vetor, nunca antes: é a mesma regra
+    /// que o #948 estabeleceu na ingestão, e ela vale aqui pelo mesmo motivo
+    /// — a coluna descreve o vetor.
+    pub fn set_embedding(&self, id: &str, embedding: &[f32], model: &str) -> Result<bool> {
+        let blob = embedding_to_blob(embedding);
+        let dims = embedding.len();
+
+        let updated = {
+            let conn = self.connection()?;
+            conn.execute(
+                "UPDATE memory_entries
+                 SET embedding = ?, embedding_model = ?, embedding_dimensions = ?
+                 WHERE id = ?",
+                params![blob, model, dims as i64, id],
+            )
+            .map_err(|e| Error::Database(format!("failed to write embedding: {e}")))?
+        };
+
+        if updated == 0 {
+            return Ok(false);
+        }
+
+        // A coluna e o indice vivem em conexoes diferentes (por desenho:
+        // o `VectorStore` tem a sua), entao nao ha transacao que cubra os
+        // dois. Se o indice recusar o vetor, a coluna volta a NULL: caso
+        // contrario a entrada sairia da fila do reindex (`embedding IS NULL`)
+        // sem ter entrado no indice, e ficaria invisivel para a busca
+        // semantica **sem nenhum caminho de reparo**. Melhor continuar na
+        // fila e ser tentada de novo.
+        if let Some(vs) = &self.vector_store
+            && let Err(e) = vs
+                .ensure_vec_table(dims)
+                .and_then(|()| vs.insert_embedding(id, embedding, dims))
+        {
+            self.clear_embedding_columns(id);
+            return Err(e);
+        }
+
+        Ok(true)
+    }
+
+    /// Desfaz a escrita da coluna quando o indice recusou o vetor.
+    ///
+    /// Best-effort de propria natureza: se este UPDATE tambem falhar, o
+    /// banco fica no estado que a chamada tentava evitar — e ai o `warn!` e
+    /// o unico sinal, porque o proximo `garra memory stats` so mostra a
+    /// divergencia agregada (`map_rows` menor que `entries_with_embedding`).
+    fn clear_embedding_columns(&self, id: &str) {
+        let Ok(conn) = self.connection() else {
+            tracing::warn!("nao foi possivel reverter a coluna de embedding: lock envenenado");
+            return;
+        };
+        if let Err(e) = conn.execute(
+            "UPDATE memory_entries
+             SET embedding = NULL, embedding_model = NULL, embedding_dimensions = NULL
+             WHERE id = ?",
+            params![id],
+        ) {
+            tracing::warn!(
+                "o indice recusou o vetor e a coluna nao pode ser revertida; a entrada \
+                 ficou marcada como indexada sem estar: {e}"
+            );
+        }
+    }
+
+    /// Reinsere no indice os vetores que ja estao na coluna mas nao no mapa.
+    ///
+    /// Este e o estado que o `remember_sync` produz na operacao normal: ele
+    /// grava a linha e insere no indice em best-effort, com `warn!`, entao um
+    /// sqlite-vec momentaneamente indisponivel deixa entradas com vetor na
+    /// coluna e fora da busca semantica — e o `reindex` por si so nao as
+    /// alcanca, porque ele procura `embedding IS NULL`.
+    ///
+    /// Nao chama provider nenhum: o vetor ja existe, so falta indexa-lo. Por
+    /// isso roda sempre, inclusive sem provider configurado.
+    ///
+    /// Devolve quantas foram reindexadas. `Ok(0)` quando o KNN esta desligado
+    /// — sem indice nao ha o que reparar.
+    pub fn reindex_missing_index_rows(&self, limit: usize) -> Result<usize> {
+        let Some(vs) = &self.vector_store else {
+            return Ok(0);
+        };
+        if !vs.vec_enabled() {
+            return Ok(0);
+        }
+
+        // O conjunto de indexados vem da conexão do próprio `VectorStore`:
+        // em produção ele é o mesmo arquivo, mas em memória é um segundo
+        // banco, e um `JOIN` daqui não enxergaria o `vec_id_map`.
+        let mapeados: std::collections::HashSet<String> = vs.mapped_ids()?.into_iter().collect();
+
+        // Só os ids primeiro (barato), e o blob depois, apenas das que estão
+        // realmente fora do índice: numa base de milhares, carregar todo
+        // vetor para descobrir que quase nenhum falta seria o custo errado.
+        let faltantes: Vec<String> = {
+            let conn = self.connection()?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM memory_entries
+                     WHERE embedding IS NOT NULL
+                     ORDER BY datetime(created_at) ASC",
+                )
+                .map_err(|e| Error::Database(format!("failed to prepare index repair: {e}")))?;
+
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| Error::Database(format!("failed to scan index repair: {e}")))?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                let id =
+                    row.map_err(|e| Error::Database(format!("failed to read entry id: {e}")))?;
+                if !mapeados.contains(&id) {
+                    out.push(id);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            out
+        };
+
+        let mut reparadas = 0usize;
+        for id in faltantes {
+            let vetor = {
+                let conn = self.connection()?;
+                let blob: Option<Vec<u8>> = conn
+                    .query_row(
+                        "SELECT embedding FROM memory_entries WHERE id = ?",
+                        params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| Error::Database(format!("failed to read embedding: {e}")))?
+                    .flatten();
+                match blob {
+                    Some(b) => blob_to_embedding(&b)?,
+                    // A entrada sumiu (ou perdeu o vetor) entre a listagem e
+                    // aqui: não é erro, é concorrência.
+                    None => continue,
+                }
+            };
+
+            let dims = vetor.len();
+            vs.ensure_vec_table(dims)?;
+            vs.insert_embedding(&id, &vetor, dims)?;
+            reparadas += 1;
+        }
+        Ok(reparadas)
+    }
+
+    /// Quantas entradas por `(modelo, dimensoes)` do vetor gravado (#950).
+    ///
+    /// `(None, None)` é a fila de reindexação; `(None, Some(d))` é uma linha
+    /// com vetor e sem modelo — o legado de antes do #954 que o
+    /// `IntegrityReport` conta agregado e que aqui aparece com a dimensão.
+    ///
+    /// Ordena por contagem decrescente: numa base misturada, o modelo que
+    /// domina é o que responde "com o que este índice foi construído?".
+    pub fn embedding_breakdown(&self) -> Result<Vec<EmbeddingBreakdownRow>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT embedding_model, embedding_dimensions, count(*)
+                 FROM memory_entries
+                 GROUP BY embedding_model, embedding_dimensions
+                 ORDER BY count(*) DESC",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare breakdown: {e}")))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let model: Option<String> = row.get(0)?;
+                let dims: Option<i64> = row.get(1)?;
+                let total: i64 = row.get(2)?;
+                Ok(EmbeddingBreakdownRow {
+                    embedding_model: model,
+                    embedding_dimensions: dims.map(|d| d as usize),
+                    entries: total as usize,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to run breakdown: {e}")))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect breakdown: {e}")))
+    }
+
+    /// Distâncias cruas dos vizinhos mais próximos, para a CLI mostrar (#950).
+    ///
+    /// Existe **só** para anotar o resultado do [`Self::recall`], nunca para
+    /// substituí-lo: o índice vec0 não conhece tenant, sessão nem modelo, e
+    /// ler dele direto foi exatamente o bypass de isolamento que o #971
+    /// fechou. Por isso devolve `(id, distância)` e não entradas — quem chama
+    /// já tem as linhas que passaram pelo escopo e usa isto para enriquecer o
+    /// que já ganhou.
+    ///
+    /// Vazio quando o KNN está desligado.
+    pub fn knn_distances(&self, embedding: &[f32], limit: usize) -> Result<Vec<(String, f64)>> {
+        match &self.vector_store {
+            Some(vs) if vs.vec_enabled() => vs.search_nearest(embedding, embedding.len(), limit),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Entradas mais recentes, sem filtro de sessão — o que a CLI lista.
+    pub fn recent_entries(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
+        self.query_candidates_with_tenant_sync(None, None, None, None, limit)
+    }
+
+    /// Apaga uma entrada pelo id, junto do vetor e do mapeamento.
+    ///
+    /// Devolve `false` se o id não existia.
+    pub fn delete_entry(&self, id: &str) -> Result<bool> {
+        let deleted = {
+            let conn = self.connection()?;
+            conn.execute("DELETE FROM memory_entries WHERE id = ?", params![id])
+                .map_err(|e| Error::Database(format!("failed to delete entry: {e}")))?
+        };
+
+        if deleted == 0 {
+            return Ok(false);
+        }
+
+        self.cleanup_vectors(&[id.to_string()]);
+        Ok(true)
     }
 
     fn remember_sync(&self, entry: NewMemoryEntry) -> Result<String> {
@@ -915,6 +1192,121 @@ mod tests {
             embedding_model: Some("unit-test".to_string()),
             metadata: serde_json::json!({}),
         }
+    }
+
+    /// O `remember_sync` grava a linha e insere no indice em best-effort:
+    /// com o sqlite-vec fora do ar por um momento, a entrada fica com vetor
+    /// na coluna e **fora** da busca semantica. O `reindex` normal nao a
+    /// alcanca, porque ele procura `embedding IS NULL` — quem repara e este
+    /// caminho, e sem custo de provider, porque o vetor ja existe.
+    #[tokio::test]
+    async fn reindex_missing_index_rows_devolve_ao_indice_o_vetor_orfao_de_coluna() {
+        let store = MemoryStore::in_memory_with_vectors().expect("store com vetores");
+        assert!(
+            store.knn_enabled(),
+            "sqlite-vec e compilado no binario; sem ele este teste nao afirma nada"
+        );
+
+        let id = store
+            .remember(entry(
+                "s1",
+                None,
+                "entrada que perdeu o indice",
+                MemoryRole::User,
+                None,
+            ))
+            .await
+            .expect("insere sem vetor");
+
+        // Estado que o best-effort do `remember_sync` produz: coluna escrita,
+        // indice intocado.
+        {
+            let conn = store.connection().expect("lock");
+            conn.execute(
+                "UPDATE memory_entries
+                 SET embedding = ?, embedding_model = 'unit-test', embedding_dimensions = 4
+                 WHERE id = ?",
+                rusqlite::params![super::embedding_to_blob(&[0.1, 0.2, 0.3, 0.4]), id],
+            )
+            .expect("simula a coluna escrita sem indice");
+        }
+
+        let antes = store.integrity_report().expect("report");
+        assert_eq!(antes.entries_with_embedding, 1);
+        assert_eq!(antes.map_rows, 0, "o indice ainda nao conhece a entrada");
+
+        let reparadas = store.reindex_missing_index_rows(100).expect("reparo");
+        assert_eq!(reparadas, 1);
+
+        let depois = store.integrity_report().expect("report");
+        assert_eq!(depois.map_rows, 1);
+
+        // E agora ela e alcancavel pelo caminho KNN.
+        let achados = store
+            .recall(RecallQuery {
+                tenant_id: None,
+                query_text: None,
+                query_embedding: Some(vec![0.1, 0.2, 0.3, 0.4]),
+                embedding_model: Some("unit-test".to_string()),
+                session_id: None,
+                continuity_key: None,
+                limit: 5,
+            })
+            .await
+            .expect("recall");
+        assert_eq!(achados.len(), 1);
+        assert_eq!(achados[0].id, id);
+    }
+
+    /// Rodar o reparo com o indice ja consistente nao e erro nem trabalho.
+    #[tokio::test]
+    async fn reindex_missing_index_rows_e_no_op_quando_tudo_esta_indexado() {
+        let store = MemoryStore::in_memory_with_vectors().expect("store com vetores");
+        assert!(store.knn_enabled());
+
+        store
+            .remember(entry(
+                "s1",
+                None,
+                "ja indexada",
+                MemoryRole::User,
+                Some(vec![0.5, 0.5, 0.5, 0.5]),
+            ))
+            .await
+            .expect("insere com vetor");
+
+        assert_eq!(store.reindex_missing_index_rows(100).expect("reparo"), 0);
+    }
+
+    /// A ordem e da mais antiga para a mais nova e o teto e respeitado: numa
+    /// base grande, reparar em fatias precisa avancar, nao repetir.
+    #[tokio::test]
+    async fn reindex_missing_index_rows_respeita_o_teto() {
+        let store = MemoryStore::in_memory_with_vectors().expect("store com vetores");
+        assert!(store.knn_enabled());
+
+        for i in 0..3 {
+            let id = store
+                .remember(entry(
+                    "s1",
+                    None,
+                    &format!("entrada {i}"),
+                    MemoryRole::User,
+                    None,
+                ))
+                .await
+                .expect("insere");
+            let conn = store.connection().expect("lock");
+            conn.execute(
+                "UPDATE memory_entries SET embedding = ?, embedding_dimensions = 4 WHERE id = ?",
+                rusqlite::params![super::embedding_to_blob(&[0.1, 0.2, 0.3, 0.4]), id],
+            )
+            .expect("simula coluna sem indice");
+        }
+
+        assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 2);
+        assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 1);
+        assert_eq!(store.reindex_missing_index_rows(2).expect("reparo"), 0);
     }
 
     #[test]
