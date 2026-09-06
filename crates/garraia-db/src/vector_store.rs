@@ -170,6 +170,110 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Remove os vetores e os mapeamentos das entradas dadas, em TODAS as
+    /// tabelas `vec_embeddings_*` existentes (#960: deletar uma entrada não
+    /// pode deixar vetor órfão; #954: a limpeza vale mesmo quando a dimensão
+    /// da entrada não é a ativa). Devolve quantos mapeamentos foram removidos.
+    ///
+    /// Idempotente: ids sem mapeamento são ignorados.
+    pub fn delete_embeddings(&self, ids: &[&str]) -> Result<usize> {
+        if !self.vec_enabled || ids.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.connection()?;
+
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT rowid FROM vec_id_map WHERE entry_id IN ({placeholders})"
+            ))
+            .map_err(|e| Error::Database(format!("failed to prepare vec rowid lookup: {e}")))?;
+        let rowids: Vec<i64> = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))
+            .map_err(|e| Error::Database(format!("failed to look up vec rowids: {e}")))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect vec rowids: {e}")))?;
+        drop(stmt);
+
+        if rowids.is_empty() {
+            return Ok(0);
+        }
+
+        let rowid_list = rowids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // Identificadores de tabela vêm do próprio sqlite_master (origem
+        // fechada, padrão vec_embeddings_<n> criado por ensure_vec_table);
+        // os valores (rowids) são inteiros nossos, não input externo.
+        for table in vec_table_names(&conn)? {
+            conn.execute(
+                &format!("DELETE FROM [{table}] WHERE rowid IN ({rowid_list})"),
+                [],
+            )
+            .map_err(|e| Error::Database(format!("failed to delete vec rows: {e}")))?;
+        }
+
+        let removed = conn
+            .execute(
+                &format!("DELETE FROM vec_id_map WHERE entry_id IN ({placeholders})"),
+                rusqlite::params_from_iter(ids.iter()),
+            )
+            .map_err(|e| Error::Database(format!("failed to delete vec id mappings: {e}")))?;
+
+        Ok(removed)
+    }
+
+    /// Inventário do índice para o relatório de integridade (#960):
+    /// mapeamentos existentes e linhas por tabela `vec_embeddings_*`.
+    pub fn index_inventory(&self) -> Result<VecIndexInventory> {
+        let conn = self.connection()?;
+
+        let map_rows: i64 = conn
+            .query_row("SELECT count(*) FROM vec_id_map", [], |row| row.get(0))
+            .map_err(|e| Error::Database(format!("failed to count vec_id_map: {e}")))?;
+
+        let mut vec_rows_by_table = Vec::new();
+        if self.vec_enabled {
+            for table in vec_table_names(&conn)? {
+                let count: i64 = conn
+                    .query_row(&format!("SELECT count(*) FROM [{table}]"), [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|e| Error::Database(format!("failed to count vec table: {e}")))?;
+                vec_rows_by_table.push((table, count as usize));
+            }
+        }
+
+        Ok(VecIndexInventory {
+            map_rows: map_rows as usize,
+            vec_rows_by_table,
+        })
+    }
+
+    /// Ids presentes no `vec_id_map` cujo entry_id não está em `entry_ids`.
+    /// Base do relatório de órfãos: o chamador (MemoryStore) passa os ids
+    /// vivos de `memory_entries`.
+    pub fn orphan_map_entries(&self, live_ids: &[&str]) -> Result<Vec<String>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare("SELECT entry_id FROM vec_id_map")
+            .map_err(|e| Error::Database(format!("failed to prepare orphan scan: {e}")))?;
+        let all: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| Error::Database(format!("failed to scan vec_id_map: {e}")))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect vec_id_map: {e}")))?;
+
+        let live: std::collections::HashSet<&str> = live_ids.iter().copied().collect();
+        Ok(all
+            .into_iter()
+            .filter(|id| !live.contains(id.as_str()))
+            .collect())
+    }
+
     /// KNN search: find the nearest `limit` embeddings to `query`.
     /// Returns `(entry_id, distance)` pairs ordered by distance ascending.
     pub fn search_nearest(
@@ -204,6 +308,36 @@ impl VectorStore {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| Error::Database(format!("failed to collect KNN results: {e}")))
     }
+}
+
+/// Contagem de linhas do índice vetorial, para o relatório de integridade.
+#[derive(Debug, Clone)]
+pub struct VecIndexInventory {
+    pub map_rows: usize,
+    /// `(nome da tabela, linhas)` para cada `vec_embeddings_*` existente.
+    pub vec_rows_by_table: Vec<(String, usize)>,
+}
+
+/// Tabelas `vec_embeddings_*` existentes, direto do sqlite_master.
+///
+/// O filtro por `CREATE VIRTUAL TABLE` é obrigatório: o vec0 cria shadow
+/// tables (`…_info`, `…_chunks`, `…_rowids`, …) que também casam com o LIKE
+/// mas são internas — deletar/contar nelas corromperia ou infl(acion)aria o
+/// índice.
+fn vec_table_names(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type='table' AND name LIKE 'vec_embeddings_%'
+               AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+        )
+        .map_err(|e| Error::Database(format!("failed to list vec tables: {e}")))?;
+    let names = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| Error::Database(format!("failed to scan vec tables: {e}")))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Database(format!("failed to collect vec tables: {e}")))?;
+    Ok(names)
 }
 
 /// Verify that sqlite-vec functions are available on this connection.
@@ -264,5 +398,37 @@ mod tests {
         let results = store.search_nearest(&[0.9, 0.1, 0.0], 3, 2).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, "id-1"); // closest
+    }
+
+    /// #960: a deleção varre TODAS as tabelas dimensionais — uma entrada pode
+    /// ter sido indexada numa dimensão que não é mais a ativa (#954).
+    #[test]
+    fn delete_embeddings_removes_from_all_tables_and_the_map() {
+        let store = VectorStore::in_memory().expect("should open in-memory vector store");
+        if !store.vec_enabled() {
+            eprintln!("sqlite-vec not available, skipping delete test");
+            return;
+        }
+
+        store.ensure_vec_table(2).unwrap();
+        store.ensure_vec_table(3).unwrap();
+        store.insert_embedding("dim2", &[1.0, 0.0], 2).unwrap();
+        store.insert_embedding("dim3", &[1.0, 0.0, 0.0], 3).unwrap();
+
+        let removed = store
+            .delete_embeddings(&["dim2", "dim3", "inexistente"])
+            .unwrap();
+        assert_eq!(removed, 2, "ids sem mapeamento são ignorados");
+
+        let inventory = store.index_inventory().unwrap();
+        assert_eq!(inventory.map_rows, 0);
+        assert!(
+            inventory.vec_rows_by_table.iter().all(|(_, n)| *n == 0),
+            "sobrou vetor: {:?}",
+            inventory.vec_rows_by_table
+        );
+
+        // Idempotente: repetir não erra nem remove nada.
+        assert_eq!(store.delete_embeddings(&["dim2"]).unwrap(), 0);
     }
 }

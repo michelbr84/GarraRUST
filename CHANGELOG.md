@@ -6,7 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Inicio da Trilha B — epico #944 (Garra Terminal UX v2), Fase 1.
+Inicio da Trilha B — epico #944 (Garra Terminal UX v2), Fase 1 — e da
+Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
+2026-09-05.
+
+### Security
+- **O caminho KNN do recall passa a respeitar tenant, sessao e continuidade
+  (achado da verificacao da Trilha C — sem issue).** O indice sqlite-vec so
+  conhece distancia; o fetch dos candidatos (`fetch_entries_by_ids`) fazia
+  `WHERE id IN (...)` sem NENHUM dos filtros da query, enquanto o caminho SQL
+  sempre filtrou. Com o vec ativo, um recall com `tenant_id` definido podia
+  devolver memorias de outro tenant. O fetch agora reescopa os quatro filtros
+  (tenant, sessao, continuidade e modelo) e ha teste garantindo que linha de
+  outro tenant nunca volta pelo KNN.
+
+### Fixed
+- **Recall filtra por `embedding_model` (#954).** Cosseno entre espacos
+  vetoriais de modelos diferentes nao significa nada, mesmo com a mesma
+  dimensao. `RecallQuery` ganha `embedding_model` (o runtime envia o modelo
+  ativo junto do vetor de consulta); o fetch KNN filtra por ele e o
+  `score_and_rank` zera o eixo semantico de entradas de outro modelo — elas
+  seguem competindo por texto/recencia. Quando o KNN acha vizinhos mas nenhum
+  pertence ao modelo ativo, um warn nomeia a causa provavel (troca de modelo
+  sem reindexar) — antes o operador nao tinha sinal nenhum.
+- **Deletar memoria deixa de criar vetores orfaos (#960).**
+  `delete_session_memory` e `compact` apagavam as linhas mas nunca o indice:
+  vetor e mapeamento ficavam para sempre. Agora a delecao varre TODAS as
+  tabelas `vec_embeddings_*` (inclusive dimensoes antigas, #954) e o
+  `vec_id_map` — com filtro que exclui as shadow tables internas do vec0
+  (`_info`/`_chunks`/`_rowids`), que um LIKE ingenuo pegaria junto.
+
+### Added
+- **`MemoryStore::integrity_report()` (#960).** Conta entradas com/sem
+  embedding (a fila de reindexacao do #953), linhas por tabela vetorial e
+  mapeamentos orfaos — a verificacao que em 2026-09-05 precisou de script
+  externo (7.101 entradas vs vetores) vira uma chamada. Base do futuro
+  `garra memory stats` (#950). `in_memory_with_vectors()` liga o caminho KNN
+  em testes; 7 testes novos cobrem isolamento, mistura de modelos, orfaos e
+  idempotencia da delecao.
 
 ### Changed
 - **O console interativo fica limpo por default (#933).** O subscriber unico
