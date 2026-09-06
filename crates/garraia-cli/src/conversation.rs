@@ -361,8 +361,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let git = tmp.path().join(".git");
         std::fs::create_dir_all(&git).expect("mkdir");
-        std::fs::write(git.join("HEAD"), "9f39dfe1b65a1c2d3e4f5061728394a5b6c7d8e9\n")
-            .expect("write");
+        std::fs::write(
+            git.join("HEAD"),
+            "9f39dfe1b65a1c2d3e4f5061728394a5b6c7d8e9\n",
+        )
+        .expect("write");
 
         assert_eq!(git_branch(tmp.path()), Some("9f39dfe".to_string()));
     }
@@ -379,11 +382,7 @@ mod tests {
 
         let work = tmp.path().join("work");
         std::fs::create_dir_all(&work).expect("mkdir");
-        std::fs::write(
-            work.join(".git"),
-            format!("gitdir: {}\n", real.display()),
-        )
-        .expect("write");
+        std::fs::write(work.join(".git"), format!("gitdir: {}\n", real.display())).expect("write");
 
         assert_eq!(git_branch(&work), Some("feature".to_string()));
     }

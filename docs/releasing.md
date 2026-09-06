@@ -6,10 +6,22 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
 
 1. Bump da versão do workspace em `Cargo.toml` (`[workspace.package] version`).
 2. Rodar `cargo check` para o `Cargo.lock` acompanhar (nunca editar o lock à mão).
-3. `CHANGELOG.md`: mover o conteúdo de `## [Unreleased]` para uma nova seção
+3. Juntar os fragmentos de changelog acumulados desde a última versão:
+
+   ```bash
+   python3 scripts/changelog/assemble.py            # confere o que vai entrar
+   python3 scripts/changelog/assemble.py --write    # insere no [Unreleased] e apaga os fragmentos
+   ```
+
+   Os PRs não editam mais o `CHANGELOG.md` direto — cada um deixa um arquivo em
+   `changelog.d/<seção>/` (ver `changelog.d/README.md`), justamente para dois PRs
+   paralelos não colidirem na mesma seção. Este passo é onde os fragmentos viram
+   changelog de verdade. Revise o texto agregado antes de seguir: o script junta,
+   não escreve por você.
+4. `CHANGELOG.md`: mover o conteúdo de `## [Unreleased]` para uma nova seção
    `## [X.Y.Z] - AAAA-MM-DD` (data narrativa em horário da Flórida,
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
-4. Abrir PR, aguardar CI verde (4 checks obrigatórios da ruleset) e mergear.
+5. Abrir PR, aguardar CI verde (4 checks obrigatórios da ruleset) e mergear.
 
 ## 2. Tag
 

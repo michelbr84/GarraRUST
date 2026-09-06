@@ -25,8 +25,6 @@ const YELLOW: &str = "\x1b[33m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
-/// Print the Garra chat banner.
-
 /// Scan the current directory for project markers and build a context summary.
 fn scan_directory_context(cwd: &str) -> String {
     let p = Path::new(cwd);

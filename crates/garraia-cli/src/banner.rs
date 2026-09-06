@@ -71,14 +71,24 @@ pub fn print_about() {
 
     println!();
     println!("{CYAN}{BOLD}╭──────────────────────────────────────────────╮{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}");
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}      {YELLOW}{BOLD}_~^~^~_{RESET}                                {CYAN}{BOLD}│{RESET}"
+    );
     println!(
         "{CYAN}{BOLD}│{RESET}   {YELLOW}{BOLD}\\) /  o o  \\ (/{RESET}   {GREEN}{BOLD}GarraIA v{version}{RESET}         {CYAN}{BOLD}│{RESET}"
     );
-    println!("{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}");
-    println!("{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}");
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}'_   -   _'{RESET}    Personal AI Assistant   {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}     {YELLOW}{BOLD}/ '-----' \\{RESET}                            {CYAN}{BOLD}│{RESET}"
+    );
+    println!(
+        "{CYAN}{BOLD}│{RESET}                                              {CYAN}{BOLD}│{RESET}"
+    );
     println!("{CYAN}{BOLD}╰──────────────────────────────────────────────╯{RESET}");
     println!();
     println!("  {DIM}Assistente de IA pessoal, escrito em Rust.{RESET}");
