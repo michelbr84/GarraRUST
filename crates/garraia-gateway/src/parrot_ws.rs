@@ -103,7 +103,7 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
         let text_for_agent = user_text.clone();
         // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
         // pelo tempo do turno inteiro.
-        let exec = ExecContext::with_mode(state.agent_mode_for(SESSION_ID).await);
+        let exec = ExecContext::with_mode(state.chosen_agent_mode_for(SESSION_ID).await);
         let task = tokio::spawn(async move {
             agents
                 .process_message_streaming_with_agent_config(

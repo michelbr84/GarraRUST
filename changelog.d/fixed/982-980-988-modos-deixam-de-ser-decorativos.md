@@ -32,7 +32,38 @@
   `bash_tool` ignora o campo por completo. O que a issue chama de validacao ja
   testada (`is_path_allowed`, `ProjectToolContext`) e codigo morto, alcancado
   so pelos proprios testes.
+- **Deduzir nao e consentir.** O auto-router (GAR-227) classifica a mensagem e
+  grava o modo na sessao. Enquanto o modo era decoracao de prompt isso era
+  inofensivo; com a politica valendo no executor, ler dali aplicaria restricao
+  a quem nunca escolheu nada — bastava a heuristica achar que a pergunta
+  parecia busca para `file_write` sumir. O store passa a registrar **quem**
+  escolheu (`agent_mode_source`): o `/mode` e o `GET /api/mode/current`
+  continuam mostrando o modo deduzido, e so o escolhido liga a politica. Sessao
+  gravada antes do marcador conta como nao-escolhida — e o comportamento que
+  ela ja tinha, e o primeiro `/mode` regulariza.
+- **O `X-Agent-Mode` nunca chegava ao banco.** O gateway gravava o modo antes
+  de `hydrate_session_history` criar a linha da sessao, e `set_agent_mode` e um
+  `UPDATE ... WHERE id = ?`: zero linhas casadas, `Ok(())` devolvido, `let _ =`
+  no chamador. O header dizia `search` e o banco ficava vazio — bug anterior a
+  este lote, achado rodando o binario, invisivel a qualquer teste que so
+  chamasse o setter numa sessao existente. Agora a gravacao acontece depois da
+  hidratacao, o setter devolve erro quando nao encontra a sessao, e o `/mode` do
+  Telegram avisa em vez de responder "modo definido" com o banco intacto.
+- **Nome de modo invalido para de virar escolha.** O `/mode` e o
+  `PUT /api/mode` ja recusavam nome desconhecido com mensagem; o header
+  `X-Agent-Mode` e o prefixo `mode:` gravavam a string crua. Depois da politica
+  isso era uma escolha registrada que nao resolve para perfil nenhum: portao
+  aberto, `/mode` exibindo um modo inexistente, ninguem sabendo. Agora valida,
+  loga `warn!` e segue como "nao pediu modo" — o request nao cai por causa de
+  um typo em header.
+- **Slack, Discord, WhatsApp, iMessage e o terceiro braco do `POST /api/chat`
+  entram junto.** Eles chamavam os wrappers `_with_context`, que passam
+  `ExecContext::default()`: `/mode search` respondia "modo definido" e a
+  restricao valia so no Telegram. Assimetria silenciosa e pior que ausencia,
+  porque o usuario acredita na restricao. Um teste varre o fonte para o proximo
+  canal — que sera escrito copiando um destes — nao reintroduzir o buraco.
+  `a2a.rs` fica de fora com o motivo escrito: a sessao `a2a:{task_id}` nasce e
+  morre na requisicao, entao nao ha escolha para ler.
 - Um `ExecContext` no lugar de mais dois `Option<&str>`: o metodo ja tinha dez
   parametros e dois `#[allow(clippy::too_many_arguments)]`, e a #986 traria
-  mais um. Os wrappers legados passam `ExecContext::default()`, entao os sete
-  consumidores que so querem texto ficam intactos.
+  mais um.

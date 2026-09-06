@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use garraia_agents::ChatMessage;
+use garraia_agents::exec_context::ExecContext;
 use garraia_channels::{WhatsAppChannel, WhatsAppOnMessageFn};
 use garraia_config::AppConfig;
 use garraia_security::{Allowlist, PairingManager};
@@ -138,10 +139,19 @@ pub fn build_whatsapp_channels(
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key(Some(&from_number));
 
+                    // O modo escolhido vale aqui tambem (#988). Antes este canal
+                    // chamava o wrapper `_with_context`, que passa
+                    // `ExecContext::default()` — `/mode search` respondia "modo
+                    // definido" e a politica de ferramenta nao valia, so no Telegram
+                    // valia. Assimetria silenciosa e pior que ausencia: o usuario
+                    // acredita na restricao.
+                    let exec =
+                        ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await);
+
                     let response = if let Some(delta_sender) = delta_tx {
                         state
                             .agents
-                            .process_message_streaming_with_context(
+                            .process_message_streaming_with_agent_config(
                                 &session_id,
                                 &text,
                                 &history,
@@ -149,17 +159,26 @@ pub fn build_whatsapp_channels(
                                 continuity_key.as_deref(),
                                 Some(&from_number),
                                 None,
+                                None,
+                                None,
+                                None,
+                                &exec,
                             )
                             .await
                     } else {
                         state
                             .agents
-                            .process_message_with_context(
+                            .process_message_with_agent_config(
                                 &session_id,
                                 &text,
                                 &history,
                                 continuity_key.as_deref(),
                                 Some(&from_number),
+                                None,
+                                None,
+                                None,
+                                None,
+                                &exec,
                             )
                             .await
                     }

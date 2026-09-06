@@ -803,10 +803,20 @@ impl AppState {
     /// Existe para os oito chamadores nao repetirem a danca de destravar o
     /// store — foi a repeticao que deixou o `/mode` gravando numa chave e a
     /// execucao lendo outra por meses.
-    pub async fn agent_mode_for(&self, session_id: &str) -> Option<String> {
+    ///
+    /// # So o modo escolhido, nunca o deduzido
+    ///
+    /// Le `get_chosen_agent_mode`, e nao `get_agent_mode`: o auto-router
+    /// (GAR-227) grava na sessao o modo que deduziu da mensagem, e desde que a
+    /// `ToolPolicy` passou a valer no executor (#988) ligar a politica com base
+    /// nisso tiraria `file_write` de quem nunca escolheu modo nenhum. Para
+    /// **mostrar** o modo corrente — `/mode` sem argumento, `GET
+    /// /api/mode/current` — o deduzido conta, e esses caminhos leem o store
+    /// direto.
+    pub async fn chosen_agent_mode_for(&self, session_id: &str) -> Option<String> {
         let store = self.session_store.as_ref()?;
         let store = store.lock().await;
-        store.get_agent_mode(session_id).ok().flatten()
+        store.get_chosen_agent_mode(session_id).ok().flatten()
     }
 
     /// A chave de sessao do Telegram, resolvida do mesmo jeito em todo lugar.
@@ -950,6 +960,72 @@ mod tests {
             "a chave de sessao do Telegram foi montada fora do \
              `AppState::telegram_session_id`, que e como o GAR-202 ficou pela \
              metade: {infratores:?}"
+        );
+    }
+
+    /// Todo canal que executa o agente respeita o modo escolhido (#988).
+    ///
+    /// Os wrappers `process_message_with_context` /
+    /// `process_message_streaming_with_context` passam
+    /// `ExecContext::default()` — nenhum modo, nenhuma politica. Enquanto o
+    /// modo era so decoracao de prompt isso nao aparecia; depois que a
+    /// `ToolPolicy` passou a valer no executor, usa-los virou uma assimetria
+    /// que o usuario nao consegue ver: `/mode search` respondia "modo
+    /// definido" no Slack, no Discord e no WhatsApp, e a restricao valia so no
+    /// Telegram. Acreditar numa restricao que nao existe e pior que nao ter
+    /// restricao.
+    ///
+    /// A varredura e do fonte porque o proximo canal e escrito copiando o
+    /// anterior: um teste de comportamento so acusaria depois de alguem
+    /// adicionar o canal, publicar, e outra pessoa reparar.
+    ///
+    /// `a2a.rs` e a excecao registrada: a sessao `a2a:{task_id}` nasce e morre
+    /// na propria requisicao, entao nao ha modo escolhido para ler. O motivo
+    /// esta escrito la.
+    #[test]
+    fn nenhum_canal_executa_o_agente_sem_o_modo_escolhido() {
+        use std::path::Path;
+
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut infratores = Vec::new();
+
+        fn varrer(dir: &Path, infratores: &mut Vec<String>) {
+            let Ok(entradas) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entradas.flatten() {
+                let caminho = e.path();
+                if caminho.is_dir() {
+                    varrer(&caminho, infratores);
+                } else if caminho.extension().is_some_and(|x| x == "rs") {
+                    // `state.rs` carrega este teste, e o teste cita os nomes
+                    // que procura; nao executa agente nenhum. `a2a.rs` e a
+                    // excecao documentada no proprio arquivo.
+                    if caminho
+                        .file_name()
+                        .is_some_and(|f| f == "state.rs" || f == "a2a.rs")
+                    {
+                        continue;
+                    }
+                    let Ok(texto) = std::fs::read_to_string(&caminho) else {
+                        continue;
+                    };
+                    if texto.contains("process_message_with_context(")
+                        || texto.contains("process_message_streaming_with_context(")
+                    {
+                        infratores.push(caminho.display().to_string());
+                    }
+                }
+            }
+        }
+
+        varrer(&raiz, &mut infratores);
+        assert!(
+            infratores.is_empty(),
+            "estes chamam o wrapper que descarta o modo escolhido; use \
+             `process_message[_streaming]_with_agent_config` com \
+             `ExecContext::with_mode(state.chosen_agent_mode_for(..).await)`: \
+             {infratores:?}"
         );
     }
 

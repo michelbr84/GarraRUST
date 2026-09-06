@@ -101,6 +101,15 @@ pub async fn create_task(
     let history = state.session_history(&session_id);
     let continuity_key = state.continuity_key(None);
 
+    // Sem `ExecContext` de modo, e de proposito.
+    //
+    // A sessao aqui e `a2a:{task_id}` — nasce nesta funcao e morre com a
+    // tarefa, entao nao existe usuario que tenha escolhido modo para ela; ler
+    // o store devolveria `None` sempre. O que restringe uma tarefa A2A sao os
+    // guardrails da propria superficie (#929), nao o `/mode` de alguem.
+    //
+    // Se um dia a tarefa A2A passar a herdar a sessao de quem a pediu, este e
+    // o ponto onde o modo escolhido precisa entrar.
     let result = state
         .agents
         .process_message_with_context(

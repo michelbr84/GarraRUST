@@ -117,7 +117,7 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                         None,
                         None,
                         None,
-                        &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
+                        &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
                     )
                     .await
                     .map_err(|e| {
@@ -323,7 +323,9 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
+                                &ExecContext::with_mode(
+                                    state.chosen_agent_mode_for(&session_id).await,
+                                ),
                             )
                             .await
                     } else {
@@ -339,7 +341,9 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
+                                &ExecContext::with_mode(
+                                    state.chosen_agent_mode_for(&session_id).await,
+                                ),
                             )
                             .await
                     }

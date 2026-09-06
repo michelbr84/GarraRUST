@@ -23,7 +23,7 @@ use garraia_agents::{ChatMessage, ChatRole, MessagePart};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::state::SharedState;
@@ -278,18 +278,41 @@ pub async fn chat_completions(
     });
 
     // Use header mode first, then fall back to message mode
-    let final_mode = agent_mode.or(message_mode);
+    let pedido_de_modo = agent_mode.or(message_mode);
 
-    // Apply X-Agent-Mode header to session if provided (GAR-234)
-    if let Some(ref mode) = final_mode
-        && let Some(ref session_store) = state.session_store
-    {
-        let store = session_store.lock().await;
-        let _ = store.set_agent_mode(&session_id, mode);
-    }
+    // Nome desconhecido nao vira escolha (#988).
+    //
+    // O `/mode` e o `PUT /api/mode` ja recusam nome invalido com mensagem; este
+    // caminho — header `X-Agent-Mode` e prefixo `mode:` — nao recusava, e
+    // gravava a string crua na sessao. Depois que a `ToolPolicy` passou a valer
+    // no executor, isso virou uma escolha registrada que nao resolve para
+    // perfil nenhum: o portao abre, o `/mode` exibe um modo que nao existe e
+    // ninguem fica sabendo. Validar aqui e o unico ponto em que ainda da para
+    // avisar.
+    //
+    // Nao derruba o request: pedir modo errado num header nao deve custar a
+    // resposta. Vira "nao pediu modo" — inclusive para o auto-router logo
+    // abaixo, que volta a poder opinar.
+    let final_mode = match pedido_de_modo {
+        Some(nome) => match garraia_agents::modes::AgentMode::from_str(&nome) {
+            Some(modo) => Some(modo.as_str().to_string()),
+            None => {
+                warn!(
+                    modo_pedido = %nome,
+                    session_id = %session_id,
+                    "modo desconhecido ignorado; use GET /api/modes para os validos"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    // As duas gravacoes do modo ficam depois de `hydrate_session_history` —
+    // ver o bloco marcado logo abaixo dela.
 
     // GAR-227: Auto-classify mode when no explicit mode was given.
-    if final_mode.is_none() {
+    let modo_deduzido = if final_mode.is_none() {
         let cfg = state.current_config();
         let user_text_for_router = body
             .messages
@@ -301,21 +324,16 @@ pub async fn chat_completions(
             .default_provider()
             .is_some()
             .then_some(&*state.agents);
-        let auto_mode = crate::auto_router::auto_classify(
+        crate::auto_router::auto_classify(
             &user_text_for_router,
             cfg.agent.auto_router_llm_enabled,
             cfg.agent.auto_router_model.as_deref(),
             runtime_ref,
         )
-        .await;
-        if let Some(mode) = auto_mode {
-            if let Some(ref session_store) = state.session_store {
-                let store = session_store.lock().await;
-                let _ = store.set_agent_mode(&session_id, mode.as_str());
-            }
-            tracing::debug!(mode = %mode, session = %session_id, "auto_router: mode assigned");
-        }
-    }
+        .await
+    } else {
+        None
+    };
 
     // GAR-225: Extract tool_choice for standardized logging
     let _tool_choice_str = if body.tool_choice.is_null() {
@@ -376,6 +394,39 @@ pub async fn chat_completions(
     state
         .hydrate_session_history(&session_id, Some("vscode"), user_id.as_deref())
         .await;
+
+    // O modo so pode ser gravado agora.
+    //
+    // `set_agent_mode` e um `UPDATE ... WHERE id = ?`, e a linha da sessao e
+    // criada ali em cima, por `hydrate_session_history`. Gravar antes casava
+    // zero linhas — e como o setter devolvia `Ok(())` e o chamador escrevia
+    // `let _ =`, o `X-Agent-Mode` sumia sem deixar rastro. Achado rodando o
+    // binario: o header dizia `search`, o banco ficava vazio.
+    if let Some(ref session_store) = state.session_store {
+        let store = session_store.lock().await;
+        // GAR-234: modo pedido pelo usuario (header `X-Agent-Mode` ou prefixo
+        // `mode:`), ja validado acima.
+        if let Some(ref mode) = final_mode
+            && let Err(e) = store.set_agent_mode(&session_id, mode)
+        {
+            warn!(session_id = %session_id, erro = %e, "falhou ao gravar o modo escolhido");
+        }
+        // GAR-227: modo deduzido. `_auto`, nao `set_agent_mode`: aparece no
+        // `/mode` e no `GET /api/mode/current`, mas nao liga a politica de
+        // ferramenta do #988 — deduzir nao e consentir. Se gravasse como
+        // escolha, quem nunca digitou `/mode` perderia `file_write` porque a
+        // heuristica achou que a pergunta parecia busca.
+        if let Some(modo) = modo_deduzido {
+            match store.set_agent_mode_auto(&session_id, modo.as_str()) {
+                Ok(()) => {
+                    tracing::debug!(mode = %modo, session = %session_id, "auto_router: mode assigned")
+                }
+                Err(e) => {
+                    warn!(session_id = %session_id, erro = %e, "falhou ao gravar o modo deduzido")
+                }
+            }
+        }
+    }
 
     // Extract the new user message from the client request (the last message is the current input)
     let new_user_text = body
@@ -512,7 +563,7 @@ async fn handle_streaming(
                 Some(model_clone.as_str()),
                 None,
                 None,
-                &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
+                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
             )
             .await
         {
@@ -672,7 +723,7 @@ async fn handle_non_streaming(
             Some(model.as_str()),
             None,
             None,
-            &ExecContext::with_mode(state.agent_mode_for(&session_id).await),
+            &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
         )
         .await;
 

@@ -23,6 +23,19 @@ pub struct ExecContext {
     /// O critério de aceite da #988 pede que "o comportamento padrão não seja
     /// regredido", e o comportamento padrão de hoje é: sem política. Então
     /// `None` continua significando sem política.
+    /// # Deduzir nao e consentir
+    ///
+    /// Este campo carrega o modo que o **usuario escolheu** — nunca o que
+    /// alguem deduziu por ele. O gateway tem um auto-router (GAR-227) que
+    /// classifica a mensagem e grava o modo na sessao; encher este campo com
+    /// aquele valor faria a politica de ferramenta valer sem escolha, e quem
+    /// nunca digitou `/mode` perderia `file_write` porque a heuristica achou
+    /// que a pergunta parecia busca. A auditoria do #988 pegou exatamente
+    /// isso.
+    ///
+    /// Quem preenche daqui do gateway usa
+    /// `AppState::chosen_agent_mode_for`, que le a escolha e ignora a
+    /// deducao.
     pub agent_mode: Option<String>,
 
     /// Diretório contra o qual caminho relativo de ferramenta é resolvido.

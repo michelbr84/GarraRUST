@@ -331,10 +331,15 @@ impl ToolGate {
     ///
     /// Diz **por que**, e nao so que falhou: sem isso o modelo tende a tentar
     /// de novo a mesma coisa, gastando o orcamento de chamadas.
+    ///
+    /// Nao manda o modelo trocar de modo. Trocar de modo e do usuario — o
+    /// modelo nao executa `/mode`, e a versao anterior desta frase sugeria
+    /// `/mode code` mesmo quando `code` nao era o modo que liberava a
+    /// ferramenta.
     pub fn recusa(tool_name: &str, modo: &str) -> String {
         format!(
             "A ferramenta `{tool_name}` nao e permitida no modo `{modo}`. \
-             Use `/mode code` se precisar dela, ou siga sem ela."
+             Siga sem ela, ou peca ao usuario para trocar de modo."
         )
     }
 }
@@ -1062,9 +1067,18 @@ mod tests {
     #[test]
     fn a_recusa_diz_o_motivo_e_a_saida() {
         let m = ToolGate::recusa("file_write", "search");
-        assert!(m.contains("file_write"));
-        assert!(m.contains("search"));
-        assert!(m.contains("/mode code"));
+        assert!(m.contains("file_write"), "diz qual ferramenta");
+        assert!(m.contains("search"), "diz qual modo barrou");
+        assert!(
+            m.contains("Siga sem ela") && m.contains("usuario"),
+            "diz o que fazer, e que a troca de modo e do usuario"
+        );
+        // O modelo nao executa `/mode`, e `code` nao e necessariamente o modo
+        // que libera a ferramenta barrada.
+        assert!(
+            !m.contains("/mode code"),
+            "nao prescreve um modo especifico"
+        );
     }
 
     use super::*;

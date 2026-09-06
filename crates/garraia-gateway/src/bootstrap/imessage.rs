@@ -1,5 +1,6 @@
 #![cfg(target_os = "macos")]
 
+use garraia_agents::exec_context::ExecContext;
 use std::sync::{Arc, Mutex};
 
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
@@ -99,14 +100,28 @@ pub fn build_imessage_channels(
                         state.session_history(&session_id);
                     let continuity_key = state.continuity_key(Some(&sender_id));
 
+                    // O modo escolhido vale aqui tambem (#988). Antes este canal
+                    // chamava o wrapper `_with_context`, que passa
+                    // `ExecContext::default()` — `/mode search` respondia "modo
+                    // definido" e a politica de ferramenta nao valia, so no Telegram
+                    // valia. Assimetria silenciosa e pior que ausencia: o usuario
+                    // acredita na restricao.
+                    let exec =
+                        ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await);
+
                     let response = state
                         .agents
-                        .process_message_with_context(
+                        .process_message_with_agent_config(
                             &session_id,
                             &text,
                             &history,
                             continuity_key.as_deref(),
                             Some(&sender_id),
+                            None,
+                            None,
+                            None,
+                            None,
+                            &exec,
                         )
                         .await
                         .map_err(|e| e.to_string())?;
