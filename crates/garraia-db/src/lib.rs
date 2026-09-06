@@ -16,8 +16,8 @@ pub use chat_sync::{
 };
 pub use db_trait::GarraDb;
 pub use memory_store::{
-    CompactionReport, IntegrityReport, MemoryEntry, MemoryProvider, MemoryRole, MemoryStore,
-    NewMemoryEntry, RecallQuery, SessionContext,
+    CompactionReport, EmbeddingBreakdownRow, IntegrityReport, MemoryEntry, MemoryProvider,
+    MemoryRole, MemoryStore, NewMemoryEntry, RecallQuery, SessionContext,
 };
 pub use project_store::{DataRetentionRecord, Project, ProjectFile, ProjectTemplate};
 pub use session_store::{MobileUser, ScheduledTask, SessionStore, StoredMessage};

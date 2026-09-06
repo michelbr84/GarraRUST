@@ -17,3 +17,13 @@
   de embeddings (`bootstrap::build_embedding_provider`, extraido de
   `build_agent_runtime`) — o que o `reindex` grava e exatamente o que o recall
   do agente le de volta.
+
+- **`garra memory reindex` tambem repara o indice, sem custo de provider (#950).**
+  O `remember_sync` grava a linha e insere no indice em best-effort: com o
+  sqlite-vec fora do ar por um momento, a entrada fica com vetor na coluna e
+  **fora** da busca semantica, e o reindex normal nao a alcanca porque ele
+  procura `embedding IS NULL`. O reparo agora roda antes, sem chamar provider
+  nenhum — o vetor ja existe, so falta indexa-lo — e aparece como
+  `index_repaired` no relatorio. Na mesma linha, `set_embedding` virou
+  fail-closed: se o indice recusar o vetor, a coluna volta a NULL, para a
+  entrada continuar na fila em vez de sair dela sem ter sido indexada.

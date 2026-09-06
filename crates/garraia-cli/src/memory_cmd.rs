@@ -95,7 +95,11 @@ pub(crate) fn cutoff_from_days(now: DateTime<Utc>, days: i64) -> Option<DateTime
     if days < 0 {
         return None;
     }
-    now.checked_sub_signed(Duration::days(days))
+    // `Duration::days` entra em **panico** acima de ~106 bilhoes de dias, e
+    // `--older-than-days` e um `i64` que o operador digita: sem o `try_`, um
+    // numero grande derruba o processo antes de o `checked_sub_signed` ter
+    // chance de recusar.
+    now.checked_sub_signed(Duration::try_days(days)?)
 }
 
 /// Uma entrada em JSON. O conteudo vai inteiro — quem pediu `--json` esta
@@ -113,19 +117,28 @@ fn entry_json(entry: &MemoryEntry) -> serde_json::Value {
     })
 }
 
-/// Uma entrada em uma linha de terminal.
-fn entry_line(entry: &MemoryEntry) -> String {
+/// Uma entrada em duas linhas de terminal: cabecalho e previa do conteudo.
+///
+/// A distancia, quando ha, vai no **cabecalho** e nao depois da previa: o
+/// conteudo e truncado, e pendurar um numero no fim de um texto cortado
+/// confunde os dois.
+fn entry_line(entry: &MemoryEntry, distancia: Option<f64>) -> String {
     let vetor = match (&entry.embedding, &entry.embedding_model) {
         (None, _) => "sem vetor".to_string(),
         (Some(_), None) => "vetor sem modelo".to_string(),
         (Some(_), Some(m)) => m.clone(),
     };
+    let distancia = match distancia {
+        Some(d) => format!("  d={d:.4}"),
+        None => String::new(),
+    };
     format!(
-        "{}  {}  [{}]  ({})\n    {}",
+        "{}  {}  [{}]  ({}){}\n    {}",
         entry.created_at.format("%Y-%m-%d %H:%M:%SZ"),
         entry.id,
         vetor,
         role_str(entry),
+        distancia,
         preview(&entry.content, PREVIEW_CHARS),
     )
 }
@@ -161,6 +174,9 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
     let report = store
         .integrity_report()
         .context("failed to build integrity report")?;
+    let breakdown = store
+        .embedding_breakdown()
+        .context("failed to build per-model breakdown")?;
     let knn = store.knn_enabled();
 
     if json {
@@ -178,6 +194,7 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
                 .map(|(t, n)| serde_json::json!({ "table": t, "rows": n }))
                 .collect::<Vec<_>>(),
             "orphan_map_entries": report.orphan_map_entries,
+            "by_model": breakdown,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(EXIT_OK);
@@ -199,6 +216,22 @@ pub async fn run_stats(config: &AppConfig, json: bool) -> Result<i32> {
     println!("Linhas no mapa:     {}", report.map_rows);
     for (table, rows) in &report.vec_rows_by_table {
         println!("  {table}: {rows}");
+    }
+
+    // "Com o que este indice foi construido?" e a pergunta que decide se uma
+    // troca de modelo exige reindexar tudo (#954) — e ela nao se responde
+    // com um agregado.
+    if !breakdown.is_empty() {
+        println!("\nPor modelo:");
+        for linha in &breakdown {
+            let rotulo = match (&linha.embedding_model, linha.embedding_dimensions) {
+                (Some(m), Some(d)) => format!("{m} ({d} dimensoes)"),
+                (Some(m), None) => format!("{m} (dimensao nao registrada)"),
+                (None, Some(d)) => format!("sem modelo registrado ({d} dimensoes)"),
+                (None, None) => "sem vetor".to_string(),
+            };
+            println!("  {rotulo}: {}", linha.entries);
+        }
     }
 
     if !report.orphan_map_entries.is_empty() {
@@ -284,7 +317,7 @@ pub async fn run_list(
     }
 
     for entry in &entries {
-        println!("{}", entry_line(entry));
+        println!("{}", entry_line(entry, None));
     }
     Ok(EXIT_OK)
 }
@@ -341,6 +374,19 @@ pub async fn run_search(
 
     let semantica = query_embedding.is_some();
 
+    // Distancias cruas do indice, so para anotar o que o recall devolver.
+    // A ordem da lista continua sendo a do score hibrido do recall — que
+    // combina distancia, recencia e casamento textual —, entao ela nao e
+    // monotona na distancia, e o rotulo diz "d=" em vez de "rank".
+    let distancias: std::collections::HashMap<String, f64> = match &query_embedding {
+        Some(vetor) => store
+            .knn_distances(vetor, limit.saturating_mul(4))
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+        None => std::collections::HashMap::new(),
+    };
+
     let results = store
         .recall(RecallQuery {
             tenant_id: None,
@@ -357,7 +403,22 @@ pub async fn run_search(
     if json {
         let payload = serde_json::json!({
             "semantic": semantica,
-            "results": results.iter().map(entry_json).collect::<Vec<_>>(),
+            "results": results
+                .iter()
+                .map(|entry| {
+                    let mut valor = entry_json(entry);
+                    if let Some(objeto) = valor.as_object_mut() {
+                        objeto.insert(
+                            "distance".to_string(),
+                            match distancias.get(&entry.id) {
+                                Some(d) => serde_json::json!(d),
+                                None => serde_json::Value::Null,
+                            },
+                        );
+                    }
+                    valor
+                })
+                .collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(EXIT_OK);
@@ -372,7 +433,7 @@ pub async fn run_search(
     };
     println!("Busca {modo} — {} resultado(s)\n", results.len());
     for entry in &results {
-        println!("{}", entry_line(entry));
+        println!("{}", entry_line(entry, distancias.get(&entry.id).copied()));
     }
 
     // O caminho textual do recall e um `LIKE '%frase inteira%'`: uma consulta
@@ -441,6 +502,7 @@ pub async fn run_reindex(
         // integridade responde sozinho.
         None => garraia_agents::ReindexReport {
             pending_before: store.integrity_report()?.entries_without_embedding,
+            index_repaired: 0,
             reindexed: 0,
             vanished: 0,
             stopped_early: false,
@@ -451,6 +513,7 @@ pub async fn run_reindex(
     if json {
         let payload = serde_json::json!({
             "pending_before": report.pending_before,
+            "index_repaired": report.index_repaired,
             "reindexed": report.reindexed,
             "vanished": report.vanished,
             "stopped_early": report.stopped_early,
@@ -467,6 +530,13 @@ pub async fn run_reindex(
             "Fila inicial: {} | reindexadas: {} | sumiram no caminho: {}",
             report.pending_before, report.reindexed, report.vanished
         );
+        if report.index_repaired > 0 {
+            println!(
+                "Alem dessas, {} entrada(s) ja tinham vetor na coluna e voltaram \
+                 para o indice sem custo de provider.",
+                report.index_repaired
+            );
+        }
         if report.stopped_early {
             println!(
                 "\nA reindexacao parou no meio: o provider de embeddings falhou.\n\
@@ -591,6 +661,16 @@ mod tests {
     #[test]
     fn cutoff_recusa_dias_negativos() {
         assert!(cutoff_from_days(Utc::now(), -1).is_none());
+    }
+
+    /// `Duration::days` entra em panico acima de ~106 bilhoes de dias, e
+    /// `--older-than-days` e um numero que o operador digita: sem o `try_`,
+    /// `garra memory compact --older-than-days 999999999999999` derrubava o
+    /// processo com backtrace em vez de recusar o argumento.
+    #[test]
+    fn cutoff_recusa_dias_absurdos_em_vez_de_entrar_em_panico() {
+        assert!(cutoff_from_days(Utc::now(), i64::MAX).is_none());
+        assert!(cutoff_from_days(Utc::now(), 999_999_999_999_999).is_none());
     }
 
     #[test]

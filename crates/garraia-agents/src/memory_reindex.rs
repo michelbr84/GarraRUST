@@ -44,6 +44,10 @@ impl Default for ReindexOptions {
 pub struct ReindexReport {
     /// Entradas sem vetor antes de comecar.
     pub pending_before: usize,
+    /// Entradas que ja tinham vetor na coluna e faltavam no indice, e foram
+    /// reinseridas sem custo de provider. E o estado que o `remember_sync`
+    /// produz quando o sqlite-vec falha na ingestao.
+    pub index_repaired: usize,
     pub reindexed: usize,
     /// Entradas que sumiram entre listar e gravar — nao e erro.
     pub vanished: usize,
@@ -69,13 +73,32 @@ pub async fn reindex_missing_embeddings(
 
     let mut report = ReindexReport {
         pending_before,
+        index_repaired: 0,
         reindexed: 0,
         vanished: 0,
         stopped_early: false,
         dry_run: options.dry_run,
     };
 
-    if options.dry_run || pending_before == 0 {
+    if options.dry_run {
+        return Ok(report);
+    }
+
+    // Reparo barato primeiro: reinserir no indice um vetor que ja esta na
+    // coluna nao custa chamada de provider nenhuma, e sem isso o `reindex`
+    // deixaria de fora justamente as entradas que o `remember_sync` gravou
+    // enquanto o sqlite-vec estava fora — elas nao aparecem em
+    // `entries_missing_embeddings`, que procura `embedding IS NULL`.
+    report.index_repaired =
+        store.reindex_missing_index_rows(options.max_entries.unwrap_or(usize::MAX))?;
+    if report.index_repaired > 0 {
+        info!(
+            reparadas = report.index_repaired,
+            "vetores que ja estavam na coluna voltaram para o indice"
+        );
+    }
+
+    if pending_before == 0 {
         return Ok(report);
     }
 
@@ -146,6 +169,7 @@ pub async fn reindex_missing_embeddings(
     }
 
     info!(
+        index_repaired = report.index_repaired,
         reindexed = report.reindexed,
         vanished = report.vanished,
         pending_before = report.pending_before,
