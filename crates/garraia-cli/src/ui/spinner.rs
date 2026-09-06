@@ -118,9 +118,6 @@ const SHOW_DELAY_TICKS: usize = 3;
 /// cronômetro, espera longa ganha os dois sinais de vida de uma vez).
 const ELAPSED_AFTER_TICKS: usize = FRAMES_PER_MESSAGE;
 
-/// Largura assumida quando o terminal não sabe informar a dele.
-const FALLBACK_WIDTH: usize = 80;
-
 /// Nunca truncamos abaixo disso — abaixo de ~12 colunas não sobra nada legível.
 const MIN_WIDTH: usize = 12;
 
@@ -289,22 +286,28 @@ impl Spinner {
     }
 }
 
-/// Decide se o indicador deve rodar neste ambiente.
+/// A saída é um terminal disposto a receber interface rica?
 ///
-/// Devolve `None` — spinner desligado — em qualquer superfície onde a animação
-/// seria ruído ou lixo: stdout redirecionado/pipe, `NO_COLOR`, `TERM=dumb`, ou
-/// o escape hatch explícito `GARRAIA_NO_SPINNER`.
-pub fn detect(seed: usize) -> Option<Spinner> {
+/// Falso em qualquer superfície onde cor e animação seriam ruído ou lixo:
+/// stdout redirecionado/pipe, `NO_COLOR`, `TERM=dumb`.
+///
+/// Desde o #942 quem consome isto é [`Capabilities::detect`](super::Capabilities::detect),
+/// o dono único da decisão. Mora aqui porque aqui estava a versão que já
+/// olhava as três coisas.
+pub(crate) fn stdout_is_rich_terminal() -> bool {
     if !io::stdout().is_terminal() {
-        return None;
+        return false;
     }
-    if env_is_set("NO_COLOR") || env_is_set("GARRAIA_NO_SPINNER") {
-        return None;
+    if env_is_set("NO_COLOR") {
+        return false;
     }
-    if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
-        return None;
-    }
-    Some(Spinner::new(detect_style(), detect_width(), seed))
+    !std::env::var("TERM").is_ok_and(|t| t == "dumb")
+}
+
+/// O escape hatch que desliga **só** a animação, mantendo o resto da
+/// interface rica de pé.
+pub(crate) fn animation_opted_out() -> bool {
+    env_is_set("GARRAIA_NO_SPINNER")
 }
 
 /// `NO_COLOR` segue a convenção: presente e não-vazia conta como ligada.
@@ -313,6 +316,10 @@ fn env_is_set(key: &str) -> bool {
 }
 
 /// UTF-8 precisa ser afirmado, não presumido: na dúvida, ASCII.
+pub(crate) fn locale_supports_unicode() -> bool {
+    matches!(detect_style(), SpinnerStyle::Unicode)
+}
+
 fn detect_style() -> SpinnerStyle {
     for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
         if let Ok(value) = std::env::var(key) {
@@ -334,13 +341,6 @@ fn detect_style() -> SpinnerStyle {
     } else {
         SpinnerStyle::Ascii
     }
-}
-
-fn detect_width() -> usize {
-    console::Term::stdout()
-        .size_checked()
-        .map(|(_, cols)| cols as usize)
-        .unwrap_or(FALLBACK_WIDTH)
 }
 
 #[cfg(test)]

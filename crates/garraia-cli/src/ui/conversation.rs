@@ -7,19 +7,26 @@
 //! inclusive os caminhos ASCII e sem cor, que ninguem exercita a mao e por
 //! isso sao justamente os que quebram sem ninguem ver.
 
-use std::io::IsTerminal;
 use std::path::Path;
 
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
+pub(crate) const DIM: &str = "\x1b[2m";
+/// Avisos e erros dirigidos ao usuario (o renderer os usa).
+pub(crate) const YELLOW: &str = "\x1b[33m";
+pub(crate) const RESET: &str = "\x1b[0m";
 
 /// Largura maxima do cabecalho quando o terminal nao diz a dele.
 pub const DEFAULT_WIDTH: usize = 72;
 
 /// O que este terminal aguenta.
+///
+/// **Quem decide** e o [`Capabilities::detect`](super::Capabilities::detect):
+/// ate o #942 este tipo tinha um `detect()` proprio que olhava TTY, `NO_COLOR`
+/// e `TERM=dumb` mas **nao** o locale, enquanto o spinner olhava o locale — e
+/// num terminal com `LANG=C` o usuario via `❯` em UTF-8 ao lado de uma
+/// animacao ASCII. Um dono so acabou com o desencontro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
     pub unicode: bool,
@@ -39,24 +46,6 @@ impl Style {
         unicode: true,
         color: true,
     };
-
-    /// Deriva do ambiente pela **mesma regra** do `spinner::detect`.
-    ///
-    /// As duas superficies nao podem discordar sobre o que o terminal
-    /// aguenta: se discordassem, um terminal legado ganharia `❯` sem ganhar
-    /// spinner, ou o contrario — e o usuario veria meia interface nova.
-    pub fn detect() -> Self {
-        if !std::io::stdout().is_terminal() {
-            return Self::PLAIN;
-        }
-        if env_is_set("NO_COLOR") {
-            return Self::PLAIN;
-        }
-        if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
-            return Self::PLAIN;
-        }
-        Self::RICH
-    }
 
     /// Marcador do input do usuario. Substitui o antigo `voce >`.
     pub fn user_prompt(&self) -> String {
@@ -96,23 +85,27 @@ impl Style {
     }
 }
 
-/// Largura util do terminal, best-effort.
+/// Largura util do terminal, best-effort — **fonte unica** desde o #942.
 ///
-/// Sem dependencia nova: le `COLUMNS` quando o shell exporta e cai no default
-/// quando nao. Nao e exato, e nem precisa ser — a regua do cabecalho nunca
-/// passa do conteudo, e o `shorten_path` ja limita o caminho em 32 chars,
-/// entao o pior caso cabe em qualquer terminal de largura razoavel. A funcao
-/// existe para o dia em que houver uma fonte melhor: troca-se so ela.
+/// Ate aqui havia duas: esta, que lia `COLUMNS`, e a do spinner, que
+/// perguntava ao `console::Term`. A do spinner era a boa (funciona sem o
+/// shell exportar nada), entao ela vem primeiro e o `COLUMNS` fica como
+/// segunda opiniao — util quando a saida nao e um terminal mas o usuario
+/// quer controlar a largura.
+///
+/// Nao e exato, e nem precisa ser: a regua do cabecalho nunca passa do
+/// conteudo, e o `shorten_path` ja limita o caminho em 32 chars.
 pub fn terminal_width() -> usize {
+    if let Some((_, cols)) = console::Term::stdout().size_checked()
+        && cols as usize >= 20
+    {
+        return cols as usize;
+    }
     std::env::var("COLUMNS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|w| *w >= 20)
         .unwrap_or(DEFAULT_WIDTH)
-}
-
-fn env_is_set(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|v| !v.is_empty())
 }
 
 /// Cabecalho compacto de abertura (#935).
