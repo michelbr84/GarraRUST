@@ -201,20 +201,201 @@ pub fn summarize_tool_input(name: &str, input: &serde_json::Value) -> String {
 /// aceite da #937. Em falha: a primeira linha nao-vazia, que e onde as
 /// ferramentas deste projeto poem a causa.
 pub fn summarize_tool_output(content: &str, success: bool) -> String {
-    let linhas: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    // Sanear **antes** de classificar, e nao depois. Saida de terminal costuma
+    // vir colorida: `cargo test` emite `\x1b[32mtest result: ok...`, e um
+    // reconhecedor rodando no texto cru procuraria "test result:" numa linha
+    // que comeca com escape e nao acharia. O caso comum quebraria em silencio,
+    // caindo no resumo generico sem nada indicando por que.
+    let limpo = sanear_controles(&garraia_security::redact_secrets(content), true);
+
+    let linhas: Vec<&str> = limpo.lines().filter(|l| !l.trim().is_empty()).collect();
 
     let Some(primeira) = linhas.first() else {
         return String::new();
     };
 
-    // Em falha o que importa e a causa, mesmo que a saida seja longa.
-    if success && linhas.len() > 1 {
+    // Uma classe reconhecida ganha resumo proprio; o resto segue no
+    // comportamento generico. Ferramenta ou formato sem caso escrito nao e
+    // adivinhado — mesma regra do `summarize_tool_input`, e pela mesma razao:
+    // adivinhar e como o resumo do input chegou a exibir connection string.
+    if let Some(resumo) = resumo_por_classe(&linhas, success) {
+        return truncar(&resumo, SUMMARY_MAX_CHARS);
+    }
+
+    // Em falha o que importa e a causa. A primeira linha nao-vazia costuma ser
+    // ruido de progresso ("Compiling ..."), entao procura-se antes uma linha
+    // que se parece com erro.
+    if !success {
+        if let Some(erro) = linhas.iter().find(|l| parece_erro(l)) {
+            return sanear(erro);
+        }
+        return sanear(primeira);
+    }
+
+    if linhas.len() > 1 {
         let resumo = sanear(primeira);
         let restantes = linhas.len() - 1;
         return format!("{resumo} (+{restantes} linha(s))");
     }
 
     sanear(primeira)
+}
+
+/// Uma linha que anuncia falha, em vez de progresso.
+///
+/// Deliberadamente simples e ancorado no **inicio** da linha: procurar a
+/// palavra em qualquer posicao faria `Compiling error-chain v0.12` — um nome
+/// de crate — passar por erro.
+fn parece_erro(linha: &str) -> bool {
+    let l = linha.trim_start();
+    l.starts_with("error")
+        || l.starts_with("Error")
+        || l.starts_with("ERROR")
+        || l.starts_with("fatal:")
+        || l.starts_with("panicked at")
+        || l.starts_with("thread '")
+        || l.starts_with("FAILED")
+}
+
+/// Resumo especifico quando a **forma da saida** e reconhecida (#938).
+///
+/// A classificacao olha o formato do texto, e nao o comando que o gerou. E de
+/// proposito: a mesma contagem de teste sai de `cargo test`, de `cargo
+/// nextest` e de um `make test` que embrulhe qualquer um dos dois, e o
+/// comando nem chega ate aqui. A forma e o sinal honesto.
+///
+/// Devolve `None` quando nada e reconhecido — e o chamador segue no generico.
+fn resumo_por_classe(linhas: &[&str], success: bool) -> Option<String> {
+    if let Some(r) = resumo_de_teste(linhas) {
+        return Some(r);
+    }
+    if let Some(r) = resumo_de_compilacao(linhas, success) {
+        return Some(r);
+    }
+    resumo_de_diffstat(linhas)
+}
+
+/// `test result: ok. 148 passed; 0 failed; ...`
+///
+/// Soma os binarios: um `cargo test --workspace` emite uma linha dessas por
+/// alvo, e "148 passed" espalhado em 54 linhas nao e resposta.
+fn resumo_de_teste(linhas: &[&str]) -> Option<String> {
+    let mut passou = 0usize;
+    let mut falhou = 0usize;
+    let mut ignorou = 0usize;
+    // Achar a **linha** nao basta: e preciso ter lido ao menos um numero dela.
+    // Sem isso, um texto que so contenha "test result: ok" viraria "0 passou",
+    // que afirma que nenhum teste passou quando o que houve foi nao conseguir
+    // parsear. Uma corrida legitima de zero testes ("0 passed; 0 failed") le
+    // os numeros normalmente e continua funcionando.
+    let mut leu_numero = false;
+
+    for l in linhas {
+        let Some(resto) = l.trim_start().strip_prefix("test result:") else {
+            continue;
+        };
+        for (palavra, alvo) in [
+            ("passed", &mut passou),
+            ("failed", &mut falhou),
+            ("ignored", &mut ignorou),
+        ] {
+            if let Some(n) = contagem_antes_de(resto, palavra) {
+                *alvo += n;
+                leu_numero = true;
+            }
+        }
+    }
+
+    if !leu_numero {
+        return None;
+    }
+
+    // A falha vem primeiro quando existe: e a informacao que muda o que a
+    // pessoa faz em seguida.
+    let mut partes = Vec::new();
+    if falhou > 0 {
+        partes.push(format!("{falhou} falhou"));
+    }
+    partes.push(format!("{passou} passou"));
+    if ignorou > 0 {
+        partes.push(format!("{ignorou} ignorado"));
+    }
+    Some(partes.join(", "))
+}
+
+/// O numero imediatamente antes de uma palavra, em `"... 148 passed; ..."`.
+fn contagem_antes_de(texto: &str, palavra: &str) -> Option<usize> {
+    let tokens: Vec<&str> = texto.split_whitespace().collect();
+    let i = tokens
+        .iter()
+        .position(|t| t.trim_end_matches(';') == palavra)?;
+    tokens.get(i.checked_sub(1)?)?.parse().ok()
+}
+
+/// Saida de compilador: conta erro e aviso, e em falha mostra o primeiro erro.
+fn resumo_de_compilacao(linhas: &[&str], success: bool) -> Option<String> {
+    let erros = linhas.iter().filter(|l| eh_linha_de_erro(l)).count();
+    let avisos = linhas
+        .iter()
+        .filter(|l| l.trim_start().starts_with("warning:"))
+        .count();
+
+    if erros == 0 && avisos == 0 {
+        return None;
+    }
+
+    if !success && erros > 0 {
+        // O primeiro erro **e** o resumo: e a "concise relevant excerpt" que a
+        // #938 pede, e vale muito mais que "1 erro".
+        let primeiro = linhas.iter().find(|l| eh_linha_de_erro(l))?;
+        let texto = primeiro.trim();
+        return Some(if erros > 1 {
+            format!("{texto} (+{} erro(s))", erros - 1)
+        } else {
+            texto.to_string()
+        });
+    }
+
+    let mut partes = Vec::new();
+    if erros > 0 {
+        partes.push(format!("{erros} erro(s)"));
+    }
+    if avisos > 0 {
+        partes.push(format!("{avisos} aviso(s)"));
+    }
+    Some(partes.join(", "))
+}
+
+/// `error: msg` ou `error[E0382]: msg`, ancorado no inicio da linha.
+///
+/// A linha-resumo do cargo (`error: could not compile ... due to N previous
+/// errors`) fica de fora: conta-la dobraria o numero de erros de todo build
+/// que falha.
+fn eh_linha_de_erro(linha: &str) -> bool {
+    let l = linha.trim_start();
+    if !l.starts_with("error") {
+        return false;
+    }
+    // As duas frases de fecho, porque cargo e rustc escrevem diferente. Contar
+    // qualquer uma somaria um erro inexistente a todo build que falha.
+    //
+    // Eu so tinha excluido a do cargo. Foi rodar o resumo contra a saida real
+    // de um `rustc` que o erro apareceu: um unico `E0382` virava "(+1
+    // erro(s))". Saida sintetica nao teria pego — eu a escrevia com a frase
+    // que ja conhecia.
+    if l.starts_with("error: could not compile") || l.starts_with("error: aborting due to") {
+        return false;
+    }
+    l.starts_with("error:") || l.starts_with("error[")
+}
+
+/// `3 files changed, 42 insertions(+), 7 deletions(-)` — git diff/commit.
+fn resumo_de_diffstat(linhas: &[&str]) -> Option<String> {
+    let l = linhas
+        .iter()
+        .rev()
+        .find(|l| l.contains("file changed") || l.contains("files changed"))?;
+    Some(l.trim().to_string())
 }
 
 fn campo(input: &serde_json::Value, chave: &str) -> Option<String> {
@@ -464,8 +645,24 @@ mod tests {
     /// para que o caso normal fique limpo em vez de virar `\u{fffd}[32m`.
     #[test]
     fn saida_colorida_fica_legivel() {
-        let saida = summarize_tool_output("\u{1b}[32mtest result: ok\u{1b}[0m", true);
+        let saida = summarize_tool_output("\u{1b}[32mtudo certo por aqui\u{1b}[0m", true);
+        assert_eq!(saida, "tudo certo por aqui");
+    }
+
+    /// Uma linha de resultado sem numero legivel nao pode virar "0 passou" —
+    /// isso afirmaria que nenhum teste passou, quando o que houve foi nao
+    /// conseguir parsear. Cai no generico.
+    #[test]
+    fn resultado_de_teste_sem_numero_nao_inventa_zero() {
+        let saida = summarize_tool_output("test result: ok", true);
         assert_eq!(saida, "test result: ok");
+    }
+
+    /// Mas uma corrida legitima de zero testes le os numeros e reporta certo.
+    #[test]
+    fn zero_testes_de_verdade_e_reportado_como_zero() {
+        let saida = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0s";
+        assert_eq!(summarize_tool_output(saida, true), "0 passou");
     }
 
     /// Um controle que nao faz parte de sequencia reconhecivel vira marcador
@@ -624,6 +821,128 @@ mod tests {
     fn saida_pequena_nao_ganha_marcador() {
         let capturado = capture_tool_output("tudo certo");
         assert_eq!(capturado, "tudo certo");
+    }
+
+    /// O caso que a #938 usa de exemplo: `cargo test` cuja primeira linha
+    /// e "Compiling", que nao diz nada sobre o resultado.
+    #[test]
+    fn conta_os_testes_em_vez_de_mostrar_o_compiling() {
+        let saida = "   Compiling garraia-agents v0.3.9\n    Finished test profile\n     Running unittests\ntest result: ok. 148 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.30s";
+        assert_eq!(summarize_tool_output(saida, true), "148 passou");
+    }
+
+    /// `cargo test --workspace` emite uma linha por binario. "148 passou"
+    /// espalhado em 54 linhas nao e resposta — soma.
+    #[test]
+    fn soma_os_binarios_de_teste() {
+        let saida = "test result: ok. 100 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1s\n                     test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2s";
+        assert_eq!(summarize_tool_output(saida, true), "148 passou, 2 ignorado");
+    }
+
+    /// Falha vem primeiro: e o que muda o que a pessoa faz em seguida.
+    #[test]
+    fn falha_de_teste_aparece_antes_do_que_passou() {
+        let saida = "test result: FAILED. 145 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6s";
+        assert_eq!(summarize_tool_output(saida, false), "3 falhou, 145 passou");
+    }
+
+    /// Saida colorida e o caso comum num terminal. Se a classificacao rodasse
+    /// no texto cru, o escape antes de "test result:" faria o reconhecedor
+    /// falhar em silencio e cair no resumo generico.
+    #[test]
+    fn reconhece_mesmo_com_saida_colorida() {
+        let saida = "\u{1b}[32mtest result\u{1b}[0m: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1s";
+        assert_eq!(summarize_tool_output(saida, true), "12 passou");
+    }
+
+    /// O exemplo literal da issue: em falha de compilacao, o primeiro erro E o
+    /// resumo — vale muito mais que "1 erro".
+    #[test]
+    fn falha_de_compilacao_mostra_o_primeiro_erro() {
+        let saida = "   Compiling garraia v0.3.9\n                     error[E0382]: borrow of moved value `config`\n                     error: could not compile `garraia` (lib) due to 1 previous error";
+        assert_eq!(
+            summarize_tool_output(saida, false),
+            "error[E0382]: borrow of moved value `config`"
+        );
+    }
+
+    /// Mais de um erro: mostra o primeiro e diz quantos faltam.
+    #[test]
+    fn varios_erros_mostram_o_primeiro_e_a_contagem() {
+        let saida = "error[E0382]: primeiro\nerror[E0433]: segundo\nerror[E0599]: terceiro";
+        assert_eq!(
+            summarize_tool_output(saida, false),
+            "error[E0382]: primeiro (+2 erro(s))"
+        );
+    }
+
+    /// As linhas de fecho nao contam como erro — senao todo build que falha
+    /// teria um erro a mais do que tem.
+    ///
+    /// Sao duas frases porque cargo e rustc escrevem diferente. A do rustc so
+    /// apareceu ao rodar o resumo contra saida real: com saida sintetica eu
+    /// escrevia a frase que ja conhecia, e o teste passava sem cobrir o caso.
+    #[test]
+    fn as_linhas_de_fecho_nao_contam_como_erro() {
+        for fecho in [
+            "error: could not compile `x` (lib) due to 1 previous error",
+            "error: aborting due to 1 previous error",
+        ] {
+            let saida = format!("error[E0382]: unico\n{fecho}");
+            let resumo = summarize_tool_output(&saida, false);
+            assert_eq!(
+                resumo, "error[E0382]: unico",
+                "contou a linha de fecho {fecho:?}"
+            );
+        }
+    }
+
+    /// Nome de crate com "error" dentro nao vira erro.
+    #[test]
+    fn nome_de_crate_com_error_nao_vira_erro() {
+        let saida = "   Compiling error-chain v0.12.4\n    Finished dev profile";
+        let resumo = summarize_tool_output(saida, true);
+        assert!(
+            !resumo.contains("erro(s)"),
+            "confundiu nome de crate com erro: {resumo}"
+        );
+    }
+
+    #[test]
+    fn conta_avisos_quando_compila() {
+        let saida =
+            "warning: unused variable `x`\nwarning: unused import\n    Finished dev profile";
+        assert_eq!(summarize_tool_output(saida, true), "2 aviso(s)");
+    }
+
+    #[test]
+    fn reconhece_o_diffstat_do_git() {
+        let saida = " src/main.rs | 12 ++++--\n 3 files changed, 42 insertions(+), 7 deletions(-)";
+        assert_eq!(
+            summarize_tool_output(saida, true),
+            "3 files changed, 42 insertions(+), 7 deletions(-)"
+        );
+    }
+
+    /// Saida sem classe reconhecida segue no comportamento de antes — nao se
+    /// adivinha formato, pela mesma razao que nao se adivinha campo de input.
+    #[test]
+    fn formato_desconhecido_cai_no_generico() {
+        let saida = "alguma coisa\noutra coisa\nmais uma";
+        assert_eq!(
+            summarize_tool_output(saida, true),
+            "alguma coisa (+2 linha(s))"
+        );
+    }
+
+    /// Em falha, uma linha que parece erro ganha da primeira linha qualquer.
+    #[test]
+    fn falha_generica_procura_a_linha_de_erro() {
+        let saida = "iniciando processo\nlendo config\nfatal: not a git repository";
+        assert_eq!(
+            summarize_tool_output(saida, false),
+            "fatal: not a git repository"
+        );
     }
 
     #[test]
