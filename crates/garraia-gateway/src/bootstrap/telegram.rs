@@ -93,7 +93,7 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                     .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                     .await;
                 let history: Vec<ChatMessage> = state.session_history(&session_id);
-                let continuity_key = state.continuity_key(Some(&user_id));
+                let continuity_key = state.continuity_key();
 
                 // Send typing indicator
                 let _ = bot
@@ -301,7 +301,7 @@ pub fn build_telegram_channels(
                         .hydrate_session_history(&session_id, Some("telegram"), Some(&user_id))
                         .await;
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
-                    let continuity_key = state.continuity_key(Some(&user_id));
+                    let continuity_key = state.continuity_key();
 
                     let model_override = state
                         .channel_models

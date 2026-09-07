@@ -97,7 +97,7 @@ pub fn build_imessage_channels(
                         .await;
                     let history: Vec<garraia_agents::ChatMessage> =
                         state.session_history(&session_id);
-                    let continuity_key = state.continuity_key(Some(&sender_id));
+                    let continuity_key = state.continuity_key();
 
                     // O modo escolhido vale aqui tambem (#988). Antes este canal
                     // chamava o wrapper `_with_context`, que passa

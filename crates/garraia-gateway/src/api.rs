@@ -173,7 +173,7 @@ pub async fn send_message(
         .hydrate_session_history(&session_id, Some("api"), None)
         .await;
     let history = state.session_history(&session_id);
-    let continuity_key = state.continuity_key(None);
+    let continuity_key = state.continuity_key();
 
     // Resolve named agent config
     let config = state.current_config();

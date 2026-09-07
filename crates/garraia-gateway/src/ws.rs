@@ -377,7 +377,7 @@ async fn process_text_message(
         .hydrate_session_history(session_id, Some("web"), None)
         .await;
     let history: Vec<ChatMessage> = state.session_history(session_id);
-    let continuity_key = state.continuity_key(None);
+    let continuity_key = state.continuity_key();
 
     // Route through agent runtime (with optional provider override)
     let reply = match state
