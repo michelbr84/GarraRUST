@@ -7,6 +7,7 @@ mod cli_args;
 mod config_cmd;
 mod doctor;
 mod glob_cmd;
+mod logs_cmd;
 mod max_power;
 mod mcp_server;
 mod memory_cmd;
@@ -122,6 +123,24 @@ enum Commands {
 
     /// Show current status
     Status,
+
+    /// Show the GarraIA log (#943)
+    ///
+    /// Le o arquivo canonico direto: nao fala com o gateway e nao precisa que
+    /// ele esteja rodando — que e justamente quando o log importa.
+    Logs {
+        /// Follow new entries until interrupted (Ctrl+C)
+        #[arg(long, short = 'f')]
+        follow: bool,
+
+        /// How many lines from the end to show
+        #[arg(long, short = 'n', default_value_t = logs_cmd::LINHAS_PADRAO)]
+        lines: usize,
+
+        /// Print the log path and exit
+        #[arg(long)]
+        path: bool,
+    },
 
     /// Diagnose the installation (platform, dirs, config, providers, daemon)
     Doctor {
@@ -1334,6 +1353,58 @@ async fn async_main(
                 .with_telemetry_config(Some(telemetry_config));
             server.run().await?;
         }
+        Commands::Logs {
+            follow,
+            lines,
+            path,
+        } => {
+            // **Sem** `init_tracing` de proposito: subir o subscriber aqui
+            // abriria o proprio `garraia.log` para escrita so para le-lo, e
+            // um `garra logs --follow` ficaria se vendo no espelho.
+            let caminho = logs_cmd::caminho_do_log(&garraia_dir());
+            let mut out = std::io::stdout();
+            if path {
+                use std::io::Write as _;
+                writeln!(out, "{}", caminho.display())?;
+                return Ok(());
+            }
+            if follow {
+                // O Ctrl+C fecha o laco em vez de matar o processo: o
+                // criterio de aceite pede saida limpa. A flag e lida a cada
+                // volta pelo `parar`.
+                let parada = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let sinal = std::sync::Arc::clone(&parada);
+                tokio::spawn(async move {
+                    if tokio::signal::ctrl_c().await.is_ok() {
+                        sinal.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+                let visto = std::sync::Arc::clone(&parada);
+                // Bloqueante num executor async: vai para uma thread propria,
+                // senao o laco de poll prenderia a thread do runtime e o
+                // proprio handler do Ctrl+C nao rodaria.
+                tokio::task::spawn_blocking(move || {
+                    let mut out = std::io::stdout();
+                    logs_cmd::follow(&caminho, lines, &mut out, &|| {
+                        visto.load(std::sync::atomic::Ordering::SeqCst)
+                    })
+                })
+                .await??;
+                // 130 = terminado por SIGINT, a convencao do shell — e a mesma
+                // escolha que o `garra chat` ocioso ja faz. `tail -f` e
+                // `journalctl -f` tambem saem assim: seguir um arquivo termina
+                // por interrupcao, e quem chama por script conta com isso.
+                if parada.load(std::sync::atomic::Ordering::SeqCst) {
+                    use std::io::Write as _;
+                    let _ = std::io::stdout().flush();
+                    std::process::exit(130);
+                }
+            } else {
+                logs_cmd::tail(&caminho, lines, &mut out)?;
+            }
+            return Ok(());
+        }
+
         Commands::Status => {
             init_tracing(&effective_level);
 

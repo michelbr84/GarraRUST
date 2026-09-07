@@ -42,6 +42,7 @@ pub mod ansi_filter;
 pub mod conversation;
 pub mod error_card;
 pub mod markdown;
+pub mod panel;
 pub mod spinner;
 pub mod tool_log;
 
@@ -88,6 +89,24 @@ pub enum UiEvent<'a> {
         titulo: &'a str,
         detalhe: &'a str,
         acoes: &'a [String],
+    },
+
+    /// Uma superficie de status: titulo, regua e pares rotulo/valor (#940).
+    ///
+    /// Variante propria pelo mesmo motivo do [`UiEvent::ErrorCard`]: quem sabe
+    /// **o que** mostrar e o `chat.rs`, quem sabe **como desenhar** e daqui.
+    /// Era isto que faltava quando o `/context` escrevia
+    /// `println!("{DIM}Diretorio: …{RESET}")` — cor incondicional e largura
+    /// ignorada, a divida que a ADR 0017 registra.
+    Panel {
+        titulo: &'a str,
+        linhas: &'a [panel::Linha<'a>],
+    },
+
+    /// Uma lista sob a mesma moldura do painel (#940): `/help`, `/models`.
+    List {
+        titulo: &'a str,
+        itens: &'a [String],
     },
 
     /// Uma ferramenta comecou (#937). `detail` ja vem redigido e truncado do
@@ -301,6 +320,8 @@ impl TerminalRenderer {
                 detalhe,
                 acoes,
             } => self.write_error_card(titulo, detalhe, acoes, out),
+            UiEvent::Panel { titulo, linhas } => self.write_panel(titulo, linhas, out),
+            UiEvent::List { titulo, itens } => self.write_list(titulo, itens, out),
             UiEvent::ToolStarted { name, detail } => self.write_tool_started(name, detail, out),
             UiEvent::ToolFinished {
                 name,
@@ -550,6 +571,30 @@ impl TerminalRenderer {
                 let _ = writeln!(out, "    {dim}{a}{reset}");
             }
         }
+        let _ = out.flush();
+    }
+
+    /// Painel de status (#940). A linha em branco antes separa da conversa.
+    fn write_panel(
+        &mut self,
+        titulo: &str,
+        linhas: &[panel::Linha<'_>],
+        out: &mut (impl io::Write + ?Sized),
+    ) {
+        if let Some(s) = self.spinner.as_mut() {
+            s.clear(out);
+        }
+        let texto = panel::render(titulo, linhas, self.caps.style(), self.caps.width);
+        let _ = write!(out, "\n{texto}");
+        let _ = out.flush();
+    }
+
+    fn write_list(&mut self, titulo: &str, itens: &[String], out: &mut (impl io::Write + ?Sized)) {
+        if let Some(s) = self.spinner.as_mut() {
+            s.clear(out);
+        }
+        let texto = panel::render_list(titulo, itens, self.caps.style(), self.caps.width);
+        let _ = write!(out, "\n{texto}");
         let _ = out.flush();
     }
 
@@ -824,6 +869,77 @@ mod tests {
             saida.lines().count() > 1,
             "com 24 colunas isto tinha de quebrar: {saida:?}"
         );
+    }
+
+    /// O painel atravessa o renderizador e respeita as `Capabilities` (#940).
+    ///
+    /// O `panel.rs` prova que a funcao desenha certo; isto prova que a largura
+    /// e a cor **chegam** nela. Sao coisas diferentes, e ja passou nesta serie
+    /// de um teste verde com a funcionalidade desligada.
+    #[test]
+    fn o_painel_atravessa_o_renderizador_com_as_capabilities() {
+        let linhas = vec![panel::linha(
+            "Projeto",
+            "Rust Cargo Docker Compose Kubernetes Terraform",
+        )];
+
+        let estreito = Capabilities {
+            interactive: true,
+            unicode: true,
+            animation: false,
+            width: 30,
+        };
+        let mut r = TerminalRenderer::with_prefix(estreito, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        r.handle(
+            UiEvent::Panel {
+                titulo: "Contexto",
+                linhas: &linhas,
+            },
+            &mut out,
+        );
+        let rico = String::from_utf8(out).expect("UTF-8");
+        assert!(rico.contains('\x1b'), "num terminal rico ha cor: {rico:?}");
+        assert!(
+            rico.lines()
+                .filter(|l| l.contains("Cargo") || l.contains("Terraform"))
+                .count()
+                >= 2,
+            "com 30 colunas o valor quebra: {rico:?}"
+        );
+
+        let mut r = TerminalRenderer::with_prefix(Capabilities::PLAIN, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        r.handle(
+            UiEvent::Panel {
+                titulo: "Contexto",
+                linhas: &linhas,
+            },
+            &mut out,
+        );
+        let plano = String::from_utf8(out).expect("UTF-8");
+        assert!(
+            !plano.contains('\x1b'),
+            "redirecionado nao ganha escape: {plano:?}"
+        );
+    }
+
+    /// A lista tambem, e pelo mesmo motivo.
+    #[test]
+    fn a_lista_atravessa_o_renderizador() {
+        let itens = vec!["  /help   mostra isto".to_string()];
+        let mut r = TerminalRenderer::with_prefix(Capabilities::PLAIN, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        r.handle(
+            UiEvent::List {
+                titulo: "Comandos",
+                itens: &itens,
+            },
+            &mut out,
+        );
+        let s = String::from_utf8(out).expect("UTF-8");
+        assert!(!s.contains('\x1b'), "sem escape: {s:?}");
+        assert!(s.contains("/help   mostra isto"));
     }
 
     /// Um turno novo volta a dever o rotulo — senao a segunda resposta da

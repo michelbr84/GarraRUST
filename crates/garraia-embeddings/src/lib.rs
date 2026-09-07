@@ -54,6 +54,14 @@
 //!
 //! [adr-0002]: https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0002-vector-store.md
 
+#![deprecated(
+    since = "0.3.9",
+    note = "Crate orfao: nada no workspace depende dele, e o que ele descreve \
+            (pgvector, 768 dimensoes fixas) nao e o que roda. O caminho vivo e \
+            `garraia_agents::embeddings` + `garraia_db::vector_store`. Ver ADR \
+            0018 (#949) — a remocao aguarda decisao do dono. Se voce chegou aqui \
+            por um `use`, e quase certo que queria o outro."
+)]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
