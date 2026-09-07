@@ -130,7 +130,7 @@ pub fn build_slack_channels(
                         .hydrate_session_history(&session_id, Some("slack"), Some(&user_id))
                         .await;
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
-                    let continuity_key = state.continuity_key(Some(&user_id));
+                    let continuity_key = state.continuity_key();
 
                     // O modo escolhido vale aqui tambem (#988). Antes este canal
                     // chamava o wrapper `_with_context`, que passa

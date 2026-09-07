@@ -22,7 +22,7 @@ use garraia_agents::{ChatMessage, ChatRole, MessagePart};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::state::SharedState;
@@ -472,7 +472,7 @@ pub async fn chat_completions(
 
     // Get continuity key based on user_id
     let continuity_key = state
-        .continuity_key(user_id.as_deref())
+        .continuity_key()
         .unwrap_or_else(|| "default".to_string());
 
     let response = if is_streaming {
@@ -884,63 +884,90 @@ fn token_fingerprint(token: &str) -> String {
     hex::encode(&digest[..6])
 }
 
-/// Mapeia um bearer que não é `garra-local` para o `user_id`.
+/// Registra que um bearer chegou, **sem** deixá-lo virar identidade (#1012).
 ///
 /// Separado de [`resolve_user_id`] porque não depende de `SharedState` — é o
 /// que torna o path testável sem subir o gateway inteiro, e é onde vive o
 /// invariante "o token não sai no log" (ver `token_fingerprint`).
-fn resolve_token_user_id(token: &str) -> Option<String> {
+///
+/// Antes da #1012 esta função devolvia o próprio token como `user_id`, com o
+/// comentário *"For other tokens, use the token itself as user_id — this
+/// allows custom API keys to identify users"*. Ela nunca identificou ninguém:
+/// a rota não verifica o token contra nada, então "o token identifica o
+/// usuário" equivalia a "o chamador escolhe o próprio nome". Hoje ela só
+/// deixa rastro para quem estiver se perguntando por que a chave dele não faz
+/// nada.
+fn note_ignored_bearer(token: &str) {
     if token.is_empty() {
-        return None;
+        return;
     }
-    // NUNCA logar `token`: ele é a credencial, e neste path também é o
-    // user_id. Só o fingerprint sai no log.
+    // NUNCA logar `token`: ele é credencial de alguém, mesmo que este
+    // caminho não a verifique. Só o fingerprint sai no log.
     info!(
         token_fp = %token_fingerprint(token),
-        "Resolved user_id from API token"
+        "bearer presented to /v1/chat/completions was ignored: this route is \
+         auth-free by design and does not derive identity from the caller"
     );
-    Some(token.to_string())
 }
 
-/// Resolve user identity from Authorization header.
-/// Maps API key to user_id for authenticated access.
+/// Resolve a identidade a ser **gravada** para uma chamada de
+/// `/v1/chat/completions`.
+///
+/// Esta rota é auth-free por desenho, como todo o `/api/*`
+/// (`docs/security/threat-model.md` §5.7 e §5.9). Auth-free significa "não
+/// exige credencial" — **não** "aceita a identidade que o chamador afirmar".
+///
+/// Antes da #1012 ela aceitava as duas coisas que o chamador escreve: um
+/// bearer qualquer virava o `user_id`, e na ausência dele o header
+/// `X-User-Id` era usado cru. O impacto medido era atribuição falsa, e não
+/// leitura cruzada — a carga de histórico é chaveada por `session_id`, não
+/// por `user_id` —, mas é a mesma forma do buraco que a #1010 fechou de
+/// propósito **antes** de ligar execução nele. Um header que não decide nada
+/// não pode ser forjado.
+///
+/// A identidade é a do dono da instalação local, ou `None`. `None` é a
+/// resposta honesta para uma instalação que ainda não sabe de quem é;
+/// preenchê-la com o que veio no header seria inventar um dono.
 fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
-    // Try Authorization header first
+    // O `garra-local` continua sendo a convenção do cliente local. Ele não
+    // muda a resposta — o dono é o dono com ou sem ele —, mas distinguir os
+    // dois casos no log é o que diz a quem depurar se o cliente está mandando
+    // o que acha que manda.
     if let Some(auth_header) = headers.get("authorization")
         && let Ok(auth_str) = auth_header.to_str()
+        && let Some(token) = auth_str.strip_prefix("Bearer ")
     {
-        // Handle "Bearer <token>" format
-        if let Some(token) = auth_str.strip_prefix("Bearer ") {
-            let token = token.trim();
-
-            // Check if it's a valid API key from the config
-            // The token "garra-local" maps to the local owner
-            if token == "garra-local" {
-                // Get the owner from allowlist
-                if let Ok(list) = state.allowlist.lock()
-                    && let Some(owner) = list.owner()
-                {
-                    info!("Resolved user_id={} from 'garra-local' token", owner);
-                    return Some(owner.to_string());
-                }
-            }
-
-            // For other tokens, use the token itself as user_id
-            // This allows custom API keys to identify users
-            if let Some(user_id) = resolve_token_user_id(token) {
-                return Some(user_id);
-            }
+        let token = token.trim();
+        if token != "garra-local" {
+            note_ignored_bearer(token);
         }
     }
 
-    // Try X-User-Id header
-    if let Some(user_id_header) = headers.get("x-user-id")
-        && let Ok(user_id) = user_id_header.to_str()
-    {
-        return Some(user_id.to_string());
-    }
+    // O `X-User-Id` é deliberadamente **não lido**. Ver o doc-comment acima:
+    // é o header que a #1012 nomeia, e a correção é que ele deixe de decidir.
 
-    None
+    let owner = state
+        .allowlist
+        .lock()
+        .ok()
+        .and_then(|list| list.owner().map(str::to_string));
+
+    // O **valor** do dono nunca sai no log, e essa e a diferenca em relacao ao
+    // codigo anterior. Ele so logava o dono quando um `garra-local` era
+    // apresentado; esta funcao resolve o dono em **toda** requisicao, entao
+    // logar o valor aqui o repetiria a cada chamada. E o que vira dono nem
+    // sempre e um id opaco: no WhatsApp e o proprio numero de telefone
+    // (`bootstrap/whatsapp.rs:88`, `claim_owner(&from_number)`), no iMessage o
+    // numero ou o Apple ID (`bootstrap/imessage.rs:59`). Regra absoluta 6.
+    //
+    // O que quem depura precisa saber e se a requisicao foi atribuida a alguem
+    // ou a ninguem — um booleano. O valor esta no `allowlist.json`, que a
+    // mesma pessoa pode abrir.
+    match &owner {
+        Some(_) => debug!("user_id resolvido pelo dono da allowlist local (valor omitido)"),
+        None => info!("nenhum dono reivindicado ainda; requisicao gravada sem user_id"),
+    }
+    owner
 }
 
 /// GET /v1/models - List available models
@@ -998,12 +1025,12 @@ mod tests {
     fn api_token_never_reaches_the_log() {
         const SECRET: &str = "garra-tok-9f3c1d7ab24e0058";
 
-        let resolved = resolve_token_user_id(SECRET);
+        // Desde a #1012 o token nao vira mais `user_id` — mas ele continua
+        // chegando pela rede e continua sendo credencial de alguem, entao o
+        // invariante do log e o mesmo e este guard segue valendo.
+        note_ignored_bearer(SECRET);
 
-        // O token continua sendo o user_id — o comportamento não mudou.
-        assert_eq!(resolved.as_deref(), Some(SECRET));
-
-        // …mas ele não pode aparecer no log.
+        // Ele não pode aparecer no log.
         assert!(
             !logs_contain(SECRET),
             "bearer token vazou para o tracing — `resolve_token_user_id` deve \
@@ -1039,6 +1066,159 @@ mod tests {
         );
     }
 
+    // ── #1012: identidade em `/v1/chat/completions` ──────────────────────
+    //
+    // A rota e auth-free por desenho, como todo o `/api/*`
+    // (docs/security/threat-model.md §5.7 e §5.9). Auth-free significa "nao
+    // exige credencial", e nao "aceita qualquer identidade que o chamador
+    // afirme": um header forjavel que **decide** o `user_id` gravado e pior
+    // que nenhum, porque parece identidade sem ser.
+
+    /// Um `AppState` cuja allowlist **nao toca o disco**.
+    ///
+    /// `AppState::new` carrega a allowlist de
+    /// `ConfigLoader::default_config_dir()/allowlist.json`, e `claim_owner`
+    /// chama `save()`. A primeira versao deste helper usava a allowlist que
+    /// vinha de la: o teste do dono gravou `dono-real` no arquivo real da
+    /// maquina, e o teste seguinte — o que exige uma instalacao *sem* dono —
+    /// leu esse dono de volta e falhou. Um teste que grava no estado real do
+    /// operador esta errado mesmo quando passa.
+    ///
+    /// `Allowlist::restricted` nasce com `path: None`, e `save()` sai cedo
+    /// quando nao ha path. Nada e escrito.
+    fn state_de_teste_com_dono(dono: Option<&str>) -> SharedState {
+        use crate::state::AppState;
+        use garraia_config::AppConfig;
+        use garraia_security::Allowlist;
+
+        let state = AppState::new(
+            AppConfig::default(),
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+        );
+
+        let mut lista = Allowlist::restricted(Vec::new());
+        if let Some(d) = dono {
+            lista.claim_owner(d);
+        }
+        *state
+            .allowlist
+            .lock()
+            .expect("allowlist envenenada no teste") = lista;
+
+        std::sync::Arc::new(state)
+    }
+
+    fn headers(pares: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pares {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).expect("header invalido"),
+                v.parse().expect("valor de header invalido"),
+            );
+        }
+        h
+    }
+
+    /// O caso que a issue nomeia: `X-User-Id` cru, sem `Authorization`.
+    ///
+    /// Antes deste conserto o header virava o `user_id` sem nenhuma
+    /// verificacao, e ia parar em `session.user_id` e na coluna `user` do
+    /// upsert da sessao. O impacto era atribuicao falsa, nao leitura cruzada
+    /// — mas e o mesmo formato do buraco que o #1010 fechou de proposito
+    /// antes de ligar execucao nele.
+    #[test]
+    fn x_user_id_forjado_nao_vira_identidade() {
+        let state = state_de_teste_com_dono(Some("dono-real"));
+        let h = headers(&[("x-user-id", "vitima")]);
+
+        let resolvido = resolve_user_id(&h, &state);
+
+        assert_ne!(
+            resolvido.as_deref(),
+            Some("vitima"),
+            "o `X-User-Id` do chamador nao pode decidir a identidade gravada"
+        );
+        assert_eq!(
+            resolvido.as_deref(),
+            Some("dono-real"),
+            "sem credencial, a identidade e a do dono da instalacao local"
+        );
+    }
+
+    /// Sem dono definido, o header forjado tambem nao pode preencher o vazio.
+    ///
+    /// `None` e a resposta honesta: a instalacao ainda nao sabe de quem e.
+    #[test]
+    fn x_user_id_forjado_nao_preenche_instalacao_sem_dono() {
+        let state = state_de_teste_com_dono(None);
+        let h = headers(&[("x-user-id", "vitima")]);
+
+        assert_eq!(resolve_user_id(&h, &state), None);
+    }
+
+    /// Um bearer arbitrario tambem nao e identidade.
+    ///
+    /// O comportamento antigo (`"For other tokens, use the token itself as
+    /// user_id"`) nunca distinguiu ninguem de verdade: qualquer um podia
+    /// mandar qualquer token. Era um nome escolhido pelo chamador.
+    #[test]
+    fn bearer_arbitrario_nao_vira_identidade() {
+        let state = state_de_teste_com_dono(Some("dono-real"));
+        let h = headers(&[("authorization", "Bearer sou-quem-eu-quiser")]);
+
+        let resolvido = resolve_user_id(&h, &state);
+
+        assert_ne!(
+            resolvido.as_deref(),
+            Some("sou-quem-eu-quiser"),
+            "o token do chamador nao pode virar o `user_id`"
+        );
+        assert_eq!(resolvido.as_deref(), Some("dono-real"));
+    }
+
+    /// O **valor** do dono nao pode aparecer no log.
+    ///
+    /// Achado ALTO da auditoria do #1012, e uma regressao que a *primeira*
+    /// versao desta correcao introduziu: o codigo antigo so logava o dono
+    /// quando um `garra-local` era apresentado; a correcao passou a resolver o
+    /// dono em toda requisicao e logava o valor junto — mais vezes, portanto,
+    /// que o codigo vulneravel que ela substituia.
+    ///
+    /// E o dono nem sempre e um id opaco: no WhatsApp e o proprio numero de
+    /// telefone (`bootstrap/whatsapp.rs:88` chama `claim_owner(&from_number)`),
+    /// no iMessage e o numero ou o Apple ID. Regra absoluta 6.
+    #[tracing_test::traced_test]
+    #[test]
+    fn o_valor_do_dono_nao_vai_para_o_log() {
+        const DONO: &str = "+15551234567";
+        let state = state_de_teste_com_dono(Some(DONO));
+
+        let resolvido = resolve_user_id(&headers(&[]), &state);
+
+        // O dono continua sendo resolvido — a correcao e sobre o log, nao
+        // sobre a resolucao.
+        assert_eq!(resolvido.as_deref(), Some(DONO));
+
+        assert!(
+            !logs_contain(DONO),
+            "o valor do dono vazou para o log — no WhatsApp isso e um numero \
+             de telefone, repetido a cada requisicao"
+        );
+    }
+
+    /// E o caminho que precisa continuar funcionando: `garra-local`.
+    ///
+    /// Criterio de aceitacao explicito da #1012 — "nenhuma regressao nos
+    /// caminhos `garra-local` e allowlist".
+    #[test]
+    fn garra_local_continua_resolvendo_o_dono() {
+        let state = state_de_teste_com_dono(Some("dono-real"));
+        let h = headers(&[("authorization", "Bearer garra-local")]);
+
+        assert_eq!(resolve_user_id(&h, &state).as_deref(), Some("dono-real"));
+    }
+
     /// E um typo comum continua legivel, que e a razao de o campo existir.
     #[test]
     fn rotulo_de_modo_preserva_typo_curto() {
@@ -1062,9 +1242,20 @@ mod tests {
         assert_ne!(fp, token_fingerprint("garra-tok-9f3c1d7ab24e0059"));
     }
 
+    /// `Authorization: Bearer ` sem nada depois nao gera linha de log.
+    ///
+    /// Antes da #1012 o guard aqui era "token vazio nao vira user_id". Agora
+    /// nenhum token vira user_id, e o que sobra a proteger e o ruido: um
+    /// cliente mal configurado mandando bearer vazio em toda requisicao
+    /// encheria o log com o fingerprint da string vazia — o mesmo em todas.
+    #[tracing_test::traced_test]
     #[test]
-    fn empty_token_resolves_to_none() {
-        assert_eq!(resolve_token_user_id(""), None);
+    fn bearer_vazio_nao_gera_linha_de_log() {
+        note_ignored_bearer("");
+        assert!(
+            !logs_contain("was ignored"),
+            "bearer vazio nao deveria produzir log"
+        );
     }
 
     #[test]

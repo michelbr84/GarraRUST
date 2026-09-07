@@ -1169,9 +1169,7 @@ async fn execute_scheduled_task(
         .await;
 
     let history = state.session_history(&task.session_id);
-    let continuity_key = state
-        .continuity_key(Some(task.user_id.as_str()))
-        .map(|k| k.as_str().to_string());
+    let continuity_key = state.continuity_key().map(|k| k.as_str().to_string());
 
     let response_text = state
         .agents
