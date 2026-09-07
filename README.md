@@ -1,10 +1,6 @@
 <!-- markdownlint-disable MD033 MD041 MD060 -->
 
-<p align="right"><strong>🇺🇸 English</strong> · <a href="README.pt-BR.md">🇧🇷 Português</a></p>
-
-<p align="center">
-  <img src="assets/logo.png" alt="GarraIA" width="280" />
-</p>
+<p align="right"><strong>🇺🇸 English</strong> · <a href="README.pt-BR.md">🇧🇷 Português</a></p
 
 <h1 align="center">GarraIA</h1>
 
