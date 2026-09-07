@@ -126,11 +126,20 @@ git checkout -b docs/pagina-atualizar  # documentação
 Execute todos os checks antes de abrir o PR:
 
 ```bash
-cargo fmt --all                           # formatar
-cargo clippy --workspace -- -D warnings   # linting
-cargo test --workspace                    # testes
-cargo deny check                          # dependências
+cargo fmt --all                                                            # formatar
+cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings   # linting
+cargo test --workspace --exclude garraia-desktop                           # testes
+cargo deny check                                                           # dependências
 ```
+
+**O `--exclude garraia-desktop` não é opcional.** O `build.rs` dele precisa
+das bibliotecas de sistema GTK/glib e de um sidecar do Windows que uma
+máquina limpa não tem, então um `--workspace` puro falha em algo que não é a
+sua mudança. O CI exclui pelo mesmo motivo; o desktop é construído à parte
+por `scripts/build-installer.ps1`.
+
+O pacote da CLI chama-se `garraia` (binário `garra`), não `garraia-cli` —
+`cargo test -p garraia-cli` falha com "did not match any packages".
 
 ### 4. Fazer commits
 
@@ -149,7 +158,31 @@ git commit -m "chore(deps): atualiza axum para 0.8.4"
 
 Limite de 72 caracteres no assunto. Use o imperativo: "adiciona" (não "adicionada").
 
-### 5. Abrir o Pull Request
+### 5. Deixar um fragmento de changelog
+
+**Não edite o `CHANGELOG.md` direto.** Cada PR deixa um arquivo em
+`changelog.d/<seção>/<numero>-<slug>.md`:
+
+```bash
+cat > changelog.d/added/1234-minha-feature.md <<'EOF'
+- **Titulo curto do que mudou (#1234).** O paragrafo explica o que a pessoa
+  que usa vai notar, e por que a mudanca e assim e nao de outro jeito.
+EOF
+
+python3 scripts/changelog/assemble.py --check    # valida os fragmentos
+```
+
+Seções válidas: `added`, `changed`, `deprecated`, `removed`, `fixed`,
+`security` (Keep a Changelog 1.1.0).
+
+A razão é concreta: arquivos diferentes nunca conflitam, e era a colisão na
+seção `[Unreleased]` que fazia **todo par de PRs paralelos** precisar de um
+merge de resolução. Juntar os fragmentos no `CHANGELOG.md` é passo de
+release (`--write`, ver `docs/releasing.md`), não de PR.
+
+Detalhe em [`changelog.d/README.md`](changelog.d/README.md).
+
+### 6. Abrir o Pull Request
 
 ```bash
 git push origin feat/nome-da-feature
