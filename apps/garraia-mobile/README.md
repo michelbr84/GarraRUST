@@ -81,4 +81,4 @@ lib/
 - Endpoint novo entra em `GarraConnection` (interface) **e** em `GatewayConnection`;
   o Cloud herda o que não sobrescreve.
 - Feature nova de tile: constante em `GarraFeature` **e** no `feature_flags` do gateway
-  (`crates/garraia-gateway/src/health.rs`) — o teste Rust trava o contrato.
+  (`crates/garraia-gateway/src/capabilities.rs`) — o teste Rust trava o contrato.

@@ -63,7 +63,7 @@ depende (`GarraFeature` em `lib/runtime/models.dart`):
 | Agents | `modes` | `/api/modes`, `/api/mcp` |
 | Automations | `automations` | **nenhum** — o gateway não expõe scheduling; o tile mostra *Unavailable* |
 
-O lado Rust é `crates/garraia-gateway/src/health.rs::feature_flags` (com
+O lado Rust é `crates/garraia-gateway/src/capabilities.rs::feature_flags` (com
 teste que trava o contrato). Adicionar feature é seguro; renomear ou remover
 quebra o app.
 

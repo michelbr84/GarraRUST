@@ -196,7 +196,7 @@ pub fn build_router(
         .route("/api/health", get(crate::health::health_handler))
         .route(
             "/api/capabilities",
-            get(crate::health::capabilities_handler),
+            get(crate::capabilities::capabilities_handler),
         )
         .route("/ws", get(ws::ws_handler))
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))

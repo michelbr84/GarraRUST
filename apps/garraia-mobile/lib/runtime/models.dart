@@ -43,7 +43,7 @@ class GarraHealth {
   );
 }
 
-/// `GET /api/capabilities` — `health.rs::CapabilitiesResponse`.
+/// `GET /api/capabilities` — `capabilities.rs::CapabilitiesResponse`.
 ///
 /// [features] is the negotiation surface: a tile whose feature is absent
 /// renders as unavailable (see `FeatureTile`).

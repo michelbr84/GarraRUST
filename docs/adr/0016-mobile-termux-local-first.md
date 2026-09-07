@@ -273,7 +273,7 @@ O que a v0.4.0 entrega, e o que ela deliberadamente não entrega:
 - **Negociação de capabilities:** a home lê `GET /api/capabilities` e um tile
   cuja feature não é anunciada renderiza *Unavailable* em vez de tela morta.
   O gateway passou a anunciar `memory`, `learning-skills`, `projects` e
-  `modes` (`health.rs::feature_flags`, aditivo); `automations` fica ausente
+  `modes` (`capabilities.rs::feature_flags`, aditivo); `automations` fica ausente
   de propósito porque não existe API de scheduling.
 - **Onboarding sem login** nos modos local/LAN; o gate do router passou de
   "tem JWT?" para "tem runtime configurado?".

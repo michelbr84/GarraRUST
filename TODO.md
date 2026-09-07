@@ -22,7 +22,7 @@ amendment da ADR 0016. Detalhe em `docs/mobile/architecture.md`.
 | Item | Estado |
 | --- | --- |
 | Home Garra Neon + `RuntimeConnection` (local/LAN/cloud) + onboarding sem login + telas dos tiles | **entregue** (`apps/garraia-mobile`, 15 testes, `flutter analyze` limpo, visual provado via `build web` + screenshot) |
-| `/api/capabilities` anuncia `memory`/`learning-skills`/`projects`/`modes` | **entregue** (`health.rs::feature_flags`, teste trava o contrato) |
+| `/api/capabilities` anuncia `memory`/`learning-skills`/`projects`/`modes` | **entregue** (`capabilities.rs::feature_flags`, teste trava o contrato) |
 | APK no CI (`mobile.yml`) e na release (`build-android-apk`, best-effort) | **entregue**; assinatura de release depende dos secrets `ANDROID_KEYSTORE_*` (**ação manual do dono**) |
 | Swagger UI pre-baixado em todo job que compila o gateway (composite action) | **entregue** — o E2E de `main` caiu por isso no dia do corte da v0.3.9 |
 | Ponte Kotlin `RUN_COMMAND`, pairing por token local, foreground service | **v0.5.x** (estratégia §Fase 1, fechamento) |

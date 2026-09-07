@@ -34,7 +34,7 @@ gateway, depois de o E2E cair em `main` no dia do corte da v0.3.9.
   `/api/modes`, `/api/mcp`, `/api/providers`, `/api/sessions`, `/api/logs`).
 - **Negociacao de capabilities entre app e gateway.** `GET /api/capabilities`
   passa a anunciar `memory`, `learning-skills`, `projects` e `modes`
-  (`health.rs::feature_flags`, aditivo, com teste que trava o contrato); a
+  (`capabilities.rs::feature_flags`, aditivo, com teste que trava o contrato); a
   home marca como *Unavailable* qualquer tile cuja feature o runtime nao
   anuncia. `automations` fica ausente de proposito — o gateway nao expoe API
   de scheduling, e o tile diz isso em vez de fingir.
