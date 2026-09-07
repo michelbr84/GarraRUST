@@ -42,6 +42,7 @@ const COMANDOS: &[(&str, &str)] = &[
     ("/tool", "Saidas de ferramenta guardadas nesta sessao"),
     ("/tool <n>", "A saida inteira de uma chamada"),
     ("/history", "Historico da conversa"),
+    ("/logs", "Onde fica o log, e como segui-lo"),
     ("/models", "Modelos que este provider lista"),
     ("/model <nome>", "Trocar de modelo sem reiniciar"),
     (
@@ -1214,6 +1215,38 @@ pub async fn run_chat(
             // Quais ferramentas o agente **tem** — diferente do `/tool`, que
             // mostra o que elas **produziram**. Ate aqui `/tools` era apelido
             // de `/tool`, e nao havia como perguntar a primeira coisa.
+            // O `/logs` **nao** despeja o log na conversa: ele diz onde ele
+            // esta e qual comando o le. Misturar centenas de linhas de log com
+            // a conversa e o oposto do que a Fase 2 deste epico foi fazer, e
+            // seguir o arquivo em tempo real disputaria a mesma tela com o
+            // streaming da resposta. O criterio de aceite pede "expose the log
+            // location/workflow", e e isso.
+            "/logs" | "/log" => {
+                let caminho = crate::logs_cmd::caminho_do_log(&crate::garraia_dir());
+                let existe = caminho.exists();
+                let linhas = vec![
+                    panel::linha("Arquivo", caminho.display().to_string()),
+                    panel::linha(
+                        "Estado",
+                        if existe {
+                            "existe"
+                        } else {
+                            "ainda nao foi criado"
+                        },
+                    ),
+                    panel::linha("Ver o fim", "garra logs"),
+                    panel::linha("Acompanhar", "garra logs --follow"),
+                    panel::linha("Mais detalhe", "RUST_LOG=debug garra start"),
+                ];
+                renderer.handle(
+                    UiEvent::Panel {
+                        titulo: "Log",
+                        linhas: &linhas,
+                    },
+                    &mut io::stdout(),
+                );
+                continue;
+            }
             "/tools" | "/ferramentas" => {
                 let ferramentas = runtime.list_tool_info();
                 if ferramentas.is_empty() {
@@ -1632,6 +1665,7 @@ mod tests {
         "/historico",
         "/saida",
         "/ferramentas",
+        "/log",
     ];
 
     /// O `/help` nao pode divergir do `match` — e ele ja tinha divergido.
