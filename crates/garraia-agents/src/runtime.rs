@@ -2008,7 +2008,27 @@ impl AgentRuntime {
                 }
                 Err(_) => {
                     // Streaming not supported — fall back to non-streaming with retry/fallback
-                    let response = self.complete_with_fallback(&provider, &request).await?;
+                    //
+                    // #984/#940: aqui ha uma `LlmResponse` de verdade, entao o
+                    // turno pode ser anotado **melhor** que no caminho de
+                    // streaming: o modelo vem confirmado pelo provider e a
+                    // contagem de tokens existe. Ate aqui este ramo nao
+                    // anotava nada, e o `/stats` respondia "nenhum turno
+                    // ainda" depois de um turno inteiro — em todo provider
+                    // que nao faz streaming. Achado rodando o binario com o
+                    // `EchoProvider`, que cai exatamente aqui.
+                    let (response, provider_usado) = self
+                        .complete_reportando_provider(&provider, &request)
+                        .await?;
+                    turno.fallback = provider_usado != provider.provider_id();
+                    turno.provider = provider_usado;
+                    turno.model = response.model.clone();
+                    turno.model_confirmado = true;
+                    if let Some(u) = &response.usage {
+                        turno.tokens_conhecidos = true;
+                        turno.input_tokens = turno.input_tokens.saturating_add(u.input_tokens);
+                        turno.output_tokens = turno.output_tokens.saturating_add(u.output_tokens);
+                    }
 
                     let tool_calls_count = response
                         .content
@@ -2041,6 +2061,10 @@ impl AgentRuntime {
                         {
                             warn!("failed to store turn in memory: {}", e);
                         }
+
+                        turno.tool_calls = budget.chamadas_na_tarefa();
+                        turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                        self.record_turn_stats(session_id, turno);
 
                         return Ok(full_response);
                     }
@@ -2545,6 +2569,88 @@ impl Default for AgentRuntime {
 
 #[cfg(test)]
 mod tests {
+    /// Provider que so sabe responder de uma vez — o `stream_complete` cai no
+    /// padrao do trait, que devolve erro.
+    ///
+    /// E o que existe de verdade: Ollama antigo, llama.cpp sem SSE, ou
+    /// qualquer provider num momento em que o streaming falha. O turno entao
+    /// segue pelo ramo de fallback nao-streaming, e era **exatamente** esse
+    /// ramo que nao anotava nada.
+    struct SoBatch;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SoBatch {
+        fn provider_id(&self) -> &str {
+            "so_batch"
+        }
+
+        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: "pronto".to_string(),
+                }],
+                model: "modelo-que-respondeu".to_string(),
+                stop_reason: None,
+                usage: Some(crate::providers::Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                }),
+            })
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// O turno que caiu no fallback nao-streaming tambem e anotado.
+    ///
+    /// O `/stats` (#984) e o `/status` (#940) respondiam "nenhum turno ainda"
+    /// depois de um turno inteiro sempre que o provider nao fazia streaming:
+    /// dos tres `return Ok` do `stream_turn_with_sink`, so um anotava. Achado
+    /// rodando o binario — `Turnos 1` e `Ultimo turno nenhum ainda` na mesma
+    /// tela.
+    #[tokio::test]
+    async fn turno_que_caiu_no_fallback_tambem_e_anotado() {
+        let runtime = AgentRuntime::new();
+        runtime.register_provider(std::sync::Arc::new(SoBatch));
+
+        let (tx, mut rx) = mpsc::channel::<crate::turn_events::TurnEvent>(64);
+        // O receptor precisa existir enquanto o turno roda: o canal e
+        // limitado e o `sink.text` bloquearia.
+        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        let resposta = runtime
+            .process_message_streaming_with_events(
+                "sessao-de-teste",
+                "oi",
+                &[],
+                tx,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("o turno completa pelo fallback");
+        assert!(resposta.contains("pronto"), "veio: {resposta:?}");
+        dreno.await.expect("dreno");
+
+        let st = runtime
+            .last_turn_stats("sessao-de-teste")
+            .expect("o turno tem de ficar registrado");
+        assert_eq!(st.provider, "so_batch");
+        // O modelo vem da **resposta**, e nao do pedido: neste ramo ha uma
+        // `LlmResponse`, entao da para confirmar — e o `/stats` diz isso.
+        assert_eq!(st.model, "modelo-que-respondeu");
+        assert!(st.model_confirmado, "aqui o modelo e confirmado");
+        assert!(st.tokens_conhecidos, "e os tokens existem");
+        assert_eq!(st.input_tokens, 11);
+        assert_eq!(st.output_tokens, 7);
+    }
 
     /// O objetivo entra no prompt de sistema, e nao na mensagem (#983).
     #[test]

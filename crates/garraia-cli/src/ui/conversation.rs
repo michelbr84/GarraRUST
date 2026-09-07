@@ -9,9 +9,9 @@
 
 use std::path::Path;
 
-const CYAN: &str = "\x1b[36m";
+pub(crate) const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
-const BOLD: &str = "\x1b[1m";
+pub(crate) const BOLD: &str = "\x1b[1m";
 pub(crate) const DIM: &str = "\x1b[2m";
 /// Avisos e erros dirigidos ao usuario (o renderer os usa).
 pub(crate) const YELLOW: &str = "\x1b[33m";
