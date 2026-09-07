@@ -54,9 +54,9 @@ class _PairScreenState extends ConsumerState<PairScreen>
     // Send the scanned pairing token to the sync service
     ref.read(syncServiceProvider).pairDevice(code);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Pareamento iniciado...')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Pareamento iniciado...')));
 
     // Reset scanning flag after a delay to prevent duplicate scans
     Future.delayed(const Duration(seconds: 3), () {
@@ -113,9 +113,9 @@ class _PairScreenState extends ConsumerState<PairScreen>
               padding: const EdgeInsets.all(12),
               child: Text(
                 'Dispositivos Pareados',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
             SizedBox(
@@ -127,7 +127,9 @@ class _PairScreenState extends ConsumerState<PairScreen>
                   return ListTile(
                     leading: Icon(
                       _platformIcon(device.platform),
-                      color: device.isOnline ? cs.primary : cs.onSurface.withValues(alpha: 0.4),
+                      color: device.isOnline
+                          ? cs.primary
+                          : cs.onSurface.withValues(alpha: 0.4),
                     ),
                     title: Text(device.platform),
                     subtitle: Text(
@@ -160,14 +162,14 @@ class _PairScreenState extends ConsumerState<PairScreen>
   }
 
   IconData _platformIcon(String platform) => switch (platform.toLowerCase()) {
-        'android' => Icons.phone_android_rounded,
-        'ios' => Icons.phone_iphone_rounded,
-        'windows' => Icons.desktop_windows_rounded,
-        'macos' => Icons.laptop_mac_rounded,
-        'linux' => Icons.computer_rounded,
-        'web' => Icons.language_rounded,
-        _ => Icons.devices_rounded,
-      };
+    'android' => Icons.phone_android_rounded,
+    'ios' => Icons.phone_iphone_rounded,
+    'windows' => Icons.desktop_windows_rounded,
+    'macos' => Icons.laptop_mac_rounded,
+    'linux' => Icons.computer_rounded,
+    'web' => Icons.language_rounded,
+    _ => Icons.devices_rounded,
+  };
 }
 
 class _SyncStatusBanner extends StatelessWidget {
@@ -236,8 +238,8 @@ class _ShowQrTab extends StatelessWidget {
               'Escaneie este QR Code\nno outro dispositivo',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: cs.onSurface.withValues(alpha: 0.7),
-                  ),
+                color: cs.onSurface.withValues(alpha: 0.7),
+              ),
             ),
             const SizedBox(height: 24),
             Container(
@@ -296,8 +298,8 @@ class _ScanQrTabState extends State<_ScanQrTab> {
             'Aponte a camera para o QR Code\ndo outro dispositivo',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.7),
-                ),
+              color: cs.onSurface.withValues(alpha: 0.7),
+            ),
           ),
         ),
         Expanded(

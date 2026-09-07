@@ -1,5 +1,7 @@
 package org.garraia.mobile
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+// FlutterFragmentActivity (not FlutterActivity): `local_auth` hosts its
+// biometric prompt in a FragmentActivity and throws at runtime otherwise.
+class MainActivity : FlutterFragmentActivity()

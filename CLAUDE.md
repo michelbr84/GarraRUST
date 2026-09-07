@@ -303,7 +303,15 @@ crates/
                         gated pela feature. Wiring no `garraia-gateway` +
                         `garraia-config::StorageConfig` fica para slice 3.
 apps/
-  garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
+  garraia-mobile/     — Garra Mobile (Flutter, Riverpod 3, go_router, Dio). v0.4.0
+                        (ADR 0016 amendment 2026-09-07): home "Garra Neon" +
+                        `lib/runtime/` (`GarraConnection`: local Termux em
+                        127.0.0.1:3888 / outro Garra na LAN / Garra Cloud) +
+                        negociação de capabilities via `/api/capabilities`.
+                        Codegen: `dart run build_runner build` (todo `*.g.dart`
+                        é gitignored). APK sai do CI (`mobile.yml` em PR,
+                        `build-android-apk` na release) — este container não
+                        alcança o Android SDK (`dl.google.com` bloqueado).
 ```
 
 ### Crates planejados (ROADMAP AAA Fases 2-3)

@@ -1,81 +1,84 @@
-# garraia_mobile — Garra Cloud Alpha
+# Garra Mobile (`garraia_mobile`)
 
-Cliente Flutter (Android / iOS / web preview) do gateway [GarraIA](../../README.md).
-Conversa com o agente local ou remoto via JWT + Dio sobre as rotas
-`/auth/*` e `/chat/*` expostas por `garraia-gateway`.
+Assistente de IA **local-first** para Android. A memória, as skills, os
+arquivos e os agentes vivem no runtime Garra que você escolhe — no próprio
+telefone (Termux), num PC da sua rede ou no Garra Cloud. O modelo pode estar
+em qualquer lugar. Arquitetura: [`docs/mobile/architecture.md`](../../docs/mobile/architecture.md);
+decisão: [ADR 0016](../../docs/adr/0016-mobile-termux-local-first.md) + amendment 2026-09-07.
 
 ## Stack
 
-- **Flutter** 3.41+ (Dart 3.11+)
-- **Riverpod 2** + code generation para state management
-- **go_router** com redirect baseado em JWT
-- **Dio** + `_AuthInterceptor` (Bearer)
-- **flutter_secure_storage** para persistir o token (`garraia_jwt`)
-- **rive** para o mascote animado (placeholder até `assets/garra_mascot.riv`)
+- Flutter 3.47.x / Dart 3.13 (o `pubspec.lock` é resolvido contra 3.47.2 — é o que o CI usa)
+- **Riverpod 3** + `riverpod_annotation` 4 + `riverpod_generator` 4 (codegen)
+- `go_router` com gate por runtime (não por JWT)
+- `dio` (`GatewayConnection` para `/api/*`; `ApiService` para o Cloud Alpha)
+- `flutter_secure_storage` para segredos (JWT, `gateway.api_key`); `shared_preferences` para o resto
+- Fontes bundladas: Inter (variável) + JetBrains Mono — o app renderiza igual offline
 
-## Início rápido
+## Rodar
 
 ```bash
-cd apps/garraia-mobile
 flutter pub get
-dart run build_runner build --delete-conflicting-outputs
-
-# Emulador Android → backend local na porta 3888 (10.0.2.2 = host)
+dart run build_runner build --delete-conflicting-outputs   # *.g.dart sao gitignored
 flutter run
-
-# Apontar para o gateway na nuvem
-flutter run --dart-define=API_BASE_URL=https://api.garraia.org
 ```
 
-Setup completo (pré-requisitos, build de APK, mascote Rive, variáveis de
-ambiente do backend): ver [`SETUP.md`](SETUP.md).
+Na primeira abertura o app pede seu nome e **onde o Garra roda**:
 
-## Endpoints consumidos
+| Modo | O que precisa |
+|---|---|
+| On this phone | Termux com `garra` instalado: `curl -fsSL https://garraia.org/install.sh \| bash && garra doctor && garra start` (escuta em `127.0.0.1:3888`) |
+| Another Garra | Um gateway na LAN: `garra start --host 0.0.0.0` no PC; digite `192.168.x.x:3888` (e a `gateway.api_key`, se configurada) |
+| Garra Cloud | Conta no `api.garraia.org` (login) |
 
-| Endpoint           | Origem                         |
-|--------------------|--------------------------------|
-| `POST /auth/register` | `garraia-gateway` mobile auth (GAR-335) |
-| `POST /auth/login`    | idem                                   |
-| `GET  /me`            | idem                                   |
-| `POST /chat`          | `garraia-gateway` mobile chat (GAR-339) |
-| `GET  /chat/history`  | idem                                   |
+Emulador Android → PC hospedeiro: use `10.0.2.2:3888` como "Another Garra".
 
-A base URL default é `http://10.0.2.2:3888` (loopback do emulador
-Android). Override via `--dart-define=API_BASE_URL=...`.
+## Verificar
+
+```bash
+flutter analyze          # zero issues e a regra do CI
+flutter test             # 15 testes: home (capabilities, estados), runtime store, settings, versao
+flutter build web --no-web-resources-cdn   # prova visual no navegador; nao e alvo de produto
+```
+
+`lib/app_version.dart` precisa bater com o `version:` do `pubspec.yaml` —
+`test/app_version_test.dart` falha quando divergem.
+
+## APK
+
+O APK é construído no GitHub Actions (o SDK do Android vem do `dl.google.com`,
+que nem todo ambiente alcança):
+
+- `.github/workflows/mobile.yml` — `analyze` + `test` + APK como artefato em todo PR que toca `apps/garraia-mobile/**`.
+- `release.yml` (job `build-android-apk`) — publica `garraia-mobile-android.apk` + `.sha256` na Release (best-effort).
+
+Assinatura: com os secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` o Gradle usa a keystore de upload
+(`android/key.properties`, gitignored); sem eles cai na keystore de debug do
+runner — instala, mas não atualiza por cima de uma instalação assinada por
+outra chave. Build local de release: `flutter build apk --release`.
 
 ## Estrutura
 
 ```text
 lib/
-├── main.dart              # MaterialApp.router + ProviderScope
-├── router/app_router.dart # GoRouter + auth redirect
-├── services/api_service.dart
-├── providers/             # AuthState, ChatMessages, MascotState
-├── screens/               # splash, login, register, chat, settings
-└── widgets/               # MascotWidget (4 estados), ChatBubble
-assets/                    # ativos empacotados (Rive, ícones, fontes)
-test/                      # widget tests (Riverpod overrides)
+├── app_version.dart          # versao unica (teste vs pubspec)
+├── main.dart                 # bootstrap de servicos, tema
+├── router/app_router.dart    # gate por runtime; rotas dos tiles e tabs
+├── runtime/                  # GarraConnection + implementacoes + config persistida
+├── providers/                # chat (sessao do gateway), auth (cloud)
+├── screens/                  # home, onboarding, chat, memory, skills, files, agents,
+│                             # automations, providers, activity, notifications, profile, settings
+├── services/                 # api_service (cloud), offline_queue, sync, biometric, notifications
+├── theme/                    # garra_tokens (cores/raios) + garra_theme (ThemeData, garraText)
+└── widgets/                  # brand/ (WolfMark, NightRidge), home/ (tiles, cards), bottom nav
 ```
-
-## Testes
-
-```bash
-flutter analyze
-flutter test
-```
-
-Os widget tests injetam um stub de `ApiService` via
-`apiServiceProvider.overrideWithValue(...)`, mantendo a árvore offline
-e determinística.
 
 ## Convenções
 
-- Riverpod com code generation (`*.g.dart` gerado, não commitado).
-- Nunca usar `withOpacity()` — usar `withValues(alpha:)` (CLAUDE.md raiz).
-- JWT armazenado em `flutter_secure_storage`, chave `garraia_jwt`.
-
-## Referências
-
-- Projeto raiz e arquitetura: [`README.md`](../../README.md)
-- Setup detalhado: [`SETUP.md`](SETUP.md)
-- ROADMAP e Linear: [`ROADMAP.md`](../../ROADMAP.md)
+- Nunca `withOpacity()` — `withValues(alpha:)`.
+- Cor nova entra em `theme/garra_tokens.dart`, não hard-coded no widget.
+- Endpoint novo entra em `GarraConnection` (interface) **e** em `GatewayConnection`;
+  o Cloud herda o que não sobrescreve.
+- Feature nova de tile: constante em `GarraFeature` **e** no `feature_flags` do gateway
+  (`crates/garraia-gateway/src/health.rs`) — o teste Rust trava o contrato.

@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../app_version.dart';
 import 'api_service.dart';
 
 part 'sync_service.g.dart';
@@ -105,9 +105,7 @@ class SyncService {
       _send(SyncCommand.registerDevice());
     } catch (e) {
       debugPrint('SyncService: connection failed: $e');
-      _ref
-          .read(syncConnectionStateProvider.notifier)
-          .update(SyncStatus.error);
+      _ref.read(syncConnectionStateProvider.notifier).update(SyncStatus.error);
       _scheduleReconnect();
     }
   }
@@ -125,16 +123,17 @@ class SyncService {
           _eventController.add(event);
           break;
         case 'device_list':
-          final devices = (event.data['devices'] as List<dynamic>?)
-                  ?.map((d) =>
-                      PairedDevice.fromJson(d as Map<String, dynamic>))
+          final devices =
+              (event.data['devices'] as List<dynamic>?)
+                  ?.map((d) => PairedDevice.fromJson(d as Map<String, dynamic>))
                   .toList() ??
               [];
           _ref.read(pairedDevicesProvider.notifier).setDevices(devices);
           break;
         case 'device_paired':
-          final device =
-              PairedDevice.fromJson(event.data['device'] as Map<String, dynamic>);
+          final device = PairedDevice.fromJson(
+            event.data['device'] as Map<String, dynamic>,
+          );
           _ref.read(pairedDevicesProvider.notifier).addDevice(device);
           break;
         case 'pong':
@@ -150,9 +149,7 @@ class SyncService {
 
   void _onError(Object error) {
     debugPrint('SyncService: WebSocket error: $error');
-    _ref
-        .read(syncConnectionStateProvider.notifier)
-        .update(SyncStatus.error);
+    _ref.read(syncConnectionStateProvider.notifier).update(SyncStatus.error);
     _scheduleReconnect();
   }
 
@@ -191,23 +188,27 @@ class SyncService {
     required String content,
     required String timestamp,
   }) {
-    _send(SyncCommand(
-      type: 'message_sync',
-      data: {
-        'session_id': sessionId,
-        'role': role,
-        'content': content,
-        'timestamp': timestamp,
-      },
-    ));
+    _send(
+      SyncCommand(
+        type: 'message_sync',
+        data: {
+          'session_id': sessionId,
+          'role': role,
+          'content': content,
+          'timestamp': timestamp,
+        },
+      ),
+    );
   }
 
   /// Mark messages as read on a session (syncs to other devices).
   void markRead(String sessionId) {
-    _send(SyncCommand(
-      type: 'read_status',
-      data: {'session_id': sessionId, 'read': true},
-    ));
+    _send(
+      SyncCommand(
+        type: 'read_status',
+        data: {'session_id': sessionId, 'read': true},
+      ),
+    );
   }
 
   /// Request the list of paired devices.
@@ -217,10 +218,7 @@ class SyncService {
 
   /// Send a pairing token to link another device.
   void pairDevice(String pairingToken) {
-    _send(SyncCommand(
-      type: 'pair_device',
-      data: {'token': pairingToken},
-    ));
+    _send(SyncCommand(type: 'pair_device', data: {'token': pairingToken}));
   }
 
   /// Disconnect and clean up.
@@ -253,9 +251,9 @@ class SyncEvent {
   SyncEvent({required this.type, required this.data});
 
   factory SyncEvent.fromJson(Map<String, dynamic> json) => SyncEvent(
-        type: json['type'] as String? ?? '',
-        data: json['data'] as Map<String, dynamic>? ?? {},
-      );
+    type: json['type'] as String? ?? '',
+    data: json['data'] as Map<String, dynamic>? ?? {},
+  );
 }
 
 /// Outgoing sync command to the WebSocket.
@@ -266,12 +264,9 @@ class SyncCommand {
   SyncCommand({required this.type, required this.data});
 
   factory SyncCommand.registerDevice() => SyncCommand(
-        type: 'register_device',
-        data: {
-          'platform': defaultTargetPlatform.name,
-          'app_version': '0.1.0',
-        },
-      );
+    type: 'register_device',
+    data: {'platform': defaultTargetPlatform.name, 'app_version': kAppVersion},
+  );
 
   factory SyncCommand.ping() => SyncCommand(type: 'ping', data: {});
 
@@ -293,9 +288,9 @@ class PairedDevice {
   });
 
   factory PairedDevice.fromJson(Map<String, dynamic> json) => PairedDevice(
-        deviceId: json['device_id'] as String? ?? '',
-        platform: json['platform'] as String? ?? 'unknown',
-        lastSeen: json['last_seen'] as String? ?? '',
-        isOnline: json['is_online'] as bool? ?? false,
-      );
+    deviceId: json['device_id'] as String? ?? '',
+    platform: json['platform'] as String? ?? 'unknown',
+    lastSeen: json['last_seen'] as String? ?? '',
+    isOnline: json['is_online'] as bool? ?? false,
+  );
 }

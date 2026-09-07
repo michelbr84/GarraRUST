@@ -1,34 +1,40 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../runtime/models.dart';
+import '../runtime/runtime_config.dart';
+
+export '../runtime/models.dart' show ChatMessage;
 
 part 'api_service.g.dart';
 
-/// Base URL for the Garra Cloud Alpha backend.
-/// Override with env var at build time: --dart-define=API_BASE_URL=https://api.garraia.org
-const String kApiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'https://api.garraia.org',
-);
+/// Base URL of the hosted Garra Cloud API. Kept for callers that still read
+/// it; new code should go through `RuntimeConfig.baseUrl`.
+const String kApiBaseUrl = kCloudBaseUrl;
 
 const _kTokenKey = 'garraia_jwt';
 
 @riverpod
 ApiService apiService(Ref ref) => ApiService();
 
+/// Garra Cloud Alpha account + chat client (`mobile_auth.rs`,
+/// `mobile_chat.rs`). Local and LAN runtimes never touch this class — they go
+/// through `GatewayConnection`.
 class ApiService {
   final Dio _dio;
   final FlutterSecureStorage _storage;
 
-  ApiService()
-      : _dio = Dio(BaseOptions(
-          baseUrl: kApiBaseUrl,
+  ApiService({String? baseUrl})
+    : _dio = Dio(
+        BaseOptions(
+          baseUrl: baseUrl ?? kCloudBaseUrl,
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 30),
           headers: {'Content-Type': 'application/json'},
-        )),
-        _storage = const FlutterSecureStorage() {
+        ),
+      ),
+      _storage = const FlutterSecureStorage() {
     _dio.interceptors.add(_AuthInterceptor(_storage));
   }
 
@@ -83,9 +89,11 @@ class ApiService {
 
   // ── Voice ─────────────────────────────────────────────────────────────────
 
+  /// `POST /api/stt` (`voice_handler.rs`). The old client called
+  /// `/api/voice/transcribe`, a path the gateway never exposed.
   Future<String> transcribeAudio(String audioPath) async {
     final resp = await _dio.post<Map<String, dynamic>>(
-      '/api/voice/transcribe',
+      '/api/stt',
       data: FormData.fromMap({
         'audio': await MultipartFile.fromFile(audioPath),
       }),
@@ -105,7 +113,10 @@ class _AuthInterceptor extends Interceptor {
   _AuthInterceptor(this._storage);
 
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
     final token = await _storage.read(key: _kTokenKey);
     if (token != null) {
       options.headers['Authorization'] = 'Bearer $token';
@@ -124,10 +135,10 @@ class AuthResult {
   AuthResult({required this.token, required this.userId, required this.email});
 
   factory AuthResult.fromJson(Map<String, dynamic> json) => AuthResult(
-        token: json['token'] as String,
-        userId: json['user_id'] as String,
-        email: json['email'] as String,
-      );
+    token: json['token'] as String,
+    userId: json['user_id'] as String,
+    email: json['email'] as String,
+  );
 }
 
 class MeResult {
@@ -135,25 +146,15 @@ class MeResult {
   final String email;
   final String createdAt;
 
-  MeResult({required this.userId, required this.email, required this.createdAt});
+  MeResult({
+    required this.userId,
+    required this.email,
+    required this.createdAt,
+  });
 
   factory MeResult.fromJson(Map<String, dynamic> json) => MeResult(
-        userId: json['user_id'] as String,
-        email: json['email'] as String,
-        createdAt: json['created_at'] as String,
-      );
-}
-
-class ChatMessage {
-  final String role;   // "user" | "assistant"
-  final String content;
-  final String timestamp;
-
-  ChatMessage({required this.role, required this.content, required this.timestamp});
-
-  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
-        role: json['role'] as String,
-        content: json['content'] as String,
-        timestamp: json['timestamp'] as String,
-      );
+    userId: json['user_id'] as String,
+    email: json['email'] as String,
+    createdAt: json['created_at'] as String,
+  );
 }

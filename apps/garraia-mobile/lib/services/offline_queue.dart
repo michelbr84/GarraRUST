@@ -2,11 +2,10 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:sqflite/sqflite.dart';
 
-import 'api_service.dart';
+import '../providers/chat_provider.dart';
 
 part 'offline_queue.g.dart';
 
@@ -38,12 +37,11 @@ class OfflineQueueState {
     int? pendingCount,
     bool? isSyncing,
     bool? isOnline,
-  }) =>
-      OfflineQueueState(
-        pendingCount: pendingCount ?? this.pendingCount,
-        isSyncing: isSyncing ?? this.isSyncing,
-        isOnline: isOnline ?? this.isOnline,
-      );
+  }) => OfflineQueueState(
+    pendingCount: pendingCount ?? this.pendingCount,
+    isSyncing: isSyncing ?? this.isSyncing,
+    isOnline: isOnline ?? this.isOnline,
+  );
 }
 
 class OfflineQueue {
@@ -74,8 +72,9 @@ class OfflineQueue {
     );
 
     // Monitor connectivity changes
-    _connectivitySub =
-        Connectivity().onConnectivityChanged.listen(_onConnectivityChanged);
+    _connectivitySub = Connectivity().onConnectivityChanged.listen(
+      _onConnectivityChanged,
+    );
 
     // Check initial connectivity
     final result = await Connectivity().checkConnectivity();
@@ -86,12 +85,11 @@ class OfflineQueue {
   }
 
   void _onConnectivityChanged(List<ConnectivityResult> results) {
-    final isOnline =
-        results.any((r) => r != ConnectivityResult.none);
+    final isOnline = results.any((r) => r != ConnectivityResult.none);
 
-    _ref.read(queueStatusProvider.notifier).update(
-          _ref.read(queueStatusProvider).copyWith(isOnline: isOnline),
-        );
+    _ref
+        .read(queueStatusProvider.notifier)
+        .update(_ref.read(queueStatusProvider).copyWith(isOnline: isOnline));
 
     if (isOnline) {
       // Connection restored — try to flush the queue
@@ -122,9 +120,9 @@ class OfflineQueue {
     if (_syncing) return;
     _syncing = true;
 
-    _ref.read(queueStatusProvider.notifier).update(
-          _ref.read(queueStatusProvider).copyWith(isSyncing: true),
-        );
+    _ref
+        .read(queueStatusProvider.notifier)
+        .update(_ref.read(queueStatusProvider).copyWith(isSyncing: true));
 
     final db = _db;
     if (db == null) {
@@ -140,7 +138,7 @@ class OfflineQueue {
         orderBy: 'id ASC',
       );
 
-      final api = _ref.read(apiServiceProvider);
+      final chat = _ref.read(chatMessagesProvider.notifier);
 
       for (final row in pending) {
         final id = row['id'] as int;
@@ -148,7 +146,7 @@ class OfflineQueue {
         final retryCount = row['retry_count'] as int? ?? 0;
 
         try {
-          await api.sendMessage(message);
+          await chat.send(message);
           await db.delete('pending_messages', where: 'id = ?', whereArgs: [id]);
         } catch (e) {
           debugPrint('OfflineQueue: failed to send message $id: $e');
@@ -197,8 +195,11 @@ class OfflineQueue {
   Future<void> clearFailed() async {
     final db = _db;
     if (db == null) return;
-    await db.delete('pending_messages',
-        where: 'status = ?', whereArgs: ['failed']);
+    await db.delete(
+      'pending_messages',
+      where: 'status = ?',
+      whereArgs: ['failed'],
+    );
     await _updateQueueStatus();
   }
 
@@ -213,24 +214,24 @@ class OfflineQueue {
     final db = _db;
     if (db == null) return;
 
-    final count = Sqflite.firstIntValue(await db.rawQuery(
-      "SELECT COUNT(*) FROM pending_messages WHERE status = 'pending'",
-    ));
+    final count = Sqflite.firstIntValue(
+      await db.rawQuery(
+        "SELECT COUNT(*) FROM pending_messages WHERE status = 'pending'",
+      ),
+    );
 
     final current = _ref.read(queueStatusProvider);
-    _ref.read(queueStatusProvider.notifier).update(
-          current.copyWith(
-            pendingCount: count ?? 0,
-            isSyncing: _syncing,
-          ),
+    _ref
+        .read(queueStatusProvider.notifier)
+        .update(
+          current.copyWith(pendingCount: count ?? 0, isSyncing: _syncing),
         );
   }
 
   /// Call on app resume to flush any pending messages.
   Future<void> onAppResume() async {
     final results = await Connectivity().checkConnectivity();
-    final isOnline =
-        results.any((r) => r != ConnectivityResult.none);
+    final isOnline = results.any((r) => r != ConnectivityResult.none);
     if (isOnline) {
       await flushQueue();
     }
@@ -259,10 +260,10 @@ class PendingMessage {
   });
 
   factory PendingMessage.fromRow(Map<String, dynamic> row) => PendingMessage(
-        id: row['id'] as int,
-        message: row['message'] as String,
-        createdAt: row['created_at'] as String,
-        retryCount: row['retry_count'] as int? ?? 0,
-        status: row['status'] as String? ?? 'pending',
-      );
+    id: row['id'] as int,
+    message: row['message'] as String,
+    createdAt: row['created_at'] as String,
+    retryCount: row['retry_count'] as int? ?? 0,
+    status: row['status'] as String? ?? 'pending',
+  );
 }

@@ -58,6 +58,7 @@ Assets da `release.yml`, em detalhe:
 | `install.sh`, `install.ps1` | copiados do repo | sim |
 | `garraia-desktop-windows-x86_64.msi`, `…-setup.exe` | job `build-windows-installer` | **best-effort** |
 | `garraia-desktop-linux-x86_64.deb` / `.AppImage` | job `build-linux-desktop` (bundler do Tauri via `scripts/build-desktop-linux.sh`) | **best-effort**; AppImage ~80-100MB (embute webkit2gtk) |
+| `garraia-mobile-android.apk` | job `build-android-apk` (Flutter, `apps/garraia-mobile`) | **best-effort**; assinado com os secrets `ANDROID_KEYSTORE_*` quando existem, senão com a keystore de debug do runner (o job avisa) |
 | `SHA256SUMS` + um `<asset>.sha256` por asset | step `Generate checksums` | sim |
 
 **Por que os binários crus continuam publicados.** `garra update` resolve o
@@ -66,9 +67,9 @@ asset por nome exato (`update.rs:42-48`) e exige o `<asset>.sha256` irmão
 auto-update de toda instalação já existente no momento em que ela pulasse para
 essa versão. Não renomeie nem remova os assets crus.
 
-**Instaladores desktop, ARM64 do Windows e pacotes Linux são best-effort.**
-Os jobs `build-windows-installer`, `build-windows-aarch64`, `package-linux` e
-`build-linux-desktop` estão no `needs:` do job `release` mas deliberadamente
+**Instaladores desktop, ARM64 do Windows, pacotes Linux e o APK são best-effort.**
+Os jobs `build-windows-installer`, `build-windows-aarch64`, `package-linux`,
+`build-linux-desktop` e `build-android-apk` estão no `needs:` do job `release` mas deliberadamente
 **fora** da condição `if:` — mesmo padrão do `build-linux-arm64`. Uma falha emite `::warning::` e a
 release sai sem o asset correspondente, sem `continue-on-error` (proibido pelo
 CLAUDE.md). Modo de falha conhecido: o `ProductVersion` do WiX é numérico de
@@ -125,7 +126,11 @@ entrega.
 6. Deploy da imagem: com tag criado via push, o run `Deploy` dispara sozinho;
    com release via `workflow_dispatch`, disparar Actions → Deploy com
    `tag=vX.Y.Z` (ver §2). Depois `docker pull ghcr.io/michelbr84/garraia:<tag>`.
-7. No dia seguinte, o `install-endpoints.yml` agendado deve estar verde —
+7. Garra Mobile: baixar `garraia-mobile-android.apk`, conferir o `.sha256`, instalar por
+   sideload num Android 11+ e rodar a seção 1 e a seção *Runtime* do
+   `docs/mobile-qa-checklist.md`. Sem os secrets `ANDROID_KEYSTORE_*` o APK não atualiza
+   por cima de uma instalação assinada por outra chave — desinstale antes.
+8. No dia seguinte, o `install-endpoints.yml` agendado deve estar verde —
    inclusive a sonda `release-cdn/install.ps1`, que ficava vermelha por design
    enquanto nenhuma release publicava o `install.ps1`.
 

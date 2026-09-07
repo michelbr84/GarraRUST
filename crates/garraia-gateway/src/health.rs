@@ -520,30 +520,73 @@ pub struct CapabilitiesResponse {
     pub version: &'static str,
 }
 
+/// What the runtime has wired, reduced to booleans so the feature list is a
+/// pure function (testable without a `SharedState`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FeatureInputs {
+    pub tts: bool,
+    pub stt: bool,
+    pub mcp: bool,
+    pub openclaw: bool,
+    pub auth_v1: bool,
+    pub memory: bool,
+}
+
+/// Feature flags advertised by `GET /api/capabilities`.
+///
+/// Garra Mobile v0.4.0 negotiates its home tiles against this list (ADR 0016
+/// amendment 2026-09-07): a tile whose feature is absent renders as
+/// "unavailable on this runtime" instead of a dead screen. The entries are
+/// therefore a contract with `apps/garraia-mobile/lib/runtime/models.dart`
+/// (`GarraFeature`) — additions are fine, renames and removals are breaking.
+///
+/// Always-on entries (`learning-skills`, `projects`, `modes`) reflect handlers
+/// that read files / built-ins and need no wired state; `memory` follows the
+/// memory provider like `/api/memory/*` does. `automations` is deliberately
+/// absent: the gateway exposes no scheduling API yet, and the mobile tile
+/// says so rather than pretending.
+pub fn feature_flags(inputs: &FeatureInputs) -> Vec<String> {
+    let mut features: Vec<String> = vec![
+        "chat".into(),
+        "websocket".into(),
+        "multi-channel".into(),
+        "learning-skills".into(),
+        "projects".into(),
+        "modes".into(),
+    ];
+    if inputs.memory {
+        features.push("memory".into());
+    }
+    if inputs.tts {
+        features.push("tts".into());
+    }
+    if inputs.stt {
+        features.push("stt".into());
+    }
+    if inputs.mcp {
+        features.push("mcp".into());
+    }
+    if inputs.openclaw {
+        features.push("openclaw".into());
+    }
+    if inputs.auth_v1 {
+        features.push("auth-v1".into());
+    }
+    features
+}
+
 /// GET /api/capabilities — read-only snapshot of what the gateway can
 /// currently do. Renders the Dashboard "Arquitetura" card + drives the
 /// Skins page enumeration without hardcoded JS lists.
 pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<CapabilitiesResponse> {
-    // Static feature flags driven by Cargo cfg + runtime state shape.
-    let mut features: Vec<String> = Vec::new();
-    features.push("chat".into());
-    features.push("websocket".into());
-    features.push("multi-channel".into());
-    if state.voice_client.is_some() {
-        features.push("tts".into());
-    }
-    if state.stt_client.is_some() {
-        features.push("stt".into());
-    }
-    if state.mcp_manager_arc.is_some() {
-        features.push("mcp".into());
-    }
-    if state.openclaw_client.is_some() {
-        features.push("openclaw".into());
-    }
-    if state.auth_provider.is_some() {
-        features.push("auth-v1".into());
-    }
+    let features = feature_flags(&FeatureInputs {
+        tts: state.voice_client.is_some(),
+        stt: state.stt_client.is_some(),
+        mcp: state.mcp_manager_arc.is_some(),
+        openclaw: state.openclaw_client.is_some(),
+        auth_v1: state.auth_provider.is_some(),
+        memory: state.agents.memory_provider().is_some(),
+    });
 
     let mut providers: Vec<String> = state.agents.provider_ids().to_vec();
     providers.sort();
@@ -599,6 +642,56 @@ pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<Capa
 mod tests {
     use super::*;
     use garraia_common::ssrf::vet_url;
+
+    /// Contrato com o Garra Mobile (`GarraFeature` em
+    /// `apps/garraia-mobile/lib/runtime/models.dart`): os nomes que a home
+    /// negocia precisam continuar existindo, e `automations` precisa continuar
+    /// ausente enquanto o gateway não expõe scheduling.
+    #[test]
+    fn feature_flags_keep_the_mobile_contract() {
+        let all = feature_flags(&FeatureInputs {
+            tts: true,
+            stt: true,
+            mcp: true,
+            openclaw: true,
+            auth_v1: true,
+            memory: true,
+        });
+        for required in [
+            "chat",
+            "websocket",
+            "multi-channel",
+            "learning-skills",
+            "projects",
+            "modes",
+            "memory",
+            "tts",
+            "stt",
+            "mcp",
+            "openclaw",
+            "auth-v1",
+        ] {
+            assert!(all.iter().any(|f| f == required), "{required} ausente");
+        }
+        assert!(
+            !all.iter().any(|f| f == "automations"),
+            "automations so entra quando existir API de scheduling"
+        );
+
+        // Nada opcional vaza quando nada esta wired; os always-on ficam.
+        let none = feature_flags(&FeatureInputs::default());
+        assert_eq!(
+            none,
+            vec![
+                "chat",
+                "websocket",
+                "multi-channel",
+                "learning-skills",
+                "projects",
+                "modes"
+            ]
+        );
+    }
 
     /// O ponto do `AllowPrivate`: alvo local passa, metadata de nuvem não.
     ///

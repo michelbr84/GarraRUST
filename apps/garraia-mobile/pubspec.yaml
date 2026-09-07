@@ -1,18 +1,22 @@
 name: garraia_mobile
-description: Garra — Personal AI Assistant Mobile App (Cloud Alpha)
-version: 0.2.1+2
+description: Garra Mobile — local-first AI assistant for Android (Termux runtime, LAN or cloud LLM)
+# versionName+versionCode — kept in sync with lib/app_version.dart (test enforced).
+version: 0.4.0+4
 publish_to: none
 
 environment:
-  sdk: ">=3.3.0 <4.0.0"
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.38.0"
 
 dependencies:
   flutter:
     sdk: flutter
 
-  # State management
-  flutter_riverpod: ^2.5.1
-  riverpod_annotation: ^2.3.5
+  # State management — Riverpod 3. The 2.x generator pinned `analyzer` at
+  # language 3.9 and crashes on Dart >= 3.13 sources
+  # (visitDotShorthandPropertyAccess); v3/generator 4 tracks a current analyzer.
+  flutter_riverpod: ^3.4.3
+  riverpod_annotation: ^4.0.7
 
   # Navigation
   go_router: ^14.2.7
@@ -20,23 +24,23 @@ dependencies:
   # HTTP
   dio: ^5.6.0
 
-  # Secure storage (JWT)
+  # Secure storage (JWT, gateway API key)
   flutter_secure_storage: ^9.2.2
-
-  # Animation (mascote)
-  rive: ^0.13.14
 
   # Utilities
   shared_preferences: ^2.3.2
 
-  # Markdown rendering (AI messages)
+  # Markdown rendering (AI messages). Discontinued upstream but functional;
+  # tracked as debt for 0.4.x — swap to a maintained fork once one stabilises.
   flutter_markdown: ^0.7.4+3
 
   # Biometric auth
   local_auth: ^2.3.0
 
-  # Audio recording (voice input)
-  record: ^5.1.2
+  # Audio recording (voice input). 6.x pins a coherent record_* family;
+  # 5.1.2 resolved record_platform_interface 1.5.0 next to record_web 1.1.9,
+  # whose `hasPermission` signatures disagree and break `flutter build web`.
+  record: ^6.2.1
 
   # QR code generation & scanning
   qr_flutter: ^4.1.0
@@ -62,14 +66,23 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^4.0.0
   build_runner: ^2.4.11
-  riverpod_generator: ^2.6.4
-  custom_lint: ^0.7.6
-  riverpod_lint: ^2.6.4
-
-dependency_overrides:
-  record_linux: 1.3.0
+  riverpod_generator: ^4.0.9
+  # custom_lint + riverpod_lint were dropped: they contradict each other on
+  # `analyzer_plugin` (0.13 vs 0.14) and are lint-only tooling. `flutter_lints`
+  # remains the lint gate.
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/
+
+  # Bundled fonts (OFL, licences beside the files) — the app must render the
+  # same offline, so nothing is fetched at runtime. Inter is a variable font:
+  # weight is selected through `FontVariation('wght', …)` (see garra_theme.dart).
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Variable.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700

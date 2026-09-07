@@ -195,3 +195,7 @@ AI Quality Gates/
 # persist on disk so iterations can read prior reports as input.
 .github-health-reports/
 audit/
+
+# Zip do swagger-ui pre-baixado pelo job build-linux-arm64 (GAR-822).
+# Ancorado na raiz de proposito (ver #1023).
+/.swagger-ui-cache/

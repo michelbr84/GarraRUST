@@ -60,10 +60,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 Text(
                   'Criar conta',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 32),
                 TextFormField(
@@ -85,7 +84,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
-                          _obscure ? Icons.visibility_off : Icons.visibility),
+                        _obscure ? Icons.visibility_off : Icons.visibility,
+                      ),
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
@@ -100,9 +100,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     labelText: 'Confirmar senha',
                     prefixIcon: Icon(Icons.lock_outline),
                   ),
-                  validator: (v) => v == _passCtrl.text
-                      ? null
-                      : 'As senhas não coincidem',
+                  validator: (v) =>
+                      v == _passCtrl.text ? null : 'As senhas não coincidem',
                 ),
                 const SizedBox(height: 8),
                 if (_error != null)

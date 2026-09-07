@@ -61,9 +61,10 @@ class _MascotWidgetState extends State<MascotWidget>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
-    _spinAnimation = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _spinController, curve: Curves.linear),
-    );
+    _spinAnimation = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _spinController, curve: Curves.linear));
 
     // Talking: vertical bounce
     _bounceController = AnimationController(
@@ -80,10 +81,7 @@ class _MascotWidgetState extends State<MascotWidget>
       duration: const Duration(milliseconds: 800),
     );
     _jumpAnimation = Tween<double>(begin: 0, end: -20).animate(
-      CurvedAnimation(
-        parent: _jumpController,
-        curve: Curves.elasticOut,
-      ),
+      CurvedAnimation(parent: _jumpController, curve: Curves.elasticOut),
     );
   }
 
@@ -196,39 +194,39 @@ class _MascotWidgetState extends State<MascotWidget>
   }
 
   double get _shadowAlpha => switch (widget.state) {
-        MascotState.idle => 0.3,
-        MascotState.thinking => 0.4,
-        MascotState.talking => 0.5,
-        MascotState.happy => 0.6,
-      };
+    MascotState.idle => 0.3,
+    MascotState.thinking => 0.4,
+    MascotState.talking => 0.5,
+    MascotState.happy => 0.6,
+  };
 
   double get _shadowBlur => switch (widget.state) {
-        MascotState.idle => 8,
-        MascotState.thinking => 16,
-        MascotState.talking => 20,
-        MascotState.happy => 24,
-      };
+    MascotState.idle => 8,
+    MascotState.thinking => 16,
+    MascotState.talking => 20,
+    MascotState.happy => 24,
+  };
 
   double get _shadowSpread => switch (widget.state) {
-        MascotState.idle => 0,
-        MascotState.thinking => 2,
-        MascotState.talking => 4,
-        MascotState.happy => 6,
-      };
+    MascotState.idle => 0,
+    MascotState.thinking => 2,
+    MascotState.talking => 4,
+    MascotState.happy => 6,
+  };
 
   Color _bgColor(ColorScheme cs) => switch (widget.state) {
-        MascotState.idle => cs.primaryContainer,
-        MascotState.thinking => cs.secondaryContainer,
-        MascotState.talking => cs.tertiaryContainer,
-        MascotState.happy => cs.primaryContainer,
-      };
+    MascotState.idle => cs.primaryContainer,
+    MascotState.thinking => cs.secondaryContainer,
+    MascotState.talking => cs.tertiaryContainer,
+    MascotState.happy => cs.primaryContainer,
+  };
 
   IconData get _icon => switch (widget.state) {
-        MascotState.idle => Icons.smart_toy_rounded,
-        MascotState.thinking => Icons.psychology_rounded,
-        MascotState.talking => Icons.record_voice_over_rounded,
-        MascotState.happy => Icons.sentiment_very_satisfied_rounded,
-      };
+    MascotState.idle => Icons.smart_toy_rounded,
+    MascotState.thinking => Icons.psychology_rounded,
+    MascotState.talking => Icons.record_voice_over_rounded,
+    MascotState.happy => Icons.sentiment_very_satisfied_rounded,
+  };
 }
 
 /// Core AnimatedWidget subclass for the mascot animations.
