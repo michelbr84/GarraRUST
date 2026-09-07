@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 MD041 MD060 -->
 
-<p align="right"><strong>🇺🇸 English</strong> · <a href="README.pt-BR.md">🇧🇷 Português</a></p
+<p align="right"><strong>🇺🇸 English</strong> · <a href="README.pt-BR.md">🇧🇷 Português</a></p>
 
 <h1 align="center">GarraIA</h1>
 
@@ -372,7 +372,10 @@ search, git diff, scheduling) with per-task tool-call budget; sliding
 context window plus automatic background summarization for long sessions;
 **execution modes** (ask / code / debug / architect / review / orchestrator
 / custom) with per-mode tool policies, selected via `/mode`, header, or
-deterministic auto-routing.
+deterministic auto-routing. Since v0.3.9 those policies are **enforced in
+the executor** — before that they were only asked for in the system prompt,
+so a mode advertised as read-only did not actually stop `file_write` or
+`bash`.
 
 ### Voice
 
@@ -437,9 +440,13 @@ headers (`X-AI-Model`, `X-AI-Provider`) on every response.
 After conversations, a dedicated LLM extractor identifies durable facts
 and stores them with context and date; local embeddings (Ollama —
 nomic-embed-text, mxbai-embed-large, …) power semantic search; relevant
-facts are injected into the agent's context automatically. Memory is
-managed through the web console and the gateway API (a `garra memory`
-CLI is on the roadmap).
+facts are injected into the agent's context automatically.
+
+Memory is managed from three places. The **CLI** covers the most ground —
+`garra memory` has `stats`, `list`, `add`, `search`, `reindex`, `backup`,
+`pin`, `ttl`, `delete` and `compact`. The **web console** and the **gateway
+API** cover the read paths plus a clear: `GET /api/memory/recent`,
+`GET /api/memory/search` and `DELETE /api/memory`.
 
 ```yaml
 memory:
@@ -604,6 +611,14 @@ Learning agent, this benchmark harness, and the v0.3.x distribution wave
 (Aug–Sep 2026): `install.sh`/`install.ps1`, Linux `.deb`/`.rpm`/AppImage,
 native Windows ARM64, `garra agents setup` with the Anthropic-compatible
 `/v1/messages` shim, and Garra Desktop for Linux with the Chat Bar.
+
+**v0.3.9** (Sep 2026) closed 48 issues and PRs across three tracks: the
+terminal stopped being a black box (per-tool activity lines, Markdown
+rendered without stalling the stream, `/status` `/tools` `/logs`, and a
+`garra logs` command), memory became inspectable (`garra memory` with
+`add`, `reindex`, `backup`, `pin`, `ttl`), and execution modes started
+being enforced in the executor rather than merely requested in the prompt.
+See [What's New in v0.3.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.3.9).
 
 ## Contributing
 
