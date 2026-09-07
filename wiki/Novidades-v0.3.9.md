@@ -20,11 +20,14 @@ arquivo, rodando `cargo test` ou simplesmente parado.
 
 ```
 ● Bash cargo test
-└─ 148 passed · 6.3s
+  └─ 148 passed · 6.3s · #7
 
-× Bash
-└─ error: exit 101 · 4.2s
+× Bash └─ error: exit 101 · 4.2s · #8
 ```
+
+Na falha o nome aparece de novo na mesma linha, de proposito: depois de uma
+saida longa, a linha de inicio pode ter rolado para fora da tela. O `#7` e um
+ponteiro — `/tool 7` mostra a saida inteira daquela chamada.
 
 Junto vieram **Markdown renderizado sem parar o streaming** (o texto continua
 aparecendo enquanto chega, com títulos, listas e blocos de código formatados),
@@ -46,7 +49,7 @@ garra memory add "O condominio fica na rua das Flores" --session projeto-x
 garra memory reindex        # gera vetor para o que ficou sem
 garra memory backup         # snapshot consistente, com retenção
 garra memory pin <id>       # a retenção nunca apaga
-garra memory ttl <id> 30d   # ou expira em 30 dias
+garra memory ttl <id> 30    # ou expira em 30 dias (numero, nao "30d")
 garra memory stats          # contagens + relatório de integridade do índice
 ```
 

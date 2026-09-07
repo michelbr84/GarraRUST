@@ -20,11 +20,14 @@ file, running `cargo test`, or simply stuck.
 
 ```
 ● Bash cargo test
-└─ 148 passed · 6.3s
+  └─ 148 passed · 6.3s · #7
 
-× Bash
-└─ error: exit 101 · 4.2s
+× Bash └─ error: exit 101 · 4.2s · #8
 ```
+
+On failure the name is repeated on the same line, deliberately: after long
+output, the start line may have scrolled away. The `#7` is a pointer — `/tool 7`
+prints that call's full output.
 
 Alongside it: **Markdown rendered without stalling the stream** (text keeps
 appearing as it arrives, with headings, lists and code blocks formatted), new
@@ -46,7 +49,7 @@ garra memory add "The building is on Flower Street" --session project-x
 garra memory reindex        # embed entries stored without a vector
 garra memory backup         # consistent snapshot, with retention
 garra memory pin <id>       # retention will never delete it
-garra memory ttl <id> 30d   # or expire it in 30 days
+garra memory ttl <id> 30    # or expire it in 30 days (a number, not "30d")
 garra memory stats          # counts + vector-index integrity report
 ```
 
