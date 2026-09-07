@@ -25,6 +25,7 @@ pub mod providers;
 pub mod runtime;
 pub mod tools;
 pub mod turn_events;
+pub mod turn_stats;
 
 pub use anthropic::AnthropicProvider;
 #[cfg(feature = "dev-echo-provider")]

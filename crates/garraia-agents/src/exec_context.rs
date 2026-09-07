@@ -52,6 +52,14 @@ pub struct ExecContext {
     /// o nome desfaria justamente o que o usuario customizou.
     pub custom_profile: Option<crate::modes::ModeProfile>,
 
+    /// O objetivo declarado da sessao (#983).
+    ///
+    /// O criterio de aceite pede que "o runtime receba o objetivo
+    /// **explicitamente**, sem depender apenas de texto concatenado no prompt".
+    /// Por isso e um campo, e nao uma string que alguem grudou na mensagem: o
+    /// runtime decide onde ele entra, e da para testar que entrou.
+    pub goal: Option<String>,
+
     /// Diretório contra o qual caminho relativo de ferramenta é resolvido.
     ///
     /// **Isto não é um sandbox**, e a #980 promete que é. Ver

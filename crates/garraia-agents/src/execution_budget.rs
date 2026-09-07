@@ -189,6 +189,11 @@ impl ExecutionBudget {
         self.current_turn_calls >= self.max_per_turn && self.current_task_calls < self.max_per_task
     }
 
+    /// Quantas ferramentas esta tarefa ja executou (#984).
+    pub fn chamadas_na_tarefa(&self) -> usize {
+        self.current_task_calls
+    }
+
     /// Verifica se ainda é permitido chamar outra ferramenta.
     pub fn pode_chamar_ferramenta(&self) -> bool {
         self.current_turn_calls < self.max_per_turn && self.current_task_calls < self.max_per_task

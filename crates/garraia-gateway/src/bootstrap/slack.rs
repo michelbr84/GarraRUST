@@ -138,7 +138,7 @@ pub fn build_slack_channels(
                     // definido" e a politica de ferramenta nao valia, so no Telegram
                     // valia. Assimetria silenciosa e pior que ausencia: o usuario
                     // acredita na restricao.
-                    let exec = state.exec_context_for(&session_id).await;
+                    let exec = state.exec_context_for(&session_id, Some(&user_id)).await;
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state

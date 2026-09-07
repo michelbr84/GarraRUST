@@ -263,19 +263,105 @@ pub fn register_commands(registry: &mut CommandRegistry) {
         Role::Admin,
         true,
         |ctx: &CommandContext| -> CommandResult {
-            let state = ctx
+            // Sem `unwrap()`: regra absoluta 4. O padrao herdado neste arquivo
+            // derruba o handler se o estado faltar ou vier de outro tipo, e um
+            // comando de chat nao deveria conseguir isso.
+            let Some(state) = ctx
                 .state
                 .as_ref()
-                .unwrap()
-                .downcast_ref::<AppState>()
-                .unwrap();
-            let sessions_count = state.sessions.len();
-            let overrides_count = state.channel_models.len();
-            let a2a_tasks = state.a2a_tasks.len();
-            Ok(format!(
-                "📊 **System Stats**\n\nActive Sessions: {}\nModel Overrides: {}\nIn-flight A2A Tasks: {}",
-                sessions_count, overrides_count, a2a_tasks
-            ))
+                .and_then(|s| s.downcast_ref::<AppState>())
+            else {
+                return Ok("⚠️ Estado indisponivel para este comando.".to_string());
+            };
+
+            let session_id = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    state
+                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                        .await
+                })
+            });
+
+            let mut out = String::from("📊 **Estatisticas**\n");
+
+            // ── O turno: o que foi usado de verdade (#984) ──────────────────
+            //
+            // A issue e explicita: provider/modelo **configurado** nao e o
+            // efetivo, porque o runtime resolve override, prefixo de modelo,
+            // `tools_model` e fallback pelo caminho. Entao isto vem do registro
+            // que o runtime escreve no fim do turno, e nao da config.
+            match state.agents.last_turn_stats(&session_id) {
+                Some(t) => {
+                    out.push_str("\n**Ultima resposta**\n");
+                    out.push_str(&format!("- Provider: {}\n", t.provider));
+                    out.push_str(&format!(
+                        "- Modelo: {}{}\n",
+                        t.model,
+                        if t.model_confirmado {
+                            ""
+                        } else {
+                            " *(pedido; o streaming nao reporta o efetivo)*"
+                        }
+                    ));
+                    if t.fallback {
+                        out.push_str("- ⚠️ Respondido por **fallback**\n");
+                    }
+                    out.push_str(&format!("- Ferramentas executadas: {}\n", t.tool_calls));
+                    if t.tokens_conhecidos {
+                        out.push_str(&format!(
+                            "- Tokens: {} entrada / {} saida\n",
+                            t.input_tokens, t.output_tokens
+                        ));
+                    } else {
+                        out.push_str("- Tokens: *(nao informados pelo provider)*\n");
+                    }
+                    out.push_str(&format!("- Latencia: {} ms\n", t.latency_ms));
+                }
+                None => {
+                    out.push_str("\n**Ultima resposta**: *(nenhum turno nesta sessao ainda)*\n");
+                }
+            }
+
+            // ── A sessao: modo aplicado e objetivo ──────────────────────────
+            //
+            // "Modo aplicado, nao apenas o modo salvo": o #988 separou escolha
+            // de deducao, e so a escolha liga a `ToolPolicy`. Mostrar so o modo
+            // salvo faria o usuario acreditar numa restricao que nao vale.
+            if let Some(store) = &state.session_store {
+                let store = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async { store.lock().await })
+                });
+                out.push_str("\n**Sessao**\n");
+                let salvo = store.get_agent_mode(&session_id).ok().flatten();
+                let escolhido = store.get_chosen_agent_mode(&session_id).ok().flatten();
+                match (&salvo, &escolhido) {
+                    (Some(m), Some(_)) => {
+                        out.push_str(&format!("- Modo: {m} *(escolhido — a politica vale)*\n"))
+                    }
+                    (Some(m), None) => out.push_str(&format!(
+                        "- Modo: {m} *(deduzido — a politica **nao** vale; use `/mode {m}` para \
+                         aplica-la)*\n"
+                    )),
+                    _ => out.push_str("- Modo: nenhum escolhido *(sem restricao de ferramenta)*\n"),
+                }
+                match store
+                    .get_session_goal(&session_id, AppState::goal_key(Some(ctx.user_id.as_str())))
+                {
+                    Ok(Some(goal)) => out.push_str(&format!("- Objetivo: {goal}\n")),
+                    _ => out.push_str("- Objetivo: *(nenhum)*\n"),
+                }
+            }
+
+            // ── O processo, para quem administra ────────────────────────────
+            out.push_str(&format!(
+                "\n**Processo**\n- Sessoes ativas: {}\n- Overrides de modelo: {}\n- Tarefas A2A \
+                 em voo: {}\n",
+                state.sessions.len(),
+                state.channel_models.len(),
+                state.a2a_tasks.len()
+            ));
+
+            Ok(out)
         },
     )));
 
@@ -328,6 +414,99 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                     "🔌 **Configured MCP Servers**\n\n- {}",
                     servers.join("\n- ")
                 ))
+            }
+        },
+    )));
+
+    // #983: /goal - objetivo persistente da sessao
+    registry.register(Box::new(ClosureCommand::new(
+        "goal",
+        "Get, set or clear the session goal",
+        "/goal [texto|clear]",
+        Role::User,
+        true,
+        |ctx: &CommandContext| -> CommandResult {
+            // Sem `unwrap()`: a regra absoluta 4 vale aqui. O padrao herdado
+            // neste arquivo e `ctx.state.as_ref().unwrap().downcast_ref().unwrap()`,
+            // que derruba o handler se o estado faltar ou vier de outro tipo —
+            // e um comando de chat nao deveria conseguir isso.
+            let Some(state) = ctx
+                .state
+                .as_ref()
+                .and_then(|s| s.downcast_ref::<AppState>())
+            else {
+                return Ok("⚠️ Estado indisponivel para este comando.".to_string());
+            };
+
+            // A mesma chave que a execucao usa (GAR-202 + #982): montar
+            // `telegram-{chat_id}` aqui gravaria numa linha que o runtime nunca
+            // le.
+            let session_id = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    state
+                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                        .await
+                })
+            });
+
+            let Some(store) = &state.session_store else {
+                return Ok("⚠️ Sem armazenamento de sessao: o objetivo nao persiste.".to_string());
+            };
+            let store = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async { store.lock().await })
+            });
+
+            // O objetivo e **por pessoa**, e nao por sessao: em grupo do
+            // Telegram ou do iMessage a sessao e do canal, e o objetivo entra
+            // no prompt de sistema. Sem esta chave, qualquer membro escreveria
+            // instrucao de sistema para os turnos dos outros — com um comando
+            // `Role::User`. Em conversa de um para um nada muda.
+            let chave = AppState::goal_key(Some(ctx.user_id.as_str()));
+
+            let pedido = ctx.args.join(" ");
+            let pedido = pedido.trim();
+
+            if pedido.is_empty() {
+                return match store.get_session_goal(&session_id, chave) {
+                    Ok(Some(goal)) => Ok(format!("🎯 Objetivo da sessao: {goal}")),
+                    Ok(None) => Ok(
+                        "🎯 Nenhum objetivo definido. Use `/goal <texto>` para definir.".to_string(),
+                    ),
+                    Err(e) => {
+                        tracing::warn!(session_id = %session_id, erro = %e, "falhou ao ler o objetivo");
+                        Ok("⚠️ Nao consegui ler o objetivo desta sessao.".to_string())
+                    }
+                };
+            }
+
+            if pedido.eq_ignore_ascii_case("clear") {
+                return match store.clear_session_goal(&session_id, chave) {
+                    Ok(()) => Ok("🎯 Objetivo removido.".to_string()),
+                    Err(e) => {
+                        tracing::warn!(session_id = %session_id, erro = %e, "falhou ao limpar o objetivo");
+                        Ok("⚠️ Nao consegui remover o objetivo. Mande uma mensagem primeiro e tente de novo.".to_string())
+                    }
+                };
+            }
+
+            // Nao engula o erro, pela mesma razao do `/mode`: `set_*` falha
+            // quando a linha da sessao ainda nao existe, e responder "objetivo
+            // definido" com o banco intacto e a falha que o #1008 corrigiu.
+            if pedido.chars().count() > garraia_db::SessionStore::GOAL_MAX_CHARS {
+                return Ok(format!(
+                    "⚠️ Objetivo longo demais ({} caracteres; o limite e {}). Ele voltaria no \
+                     prompt de **todo** turno seguinte, entao vale resumir.",
+                    pedido.chars().count(),
+                    garraia_db::SessionStore::GOAL_MAX_CHARS
+                ));
+            }
+
+            match store.set_session_goal(&session_id, chave, pedido) {
+                Ok(()) => Ok(format!("🎯 Objetivo definido: {pedido}")),
+                Err(e) => {
+                    tracing::warn!(session_id = %session_id, erro = %e, "falhou ao gravar o objetivo");
+                    Ok("⚠️ Nao consegui salvar o objetivo. Mande uma mensagem primeiro e tente de novo.".to_string())
+                }
             }
         },
     )));

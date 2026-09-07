@@ -562,7 +562,9 @@ async fn handle_streaming(
                 Some(model_clone.as_str()),
                 None,
                 None,
-                &state.exec_context_for(&session_id).await,
+                &state
+                    .exec_context_for(&session_id, user_id.as_deref())
+                    .await,
             )
             .await
         {
@@ -722,7 +724,9 @@ async fn handle_non_streaming(
             Some(model.as_str()),
             None,
             None,
-            &state.exec_context_for(&session_id).await,
+            &state
+                .exec_context_for(&session_id, user_id.as_deref())
+                .await,
         )
         .await;
 
