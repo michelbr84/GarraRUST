@@ -832,13 +832,26 @@ impl AppState {
     /// Modo customizado e procurado **por nome, dentro dos modos do usuario**,
     /// e nunca por id solto. Ver o comentario em `custom_mode_profile`.
     pub async fn exec_context_for(&self, session_id: &str) -> ExecContext {
+        let goal = self.session_goal_for(session_id).await;
         let Some(nome) = self.chosen_agent_mode_for(session_id).await else {
-            return ExecContext::default();
+            return ExecContext {
+                goal,
+                ..ExecContext::default()
+            };
         };
-        match self.custom_mode_profile(&nome).await {
+        let mut exec = match self.custom_mode_profile(&nome).await {
             Some(perfil) => ExecContext::with_custom_profile(nome, perfil),
             None => ExecContext::with_mode(Some(nome)),
-        }
+        };
+        exec.goal = goal;
+        exec
+    }
+
+    /// O objetivo declarado da sessao (#983).
+    pub async fn session_goal_for(&self, session_id: &str) -> Option<String> {
+        let store = self.session_store.as_ref()?;
+        let store = store.lock().await;
+        store.get_session_goal(session_id).ok().flatten()
     }
 
     /// O perfil de um modo customizado, procurado por nome.
@@ -1110,6 +1123,51 @@ mod tests {
         st.set_session_store(Arc::clone(&store));
         st.set_chat_session_manager(Arc::new(ChatSessionManager::new(store)));
         st
+    }
+
+    /// O objetivo da sessao chega ao `ExecContext` (#983).
+    ///
+    /// O criterio de aceite pede que o runtime receba o objetivo
+    /// **explicitamente**, e nao concatenado no prompt por quem chama. Este
+    /// teste percorre o caminho: gravar, montar o contexto, e conferir que o
+    /// campo veio — inclusive junto com um modo, porque os dois moram no mesmo
+    /// metadado.
+    #[tokio::test]
+    async fn objetivo_da_sessao_chega_ao_exec_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "sessao-com-objetivo";
+        st.hydrate_session_history(sid, Some("api"), None).await;
+
+        assert_eq!(
+            st.exec_context_for(sid).await.goal,
+            None,
+            "sem objetivo definido, o campo fica vazio"
+        );
+
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store
+                .set_session_goal(sid, "revisar a seguranca do gateway")
+                .expect("gravar o objetivo");
+            store.set_agent_mode(sid, "search").expect("gravar o modo");
+        }
+
+        let exec = st.exec_context_for(sid).await;
+        assert_eq!(exec.goal.as_deref(), Some("revisar a seguranca do gateway"));
+        assert_eq!(
+            exec.agent_mode.as_deref(),
+            Some("search"),
+            "o objetivo nao pode ter apagado o modo"
+        );
+
+        // E sobrevive ao turno, como o modo.
+        st.persist_turn(sid, Some("api"), None, "oi", "ola!").await;
+        assert_eq!(
+            st.exec_context_for(sid).await.goal.as_deref(),
+            Some("revisar a seguranca do gateway"),
+            "o persist_turn apagou o objetivo"
+        );
     }
 
     /// Um modo customizado escolhido chega ao `ExecContext` como perfil (#986).

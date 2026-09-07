@@ -190,6 +190,12 @@ pub struct AgentRuntime {
     tools_model: RwLock<Option<String>>,
     /// #952: o que nao merece vetor. Ver `crate::memory_noise`.
     noise_policy: crate::memory_noise::NoisePolicy,
+    /// #984: o que o ultimo turno de cada sessao realmente usou.
+    ///
+    /// Mora aqui, e nao no gateway, porque quem resolve provider, modelo e
+    /// fallback e o runtime — perguntar a config devolveria o configurado, que
+    /// a issue distingue explicitamente do efetivo.
+    turn_stats: RwLock<crate::turn_stats::TurnStatsRegistry>,
 }
 
 /// Avisa quando o modo whitelist deixou ferramenta MCP passar (#979).
@@ -230,6 +236,29 @@ fn avisar_lacuna_mcp(portao: &crate::modes::ToolGate, tool_defs: &[crate::ToolDe
     );
 }
 
+/// Injeta o objetivo da sessao no prompt de sistema (#983).
+///
+/// Vai no **system prompt**, e nao na mensagem do usuario, porque objetivo e
+/// enquadramento do turno inteiro e nao mais uma coisa que a pessoa disse. Se
+/// fosse concatenado na mensagem, sumiria da janela junto com ela quando o
+/// historico fosse podado — que e exatamente o que o criterio de aceite quis
+/// evitar ao pedir que o runtime recebesse o objetivo explicitamente.
+///
+/// Vazio ou so espaco nao entra: `/goal` sem argumento e consulta, e nao um
+/// objetivo em branco.
+fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
+    match goal.map(str::trim).filter(|g| !g.is_empty()) {
+        None => system,
+        Some(g) => {
+            let bloco = format!("Objetivo declarado desta sessao: {g}");
+            Some(match system {
+                Some(s) => format!("{s}\n\n{bloco}"),
+                None => bloco,
+            })
+        }
+    }
+}
+
 impl AgentRuntime {
     pub fn new() -> Self {
         Self {
@@ -247,6 +276,7 @@ impl AgentRuntime {
             memory_extractor: LlmMemoryExtractor::new(),
             resilience: Arc::new(ResilienceManager::new()),
             fallback_providers_list: RwLock::new(Vec::new()),
+            turn_stats: RwLock::new(crate::turn_stats::TurnStatsRegistry::new()),
             context_policy: ContextPolicy::default(),
             tools_model: RwLock::new(None),
             noise_policy: crate::memory_noise::NoisePolicy::default(),
@@ -319,6 +349,18 @@ impl AgentRuntime {
     /// GAR-210: Return the configured fallback provider IDs.
     pub fn fallback_providers(&self) -> Vec<String> {
         self.fallback_providers_list.read().unwrap().clone()
+    }
+
+    /// O que o ultimo turno desta sessao usou de fato (#984).
+    pub fn last_turn_stats(&self, session_id: &str) -> Option<crate::turn_stats::TurnStats> {
+        self.turn_stats.read().ok()?.get(session_id).cloned()
+    }
+
+    /// Registra o turno. Chamado no fim de cada caminho de execucao.
+    fn record_turn_stats(&self, session_id: &str, stats: crate::turn_stats::TurnStats) {
+        if let Ok(mut reg) = self.turn_stats.write() {
+            reg.record(session_id, stats);
+        }
     }
 
     pub fn system_prompt(&self) -> Option<&str> {
@@ -853,7 +895,10 @@ impl AgentRuntime {
             .map(|s| s.to_string())
             .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = self.base_system_prompt(explicit_prompt.as_deref());
+        let effective_system_prompt = com_objetivo(
+            self.base_system_prompt(explicit_prompt.as_deref()),
+            exec.goal.as_deref(),
+        );
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
@@ -936,6 +981,15 @@ impl AgentRuntime {
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
 
+        // #984: o que o turno realmente usar. Acumula ao longo do loop porque
+        // um turno com ferramenta faz varias chamadas ao LLM, e o `/stats`
+        // quer o total, nao a ultima.
+        let inicio_do_turno = std::time::Instant::now();
+        let mut turno = crate::turn_stats::TurnStats {
+            mode: portao.nome_do_modo().map(|m| m.to_string()),
+            ..crate::turn_stats::TurnStats::default()
+        };
+
         loop {
             // Auto-reset turn limit when reached (but task limit not reached)
             // This allows multi-turn agent loops without failing
@@ -961,7 +1015,21 @@ impl AgentRuntime {
                 tools: tool_defs.clone(),
             };
 
-            let response = self.complete_with_fallback(&provider, &request).await?;
+            let (response, provider_usado) = self
+                .complete_reportando_provider(&provider, &request)
+                .await?;
+            // #984: o modelo vem da **resposta**, e nao do pedido — e o unico
+            // valor que sobreviveu a todas as resolucoes (override, prefixo de
+            // modelo, `tools_model`, fallback).
+            turno.fallback = provider_usado != provider.provider_id();
+            turno.provider = provider_usado;
+            turno.model = response.model.clone();
+            turno.model_confirmado = true;
+            if let Some(u) = &response.usage {
+                turno.tokens_conhecidos = true;
+                turno.input_tokens = turno.input_tokens.saturating_add(u.input_tokens);
+                turno.output_tokens = turno.output_tokens.saturating_add(u.output_tokens);
+            }
 
             let has_tool_use = response
                 .content
@@ -981,6 +1049,9 @@ impl AgentRuntime {
                 {
                     warn!("failed to store turn in memory: {}", e);
                 }
+                turno.tool_calls = budget.chamadas_na_tarefa();
+                turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                self.record_turn_stats(session_id, turno);
                 return Ok(final_text);
             }
 
@@ -1140,7 +1211,10 @@ impl AgentRuntime {
             .system_prompt()
             .map(|s| s.to_string())
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = self.base_system_prompt(prompt_do_modo.as_deref());
+        let effective_system_prompt = com_objetivo(
+            self.base_system_prompt(prompt_do_modo.as_deref()),
+            exec.goal.as_deref(),
+        );
         let system = match (&effective_system_prompt, memory_context) {
             (Some(prompt), Some(ctx)) => Some(format!("{prompt}\n\n{ctx}")),
             (Some(prompt), None) => Some(prompt.clone()),
@@ -1582,7 +1656,10 @@ impl AgentRuntime {
         let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
             .or_else(|| self.system_prompt.clone());
-        let effective_system_prompt = self.base_system_prompt(explicit_prompt.as_deref());
+        let effective_system_prompt = com_objetivo(
+            self.base_system_prompt(explicit_prompt.as_deref()),
+            exec.goal.as_deref(),
+        );
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
@@ -1664,6 +1741,14 @@ impl AgentRuntime {
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
+
+        // #984: mesmo registro do caminho nao-streaming. O `/stats` nao pode
+        // saber menos sobre um turno so porque ele veio em pedacos.
+        let inicio_do_turno = std::time::Instant::now();
+        let mut turno = crate::turn_stats::TurnStats {
+            mode: portao.nome_do_modo().map(|m| m.to_string()),
+            ..crate::turn_stats::TurnStats::default()
+        };
 
         loop {
             // Auto-reset turn limit when reached (but task limit not reached)
@@ -1768,6 +1853,16 @@ impl AgentRuntime {
                         {
                             warn!("failed to store turn in memory: {}", e);
                         }
+
+                        // #984: no streaming nao ha `LlmResponse`, entao o
+                        // modelo aqui e o **pedido** e nao ha contagem de
+                        // tokens. Os dois campos ficam marcados como nao
+                        // confirmados; o `/stats` diz isso em vez de fingir.
+                        turno.provider = provider.provider_id().to_string();
+                        turno.model = effective_model.clone();
+                        turno.tool_calls = budget.chamadas_na_tarefa();
+                        turno.latency_ms = inicio_do_turno.elapsed().as_millis() as u64;
+                        self.record_turn_stats(session_id, turno);
 
                         return Ok(full_response);
                     }
@@ -2085,6 +2180,22 @@ impl AgentRuntime {
         primary: &Arc<dyn LlmProvider>,
         request: &LlmRequest,
     ) -> Result<LlmResponse> {
+        self.complete_reportando_provider(primary, request)
+            .await
+            .map(|(resp, _)| resp)
+    }
+
+    /// Igual, mas diz **quem** serviu (#984).
+    ///
+    /// O `/stats` precisa distinguir "o primario respondeu" de "o primario caiu
+    /// e um fallback respondeu", e a `LlmResponse` sozinha nao conta essa
+    /// historia: ela traz o modelo, nao o provider. Sem isto, "provider
+    /// efetivo" seria um palpite.
+    pub async fn complete_reportando_provider(
+        &self,
+        primary: &Arc<dyn LlmProvider>,
+        request: &LlmRequest,
+    ) -> Result<(LlmResponse, String)> {
         let primary_id = primary.provider_id().to_string();
         let retry_policy = &self.resilience.retry_policy;
 
@@ -2096,7 +2207,7 @@ impl AgentRuntime {
                 match primary.complete(request).await {
                     Ok(resp) => {
                         primary_cb.record_success().await;
-                        return Ok(resp);
+                        return Ok((resp, primary_id.clone()));
                     }
                     Err(e) if is_retryable_error(&e) => {
                         warn!(
@@ -2139,7 +2250,7 @@ impl AgentRuntime {
             match fallback.complete(request).await {
                 Ok(resp) => {
                     cb.record_success().await;
-                    return Ok(resp);
+                    return Ok((resp, fallback_id.clone()));
                 }
                 Err(e) => {
                     warn!("fallback '{}' failed: {}", fallback_id, e);
@@ -2434,6 +2545,46 @@ impl Default for AgentRuntime {
 
 #[cfg(test)]
 mod tests {
+
+    /// O objetivo entra no prompt de sistema, e nao na mensagem (#983).
+    #[test]
+    fn objetivo_entra_no_system_prompt() {
+        let com = com_objetivo(
+            Some("Voce e um assistente.".into()),
+            Some("revisar a seguranca do gateway"),
+        )
+        .expect("com prompt e com goal");
+        assert!(com.contains("Voce e um assistente."), "o prompt base fica");
+        assert!(
+            com.contains("revisar a seguranca do gateway"),
+            "o objetivo entra"
+        );
+
+        // Sem prompt base, o objetivo sozinho ja e um system prompt valido.
+        let so_goal = com_objetivo(None, Some("achar o bug")).expect("so o goal");
+        assert!(so_goal.contains("achar o bug"));
+    }
+
+    /// Sem objetivo, o prompt nao muda — nem ganha bloco vazio.
+    #[test]
+    fn sem_objetivo_o_prompt_fica_igual() {
+        assert_eq!(
+            com_objetivo(Some("Voce e um assistente.".into()), None).as_deref(),
+            Some("Voce e um assistente.")
+        );
+        assert_eq!(com_objetivo(None, None), None);
+
+        // `/goal` sem argumento e consulta; string vazia nao e objetivo.
+        for vazio in ["", "   ", "\n\t "] {
+            assert_eq!(
+                com_objetivo(Some("base".into()), Some(vazio)).as_deref(),
+                Some("base"),
+                "objetivo {vazio:?} nao deveria entrar"
+            );
+            assert_eq!(com_objetivo(None, Some(vazio)), None);
+        }
+    }
+
     use super::*;
 
     // ─── #957: as metricas da memoria ─────────────────────────────────────

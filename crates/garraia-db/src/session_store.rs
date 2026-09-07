@@ -1012,6 +1012,89 @@ impl SessionStore {
     // GAR-222: Mode Persistence - Armazenar modo por sessão
     // ============================================================================
 
+    /// Chave de metadados que guarda o objetivo da sessao (#983).
+    const SESSION_GOAL: &'static str = "goal";
+
+    /// O objetivo declarado da sessao, se houver (#983).
+    ///
+    /// Mora no mesmo JSON de `sessions.metadata` que o modo. Isso so e seguro
+    /// desde o #1008: antes o upsert do turno substituia a coluna inteira, entao
+    /// gravar goal aqui seria gravar e perder no mesmo turno — exatamente o que
+    /// acontecia com o modo.
+    pub fn get_session_goal(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT metadata FROM sessions WHERE id = ?1")
+            .map_err(|e| Error::Database(format!("failed to prepare goal query: {e}")))?;
+
+        let metadata: Option<String> = stmt.query_row(params![session_id], |row| row.get(0)).ok();
+
+        if let Some(m) = metadata
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&m)
+            && let Some(goal) = v.get(Self::SESSION_GOAL).and_then(|g| g.as_str())
+            && !goal.trim().is_empty()
+        {
+            return Ok(Some(goal.to_string()));
+        }
+        Ok(None)
+    }
+
+    /// Define o objetivo da sessao (#983).
+    ///
+    /// Como o `set_agent_mode`, falha quando a sessao nao existe: `UPDATE ...
+    /// WHERE id = ?` casando zero linhas nao e sucesso, e foi assim que o
+    /// `X-Agent-Mode` sumia sem deixar rastro.
+    pub fn set_session_goal(&self, session_id: &str, goal: &str) -> Result<()> {
+        self.write_session_metadata_key(
+            session_id,
+            Self::SESSION_GOAL,
+            serde_json::Value::String(goal.to_string()),
+        )
+    }
+
+    /// Remove o objetivo da sessao (#983).
+    pub fn clear_session_goal(&self, session_id: &str) -> Result<()> {
+        self.write_session_metadata_key(session_id, Self::SESSION_GOAL, serde_json::Value::Null)
+    }
+
+    /// Grava uma chave no metadado da sessao, preservando o resto.
+    ///
+    /// Le, muda a chave, escreve de volta — tudo sob a mesma guarda do store,
+    /// que e o que torna o par leitura+escrita atomico entre chamadores.
+    fn write_session_metadata_key(
+        &self,
+        session_id: &str,
+        chave: &str,
+        valor: serde_json::Value,
+    ) -> Result<()> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT metadata FROM sessions WHERE id = ?1")
+            .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
+        let atual: Option<String> = stmt.query_row(params![session_id], |row| row.get(0)).ok();
+
+        let mut metadata = atual
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        metadata[chave] = valor;
+
+        let afetadas = self
+            .conn
+            .execute(
+                "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![metadata.to_string(), session_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to write session metadata: {e}")))?;
+
+        if afetadas == 0 {
+            return Err(Error::Database(format!(
+                "sessao '{session_id}' nao existe; grave o metadado depois de criar a sessao"
+            )));
+        }
+        Ok(())
+    }
+
     /// Chave de metadados que registra **quem** escolheu o modo da sessao.
     ///
     /// Valores: `"user"` (alguem digitou `/mode`, mandou `X-Agent-Mode` ou
@@ -2105,6 +2188,109 @@ mod tests {
         // (We can't easily check internal metadata, but setting mode shouldn't break)
         let mode = store.get_agent_mode(session_id).unwrap();
         assert_eq!(mode, Some("orchestrator".to_string()));
+    }
+
+    // ── Objetivo da sessao (#983) ──────────────────────────────────────────
+
+    /// O objetivo persiste, sobrevive ao turno e some quando limpo.
+    ///
+    /// Sobreviver ao turno importa: o goal mora no mesmo JSON que o modo, e ate
+    /// o #1008 o upsert do turno substituia a coluna inteira. Gravar goal antes
+    /// dessa correcao seria gravar e perder no mesmo turno.
+    #[test]
+    fn goal_da_sessao_persiste_e_limpa() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let sid = "sessao-com-goal";
+        store
+            .upsert_session(sid, "web", "u1", &serde_json::json!({}))
+            .unwrap();
+
+        assert_eq!(store.get_session_goal(sid).unwrap(), None);
+
+        store
+            .set_session_goal(sid, "revisar a seguranca do gateway")
+            .unwrap();
+        assert_eq!(
+            store.get_session_goal(sid).unwrap().as_deref(),
+            Some("revisar a seguranca do gateway")
+        );
+
+        // O upsert do turno nao pode apaga-lo.
+        store
+            .upsert_session(
+                sid,
+                "web",
+                "u1",
+                &serde_json::json!({ "continuity_key": "bus:global" }),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_session_goal(sid).unwrap().as_deref(),
+            Some("revisar a seguranca do gateway"),
+            "o upsert do turno apagou o objetivo"
+        );
+
+        store.clear_session_goal(sid).unwrap();
+        assert_eq!(store.get_session_goal(sid).unwrap(), None);
+    }
+
+    /// O objetivo nao vaza entre sessoes.
+    #[test]
+    fn goal_nao_vaza_entre_sessoes() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        for sid in ["sessao-a", "sessao-b"] {
+            store
+                .upsert_session(sid, "web", "u1", &serde_json::json!({}))
+                .unwrap();
+        }
+        store.set_session_goal("sessao-a", "objetivo do A").unwrap();
+
+        assert_eq!(
+            store.get_session_goal("sessao-a").unwrap().as_deref(),
+            Some("objetivo do A")
+        );
+        assert_eq!(store.get_session_goal("sessao-b").unwrap(), None);
+    }
+
+    /// Gravar goal e o modo na mesma sessao nao faz um apagar o outro.
+    ///
+    /// Os dois moram no mesmo objeto JSON, e a escrita e read-modify-write.
+    #[test]
+    fn goal_e_modo_convivem_no_mesmo_metadado() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let sid = "sessao-goal-modo";
+        store
+            .upsert_session(sid, "web", "u1", &serde_json::json!({}))
+            .unwrap();
+
+        store.set_agent_mode(sid, "search").unwrap();
+        store.set_session_goal(sid, "achar o bug").unwrap();
+
+        assert_eq!(
+            store.get_chosen_agent_mode(sid).unwrap().as_deref(),
+            Some("search"),
+            "gravar o goal apagou o modo"
+        );
+        assert_eq!(
+            store.get_session_goal(sid).unwrap().as_deref(),
+            Some("achar o bug")
+        );
+
+        // E na ordem inversa.
+        store.set_agent_mode(sid, "code").unwrap();
+        assert_eq!(
+            store.get_session_goal(sid).unwrap().as_deref(),
+            Some("achar o bug"),
+            "gravar o modo apagou o goal"
+        );
+    }
+
+    /// Goal em sessao inexistente e erro, nao no-op silencioso.
+    #[test]
+    fn goal_em_sessao_inexistente_falha() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        assert!(store.set_session_goal("nunca-criada", "x").is_err());
+        assert_eq!(store.get_session_goal("nunca-criada").unwrap(), None);
     }
 
     // ── Modo customizado: escopo por usuario (#986) ────────────────────────
