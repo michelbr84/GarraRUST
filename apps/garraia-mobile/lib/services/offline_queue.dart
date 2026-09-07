@@ -6,6 +6,8 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../providers/chat_provider.dart';
+import '../runtime/runtime_config.dart';
+import '../runtime/runtime_providers.dart';
 
 part 'offline_queue.g.dart';
 
@@ -116,6 +118,13 @@ class OfflineQueue {
   }
 
   /// Try to send all pending messages in order.
+  ///
+  /// Goes to the runtime directly instead of through `chatMessagesProvider`:
+  /// that notifier is autoDispose and only alive while a chat screen watches
+  /// it, whereas this queue is keepAlive and fires from connectivity
+  /// callbacks with no screen open. The session comes from
+  /// `currentSessionProvider` (keepAlive, persisted), so the flush lands in
+  /// the conversation the user opens next; an open chat is told to reload.
   Future<void> flushQueue() async {
     if (_syncing) return;
     _syncing = true;
@@ -130,7 +139,12 @@ class OfflineQueue {
       return;
     }
 
+    var sentAny = false;
     try {
+      // Before onboarding there is nothing to send to; messages stay queued.
+      final conn = _ref.read(garraConnectionProvider);
+      if (conn == null) return;
+
       final pending = await db.query(
         'pending_messages',
         where: 'status = ?',
@@ -138,16 +152,18 @@ class OfflineQueue {
         orderBy: 'id ASC',
       );
 
-      final chat = _ref.read(chatMessagesProvider.notifier);
-
       for (final row in pending) {
         final id = row['id'] as int;
         final message = row['message'] as String;
         final retryCount = row['retry_count'] as int? ?? 0;
 
         try {
-          await chat.send(message);
+          final sessionId = conn.mode == RuntimeMode.cloud
+              ? null
+              : await _ref.read(currentSessionProvider.notifier).ensure();
+          await conn.sendMessage(message, sessionId: sessionId);
           await db.delete('pending_messages', where: 'id = ?', whereArgs: [id]);
+          sentAny = true;
         } catch (e) {
           debugPrint('OfflineQueue: failed to send message $id: $e');
           if (retryCount >= 5) {
@@ -173,6 +189,9 @@ class OfflineQueue {
     } finally {
       _syncing = false;
       await _updateQueueStatus();
+      // The replies live in the runtime's history now; a chat screen that is
+      // open rebuilds from it (no-op when nobody is watching).
+      if (sentAny) _ref.invalidate(chatMessagesProvider);
     }
   }
 

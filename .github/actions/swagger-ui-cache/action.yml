@@ -25,15 +25,21 @@ inputs:
 runs:
   using: composite
   steps:
+    # Inputs reach the shell through `env:`, never through `${{ }}` inside
+    # `run:` — an expression expanded into a script is a shell-injection seam,
+    # an environment variable is just data.
     - name: Point SWAGGER_UI_DOWNLOAD_URL at the local cache (cross-platform file:// URI)
       shell: bash
+      env:
+        SWAGGER_UI_VERSION: ${{ inputs.version }}
+        SWAGGER_UI_DIR_INPUT: ${{ inputs.dir }}
       run: |
         set -euo pipefail
-        dir="${{ inputs.dir }}"
+        dir="${SWAGGER_UI_DIR_INPUT}"
         if [ -z "${dir}" ]; then dir="${RUNNER_TEMP}/swagger-ui-cache"; fi
         mkdir -p "${dir}"
         # pathlib.as_uri() yields file:///C:/… on Windows and file:///… elsewhere.
-        uri="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "${dir}/${{ inputs.version }}.zip")"
+        uri="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "${dir}/${SWAGGER_UI_VERSION}.zip")"
         echo "SWAGGER_UI_DOWNLOAD_URL=${uri}" >> "${GITHUB_ENV}"
         echo "SWAGGER_UI_CACHE_DIR=${dir}" >> "${GITHUB_ENV}"
 
@@ -48,9 +54,11 @@ runs:
       # exactly the failure mode this action exists to prevent, so the file is
       # verified as a real zip before the build script ever opens it.
       shell: bash
+      env:
+        SWAGGER_UI_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        zip="${SWAGGER_UI_CACHE_DIR}/${{ inputs.version }}.zip"
+        zip="${SWAGGER_UI_CACHE_DIR}/${SWAGGER_UI_VERSION}.zip"
         check() { python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).testzip()' "$1"; }
         if [ -f "${zip}" ] && check "${zip}" 2>/dev/null; then
           echo "cached ${zip} is a valid zip"
@@ -59,6 +67,6 @@ runs:
         rm -f "${zip}"
         curl -sSLf --retry 5 --retry-delay 5 \
           -o "${zip}" \
-          "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${{ inputs.version }}.zip"
+          "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${SWAGGER_UI_VERSION}.zip"
         check "${zip}"
         echo "downloaded ${zip} ($(wc -c < "${zip}") bytes, zip verified)"

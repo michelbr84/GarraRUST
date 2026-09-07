@@ -96,11 +96,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         apiKey: _apiKey.text.trim().isEmpty ? null : _apiKey.text.trim(),
       );
       final h = await conn.health();
-      setState(() => _probe = h);
+      if (mounted) setState(() => _probe = h);
     } on DioException catch (e) {
-      setState(() => _probeError = _explain(e));
+      // The probe outlives the screen if the user backs out mid-request.
+      if (mounted) setState(() => _probeError = _explain(e));
     } catch (e) {
-      setState(() => _probeError = e.toString());
+      if (mounted) setState(() => _probeError = e.toString());
     } finally {
       if (mounted) setState(() => _testing = false);
     }
@@ -313,6 +314,7 @@ class _RuntimeStep extends StatelessWidget {
             decoration: InputDecoration(hintText: mode.defaultBaseUrl),
           ),
         ],
+        if (mode == RuntimeMode.remote) _PlainHttpHint(url: url),
         if (mode == RuntimeMode.remote) ...[
           const SizedBox(height: 12),
           Text(
@@ -474,6 +476,52 @@ class _TermuxHint extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Shown under the address field while a LAN address is plain `http://`.
+/// Loopback (On this phone) never leaves the device, and Cloud is pinned to
+/// HTTPS by the network security config, so only the LAN mode needs it.
+class _PlainHttpHint extends StatelessWidget {
+  final TextEditingController url;
+  const _PlainHttpHint({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: url,
+      builder: (context, value, _) {
+        final text = value.text.trim().toLowerCase();
+        if (text.isEmpty || text.startsWith('https://')) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.lock_open_rounded,
+                size: 14,
+                color: GarraColors.textMuted,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Plain HTTP: your messages and the API key are readable on '
+                  'this network. Fine on your home Wi-Fi, not on a public one.',
+                  style: garraText(
+                    size: 12,
+                    color: GarraColors.textMuted,
+                    height: 1.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

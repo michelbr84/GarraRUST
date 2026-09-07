@@ -14,10 +14,16 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.microphone" android:required="false"/>
 
+    <!-- allowBackup=false: SharedPreferences hold the runtime URL and the
+         gateway session id, and flutter_secure_storage's Keystore-wrapped
+         blob would be copied by auto-backup / `adb backup` as opaque bytes.
+         Nothing here is worth restoring onto another device — onboarding
+         takes 30 seconds — so the whole app is excluded from backups. -->
     <application
         android:label="Garra"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
@@ -39,7 +45,11 @@
             </intent-filter>
 
             <!-- Deep links handled by lib/router/app_router.dart:
-                 garraia://chat/<sessionId> and garraia://session/<id>. -->
+                 garraia://chat/<sessionId> and garraia://session/<id>.
+                 BROWSABLE means any app or web page can fire these; the
+                 path segment is only ever used as a session id to look up
+                 on the runtime (404 → empty chat), never as a URL or a
+                 command, so a hostile link can at most open a blank chat. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>

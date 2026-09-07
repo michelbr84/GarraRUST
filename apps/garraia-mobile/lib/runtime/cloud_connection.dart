@@ -10,6 +10,10 @@ import 'runtime_config.dart';
 /// [GatewayConnection]. Chat is the exception: Cloud Alpha talks through the
 /// JWT-protected `/chat` + `/chat/history` (`mobile_chat.rs`) instead of
 /// `/api/sessions`, and is single-threaded per account.
+///
+/// The gateway-session cookie replay is switched off here: the only
+/// credential in cloud mode is the JWT, and `POST /api/sessions` is never
+/// called, so there is no legitimate `garraia_session` cookie to carry.
 class CloudConnection extends GatewayConnection {
   final ApiService _api;
 
@@ -19,6 +23,7 @@ class CloudConnection extends GatewayConnection {
         mode: RuntimeMode.cloud,
         baseUrl: baseUrl ?? kCloudBaseUrl,
         dio: _cloudDio(baseUrl ?? kCloudBaseUrl, api),
+        replaySessionCookie: false,
       );
 
   static Dio _cloudDio(String baseUrl, ApiService api) {

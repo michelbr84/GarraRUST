@@ -39,7 +39,15 @@ Sessão do gateway: `POST /api/sessions` devolve `session_id` (persistido em
 `garraia_session_id`) e, quando `session_tokens_required`, um cookie
 `garraia_session` que o Dio não guarda sozinho — `GatewayConnection` captura o
 `Set-Cookie` e o repete como `Cookie` (`session_auth.rs` aceita cookie ou
-Bearer).
+Bearer). Só nos modos local e LAN: a `CloudConnection` desliga o replay
+(`replaySessionCookie: false`), porque no cloud a credencial é o JWT e a
+sessão do gateway nunca é criada.
+
+Fila offline (`services/offline_queue.dart`): mensagens que falharam sem rede
+ficam em SQLite e são reenviadas **direto pela `GarraConnection`**, com a
+sessão persistida de `currentSessionProvider` — nunca pelo notifier do chat,
+que é autoDispose e só existe enquanto a tela está aberta. Depois do flush a
+tela de chat, se aberta, recarrega o histórico.
 
 ## Negociação de capabilities
 

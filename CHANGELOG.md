@@ -123,6 +123,17 @@ gateway, depois de o E2E cair em `main` no dia do corte da v0.3.9.
   em `SharedPreferences`), e chaves de provider continuam no runtime, nunca
   no telefone — enquanto o runtime for outro app (UID do Termux != UID do
   app), o Keystore do app nao alcanca o cofre do Garra.
+- **Garra Mobile: backup do Android desligado e cookie de sessao so onde
+  faz sentido.** `android:allowBackup="false"` no manifesto — as
+  `SharedPreferences` guardam a URL do runtime e o `session_id` do gateway,
+  e o auto-backup / `adb backup` os copiaria para fora do aparelho sem ganho
+  nenhum (refazer o onboarding leva trinta segundos). A `CloudConnection`
+  deixa de herdar o replay do cookie `garraia_session`: no cloud a unica
+  credencial e o JWT e `POST /api/sessions` nunca e chamado, entao um cookie
+  ali so poderia ter sido plantado por uma resposta hostil. O onboarding
+  avisa quando o endereco LAN e `http://` puro, e a fila offline passou a
+  falar com o runtime diretamente (sessao persistida) em vez de acordar o
+  notifier do chat, que e autoDispose e pode nao existir sem tela aberta.
 
 ## [0.3.9] - 2026-09-07
 

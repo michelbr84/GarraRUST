@@ -12,7 +12,10 @@ import 'runtime_config.dart';
 /// `Authorization: Bearer` (what `session_auth.rs` and `ws.rs` read). Session
 /// tokens (GAR-202) arrive as a `garraia_session` cookie on
 /// `POST /api/sessions`; Dio has no cookie jar on mobile, so the cookie is
-/// captured once and replayed as a `Cookie` header.
+/// captured once and replayed as a `Cookie` header — only when
+/// [replaySessionCookie] is on. The cloud subclass turns it off: its chat
+/// is JWT-authenticated and never creates a gateway session, so a cookie
+/// there could only be something a hostile response planted.
 class GatewayConnection implements GarraConnection {
   @override
   final RuntimeMode mode;
@@ -27,6 +30,7 @@ class GatewayConnection implements GarraConnection {
     required this.baseUrl,
     String? apiKey,
     Dio? dio,
+    bool replaySessionCookie = true,
   }) : _dio =
            dio ??
            Dio(
@@ -41,7 +45,7 @@ class GatewayConnection implements GarraConnection {
                },
              ),
            ) {
-    _dio.interceptors.add(_CookieReplay(this));
+    if (replaySessionCookie) _dio.interceptors.add(_CookieReplay(this));
   }
 
   // ── Health / capabilities ────────────────────────────────────────────────
@@ -115,7 +119,18 @@ class GatewayConnection implements GarraConnection {
       '/api/sessions/$sessionId/messages',
       data: {'content': text},
     );
-    return r.data?['content'] as String? ?? '';
+    // `SendMessageResponse.content` is a required String on the Rust side
+    // (api.rs). A 200 without it is a contract break, not an empty reply —
+    // surface it instead of appending a blank assistant bubble.
+    final content = r.data?['content'] as String?;
+    if (content == null) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        message: 'reply content missing from the gateway response',
+      );
+    }
+    return content;
   }
 
   // ── Memory ───────────────────────────────────────────────────────────────
