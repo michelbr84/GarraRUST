@@ -344,7 +344,9 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                     )),
                     _ => out.push_str("- Modo: nenhum escolhido *(sem restricao de ferramenta)*\n"),
                 }
-                match store.get_session_goal(&session_id) {
+                match store
+                    .get_session_goal(&session_id, AppState::goal_key(Some(ctx.user_id.as_str())))
+                {
                     Ok(Some(goal)) => out.push_str(&format!("- Objetivo: {goal}\n")),
                     _ => out.push_str("- Objetivo: *(nenhum)*\n"),
                 }
@@ -454,11 +456,18 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 tokio::runtime::Handle::current().block_on(async { store.lock().await })
             });
 
+            // O objetivo e **por pessoa**, e nao por sessao: em grupo do
+            // Telegram ou do iMessage a sessao e do canal, e o objetivo entra
+            // no prompt de sistema. Sem esta chave, qualquer membro escreveria
+            // instrucao de sistema para os turnos dos outros — com um comando
+            // `Role::User`. Em conversa de um para um nada muda.
+            let chave = AppState::goal_key(Some(ctx.user_id.as_str()));
+
             let pedido = ctx.args.join(" ");
             let pedido = pedido.trim();
 
             if pedido.is_empty() {
-                return match store.get_session_goal(&session_id) {
+                return match store.get_session_goal(&session_id, chave) {
                     Ok(Some(goal)) => Ok(format!("🎯 Objetivo da sessao: {goal}")),
                     Ok(None) => Ok(
                         "🎯 Nenhum objetivo definido. Use `/goal <texto>` para definir.".to_string(),
@@ -471,7 +480,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             }
 
             if pedido.eq_ignore_ascii_case("clear") {
-                return match store.clear_session_goal(&session_id) {
+                return match store.clear_session_goal(&session_id, chave) {
                     Ok(()) => Ok("🎯 Objetivo removido.".to_string()),
                     Err(e) => {
                         tracing::warn!(session_id = %session_id, erro = %e, "falhou ao limpar o objetivo");
@@ -483,7 +492,16 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             // Nao engula o erro, pela mesma razao do `/mode`: `set_*` falha
             // quando a linha da sessao ainda nao existe, e responder "objetivo
             // definido" com o banco intacto e a falha que o #1008 corrigiu.
-            match store.set_session_goal(&session_id, pedido) {
+            if pedido.chars().count() > garraia_db::SessionStore::GOAL_MAX_CHARS {
+                return Ok(format!(
+                    "⚠️ Objetivo longo demais ({} caracteres; o limite e {}). Ele voltaria no \
+                     prompt de **todo** turno seguinte, entao vale resumir.",
+                    pedido.chars().count(),
+                    garraia_db::SessionStore::GOAL_MAX_CHARS
+                ));
+            }
+
+            match store.set_session_goal(&session_id, chave, pedido) {
                 Ok(()) => Ok(format!("🎯 Objetivo definido: {pedido}")),
                 Err(e) => {
                     tracing::warn!(session_id = %session_id, erro = %e, "falhou ao gravar o objetivo");

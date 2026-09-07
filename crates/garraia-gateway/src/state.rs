@@ -831,8 +831,12 @@ impl AppState {
     ///
     /// Modo customizado e procurado **por nome, dentro dos modos do usuario**,
     /// e nunca por id solto. Ver o comentario em `custom_mode_profile`.
-    pub async fn exec_context_for(&self, session_id: &str) -> ExecContext {
-        let goal = self.session_goal_for(session_id).await;
+    /// `user_id` importa: em grupo do Telegram ou do iMessage a sessao e do
+    /// canal, e o objetivo e por pessoa (#983). Quem nao tem usuario
+    /// distinguivel — CLI, overlay, `POST /api/chat` — passa `None`, e a sessao
+    /// e a pessoa.
+    pub async fn exec_context_for(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
+        let goal = self.session_goal_for(session_id, user_id).await;
         let Some(nome) = self.chosen_agent_mode_for(session_id).await else {
             return ExecContext {
                 goal,
@@ -847,11 +851,26 @@ impl AppState {
         exec
     }
 
-    /// O objetivo declarado da sessao (#983).
-    pub async fn session_goal_for(&self, session_id: &str) -> Option<String> {
+    /// O objetivo declarado por esta pessoa nesta sessao (#983).
+    pub async fn session_goal_for(
+        &self,
+        session_id: &str,
+        user_id: Option<&str>,
+    ) -> Option<String> {
         let store = self.session_store.as_ref()?;
         let store = store.lock().await;
-        store.get_session_goal(session_id).ok().flatten()
+        store
+            .get_session_goal(session_id, Self::goal_key(user_id))
+            .ok()
+            .flatten()
+    }
+
+    /// A chave sob a qual o objetivo de alguem e gravado.
+    pub fn goal_key(user_id: Option<&str>) -> &str {
+        user_id
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .unwrap_or(garraia_db::SessionStore::GOAL_SOLO)
     }
 
     /// O perfil de um modo customizado, procurado por nome.
@@ -1140,7 +1159,7 @@ mod tests {
         st.hydrate_session_history(sid, Some("api"), None).await;
 
         assert_eq!(
-            st.exec_context_for(sid).await.goal,
+            st.exec_context_for(sid, Some("u1")).await.goal,
             None,
             "sem objetivo definido, o campo fica vazio"
         );
@@ -1148,12 +1167,12 @@ mod tests {
         {
             let store = st.session_store.as_ref().expect("store").lock().await;
             store
-                .set_session_goal(sid, "revisar a seguranca do gateway")
+                .set_session_goal(sid, "u1", "revisar a seguranca do gateway")
                 .expect("gravar o objetivo");
             store.set_agent_mode(sid, "search").expect("gravar o modo");
         }
 
-        let exec = st.exec_context_for(sid).await;
+        let exec = st.exec_context_for(sid, Some("u1")).await;
         assert_eq!(exec.goal.as_deref(), Some("revisar a seguranca do gateway"));
         assert_eq!(
             exec.agent_mode.as_deref(),
@@ -1164,7 +1183,7 @@ mod tests {
         // E sobrevive ao turno, como o modo.
         st.persist_turn(sid, Some("api"), None, "oi", "ola!").await;
         assert_eq!(
-            st.exec_context_for(sid).await.goal.as_deref(),
+            st.exec_context_for(sid, Some("u1")).await.goal.as_deref(),
             Some("revisar a seguranca do gateway"),
             "o persist_turn apagou o objetivo"
         );
@@ -1201,7 +1220,7 @@ mod tests {
                 .expect("selecionar o modo");
         }
 
-        let exec = st.exec_context_for(sid).await;
+        let exec = st.exec_context_for(sid, Some("u1")).await;
         assert_eq!(exec.agent_mode.as_deref(), Some("Rust Strict"));
         let perfil = exec
             .custom_profile
@@ -1243,7 +1262,7 @@ mod tests {
             store.set_agent_mode(sid, "code").expect("selecionar");
         }
 
-        let exec = st.exec_context_for(sid).await;
+        let exec = st.exec_context_for(sid, Some("u1")).await;
         assert!(
             exec.custom_profile.is_none(),
             "o nativo `code` decide antes de consultar o banco"

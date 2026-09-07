@@ -155,7 +155,7 @@ pub async fn chat(
             None,           // model: use default
             Some(&persona), // Garra personality system prompt
             None,           // max_tokens: use default
-            &state.exec_context_for(&session_id).await,
+            &state.exec_context_for(&session_id, Some(&user_id)).await,
         )
         .await;
 

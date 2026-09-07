@@ -392,7 +392,7 @@ async fn process_text_message(
             model_override.as_deref(),
             None,
             None,
-            &state.exec_context_for(session_id).await,
+            &state.exec_context_for(session_id, None).await,
         )
         .await
     {
