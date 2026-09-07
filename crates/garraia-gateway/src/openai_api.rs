@@ -298,7 +298,7 @@ pub async fn chat_completions(
             Some(modo) => Some(modo.as_str().to_string()),
             None => {
                 warn!(
-                    modo_pedido = %nome,
+                    modo_pedido = %rotulo_de_modo_para_log(&nome),
                     session_id = %session_id,
                     "modo desconhecido ignorado; use GET /api/modes para os validos"
                 );
@@ -843,6 +843,38 @@ fn parse_role(role: &str) -> ChatRole {
 ///
 /// 12 hex chars de SHA-256 bastam para correlacionar duas requisições do mesmo
 /// chamador e são pouco demais para replay.
+/// Reduz um nome de modo invalido ao que da para logar sem risco.
+///
+/// O valor vem cru do header `X-Agent-Mode` ou do prefixo `mode:` da mensagem,
+/// entao e texto arbitrario de quem chama. Nome de modo real e uma palavra
+/// curta em ASCII; qualquer outra coisa ali e engano — e o engano que preocupa
+/// e alguem colar um segredo no lugar do nome. Manter o valor legivel importa
+/// (o log existe para a pessoa ver que digitou `agente` em vez de `ask`), entao
+/// nao dando para redigir tudo, limitamos o estrago: 24 caracteres, so o que
+/// um nome de modo poderia conter, e uma marca quando houve corte.
+///
+/// Nao substitui a regra: segredo nao vai para log. Isto e o piso para quando
+/// alguem colar um por engano.
+fn rotulo_de_modo_para_log(nome: &str) -> String {
+    const MAX: usize = 24;
+    let limpo: String = nome
+        .chars()
+        .take(MAX)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    if nome.chars().count() > MAX {
+        format!("{limpo}...(truncado)")
+    } else {
+        limpo
+    }
+}
+
 fn token_fingerprint(token: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(token.as_bytes());
@@ -981,6 +1013,37 @@ mod tests {
             logs_contain(&token_fingerprint(SECRET)),
             "o fingerprint deveria estar no log para correlação"
         );
+    }
+
+    /// Um segredo colado no lugar do nome do modo nao sai inteiro no log.
+    ///
+    /// O caso real que preocupa: alguem exporta a chave para o header errado,
+    /// ou cola `mode: sk-...` na mensagem. O nome invalido precisa aparecer no
+    /// log para a pessoa entender o que aconteceu, mas nao o valor inteiro.
+    #[test]
+    fn rotulo_de_modo_nao_deixa_segredo_inteiro_no_log() {
+        let segredo = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+        let saida = rotulo_de_modo_para_log(segredo);
+
+        assert!(
+            !saida.contains(segredo),
+            "o valor inteiro vazou para o log: {saida}"
+        );
+        assert!(saida.contains("truncado"), "corte precisa ser visivel");
+        assert!(
+            saida.chars().count() <= 24 + "...(truncado)".len(),
+            "limite estourou: {saida}"
+        );
+    }
+
+    /// E um typo comum continua legivel, que e a razao de o campo existir.
+    #[test]
+    fn rotulo_de_modo_preserva_typo_curto() {
+        assert_eq!(rotulo_de_modo_para_log("agente"), "agente");
+        assert_eq!(rotulo_de_modo_para_log("code-2"), "code-2");
+        // Controle e quebra de linha nao entram no log: `\n` num campo de
+        // tracing quebraria a linha e permitiria forjar uma entrada.
+        assert_eq!(rotulo_de_modo_para_log("a\nb\tc"), "a.b.c");
     }
 
     #[test]

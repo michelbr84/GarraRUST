@@ -1047,6 +1047,53 @@ mod tests {
         st
     }
 
+    /// O modo escolhido sobrevive ao turno inteiro (#988).
+    ///
+    /// Esta e a sequencia real de producao, na ordem em que ela acontece:
+    /// `/mode search` grava, o turno roda, e o `persist_turn` do fim do turno
+    /// faz upsert da sessao. Enquanto o upsert substituia o metadado inteiro
+    /// por `{"continuity_key": ...}`, esse ultimo passo apagava a escolha —
+    /// e a mensagem seguinte rodava sem politica, com o usuario acreditando
+    /// estar restrito.
+    ///
+    /// A sonda no binario nao pegou: sem provider de LLM o turno falhava antes
+    /// e o `persist_turn` nunca rodava. Foi a auditoria que achou, lendo o SQL.
+    #[tokio::test]
+    async fn o_modo_escolhido_sobrevive_ao_persist_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "sessao-com-modo";
+
+        st.hydrate_session_history(sid, Some("vscode"), Some("u1"))
+            .await;
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store.set_agent_mode(sid, "search").expect("gravar o modo");
+        }
+        assert_eq!(
+            st.chosen_agent_mode_for(sid).await,
+            Some("search".to_string()),
+            "pre-condicao: o modo foi gravado"
+        );
+
+        st.persist_turn(sid, Some("vscode"), Some("u1"), "oi", "ola!")
+            .await;
+
+        assert_eq!(
+            st.chosen_agent_mode_for(sid).await,
+            Some("search".to_string()),
+            "o persist_turn apagou a escolha do usuario"
+        );
+
+        // E numa instancia nova, como depois de um restart do gateway.
+        let fresh = state_with_store(dir.path());
+        assert_eq!(
+            fresh.chosen_agent_mode_for(sid).await,
+            Some("search".to_string()),
+            "a escolha nao sobreviveu ao restart"
+        );
+    }
+
     /// O mecanismo em que os dois lados da #922 se apoiam: um turno
     /// persistido volta por `hydrate_session_history` + `session_history`
     /// numa instância **nova**, sem nada em memória. Se este par quebrar, a

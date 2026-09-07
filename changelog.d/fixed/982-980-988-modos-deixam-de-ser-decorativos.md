@@ -49,13 +49,29 @@
   chamasse o setter numa sessao existente. Agora a gravacao acontece depois da
   hidratacao, o setter devolve erro quando nao encontra a sessao, e o `/mode` do
   Telegram avisa em vez de responder "modo definido" com o banco intacto.
+- **O upsert da sessao apagava o modo a cada requisicao.** Causa-raiz mais
+  profunda que a anterior, e a razao real de o `/mode` nunca ter funcionado:
+  `upsert_session_with_tenant` fazia `metadata = excluded.metadata` —
+  substituicao inteira — e os dois chamadores de producao
+  (`hydrate_session_history` no inicio do turno, `persist_turn` no fim) passam
+  `{}` ou so `{"continuity_key": ...}`. O `/mode search` respondia "modo
+  definido", gravava, e o proprio turno apagava. Enquanto o modo era decoracao
+  de prompt isso so tornava o comando inutil; com a `ToolPolicy` valendo,
+  passou a ser uma restricao que o produto promete e nao entrega. O upsert
+  passa a **mesclar** (`json_patch`, RFC 7396: chave presente sobrescreve,
+  ausente preserva, `null` apaga), com guarda para linha de metadado nula ou
+  quebrada — `json_patch(NULL, ...)` devolveria `NULL` e trocaria a
+  substituicao por um apagamento pior.
 - **Nome de modo invalido para de virar escolha.** O `/mode` e o
   `PUT /api/mode` ja recusavam nome desconhecido com mensagem; o header
   `X-Agent-Mode` e o prefixo `mode:` gravavam a string crua. Depois da politica
   isso era uma escolha registrada que nao resolve para perfil nenhum: portao
   aberto, `/mode` exibindo um modo inexistente, ninguem sabendo. Agora valida,
   loga `warn!` e segue como "nao pediu modo" — o request nao cai por causa de
-  um typo em header.
+  um typo em header. O valor logado passa por um limitador: nome de modo real e
+  uma palavra curta em ASCII, e o engano que preocupa e colar um segredo no
+  lugar do nome, entao o campo sai com 24 caracteres, sem controle e marcado
+  quando ha corte.
 - **Slack, Discord, WhatsApp, iMessage e o terceiro braco do `POST /api/chat`
   entram junto.** Eles chamavam os wrappers `_with_context`, que passam
   `ExecContext::default()`: `/mode search` respondia "modo definido" e a

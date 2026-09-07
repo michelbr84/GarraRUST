@@ -384,6 +384,33 @@ impl SessionStore {
     }
 
     /// Create or update a session row with an explicit tenant_id.
+    ///
+    /// # O metadado e **mesclado**, nao substituido
+    ///
+    /// Era `metadata = excluded.metadata` — substituicao inteira — e os dois
+    /// chamadores de producao (`hydrate_session_history` e `persist_turn`)
+    /// passam `{}` ou so `{"continuity_key": ...}`. Toda requisicao apagava
+    /// tudo o que outro caminho tivesse escrito ali, `agent_mode` e
+    /// `agent_mode_source` inclusive.
+    ///
+    /// O efeito era o pior tipo: `/mode search` respondia "modo definido",
+    /// gravava, e o `persist_turn` do proprio turno apagava. A mensagem
+    /// seguinte rodava sem politica, e o usuario acreditava estar restrito.
+    /// Enquanto o modo era decoracao de prompt isso so tornava o `/mode`
+    /// inutil; depois que a `ToolPolicy` passou a valer (#988), virou uma
+    /// restricao que o produto promete e nao entrega.
+    ///
+    /// `json_patch` implementa o merge do RFC 7396: chave presente sobrescreve,
+    /// chave ausente e preservada, e `null` explicito apaga — que e como o
+    /// `clear_agent_mode` continua conseguindo limpar. Passar `{}` vira no-op
+    /// em vez de faxina.
+    ///
+    /// O `CASE WHEN json_valid` existe porque a coluna e anulavel (`metadata
+    /// TEXT DEFAULT '{}'`, sem `NOT NULL`) e nada impede uma linha antiga de
+    /// carregar JSON quebrado. `json_patch(NULL, ...)` devolve `NULL`, o que
+    /// trocaria a substituicao que acabamos de remover por um apagamento
+    /// ainda mais silencioso; com o guard, uma linha inservivel vira `{}` e o
+    /// patch se aplica sobre ela.
     pub fn upsert_session_with_tenant(
         &self,
         session_id: &str,
@@ -400,7 +427,11 @@ impl SessionStore {
                    tenant_id = excluded.tenant_id,
                    channel_id = excluded.channel_id,
                    user_id = excluded.user_id,
-                   metadata = excluded.metadata,
+                   metadata = json_patch(
+                       CASE WHEN json_valid(sessions.metadata)
+                            THEN sessions.metadata
+                            ELSE '{}' END,
+                       excluded.metadata),
                    updated_at = datetime('now')",
                 params![
                     session_id,
@@ -2115,6 +2146,144 @@ mod tests {
             None,
             "e a politica volta a nao valer, porque ninguem escolheu esse"
         );
+    }
+
+    /// O upsert da sessao **preserva** o modo escolhido.
+    ///
+    /// Este e o teste da falha que a auditoria do #988 achou depois da
+    /// remediacao: `upsert_session_with_tenant` fazia
+    /// `metadata = excluded.metadata` — substituicao inteira —, e os dois
+    /// chamadores de producao (`hydrate_session_history` e `persist_turn`)
+    /// passam `{}` ou so `{"continuity_key": ...}`. Ou seja, toda requisicao
+    /// apagava `agent_mode` e `agent_mode_source` do metadado.
+    ///
+    /// O efeito era o pior possivel: o `/mode search` respondia "modo
+    /// definido", gravava, e o `persist_turn` do proprio turno apagava. A
+    /// mensagem seguinte rodava sem politica nenhuma, e o usuario acreditava
+    /// estar restrito.
+    ///
+    /// Nao apareceu na sonda do binario porque o turno falhava antes
+    /// (`no LLM provider configured`) e o `persist_turn` nunca rodava.
+    #[test]
+    fn upsert_preserva_o_modo_escolhido() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "upsert-preserva";
+        store
+            .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+            .unwrap();
+        store.set_agent_mode(session_id, "search").unwrap();
+
+        // Exatamente o que `persist_turn` e `hydrate_session_history` passam.
+        store
+            .upsert_session(
+                session_id,
+                "vscode",
+                "user-1",
+                &serde_json::json!({ "continuity_key": "bus:global" }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            Some("search".to_string()),
+            "o upsert do turno apagou a escolha do usuario"
+        );
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string())
+        );
+    }
+
+    /// E o upsert continua conseguindo **atualizar** o que ele mesmo escreve.
+    ///
+    /// Preservar nao pode virar congelar: `continuity_key` muda quando o
+    /// usuario muda, e o merge tem de deixar passar.
+    #[test]
+    fn upsert_ainda_atualiza_os_campos_que_ele_escreve() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "upsert-atualiza";
+        store
+            .upsert_session(
+                session_id,
+                "vscode",
+                "user-1",
+                &serde_json::json!({ "continuity_key": "bus:antigo" }),
+            )
+            .unwrap();
+        store
+            .upsert_session(
+                session_id,
+                "vscode",
+                "user-1",
+                &serde_json::json!({ "continuity_key": "bus:novo" }),
+            )
+            .unwrap();
+
+        let md: String = store
+            .connection()
+            .query_row(
+                "SELECT metadata FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&md).unwrap();
+        assert_eq!(v["continuity_key"], "bus:novo");
+    }
+
+    /// Metadado NULL ou corrompido nao pode apagar o modo pela porta dos
+    /// fundos.
+    ///
+    /// A coluna e anulavel e `json_patch(NULL, ...)` devolve `NULL` — trocar a
+    /// substituicao por um `NULL` seria piorar. As duas linhas aqui sao
+    /// escritas direto no banco porque nenhum caminho normal as produz; a
+    /// questao e o que acontece quando ja existem.
+    #[test]
+    fn upsert_sobrevive_a_metadado_nulo_ou_quebrado() {
+        for (nome, valor) in [("nulo", None::<String>), ("quebrado", Some("{nao".into()))] {
+            let store = SessionStore::in_memory().expect("in-memory store should open");
+            let session_id = "metadado-ruim";
+            store
+                .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+                .unwrap();
+            store
+                .connection()
+                .execute(
+                    "UPDATE sessions SET metadata = ?1 WHERE id = ?2",
+                    params![valor, session_id],
+                )
+                .unwrap();
+
+            store
+                .upsert_session(
+                    session_id,
+                    "vscode",
+                    "user-1",
+                    &serde_json::json!({ "continuity_key": "bus:global" }),
+                )
+                .unwrap_or_else(|e| panic!("upsert falhou com metadado {nome}: {e}"));
+
+            let md: Option<String> = store
+                .connection()
+                .query_row(
+                    "SELECT metadata FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let md = md.unwrap_or_else(|| panic!("metadado {nome} virou NULL depois do upsert"));
+            let v: serde_json::Value = serde_json::from_str(&md)
+                .unwrap_or_else(|e| panic!("metadado {nome} nao virou JSON valido: {e}"));
+            assert_eq!(v["continuity_key"], "bus:global", "caso {nome}");
+
+            // E o modo escrito depois disso continua legivel.
+            store.set_agent_mode(session_id, "search").unwrap();
+            assert_eq!(
+                store.get_chosen_agent_mode(session_id).unwrap(),
+                Some("search".to_string()),
+                "caso {nome}"
+            );
+        }
     }
 
     /// Gravar modo em sessao que nao existe e **erro**, nao no-op.
