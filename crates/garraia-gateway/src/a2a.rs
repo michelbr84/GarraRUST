@@ -8,6 +8,8 @@ use garraia_agents::a2a::{
 };
 use tracing::{info, warn};
 
+use garraia_agents::exec_context::ExecContext;
+
 use crate::state::SharedState;
 
 /// GET /.well-known/agent.json — serve the agent card.
@@ -52,6 +54,47 @@ pub async fn agent_card(State(state): State<SharedState>) -> impl IntoResponse {
     Json(card)
 }
 
+/// O que o `target` de um pedido A2A resolve (#965).
+///
+/// Existe como enum e nao como `Option` porque sao **tres** casos, e juntar
+/// dois deles e o bug: "nao pediu agente" e "pediu um que nao existe" levam a
+/// respostas opostas — a primeira e sucesso com o agente padrao, a segunda e
+/// 400. Um `Option<&NamedAgentConfig>` colapsaria as duas em `None`, que e
+/// exatamente o que o `agent_router::resolve` faz e por que ele nao serve
+/// aqui.
+#[derive(Debug)]
+pub(crate) enum Alvo<'a> {
+    /// Sem `target`: o agente padrao atende, como sempre atendeu.
+    Padrao,
+    /// `target` que existe na config.
+    Nomeado(&'a garraia_config::NamedAgentConfig),
+    /// `target` que nao existe. Carrega os nomes conhecidos para a resposta.
+    Desconhecido { conhecidos: Vec<String> },
+}
+
+/// Decide o alvo de um pedido A2A. Funcao pura — o handler so age sobre ela.
+///
+/// Toda a decisao mora aqui para que ela seja testavel sem subir servidor,
+/// sem Postgres e sem provider: os testes de integracao do gateway que sobem
+/// processo estao todos `#[ignore]`d por dependencia de infra, e um teste que
+/// nao roda nao prova nada.
+pub(crate) fn resolver_alvo<'a>(
+    config: &'a garraia_config::AppConfig,
+    target: Option<&str>,
+) -> Alvo<'a> {
+    match target {
+        None => Alvo::Padrao,
+        Some(nome) => match crate::agent_router::resolve_exact(config, nome) {
+            Some(a) => Alvo::Nomeado(a),
+            None => {
+                let mut conhecidos: Vec<String> = config.agents.keys().cloned().collect();
+                conhecidos.sort_unstable();
+                Alvo::Desconhecido { conhecidos }
+            }
+        },
+    }
+}
+
 /// POST /a2a/tasks — create a new task.
 pub async fn create_task(
     State(state): State<SharedState>,
@@ -78,6 +121,37 @@ pub async fn create_task(
         )
             .into_response();
     }
+
+    // O agente-alvo (#965), resolvido **antes** de a tarefa ser criada.
+    //
+    // Recusar cedo importa: um `target` desconhecido que so falhasse depois
+    // deixaria uma tarefa `working` no mapa para sempre, e o chamador leria o
+    // 400 como se a tarefa nao existisse — quando ela existe, orfa.
+    let config = state.current_config();
+    let agente = match resolver_alvo(&config, body.target.as_deref()) {
+        Alvo::Padrao => None,
+        Alvo::Nomeado(a) => Some(a),
+        // **Nunca** cair no padrao. O `resolve` normal cairia, e quem pediu a
+        // Hera receberia a Garra com 200 e sem sinal nenhum — acreditar numa
+        // restricao que nao existe e pior que nao ter restricao.
+        Alvo::Desconhecido { conhecidos } => {
+            // O nome pedido **nao** entra no log: ele vem de um endpoint sem
+            // autenticacao, e ecoar entrada de fora para o arquivo de log e o
+            // caminho curto para poluicao e injecao de linha.
+            warn!("A2A task rejected: unknown target agent");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "unknown target agent",
+                    // Listar os nomes nao vaza nada: o
+                    // `GET /.well-known/agent.json` ja publica todos como
+                    // `skills`, e sem a lista o chamador so pode adivinhar.
+                    "known": conhecidos,
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Create an initial task in "working" status
     let task = A2ATask {
@@ -110,16 +184,40 @@ pub async fn create_task(
     //
     // Se um dia a tarefa A2A passar a herdar a sessao de quem a pediu, este e
     // o ponto onde o modo escolhido precisa entrar.
-    let result = state
-        .agents
-        .process_message_with_context(
-            &session_id,
-            &user_text,
-            &history,
-            continuity_key.as_deref(),
-            None,
-        )
-        .await;
+    let result = match agente {
+        // Com agente nomeado, o provider, o prompt e o teto de tokens sao os
+        // dele — e o mesmo caminho que o `POST /api/chat` ja usa para
+        // `agent_id`.
+        Some(ac) => {
+            state
+                .agents
+                .process_message_with_agent_config(
+                    &session_id,
+                    &user_text,
+                    &history,
+                    continuity_key.as_deref(),
+                    None,
+                    ac.provider.as_deref(),
+                    None,
+                    ac.system_prompt.as_deref(),
+                    ac.max_tokens,
+                    &ExecContext::default(),
+                )
+                .await
+        }
+        None => {
+            state
+                .agents
+                .process_message_with_context(
+                    &session_id,
+                    &user_text,
+                    &history,
+                    continuity_key.as_deref(),
+                    None,
+                )
+                .await
+        }
+    };
 
     match result {
         Ok(response_text) => {
@@ -221,5 +319,106 @@ pub async fn cancel_task(
             Json(serde_json::json!({ "error": "task not found" })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garraia_agents::a2a::CreateTaskRequest;
+    use garraia_config::{AppConfig, NamedAgentConfig};
+
+    fn agente(prompt: &str) -> NamedAgentConfig {
+        NamedAgentConfig {
+            provider: None,
+            model: None,
+            system_prompt: Some(prompt.to_string()),
+            max_tokens: None,
+            max_context_tokens: None,
+            tools: vec![],
+        }
+    }
+
+    fn config_com_hera() -> AppConfig {
+        let mut c = AppConfig::default();
+        c.agents
+            .insert("hera".to_string(), agente("Eu sou a Hera."));
+        c.agents
+            .insert("default".to_string(), agente("Eu sou a Garra."));
+        c
+    }
+
+    /// Sem `target`, nada muda para quem ja usava o endpoint.
+    #[test]
+    fn sem_target_o_padrao_atende() {
+        let c = config_com_hera();
+        assert!(matches!(resolver_alvo(&c, None), Alvo::Padrao));
+    }
+
+    /// `target` que existe leva ao agente pedido — e ao **prompt** dele.
+    #[test]
+    fn target_conhecido_leva_ao_agente_pedido() {
+        let c = config_com_hera();
+        match resolver_alvo(&c, Some("hera")) {
+            Alvo::Nomeado(a) => {
+                assert_eq!(a.system_prompt.as_deref(), Some("Eu sou a Hera."))
+            }
+            outro => panic!("devia ser Nomeado: {outro:?}"),
+        }
+    }
+
+    /// **O ponto da issue: desconhecido nao vira o padrao em silencio.**
+    ///
+    /// Se este teste falhar porque alguem trocou o `resolve_exact` pelo
+    /// `resolve`, o sintoma em producao e um 200 com a resposta de outro
+    /// agente — e o chamador nao tem como saber.
+    #[test]
+    fn target_desconhecido_nao_vira_o_padrao() {
+        let c = config_com_hera();
+        match resolver_alvo(&c, Some("forja")) {
+            Alvo::Desconhecido { conhecidos } => {
+                assert_eq!(conhecidos, vec!["default".to_string(), "hera".to_string()]);
+            }
+            outro => panic!("devia ser Desconhecido: {outro:?}"),
+        }
+    }
+
+    /// Sem agente nomeado nenhum configurado, qualquer `target` e desconhecido
+    /// — inclusive `"default"`, que ai nao existe como agente **nomeado**.
+    #[test]
+    fn sem_agentes_configurados_todo_target_e_desconhecido() {
+        let c = AppConfig::default();
+        assert!(matches!(
+            resolver_alvo(&c, Some("default")),
+            Alvo::Desconhecido { .. }
+        ));
+        // E sem `target` continua funcionando: e o caminho legado.
+        assert!(matches!(resolver_alvo(&c, None), Alvo::Padrao));
+    }
+
+    /// O corpo aceita `target`, `agentId` e `agent_id` — a issue cita os dois
+    /// nomes, e nao ha razao para escolher por quem chama.
+    #[test]
+    fn o_corpo_aceita_as_tres_grafias() {
+        for chave in ["target", "agentId", "agent_id"] {
+            let json = serde_json::json!({
+                "message": { "role": "user", "parts": [{ "type": "text", "text": "oi" }] },
+                chave: "hera",
+            });
+            let req: CreateTaskRequest =
+                serde_json::from_value(json).unwrap_or_else(|e| panic!("{chave}: {e}"));
+            assert_eq!(req.target.as_deref(), Some("hera"), "grafia {chave}");
+        }
+    }
+
+    /// E um corpo sem `target` continua desserializando — o campo e opcional,
+    /// entao nenhum cliente A2A existente quebra.
+    #[test]
+    fn corpo_sem_target_continua_valido() {
+        let json = serde_json::json!({
+            "message": { "role": "user", "parts": [{ "type": "text", "text": "oi" }] }
+        });
+        let req: CreateTaskRequest = serde_json::from_value(json).expect("desserializa");
+        assert!(req.target.is_none());
     }
 }
