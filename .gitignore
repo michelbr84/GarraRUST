@@ -113,8 +113,15 @@ venv/
 *.wasm
 
 # Release artifacts
-dist/
-release/
+#
+# Ancorados na raiz de proposito. Sem a barra inicial, o padrao casa em
+# QUALQUER profundidade — e `release/` sem ancora engolia `scripts/release/`,
+# que e codigo-fonte. O `git add -A` pulava o arquivo em silencio, e o
+# `release.yml` ficava referenciando um script que nao existia no repo.
+# O que estes padroes querem ignorar e o diretorio de staging que o
+# `release.yml` cria na raiz (`mkdir -p release`), nada aninhado.
+/dist/
+/release/
 
 # Planning / drafts (internal)
 # Por default, conteúdo de plans/ é ignorado para não vazar drafts locais.
