@@ -9,6 +9,7 @@ use garraia_agents::a2a::{
 use tracing::{info, warn};
 
 use garraia_agents::exec_context::ExecContext;
+use garraia_agents::modes::ModeProfile;
 
 use crate::state::SharedState;
 
@@ -52,6 +53,52 @@ pub async fn agent_card(State(state): State<SharedState>) -> impl IntoResponse {
     };
 
     Json(card)
+}
+
+/// Transforma o `tools:` de um agente nomeado numa politica que **vale**.
+///
+/// O campo esta documentado na config como "Restrict which tools this agent
+/// can use (empty = all tools)" e nao era lido em lugar nenhum — nem aqui, nem
+/// no `POST /api/chat`, que ja aceitava `agent_id`. Um operador que escrevesse
+/// `tools = ["web_search"]` acreditava ter restringido, e o agente continuava
+/// com todas.
+///
+/// E a mesma forma da #988, e a razao de consertar **aqui** e que este PR abre
+/// o caminho dos agentes nomeados para um endpoint sem autenticacao: uma
+/// restricao que nao vale e pior num lugar onde qualquer um chega.
+///
+/// Lista vazia continua significando "todas" — e o que a config documenta, e
+/// mudar isso quebraria toda configuracao existente em silencio.
+fn politica_do_agente(ac: &garraia_config::NamedAgentConfig) -> Option<ModeProfile> {
+    if ac.tools.is_empty() {
+        return None;
+    }
+    // **Nao** partir de `ModeProfile::default()`: ele e o perfil do modo
+    // `Ask`, e traria junto o `denied` dele (que nega `file_write`), os
+    // limites dele e o template de prompt dele. O agente passaria a se
+    // comportar como `Ask` porque alguem listou uma ferramenta — a restricao
+    // pedida viria acompanhada de tres que ninguem pediu. O teste
+    // `so_restringe_ferramenta` fixa isso.
+    Some(ModeProfile {
+        name: format!("a2a:{}", ac.provider.as_deref().unwrap_or("agente")),
+        description: "Politica derivada do `tools:` do agente nomeado".to_string(),
+        // Nenhum template: o prompt do agente ja vai por
+        // `system_prompt_override`, e um template aqui competiria com ele.
+        system_prompt_template: None,
+        tool_policy: garraia_agents::modes::ToolPolicy {
+            allowed: ac.tools.clone(),
+            denied: Vec::new(),
+            required: Vec::new(),
+            // Sem isto o `allowed` seria so uma lista de preferencia: e o
+            // `whitelist_mode` que faz o que **nao** esta na lista ser negado.
+            whitelist_mode: true,
+        },
+        // Os defaults destes dois sao neutros (ver `impl Default` em
+        // `modes.rs`); o que nao pode e herdar os do `Ask`.
+        llm_config: Default::default(),
+        limits: Default::default(),
+        ..ModeProfile::default()
+    })
 }
 
 /// O que o `target` de um pedido A2A resolve (#965).
@@ -128,6 +175,9 @@ pub async fn create_task(
     // deixaria uma tarefa `working` no mapa para sempre, e o chamador leria o
     // 400 como se a tarefa nao existisse — quando ela existe, orfa.
     let config = state.current_config();
+    // O nome ja validado contra a config — nao e mais entrada crua do
+    // chamador, e o `/stats` e a mensagem de recusa querem o nome pedido.
+    let nome_do_alvo = body.target.clone().unwrap_or_default();
     let agente = match resolver_alvo(&config, body.target.as_deref()) {
         Alvo::Padrao => None,
         Alvo::Nomeado(a) => Some(a),
@@ -198,10 +248,17 @@ pub async fn create_task(
                     continuity_key.as_deref(),
                     None,
                     ac.provider.as_deref(),
-                    None,
+                    // O modelo do agente, e nao `None`: um agente configurado
+                    // com `model = "gpt-4"` respondia pelo default do provider.
+                    ac.model.as_deref(),
                     ac.system_prompt.as_deref(),
                     ac.max_tokens,
-                    &ExecContext::default(),
+                    // E o `tools:` do agente, que ate aqui nao era lido por
+                    // ninguem — ver `politica_do_agente`.
+                    &match politica_do_agente(ac) {
+                        Some(p) => ExecContext::with_custom_profile(nome_do_alvo.clone(), p),
+                        None => ExecContext::default(),
+                    },
                 )
                 .await
         }
@@ -420,5 +477,74 @@ mod tests {
         });
         let req: CreateTaskRequest = serde_json::from_value(json).expect("desserializa");
         assert!(req.target.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_politica {
+    use super::*;
+    use garraia_config::NamedAgentConfig;
+
+    fn agente_com_tools(tools: &[&str]) -> NamedAgentConfig {
+        NamedAgentConfig {
+            provider: None,
+            model: None,
+            system_prompt: None,
+            max_tokens: None,
+            max_context_tokens: None,
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Lista vazia continua significando "todas" — e o que a config documenta.
+    #[test]
+    fn tools_vazio_nao_restringe() {
+        assert!(politica_do_agente(&agente_com_tools(&[])).is_none());
+    }
+
+    /// **O achado da auditoria: `tools:` era decoracao.**
+    ///
+    /// O campo esta documentado como restricao e nao era lido em lugar nenhum
+    /// — nem aqui nem no `/api/chat`, que ja aceitava `agent_id`. Agora ele
+    /// vira uma `ToolPolicy` com `whitelist_mode`, que e o que faz o que **nao**
+    /// esta na lista ser negado. Sem o `whitelist_mode` o `allowed` seria so
+    /// uma lista de preferencia, e a restricao continuaria sem valer.
+    #[test]
+    fn tools_com_lista_vira_whitelist_de_verdade() {
+        let p = politica_do_agente(&agente_com_tools(&["web_search", "file_read"]))
+            .expect("lista nao vazia vira politica");
+        assert_eq!(p.tool_policy.allowed, vec!["web_search", "file_read"]);
+        assert!(
+            p.tool_policy.whitelist_mode,
+            "sem whitelist_mode o `allowed` nao nega nada"
+        );
+        assert!(p.tool_policy.denied.is_empty(), "restricao e por whitelist");
+    }
+
+    /// A politica derivada restringe **so** ferramenta — nada mais.
+    ///
+    /// A primeira versao partia de `ModeProfile::default()`, que e o perfil do
+    /// modo `Ask`: o agente herdava o `denied` do Ask (que nega `file_write`)
+    /// e o template de prompt dele. Quem escreveu `tools = ["web_search"]`
+    /// ganharia tres restricoes que nao pediu, e uma delas contradiria a
+    /// propria lista. O teste pegou isso, e nao a leitura.
+    #[test]
+    fn so_restringe_ferramenta() {
+        let p = politica_do_agente(&agente_com_tools(&["file_write"]))
+            .expect("lista nao vazia vira politica");
+
+        assert!(
+            p.tool_policy.denied.is_empty(),
+            "nao herda o `denied` do Ask: {:?}",
+            p.tool_policy.denied
+        );
+        assert!(
+            p.tool_policy.allowed.contains(&"file_write".to_string()),
+            "a ferramenta pedida continua permitida"
+        );
+        assert!(
+            p.system_prompt_template.is_none(),
+            "o prompt do agente vai por `system_prompt_override`, nao daqui"
+        );
     }
 }

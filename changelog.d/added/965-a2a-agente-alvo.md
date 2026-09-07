@@ -16,3 +16,13 @@
 - **O nome pedido nao entra no log.** Ele vem de um endpoint sem
   autenticacao, e ecoar entrada de fora para o arquivo de log e o caminho
   curto para poluicao e injecao de linha.
+- **O `tools:` de um agente nomeado passa a valer — ele nunca valeu.** A config
+  documenta o campo como "Restrict which tools this agent can use (empty = all
+  tools)" e nenhum codigo o lia: nem aqui, nem no `POST /api/chat`, que ja
+  aceitava `agent_id`. Quem escrevia `tools = ["web_search"]` acreditava ter
+  restringido e o agente seguia com todas. E a mesma forma da #988, e o
+  conserto entra **aqui** porque este PR abre o caminho dos agentes nomeados
+  para um endpoint sem autenticacao — uma restricao que nao vale e pior num
+  lugar onde qualquer um chega. Lista vazia continua significando "todas".
+- **E o `model:` do agente tambem era ignorado.** Um agente configurado com
+  `model = "gpt-4"` respondia pelo modelo padrao do provider.
