@@ -1,0 +1,340 @@
+{
+  "dataset_versao": 1,
+  "documentos": 30,
+  "limite": 10,
+  "modo_de_busca": "textual",
+  "modelo": "(nenhum: busca textual)",
+  "provider": null,
+  "consultas": [
+    {
+      "q": "quem e o operador do sistema",
+      "grupo": "identidade",
+      "esperados": [
+        "d01"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quem e Michel",
+      "grupo": "identidade-ruido",
+      "esperados": [
+        "d01",
+        "d02"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quien es el operador del sistema",
+      "grupo": "cross-lingual",
+      "esperados": [
+        "d01"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "onde o Michel mora",
+      "grupo": "identidade",
+      "esperados": [
+        "d02"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "em que cidade eu moro",
+      "grupo": "parafrase",
+      "esperados": [
+        "d02"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "em que linguagem o GarraIA e escrito",
+      "grupo": "projeto",
+      "esperados": [
+        "d03"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "proyecto GarraIA Rust",
+      "grupo": "cross-lingual",
+      "esperados": [
+        "d03"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "qual framework web o gateway usa",
+      "grupo": "projeto",
+      "esperados": [
+        "d04"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "o app de celular e feito em que",
+      "grupo": "parafrase",
+      "esperados": [
+        "d05"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "como a memoria semantica guarda os vetores",
+      "grupo": "projeto",
+      "esperados": [
+        "d23"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "qual modelo de embedding",
+      "grupo": "projeto",
+      "esperados": [
+        "d24"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "endereco do condominio",
+      "grupo": "condominio",
+      "esperados": [
+        "d06"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "qual o numero do predio",
+      "grupo": "parafrase",
+      "esperados": [
+        "d06"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quando vence a taxa",
+      "grupo": "condominio",
+      "esperados": [
+        "d07"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quanto custa o condominio por mes",
+      "grupo": "parafrase-dificil",
+      "esperados": [
+        "d07"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "nome do sindico",
+      "grupo": "condominio",
+      "esperados": [
+        "d08"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quem administra o predio",
+      "grupo": "parafrase",
+      "esperados": [
+        "d08"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "ferrugem",
+      "grupo": "curta",
+      "esperados": [
+        "d09",
+        "d10"
+      ],
+      "obtidos": [
+        "d09"
+      ]
+    },
+    {
+      "q": "o portao esta enferrujado",
+      "grupo": "sinonimo",
+      "esperados": [
+        "d09",
+        "d10"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quanto vai custar trocar o portao",
+      "grupo": "condominio",
+      "esperados": [
+        "d10"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "que horas fecha a piscina",
+      "grupo": "condominio",
+      "esperados": [
+        "d11"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "manutencao do elevador",
+      "grupo": "condominio",
+      "esperados": [
+        "d12"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "senha do wifi",
+      "grupo": "condominio",
+      "esperados": [
+        "d13"
+      ],
+      "obtidos": [
+        "d13"
+      ]
+    },
+    {
+      "q": "qual e o meu carro",
+      "grupo": "carro",
+      "esperados": [
+        "d14"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "cor do carro",
+      "grupo": "curta",
+      "esperados": [
+        "d14"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "quando e a revisao",
+      "grupo": "carro",
+      "esperados": [
+        "d15"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "problema no pneu",
+      "grupo": "carro",
+      "esperados": [
+        "d16"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "calibragem",
+      "grupo": "curta",
+      "esperados": [
+        "d16"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "consulta medica",
+      "grupo": "saude",
+      "esperados": [
+        "d17",
+        "d18"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "preciso ficar em jejum",
+      "grupo": "saude",
+      "esperados": [
+        "d18"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "que horas a farmacia abre",
+      "grupo": "saude",
+      "esperados": [
+        "d19"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "dentista",
+      "grupo": "curta",
+      "esperados": [
+        "d17"
+      ],
+      "obtidos": [
+        "d17"
+      ]
+    },
+    {
+      "q": "horario do voo",
+      "grupo": "viagem",
+      "esperados": [
+        "d20"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "de que terminal sai o aviao",
+      "grupo": "parafrase",
+      "esperados": [
+        "d20"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "reserva do hotel",
+      "grupo": "viagem",
+      "esperados": [
+        "d21"
+      ],
+      "obtidos": [
+        "d21"
+      ]
+    },
+    {
+      "q": "quando vence o passaporte",
+      "grupo": "viagem",
+      "esperados": [
+        "d22"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "documento de viagem",
+      "grupo": "parafrase-dificil",
+      "esperados": [
+        "d22"
+      ],
+      "obtidos": []
+    },
+    {
+      "q": "oi",
+      "grupo": "ruido-puro",
+      "esperados": [],
+      "obtidos": [
+        "d25"
+      ]
+    },
+    {
+      "q": "bom dia",
+      "grupo": "ruido-puro",
+      "esperados": [],
+      "obtidos": [
+        "d29"
+      ]
+    },
+    {
+      "q": "obrigado pela ajuda",
+      "grupo": "ruido-puro",
+      "esperados": [],
+      "obtidos": []
+    }
+  ]
+}
