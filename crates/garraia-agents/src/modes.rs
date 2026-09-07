@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::debug;
 
 /// Enum de modos de execução do agente.
 /// Cada modo define uma estratégia diferente de comportamento.
@@ -262,7 +263,17 @@ pub struct ModeProfile {
 /// whitelist que entenda servidor MCP precisa ser desenhado com o dono.
 #[derive(Debug, Clone)]
 pub struct ToolGate {
-    policy: Option<ToolPolicy>,
+    /// O perfil que vale neste turno, se algum vale.
+    ///
+    /// Guarda o perfil inteiro, e nao so a `ToolPolicy`, porque o mesmo perfil
+    /// tambem decide os limites de execucao (`ModeLimits`) — o #979 pede que
+    /// o `max_tool_loops` e o timeout do modo valham no lugar dos fixos, e
+    /// carregar duas metades do mesmo perfil por caminhos diferentes e como
+    /// elas divergem.
+    profile: Option<ModeProfile>,
+    /// O nome que aparece na recusa. Para `auto`, e o modo **deduzido**, que e
+    /// o que explica a restricao para quem pediu a ferramenta.
+    nome: Option<String>,
 }
 
 /// Separador que o `tool_bridge` usa entre servidor e ferramenta.
@@ -271,21 +282,72 @@ const SEPARADOR_MCP: &str = "__";
 impl ToolGate {
     /// O portao aberto: nenhuma politica, tudo permitido.
     pub fn sem_politica() -> Self {
-        Self { policy: None }
+        Self {
+            profile: None,
+            nome: None,
+        }
     }
 
     /// O portao do perfil de um modo.
     pub fn from_profile(profile: &ModeProfile) -> Self {
         Self {
-            policy: Some(profile.tool_policy.clone()),
+            nome: Some(profile.name.clone()),
+            profile: Some(profile.clone()),
         }
     }
 
-    /// O portao para um contexto de execucao.
+    /// O portao para um contexto de execucao, **sem** olhar a mensagem.
     ///
-    /// Sem modo escolhido, portao aberto. Ver o docblock do tipo.
+    /// Sem modo escolhido, portao aberto. Ver o docblock do tipo. Com `auto`
+    /// escolhido nao da para resolver aqui — `auto` depende do que a pessoa
+    /// escreveu —, entao use [`Self::para_o_turno`] onde o texto existir.
     pub fn from_exec(exec: &crate::exec_context::ExecContext) -> Self {
         match exec.agent_mode.as_deref() {
+            Some(nome) => Self::for_mode_name(nome),
+            None => Self::sem_politica(),
+        }
+    }
+
+    /// O portao do turno: igual ao [`Self::from_exec`], exceto em `auto`.
+    ///
+    /// # Escolher `auto` e consentir com a delegacao
+    ///
+    /// O #988 estabeleceu que modo **deduzido** nao liga politica: quem nunca
+    /// digitou `/mode` nao pode perder `file_write` porque uma heuristica achou
+    /// que a pergunta parecia busca. `auto` nao contradiz isso — e o caso em
+    /// que a pessoa escolheu, explicitamente, deixar o roteador decidir. A
+    /// escolha esta em ter digitado `/mode auto`; o que a heuristica faz depois
+    /// e executar essa escolha, nao substitui-la.
+    ///
+    /// Ate aqui `auto` resolvia para `ModeProfile::default_auto()`, cuja
+    /// `ToolPolicy` e a vazia — ou seja, escolher `auto` nao mudava nada. Era o
+    /// buraco do #979.
+    ///
+    /// # So a heuristica, aqui
+    ///
+    /// O estagio de LLM do roteador precisa de config (`auto_router_llm_enabled`,
+    /// `auto_router_model`) que o runtime nao tem e nao deveria ter. Quem tem a
+    /// config — hoje o gateway — pode resolver `auto` para um modo concreto
+    /// antes de chamar e passar esse nome no `ExecContext`; este caminho e o
+    /// piso, e vale para a CLI, que monta o proprio runtime.
+    pub fn para_o_turno(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
+        match exec.agent_mode.as_deref() {
+            Some(nome) if AgentMode::from_str(nome) == Some(AgentMode::Auto) => {
+                match crate::auto_router::classify_heuristic(user_text) {
+                    Some(modo) => {
+                        let perfil = ModeProfile::from_mode(modo);
+                        debug!(
+                            modo_deduzido = %perfil.name,
+                            "auto: perfil do turno resolvido pela mensagem"
+                        );
+                        Self::from_profile(&perfil)
+                    }
+                    // Nao deu para dizer qual: portao aberto, que e o
+                    // comportamento que `auto` sempre teve. Fechar por duvida
+                    // bloquearia ferramenta que a pessoa podia usar.
+                    None => Self::sem_politica(),
+                }
+            }
             Some(nome) => Self::for_mode_name(nome),
             None => Self::sem_politica(),
         }
@@ -301,9 +363,20 @@ impl ToolGate {
         }
     }
 
+    /// Os limites do modo que vale neste turno, se algum vale (#979).
+    pub fn limites(&self) -> Option<&ModeLimits> {
+        self.profile.as_ref().map(|p| &p.limits)
+    }
+
+    /// O nome do modo que esta valendo — o deduzido, quando o escolhido foi
+    /// `auto`. E o que a recusa precisa dizer para a explicacao fazer sentido.
+    pub fn nome_do_modo(&self) -> Option<&str> {
+        self.nome.as_deref()
+    }
+
     /// A ferramenta pode rodar?
     pub fn permite(&self, tool_name: &str) -> bool {
-        let Some(p) = &self.policy else {
+        let Some(p) = self.profile.as_ref().map(|p| &p.tool_policy) else {
             return true;
         };
 
@@ -1060,6 +1133,88 @@ mod tests {
             ..ModeProfile::from_mode(AgentMode::Code)
         });
         assert!(g.permite("file_write"));
+    }
+
+    /// `/mode auto` passa a restringir de verdade (#979).
+    ///
+    /// Ate aqui `auto` resolvia para `default_auto()`, cuja `ToolPolicy` e a
+    /// vazia: escolher `auto` nao mudava nada. Agora o perfil sai da mensagem.
+    #[test]
+    fn auto_escolhido_resolve_o_perfil_pela_mensagem() {
+        let exec = crate::exec_context::ExecContext::with_mode(Some("auto".into()));
+
+        // Mensagem de busca -> perfil `search`, que nega escrita.
+        let g = ToolGate::para_o_turno(
+            &exec,
+            "qual arquivo tem o handler de login? procura por ele",
+        );
+        assert_eq!(g.nome_do_modo(), Some("search"));
+        assert!(!g.permite("file_write"), "search precisa negar escrita");
+
+        // Mensagem de codigo -> perfil `code`, que permite.
+        let g = ToolGate::para_o_turno(&exec, "escreve uma funcao que soma dois numeros");
+        assert_eq!(g.nome_do_modo(), Some("code"));
+        assert!(g.permite("file_write"));
+    }
+
+    /// Sem conseguir deduzir, `auto` fica aberto — nao fechado.
+    ///
+    /// Fechar por duvida bloquearia ferramenta que a pessoa podia usar, e o
+    /// comportamento que `auto` sempre teve foi permitir tudo.
+    #[test]
+    fn auto_sem_deducao_clara_fica_aberto() {
+        let exec = crate::exec_context::ExecContext::with_mode(Some("auto".into()));
+        let g = ToolGate::para_o_turno(&exec, "oi");
+        assert_eq!(g.nome_do_modo(), None);
+        assert!(g.permite("file_write"));
+        assert!(g.permite("bash"));
+    }
+
+    /// E nao escolher modo nenhum continua sem politica (#988).
+    ///
+    /// Esta e a linha que o #979 nao pode cruzar: deduzir para quem **escolheu
+    /// `auto`** e executar a escolha; deduzir para quem nao escolheu nada seria
+    /// restringir sem consentimento. A mensagem aqui e a mesma que resolveria
+    /// para `search` no teste acima.
+    #[test]
+    fn sem_modo_escolhido_a_mensagem_nao_restringe() {
+        let exec = crate::exec_context::ExecContext::default();
+        let g = ToolGate::para_o_turno(
+            &exec,
+            "qual arquivo tem o handler de login? procura por ele",
+        );
+        assert_eq!(g.nome_do_modo(), None);
+        assert!(
+            g.permite("file_write"),
+            "quem nao escolheu modo nao pode perder file_write por heuristica"
+        );
+    }
+
+    /// Modo concreto escolhido ignora a mensagem, como sempre.
+    #[test]
+    fn modo_concreto_nao_e_reinterpretado_pela_mensagem() {
+        let exec = crate::exec_context::ExecContext::with_mode(Some("search".into()));
+        let g = ToolGate::para_o_turno(&exec, "escreve uma funcao que soma dois numeros");
+        assert_eq!(g.nome_do_modo(), Some("search"));
+        assert!(!g.permite("file_write"), "a escolha do usuario manda");
+    }
+
+    /// Os limites do modo chegam ao portao (#979 item 4).
+    #[test]
+    fn o_portao_carrega_os_limites_do_modo() {
+        let g = ToolGate::for_mode_name("code");
+        let limites = g.limites().expect("modo concreto tem limites");
+        assert_eq!(
+            limites.max_tool_loops,
+            ModeProfile::from_mode(AgentMode::Code)
+                .limits
+                .max_tool_loops
+        );
+
+        assert!(
+            ToolGate::sem_politica().limites().is_none(),
+            "sem modo nao ha limites de modo"
+        );
     }
 
     /// A recusa diz por que, e o que fazer. Sem isso o modelo tende a repetir

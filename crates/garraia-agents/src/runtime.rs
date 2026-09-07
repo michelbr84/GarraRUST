@@ -843,7 +843,7 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::from_exec(exec);
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let tool_defs: Vec<_> = self
             .tool_definitions()
             .into_iter()
@@ -873,9 +873,13 @@ impl AgentRuntime {
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
-        let mut budget = match self.max_tool_calls {
-            Some(limit) => ExecutionBudget::com_limite(limit),
-            None => ExecutionBudget::padrao(),
+        // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
+        // override explicito do runtime > limites do modo > padrao. Quem passou
+        // `max_tool_calls` na mao pediu aquele numero.
+        let mut budget = match (self.max_tool_calls, portao.limites()) {
+            (Some(limit), _) => ExecutionBudget::com_limite(limit),
+            (None, Some(limits)) => ExecutionBudget::com_limites_do_modo(limits),
+            (None, None) => ExecutionBudget::padrao(),
         };
 
         // Reset turn counter at the start of processing a new user message
@@ -977,7 +981,11 @@ impl AgentRuntime {
                     // ferramenta, e nao como erro do turno: o modelo le, e
                     // segue sem ela.
                     if !portao.permite(name) {
-                        let modo = exec.agent_mode.as_deref().unwrap_or("");
+                        // O nome vem do portao, e nao do `exec`: com `auto`
+                        // escolhido, quem barrou foi o modo **deduzido**, e
+                        // dizer "nao e permitida no modo `auto`" nao explica
+                        // nada a quem le.
+                        let modo = portao.nome_do_modo().unwrap_or("");
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: crate::modes::ToolGate::recusa(name, modo),
@@ -1085,7 +1093,7 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::from_exec(exec);
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let tool_defs: Vec<_> = self
             .tool_definitions()
             .into_iter()
@@ -1110,9 +1118,13 @@ impl AgentRuntime {
         let is_confirmation_approved =
             detect_confirmation_approval(conversation_history, user_text);
 
-        let mut budget = match self.max_tool_calls {
-            Some(limit) => ExecutionBudget::com_limite(limit),
-            None => ExecutionBudget::padrao(),
+        // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
+        // override explicito do runtime > limites do modo > padrao. Quem passou
+        // `max_tool_calls` na mao pediu aquele numero.
+        let mut budget = match (self.max_tool_calls, portao.limites()) {
+            (Some(limit), _) => ExecutionBudget::com_limite(limit),
+            (None, Some(limits)) => ExecutionBudget::com_limites_do_modo(limits),
+            (None, None) => ExecutionBudget::padrao(),
         };
 
         // Reset turn counter at the start of processing a new user message
@@ -1240,7 +1252,11 @@ impl AgentRuntime {
                     // ferramenta, e nao como erro do turno: o modelo le, e
                     // segue sem ela.
                     if !portao.permite(name) {
-                        let modo = exec.agent_mode.as_deref().unwrap_or("");
+                        // O nome vem do portao, e nao do `exec`: com `auto`
+                        // escolhido, quem barrou foi o modo **deduzido**, e
+                        // dizer "nao e permitida no modo `auto`" nao explica
+                        // nada a quem le.
+                        let modo = portao.nome_do_modo().unwrap_or("");
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: crate::modes::ToolGate::recusa(name, modo),
@@ -1540,7 +1556,7 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::from_exec(exec);
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let tool_defs: Vec<_> = self
             .tool_definitions()
             .into_iter()
@@ -1572,9 +1588,13 @@ impl AgentRuntime {
 
         let mut full_response = String::new();
 
-        let mut budget = match self.max_tool_calls {
-            Some(limit) => ExecutionBudget::com_limite(limit),
-            None => ExecutionBudget::padrao(),
+        // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
+        // override explicito do runtime > limites do modo > padrao. Quem passou
+        // `max_tool_calls` na mao pediu aquele numero.
+        let mut budget = match (self.max_tool_calls, portao.limites()) {
+            (Some(limit), _) => ExecutionBudget::com_limite(limit),
+            (None, Some(limits)) => ExecutionBudget::com_limites_do_modo(limits),
+            (None, None) => ExecutionBudget::padrao(),
         };
 
         // Reset turn counter at the start of processing a new user message
@@ -1754,7 +1774,11 @@ impl AgentRuntime {
                         // ferramenta, e nao como erro do turno: o modelo le, e
                         // segue sem ela.
                         if !portao.permite(name) {
-                            let modo = exec.agent_mode.as_deref().unwrap_or("");
+                            // O nome vem do portao, e nao do `exec`: com `auto`
+                            // escolhido, quem barrou foi o modo **deduzido**, e
+                            // dizer "nao e permitida no modo `auto`" nao explica
+                            // nada a quem le.
+                            let modo = portao.nome_do_modo().unwrap_or("");
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: crate::modes::ToolGate::recusa(name, modo),
@@ -1905,7 +1929,11 @@ impl AgentRuntime {
                             // ferramenta, e nao como erro do turno: o modelo le, e
                             // segue sem ela.
                             if !portao.permite(name) {
-                                let modo = exec.agent_mode.as_deref().unwrap_or("");
+                                // O nome vem do portao, e nao do `exec`: com `auto`
+                                // escolhido, quem barrou foi o modo **deduzido**, e
+                                // dizer "nao e permitida no modo `auto`" nao explica
+                                // nada a quem le.
+                                let modo = portao.nome_do_modo().unwrap_or("");
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: crate::modes::ToolGate::recusa(name, modo),

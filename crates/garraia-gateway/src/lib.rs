@@ -5,7 +5,6 @@ pub mod anthropic_api;
 pub mod api;
 pub mod auth_metrics;
 pub mod auth_routes;
-pub mod auto_router;
 pub mod billing;
 pub mod bootstrap;
 pub mod channel_send;

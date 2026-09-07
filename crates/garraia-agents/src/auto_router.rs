@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use garraia_agents::{AgentMode, AgentRuntime, ChatMessage, ChatRole, LlmRequest, MessagePart};
+use crate::{AgentMode, AgentRuntime, ChatMessage, ChatRole, LlmRequest, MessagePart};
 use tracing::{debug, warn};
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -54,7 +54,23 @@ pub async fn auto_classify(
 ///
 /// Returns a clear mode when the message strongly signals a single intent, or
 /// `None` when ambiguous (e.g., "how do I fix this code?").
-fn classify_heuristic(text: &str) -> Option<AgentMode> {
+///
+/// # Portugues conta
+///
+/// As listas nasceram so em ingles, e este projeto e escrito e usado em
+/// portugues. Enquanto o modo era decoracao de prompt, um classificador que
+/// nunca dispara para "escreve uma funcao que soma" era so um recurso inerte;
+/// depois que a `ToolPolicy` passou a valer (#988), `/mode auto` para um
+/// usuario que escreve em portugues vira **nenhuma restricao**, em silencio —
+/// o mesmo padrao de prometer e nao entregar que o #988 corrigiu.
+///
+/// O vocabulario pt-BR veio do `AutoRouter` que morava em `agent_mode.rs`,
+/// removido neste mesmo trabalho. O que **nao** veio de la e o algoritmo: ele
+/// era primeiro-que-casar-vence e devolvia sempre um modo, nunca `None`. Com a
+/// politica valendo, classificar "oi" como `code` ou `search` seria pior que
+/// nao classificar. O criterio de pontuacao com folga minima e o que permite
+/// dizer "nao sei".
+pub(crate) fn classify_heuristic(text: &str) -> Option<AgentMode> {
     let lower = text.to_lowercase();
     let t = lower.as_str();
 
@@ -99,6 +115,30 @@ fn score_code(t: &str) -> u8 {
         "code for",
         "function that",
         "method that",
+        // pt-BR
+        "implementa",
+        "implementar",
+        "escreve uma",
+        "escrever uma",
+        "cria uma",
+        "criar uma",
+        "cria um",
+        "criar um",
+        "refatora",
+        "refatorar",
+        "adiciona um",
+        "adicionar um",
+        "corrige o bug",
+        "corrigir o bug",
+        "escreve um teste",
+        "erro de compila",
+        "erro de sintaxe",
+        "gera o codigo",
+        "gerar o codigo",
+        "funcao que",
+        "função que",
+        "metodo que",
+        "método que",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -120,6 +160,27 @@ fn score_debug(t: &str) -> u8 {
         "bug in",
         "undefined",
         "null pointer",
+        // pt-BR
+        "por que o",
+        "por que a",
+        "por que nao",
+        "por que não",
+        "nao funciona",
+        "não funciona",
+        "quebrado",
+        "travou",
+        "panico",
+        "pânico",
+        "excecao",
+        "exceção",
+        "diagnostica",
+        "diagnosticar",
+        "falha com",
+        "erro ao",
+        "bug no",
+        "bug na",
+        "deu erro",
+        "stack trace",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -137,6 +198,29 @@ fn score_review(t: &str) -> u8 {
         "critique",
         "assess",
         "evaluate",
+        // pt-BR
+        "revisa",
+        "revisar",
+        "revise",
+        "verifica o",
+        "verificar o",
+        "analisa o",
+        "analisar o",
+        "audita",
+        "auditar",
+        "olha esse",
+        "olha este",
+        "da uma olhada",
+        "dá uma olhada",
+        "esta correto",
+        "está correto",
+        "melhora esse",
+        "melhorar esse",
+        "o que ha de errado",
+        "o que há de errado",
+        "critica",
+        "avalia",
+        "avaliar",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -152,6 +236,24 @@ fn score_search(t: &str) -> u8 {
         "which file",
         "list all",
         "show me all",
+        // pt-BR
+        "encontra",
+        "encontrar",
+        "procura",
+        "procurar",
+        "onde esta",
+        "onde está",
+        "onde fica",
+        "localiza",
+        "localizar",
+        "qual arquivo",
+        "em que arquivo",
+        "lista todos",
+        "lista todas",
+        "me mostra todos",
+        "me mostra todas",
+        "busca por",
+        "buscar por",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -168,6 +270,20 @@ fn score_architect(t: &str) -> u8 {
         "data model",
         "schema for",
         "diagram",
+        // pt-BR
+        "desenha",
+        "desenhar",
+        "arquitetura",
+        "planeja",
+        "planejar",
+        "como estruturar",
+        "melhor forma de",
+        "melhor maneira de",
+        "abordagem para",
+        "desenho do sistema",
+        "modelo de dados",
+        "esquema para",
+        "diagrama",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -184,6 +300,22 @@ fn score_ask(t: &str) -> u8 {
         "compare",
         "definition of",
         "what are",
+        // pt-BR
+        "o que e",
+        "o que é",
+        "o que sao",
+        "o que são",
+        "explica",
+        "explicar",
+        "me diz",
+        "me diga",
+        "como funciona",
+        "por que existe",
+        "descreve",
+        "descrever",
+        "define",
+        "definir",
+        "significa",
     ];
     keywords.iter().filter(|&&k| t.contains(k)).count().min(4) as u8
 }
@@ -207,8 +339,16 @@ async fn classify_with_llm(
 ) -> Option<AgentMode> {
     let provider = runtime.default_provider()?;
 
-    // Use only the first 400 chars to keep the classify call cheap.
-    let snippet = &text[..text.len().min(400)];
+    // Corte por **caractere**, nao por byte.
+    //
+    // Era `&text[..text.len().min(400)]`, e `len()` conta bytes: numa mensagem
+    // em portugues com 400+ bytes, o corte cai no meio de um `ç`/`ã`/`é` e o
+    // slice entra em panico — derrubando o turno de quem escreveu acentuado,
+    // que neste projeto e a maioria. `char_indices` acha o limite real.
+    let snippet: &str = match text.char_indices().nth(400) {
+        Some((limite, _)) => &text[..limite],
+        None => text,
+    };
 
     let model = model_override
         .map(|m| m.to_string())
@@ -238,7 +378,7 @@ async fn classify_with_llm(
                 .content
                 .iter()
                 .filter_map(|b| {
-                    if let garraia_agents::ContentBlock::Text { text } = b {
+                    if let crate::ContentBlock::Text { text } = b {
                         Some(text.trim().to_lowercase())
                     } else {
                         None
@@ -323,5 +463,91 @@ mod tests {
         // Short or generic messages should not match strongly
         assert_eq!(classify_heuristic("hello"), None);
         assert_eq!(classify_heuristic("ok"), None);
+    }
+}
+
+#[cfg(test)]
+mod pt_br {
+    use super::*;
+
+    /// O classificador precisa acertar intencao escrita em portugues.
+    ///
+    /// Antes deste trabalho as listas eram so em ingles, entao `/mode auto`
+    /// nunca disparava para quem escreve em portugues — e, com a `ToolPolicy`
+    /// valendo (#988), "nunca dispara" quer dizer "nenhuma restricao", em
+    /// silencio, justamente para o publico principal do projeto.
+    #[test]
+    fn intencao_em_portugues_e_classificada() {
+        let casos = [
+            ("escreve uma funcao que soma dois numeros", AgentMode::Code),
+            ("implementar o parser de config", AgentMode::Code),
+            (
+                "por que o teste nao funciona? deu erro ao rodar",
+                AgentMode::Debug,
+            ),
+            (
+                "qual arquivo tem o handler de login? procura por ele",
+                AgentMode::Search,
+            ),
+            (
+                "como estruturar o modulo de auth? melhor forma de fazer",
+                AgentMode::Architect,
+            ),
+            ("o que e um trait em rust? explica", AgentMode::Ask),
+        ];
+        for (frase, esperado) in casos {
+            assert_eq!(
+                classify_heuristic(frase),
+                Some(esperado),
+                "frase: {frase:?}"
+            );
+        }
+    }
+
+    /// E precisa continuar dizendo "nao sei" quando nao sabe.
+    ///
+    /// O criterio (dois acertos e folga de dois) deixa de fora frases curtas
+    /// que um humano classificaria — `"revisa esse codigo pra mim"` casa so
+    /// `revisa`, e `"onde esta a funcao que valida o token?"` empata entre
+    /// busca e codigo. Isso e deliberado e a direcao segura: sob politica
+    /// aplicada, classificar errado **bloqueia** uma ferramenta que o usuario
+    /// podia usar, enquanto nao classificar so deixa tudo liberado, que e o
+    /// comportamento padrao de sempre. Baixar o limiar troca um incomodo por
+    /// um bloqueio indevido.
+    #[test]
+    fn frase_ambigua_ou_curta_continua_sem_classificacao() {
+        for frase in [
+            "revisa esse codigo pra mim",
+            "onde esta a funcao que valida o token?",
+            "oi",
+            "obrigado",
+        ] {
+            assert_eq!(classify_heuristic(frase), None, "frase: {frase:?}");
+        }
+    }
+
+    /// Acento nao pode derrubar o turno.
+    ///
+    /// O caminho de LLM cortava a mensagem com `&text[..text.len().min(400)]`,
+    /// e `len()` conta **bytes**: numa mensagem em portugues com mais de 400
+    /// bytes, o corte cai no meio de um `ç`/`ã`/`é` e o slice entra em panico.
+    /// Este teste exercita o corte diretamente, com o limite caindo dentro de
+    /// um caractere de dois bytes.
+    #[test]
+    fn corte_para_o_classificador_llm_nao_quebra_caractere() {
+        let mut texto = "a".repeat(399);
+        texto.push('ç');
+        texto.push_str(" e mais um tanto de texto depois do corte");
+
+        let cortado: &str = match texto.char_indices().nth(400) {
+            Some((limite, _)) => &texto[..limite],
+            None => &texto,
+        };
+
+        assert_eq!(cortado.chars().count(), 400);
+        assert!(
+            cortado.ends_with('ç'),
+            "o caractere do limite ficou inteiro"
+        );
     }
 }
