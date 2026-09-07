@@ -966,6 +966,134 @@ fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     Ok(answer)
 }
 
+/// `garra memory add` — semeia uma entrada de memoria (#958).
+///
+/// # Por que este comando existe
+///
+/// O `garra memory` sabia inspecionar (`list`, `search`, `stats`) e podar
+/// (`delete`, `compact`, `ttl`), mas nao **semear**: a unica forma de por algo
+/// na memoria era conversar com o agente, o que exige um provider de LLM. Isso
+/// tornava impossivel medir a qualidade do recall de forma reproduzivel — que
+/// e exatamente o que a #958 pede — e tambem incomodava quem so queria testar
+/// a busca sem gastar um turno de modelo.
+///
+/// # O embedding e gerado aqui, e nao adiado
+///
+/// Uma entrada sem vetor nao aparece na busca semantica ate alguem rodar
+/// `reindex`, e um comando de semear que deixa a entrada invisivel ate um
+/// segundo comando e uma armadilha. Quando o provider falha, o comando **diz**
+/// e grava sem vetor, apontando o `reindex` — em vez de gravar em silencio
+/// algo que a busca nao acha.
+pub async fn run_add(
+    config: &AppConfig,
+    content: String,
+    session_id: String,
+    user_id: Option<String>,
+    no_embed: bool,
+    json: bool,
+) -> Result<i32> {
+    if content.trim().is_empty() {
+        eprintln!("error: a entrada precisa de texto");
+        return Ok(EXIT_USAGE);
+    }
+
+    // Aqui o banco **e** criado se faltar: semear numa instalacao nova e o
+    // caso de uso principal, e recusar seria pedir que o usuario conversasse
+    // com o agente primeiro — justamente o que este comando evita.
+    let path = config.memory_db_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let store = match MemoryStore::open(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: nao consegui abrir {}: {e}", path.display());
+            return Ok(EXIT_IOERR);
+        }
+    };
+
+    let (embedding, embedding_model, aviso) = if no_embed {
+        (None, None, None)
+    } else {
+        match garraia_gateway::bootstrap::build_embedding_provider(config) {
+            Some(p) => match p.embed_query(&content).await {
+                Ok(v) => (Some(v), Some(p.model().to_string()), None),
+                Err(e) => (
+                    None,
+                    None,
+                    Some(format!(
+                        "o provider de embeddings falhou ({e}); a entrada foi \
+                         gravada sem vetor — rode `garra memory reindex`"
+                    )),
+                ),
+            },
+            None => (
+                None,
+                None,
+                Some(
+                    "nenhum provider de embeddings configurado; a entrada foi \
+                     gravada sem vetor — rode `garra memory reindex` depois de \
+                     configurar um"
+                        .to_string(),
+                ),
+            ),
+        }
+    };
+
+    let semantica = embedding.is_some();
+    let id = match store
+        .remember(garraia_db::NewMemoryEntry {
+            // Mesmo tenant que o `remember_turn` do runtime usa
+            // (`runtime.rs:551`): semear noutro faria a entrada existir e o
+            // recall do agente nunca acha-la.
+            tenant_id: "default".to_string(),
+            session_id: session_id.clone(),
+            channel_id: None,
+            user_id: user_id.clone(),
+            continuity_key: None,
+            role: garraia_db::MemoryRole::User,
+            content: content.clone(),
+            embedding,
+            embedding_model,
+            metadata: serde_json::json!({ "source": "garra memory add" }),
+        })
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("error: nao consegui gravar: {e}");
+            return Ok(EXIT_IOERR);
+        }
+    };
+
+    if let Some(a) = &aviso
+        && !json
+    {
+        eprintln!("aviso: {a}");
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "embedded": semantica,
+                "warning": aviso,
+            })
+        );
+    } else {
+        let como = if semantica {
+            "com vetor (busca semantica ja acha)"
+        } else {
+            "sem vetor (so busca textual)"
+        };
+        println!("gravado {id} {como}");
+    }
+    Ok(EXIT_OK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

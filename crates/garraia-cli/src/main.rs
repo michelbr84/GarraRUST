@@ -365,6 +365,32 @@ enum MemoryCommands {
         json: bool,
     },
 
+    /// Add an entry to the memory (#958).
+    ///
+    /// O `garra memory` sabia inspecionar e podar, mas nao semear: a unica
+    /// forma de por algo na memoria era conversar com o agente, o que exige um
+    /// provider de LLM. E o que torna possivel medir a qualidade do recall de
+    /// forma reproduzivel.
+    Add {
+        /// O texto a lembrar.
+        content: String,
+
+        /// A sessao a que a entrada pertence.
+        #[arg(long, default_value = "cli-seed")]
+        session: String,
+
+        /// Dono da entrada, quando houver.
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Grava sem vetor, deixando o embedding para o `reindex`.
+        #[arg(long)]
+        no_embed: bool,
+
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Search the memory through the same recall the agent uses.
     ///
     /// Semantic when an embedding provider is configured; textual otherwise.
@@ -1977,6 +2003,13 @@ async fn async_main(
                     no_embedding,
                     json,
                 } => memory_cmd::run_list(&config, limit, no_embedding, json).await?,
+                MemoryCommands::Add {
+                    content,
+                    session,
+                    user,
+                    no_embed,
+                    json,
+                } => memory_cmd::run_add(&config, content, session, user, no_embed, json).await?,
                 MemoryCommands::Search { query, limit, json } => {
                     memory_cmd::run_search(&config, query, limit, json).await?
                 }
