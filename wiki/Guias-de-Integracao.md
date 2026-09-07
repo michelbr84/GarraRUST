@@ -35,4 +35,4 @@
 
 ## Ferramentas do agente
 
-- [Tools embutidas](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/tools.md) · [Modos de execução](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/modes.md) · [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/memory.md)
+- [Tools embutidas](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/tools.md) · [Modos de execução](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/modes.md) · [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/memory.md)

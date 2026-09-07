@@ -20,10 +20,16 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 > Esta wiki é a **porta de entrada**: o conteúdo técnico canônico vive versionado em [`docs/`](https://github.com/michelbr84/GarraRUST/tree/main/docs) e no [README](https://github.com/michelbr84/GarraRUST/blob/main/README.md).
 
+## Novidades
+
+- **[v0.3.9 — Novidades](Novidades-v0.3.9)** · **[What's New in v0.3.9 (English)](Whats-New-v0.3.9)**
+  — 48 issues e PRs: terminal que mostra o que o agente faz, memoria
+  inspecionavel, e os modos de execucao passando a valer no executor.
+
 ## Changelogs
 
 - [Semana 21 (18/05 – 24/05)](Changelog-Semana-21)
 - [Semana 20 (11/05 – 17/05)](Changelog-Semana-20)
 - [Semana 19 (04/05 – 10/05)](Changelog-Semana-19)
 
-Histórico completo de versões: [CHANGELOG.md](https://github.com/michelbr84/GarraRUST/blob/main/CHANGELOG.md) (última release: v0.3.2).
+Histórico completo de versões: [CHANGELOG.md](https://github.com/michelbr84/GarraRUST/blob/main/CHANGELOG.md) · [todas as releases](https://github.com/michelbr84/GarraRUST/releases).
