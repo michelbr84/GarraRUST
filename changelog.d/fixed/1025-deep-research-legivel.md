@@ -16,3 +16,17 @@
   cabecalho diz o que ele e, de quando e, que o ADR vence onde divergirem, e
   quais dos "itens nao especificados" ja foram decididos (ADR 0003, 0004 e
   0005).
+- **Sete links relativos apontavam para arquivos que nao existem.** Cinco eram
+  para `benches/database-poc/`, o PoC removido em 2026-08-16 pelo #814 — que
+  ja tinha estabelecido o tratamento ("links mortos viram mencao historica"),
+  mas corrigiu README e ROADMAP e deixou passar o ADR 0003, onde estava a
+  maioria deles. A tabela B1-B5 continua reproduzida no proprio ADR, entao
+  nenhum numero se perdeu; os arquivos seguem recuperaveis em `2188751^`.
+- Os outros dois eram do ADR 0009, para `plans/0116a-*` e `plans/0116b-*`.
+  Conferido: esses planos **nunca existiram** em ponto nenhum da historia do
+  repositorio. Viraram nome de registro, com ponteiro para o plano que existe.
+- `docs/src/SUMMARY.md`, o indice do mdBook, mandava para `./installation.md`
+  e `./configuration.md`; os dois arquivos vivem em `docs/`, nao em
+  `docs/src/`. As paginas "Instalacao" e "Configuracao" do livro sairiam
+  vazias. Corrigido para `../`, que e o que o proprio SUMMARY ja usa para a
+  persona da Hera. Mesmo erro em `docs/src/continue-modes.md`.

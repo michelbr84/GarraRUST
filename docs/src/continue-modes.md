@@ -446,5 +446,5 @@ curl http://localhost:3000/v1/models
 ## See Also
 
 - [Mode System Documentation](./modes.md) - Detailed mode configuration
-- [Gateway Configuration](./configuration.md) - Gateway setup
+- [Gateway Configuration](../configuration.md) - Gateway setup
 - [API Reference](./architecture.md) - Full API documentation
