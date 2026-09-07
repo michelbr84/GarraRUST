@@ -363,6 +363,34 @@ mod tests {
         }
     }
 
+    /// Largura hostil nao vira alocacao gigante.
+    ///
+    /// `terminal_width()` le a env var `COLUMNS` sem teto superior, entao
+    /// `COLUMNS=999999999` chega ate aqui. A regua acompanha o **conteudo** e
+    /// so entao e limitada pela largura — se fosse `traco.repeat(largura)`,
+    /// esta linha alocaria alguns gigabytes. E o mesmo cuidado que o
+    /// `Header::render` ja tomava; o painel novo tinha de nao reintroduzir o
+    /// problema.
+    #[test]
+    fn largura_absurda_nao_aloca_o_mundo() {
+        let s = render("Contexto", &amostra(), Style::PLAIN, usize::MAX);
+        assert!(s.len() < 4096, "saida grande demais: {} bytes", s.len());
+
+        let l = render_list("Comandos", &["/help".to_string()], Style::PLAIN, usize::MAX);
+        assert!(l.len() < 4096, "saida grande demais: {} bytes", l.len());
+    }
+
+    /// Largura 0 e 1 nao entram em panico.
+    #[test]
+    fn largura_degenerada_nao_entra_em_panico() {
+        for largura in [0usize, 1, 2] {
+            let s = render("Contexto", &amostra(), Style::PLAIN, largura);
+            assert!(s.contains("Diretorio"), "largura {largura}: {s:?}");
+            let l = render_list("Comandos", &["/help".to_string()], Style::PLAIN, largura);
+            assert!(l.contains("/help"), "largura {largura}: {l:?}");
+        }
+    }
+
     /// Valor sem espaco maior que a largura **estoura**, e nao e truncado.
     ///
     /// Um caminho e um nome de ramo nao tem onde quebrar, e cortar com `…`
