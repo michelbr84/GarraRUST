@@ -303,7 +303,15 @@ crates/
                         gated pela feature. Wiring no `garraia-gateway` +
                         `garraia-config::StorageConfig` fica para slice 3.
 apps/
-  garraia-mobile/     — Flutter Android client (Riverpod, go_router, Dio)
+  garraia-mobile/     — Garra Mobile (Flutter, Riverpod 3, go_router, Dio). v0.4.0
+                        (ADR 0016 amendment 2026-09-07): home "Garra Neon" +
+                        `lib/runtime/` (`GarraConnection`: local Termux em
+                        127.0.0.1:3888 / outro Garra na LAN / Garra Cloud) +
+                        negociação de capabilities via `/api/capabilities`.
+                        Codegen: `dart run build_runner build` (todo `*.g.dart`
+                        é gitignored). APK sai do CI (`mobile.yml` em PR,
+                        `build-android-apk` na release) — este container não
+                        alcança o Android SDK (`dl.google.com` bloqueado).
 ```
 
 ### Crates planejados (ROADMAP AAA Fases 2-3)
@@ -424,6 +432,17 @@ benches/
     O `select_checksum_line` do `install.sh` (e o `Select-ChecksumLine` do `install.ps1`)
     ancoram o nome em fim de linha justamente para que `garraia-linux-x86_64` nunca case
     com `garraia-linux-x86_64.tar.gz`.
+    **O corpo da release vem do CHANGELOG, nao da lista de commits.** O
+    `release.yml` roda `scripts/release/notes.py "$VERSION" CHANGELOG.md` e passa o
+    resultado como `body_path`; o script extrai a *prosa de abertura* da secao da
+    versao (o que vem antes da primeira subsecao `###`) e o softprops anexa a lista
+    gerada embaixo. A secao inteira nao serve: a da v0.3.9 tem 1298 linhas e 90 KB,
+    perto do teto de 125 KB do GitHub. Apagar o script quebra a release inteira — ele
+    roda **antes** do `Create Release`, e o job usa `set -euo pipefail`.
+    **E cuidado com `.gitignore` sem ancora:** `release/` sem a barra inicial casa em
+    QUALQUER profundidade e ja engoliu `scripts/release/` uma vez, com o `git add -A`
+    pulando o arquivo em silencio e a release referenciando um script inexistente. Os
+    padroes de artefato de build sao `/release/` e `/dist/`, ancorados na raiz.
 16. **SEMPRE** manter `install.sh` e `install.ps1` em paridade de comportamento. Sao o mesmo
     contrato em dois sistemas operacionais (flags, env vars, precedencia env-vence-flag,
     verificacao SHA-256, encadeamento `init`/`start`); mudou um, muda o outro, e as suites

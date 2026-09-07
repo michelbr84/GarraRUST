@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 part 'notification_service.g.dart';
@@ -32,8 +31,9 @@ class NotificationService {
     if (_initialized) return;
     _initialized = true;
 
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
     const iosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
@@ -41,10 +41,7 @@ class NotificationService {
     );
 
     await _localNotifications.initialize(
-      const InitializationSettings(
-        android: androidSettings,
-        iOS: iosSettings,
-      ),
+      const InitializationSettings(android: androidSettings, iOS: iosSettings),
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
 
@@ -53,30 +50,38 @@ class NotificationService {
   }
 
   Future<void> _createChannels() async {
-    final android = _localNotifications.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android = _localNotifications
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
 
     if (android != null) {
-      await android.createNotificationChannel(const AndroidNotificationChannel(
-        'chat_messages',
-        'Mensagens do Chat',
-        description: 'Notificacoes de novas mensagens do chat',
-        importance: Importance.high,
-      ));
+      await android.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'chat_messages',
+          'Mensagens do Chat',
+          description: 'Notificacoes de novas mensagens do chat',
+          importance: Importance.high,
+        ),
+      );
 
-      await android.createNotificationChannel(const AndroidNotificationChannel(
-        'sync_status',
-        'Status de Sincronizacao',
-        description: 'Notificacoes de sincronizacao entre dispositivos',
-        importance: Importance.low,
-      ));
+      await android.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'sync_status',
+          'Status de Sincronizacao',
+          description: 'Notificacoes de sincronizacao entre dispositivos',
+          importance: Importance.low,
+        ),
+      );
 
-      await android.createNotificationChannel(const AndroidNotificationChannel(
-        'system',
-        'Sistema',
-        description: 'Notificacoes do sistema',
-        importance: Importance.defaultImportance,
-      ));
+      await android.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'system',
+          'Sistema',
+          description: 'Notificacoes do sistema',
+          importance: Importance.defaultImportance,
+        ),
+      );
     }
   }
 

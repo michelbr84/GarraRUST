@@ -4,7 +4,8 @@ import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
-import '../services/api_service.dart';
+import '../runtime/runtime_config.dart';
+import '../runtime/runtime_providers.dart';
 import '../services/offline_queue.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/mascot_widget.dart';
@@ -14,7 +15,11 @@ import '../widgets/typing_indicator.dart';
 import '../widgets/voice_input_widget.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
-  const ChatScreen({super.key});
+  /// Gateway session to open (deep link `garraia://chat/<id>`); null keeps
+  /// the persisted current session.
+  final String? sessionId;
+
+  const ChatScreen({super.key, this.sessionId});
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -33,6 +38,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollCtrl.addListener(_onScroll);
+    final id = widget.sessionId;
+    if (id != null && id.isNotEmpty) {
+      Future.microtask(
+        () => ref.read(currentSessionProvider.notifier).select(id),
+      );
+    }
   }
 
   @override
@@ -53,7 +64,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   void _onScroll() {
     if (!_scrollCtrl.hasClients) return;
-    final isAtBottom = _scrollCtrl.position.pixels >=
+    final isAtBottom =
+        _scrollCtrl.position.pixels >=
         _scrollCtrl.position.maxScrollExtent - 100;
     if (_showScrollToBottom == isAtBottom) {
       setState(() => _showScrollToBottom = !isAtBottom);
@@ -83,9 +95,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           }
         } else {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Erro: $e')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('Erro: $e')));
           }
         }
       }
@@ -108,8 +120,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<String> _handleAudioRecorded(String audioPath) async {
     try {
-      final api = ref.read(apiServiceProvider);
-      return await api.transcribeAudio(audioPath);
+      final conn = ref.read(garraConnectionProvider);
+      if (conn == null) return 'No runtime configured';
+      return await conn.transcribe(audioPath);
     } catch (_) {
       return 'Erro ao transcrever audio';
     }
@@ -120,6 +133,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final messages = ref.watch(chatMessagesProvider);
     final mascotState = ref.watch(mascotStateProvider);
     final isThinking = mascotState == MascotState.thinking;
+    final isCloud =
+        ref.watch(runtimeConfigStateProvider).value?.mode == RuntimeMode.cloud;
 
     return Scaffold(
       appBar: AppBar(
@@ -146,22 +161,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           ),
           PopupMenuButton<String>(
             onSelected: (v) async {
-              if (v == 'logout') {
+              if (v == 'new') {
+                await ref.read(currentSessionProvider.notifier).reset();
+                ref.invalidate(chatMessagesProvider);
+              } else if (v == 'logout') {
                 await ref.read(authStateProvider.notifier).logout();
                 if (context.mounted) context.go('/login');
               }
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: 'logout',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout),
-                    SizedBox(width: 8),
-                    Text('Sair'),
-                  ],
+              if (!isCloud)
+                const PopupMenuItem(
+                  value: 'new',
+                  child: Row(
+                    children: [
+                      Icon(Icons.add_comment_outlined),
+                      SizedBox(width: 8),
+                      Text('New session'),
+                    ],
+                  ),
                 ),
-              ),
+              if (isCloud)
+                const PopupMenuItem(
+                  value: 'logout',
+                  child: Row(
+                    children: [
+                      Icon(Icons.logout),
+                      SizedBox(width: 8),
+                      Text('Sair'),
+                    ],
+                  ),
+                ),
             ],
           ),
         ],
@@ -175,18 +205,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           Expanded(
             child: messages.when(
               loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('Erro ao carregar: $e')),
+              error: (e, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Could not load the conversation: $e',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
               data: (msgs) => msgs.isEmpty && !isThinking
-                  ? _EmptyChat(onPrompt: (p) {
-                      _inputCtrl.text = p;
-                      _send();
-                    })
+                  ? _EmptyChat(
+                      onPrompt: (p) {
+                        _inputCtrl.text = p;
+                        _send();
+                      },
+                    )
                   : Stack(
                       children: [
                         ListView.builder(
                           controller: _scrollCtrl,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
                           itemCount: msgs.length + (isThinking ? 1 : 0),
                           itemBuilder: (_, i) {
                             if (i == msgs.length && isThinking) {
@@ -196,9 +238,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           },
                         ),
                         if (_showScrollToBottom)
-                          ScrollToBottomButton(
-                            onPressed: _scrollToBottom,
-                          ),
+                          ScrollToBottomButton(onPressed: _scrollToBottom),
                       ],
                     ),
             ),
@@ -266,9 +306,7 @@ class _InputBar extends StatelessWidget {
                 // Voice toggle button
                 IconButton(
                   icon: Icon(
-                    showVoiceInput
-                        ? Icons.keyboard_rounded
-                        : Icons.mic_rounded,
+                    showVoiceInput ? Icons.keyboard_rounded : Icons.mic_rounded,
                     size: 22,
                   ),
                   onPressed: onToggleVoice,
@@ -318,7 +356,9 @@ class _SendButton extends StatelessWidget {
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white),
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
                 )
               : const Icon(Icons.send_rounded, color: Colors.white, size: 22),
         ),
@@ -353,18 +393,17 @@ class _EmptyChat extends StatelessWidget {
           Text(
             'Oi! Eu sou o Garra.',
             textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.bold),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
           Text(
             'Seu assistente pessoal de IA.\nMe pergunte qualquer coisa!',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.6),
-                ),
+              color: cs.onSurface.withValues(alpha: 0.6),
+            ),
           ),
           const SizedBox(height: 28),
           Wrap(
@@ -373,10 +412,8 @@ class _EmptyChat extends StatelessWidget {
             runSpacing: 8,
             children: _suggestions
                 .map(
-                  (s) => ActionChip(
-                    label: Text(s),
-                    onPressed: () => onPrompt(s),
-                  ),
+                  (s) =>
+                      ActionChip(label: Text(s), onPressed: () => onPrompt(s)),
                 )
                 .toList(),
           ),

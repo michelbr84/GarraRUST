@@ -1,0 +1,72 @@
+name: Cache Swagger UI zip
+description: >-
+  Pre-downloads the swagger-ui archive that `utoipa-swagger-ui`'s build.rs
+  fetches at compile time and points SWAGGER_UI_DOWNLOAD_URL at the local
+  copy (GAR-822). Without this, every job that compiles `garraia-gateway`
+  depends on a build-script download from GitHub that intermittently comes
+  back truncated — `InvalidArchive("Could not find EOCD")` — which took the
+  E2E job down on `main` on 2026-09-07 and can abort a release.
+
+inputs:
+  version:
+    description: swagger-ui tag to fetch (must match utoipa-swagger-ui's expectation)
+    required: false
+    default: v5.17.14
+  dir:
+    description: >-
+      Directory that holds the zip. Defaults to the runner temp dir. Jobs that
+      compile inside a container (`cross`) must point this INSIDE the workspace
+      — cross mounts the workspace at the same absolute path, so the file://
+      URI stays valid there — and pass SWAGGER_UI_DOWNLOAD_URL through
+      (see Cross.toml `[build.env] passthrough`).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach the shell through `env:`, never through `${{ }}` inside
+    # `run:` — an expression expanded into a script is a shell-injection seam,
+    # an environment variable is just data.
+    - name: Point SWAGGER_UI_DOWNLOAD_URL at the local cache (cross-platform file:// URI)
+      shell: bash
+      env:
+        SWAGGER_UI_VERSION: ${{ inputs.version }}
+        SWAGGER_UI_DIR_INPUT: ${{ inputs.dir }}
+      run: |
+        set -euo pipefail
+        dir="${SWAGGER_UI_DIR_INPUT}"
+        if [ -z "${dir}" ]; then dir="${RUNNER_TEMP}/swagger-ui-cache"; fi
+        mkdir -p "${dir}"
+        # pathlib.as_uri() yields file:///C:/… on Windows and file:///… elsewhere.
+        uri="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "${dir}/${SWAGGER_UI_VERSION}.zip")"
+        echo "SWAGGER_UI_DOWNLOAD_URL=${uri}" >> "${GITHUB_ENV}"
+        echo "SWAGGER_UI_CACHE_DIR=${dir}" >> "${GITHUB_ENV}"
+
+    - name: Restore cached Swagger UI zip
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.dir != '' && inputs.dir || format('{0}/swagger-ui-cache', runner.temp) }}
+        key: swagger-ui-${{ inputs.version }}-${{ runner.os }}
+
+    - name: Download Swagger UI zip when missing or corrupt
+      # Runs on cache hit too: a truncated zip that slipped into the cache is
+      # exactly the failure mode this action exists to prevent, so the file is
+      # verified as a real zip before the build script ever opens it.
+      shell: bash
+      env:
+        SWAGGER_UI_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        zip="${SWAGGER_UI_CACHE_DIR}/${SWAGGER_UI_VERSION}.zip"
+        check() { python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).testzip()' "$1"; }
+        if [ -f "${zip}" ] && check "${zip}" 2>/dev/null; then
+          echo "cached ${zip} is a valid zip"
+          exit 0
+        fi
+        rm -f "${zip}"
+        curl -sSLf --retry 5 --retry-delay 5 \
+          -o "${zip}" \
+          "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${SWAGGER_UI_VERSION}.zip"
+        check "${zip}"
+        echo "downloaded ${zip} ($(wc -c < "${zip}") bytes, zip verified)"

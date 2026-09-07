@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
 
-import '../services/api_service.dart';
+import 'brand/wolf_mark.dart';
+
+import '../runtime/models.dart';
 
 /// Modern chat bubble with markdown rendering for AI messages,
 /// timestamps, and avatar for assistant messages.
@@ -30,15 +32,16 @@ class ChatBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        mainAxisAlignment:
-            _isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: _isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (!_isUser) ...[
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: cs.primaryContainer,
-              child: const Icon(Icons.smart_toy_rounded, size: 18),
+            const SizedBox(
+              width: 32,
+              height: 32,
+              child: WolfMark(size: 32, glow: 0.4),
             ),
             const SizedBox(width: 8),
           ],
@@ -52,10 +55,11 @@ class ChatBubble extends StatelessWidget {
                 children: [
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
-                      color:
-                          _isUser ? cs.primary : cs.surfaceContainerHighest,
+                      color: _isUser ? cs.primary : cs.surfaceContainerHighest,
                       borderRadius: BorderRadius.only(
                         topLeft: const Radius.circular(16),
                         topRight: const Radius.circular(16),
@@ -66,10 +70,7 @@ class ChatBubble extends StatelessWidget {
                     child: _isUser
                         ? Text(
                             message.content,
-                            style: TextStyle(
-                              color: cs.onPrimary,
-                              fontSize: 15,
-                            ),
+                            style: TextStyle(color: cs.onPrimary, fontSize: 15),
                           )
                         : _MarkdownBody(
                             content: message.content,
@@ -114,10 +115,11 @@ class _MarkdownBody extends StatelessWidget {
         p: TextStyle(color: textColor, fontSize: 15, height: 1.4),
         code: TextStyle(
           color: textColor,
-          backgroundColor:
-              Theme.of(context).colorScheme.surface.withValues(alpha: 0.3),
+          backgroundColor: Theme.of(
+            context,
+          ).colorScheme.surface.withValues(alpha: 0.3),
           fontSize: 13,
-          fontFamily: 'monospace',
+          fontFamily: 'JetBrainsMono',
         ),
         codeblockDecoration: BoxDecoration(
           color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.3),
@@ -134,14 +136,22 @@ class _MarkdownBody extends StatelessWidget {
         ),
         blockquotePadding: const EdgeInsets.only(left: 12),
         h1: TextStyle(
-            color: textColor, fontSize: 20, fontWeight: FontWeight.bold),
+          color: textColor,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
         h2: TextStyle(
-            color: textColor, fontSize: 18, fontWeight: FontWeight.bold),
+          color: textColor,
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
         h3: TextStyle(
-            color: textColor, fontSize: 16, fontWeight: FontWeight.w600),
+          color: textColor,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
         listBullet: TextStyle(color: textColor, fontSize: 15),
-        strong: TextStyle(
-            color: textColor, fontWeight: FontWeight.bold),
+        strong: TextStyle(color: textColor, fontWeight: FontWeight.bold),
         em: TextStyle(color: textColor, fontStyle: FontStyle.italic),
         a: TextStyle(
           color: Theme.of(context).colorScheme.primary,

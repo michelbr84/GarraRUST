@@ -476,7 +476,12 @@ O GarraIA mantém **histórico unificado** entre todos os canais:
 
 ### Modos de Execução (Agent Modes)
 
-O GarraIA possui um sistema avançado de **Modos de Execução** que permite selecionar diferentes estratégias de comportamento do agente:
+O GarraIA possui um sistema avançado de **Modos de Execução** que permite selecionar diferentes estratégias de comportamento do agente.
+
+> **Desde a v0.3.9 (#988), a coluna "Políticas de Ferramentas" vale no
+> executor.** Até então ela era só pedida no prompt do sistema: um modo
+> anunciado como somente-leitura não impedia `file_write` nem `bash` — só
+> pedia educadamente. Agora a ferramenta fora da política é **bloqueada**.
 
 | Modo | Descrição | Políticas de Ferramentas |
 |------|-----------|--------------------------|
@@ -770,9 +775,14 @@ embeddings:
 
 ### Gerenciando a memória
 
-A memória é gerenciada pelo Web Console e pela API do gateway (listar,
-buscar por similaridade, adicionar, limpar e exportar fatos). Um
-subcomando `garra memory` na CLI está no roadmap.
+A memória é gerenciada de três lugares, e a CLI é a mais completa:
+`garra memory` tem `stats`, `list`, `add`, `search`, `reindex`, `backup`,
+`pin`, `ttl`, `delete` e `compact`.
+
+O **Web Console** e a **API do gateway** cobrem a leitura mais uma limpeza —
+`GET /api/memory/recent`, `GET /api/memory/search` e `DELETE /api/memory`.
+Não há endpoint de adicionar nem de exportar: para semear use
+`garra memory add`, e para levar embora, `garra memory backup`.
 
 ## Segurança
 

@@ -21,3 +21,9 @@
 pre-build = [
   "apt-get update && apt-get install --assume-yes --no-install-recommends perl make"
 ]
+
+# GAR-822: o build.rs do utoipa-swagger-ui le SWAGGER_UI_DOWNLOAD_URL; o
+# release.yml aponta para um zip dentro do workspace (montado no container
+# no mesmo caminho absoluto), e a variavel precisa atravessar o cross.
+[build.env]
+passthrough = ["SWAGGER_UI_DOWNLOAD_URL"]

@@ -1,12 +1,26 @@
 # GarraIA Group Workspace para Garra: arquitetura, requisitos e entrega de um Shared Workspace de Grupo/Família
 
+> **Relatório de pesquisa, não especificação viva.** Levantamento do estado da
+> arte feito na abertura do planejamento da Fase 3 e trazido para o repositório
+> em 2026-04-13 (`af0f42e`). É a base **qualitativa** das decisões, não o
+> registro delas: onde este texto e um ADR divergirem, **o ADR vence**.
+>
+> Parte do que a seção seguinte lista como "itens não especificados" já foi
+> decidida desde então — provedor de identidade no
+> [ADR 0005](docs/adr/0005-identity-provider.md), armazenamento de arquivos no
+> [ADR 0004](docs/adr/0004-object-storage.md), banco e memória vetorial no
+> [ADR 0003](docs/adr/0003-database-for-workspace.md). A arquitetura, que o
+> texto deixa em aberto entre monólito e microserviços, é hoje um workspace de
+> 22 crates com um gateway único. O que de fato foi construído está no
+> [ROADMAP.md](ROADMAP.md) §Fase 3.
+
 ## Resumo executivo
 
-O **GarraIA Group Workspace** é um espaço compartilhado (família/equipe/grupo) que combina **arquivos**, **chats** e **memória de IA** sob um **modelo robusto de permissões**, de modo que múltiplos membros colaborem com contexto comum sem vazar dados entre pessoas/grupos e sem misturar “memória pessoal” com “memória do grupo”. A solução recomendada é um desenho “multi-tenant por grupo”, com **escopos de runtime** explícitos (*user*, *group*, *chat*), validações de autorização em camadas (API + banco com *defense-in-depth* quando aplicável), e armazenamento de arquivos em **object storage** (cloud ou self-host) com versionamento e trilha de auditoria. Para entrega consistente e observável, é recomendado instrumentar com **telemetria padrão (OpenTelemetry)** e métricas *Prometheus-style*. citeturn1search3turn1search0turn1search2turn1search5turn1search19turn15search7
+O **GarraIA Group Workspace** é um espaço compartilhado (família/equipe/grupo) que combina **arquivos**, **chats** e **memória de IA** sob um **modelo robusto de permissões**, de modo que múltiplos membros colaborem com contexto comum sem vazar dados entre pessoas/grupos e sem misturar “memória pessoal” com “memória do grupo”. A solução recomendada é um desenho “multi-tenant por grupo”, com **escopos de runtime** explícitos (*user*, *group*, *chat*), validações de autorização em camadas (API + banco com *defense-in-depth* quando aplicável), e armazenamento de arquivos em **object storage** (cloud ou self-host) com versionamento e trilha de auditoria. Para entrega consistente e observável, é recomendado instrumentar com **telemetria padrão (OpenTelemetry)** e métricas *Prometheus-style*.
 
-Do ponto de vista de segurança e privacidade, o recurso precisa nascer com “**privacidade por padrão**” e segregação de dados: a própria lei brasileira (LGPD) define dado pessoal e princípios (finalidade/necessidade/segurança) e exige **medidas técnicas e administrativas** para proteção (arts. 46–49). Além disso, a **ANPD** publica guias e orientações práticas sobre incidentes e segurança para agentes de tratamento. No cenário europeu, diretrizes e materiais oficiais reforçam requisitos de segurança e notificação de incidentes, e fontes oficiais da União Europeia descrevem o dever de notificar autoridade supervisora em até 72h quando houver risco. citeturn11view0turn13search1turn13search0turn12search7turn12search18
+Do ponto de vista de segurança e privacidade, o recurso precisa nascer com “**privacidade por padrão**” e segregação de dados: a própria lei brasileira (LGPD) define dado pessoal e princípios (finalidade/necessidade/segurança) e exige **medidas técnicas e administrativas** para proteção (arts. 46–49). Além disso, a **ANPD** publica guias e orientações práticas sobre incidentes e segurança para agentes de tratamento. No cenário europeu, diretrizes e materiais oficiais reforçam requisitos de segurança e notificação de incidentes, e fontes oficiais da União Europeia descrevem o dever de notificar autoridade supervisora em até 72h quando houver risco.
 
-Recomendação de stack para implementação (backend): **Rust** com runtime assíncrono (Tokio), framework HTTP (Axum), acesso a banco assíncrono (SQLx), TLS moderno (rustls), autenticação baseada em padrões (OAuth2/JWT quando aplicável), e integração com object storage via SDK (ex.: S3 compatível). citeturn5search4turn5search1turn5search2turn6search1turn6search8turn0search2turn0search10
+Recomendação de stack para implementação (backend): **Rust** com runtime assíncrono (Tokio), framework HTTP (Axum), acesso a banco assíncrono (SQLx), TLS moderno (rustls), autenticação baseada em padrões (OAuth2/JWT quando aplicável), e integração com object storage via SDK (ex.: S3 compatível).
 
 **Itens não especificados** (devem ser definidos para fechar o desenho final): arquitetura atual do Garra (monólito vs microserviços), provedor de identidade atual (SSO/OIDC?), mecanismos atuais de chat/arquivos/memória IA, e restrições de plataforma (ex.: execução on-prem, mobile offline, multi-região).
 
@@ -20,7 +34,7 @@ O GarraIA Group Workspace deve permitir que um **grupo/família**:
 3) mantenha uma **memória compartilhada do grupo** (e opcionalmente memória por chat) sem conflitar com memória pessoal;  
 4) tenha **gestão de membros/convites** e auditoria (quem acessou/alterou o quê).  
 
-O recorte “grupo como tenant” é o modelo mais simples para reduzir risco de vazamento, pois tudo é associado a `group_id` e validado por políticas de acesso (ex.: RLS no Postgres, quando útil). citeturn1search3turn1search0
+O recorte “grupo como tenant” é o modelo mais simples para reduzir risco de vazamento, pois tudo é associado a `group_id` e validado por políticas de acesso (ex.: RLS no Postgres, quando útil).
 
 ### Requisitos funcionais
 
@@ -48,30 +62,30 @@ O recorte “grupo como tenant” é o modelo mais simples para reduzir risco de
 - Regras claras: (a) o que entra na memória; (b) quem pode ver/editar; (c) políticas de retenção/expiração; (d) trilha de auditoria.
 
 **Busca**
-- Busca unificada (arquivos + chats + memória) com filtros por escopo. Para mensagens, dá para usar full-text nativo do Postgres (tsvector/tsquery) ou index externo; ambos têm trade-offs. citeturn7search0turn7search16
+- Busca unificada (arquivos + chats + memória) com filtros por escopo. Para mensagens, dá para usar full-text nativo do Postgres (tsvector/tsquery) ou index externo; ambos têm trade-offs.
 
 ### Requisitos não funcionais
 
 **Segurança**
-- Autenticação forte; proteção de transporte com TLS 1.3 quando possível. citeturn3search0  
-- Senhas (se houver login local) com hash *memory-hard* como Argon2. citeturn3search1turn19search2  
-- Controles de acesso priorizando “least privilege” e verificações consistentes (padrões de segurança OWASP). citeturn0search3turn8search1turn8search0  
+- Autenticação forte; proteção de transporte com TLS 1.3 quando possível.
+- Senhas (se houver login local) com hash *memory-hard* como Argon2.
+- Controles de acesso priorizando “least privilege” e verificações consistentes (padrões de segurança OWASP).
 
 **Privacidade**
-- Minimização/necessidade e segmentação de escopo (não misturar memórias). A LGPD define princípios e conceitos de dado pessoal e exige governança e segurança. citeturn11view0turn13search1  
-- Se houver operação na entity["country","Brasil","country in south america"], considerar guias e expectativas da entity["organization","ANPD","brazil data protection auth"]. citeturn13search1turn13search0turn13search2  
-- Se houver usuários na entity["organization","União Europeia","supranational union"], considerar práticas oficiais de notificação de incidentes e diretrizes europeias. citeturn12search7turn12search18turn12search6  
+- Minimização/necessidade e segmentação de escopo (não misturar memórias). A LGPD define princípios e conceitos de dado pessoal e exige governança e segurança.
+- Se houver operação no Brasil, considerar guias e expectativas da ANPD.
+- Se houver usuários na União Europeia, considerar práticas oficiais de notificação de incidentes e diretrizes europeias.
 
 **Escalabilidade**
 - Escalar API horizontalmente; separar tarefas de upload e indexação por workers assíncronos.
-- Arquivos em object storage (escala melhor do que disco local) com multipart/resumable para grandes uploads. citeturn17search8turn17search0turn17search1  
+- Arquivos em object storage (escala melhor do que disco local) com multipart/resumable para grandes uploads.
 
 **Disponibilidade**
-- Banco e storage com estratégia clara de backup/restore; para Postgres, PITR com arquivamento contínuo de WAL é prática padrão suportada pela documentação. citeturn7search2turn16search1turn16search6  
+- Banco e storage com estratégia clara de backup/restore; para Postgres, PITR com arquivamento contínuo de WAL é prática padrão suportada pela documentação.
 
 **Performance**
-- Upload direto para storage via **URLs pré-assinadas** para reduzir carga do backend, com expiração curta e escopo mínimo. citeturn17search7turn17search3turn17search11  
-- Busca: usar índices adequados (GIN/tsvector no Postgres para texto; index dedicado para grandes volumes). citeturn2search3turn7search0  
+- Upload direto para storage via **URLs pré-assinadas** para reduzir carga do backend, com expiração curta e escopo mínimo.
+- Busca: usar índices adequados (GIN/tsvector no Postgres para texto; index dedicado para grandes volumes).
 
 ## Arquitetura de referência
 
@@ -86,10 +100,10 @@ Uma arquitetura pragmática (monólito modular ou “modular monolith” com ser
 - **Files Service**: metadados de arquivos + integração com object storage.
 - **Memory Service**: memória pessoal/grupo/chat + políticas de retenção.
 - **Search Service**: index e consulta (Postgres FTS, Tantivy/Meilisearch ou híbrido).
-- **DB transacional**: preferencialmente Postgres por recursos de segurança e busca textual nativa. citeturn1search3turn7search0  
+- **DB transacional**: preferencialmente Postgres por recursos de segurança e busca textual nativa.
 - **Object Storage**: S3/GCS/Azure/MinIO com versionamento e criptografia em repouso.
 - **Event Bus/Queue**: para indexação, preview, antivírus, jobs de retenção (tecnologia específica não especificada).
-- **Observabilidade**: OpenTelemetry + métricas no padrão Prometheus para dashboards e alertas. citeturn1search19turn15search3turn15search7  
+- **Observabilidade**: OpenTelemetry + métricas no padrão Prometheus para dashboards e alertas.
 
 ### Diagrama de arquitetura
 
@@ -132,16 +146,16 @@ A tabela abaixo foca no perfil “workspace multi-tenant” com chats, ACL e bus
 
 | Opção | Pontos fortes | Pontos de atenção | Quando escolher |
 |---|---|---|---|
-| **PostgreSQL** | RLS/policies no banco (*CREATE POLICY*), full-text com `tsvector/tsquery`, índices GIN e extensões (ex.: `pgcrypto`). citeturn1search0turn1search3turn7search0turn7search1turn2search3turn2search11 | Operação/HA exige disciplina (backup, WAL, replica). A doc cobre PITR/WAL/HA/hot standby. citeturn7search2turn16search6turn16search0 | Recomendado como default para GarraIA Group Workspace. |
-| **MySQL/InnoDB** | Replicação bem difundida; binlog e modos de logging/replicação documentados. citeturn2search17turn2search5turn2search9 | Sem equivalente tão direto a RLS nativa no core; FTS e modelagem de ACL tendem a ficar mais na aplicação. | Se o Garra já for majoritariamente MySQL e houver forte inércia operacional. |
-| **CockroachDB** | SQL distribuído com transações ACID distribuídas e isolamento serializable como foco. citeturn2search12turn2search0turn2search20 | Custo/complexidade; compatibilidade SQL e tuning; exige domínio de padrões de DB distribuído. | Se o roadmap exigir multi-região ativa/ativa cedo. |
-| **MongoDB** | Sharding e replica sets; transações multi-documento e em cluster sharded são suportadas (com considerações). citeturn2search2turn2search10turn2search6 | ACL e consistência relacional (membros/grupos) ficam mais delicadas; custo de integridade referencial e consultas. | Se o Garra já usa documento e prioriza adaptabilidade do schema sobre joins. |
+| **PostgreSQL** | RLS/policies no banco (*CREATE POLICY*), full-text com `tsvector/tsquery`, índices GIN e extensões (ex.: `pgcrypto`). | Operação/HA exige disciplina (backup, WAL, replica). A doc cobre PITR/WAL/HA/hot standby. | Recomendado como default para GarraIA Group Workspace. |
+| **MySQL/InnoDB** | Replicação bem difundida; binlog e modos de logging/replicação documentados. | Sem equivalente tão direto a RLS nativa no core; FTS e modelagem de ACL tendem a ficar mais na aplicação. | Se o Garra já for majoritariamente MySQL e houver forte inércia operacional. |
+| **CockroachDB** | SQL distribuído com transações ACID distribuídas e isolamento serializable como foco. | Custo/complexidade; compatibilidade SQL e tuning; exige domínio de padrões de DB distribuído. | Se o roadmap exigir multi-região ativa/ativa cedo. |
+| **MongoDB** | Sharding e replica sets; transações multi-documento e em cluster sharded são suportadas (com considerações). | ACL e consistência relacional (membros/grupos) ficam mais delicadas; custo de integridade referencial e consultas. | Se o Garra já usa documento e prioriza adaptabilidade do schema sobre joins. |
 
 ## Modelo de dados e escopos de runtime
 
 ### Princípio de modelagem
 
-O workspace precisa de **domínio relacional claro** (grupos↔membros↔papéis; chats; mensagens; arquivos; memória). Mesmo que a UI “pareça simples”, os riscos de segurança e conformidade aumentam quando ACL e auditoria são improvisadas (ponto recorrente em padrões OWASP). citeturn8search1turn0search3
+O workspace precisa de **domínio relacional claro** (grupos↔membros↔papéis; chats; mensagens; arquivos; memória). Mesmo que a UI “pareça simples”, os riscos de segurança e conformidade aumentam quando ACL e auditoria são improvisadas (ponto recorrente em padrões OWASP).
 
 ### Tabelas recomendadas
 
@@ -149,7 +163,7 @@ Abaixo está um schema conceitual (nomes sugeridos). Tipos são indicativos.
 
 **Identidade e autenticação**
 - `users` (`id`, `email`, `display_name`, `status`, `created_at`)
-- `user_identities` (`id`, `user_id`, `provider`, `provider_sub`, `created_at`) — para OIDC/SSO (se aplicável). OAuth 2.0 é o padrão de autorização amplamente adotado. citeturn0search2turn0search14
+- `user_identities` (`id`, `user_id`, `provider`, `provider_sub`, `created_at`) — para OIDC/SSO (se aplicável). OAuth 2.0 é o padrão de autorização amplamente adotado.
 - `sessions` (`id`, `user_id`, `refresh_token_hash`, `expires_at`, `device_id`, `created_at`)
 - `api_keys` (`id`, `user_id`, `label`, `key_hash`, `scopes`, `created_at`, `revoked_at`)
 
@@ -163,7 +177,7 @@ Abaixo está um schema conceitual (nomes sugeridos). Tipos são indicativos.
 - `permissions` (`id`, `action`, `resource_type`)
 - `role_permissions` (`role_id`, `permission_id`)
 - `audit_events` (`id`, `group_id`, `actor_user_id`, `action`, `resource_type`, `resource_id`, `ip`, `user_agent`, `metadata_jsonb`, `created_at`)  
-Boas práticas de logging e auditoria para eventos de segurança são amplamente documentadas por OWASP. citeturn8search0turn8search8
+Boas práticas de logging e auditoria para eventos de segurança são amplamente documentadas por OWASP.
 
 **Chats**
 - `chats` (`id`, `group_id`, `type`, `name`, `created_by`, `created_at`, `settings_jsonb`)
@@ -180,7 +194,7 @@ Boas práticas de logging e auditoria para eventos de segurança são amplamente
 
 **Memória**
 - `memory_items` (`id`, `scope_type`, `scope_id`, `group_id`, `created_by`, `kind`, `content`, `sensitivity`, `ttl_expires_at`, `created_at`, `deleted_at`)
-- `memory_embeddings` (`memory_item_id`, `embedding`) — opcional (pgvector ou outro). O `pgvector` suporta indexação aproximada como HNSW e IVFFlat. citeturn14search0turn14search11
+- `memory_embeddings` (`memory_item_id`, `embedding`) — opcional (pgvector ou outro). O `pgvector` suporta indexação aproximada como HNSW e IVFFlat.
 
 ### Modelo de escopos de runtime
 
@@ -196,7 +210,7 @@ A regra de resolução para IA e busca deve obedecer:
 2) **Escopo do grupo**  
 3) **Escopo do usuário** (apenas do usuário atual)  
 
-Esse “empilhamento” evita que memória pessoal se torne visível ao grupo. Esse ponto é alinhado ao princípio de necessidade/minimização e a exigências de segurança (LGPD) e “by default” (GDPR) quando aplicável. citeturn11view0turn13search1turn12search6turn12search7
+Esse “empilhamento” evita que memória pessoal se torne visível ao grupo. Esse ponto é alinhado ao princípio de necessidade/minimização e a exigências de segurança (LGPD) e “by default” (GDPR) quando aplicável.
 
 ### Diagrama ER
 
@@ -274,20 +288,20 @@ erDiagram
 ### Princípios de API
 
 - **REST/JSON** com versionamento explícito (`/v1/...`).
-- **OpenAPI** para contrato, testes e SDKs. A especificação OpenAPI define um formato padrão e agnóstico de linguagem para descrever APIs HTTP. citeturn18search0turn18search4
-- **Erros padronizados** com “Problem Details”, preferindo o RFC mais atual (RFC 9457). citeturn18search19  
-- HTTP é stateless por natureza; a sessão fica em tokens/cookies, não em estado no servidor. citeturn18search2
+- **OpenAPI** para contrato, testes e SDKs. A especificação OpenAPI define um formato padrão e agnóstico de linguagem para descrever APIs HTTP.
+- **Erros padronizados** com “Problem Details”, preferindo o RFC mais atual (RFC 9457).
+- HTTP é stateless por natureza; a sessão fica em tokens/cookies, não em estado no servidor.
 
 ### Autenticação e autorização
 
 **Opções de autenticação**
-- **OIDC/OAuth2** (recomendado se Garra já tem SSO ou pretende ter): OAuth 2.0 é um framework de autorização para obter acesso limitado a recursos HTTP. citeturn0search2turn0search14  
-- **JWT** como token de acesso (curta duração) quando fizer sentido. JWT é padronizado em RFC próprio. citeturn0search10  
+- **OIDC/OAuth2** (recomendado se Garra já tem SSO ou pretende ter): OAuth 2.0 é um framework de autorização para obter acesso limitado a recursos HTTP.
+- **JWT** como token de acesso (curta duração) quando fizer sentido. JWT é padronizado em RFC próprio.
 - **Sessões web** (cookie HttpOnly + refresh server-side) para UX web mais simples; ainda assim, o token interno pode ser JWT ou identificador opaco.
 
 **Autorização**
 - RBAC por grupo (`group_members.role`) mapeado para permissões por ação (`permission.action`) e tipo de recurso.
-- Para *defense-in-depth*, habilitar **Row Level Security** em tabelas críticas do Postgres, com políticas que restringem leitura/escrita a `group_id` e/ou `user_id`. O Postgres aplica RLS via `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` e `CREATE POLICY`. citeturn1search3turn1search0
+- Para *defense-in-depth*, habilitar **Row Level Security** em tabelas críticas do Postgres, com políticas que restringem leitura/escrita a `group_id` e/ou `user_id`. O Postgres aplica RLS via `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` e `CREATE POLICY`.
 
 ### Endpoints principais
 
@@ -377,7 +391,7 @@ POST /v1/groups/{group_id}/invites
 }
 ```
 
-O formato acima segue o conceito de “problem detail” padronizado (RFC 9457). citeturn18search19
+O formato acima segue o conceito de “problem detail” padronizado (RFC 9457).
 
 ### Papéis e permissões sugeridos
 
@@ -389,32 +403,32 @@ Uma sugestão mínima (ajuste conforme produto/negócio):
 - **Guest**: leitura e contribuição limitada (pasta “Compartilhados”, chat específico).
 - **Child/Dependent**: similar a Guest com *guardrails* adicionais (sem export/sem share externo).
 
-Recomendação: modelar permissões como *capabilities* (`files.write`, `chats.moderate`, `members.manage`) e aplicar em policy central; OWASP ASVS é uma base de requisitos verificáveis para controles de autenticação, autorização e logging. citeturn0search3turn8search0
+Recomendação: modelar permissões como *capabilities* (`files.write`, `chats.moderate`, `members.manage`) e aplicar em policy central; OWASP ASVS é uma base de requisitos verificáveis para controles de autenticação, autorização e logging.
 
 ## Armazenamento, chat, busca e UX
 
 ### Armazenamento de arquivos e opções de sync
 
-**Object storage como “origem da verdade”** é o caminho padrão para arquivos e anexos (durabilidade, versionamento, escalabilidade). Em cloud, serviços já oferecem criptografia em repouso e recursos como versionamento. Por exemplo, no S3 existe criptografia server-side por padrão em buckets e há suporte a SSE-S3/SSE-KMS. citeturn4search4turn4search8turn4search0
+**Object storage como “origem da verdade”** é o caminho padrão para arquivos e anexos (durabilidade, versionamento, escalabilidade). Em cloud, serviços já oferecem criptografia em repouso e recursos como versionamento. Por exemplo, no S3 existe criptografia server-side por padrão em buckets e há suporte a SSE-S3/SSE-KMS.
 
 #### Comparativo de storage
 
 | Modelo | Como funciona | Vantagens | Desvantagens | Melhor encaixe |
 |---|---|---|---|---|
 | Local-only | Arquivos em disco/NAS + metadados no DB local | Simplicidade “caseira”; dados ficam no local | Backup e acesso remoto mais difíceis; risco de perda se não houver redundância | “Família on-prem” |
-| Cloud object storage | Metadados no DB + blob em bucket | Versionamento e criptografia em repouso comuns. Ex.: object versioning no GCS; blob versioning no Azure; criptografia automática no Azure Storage. citeturn4search5turn4search6turn4search2turn4search4 | Dependência do provedor e custos de egress; latência para alguns usuários | Padrão SaaS |
+| Cloud object storage | Metadados no DB + blob em bucket | Versionamento e criptografia em repouso comuns. Ex.: object versioning no GCS; blob versioning no Azure; criptografia automática no Azure Storage. | Dependência do provedor e custos de egress; latência para alguns usuários | Padrão SaaS |
 | Hybrid | Cache local + nuvem como source-of-truth | Melhor UX offline e desempenho local; retenção local controlável | Complexidade de sync e conflitos; exige agente/daemon | Mobile/offline e “família” com múltiplos devices |
-| Self-host S3 compatível | MinIO (ou similar) com API S3 | Mantém modelo de object storage; compatibilidade S3; suporta versionamento e conceitos como erasure coding. citeturn4search3turn4search15turn4search19 | Operação: upgrades, monitoramento, capacidade, DR | Empresas/on-prem com time DevOps |
+| Self-host S3 compatível | MinIO (ou similar) com API S3 | Mantém modelo de object storage; compatibilidade S3; suporta versionamento e conceitos como erasure coding. | Operação: upgrades, monitoramento, capacidade, DR | Empresas/on-prem com time DevOps |
 
 #### Upload: presigned URLs, multipart e resumable
 
-Para reduzir custo e evitar que o backend vire gargalo de throughput, use **URL pré-assinada** de upload/download com expiração curta. A documentação do S3 descreve URLs pré-assinadas para upload e download e ressalta que elas dão acesso temporário sem compartilhar credenciais permanentes. citeturn17search7turn17search11turn17search3
+Para reduzir custo e evitar que o backend vire gargalo de throughput, use **URL pré-assinada** de upload/download com expiração curta. A documentação do S3 descreve URLs pré-assinadas para upload e download e ressalta que elas dão acesso temporário sem compartilhar credenciais permanentes.
 
 Para arquivos grandes:
-- **S3 multipart upload** divide o objeto em partes; falhas em uma parte não invalidam o resto, e o “CompleteMultipartUpload” monta as partes. citeturn17search8turn17search4turn17search0  
-- **tus** é um protocolo aberto para uploads retomáveis via HTTP, útil se Garra quiser padronizar retomada em múltiplos backends. citeturn17search1turn17search13
+- **S3 multipart upload** divide o objeto em partes; falhas em uma parte não invalidam o resto, e o “CompleteMultipartUpload” monta as partes.
+- **tus** é um protocolo aberto para uploads retomáveis via HTTP, útil se Garra quiser padronizar retomada em múltiplos backends.
 
-Se o produto quiser “montar” o workspace como uma pasta no sistema operacional, **WebDAV** é um padrão HTTP para autoria/gerência de coleções e locking. citeturn17search2 (Observação: isso implica desafios de permissões, locking e performance; deve ser uma opção deliberada.)
+Se o produto quiser “montar” o workspace como uma pasta no sistema operacional, **WebDAV** é um padrão HTTP para autoria/gerência de coleções e locking. (Observação: isso implica desafios de permissões, locking e performance; deve ser uma opção deliberada.)
 
 ### Chat integrado e busca
 
@@ -424,9 +438,9 @@ Se o produto quiser “montar” o workspace como uma pasta no sistema operacion
 
 **Busca**: três estratégias comuns:
 
-1) **Postgres Full-Text Search**: `tsvector`/`tsquery` para mensagens e descrições; é nativo e reduz dependências. citeturn7search0turn7search16turn7search4  
-2) **Index embutido Rust (Tantivy)**: biblioteca de busca em Rust inspirada em Lucene, boa para index local/sidecar. citeturn14search1turn14search5  
-3) **Search service externo (Meilisearch)**: API dedicada para busca full-text (e até híbrida/semântica em alguns cenários). citeturn14search2turn14search6turn14search10  
+1) **Postgres Full-Text Search**: `tsvector`/`tsquery` para mensagens e descrições; é nativo e reduz dependências.
+2) **Index embutido Rust (Tantivy)**: biblioteca de busca em Rust inspirada em Lucene, boa para index local/sidecar.
+3) **Search service externo (Meilisearch)**: API dedicada para busca full-text (e até híbrida/semântica em alguns cenários).
 
 **Recomendação pragmática**: começar com Postgres FTS para mensagens (escala suficiente para muitos cenários) e evoluir para index dedicado se volume/latência exigir.
 
@@ -453,16 +467,16 @@ Abaixo, “wireframes textuais” (descrições) para web e mobile.
 
 ### Backup, recuperação e versionamento
 
-- **Postgres PITR/archiving**: a documentação descreve que restauração com “continuous archiving” requer sequência contínua de WAL arquivados; isso permite point-in-time recovery quando combinado com base backup. citeturn7search2turn16search1  
-- **Alta disponibilidade**: Postgres documenta conceitos de HA e hot standby e parâmetros de replicação/streaming. citeturn16search6turn16search0turn16search3  
+- **Postgres PITR/archiving**: a documentação descreve que restauração com “continuous archiving” requer sequência contínua de WAL arquivados; isso permite point-in-time recovery quando combinado com base backup.
+- **Alta disponibilidade**: Postgres documenta conceitos de HA e hot standby e parâmetros de replicação/streaming.
 
-Para arquivos: habilitar **versionamento** no object storage quando disponível (GCS/Azure/MinIO) e definir política de retenção e limpeza. citeturn4search5turn4search6turn4search15
+Para arquivos: habilitar **versionamento** no object storage quando disponível (GCS/Azure/MinIO) e definir política de retenção e limpeza.
 
 ### Criptografia e gestão de chaves
 
-- **Em trânsito**: TLS 1.3 foi especificado para prevenir escuta, adulteração e forja. citeturn3search0  
-- **Em repouso**: preferir criptografia gerenciada pelo provedor (SSE) quando cloud; S3 documenta SSE-S3 e SSE-KMS e descreve criptografia por padrão em buckets. citeturn4search4turn4search0turn4search8  
-- **Chaves**: seguir boas práticas de gestão de material criptográfico (ciclo de vida, rotação, separação de funções) conforme recomendações do entity["organization","NIST","us standards agency"] (SP 800-57). citeturn3search3  
+- **Em trânsito**: TLS 1.3 foi especificado para prevenir escuta, adulteração e forja.
+- **Em repouso**: preferir criptografia gerenciada pelo provedor (SSE) quando cloud; S3 documenta SSE-S3 e SSE-KMS e descreve criptografia por padrão em buckets.
+- **Chaves**: seguir boas práticas de gestão de material criptográfico (ciclo de vida, rotação, separação de funções) conforme recomendações do NIST (SP 800-57).
 
 ### Auditoria e logging de segurança
 
@@ -472,30 +486,30 @@ Eventos mínimos a auditar:
 - downloads de arquivos sensíveis; compartilhamentos;
 - exportação e deleção (soft/hard), mudanças de retenção.
 
-OWASP fornece orientações práticas para mecanismos de logging e para vocabulário consistente de eventos. citeturn8search0turn8search8
+OWASP fornece orientações práticas para mecanismos de logging e para vocabulário consistente de eventos.
 
 ### Conformidade LGPD e considerações GDPR
 
 **LGPD (Brasil)**
-- Define conceitos como dado pessoal e princípios do tratamento (finalidade/necessidade/segurança). citeturn11view0  
-- Exige adoção de medidas de segurança técnicas e administrativas (art. 46 e seguintes), e a ANPD publica material educativo sobre segurança da informação para agentes de tratamento. citeturn13search11turn13search1  
-- A ANPD mantém canal/orientação para comunicação de incidente de segurança (CIS) e reforça a obrigação do controlador em comunicar incidente quando aplicável. citeturn13search0  
+- Define conceitos como dado pessoal e princípios do tratamento (finalidade/necessidade/segurança).
+- Exige adoção de medidas de segurança técnicas e administrativas (art. 46 e seguintes), e a ANPD publica material educativo sobre segurança da informação para agentes de tratamento.
+- A ANPD mantém canal/orientação para comunicação de incidente de segurança (CIS) e reforça a obrigação do controlador em comunicar incidente quando aplicável.
 
 Implicações práticas para o GarraIA Group Workspace:
-- **Controles de acesso e segregação** por grupo não são opcionais; devem ser demonstráveis (princípio de responsabilização). citeturn11view0turn13search1  
+- **Controles de acesso e segregação** por grupo não são opcionais; devem ser demonstráveis (princípio de responsabilização).
 - **Direitos do titular** (ex.: exportação/apagamento) exigem trilhas e processos: localizar dados por escopo, exportar (com consentimento/política) e apagar conforme regras de retenção. (Implementação específica depende do produto — não especificado.)
 
 **GDPR (quando aplicável)**
-- A Comissão Europeia descreve obrigação de notificar a autoridade supervisora “sem demora indevida” e, no máximo, em 72h após ciência quando houver risco, e também descreve obrigações do processador notificar o controlador. citeturn12search7  
-- Diretrizes do entity["organization","European Data Protection Board","eu data protection board"] detalham práticas sobre notificação de incidentes e interpretação de artigos relacionados a segurança e breach notification. citeturn12search18turn8search11  
-- Diretrizes oficiais sobre “data protection by design and by default” reforçam que medidas e salvaguardas devem ser consideradas desde o design. citeturn12search6  
+- A Comissão Europeia descreve obrigação de notificar a autoridade supervisora “sem demora indevida” e, no máximo, em 72h após ciência quando houver risco, e também descreve obrigações do processador notificar o controlador.
+- Diretrizes do European Data Protection Board detalham práticas sobre notificação de incidentes e interpretação de artigos relacionados a segurança e breach notification.
+- Diretrizes oficiais sobre “data protection by design and by default” reforçam que medidas e salvaguardas devem ser consideradas desde o design.
 
 Para IA/memória: **memória compartilhada** pode conter dado pessoal; tratar como dado sob governança (retenção, acesso, auditoria, exclusão). Se o Garra aplicar embeddings/vetores (RAG), a mesma governança se aplica ao conteúdo e aos embeddings.
 
 ### Observabilidade, monitoramento e SRE
 
-- **OpenTelemetry** define especificações e contexto para correlação de logs/traços/métricas. citeturn1search19turn1search23  
-- Guia de instrumentação do Prometheus recomenda instrumentar amplamente (métricas por subsistema), e métricas incluem tipos como counters/gauges/histograms. citeturn15search7turn15search3  
+- **OpenTelemetry** define especificações e contexto para correlação de logs/traços/métricas.
+- Guia de instrumentação do Prometheus recomenda instrumentar amplamente (métricas por subsistema), e métricas incluem tipos como counters/gauges/histograms.
 
 Métricas recomendadas:
 - latência p50/p95/p99 por endpoint;
@@ -507,11 +521,11 @@ Métricas recomendadas:
 ### Infra e deployment em Kubernetes
 
 Para ambientes containerizados:
-- **StatefulSet** é apropriado para workloads stateful e identidade estável. citeturn1search2  
-- **Ingress** gerencia acesso externo HTTP/HTTPS com regras (host/path). citeturn1search5  
-- **Secrets** podem ser montados como volume/env e há boas práticas oficiais para gestão de secrets. citeturn15search1turn15search5  
-- **RBAC** e boas práticas de RBAC são documentadas pelo Kubernetes para reduzir risco de privilégio excessivo. citeturn15search2turn15search18  
-- **Probes** (liveness/readiness/startup) e **HPA** (autoscaling horizontal) são mecanismos oficiais para robustez e escala por demanda. citeturn16search2turn16search14turn16search5  
+- **StatefulSet** é apropriado para workloads stateful e identidade estável.
+- **Ingress** gerencia acesso externo HTTP/HTTPS com regras (host/path).
+- **Secrets** podem ser montados como volume/env e há boas práticas oficiais para gestão de secrets.
+- **RBAC** e boas práticas de RBAC são documentadas pelo Kubernetes para reduzir risco de privilégio excessivo.
+- **Probes** (liveness/readiness/startup) e **HPA** (autoscaling horizontal) são mecanismos oficiais para robustez e escala por demanda.
 
 ### Estratégia de migração e upgrades
 
@@ -520,7 +534,7 @@ Mesmo sem detalhes do sistema atual, uma estratégia segura de evolução inclui
 - **Dupla escrita** temporária (quando migrar storage/search), seguida de “cutover” e limpeza.
 - **Versionamento de API** (`/v1`) e compatibilidade retroativa com clientes mobile (Janela de suporte explícita — não especificada).
 
-Para Rust, usar tooling de migração do SQLx (migrations) é comum em pipelines CI/CD e se integra ao runtime assíncrono. citeturn5search2turn5search6
+Para Rust, usar tooling de migração do SQLx (migrations) é comum em pipelines CI/CD e se integra ao runtime assíncrono.
 
 ## Implementação em Rust e roadmap
 
@@ -544,15 +558,15 @@ Um layout “workspace Cargo” facilita modularidade:
   - tracing + OpenTelemetry exporters
 
 **Async runtime e HTTP**
-- **Tokio** é um runtime assíncrono para Rust com I/O não bloqueante e agendamento. citeturn5search4turn5search16  
-- **Axum** integra middleware via Tower, reaproveitando ecossistema de middleware HTTP. citeturn5search1turn5search13  
-- **SQLx**: crate assíncrona com queries verificáveis e suporte a Postgres/MySQL/SQLite. citeturn5search2  
+- **Tokio** é um runtime assíncrono para Rust com I/O não bloqueante e agendamento.
+- **Axum** integra middleware via Tower, reaproveitando ecossistema de middleware HTTP.
+- **SQLx**: crate assíncrona com queries verificáveis e suporte a Postgres/MySQL/SQLite.
 
 **Segurança e telemetria**
-- **rustls**: biblioteca TLS moderna com foco em cripto segura por padrão. citeturn6search1turn6search5  
-- **tracing** e integração com OpenTelemetry via `tracing-opentelemetry`. citeturn5search3turn6search3  
-- Hash de senha com `argon2` crate, alinhado ao RFC Argon2. citeturn19search2turn3search1  
-- Documentar API com `utoipa` (OpenAPI auto gerado). citeturn19search1turn18search0  
+- **rustls**: biblioteca TLS moderna com foco em cripto segura por padrão.
+- **tracing** e integração com OpenTelemetry via `tracing-opentelemetry`.
+- Hash de senha com `argon2` crate, alinhado ao RFC Argon2.
+- Documentar API com `utoipa` (OpenAPI auto gerado).
 
 ### Padrões async e concorrência
 
@@ -562,7 +576,7 @@ Tarefas típicas que devem ser **assíncronas/fora do request**:
 - jobs de retenção (expirar memória, esvaziar lixeira);
 - verificação de malware (se adotado; não especificado).
 
-Em Tokio, isso tende a ser implementado com `tokio::spawn` + filas internas/externas e *cancellation* por shutdown signal. citeturn5search16turn5search8
+Em Tokio, isso tende a ser implementado com `tokio::spawn` + filas internas/externas e *cancellation* por shutdown signal.
 
 ### Snippets de código (núcleo do feature)
 
@@ -726,7 +740,7 @@ fn internal_err<E: std::fmt::Display>(e: E) -> (axum::http::StatusCode, String) 
 }
 ```
 
-Axum oferece extractors como `Multipart` para upload via `multipart/form-data` (com a ressalva de consumir o corpo e precisar ser o último extractor). citeturn7search3turn5search5
+Axum oferece extractors como `Multipart` para upload via `multipart/form-data` (com a ressalva de consumir o corpo e precisar ser o último extractor).
 
 #### Upload de arquivo: multipart direto no backend (útil para on-prem)
 
@@ -774,7 +788,7 @@ fn internal_err<E: std::fmt::Display>(e: E) -> (axum::http::StatusCode, String) 
 }
 ```
 
-Para SaaS com object storage, preferir **presigned URL** e/ou multipart nativo do storage para uploads grandes. citeturn17search7turn17search8turn17search0
+Para SaaS com object storage, preferir **presigned URL** e/ou multipart nativo do storage para uploads grandes.
 
 #### Upload de arquivo: presigned URL em S3 compatível
 
@@ -797,21 +811,21 @@ impl S3Storage {
 }
 ```
 
-O AWS SDK for Rust fornece crates por serviço (ex.: `aws-sdk-s3`) e a documentação oficial descreve exemplos com S3. citeturn6search0turn6search8turn6search20
+O AWS SDK for Rust fornece crates por serviço (ex.: `aws-sdk-s3`) e a documentação oficial descreve exemplos com S3.
 
 ### Boas práticas de segurança específicas para Rust
 
-- Preferir TLS via **rustls** e configurar *cipher suites* modernas; TLS 1.3 tem requisitos e objetivos de segurança definidos no RFC. citeturn6search1turn3search0  
-- Evitar armazenar tokens/senhas em texto: usar `argon2` para hashing de senha (quando aplicável) e rotação/expiração de refresh tokens. citeturn19search2turn3search1  
-- Instrumentação estruturada com `tracing` e export OpenTelemetry para rastrear requests e operações críticas. citeturn5search3turn6search3turn6search11  
-- Middleware HTTP (CORS, compression, tracing, headers sensíveis) via `tower-http`. citeturn19search4turn19search0turn19search16  
+- Preferir TLS via **rustls** e configurar *cipher suites* modernas; TLS 1.3 tem requisitos e objetivos de segurança definidos no RFC.
+- Evitar armazenar tokens/senhas em texto: usar `argon2` para hashing de senha (quando aplicável) e rotação/expiração de refresh tokens.
+- Instrumentação estruturada com `tracing` e export OpenTelemetry para rastrear requests e operações críticas.
+- Middleware HTTP (CORS, compression, tracing, headers sensíveis) via `tower-http`.
 
 ### Estratégia de testes
 
 - **Unit tests**: validação de políticas RBAC, parse de escopos, sanitização.
 - **Integration tests**: endpoints com DB real (testcontainers ou ambiente efêmero), verificação de RLS/políticas e migrações.
 - **E2E** (web/mobile): fluxos críticos (criar grupo → convidar → upload → chat → memória).
-- **Security testing**: checklist e critérios verificáveis baseados em OWASP ASVS e OWASP Logging Cheat Sheet. citeturn0search3turn8search0  
+- **Security testing**: checklist e critérios verificáveis baseados em OWASP ASVS e OWASP Logging Cheat Sheet.
 - **Chaos/Resiliência**: simular indisponibilidade de storage/DB e conferir degradação.
 
 ### Roadmap com marcos, entregáveis e estimativas
@@ -836,14 +850,14 @@ Estimativas em semanas (**baixa / provável / alta**) incluem desenvolvimento + 
 - **Frontend Web**: flows, componentes, acessibilidade.
 - **Mobile**: offline/cache, uploads retomáveis.
 - **DevOps/SRE**: Kubernetes, observabilidade, CI/CD, DR.
-- **Segurança/Privacy**: threat modeling, revisão OWASP, governança LGPD/GDPR, incident response (ANPD/UE). citeturn13search1turn12search7turn8search0turn0search3
+- **Segurança/Privacy**: threat modeling, revisão OWASP, governança LGPD/GDPR, incident response (ANPD/UE).
 
 ### Riscos e mitigação
 
-- **Vazamento de dados entre grupos**: mitigar com `group_id` obrigatório, políticas centralizadas, testes de autorização, e RLS no Postgres onde fizer sentido. citeturn1search3turn1search0  
-- **Uploads grandes e instáveis no mobile**: mitigar com tus (resumable) ou multipart no storage, e fila de upload retomável. citeturn17search1turn17search8  
-- **Crescimento de busca**: começar Postgres FTS e migrar para index dedicado (Tantivy/Meilisearch) quando latência/volume exigirem. citeturn7search0turn14search1turn14search2  
-- **Operação de secrets/chaves em Kubernetes**: seguir boas práticas oficiais de Secrets e RBAC e, se possível, integrar KMS externo. citeturn15search5turn15search18turn3search3  
+- **Vazamento de dados entre grupos**: mitigar com `group_id` obrigatório, políticas centralizadas, testes de autorização, e RLS no Postgres onde fizer sentido.
+- **Uploads grandes e instáveis no mobile**: mitigar com tus (resumable) ou multipart no storage, e fila de upload retomável.
+- **Crescimento de busca**: começar Postgres FTS e migrar para index dedicado (Tantivy/Meilisearch) quando latência/volume exigirem.
+- **Operação de secrets/chaves em Kubernetes**: seguir boas práticas oficiais de Secrets e RBAC e, se possível, integrar KMS externo.
 
 ### Linha do tempo em Gantt
 
@@ -885,8 +899,8 @@ flowchart TD
 ```
 
 **Checklist final de prontidão**
-- RLS/políticas e testes de autorização (defense-in-depth). citeturn1search3  
-- TLS e hashing de senha conforme boas práticas (TLS 1.3 / Argon2). citeturn3search0turn3search1  
-- Observabilidade (OpenTelemetry) e métricas (Prometheus). citeturn1search19turn15search7  
-- Backup/PITR para Postgres e versionamento/retention em storage. citeturn7search2turn4search5turn4search6  
-- Runbooks de incidentes alinhados a orientações da ANPD e materiais oficiais europeus quando aplicável. citeturn13search0turn12search7turn12search18
+- RLS/políticas e testes de autorização (defense-in-depth).
+- TLS e hashing de senha conforme boas práticas (TLS 1.3 / Argon2).
+- Observabilidade (OpenTelemetry) e métricas (Prometheus).
+- Backup/PITR para Postgres e versionamento/retention em storage.
+- Runbooks de incidentes alinhados a orientações da ANPD e materiais oficiais europeus quando aplicável. 

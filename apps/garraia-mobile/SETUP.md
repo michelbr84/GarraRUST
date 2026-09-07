@@ -1,117 +1,64 @@
-# Garra Mobile — Setup Guide
+# Garra Mobile — Setup
 
 ## Pré-requisitos
 
-1. **Flutter SDK** ≥ 3.22
-   Download: https://docs.flutter.dev/get-started/install/windows/mobile
+- Flutter **3.47.2** (stable) — a versão fixada no CI (`.github/workflows/mobile.yml`).
+  O `pubspec.lock` é resolvido contra ela; outra versão pode pedir `flutter pub get`
+  sem `--enforce-lockfile` e mudar o lock.
+- JDK 17 (o Gradle do app compila com `JavaVersion.VERSION_17`).
+- Android SDK / Android Studio para o APK. **Não** fixe `org.gradle.java.home` em
+  `android/gradle.properties`: use `JAVA_HOME` ou `~/.gradle/gradle.properties`.
 
-2. **Android Studio** (ou VSCode + extensão Flutter)
-
-3. **Java 17+** (bundled no Android Studio)
-
----
-
-## Primeiros passos
+## Passos
 
 ```bash
-# 1. Instalar dependências
 cd apps/garraia-mobile
 flutter pub get
-
-# 2. Gerar código Riverpod (*.g.dart)
 dart run build_runner build --delete-conflicting-outputs
+flutter analyze && flutter test
 ```
 
-> Os arquivos `*.g.dart` são gerados automaticamente e não devem ser commitados.
-> Adicione ao `.gitignore`: `**/*.g.dart`
+## Backend para desenvolver
 
----
-
-## Rodar no emulador Android
+Um gateway local basta:
 
 ```bash
-# Inicie o gateway local na porta 3888
-cargo run -p garraia -- --port 3888
-
-# Em outro terminal, rode o app (emulador aponta para 10.0.2.2:3888 = localhost)
-cd apps/garraia-mobile
-flutter run
+cargo run -p garraia -- start --port 3888          # no PC
 ```
 
----
+- Emulador: no onboarding escolha *Another Garra* e use `10.0.2.2:3888`.
+- Aparelho físico na mesma Wi-Fi: `garra start --host 0.0.0.0 --port 3888` no PC e o IP da
+  máquina no app. Com `gateway.api_key` configurada, informe-a no onboarding.
+- Termux no próprio aparelho: `curl -fsSL https://garraia.org/install.sh | bash`,
+  `garra doctor`, `garra start`; no app escolha *On this phone*.
 
-## Rodar apontando para a nuvem
+Sem gateway nenhum, a home mostra o card **Runtime** vermelho com a instrução — é o
+comportamento esperado, não um bug.
+
+## APK
 
 ```bash
-flutter run --dart-define=API_BASE_URL=https://api.garraia.org
+flutter build apk --release            # debug keystore se nao houver android/key.properties
 ```
 
----
+Para assinar com a keystore de upload, crie `android/key.properties` (gitignored):
 
-## Gerar APK de debug
+```properties
+storeFile=upload-keystore.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+No CI os mesmos valores vêm dos secrets `ANDROID_KEYSTORE_*`.
+
+## Prova visual sem Android SDK
 
 ```bash
-flutter build apk --debug
-# APK em: build/app/outputs/flutter-apk/app-debug.apk
+flutter build web --release --no-web-resources-cdn
+python3 -m http.server 8088 --directory build/web
 ```
 
-## Gerar APK de release
-
-```bash
-flutter build apk --release --dart-define=API_BASE_URL=https://api.garraia.org
-# APK em: build/app/outputs/flutter-apk/app-release.apk
-```
-
----
-
-## Estrutura do projeto
-
-```
-lib/
-├── main.dart                  # Entrada, MaterialApp.router
-├── router/
-│   └── app_router.dart        # GoRouter + redirect auth
-├── services/
-│   └── api_service.dart       # Dio HTTP client, models
-├── providers/
-│   ├── auth_provider.dart     # AuthState (Riverpod)
-│   └── chat_provider.dart     # ChatMessages + MascotState
-├── screens/
-│   ├── splash_screen.dart
-│   ├── login_screen.dart
-│   ├── register_screen.dart
-│   └── chat_screen.dart
-└── widgets/
-    ├── mascot_widget.dart     # Placeholder → trocar por Rive
-    └── chat_bubble.dart
-```
-
----
-
-## Adicionar mascote Rive
-
-1. Exporte o arquivo `.riv` do Rive Studio como `assets/garra_mascot.riv`
-2. Em `mascot_widget.dart`, substitua o `Container` por:
-
-```dart
-RiveAnimation.asset(
-  'assets/garra_mascot.riv',
-  stateMachines: const ['GarraStateMachine'],
-  onInit: (artboard) {
-    final ctrl = StateMachineController.fromArtboard(
-      artboard, 'GarraStateMachine',
-    )!;
-    artboard.addController(ctrl);
-    // Trigger inputs: idle, thinking, talking, happy
-  },
-)
-```
-
----
-
-## Variáveis de ambiente relevantes (backend)
-
-```bash
-GARRAIA_JWT_SECRET=<segredo-forte-256bits>  # obrigatório em produção
-GARRAIA_PORT=3888
-```
+Abra `http://127.0.0.1:8088/#/home` num navegador com viewport de celular. Para a
+home mostrar dados, aponte o runtime para um gateway real ou para um stub que
+responda `/api/health` e `/api/capabilities` com CORS.
