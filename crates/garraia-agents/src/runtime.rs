@@ -838,11 +838,20 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
+        // O portao sai daqui de cima porque o prompt e o `max_tokens` do modo
+        // (#986) entram nas resolucoes logo abaixo.
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
+
         // Plan 0250 (GAR-771): resolve override → config prompt → default
         // persona. An explicit prompt always wins; the persona only fills in
         // when nothing is configured (and not in Neutral mode).
+        // Precedencia: override explicito do chamador > prompt do modo (#986) >
+        // prompt configurado no runtime. O do modo entra no meio porque quem
+        // passou um prompt na chamada pediu aquele, e quem escolheu um modo
+        // customizado pediu o dele.
         let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
+            .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
         let effective_system_prompt = self.base_system_prompt(explicit_prompt.as_deref());
         let effective_model = model_override
@@ -850,7 +859,11 @@ impl AgentRuntime {
             .filter(|m| !m.is_empty())
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let effective_max_tokens = max_tokens_override.or(self.max_tokens).unwrap_or(4096);
+        // Mesma precedencia (#986): chamador > modo > runtime > default.
+        let effective_max_tokens = max_tokens_override
+            .or(self.max_tokens)
+            .or_else(|| portao.max_tokens())
+            .unwrap_or(4096);
 
         let memory_context = match self
             .recall_context(user_text, Some(session_id), continuity_key, 5)
@@ -881,7 +894,6 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let tool_defs: Vec<_> = self
             .tool_definitions()
             .into_iter()
@@ -1119,8 +1131,16 @@ impl AgentRuntime {
             _ => None,
         };
 
+        // O portao sai daqui de cima porque o prompt do modo (#986) entra no
+        // `system` logo abaixo.
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
+
         // Plan 0250 (GAR-771): apply default persona fallback here too.
-        let effective_system_prompt = self.base_system_prompt(self.system_prompt.as_deref());
+        let prompt_do_modo = portao
+            .system_prompt()
+            .map(|s| s.to_string())
+            .or_else(|| self.system_prompt.clone());
+        let effective_system_prompt = self.base_system_prompt(prompt_do_modo.as_deref());
         let system = match (&effective_system_prompt, memory_context) {
             (Some(prompt), Some(ctx)) => Some(format!("{prompt}\n\n{ctx}")),
             (Some(prompt), None) => Some(prompt.clone()),
@@ -1132,7 +1152,6 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let tool_defs: Vec<_> = self
             .tool_definitions()
             .into_iter()
@@ -1191,8 +1210,13 @@ impl AgentRuntime {
                 model: tools_model_override.clone(),
                 messages: messages.clone(),
                 system: system.clone(),
-                max_tokens: Some(self.max_tokens.unwrap_or(4096)),
-                temperature: None,
+                // #986: o `defaults` do modo customizado chega ao pedido.
+                max_tokens: Some(
+                    self.max_tokens
+                        .or_else(|| portao.max_tokens())
+                        .unwrap_or(4096),
+                ),
+                temperature: portao.temperature(),
                 tools: tool_defs.clone(),
             };
 

@@ -5,7 +5,6 @@
 //!   GET  /chat/history   — return recent message history for the authenticated user
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use garraia_agents::exec_context::ExecContext;
 use garraia_db::StoredMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -156,7 +155,7 @@ pub async fn chat(
             None,           // model: use default
             Some(&persona), // Garra personality system prompt
             None,           // max_tokens: use default
-            &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+            &state.exec_context_for(&session_id).await,
         )
         .await;
 

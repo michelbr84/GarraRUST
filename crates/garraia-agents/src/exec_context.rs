@@ -10,7 +10,9 @@
 //! preenche só o campo que conhece.
 
 /// Contexto de execução de um turno.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// Sem `Eq`: o perfil customizado carrega `ModeLlmConfig`, que tem `f64`
+// (temperatura, top_p). `PartialEq` basta para os testes compararem contextos.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecContext {
     /// O modo que o usuário escolheu para esta sessão, se escolheu.
     ///
@@ -38,6 +40,18 @@ pub struct ExecContext {
     /// deducao.
     pub agent_mode: Option<String>,
 
+    /// O perfil ja resolvido de um **modo customizado** (#986).
+    ///
+    /// Modo customizado mora no banco (`custom_modes`), e nem todo chamador do
+    /// runtime tem banco — a CLI monta o proprio `AgentRuntime`. Entao quem tem
+    /// o banco resolve e passa o perfil pronto; quem nao tem passa `None` e o
+    /// nome em [`Self::agent_mode`] resolve pelos modos nativos, como sempre.
+    ///
+    /// Quando presente, **vence** o nome: um modo customizado ja carrega o
+    /// perfil do seu `base_mode` com os overrides aplicados, entao reinterpretar
+    /// o nome desfaria justamente o que o usuario customizou.
+    pub custom_profile: Option<crate::modes::ModeProfile>,
+
     /// Diretório contra o qual caminho relativo de ferramenta é resolvido.
     ///
     /// **Isto não é um sandbox**, e a #980 promete que é. Ver
@@ -53,15 +67,27 @@ impl ExecContext {
     pub fn with_mode(agent_mode: Option<String>) -> Self {
         Self {
             agent_mode,
-            working_dir: None,
+            ..Self::default()
+        }
+    }
+
+    /// Contexto com um perfil de modo customizado ja resolvido (#986).
+    ///
+    /// `nome` e guardado junto porque a mensagem de recusa e o `/stats` querem
+    /// o nome que o usuario deu, e nao o do modo base.
+    pub fn with_custom_profile(nome: String, profile: crate::modes::ModeProfile) -> Self {
+        Self {
+            agent_mode: Some(nome),
+            custom_profile: Some(profile),
+            ..Self::default()
         }
     }
 
     /// Só o diretório — o caso do CLI antes de ler modo.
     pub fn with_working_dir(working_dir: Option<String>) -> Self {
         Self {
-            agent_mode: None,
             working_dir,
+            ..Self::default()
         }
     }
 }
