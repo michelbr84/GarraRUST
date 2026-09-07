@@ -24,15 +24,30 @@ if [[ ! -x "$GARRA" ]]; then
   exit 1
 fi
 
-# HOME proprio, sempre.
+# Memoria propria, sempre.
 #
 # O `garra memory add` escreve no banco de memoria de quem chama. Sem isto o
 # benchmark despejaria trinta frases inventadas na memoria real do operador —
 # e depois as mediria junto com as dele, o que estragaria o numero e a memoria
 # na mesma execucao.
+#
+# Trocar so o `HOME` NAO basta, e a primeira versao disto errava nisso. A
+# cadeia de `ConfigLoader::default_config_dir()` (garraia-config/src/loader.rs)
+# consulta, em ordem:
+#
+#   1. `GARRAIA_CONFIG_DIR` — retorna na hora, sem nunca olhar o `HOME`
+#   2. `dirs::config_dir()` — que le `XDG_CONFIG_HOME` quando definido
+#   3. `dirs::home_dir()` — so aqui o `HOME` entra
+#
+# Ou seja: num shell com `GARRAIA_CONFIG_DIR` ou `XDG_CONFIG_HOME` definido
+# (config centralizada, CI), o `HOME` isolado nao valia nada e a semeadura ia
+# para a memoria real. Definir a variavel de maior precedencia e mais forte que
+# desdefinir as outras: ela e a primeira da cadeia e corta as demais.
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
+export GARRAIA_CONFIG_DIR="$SANDBOX/.garraia"
 export HOME="$SANDBOX"
+mkdir -p "$GARRAIA_CONFIG_DIR"
 
 CARIMBO="$(date -u +%Y-%m-%d)"
 SAIDA="$AQUI/results/$CARIMBO-$(hostname -s 2>/dev/null || echo host)"
@@ -42,6 +57,25 @@ echo "== semeando (HOME isolado: $SANDBOX) =="
 python3 - "$AQUI/dataset.json" > "$SANDBOX/docs.tsv" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
+
+# O grupo `ruido-puro` so significa alguma coisa se as consultas dele
+# realmente nao tiverem resposta no corpus. A primeira versao do dataset
+# perguntava `oi` — e o corpus tem `d25: "oi"` como documento, entao
+# devolve-lo era acerto e a sonda punia o comportamento certo. Esta checagem
+# existe para que esse erro nao volte em silencio numa edicao futura do JSON.
+corpus = " ".join(doc["texto"].lower() for doc in d["documentos"])
+for c in d["consultas"]:
+    if c["grupo"] != "ruido-puro":
+        continue
+    if c["esperados"]:
+        sys.exit(f"erro: consulta de ruido {c['q']!r} tem `esperados` — o grupo exige vazio")
+    for palavra in c["q"].lower().split():
+        if len(palavra) > 4 and palavra in corpus:
+            sys.exit(
+                f"erro: consulta de ruido {c['q']!r} usa {palavra!r}, que aparece no corpus."
+                " o grupo `ruido-puro` so mede ruido se nao houver resposta certa."
+            )
+
 for doc in d["documentos"]:
     print(f"{doc['id']}\t{doc['texto']}")
 PY
@@ -109,6 +143,21 @@ print(f"   {len(consultas)} consultas -> {saida}")
 PY
 
 echo
-python3 "$AQUI/metrics.py" "$SAIDA/raw.json" | tee "$SAIDA/report.txt"
+# O `tee` foi trocado por escrita-e-confere de proposito.
+#
+# A primeira coleta desta bancada gravou um `report.txt` truncado — parou no
+# meio da tabela, sem a linha `TODAS` — porque o disco estava a 98%. O `tee`
+# escreveu o que coube e o terminal mostrou o relatorio inteiro, entao a falha
+# so aparecia em quem abrisse o arquivo depois. Um artefato pela metade e pior
+# que artefato nenhum: o README aponta para ele como evidencia.
+python3 "$AQUI/metrics.py" "$SAIDA/raw.json" > "$SAIDA/report.txt"
+if ! grep -q '^TODAS' "$SAIDA/report.txt"; then
+  echo "erro: $SAIDA/report.txt saiu incompleto (sem a linha TODAS)." >&2
+  echo "      disco cheio e a causa provavel: df -h ." >&2
+  echo "      o raw.json esta salvo; repontue com:" >&2
+  echo "      python3 $AQUI/metrics.py $SAIDA/raw.json" >&2
+  exit 1
+fi
+cat "$SAIDA/report.txt"
 echo
 echo "artefatos em $SAIDA"

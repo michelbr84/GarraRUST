@@ -38,12 +38,20 @@ A separação permite repontuar uma coleta antiga com uma métrica nova, sem
 rodar os modelos de novo. E mantém a regra herdada do outro benchmark:
 **número sem artefato bruto commitado não conta como claim válido.**
 
-### O `HOME` é isolado, sempre
+### A memória é isolada, sempre
 
 O `garra memory add` escreve no banco de memória de quem chama. Sem isolamento,
 o benchmark despejaria trinta frases inventadas na memória real do operador —
 e depois as mediria junto com as dele, estragando o número e a memória na
-mesma execução. O `run.sh` cria um `HOME` temporário e o apaga no fim.
+mesma execução. O `run.sh` cria um diretório temporário e o apaga no fim.
+
+**Trocar só o `HOME` não bastava**, e a primeira versão disto errava nisso. O
+`ConfigLoader::default_config_dir()` consulta `GARRAIA_CONFIG_DIR` primeiro e
+retorna na hora, e depois `XDG_CONFIG_HOME` — o `HOME` só entra em terceiro.
+Num shell com qualquer uma das duas definida (config centralizada, CI), o
+`HOME` isolado não valia nada. O `run.sh` define `GARRAIA_CONFIG_DIR`, que é a
+primeira da cadeia: apontá-la para o sandbox corta as outras duas, o que é mais
+forte que desdefini-las uma a uma.
 
 ## As métricas, e o que cada uma responde
 
@@ -56,14 +64,34 @@ mesma execução. O `run.sh` cria um `HOME` temporário e o apaga no fim.
 
 O **ruído@k é o que a issue pediu sem nomear.** Ela relata que "quem é Michel"
 devolveu "oi" no top-K. Um benchmark que só mede acerto daria nota cheia a um
-sistema que devolve tudo para tudo — por isso o grupo `ruido-puro` (`oi`,
-`bom dia`, `obrigado pela ajuda`) tem ground truth **vazio**, e é pontuado
-numa escala separada, onde **menor é melhor**. Misturá-lo na tabela de acerto
-faria um número ruim parecer bom.
+sistema que devolve tudo para tudo — por isso o grupo `ruido-puro` tem ground
+truth **vazio**, e é pontuado numa escala separada, onde **menor é melhor**.
+Misturá-lo na tabela de acerto faria um número ruim parecer bom.
 
 `recall@k` e `precision@k` são `n/a` para essas consultas, e não zero: sem
 documento esperado, a fração não existe, e inventar um zero puxaria a média
 para baixo por uma razão que não é qualidade.
+
+### As consultas de ruído não podem ser saudações
+
+A primeira versão deste grupo usava `oi`, `bom dia` e `obrigado pela ajuda`, e
+**estava errada** — o corpus contém `d25: "oi"` e `d29: "bom dia"` como
+documentos. Perguntar `oi` tem resposta exata ali, então devolvê-la é acerto, e
+a sonda estava punindo o comportamento certo. O grupo agora pergunta por
+assuntos que o corpus não tem (`qual a receita do bolo de cenoura`), e há uma
+verificação no próprio dataset de que nenhuma palavra dessas consultas aparece
+no corpus.
+
+As saudações continuam entre os documentos, que é onde elas importam: como
+**distratoras** das consultas de verdade. É o grupo `identidade-ruido` que
+mede o caso da issue — `quem e Michel` deve trazer `d01`/`d02`, e não `d25`.
+
+### Uma ressalva sobre `precision@k`
+
+O denominador aqui é `min(k, |retornados|)`, não `k`. É deliberado — dividir
+por `k` puniria o sistema por uma memória com menos de `k` entradas, que não é
+erro dele. Mas **não é a definição padrão da literatura de IR**, então estes
+números não se comparam diretamente com os de outro benchmark.
 
 ## O corpus
 
@@ -109,8 +137,30 @@ ou a frase casa ou não casa, e olhar mais fundo na lista não ajuda. "endereço
 do condomínio" não acha "O condomínio fica na rua das Flores" porque a frase
 inteira não está lá.
 
-Os únicos grupos acima de zero são `curta` (0.375) e `viagem` (0.333) — as
-consultas de uma palavra, que é justamente o caso em que o `LIKE` funciona.
+Só três dos treze grupos saem do zero: `curta` (MRR 0.500), `viagem` (0.333) e
+`condominio` (0.143). Nove ficam em zero absoluto — entre eles `parafrase`,
+`sinonimo` e `cross-lingual` — e o décimo terceiro (`ruido-puro`) é `n/a` por
+construção.
+
+**As quatro consultas que acertaram têm uma coisa só em comum**, e não é o
+tamanho: a string da consulta aparece **literal** no documento. `ferrugem` está
+dentro de "esta com ferrugem na dobradica"; `reserva do hotel` está dentro de
+"A reserva do hotel esta no nome do Michel". Não é "consulta curta funciona" —
+`cor do carro` tem o mesmo tamanho de `reserva do hotel` e falha, porque o
+documento diz "Corolla prata" e nunca escreve a palavra "cor".
+
+E o ruído:
+
+```
+ruido@1: 0.000   ruido@3: 0.000   ruido@5: 0.000   ruido@10: 0.000
+```
+
+**Zero — e isso não é elogio.** O `LIKE` não devolve nada para as consultas de
+ruído pela mesma razão que não devolve nada para as consultas de verdade: a
+frase inteira não está em documento nenhum. Um sistema que não responde nada a
+ninguém tira nota cheia em ruído. O número só passa a significar alguma coisa
+quando estiver ao lado de um recall que funciona — que é exatamente a
+comparação que falta.
 
 Artefato: [`results/2026-09-07-vm/`](results/2026-09-07-vm/).
 

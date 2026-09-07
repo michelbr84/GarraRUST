@@ -315,23 +315,19 @@
       "obtidos": []
     },
     {
-      "q": "oi",
+      "q": "qual a receita do bolo de cenoura",
       "grupo": "ruido-puro",
       "esperados": [],
-      "obtidos": [
-        "d25"
-      ]
+      "obtidos": []
     },
     {
-      "q": "bom dia",
+      "q": "quanto custa a mensalidade da academia",
       "grupo": "ruido-puro",
       "esperados": [],
-      "obtidos": [
-        "d29"
-      ]
+      "obtidos": []
     },
     {
-      "q": "obrigado pela ajuda",
+      "q": "qual foi o placar do campeonato de ontem",
       "grupo": "ruido-puro",
       "esperados": [],
       "obtidos": []

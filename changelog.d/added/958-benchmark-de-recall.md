@@ -8,7 +8,11 @@
   sem nomear: ela relata que "quem e Michel" devolveu "oi" no top-K. Um
   benchmark que so mede acerto daria nota cheia a um sistema que devolve tudo
   para tudo, entao o grupo `ruido-puro` tem ground truth vazio e e pontuado
-  numa escala separada, onde menor e melhor.
+  numa escala separada, onde menor e melhor. As consultas desse grupo perguntam
+  por assuntos que o corpus nao tem, e o `run.sh` recusa o dataset se alguma
+  delas usar palavra que aparece no corpus — sem isso a sonda mediria acerto
+  como se fosse ruido. As saudacoes seguem entre os **documentos**, que e onde
+  importam: como distratoras das consultas de verdade.
 - **`garra memory add` novo.** O `garra memory` sabia inspecionar (`list`,
   `search`, `stats`) e podar (`delete`, `compact`, `ttl`), mas nao **semear**:
   a unica forma de por algo na memoria era conversar com o agente, o que exige
@@ -24,5 +28,6 @@
   (sem provider configurado). O que o numero diz nao e "a memoria e ruim" — e
   que o fallback textual e quase inutil para pergunta em linguagem natural.
   `recall@1` igual a `recall@10` e a assinatura: a busca e
-  `LIKE '%frase inteira%'`, entao ou a frase casa ou nao casa. Os unicos grupos
-  acima de zero sao os de consulta de uma palavra.
+  `LIKE '%frase inteira%'`, entao ou a frase casa ou nao casa. As quatro
+  consultas que acertaram, das 37 com resposta esperada, sao exatamente aquelas
+  cuja string aparece **literal** no documento — nao as mais curtas.

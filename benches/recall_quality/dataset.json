@@ -78,8 +78,8 @@
     { "q": "quando vence o passaporte", "esperados": ["d22"], "grupo": "viagem" },
     { "q": "documento de viagem", "esperados": ["d22"], "grupo": "parafrase-dificil" },
 
-    { "q": "oi", "esperados": [], "grupo": "ruido-puro" },
-    { "q": "bom dia", "esperados": [], "grupo": "ruido-puro" },
-    { "q": "obrigado pela ajuda", "esperados": [], "grupo": "ruido-puro" }
+    { "q": "qual a receita do bolo de cenoura", "esperados": [], "grupo": "ruido-puro" },
+    { "q": "quanto custa a mensalidade da academia", "esperados": [], "grupo": "ruido-puro" },
+    { "q": "qual foi o placar do campeonato de ontem", "esperados": [], "grupo": "ruido-puro" }
   ]
 }
