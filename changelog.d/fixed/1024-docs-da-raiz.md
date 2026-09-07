@@ -20,3 +20,8 @@
 - `ROADMAP.md` e `TODO.md` reancorados na v0.3.9 e em zero issues abertas; o
   `CLAUDE.md` registra o invariante novo do corpo de release e a armadilha de
   `.gitignore` sem ancora que engoliu o `scripts/release/notes.py`.
+- **O titulo do README voltou a ser um `<h1>`.** O #1021 fechou o seletor de
+  idioma como `</p` sem o `>`, e o tokenizador HTML, ao procurar o fim daquela
+  tag, engolia o `<h1 align="center">` inteiro da linha seguinte: "GarraIA"
+  passava a ser texto solto e sem centralizacao na capa do repositorio. Um
+  caractere devolvido; a remocao do logo, que foi decisao do #1021, fica.
