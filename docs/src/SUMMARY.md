@@ -7,8 +7,8 @@
 # Primeiros Passos
 
 - [Início Rápido (< 5 minutos)](./getting-started.md)
-- [Instalação](./installation.md)
-- [Configuração](./configuration.md)
+- [Instalação](../installation.md)
+- [Configuração](../configuration.md)
 
 ---
 
