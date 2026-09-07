@@ -1231,9 +1231,16 @@ pub async fn run_chat(
                 let linhas: Vec<panel::Linha<'_>> = ferramentas
                     .iter()
                     .map(|(nome, descricao)| {
-                        // A descricao vem da tool, e tool de servidor MCP vem
-                        // de fora: uma linha so, e o painel ainda saneia.
-                        panel::linha(nome.as_str(), descricao.lines().next().unwrap_or(""))
+                        // A descricao de uma tool MCP e texto livre escrito
+                        // pelo servidor. O painel tira escape, mas escape nao e
+                        // o unico problema: uma descricao mal escrita pode
+                        // trazer uma URL com token dentro, e ela iria para a
+                        // tela em texto plano. E a mesma redacao que o
+                        // `capture_tool_output` ja aplica na **saida** da
+                        // ferramenta — faltava na descricao. Achado na
+                        // auditoria.
+                        let curta = descricao.lines().next().unwrap_or("");
+                        panel::linha(nome.as_str(), garraia_security::redact_secrets(curta))
                     })
                     .collect();
                 renderer.handle(
@@ -1671,6 +1678,11 @@ mod tests {
         //
         // So os literais de comando: o corpo dos arms tem texto de ajuda com
         // barra dentro, e a busca e ancorada em `"/` seguido de letra.
+        //
+        // As duas terminacoes contam. `"/status"` e braco exato; `"/model "`
+        // (com espaco) e prefixo de `starts_with`. Vendo so a primeira, um
+        // `_ if input.starts_with("/novo ")` novo entraria sem aparecer no
+        // `/help` e sem o teste notar — achado na auditoria.
         let mut vistos = std::collections::BTreeSet::new();
         let bytes = corpo.as_bytes();
         for (i, _) in corpo.match_indices("\"/") {
@@ -1678,7 +1690,9 @@ mod tests {
             let fim = resto
                 .find(|c: char| !c.is_ascii_lowercase())
                 .unwrap_or(resto.len());
-            if fim == 0 || bytes.get(i + 2 + fim) != Some(&b'"') {
+            let fecha = bytes.get(i + 2 + fim);
+            let fecha_com_espaco = fecha == Some(&b' ') && bytes.get(i + 3 + fim) == Some(&b'"');
+            if fim == 0 || !(fecha == Some(&b'"') || fecha_com_espaco) {
                 continue;
             }
             vistos.insert(format!("/{}", &resto[..fim]));
