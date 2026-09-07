@@ -11,6 +11,22 @@
   override ser ignorado em silencio. Chave ausente preserva a do perfil base;
   presente substitui — nao ha merge de listas, porque quem declara `allow` esta
   dizendo qual e a lista, e nao acrescentando a ela.
+- **O `prompt_override` e o `defaults` chegam ao modelo.** Achado de auditoria:
+  na primeira versao os dois eram gravados, devolvidos pela API e **nunca lidos
+  na execucao** — o perfil os carregava e nada extraia dali. O criterio de aceite
+  da issue ("overrides de politica, prompt e defaults sao respeitados") nao
+  estava cumprido, e o teste que eu tinha escrito verificava so o struct, entao
+  passava com a feature morta. Precedencia: override explicito do chamador >
+  valor do modo > config do runtime > default. Diferente dos `ModeLimits`, o
+  `max_tokens` do modo **nao** e limitado ao padrao: aquele limita quantas vezes
+  o agente roda ferramenta (cada uma podendo rodar `bash`) e o tempo de parede
+  junto; este limita o tamanho de uma resposta, e o README documenta `8192` como
+  uso pretendido. Quem configurou `max_tokens` no runtime continua vencendo.
+- **Nome de modo nativo e recusado na criacao.** `select_mode` tenta o nativo
+  primeiro — e tem de tentar, para um customizado chamado `code` nao sequestrar
+  o nativo. A consequencia era que um modo criado com nome nativo ficava gravado
+  e nunca selecionavel. Aceitar a criacao e negar a selecao depois e o pior dos
+  dois.
 - **`GET /api/modes` passa a listar os customizados**, com a `tool_policy`
   **efetiva** e nao a do modo base. A mensagem de erro do `select` mandava
   conferir uma lista que nunca continha o modo recem-criado.

@@ -1322,9 +1322,15 @@ impl SessionStore {
     }
 
     /// Update a custom mode
+    /// Update a custom mode, **restrito ao usuario dono**.
+    ///
+    /// O escopo entra na clausula `WHERE`, e nao num filtro depois: sobrescrever
+    /// e mutacao, e um `UPDATE` que casa a linha de outra pessoa ja escreveu
+    /// quando o filtro roda.
     pub fn update_custom_mode(
         &self,
         mode_id: &str,
+        user_id: &str,
         name: Option<&str>,
         description: Option<&str>,
         tool_policy_overrides: Option<&serde_json::Value>,
@@ -1358,14 +1364,24 @@ impl SessionStore {
 
         if updates.len() == 1 {
             // Only updated_at, no changes
-            return self.get_custom_mode(mode_id);
+            return self.get_custom_mode_for_user(mode_id, user_id);
         }
 
-        // Add mode_id as last param
+        // Os dois ultimos parametros sao os do `WHERE`, nesta ordem.
         params_vec.push(Box::new(mode_id.to_string()));
+        params_vec.push(Box::new(user_id.to_string()));
 
+        // Regra absoluta 5 (CLAUDE.md): SQL nao se monta com `format!`. A
+        // excecao prevista pela propria regra e identificador que o SQLite nao
+        // aceita como bind — aqui, a lista de colunas do `SET`. Origem fechada:
+        // cada item de `updates` e um literal Rust escrito neste bloco
+        // (`"name = ?"`, `"description = ?"`, ...), nenhum vem de request. Todo
+        // **valor** continua indo por `?` em `params_refs`.
+        //
+        // Quem acrescentar coluna aqui tem de acrescentar outro literal, e nunca
+        // uma string vinda de fora — e o que mantem esta excecao valida.
         let query = format!(
-            "UPDATE custom_modes SET {} WHERE id = ?",
+            "UPDATE custom_modes SET {} WHERE id = ? AND user_id = ?",
             updates.join(", ")
         );
 
@@ -1377,16 +1393,21 @@ impl SessionStore {
             .execute(&query, params_refs.as_slice())
             .map_err(|e| Error::Database(format!("failed to update custom mode: {e}")))?;
 
-        self.get_custom_mode(mode_id)
+        self.get_custom_mode_for_user(mode_id, user_id)
     }
 
-    /// Delete (soft delete) a custom mode
-    pub fn delete_custom_mode(&self, mode_id: &str) -> Result<bool> {
+    /// Delete (soft delete) a custom mode, **restrito ao usuario dono**.
+    ///
+    /// Escopo por `user_id` na propria clausula, e nao filtrado depois: apagar
+    /// e mutacao, e uma consulta que casa a linha de outra pessoa ja apagou
+    /// quando o filtro roda.
+    pub fn delete_custom_mode(&self, mode_id: &str, user_id: &str) -> Result<bool> {
         let rows_affected = self
             .conn
             .execute(
-                "UPDATE custom_modes SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
-                params![mode_id],
+                "UPDATE custom_modes SET is_active = 0, updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![mode_id, user_id],
             )
             .map_err(|e| Error::Database(format!("failed to delete custom mode: {e}")))?;
 
@@ -2136,6 +2157,81 @@ mod tests {
             store.get_custom_mode(&meu.id).unwrap().is_some(),
             "documenta o comportamento da crua, para a diferenca ficar visivel"
         );
+    }
+
+    /// Mutacao tambem respeita o dono (#986, achado ALTO de auditoria).
+    ///
+    /// A primeira versao deste trabalho deu escopo ao `GET` e deixou `PATCH` e
+    /// `DELETE` abertos — usando para a leitura exatamente o argumento que vale
+    /// mais para a escrita. Sobrescrever ou apagar o modo de outra pessoa e pior
+    /// que le-lo.
+    #[test]
+    fn mutacao_de_modo_customizado_respeita_o_dono() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let do_a = store
+            .create_custom_mode(
+                "usuario-a",
+                "Rust Strict",
+                None,
+                "code",
+                &serde_json::json!({}),
+                Some("prompt do A"),
+                &serde_json::json!({}),
+            )
+            .expect("criar");
+
+        // Update por outro usuario nao casa linha nenhuma.
+        assert!(
+            store
+                .update_custom_mode(
+                    &do_a.id,
+                    "usuario-b",
+                    Some("Sequestrado"),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .is_none(),
+            "o update de outro usuario nao pode encontrar a linha"
+        );
+        let intacto = store
+            .get_custom_mode_for_user(&do_a.id, "usuario-a")
+            .unwrap()
+            .expect("o modo do A continua la");
+        assert_eq!(intacto.name, "Rust Strict", "o nome nao foi sobrescrito");
+        assert_eq!(intacto.prompt_override.as_deref(), Some("prompt do A"));
+
+        // Delete por outro usuario tambem nao.
+        assert!(
+            !store.delete_custom_mode(&do_a.id, "usuario-b").unwrap(),
+            "o delete de outro usuario nao pode casar linha"
+        );
+        assert!(
+            store
+                .get_custom_mode_for_user(&do_a.id, "usuario-a")
+                .unwrap()
+                .is_some(),
+            "o modo do A sobreviveu"
+        );
+
+        // E o dono continua conseguindo os dois.
+        assert!(
+            store
+                .update_custom_mode(
+                    &do_a.id,
+                    "usuario-a",
+                    Some("Renomeado"),
+                    None,
+                    None,
+                    None,
+                    None
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.delete_custom_mode(&do_a.id, "usuario-a").unwrap());
     }
 
     // ── Modo escolhido x modo deduzido (#988) ──────────────────────────────

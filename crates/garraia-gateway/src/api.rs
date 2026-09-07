@@ -629,6 +629,28 @@ pub async fn create_custom_mode(
         );
     }
 
+    // Nome que colide com nativo e recusado na porta.
+    //
+    // `select_mode` tenta `AgentMode::from_str` primeiro — e tem de tentar, para
+    // um customizado chamado `code` nao sequestrar o nativo. A consequencia e
+    // que um modo criado com nome nativo fica gravado e **nunca selecionavel**.
+    // Aceitar a criacao e negar a selecao depois e o pior dos dois: dizer nao
+    // agora, com o motivo, custa uma mensagem.
+    if AgentMode::from_str(&body.name).is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!(CustomModeResponse {
+                success: false,
+                mode: None,
+                message: format!(
+                    "'{}' e o nome de um modo nativo. Escolha outro — um modo \
+                     customizado com nome nativo nunca poderia ser selecionado.",
+                    body.name
+                ),
+            })),
+        );
+    }
+
     // Uma identidade so, nomeada em `state.rs`: a resolucao de execucao (#986)
     // precisa procurar sob a mesma que o CRUD grava, e uma string literal
     // repetida em quatro lugares e como elas divergem.
@@ -778,8 +800,11 @@ pub async fn update_custom_mode(
 ) -> impl IntoResponse {
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
+        // Com escopo, pelo mesmo motivo do GET — e com mais forca: sobrescrever
+        // o modo de outra pessoa e pior que le-lo.
         match store.update_custom_mode(
             &mode_id,
+            crate::state::CUSTOM_MODE_USER_ID,
             body.name.as_deref(),
             body.description.as_deref(),
             body.tool_policy_overrides.as_ref(),
@@ -836,7 +861,9 @@ pub async fn delete_custom_mode(
 ) -> impl IntoResponse {
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
-        match store.delete_custom_mode(&mode_id) {
+        // Com escopo: apagar o modo de outra pessoa e a mutacao mais destrutiva
+        // desta superficie.
+        match store.delete_custom_mode(&mode_id, crate::state::CUSTOM_MODE_USER_ID) {
             Ok(true) => {
                 return (
                     StatusCode::OK,

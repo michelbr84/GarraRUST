@@ -10,3 +10,15 @@
   repetida em quatro lugares para virar uma constante nomeada — de modo que quem
   trocar por identidade real troque num lugar so. Teste cross-user confirma que
   nem o `GET` por id, nem a listagem, nem o `select` alcancam o modo alheio.
+- **`PATCH` e `DELETE /api/modes/custom/{id}` tambem passam a respeitar o dono.**
+  A primeira versao deste trabalho deu escopo so ao `GET`, usando para a leitura
+  um argumento que vale **mais** para a escrita: sobrescrever ou apagar o modo de
+  outra pessoa e pior que le-lo. O escopo entra na clausula `WHERE` das duas
+  consultas, e nao num filtro depois — um `UPDATE` que casa a linha alheia ja
+  escreveu quando o filtro rodaria. Como o resto, hoje e inerte e existe para o
+  dia em que houver identidade de verdade.
+- O `format!` que monta a lista de colunas do `UPDATE` ganhou o comentario de
+  auditoria que a regra absoluta 5 exige na sua propria excecao: os fragmentos
+  sao literais Rust escritos no bloco, nenhum vem de request, e todo valor
+  continua indo por `?`. Sem o comentario, a proxima pessoa a acrescentar coluna
+  ali nao tem o sinal de alerta.

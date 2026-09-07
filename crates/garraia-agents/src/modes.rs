@@ -386,6 +386,40 @@ impl ToolGate {
         tool_name.contains(SEPARADOR_MCP)
     }
 
+    /// O `system_prompt_template` do modo em vigor, se houver (#986).
+    ///
+    /// E o que faz o `prompt_override` de um modo customizado chegar ao modelo.
+    /// Sem isto o campo era gravado, devolvido pela API e ignorado na execucao —
+    /// mais um "parece que funciona".
+    pub fn system_prompt(&self) -> Option<&str> {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.system_prompt_template.as_deref())
+            .filter(|p| !p.trim().is_empty())
+    }
+
+    /// O `max_tokens` do modo em vigor, se houver (#986).
+    ///
+    /// # Por que este nao e limitado ao padrao, e o `max_tool_loops` e
+    ///
+    /// O #979 limitou `ModeLimits` porque um modo podia quadruplicar o numero de
+    /// **chamadas de ferramenta** — cada uma podendo rodar `bash` — e o tempo de
+    /// parede junto. `max_tokens` limita o tamanho de **uma** resposta: o raio e
+    /// outro, e o `README.pt-BR.md` documenta `8192` como uso pretendido de modo
+    /// customizado.
+    ///
+    /// Quem configurou `max_tokens` no runtime continua vencendo; o valor do
+    /// modo so preenche quando o operador nao disse nada, e ai o que ele
+    /// substitui e o default de biblioteca, nao uma escolha de ninguem.
+    pub fn max_tokens(&self) -> Option<u32> {
+        self.profile.as_ref().map(|p| p.llm_config.max_tokens)
+    }
+
+    /// A `temperature` do modo em vigor, se houver (#986).
+    pub fn temperature(&self) -> Option<f64> {
+        self.profile.as_ref().map(|p| p.llm_config.temperature)
+    }
+
     /// Os limites do modo que vale neste turno, se algum vale (#979).
     pub fn limites(&self) -> Option<&ModeLimits> {
         self.profile.as_ref().map(|p| &p.limits)
@@ -1388,6 +1422,67 @@ mod tests {
         assert!(!g.permite("bash"), "o override de deny tem de valer");
         assert!(!g.permite("web_fetch"));
         assert!(g.permite("file_write"), "o resto do perfil `code` fica");
+    }
+
+    /// O prompt e o `defaults` do modo customizado saem pelo portao (#986).
+    ///
+    /// A auditoria pegou que os dois campos eram gravados, devolvidos pela API e
+    /// **nunca lidos na execucao**: `from_custom` populava o perfil e nada
+    /// extraia dali. O teste anterior so verificava o struct, entao passava com
+    /// a feature morta. Este verifica a superficie que o runtime consome.
+    #[test]
+    fn prompt_e_defaults_do_modo_saem_pelo_portao() {
+        let perfil = ModeProfile::from_custom(
+            AgentMode::Code,
+            "Rust Strict",
+            Some("Voce e um especialista em Rust."),
+            &serde_json::json!({}),
+            &serde_json::json!({ "temperature": 0.3, "max_tokens": 8192 }),
+        );
+        let exec = crate::exec_context::ExecContext::with_custom_profile(
+            "Rust Strict".to_string(),
+            perfil,
+        );
+        let g = ToolGate::para_o_turno(&exec, "escreve uma funcao");
+
+        assert_eq!(g.system_prompt(), Some("Voce e um especialista em Rust."));
+        assert_eq!(g.max_tokens(), Some(8192));
+        assert_eq!(g.temperature(), Some(0.3));
+    }
+
+    /// Prompt vazio ou so espaco nao vira prompt.
+    ///
+    /// Senao um `prompt_override: ""` — o que a UI manda quando o campo fica em
+    /// branco — apagaria o prompt do modo base em vez de nao mexer nele.
+    #[test]
+    fn prompt_em_branco_nao_substitui_o_do_base() {
+        let base = ModeProfile::from_mode(AgentMode::Code);
+        for vazio in ["", "   ", "\n\t "] {
+            let p = ModeProfile::from_custom(
+                AgentMode::Code,
+                "X",
+                Some(vazio),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+            );
+            assert_eq!(
+                p.system_prompt_template, base.system_prompt_template,
+                "prompt {vazio:?} nao deveria substituir"
+            );
+        }
+    }
+
+    /// Sem modo escolhido, o portao nao tem prompt nem `max_tokens` a oferecer.
+    ///
+    /// Importa porque o runtime encadeia `.or_else(|| portao.max_tokens())`: se
+    /// o portao aberto devolvesse algum valor, ele viraria default silencioso
+    /// para toda sessao sem modo.
+    #[test]
+    fn portao_aberto_nao_oferece_prompt_nem_tokens() {
+        let g = ToolGate::sem_politica();
+        assert_eq!(g.system_prompt(), None);
+        assert_eq!(g.max_tokens(), None);
+        assert_eq!(g.temperature(), None);
     }
 
     /// As duas grafias do override de politica sao aceitas.
