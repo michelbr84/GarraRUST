@@ -2,8 +2,8 @@
 pub mod mcp;
 
 pub mod a2a;
-pub mod agent_mode;
 pub mod anthropic;
+pub mod auto_router;
 pub mod context_policy;
 #[cfg(feature = "dev-echo-provider")]
 pub mod echo;
@@ -26,10 +26,6 @@ pub mod runtime;
 pub mod tools;
 pub mod turn_events;
 
-pub use agent_mode::{
-    AutoRouter, LlmRouter, ModeProfileExt, ModeSelectionMethod, SessionModeMetadata,
-    ToolPolicyEngine,
-};
 pub use anthropic::AnthropicProvider;
 #[cfg(feature = "dev-echo-provider")]
 pub use echo::EchoProvider;

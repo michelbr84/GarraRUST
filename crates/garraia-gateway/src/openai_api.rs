@@ -324,7 +324,7 @@ pub async fn chat_completions(
             .default_provider()
             .is_some()
             .then_some(&*state.agents);
-        crate::auto_router::auto_classify(
+        garraia_agents::auto_router::auto_classify(
             &user_text_for_router,
             cfg.agent.auto_router_llm_enabled,
             cfg.agent.auto_router_model.as_deref(),

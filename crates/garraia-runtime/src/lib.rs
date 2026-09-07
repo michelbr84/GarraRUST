@@ -17,9 +17,12 @@
 //!
 //! **O canonico e `garraia_agents::modes`**: e o que o `/mode`, o
 //! `POST /api/mode/select` e o `GET /api/modes` usam de verdade. O roteamento
-//! automatico em producao e o `garraia_gateway::auto_router`, e nao o
-//! `AutoRouter` de `garraia_agents::agent_mode` — que tambem nao tem
-//! chamadores.
+//! automatico e o `garraia_agents::auto_router` — que morava em
+//! `garraia_gateway` e mudou de crate na #979, para o runtime tambem poder
+//! resolver `/mode auto`. O `AutoRouter` de `garraia_agents::agent_mode`, que
+//! esta nota citava como o concorrente sem chamadores, foi removido junto: o
+//! modulo inteiro era codigo morto. O vocabulario pt-BR dele, esse sim, foi
+//! levado para o roteador vivo.
 
 pub mod executor;
 pub mod meta_controller;
