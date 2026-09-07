@@ -981,9 +981,49 @@ impl SessionStore {
     // GAR-222: Mode Persistence - Armazenar modo por sessão
     // ============================================================================
 
-    /// Get the current agent mode for a session.
-    /// Returns None if no mode has been set.
+    /// Chave de metadados que registra **quem** escolheu o modo da sessao.
+    ///
+    /// Valores: `"user"` (alguem digitou `/mode`, mandou `X-Agent-Mode` ou
+    /// chamou `PUT /api/mode`) e `"auto"` (o auto-router do GAR-227 deduziu).
+    /// Ausente quer dizer sessao gravada antes desta distincao existir.
+    const AGENT_MODE_SOURCE: &'static str = "agent_mode_source";
+
+    /// O modo da sessao, tenha sido escolhido ou deduzido.
+    ///
+    /// E o que o `/mode` sem argumento e o `GET /api/mode/current` mostram:
+    /// ali a pergunta e "em que modo eu estou", e o modo deduzido e a resposta
+    /// honesta. Para decidir **politica de ferramenta** use
+    /// [`Self::get_chosen_agent_mode`] — deduzir nao e consentir.
     pub fn get_agent_mode(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self.agent_mode_entry(session_id)?.map(|(mode, _)| mode))
+    }
+
+    /// O modo que o **usuario escolheu**, e so ele.
+    ///
+    /// # Por que nao basta ler `agent_mode`
+    ///
+    /// O auto-router (GAR-227) grava na mesma chave o modo que deduziu da
+    /// mensagem. Enquanto o modo era so decoracao de prompt isso era inofensivo;
+    /// desde que a `ToolPolicy` passou a valer no executor (#988), ler dali
+    /// aplicaria a politica sem ninguem ter escolhido — quem nunca digitou
+    /// `/mode` perderia `file_write` porque a heuristica achou que a pergunta
+    /// parecia busca.
+    ///
+    /// # Sessao antiga, sem marcador
+    ///
+    /// Metadado gravado antes desta distincao nao diz quem escolheu, e o
+    /// gravador de entao era o mesmo para os dois casos. Tratamos como **nao
+    /// escolhido**: e exatamente o comportamento que essas sessoes ja tinham
+    /// (nenhuma politica), e o primeiro `/mode` do usuario corrige o registro.
+    pub fn get_chosen_agent_mode(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .agent_mode_entry(session_id)?
+            .filter(|(_, source)| source.as_deref() == Some("user"))
+            .map(|(mode, _)| mode))
+    }
+
+    /// Le o par `(agent_mode, agent_mode_source)` do metadado da sessao.
+    fn agent_mode_entry(&self, session_id: &str) -> Result<Option<(String, Option<String>)>> {
         let mut stmt = self
             .conn
             .prepare("SELECT metadata FROM sessions WHERE id = ?1")
@@ -1000,13 +1040,32 @@ impl SessionStore {
             && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_str)
             && let Some(mode) = metadata.get("agent_mode").and_then(|v| v.as_str())
         {
-            return Ok(Some(mode.to_string()));
+            let source = metadata
+                .get(Self::AGENT_MODE_SOURCE)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            return Ok(Some((mode.to_string(), source)));
         }
         Ok(None)
     }
 
-    /// Set the current agent mode for a session.
+    /// Registra o modo que o **usuario escolheu** para a sessao.
+    ///
+    /// E este que habilita a politica de ferramenta. Quem esta deduzindo o modo
+    /// chama [`Self::set_agent_mode_auto`].
     pub fn set_agent_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+        self.write_agent_mode(session_id, mode, "user")
+    }
+
+    /// Registra o modo que o auto-router **deduziu** para a sessao.
+    ///
+    /// Fica visivel no `/mode` e no `GET /api/mode/current`, mas nao liga a
+    /// politica de ferramenta: [`Self::get_chosen_agent_mode`] o ignora.
+    pub fn set_agent_mode_auto(&self, session_id: &str, mode: &str) -> Result<()> {
+        self.write_agent_mode(session_id, mode, "auto")
+    }
+
+    fn write_agent_mode(&self, session_id: &str, mode: &str, source: &str) -> Result<()> {
         // First get existing metadata
         let mut stmt = self
             .conn
@@ -1024,14 +1083,31 @@ impl SessionStore {
 
         // Update the agent_mode field
         metadata["agent_mode"] = serde_json::Value::String(mode.to_string());
+        metadata[Self::AGENT_MODE_SOURCE] = serde_json::Value::String(source.to_string());
 
         // Update the session
-        self.conn
+        let afetadas = self
+            .conn
             .execute(
                 "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![metadata.to_string(), session_id],
             )
             .map_err(|e| Error::Database(format!("failed to set agent mode: {e}")))?;
+
+        // Zero linhas nao e sucesso.
+        //
+        // `UPDATE ... WHERE id = ?` casa zero linhas quando a sessao ainda nao
+        // existe, e o `Ok(())` de antes fazia disso um sucesso silencioso — com
+        // `let _ =` no chamador, ninguem ficava sabendo. Era assim que o
+        // `X-Agent-Mode` sumia: o gateway gravava o modo antes de
+        // `hydrate_session_history` criar a linha, e o modo escolhido
+        // simplesmente nao existia no turno seguinte. Descoberto rodando o
+        // binario, nao em teste.
+        if afetadas == 0 {
+            return Err(Error::Database(format!(
+                "sessao '{session_id}' nao existe; grave o modo depois de criar a sessao"
+            )));
+        }
 
         Ok(())
     }
@@ -1051,6 +1127,7 @@ impl SessionStore {
             && let Ok(mut metadata) = serde_json::from_str::<serde_json::Value>(&m)
         {
             metadata["agent_mode"] = serde_json::Value::Null;
+            metadata[Self::AGENT_MODE_SOURCE] = serde_json::Value::Null;
             self.conn
                 .execute(
                     "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -1949,6 +2026,168 @@ mod tests {
         // (We can't easily check internal metadata, but setting mode shouldn't break)
         let mode = store.get_agent_mode(session_id).unwrap();
         assert_eq!(mode, Some("orchestrator".to_string()));
+    }
+
+    // ── Modo escolhido x modo deduzido (#988) ──────────────────────────────
+
+    /// O auto-router grava para **mostrar**, nao para autorizar.
+    ///
+    /// Este e o teste da regressao que a auditoria do #988 pegou: se
+    /// `get_chosen_agent_mode` respondesse o modo deduzido, quem nunca digitou
+    /// `/mode` teria a `ToolPolicy` de `search` aplicada — e perderia
+    /// `file_write` — so porque a heuristica achou que a pergunta parecia
+    /// busca.
+    #[test]
+    fn modo_deduzido_aparece_mas_nao_autoriza() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "modo-auto";
+        store
+            .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+            .unwrap();
+
+        store.set_agent_mode_auto(session_id, "search").unwrap();
+
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string()),
+            "o /mode e o GET /api/mode/current mostram o modo deduzido"
+        );
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            None,
+            "deduzir nao e consentir: a politica de ferramenta nao liga"
+        );
+    }
+
+    /// E o escolhido continua valendo, inclusive depois do turno em que foi
+    /// escolhido — `/mode search` gruda na sessao, e essa e a razao de a
+    /// correcao morar no store e nao no request.
+    #[test]
+    fn modo_escolhido_autoriza_e_e_pegajoso() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "modo-escolhido";
+        store
+            .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+            .unwrap();
+
+        store.set_agent_mode(session_id, "search").unwrap();
+
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            Some("search".to_string())
+        );
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string())
+        );
+    }
+
+    /// Escolher depois de deduzir promove; deduzir depois de escolher **nao**
+    /// rebaixa a escolha a palpite — senao a primeira mensagem seguinte sem
+    /// `/mode` desligaria a politica que o usuario acabou de ligar.
+    #[test]
+    fn escolha_e_deducao_se_sobrescrevem_na_ordem_certa() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "modo-ordem";
+        store
+            .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+            .unwrap();
+
+        store.set_agent_mode_auto(session_id, "search").unwrap();
+        store.set_agent_mode(session_id, "code").unwrap();
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            Some("code".to_string()),
+            "escolher depois de deduzir vale"
+        );
+
+        // O gateway so chama o auto-router quando nao houve modo explicito no
+        // request, mas o store nao pode depender disso: se chamarem, a escolha
+        // anterior nao vira palpite.
+        store.set_agent_mode_auto(session_id, "search").unwrap();
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string()),
+            "o modo mostrado acompanha a ultima gravacao"
+        );
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            None,
+            "e a politica volta a nao valer, porque ninguem escolheu esse"
+        );
+    }
+
+    /// Gravar modo em sessao que nao existe e **erro**, nao no-op.
+    ///
+    /// O `UPDATE ... WHERE id = ?` casa zero linhas, e devolver `Ok(())` ali
+    /// fazia o gateway perder o `X-Agent-Mode` sem deixar rastro: ele gravava
+    /// o modo antes de `hydrate_session_history` criar a linha, e o chamador
+    /// escrevia `let _ =`. O header dizia `search`, o banco ficava vazio, e o
+    /// usuario so descobria pela restricao que nao valia.
+    #[test]
+    fn gravar_modo_em_sessao_inexistente_falha() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+
+        assert!(
+            store.set_agent_mode("nunca-criada", "search").is_err(),
+            "sucesso silencioso e o que fazia o modo sumir"
+        );
+        assert!(store.set_agent_mode_auto("nunca-criada", "search").is_err());
+        assert_eq!(store.get_agent_mode("nunca-criada").unwrap(), None);
+    }
+
+    /// `clear_agent_mode` tem de limpar o marcador junto: se sobrasse
+    /// `agent_mode_source = "user"`, o proximo modo deduzido herdaria a
+    /// autorizacao de uma escolha ja revogada.
+    #[test]
+    fn clear_apaga_o_marcador_junto() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "modo-clear-marcador";
+        store
+            .upsert_session(session_id, "vscode", "user-1", &serde_json::json!({}))
+            .unwrap();
+
+        store.set_agent_mode(session_id, "code").unwrap();
+        store.clear_agent_mode(session_id).unwrap();
+        store.set_agent_mode_auto(session_id, "search").unwrap();
+
+        assert_eq!(store.get_chosen_agent_mode(session_id).unwrap(), None);
+    }
+
+    /// Sessao gravada antes do marcador existir nao diz quem escolheu, e o
+    /// gravador de entao era o mesmo para escolha e deducao. Tratamos como
+    /// **nao escolhida**: e o comportamento que ela ja tinha (nenhuma politica
+    /// era aplicada), e o primeiro `/mode` corrige o registro.
+    #[test]
+    fn sessao_legada_sem_marcador_nao_autoriza() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "modo-legado";
+        store
+            .upsert_session(
+                session_id,
+                "vscode",
+                "user-1",
+                &serde_json::json!({"agent_mode": "search"}),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.get_agent_mode(session_id).unwrap(),
+            Some("search".to_string()),
+            "o modo antigo continua visivel"
+        );
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            None,
+            "sem marcador, nao da para afirmar que houve escolha"
+        );
+
+        store.set_agent_mode(session_id, "search").unwrap();
+        assert_eq!(
+            store.get_chosen_agent_mode(session_id).unwrap(),
+            Some("search".to_string()),
+            "o primeiro /mode depois do upgrade regulariza a sessao"
+        );
     }
 
     // ── Session tokens stored hashed (CodeQL rust/cleartext-storage-database) ──

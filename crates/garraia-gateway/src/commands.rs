@@ -388,7 +388,23 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                         let store = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async { store.lock().await })
                         });
-                        let _ = store.set_agent_mode(&session_id, &new_mode.to_lowercase());
+                        // Nao engula o erro: `set_agent_mode` falha quando a
+                        // linha da sessao ainda nao existe, e o `let _ =` de
+                        // antes transformava isso em "modo definido" para o
+                        // usuario com o banco intacto.
+                        if let Err(e) = store.set_agent_mode(&session_id, &new_mode.to_lowercase())
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                erro = %e,
+                                "falhou ao gravar o modo escolhido"
+                            );
+                            return Ok(format!(
+                                "⚠️ Nao consegui salvar o modo `{}`. Mande uma mensagem \
+                                 primeiro e tente de novo.",
+                                new_mode.to_lowercase()
+                            ));
+                        }
                     }
                     Ok(format!("🎯 Mode set to: {}", new_mode.to_lowercase()))
                 } else {

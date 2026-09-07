@@ -17,6 +17,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
+use crate::exec_context::ExecContext;
 use crate::execution_budget::ExecutionBudget;
 use crate::memory_extractor::LlmMemoryExtractor;
 use crate::provider_resilience::ResilienceManager;
@@ -706,6 +707,7 @@ impl AgentRuntime {
             None,
             None,
             None,
+            &ExecContext::default(),
         )
         .await
     }
@@ -728,6 +730,7 @@ impl AgentRuntime {
             continuity_key,
             user_id,
             true,
+            &ExecContext::default(),
         )
         .await
     }
@@ -746,6 +749,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        exec: &ExecContext,
     ) -> Result<String> {
         // Resolve provider: first try explicit provider_id, then try deriving from model_override
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
@@ -835,7 +839,16 @@ impl AgentRuntime {
             (None, None) => None,
         };
 
-        let tool_defs = self.tool_definitions();
+        // #988: a politica do modo filtra o que o modelo chega a ver. Isso e
+        // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
+        // seguranca e o guard antes do `execute`, porque o modelo pode inventar
+        // um nome que nunca esteve na lista.
+        let portao = crate::modes::ToolGate::from_exec(exec);
+        let tool_defs: Vec<_> = self
+            .tool_definitions()
+            .into_iter()
+            .filter(|d| portao.permite(&d.name))
+            .collect();
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -943,7 +956,7 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat: false,
                         is_confirmation_approved,
-                        working_dir: None,
+                        working_dir: exec.working_dir.clone(),
                         project_id: None,
                     };
 
@@ -956,6 +969,22 @@ impl AgentRuntime {
                     }
 
                     // executa com timeout
+                    // #988: o guard de seguranca. O filtro na montagem tira a
+                    // ferramenta da lista que o modelo ve, mas o modelo pode
+                    // pedir um nome que nunca esteve la — o criterio de aceite
+                    // e "nenhuma ferramenta proibida e executada, **mesmo que
+                    // solicitada pelo LLM**". A recusa volta como saida de
+                    // ferramenta, e nao como erro do turno: o modelo le, e
+                    // segue sem ela.
+                    if !portao.permite(name) {
+                        let modo = exec.agent_mode.as_deref().unwrap_or("");
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: crate::modes::ToolGate::recusa(name, modo),
+                        });
+                        continue;
+                    }
+
                     let output = match self.find_tool(name) {
                         Some(tool) => {
                             match timeout(budget.timeout(), tool.execute(&context, input.clone()))
@@ -1017,6 +1046,7 @@ impl AgentRuntime {
         continuity_key: Option<&str>,
         user_id: Option<&str>,
         is_heartbeat: bool,
+        exec: &ExecContext,
     ) -> Result<String> {
         let provider: Arc<dyn LlmProvider> = self
             .default_provider()
@@ -1051,7 +1081,16 @@ impl AgentRuntime {
             (None, None) => None,
         };
 
-        let tool_defs = self.tool_definitions();
+        // #988: a politica do modo filtra o que o modelo chega a ver. Isso e
+        // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
+        // seguranca e o guard antes do `execute`, porque o modelo pode inventar
+        // um nome que nunca esteve na lista.
+        let portao = crate::modes::ToolGate::from_exec(exec);
+        let tool_defs: Vec<_> = self
+            .tool_definitions()
+            .into_iter()
+            .filter(|d| portao.permite(&d.name))
+            .collect();
         let (provider, tools_model_override) =
             self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
@@ -1180,7 +1219,7 @@ impl AgentRuntime {
                         user_id: user_id.map(|s| s.to_string()),
                         is_heartbeat,
                         is_confirmation_approved,
-                        working_dir: None,
+                        working_dir: exec.working_dir.clone(),
                         project_id: None,
                     };
 
@@ -1193,6 +1232,22 @@ impl AgentRuntime {
                     }
 
                     // executa com timeout
+                    // #988: o guard de seguranca. O filtro na montagem tira a
+                    // ferramenta da lista que o modelo ve, mas o modelo pode
+                    // pedir um nome que nunca esteve la — o criterio de aceite
+                    // e "nenhuma ferramenta proibida e executada, **mesmo que
+                    // solicitada pelo LLM**". A recusa volta como saida de
+                    // ferramenta, e nao como erro do turno: o modelo le, e
+                    // segue sem ela.
+                    if !portao.permite(name) {
+                        let modo = exec.agent_mode.as_deref().unwrap_or("");
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: crate::modes::ToolGate::recusa(name, modo),
+                        });
+                        continue;
+                    }
+
                     let output = match self.find_tool(name) {
                         Some(tool) => {
                             match timeout(budget.timeout(), tool.execute(&context, input.clone()))
@@ -1290,6 +1345,7 @@ impl AgentRuntime {
             model_override,
             None,
             None,
+            &ExecContext::default(),
         )
         .await
     }
@@ -1319,6 +1375,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        exec: &ExecContext,
     ) -> Result<String> {
         self.stream_turn_with_sink(
             session_id,
@@ -1331,6 +1388,7 @@ impl AgentRuntime {
             model_override,
             system_prompt_override,
             max_tokens_override,
+            exec,
         )
         .await
     }
@@ -1354,6 +1412,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        exec: &ExecContext,
     ) -> Result<String> {
         self.stream_turn_with_sink(
             session_id,
@@ -1366,6 +1425,7 @@ impl AgentRuntime {
             model_override,
             system_prompt_override,
             max_tokens_override,
+            exec,
         )
         .await
     }
@@ -1385,6 +1445,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        exec: &ExecContext,
     ) -> Result<String> {
         // Resolve provider: first try explicit provider_id, then try deriving from model_override
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
@@ -1475,7 +1536,16 @@ impl AgentRuntime {
             (None, None) => None,
         };
 
-        let tool_defs = self.tool_definitions();
+        // #988: a politica do modo filtra o que o modelo chega a ver. Isso e
+        // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
+        // seguranca e o guard antes do `execute`, porque o modelo pode inventar
+        // um nome que nunca esteve na lista.
+        let portao = crate::modes::ToolGate::from_exec(exec);
+        let tool_defs: Vec<_> = self
+            .tool_definitions()
+            .into_iter()
+            .filter(|d| portao.permite(&d.name))
+            .collect();
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -1652,7 +1722,7 @@ impl AgentRuntime {
                             user_id: user_id.map(|s| s.to_string()),
                             is_heartbeat: false,
                             is_confirmation_approved,
-                            working_dir: None,
+                            working_dir: exec.working_dir.clone(),
                             project_id: None,
                         };
 
@@ -1676,6 +1746,22 @@ impl AgentRuntime {
                         let iniciado_em = std::time::Instant::now();
 
                         // executa com timeout
+                        // #988: o guard de seguranca. O filtro na montagem tira a
+                        // ferramenta da lista que o modelo ve, mas o modelo pode
+                        // pedir um nome que nunca esteve la — o criterio de aceite
+                        // e "nenhuma ferramenta proibida e executada, **mesmo que
+                        // solicitada pelo LLM**". A recusa volta como saida de
+                        // ferramenta, e nao como erro do turno: o modelo le, e
+                        // segue sem ela.
+                        if !portao.permite(name) {
+                            let modo = exec.agent_mode.as_deref().unwrap_or("");
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: crate::modes::ToolGate::recusa(name, modo),
+                            });
+                            continue;
+                        }
+
                         let output = match self.find_tool(name) {
                             Some(tool) => {
                                 match timeout(budget.timeout(), tool.execute(&context, input)).await
@@ -1789,7 +1875,7 @@ impl AgentRuntime {
                                 user_id: user_id.map(|s| s.to_string()),
                                 is_heartbeat: false,
                                 is_confirmation_approved,
-                                working_dir: None,
+                                working_dir: exec.working_dir.clone(),
                                 project_id: None,
                             };
 
@@ -1811,6 +1897,22 @@ impl AgentRuntime {
                             let iniciado_em = std::time::Instant::now();
 
                             // executa com timeout
+                            // #988: o guard de seguranca. O filtro na montagem tira a
+                            // ferramenta da lista que o modelo ve, mas o modelo pode
+                            // pedir um nome que nunca esteve la — o criterio de aceite
+                            // e "nenhuma ferramenta proibida e executada, **mesmo que
+                            // solicitada pelo LLM**". A recusa volta como saida de
+                            // ferramenta, e nao como erro do turno: o modelo le, e
+                            // segue sem ela.
+                            if !portao.permite(name) {
+                                let modo = exec.agent_mode.as_deref().unwrap_or("");
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: crate::modes::ToolGate::recusa(name, modo),
+                                });
+                                continue;
+                            }
+
                             let output = match self.find_tool(name) {
                                 Some(tool) => {
                                     match timeout(
@@ -2504,6 +2606,48 @@ mod tests {
             viu_provider,
             "o teste precisa ter visto ao menos um provider"
         );
+    }
+
+    /// O portao **recusa**, e nao apenas deixa de oferecer (#988).
+    ///
+    /// O criterio de aceite e "nenhuma ferramenta proibida e executada, mesmo
+    /// que solicitada pelo LLM". Um teste que so verificasse a lista de
+    /// definicoes passaria com o guard removido — o modelo pode pedir um nome
+    /// que nunca esteve na lista.
+    #[test]
+    fn o_portao_recusa_ferramenta_proibida_pelo_modo() {
+        use crate::exec_context::ExecContext;
+        use crate::modes::ToolGate;
+
+        let exec = ExecContext::with_mode(Some("search".to_string()));
+        let portao = ToolGate::from_exec(&exec);
+
+        // `search` e somente-leitura.
+        assert!(!portao.permite("file_write"), "search deixou escrever");
+        assert!(!portao.permite("bash"), "search deixou rodar bash");
+        assert!(portao.permite("file_read"));
+    }
+
+    /// Sem modo escolhido, nada muda — e o caminho de todo canal que nunca
+    /// setou modo, o CLI incluso.
+    #[test]
+    fn sem_modo_o_portao_nao_muda_nada() {
+        use crate::exec_context::ExecContext;
+        use crate::modes::ToolGate;
+
+        let portao = ToolGate::from_exec(&ExecContext::default());
+        assert!(portao.permite("file_write"));
+        assert!(portao.permite("bash"));
+    }
+
+    /// O `working_dir` do #980 chega ao `ToolContext`.
+    #[test]
+    fn o_working_dir_chega_ao_contexto_de_ferramenta() {
+        use crate::exec_context::ExecContext;
+
+        let exec = ExecContext::with_working_dir(Some("/tmp/projeto".to_string()));
+        assert_eq!(exec.working_dir.as_deref(), Some("/tmp/projeto"));
+        assert_eq!(exec.agent_mode, None, "working_dir nao pode implicar modo");
     }
 
     /// Nenhuma label pode carregar id de sessao, de usuario ou conteudo — e a

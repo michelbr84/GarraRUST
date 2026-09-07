@@ -8,6 +8,7 @@ pub mod context_policy;
 #[cfg(feature = "dev-echo-provider")]
 pub mod echo;
 pub mod embeddings;
+pub mod exec_context;
 pub mod execution_budget;
 pub mod llama_cpp;
 pub mod memory_extractor;

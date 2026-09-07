@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
+use garraia_agents::exec_context::ExecContext;
 use garraia_agents::{AgentMode, ContentBlock, MessagePart, ModeEngine};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -192,6 +193,7 @@ pub async fn send_message(
                 body.model.as_deref(),
                 ac.system_prompt.as_deref(),
                 ac.max_tokens,
+                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
             )
             .await
     } else if body.model.is_some() {
@@ -207,17 +209,28 @@ pub async fn send_message(
                 body.model.as_deref(),
                 None,
                 None,
+                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
             )
             .await
     } else {
         state
             .agents
-            .process_message_with_context(
+            // Mesmo endpoint, mesma sessao: o modo escolhido tem de valer nos
+            // tres bracos. Este ficou para tras quando os outros dois passaram
+            // a ler o modo, e a diferenca visivel para o usuario seria a pior
+            // possivel — `/mode search` restringiria ou nao conforme ele
+            // tivesse mandado `agent_id`/`model` no corpo.
+            .process_message_with_agent_config(
                 &session_id,
                 &body.content,
                 &history,
                 continuity_key.as_deref(),
                 None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
             )
             .await
     };

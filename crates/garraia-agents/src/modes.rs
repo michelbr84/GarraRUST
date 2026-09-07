@@ -234,6 +234,116 @@ pub struct ModeProfile {
     pub base_mode: Option<String>,
 }
 
+/// Decide se uma ferramenta pode rodar, para um modo escolhido (#988).
+///
+/// # Sem modo escolhido, sem politica
+///
+/// [`ToolGate::sem_politica`] permite tudo, e e o que uma sessao sem `/mode`
+/// recebe. **Nao** e o perfil de `Ask` — o default do enum e `Ask`, e `ask`
+/// nega `file_write`, entao tratar "nao escolheu" como "escolheu Ask"
+/// quebraria escrita por padrao em todo canal, CLI incluso. O criterio de
+/// aceite da #988 pede que o comportamento padrao nao regrida, e o
+/// comportamento padrao de hoje e nao ter politica.
+///
+/// # Ferramenta MCP nao e barrada por whitelist
+///
+/// Tool de servidor MCP se chama `{servidor}__{tool}`
+/// (`mcp/tool_bridge.rs`). Os whitelists de `search`, `architect`, `debug`,
+/// `review` e `edit` listam so nomes nativos, entao aplicar `whitelist_mode`
+/// ao pe da letra **derrubaria toda integracao MCP** nesses cinco modos, em
+/// silencio — o usuario veria a ferramenta sumir sem mensagem nenhuma.
+///
+/// Entao ferramenta MCP passa pelo whitelist e continua sujeita ao `denied`.
+///
+/// **A consequencia precisa ser dita**: um modo somente-leitura nao restringe
+/// ferramenta MCP. Se o operador conectou um servidor MCP que escreve arquivo,
+/// o modo `search` nao o impede. Isso e um limite conhecido desta versao, nao
+/// um descuido — a alternativa era quebrar MCP para todo mundo hoje. Um
+/// whitelist que entenda servidor MCP precisa ser desenhado com o dono.
+#[derive(Debug, Clone)]
+pub struct ToolGate {
+    policy: Option<ToolPolicy>,
+}
+
+/// Separador que o `tool_bridge` usa entre servidor e ferramenta.
+const SEPARADOR_MCP: &str = "__";
+
+impl ToolGate {
+    /// O portao aberto: nenhuma politica, tudo permitido.
+    pub fn sem_politica() -> Self {
+        Self { policy: None }
+    }
+
+    /// O portao do perfil de um modo.
+    pub fn from_profile(profile: &ModeProfile) -> Self {
+        Self {
+            policy: Some(profile.tool_policy.clone()),
+        }
+    }
+
+    /// O portao para um contexto de execucao.
+    ///
+    /// Sem modo escolhido, portao aberto. Ver o docblock do tipo.
+    pub fn from_exec(exec: &crate::exec_context::ExecContext) -> Self {
+        match exec.agent_mode.as_deref() {
+            Some(nome) => Self::for_mode_name(nome),
+            None => Self::sem_politica(),
+        }
+    }
+
+    /// Resolve o modo pelo nome; nome desconhecido vira portao aberto, e nao
+    /// portao fechado — recusar tudo porque alguem digitou errado seria pior
+    /// que ignorar o modo.
+    pub fn for_mode_name(nome: &str) -> Self {
+        match AgentMode::from_str(nome) {
+            Some(modo) => Self::from_profile(&ModeProfile::from_mode(modo)),
+            None => Self::sem_politica(),
+        }
+    }
+
+    /// A ferramenta pode rodar?
+    pub fn permite(&self, tool_name: &str) -> bool {
+        let Some(p) = &self.policy else {
+            return true;
+        };
+
+        // `denied` vale sempre, inclusive para MCP.
+        if p.denied.iter().any(|t| t == tool_name) {
+            return false;
+        }
+
+        if p.whitelist_mode {
+            // Whitelist vazia nao quer dizer "nada permitido" — quer dizer que
+            // o perfil nao restringiu.
+            if p.allowed.is_empty() {
+                return true;
+            }
+            if tool_name.contains(SEPARADOR_MCP) {
+                return true;
+            }
+            return p.allowed.iter().any(|t| t == tool_name);
+        }
+
+        true
+    }
+
+    /// A mensagem que o modelo recebe quando pede uma ferramenta barrada.
+    ///
+    /// Diz **por que**, e nao so que falhou: sem isso o modelo tende a tentar
+    /// de novo a mesma coisa, gastando o orcamento de chamadas.
+    ///
+    /// Nao manda o modelo trocar de modo. Trocar de modo e do usuario — o
+    /// modelo nao executa `/mode`, e a versao anterior desta frase sugeria
+    /// `/mode code` mesmo quando `code` nao era o modo que liberava a
+    /// ferramenta.
+    pub fn recusa(tool_name: &str, modo: &str) -> String {
+        format!(
+            "A ferramenta `{tool_name}` nao e permitida no modo `{modo}`. \
+             Siga sem ela, ou peca ao usuario para trocar de modo."
+        )
+    }
+}
+
 impl ModeProfile {
     /// Cria um perfil padrão para um modo
     pub fn from_mode(mode: AgentMode) -> Self {
@@ -856,6 +966,121 @@ impl ModeContext {
 
 #[cfg(test)]
 mod tests {
+    use super::ToolGate;
+
+    /// A regressao mais provavel do lote, e a razao de `None` existir.
+    ///
+    /// O default do enum e `Ask`, e `ask` nega `file_write`. Se sessao sem
+    /// modo resolvesse para `Ask`, ligar a politica quebraria escrita por
+    /// padrao em todo canal — o CLI nunca seta modo.
+    #[test]
+    fn sem_modo_escolhido_permite_tudo() {
+        let g = ToolGate::sem_politica();
+        assert!(g.permite("file_write"));
+        assert!(g.permite("bash"));
+        assert!(g.permite("qualquer_coisa"));
+    }
+
+    /// E o modo `ask`, quando **escolhido**, nega mesmo.
+    #[test]
+    fn modo_ask_escolhido_nega_escrita() {
+        let g = ToolGate::for_mode_name("ask");
+        assert!(!g.permite("file_write"), "ask deveria negar file_write");
+        assert!(g.permite("file_read"));
+    }
+
+    /// Modo somente-leitura barra escrita e bash.
+    #[test]
+    fn modo_search_barra_escrita_e_bash() {
+        let g = ToolGate::for_mode_name("search");
+        assert!(!g.permite("file_write"));
+        assert!(!g.permite("bash"));
+        assert!(g.permite("file_read"));
+        assert!(g.permite("repo_search"));
+    }
+
+    /// Modo `code` continua podendo tudo — o criterio de aceite da #988 sobre
+    /// nao regredir o caminho de escrita.
+    #[test]
+    fn modo_code_nao_e_restringido() {
+        let g = ToolGate::for_mode_name("code");
+        assert!(g.permite("file_write"));
+        assert!(g.permite("bash"));
+    }
+
+    /// Ferramenta MCP passa pelo whitelist.
+    ///
+    /// Os whitelists listam so nomes nativos; aplicar ao pe da letra
+    /// derrubaria toda integracao MCP em cinco dos nove modos, em silencio.
+    #[test]
+    fn ferramenta_mcp_nao_e_barrada_por_whitelist() {
+        for modo in ["search", "architect", "debug", "review", "edit"] {
+            let g = ToolGate::for_mode_name(modo);
+            assert!(
+                g.permite("meu_servidor__consulta"),
+                "{modo} barrou ferramenta MCP"
+            );
+        }
+    }
+
+    /// Mas `denied` vale para MCP tambem — a lista explicita ganha.
+    #[test]
+    fn denied_vale_inclusive_para_mcp() {
+        let g = ToolGate::from_profile(&ModeProfile {
+            tool_policy: ToolPolicy {
+                allowed: vec![],
+                denied: vec!["servidor__perigosa".to_string()],
+                required: vec![],
+                whitelist_mode: true,
+            },
+            ..ModeProfile::from_mode(AgentMode::Code)
+        });
+        assert!(!g.permite("servidor__perigosa"));
+        assert!(g.permite("servidor__inofensiva"));
+    }
+
+    /// Nome de modo desconhecido abre o portao, em vez de fechar. Recusar tudo
+    /// porque alguem digitou errado seria pior que ignorar o modo.
+    #[test]
+    fn modo_desconhecido_nao_fecha_o_portao() {
+        let g = ToolGate::for_mode_name("modo_que_nao_existe");
+        assert!(g.permite("file_write"));
+    }
+
+    /// Whitelist vazia quer dizer "nao restringiu", e nao "nada permitido".
+    #[test]
+    fn whitelist_vazia_nao_e_negacao_total() {
+        let g = ToolGate::from_profile(&ModeProfile {
+            tool_policy: ToolPolicy {
+                allowed: vec![],
+                denied: vec![],
+                required: vec![],
+                whitelist_mode: true,
+            },
+            ..ModeProfile::from_mode(AgentMode::Code)
+        });
+        assert!(g.permite("file_write"));
+    }
+
+    /// A recusa diz por que, e o que fazer. Sem isso o modelo tende a repetir
+    /// a mesma chamada e gastar o orcamento.
+    #[test]
+    fn a_recusa_diz_o_motivo_e_a_saida() {
+        let m = ToolGate::recusa("file_write", "search");
+        assert!(m.contains("file_write"), "diz qual ferramenta");
+        assert!(m.contains("search"), "diz qual modo barrou");
+        assert!(
+            m.contains("Siga sem ela") && m.contains("usuario"),
+            "diz o que fazer, e que a troca de modo e do usuario"
+        );
+        // O modelo nao executa `/mode`, e `code` nao e necessariamente o modo
+        // que libera a ferramenta barrada.
+        assert!(
+            !m.contains("/mode code"),
+            "nao prescreve um modo especifico"
+        );
+    }
+
     use super::*;
 
     #[test]
