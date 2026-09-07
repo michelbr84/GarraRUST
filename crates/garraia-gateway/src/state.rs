@@ -486,7 +486,21 @@ impl AppState {
 
     /// Resolve the continuity key used by the cross-channel memory bus.
     /// When disabled, returns `None` and memory remains session-scoped.
-    pub fn continuity_key(&self, _user_id: Option<&str>) -> Option<String> {
+    ///
+    /// **O barramento e global, nao por usuario** (#1012). Ate 2026-09-07 esta
+    /// funcao recebia um `_user_id` que nunca usava — o `_` era a unica coisa
+    /// separando o leitor da conclusao errada de que a chave era escopada por
+    /// pessoa. Quatorze chamadores passavam identidade real (Telegram, Slack,
+    /// WhatsApp, Discord, iMessage), e todos recebiam a mesma
+    /// `bus:shared-global` de volta.
+    ///
+    /// O parametro foi removido em vez de passar a ser usado: honra-lo mudaria
+    /// o significado de `memory.shared_continuity` para quem ja o ligou, e
+    /// "shared" e literalmente o que a opcao promete. Sem o parametro, a
+    /// assinatura para de sugerir uma garantia que nao existe — e o dia em que
+    /// alguem quiser um barramento por pessoa, tera de escrever uma funcao
+    /// nova e decidir isso de proposito.
+    pub fn continuity_key(&self) -> Option<String> {
         if self.config.memory.shared_continuity {
             Some("bus:shared-global".to_string())
         } else {
@@ -587,7 +601,7 @@ impl AppState {
         let channel = channel_id.unwrap_or("web");
         let user = user_id.unwrap_or("anonymous");
         let metadata = self
-            .continuity_key(user_id)
+            .continuity_key()
             .map(|k| serde_json::json!({ "continuity_key": k }))
             .unwrap_or_else(|| serde_json::json!({}));
 
@@ -688,7 +702,7 @@ impl AppState {
         let channel = channel_id.unwrap_or("web");
         let user = user_id.unwrap_or("anonymous");
         let metadata = self
-            .continuity_key(user_id)
+            .continuity_key()
             .map(|k| serde_json::json!({ "continuity_key": k }))
             .unwrap_or_else(|| serde_json::json!({}));
 
@@ -1463,7 +1477,7 @@ mod tests {
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         );
-        let key = state.continuity_key(Some("user1"));
+        let key = state.continuity_key();
         assert_eq!(key, Some("bus:shared-global".to_string()));
     }
 
@@ -1476,7 +1490,7 @@ mod tests {
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         );
-        let key = state.continuity_key(Some("user1"));
+        let key = state.continuity_key();
         assert_eq!(key, None);
     }
 

@@ -305,6 +305,67 @@ vem de conjunto fechado.
 
 ---
 
+## 5.9. Identidade em `/v1/chat/completions` — auth-free nao e identidade livre (#1012)
+
+Fechado em 2026-09-07. `POST /v1/chat/completions` e a rota de compatibilidade
+OpenAI: e o que um plugin de editor, um `curl`, ou qualquer cliente que fale o
+protocolo da OpenAI aponta para o gateway local. Ela **nao tem camada de auth**
+(`router.rs:204`, sem `layer`; so `governor_layer` e CORS) — e isso e desenho,
+nao esquecimento: e a mesma postura de todo o `/api/*` descrita na §5.7.
+
+O defeito nao era a ausencia de auth. Era `resolve_user_id` derivar a
+identidade **gravada** das duas coisas que o proprio chamador escreve:
+
+1. `Authorization: Bearer <token>` — para qualquer token que nao fosse
+   `garra-local`, **o proprio token virava o `user_id`**, com o comentario no
+   fonte *"this allows custom API keys to identify users"*. Nunca identificou
+   ninguem: a rota nao verifica o token contra nada, entao equivalia a deixar
+   o chamador escolher o proprio nome.
+2. Sem `Authorization`, o header `X-User-Id` era usado **cru**.
+
+**Severidade: latente, nao ativa.** Rastreado ate o fim, o `user_id` nao abria
+leitura de dado alheio: o unico consumidor e `hydrate_session_history`, que so
+grava `session.user_id` e a coluna `user` do upsert; a carga de historico e
+chaveada por `session_id`. O impacto era **atribuicao falsa** — a sessao e o
+registro no banco ficavam sob uma identidade que ninguem provou.
+
+Vale fechar porque e a mesma forma do buraco que a #1010 fechou de proposito
+*antes* de ligar execucao nele. A arma engatilha sozinha no dia em que
+qualquer leitura passar a filtrar por `user_id` em vez de `session_id`, ou em
+que a identidade real do `garraia-auth` chegar a este caminho legado.
+
+**Mitigacao**: a identidade e a do dono da instalacao local (allowlist), ou
+`None`. O `X-User-Id` deixou de ser lido; um bearer que nao seja `garra-local`
+e ignorado (com fingerprint no log, nunca o token — §invariante herdado de
+2026-08-29). `None` e a resposta honesta para instalacao sem dono: preenche-la
+com o header seria inventar um dono. Guards em
+`openai_api.rs`: `x_user_id_forjado_nao_vira_identidade`,
+`x_user_id_forjado_nao_preenche_instalacao_sem_dono`,
+`bearer_arbitrario_nao_vira_identidade`, e
+`garra_local_continua_resolvendo_o_dono` para a nao-regressao.
+
+**Tambem**: `AppState::continuity_key` recebia um `_user_id` que **nunca
+usava**, e quatorze chamadores passavam identidade real (Telegram, Slack,
+WhatsApp, Discord, iMessage) recebendo a mesma `bus:shared-global` de volta. O
+parametro foi removido em vez de passar a ser honrado: honra-lo mudaria o
+significado de `memory.shared_continuity` para quem ja o ligou, e "shared" e o
+que a opcao promete. O barramento e global **por desenho**, e agora a
+assinatura diz isso.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **S** Spoofing | `curl -H 'X-User-Id: vitima' localhost:3000/v1/chat/completions` grava a sessão sob o nome da vítima. | Header não é lido; identidade vem da allowlist local. Guard de regressão contra o código vulnerável. | — |
+| **S** Spoofing | Bearer arbitrário vira `user_id` ("custom API keys identify users"). | Bearer não-`garra-local` é ignorado; só o fingerprint vai ao log. | Se a rota algum dia precisar de auth real, verificar contra `garraia-auth` e devolver 401 — decisão de produto, quebra todo cliente local existente. |
+| **I** Information disclosure | Bearer de terceiro escrito no log de toda requisição. | `token_fingerprint` (6 bytes de SHA-256); guard `api_token_never_reaches_the_log`. | — |
+| **E** Elevation of privilege | Barramento de memória "por usuário" que na verdade é global, ligado por quem leu a assinatura. | Parâmetro removido: a assinatura não sugere mais escopo por pessoa. | Barramento por pessoa, se desejado, exige função nova e decisão explícita. |
+
+**O que ficou fora, de propósito**: promover `Security Gate (BOLA & Tenant
+Isolation)` a required check da `main` (hoje os obrigatórios são quatro —
+`docs/security/protect-main-ruleset.md`). É mudança de branch protection, que
+é do dono.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

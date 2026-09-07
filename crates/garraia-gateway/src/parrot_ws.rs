@@ -95,7 +95,7 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
         // Build history and call the agent (streaming: deltas viram frames
         // "chunk"; o texto final segue num "response" autoritativo).
         let history = state.session_history(SESSION_ID);
-        let continuity_key = state.continuity_key(None);
+        let continuity_key = state.continuity_key();
 
         let (delta_tx, delta_rx) = tokio::sync::mpsc::channel::<String>(100);
         let agents = state.agents.clone();

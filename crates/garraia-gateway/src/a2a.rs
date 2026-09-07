@@ -99,7 +99,7 @@ pub async fn create_task(
         .hydrate_session_history(&session_id, Some("a2a"), None)
         .await;
     let history = state.session_history(&session_id);
-    let continuity_key = state.continuity_key(None);
+    let continuity_key = state.continuity_key();
 
     // Sem `ExecContext` de modo, e de proposito.
     //
