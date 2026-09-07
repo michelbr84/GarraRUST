@@ -4,6 +4,8 @@ use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use garraia_agents::exec_context::ExecContext;
+use garraia_agents::modes::{AgentMode, ModeProfile};
 use garraia_agents::{AgentRuntime, ChatMessage};
 use garraia_auth::{
     AppPool, InternalProvider, JwtIssuer, LoginPool, SessionStore as AuthSessionStore, SignupPool,
@@ -819,6 +821,61 @@ impl AppState {
         store.get_chosen_agent_mode(session_id).ok().flatten()
     }
 
+    /// O `ExecContext` do turno, montado num lugar so.
+    ///
+    /// Resolve o modo escolhido e, se ele for um modo **customizado**, ja traz
+    /// o perfil pronto — porque o perfil mora no banco e nem todo chamador do
+    /// runtime tem banco (#986). Os dez pontos que atendem usuario chamam aqui,
+    /// pelo mesmo motivo de `chosen_agent_mode_for` existir: foi a repeticao
+    /// que deixou o `/mode` gravando numa chave e a execucao lendo outra.
+    ///
+    /// Modo customizado e procurado **por nome, dentro dos modos do usuario**,
+    /// e nunca por id solto. Ver o comentario em `custom_mode_profile`.
+    pub async fn exec_context_for(&self, session_id: &str) -> ExecContext {
+        let Some(nome) = self.chosen_agent_mode_for(session_id).await else {
+            return ExecContext::default();
+        };
+        match self.custom_mode_profile(&nome).await {
+            Some(perfil) => ExecContext::with_custom_profile(nome, perfil),
+            None => ExecContext::with_mode(Some(nome)),
+        }
+    }
+
+    /// O perfil de um modo customizado, procurado por nome.
+    ///
+    /// # Por nome dentro do usuario, nunca por id solto
+    ///
+    /// `SessionStore::get_custom_mode(id)` nao filtra por usuario — e o
+    /// `GET /api/modes/custom/{id}` herdou isso. Hoje o impacto e baixo porque
+    /// todo modo e gravado sob o mesmo `api:default` e o `/api/*` e auth-free
+    /// por desenho (local-first, mono-usuario); mas fazer a **execucao** passar
+    /// a depender de uma busca sem escopo seria transformar um buraco inerte em
+    /// caminho ativo. Entao aqui e `get_custom_modes(user_id)` e comparacao de
+    /// nome, que respeita a fronteira que o schema declara.
+    ///
+    /// Nome de modo nativo nunca chega a consultar o banco: `AgentMode::from_str`
+    /// decide antes, e isso tambem impede um modo customizado chamado `code` de
+    /// sequestrar o nativo.
+    async fn custom_mode_profile(&self, nome: &str) -> Option<ModeProfile> {
+        if AgentMode::from_str(nome).is_some() {
+            return None;
+        }
+        let store = self.session_store.as_ref()?;
+        let store = store.lock().await;
+        let modos = store.get_custom_modes(CUSTOM_MODE_USER_ID).ok()?;
+        let cm = modos
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(nome) || m.id == nome)?;
+        let base = AgentMode::from_str(&cm.base_mode).unwrap_or(AgentMode::Ask);
+        Some(ModeProfile::from_custom(
+            base,
+            &cm.name,
+            cm.prompt_override.as_deref(),
+            &cm.tool_policy_overrides,
+            &cm.defaults,
+        ))
+    }
+
     /// A chave de sessao do Telegram, resolvida do mesmo jeito em todo lugar.
     ///
     /// # Por que isto e uma funcao, e nao tres copias
@@ -907,6 +964,14 @@ impl AppState {
         });
     }
 }
+
+/// O `user_id` sob o qual todo modo customizado e gravado hoje.
+///
+/// O CRUD inteiro (`api.rs`) usa esta string fixa, e o `/api/*` e auth-free por
+/// desenho — local-first e mono-usuario. Nomear a constante aqui e o que impede
+/// a resolucao de execucao e o CRUD divergirem no dia em que houver identidade
+/// de verdade: quem trocar isto por um usuario real troca num lugar so.
+pub const CUSTOM_MODE_USER_ID: &str = "api:default";
 
 pub type SharedState = Arc<AppState>;
 
@@ -1024,7 +1089,7 @@ mod tests {
             infratores.is_empty(),
             "estes chamam o wrapper que descarta o modo escolhido; use \
              `process_message[_streaming]_with_agent_config` com \
-             `ExecContext::with_mode(state.chosen_agent_mode_for(..).await)`: \
+             `state.exec_context_for(..).await`: \
              {infratores:?}"
         );
     }
@@ -1045,6 +1110,88 @@ mod tests {
         st.set_session_store(Arc::clone(&store));
         st.set_chat_session_manager(Arc::new(ChatSessionManager::new(store)));
         st
+    }
+
+    /// Um modo customizado escolhido chega ao `ExecContext` como perfil (#986).
+    ///
+    /// O CRUD existia e a execucao nunca o lia. Este teste percorre o caminho
+    /// inteiro: criar no banco, selecionar como modo da sessao, e conferir que
+    /// o `ExecContext` do turno traz o perfil com o override aplicado — nao so
+    /// o nome.
+    #[tokio::test]
+    async fn modo_customizado_escolhido_chega_ao_exec_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "sessao-modo-custom";
+        st.hydrate_session_history(sid, Some("api"), None).await;
+
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store
+                .create_custom_mode(
+                    CUSTOM_MODE_USER_ID,
+                    "Rust Strict",
+                    None,
+                    "code",
+                    &serde_json::json!({ "deny": ["bash"] }),
+                    None,
+                    &serde_json::json!({}),
+                )
+                .expect("criar modo customizado");
+            store
+                .set_agent_mode(sid, "Rust Strict")
+                .expect("selecionar o modo");
+        }
+
+        let exec = st.exec_context_for(sid).await;
+        assert_eq!(exec.agent_mode.as_deref(), Some("Rust Strict"));
+        let perfil = exec
+            .custom_profile
+            .as_ref()
+            .expect("o perfil customizado tem de vir resolvido");
+        assert_eq!(perfil.base_mode.as_deref(), Some("code"));
+        assert!(perfil.tool_policy.denied.contains(&"bash".to_string()));
+
+        // E o portao do turno usa esse perfil.
+        let g = garraia_agents::modes::ToolGate::para_o_turno(&exec, "escreve uma funcao");
+        assert!(!g.permite("bash"), "o override do modo customizado vale");
+        assert!(g.permite("file_write"), "o resto do `code` fica");
+    }
+
+    /// Nome nativo nunca vira consulta ao banco de modos customizados.
+    ///
+    /// Alem de poupar a consulta, e o que impede um modo customizado chamado
+    /// `code` de sequestrar o nativo.
+    #[tokio::test]
+    async fn modo_nativo_nao_e_sequestrado_por_customizado_homonimo() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "sessao-homonimo";
+        st.hydrate_session_history(sid, Some("api"), None).await;
+
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store
+                .create_custom_mode(
+                    CUSTOM_MODE_USER_ID,
+                    "code",
+                    None,
+                    "search",
+                    &serde_json::json!({ "deny": ["file_write"] }),
+                    None,
+                    &serde_json::json!({}),
+                )
+                .expect("criar homonimo");
+            store.set_agent_mode(sid, "code").expect("selecionar");
+        }
+
+        let exec = st.exec_context_for(sid).await;
+        assert!(
+            exec.custom_profile.is_none(),
+            "o nativo `code` decide antes de consultar o banco"
+        );
+        let g = garraia_agents::modes::ToolGate::para_o_turno(&exec, "oi");
+        assert!(g.permite("file_write"), "o `code` nativo permite escrita");
     }
 
     /// O modo escolhido sobrevive ao turno inteiro (#988).

@@ -111,7 +111,7 @@ impl std::fmt::Display for AgentMode {
 
 /// Política de ferramentas para um modo específico.
 /// Define quais ferramentas são permitidas, negadas ou obrigatórias.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ToolPolicy {
     /// Ferramentas explicitamente permitidas (whitelist)
     #[serde(default)]
@@ -128,7 +128,7 @@ pub struct ToolPolicy {
 }
 
 /// Configurações de LLM específicas por modo
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModeLlmConfig {
     /// Temperatura padrão (0.0 - 2.0)
     #[serde(default = "default_temperature")]
@@ -172,7 +172,7 @@ impl Default for ModeLlmConfig {
 }
 
 /// Limites de execução por modo
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModeLimits {
     /// Máximo de loops de ferramentas por requisição
     #[serde(default = "default_max_tool_loops")]
@@ -209,7 +209,7 @@ impl Default for ModeLimits {
 
 /// Perfil completo de um modo de execução.
 /// Contém todas as configurações necessárias para executar um agente em um modo específico.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModeProfile {
     /// Nome do modo
     pub name: String,
@@ -331,6 +331,12 @@ impl ToolGate {
     /// antes de chamar e passar esse nome no `ExecContext`; este caminho e o
     /// piso, e vale para a CLI, que monta o proprio runtime.
     pub fn para_o_turno(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
+        // Modo customizado (#986) chega com o perfil pronto de quem tem banco.
+        // Vence o nome: o perfil ja e o do `base_mode` com os overrides
+        // aplicados, e reinterpretar o nome desfaria a customizacao.
+        if let Some(perfil) = exec.custom_profile.as_ref() {
+            return Self::from_profile(perfil);
+        }
         match exec.agent_mode.as_deref() {
             Some(nome) if AgentMode::from_str(nome) == Some(AgentMode::Auto) => {
                 match crate::auto_router::classify_heuristic(user_text) {
@@ -435,6 +441,82 @@ impl ToolGate {
 }
 
 impl ModeProfile {
+    /// Monta o perfil efetivo de um **modo customizado** (#986).
+    ///
+    /// O CRUD de modos customizados existe desde o GAR-232 e o runtime nunca
+    /// leu nada dele: dava para criar um modo, seleciona-lo e ver a execucao
+    /// ignorar tudo. Esta e a funcao que faz o registro virar perfil.
+    ///
+    /// Recebe primitivas em vez de um `CustomMode` de proposito: o tipo mora em
+    /// `garraia-db`, e `garraia-agents` nao depende dele. Quem tem o banco
+    /// converte.
+    ///
+    /// # As duas grafias do override de politica
+    ///
+    /// O `README.pt-BR.md` documenta `{"allow": [...], "deny": [...]}` e a
+    /// struct chama os campos `allowed`/`denied`. As duas sao aceitas: o README
+    /// e o contrato publicado, e quem seguiu a documentacao nao pode ver o
+    /// override ser ignorado em silencio — que e exatamente o tipo de falha
+    /// que este lote de issues inteiro esta corrigindo.
+    ///
+    /// Chave ausente **preserva** a do perfil base; chave presente substitui.
+    /// Nao ha merge de listas: quem declara `allow` esta dizendo qual e a lista,
+    /// nao acrescentando a ela.
+    ///
+    /// # `defaults` e config de LLM, nao limite de execucao
+    ///
+    /// A UI (`modeSidebar.js`) e o README mandam `{temperature, max_tokens,
+    /// top_p}`, que sao os campos de [`ModeLlmConfig`]. Os limites de execucao
+    /// (`ModeLimits`) seguem os do modo base — um modo customizado nao levanta
+    /// teto de orcamento pelo mesmo motivo que um modo nativo nao levanta.
+    pub fn from_custom(
+        base: AgentMode,
+        nome: &str,
+        prompt_override: Option<&str>,
+        tool_policy_overrides: &serde_json::Value,
+        defaults: &serde_json::Value,
+    ) -> Self {
+        let mut perfil = Self::from_mode(base);
+        perfil.name = nome.to_string();
+        perfil.base_mode = Some(base.as_str().to_string());
+
+        if let Some(prompt) = prompt_override.filter(|p| !p.trim().is_empty()) {
+            perfil.system_prompt_template = Some(prompt.to_string());
+        }
+
+        let lista = |v: &serde_json::Value, a: &str, b: &str| -> Option<Vec<String>> {
+            v.get(a).or_else(|| v.get(b)).and_then(|x| {
+                x.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+            })
+        };
+        if let Some(permitidas) = lista(tool_policy_overrides, "allow", "allowed") {
+            perfil.tool_policy.allowed = permitidas;
+        }
+        if let Some(negadas) = lista(tool_policy_overrides, "deny", "denied") {
+            perfil.tool_policy.denied = negadas;
+        }
+        if let Some(w) = tool_policy_overrides
+            .get("whitelist_mode")
+            .and_then(|v| v.as_bool())
+        {
+            perfil.tool_policy.whitelist_mode = w;
+        }
+
+        // Chave desconhecida em `defaults` e ignorada — o `serde` do
+        // `ModeLlmConfig` preenche o resto com os defaults do proprio tipo.
+        if defaults.is_object()
+            && let Ok(llm) = serde_json::from_value::<ModeLlmConfig>(defaults.clone())
+        {
+            perfil.llm_config = llm;
+        }
+
+        perfil
+    }
+
     /// Cria um perfil padrão para um modo
     pub fn from_mode(mode: AgentMode) -> Self {
         match mode {
@@ -1270,6 +1352,109 @@ mod tests {
 
         assert!(ToolGate::eh_ferramenta_mcp("servidor__tool"));
         assert!(!ToolGate::eh_ferramenta_mcp("file_write"));
+    }
+
+    // ── Modos customizados (#986) ───────────────────────────────────────────
+
+    /// Um modo customizado vira perfil efetivo, e a execucao passa a respeita-lo.
+    ///
+    /// O CRUD existe desde o GAR-232 e o runtime nunca leu nada dele: dava para
+    /// criar um modo, seleciona-lo, e ver a execucao ignorar tudo.
+    #[test]
+    fn modo_customizado_vira_perfil_e_vale_na_execucao() {
+        let perfil = ModeProfile::from_custom(
+            AgentMode::Code,
+            "Rust Strict",
+            Some("Voce e um especialista em Rust."),
+            &serde_json::json!({ "deny": ["web_fetch", "bash"] }),
+            &serde_json::json!({ "temperature": 0.3, "max_tokens": 8192 }),
+        );
+
+        assert_eq!(perfil.name, "Rust Strict");
+        assert_eq!(perfil.base_mode.as_deref(), Some("code"));
+        assert_eq!(
+            perfil.system_prompt_template.as_deref(),
+            Some("Voce e um especialista em Rust.")
+        );
+        assert_eq!(perfil.llm_config.temperature, 0.3);
+        assert_eq!(perfil.llm_config.max_tokens, 8192);
+
+        let exec = crate::exec_context::ExecContext::with_custom_profile(
+            "Rust Strict".to_string(),
+            perfil,
+        );
+        let g = ToolGate::para_o_turno(&exec, "escreve uma funcao");
+        assert_eq!(g.nome_do_modo(), Some("Rust Strict"));
+        assert!(!g.permite("bash"), "o override de deny tem de valer");
+        assert!(!g.permite("web_fetch"));
+        assert!(g.permite("file_write"), "o resto do perfil `code` fica");
+    }
+
+    /// As duas grafias do override de politica sao aceitas.
+    ///
+    /// O README documenta `allow`/`deny` e a struct chama `allowed`/`denied`.
+    /// Quem seguiu a documentacao publicada nao pode ver o override ser
+    /// ignorado em silencio — e o mesmo tipo de falha que este lote corrige.
+    #[test]
+    fn override_aceita_a_grafia_do_readme_e_a_da_struct() {
+        let do_readme = ModeProfile::from_custom(
+            AgentMode::Code,
+            "A",
+            None,
+            &serde_json::json!({ "allow": ["file_read"], "deny": ["bash"] }),
+            &serde_json::json!({}),
+        );
+        let da_struct = ModeProfile::from_custom(
+            AgentMode::Code,
+            "B",
+            None,
+            &serde_json::json!({ "allowed": ["file_read"], "denied": ["bash"] }),
+            &serde_json::json!({}),
+        );
+        assert_eq!(do_readme.tool_policy.allowed, vec!["file_read".to_string()]);
+        assert_eq!(do_readme.tool_policy.allowed, da_struct.tool_policy.allowed);
+        assert_eq!(do_readme.tool_policy.denied, da_struct.tool_policy.denied);
+    }
+
+    /// Chave ausente preserva o perfil base; presente substitui.
+    #[test]
+    fn override_ausente_preserva_o_base() {
+        let base = ModeProfile::from_mode(AgentMode::Search);
+        let p = ModeProfile::from_custom(
+            AgentMode::Search,
+            "Busca minha",
+            None,
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+        );
+        assert_eq!(p.tool_policy.allowed, base.tool_policy.allowed);
+        assert_eq!(p.tool_policy.denied, base.tool_policy.denied);
+        assert_eq!(
+            p.system_prompt_template, base.system_prompt_template,
+            "prompt vazio nao apaga o do base"
+        );
+        assert_eq!(
+            p.limits.max_tool_loops, base.limits.max_tool_loops,
+            "`defaults` e config de LLM; limite de execucao segue o base"
+        );
+    }
+
+    /// `defaults` malformado nao derruba nem zera a config do base.
+    #[test]
+    fn defaults_invalido_e_ignorado() {
+        let base = ModeProfile::from_mode(AgentMode::Code);
+        for ruim in [
+            serde_json::json!("nao sou objeto"),
+            serde_json::json!({ "temperature": "quente" }),
+            serde_json::json!(null),
+        ] {
+            let p =
+                ModeProfile::from_custom(AgentMode::Code, "X", None, &serde_json::json!({}), &ruim);
+            assert_eq!(
+                p.llm_config.temperature, base.llm_config.temperature,
+                "defaults {ruim} nao deveria mexer na config"
+            );
+        }
     }
 
     /// A recusa diz por que, e o que fazer. Sem isso o modelo tende a repetir

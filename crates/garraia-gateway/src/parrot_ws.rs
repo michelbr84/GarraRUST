@@ -22,7 +22,6 @@ use futures::{SinkExt, StreamExt};
 ///
 /// The desktop always uses the fixed session ID "parrot-desktop" so history
 /// persists across gateway restarts and overlay reconnections.
-use garraia_agents::exec_context::ExecContext;
 use tracing::{info, warn};
 
 use crate::state::SharedState;
@@ -103,7 +102,7 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
         let text_for_agent = user_text.clone();
         // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
         // pelo tempo do turno inteiro.
-        let exec = ExecContext::with_mode(state.chosen_agent_mode_for(SESSION_ID).await);
+        let exec = state.exec_context_for(SESSION_ID).await;
         let task = tokio::spawn(async move {
             agents
                 .process_message_streaming_with_agent_config(

@@ -6,7 +6,6 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
-use garraia_agents::exec_context::ExecContext;
 use garraia_agents::{AgentMode, ContentBlock, MessagePart, ModeEngine};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -193,7 +192,7 @@ pub async fn send_message(
                 body.model.as_deref(),
                 ac.system_prompt.as_deref(),
                 ac.max_tokens,
-                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+                &state.exec_context_for(&session_id).await,
             )
             .await
     } else if body.model.is_some() {
@@ -209,7 +208,7 @@ pub async fn send_message(
                 body.model.as_deref(),
                 None,
                 None,
-                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+                &state.exec_context_for(&session_id).await,
             )
             .await
     } else {
@@ -230,7 +229,7 @@ pub async fn send_message(
                 None,
                 None,
                 None,
-                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+                &state.exec_context_for(&session_id).await,
             )
             .await
     };
@@ -341,11 +340,14 @@ struct ModeInfo {
 }
 
 /// GET /api/modes — list all available agent modes with their profiles.
-pub async fn list_modes() -> impl IntoResponse {
+///
+/// Inclui os modos customizados (#986): antes so os nove nativos apareciam,
+/// entao a mensagem de erro do `select_mode` mandava conferir aqui uma lista
+/// que nunca continha o modo que a pessoa tinha acabado de criar.
+pub async fn list_modes(State(state): State<SharedState>) -> impl IntoResponse {
     let engine = ModeEngine::new();
-    let profiles = engine.list_profiles();
-
-    let modes: Vec<ModeInfo> = profiles
+    let mut modes: Vec<ModeInfo> = engine
+        .list_profiles()
         .iter()
         .map(|p| ModeInfo {
             id: p.name.clone(),
@@ -354,6 +356,33 @@ pub async fn list_modes() -> impl IntoResponse {
             tool_policy: p.tool_policy.clone(),
         })
         .collect();
+
+    if let Some(store) = &state.session_store {
+        let store = store.lock().await;
+        if let Ok(custom) = store.get_custom_modes(crate::state::CUSTOM_MODE_USER_ID) {
+            for cm in custom {
+                let base = AgentMode::from_str(&cm.base_mode).unwrap_or(AgentMode::Ask);
+                // O perfil efetivo, e nao o do modo base: a `tool_policy` que
+                // esta listagem mostra tem de ser a que vai valer na execucao.
+                let perfil = garraia_agents::modes::ModeProfile::from_custom(
+                    base,
+                    &cm.name,
+                    cm.prompt_override.as_deref(),
+                    &cm.tool_policy_overrides,
+                    &cm.defaults,
+                );
+                modes.push(ModeInfo {
+                    id: cm.id.clone(),
+                    name: cm.name.clone(),
+                    description: cm
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| format!("modo customizado sobre `{}`", cm.base_mode)),
+                    tool_policy: perfil.tool_policy,
+                });
+            }
+        }
+    }
 
     Json(serde_json::json!({ "modes": modes }))
 }
@@ -373,6 +402,23 @@ struct SelectModeResponse {
     message: String,
 }
 
+/// O nome canonico de um modo customizado, se `pedido` for um.
+///
+/// Procura **por nome, dentro dos modos do usuario** — nunca por id solto, pelo
+/// motivo escrito em `AppState::custom_mode_profile`. Devolve o nome como esta
+/// gravado, para o banco guardar a grafia canonica e o `/mode` exibi-la igual.
+async fn nome_de_modo_customizado(state: &SharedState, pedido: &str) -> Option<String> {
+    let store = state.session_store.as_ref()?;
+    let store = store.lock().await;
+    let modos = store
+        .get_custom_modes(crate::state::CUSTOM_MODE_USER_ID)
+        .ok()?;
+    modos
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(pedido) || m.id == pedido)
+        .map(|m| m.name.clone())
+}
+
 /// POST /api/mode/select — select mode for a session.
 /// Header: X-Session-Id (optional) - if not provided, uses a default session ID.
 pub async fn select_mode(
@@ -380,9 +426,28 @@ pub async fn select_mode(
     headers: HeaderMap,
     Json(body): Json<SelectModeRequest>,
 ) -> impl IntoResponse {
-    // Validate mode
-    let mode_str = body.mode.to_lowercase();
-    if AgentMode::from_str(&mode_str).is_none() {
+    // Valida contra os nativos **e** os customizados (#986).
+    //
+    // Antes so `AgentMode::from_str` valia, entao um modo customizado criado
+    // pelo `POST /api/modes/custom` nao podia ser selecionado — o CRUD existia
+    // e desembocava em 400.
+    //
+    // O nome nativo e minusculo por convencao; o customizado e o que o usuario
+    // escreveu, e nao pode ser achatado. Por isso os dois nomes andam juntos:
+    // `mode_str` e o que vai para o banco, e a validacao tenta nativo primeiro.
+    let nativo = AgentMode::from_str(&body.mode);
+    let customizado = if nativo.is_none() {
+        nome_de_modo_customizado(&state, &body.mode).await
+    } else {
+        None
+    };
+    let mode_str = match (&nativo, &customizado) {
+        (Some(_), _) => body.mode.to_lowercase(),
+        (None, Some(nome)) => nome.clone(),
+        (None, None) => String::new(),
+    };
+    if mode_str.is_empty() {
+        let mode_str = body.mode.clone();
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!(SelectModeResponse {
@@ -564,8 +629,10 @@ pub async fn create_custom_mode(
         );
     }
 
-    // Use a default user_id for API sessions (in a real app, this would come from auth)
-    let user_id = "api:default";
+    // Uma identidade so, nomeada em `state.rs`: a resolucao de execucao (#986)
+    // precisa procurar sob a mesma que o CRUD grava, e uma string literal
+    // repetida em quatro lugares e como elas divergem.
+    let user_id = crate::state::CUSTOM_MODE_USER_ID;
 
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
@@ -613,7 +680,7 @@ pub async fn create_custom_mode(
 
 /// GET /api/modes/custom — list all custom modes for the user
 pub async fn list_custom_modes(State(state): State<SharedState>) -> impl IntoResponse {
-    let user_id = "api:default";
+    let user_id = crate::state::CUSTOM_MODE_USER_ID;
 
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
@@ -656,7 +723,10 @@ pub async fn get_custom_mode(
 ) -> impl IntoResponse {
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
-        match store.get_custom_mode(&mode_id) {
+        // Com escopo: a consulta crua nao filtra por `user_id`, e um endpoint
+        // que devolve o `prompt_override` de outra pessoa nao pode depender de
+        // o deploy ser mono-usuario.
+        match store.get_custom_mode_for_user(&mode_id, crate::state::CUSTOM_MODE_USER_ID) {
             Ok(Some(mode)) => {
                 return (
                     StatusCode::OK,

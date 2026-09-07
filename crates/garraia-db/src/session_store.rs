@@ -1260,7 +1260,20 @@ impl SessionStore {
         Ok(modes)
     }
 
-    /// Get a custom mode by ID
+    /// Get a custom mode by ID.
+    ///
+    /// # Sem escopo de usuario, de proposito documentado
+    ///
+    /// Esta consulta filtra so por `id`, e a tabela tem `user_id`. Enquanto o
+    /// `/api/*` for auth-free e mono-usuario — todo modo gravado sob a mesma
+    /// identidade — isso nao separa nada de ninguem. Mas e um buraco esperando
+    /// identidade de verdade, entao **nao** e por aqui que a execucao resolve
+    /// modo customizado: ver `AppState::custom_mode_profile`, que procura por
+    /// nome dentro de `get_custom_modes(user_id)`.
+    ///
+    /// Quem for adicionar identidade real precisa dar escopo a este metodo
+    /// antes de qualquer coisa; o [`Self::get_custom_mode_for_user`] ja existe
+    /// para isso.
     pub fn get_custom_mode(&self, mode_id: &str) -> Result<Option<CustomMode>> {
         let mut stmt = self.conn
             .prepare(
@@ -1292,6 +1305,20 @@ impl SessionStore {
             .ok();
 
         Ok(result)
+    }
+
+    /// Get a custom mode by ID, **restrito ao usuario dono**.
+    ///
+    /// A variante que respeita a fronteira que o schema declara. O
+    /// `GET /api/modes/custom/{id}` usa esta.
+    pub fn get_custom_mode_for_user(
+        &self,
+        mode_id: &str,
+        user_id: &str,
+    ) -> Result<Option<CustomMode>> {
+        Ok(self
+            .get_custom_mode(mode_id)?
+            .filter(|m| m.user_id == user_id))
     }
 
     /// Update a custom mode
@@ -2057,6 +2084,58 @@ mod tests {
         // (We can't easily check internal metadata, but setting mode shouldn't break)
         let mode = store.get_agent_mode(session_id).unwrap();
         assert_eq!(mode, Some("orchestrator".to_string()));
+    }
+
+    // ── Modo customizado: escopo por usuario (#986) ────────────────────────
+
+    /// A busca com escopo nao devolve o modo de outro usuario.
+    ///
+    /// A regra absoluta 10 do CLAUDE.md pede teste cross-group antes de merge
+    /// em rota que passe a valer. O `get_custom_mode(id)` cru **nao** filtra por
+    /// `user_id`, e o `GET /api/modes/custom/{id}` herdou isso: um endpoint que
+    /// devolve o `prompt_override` de outra pessoa nao pode depender de o
+    /// deploy ser mono-usuario. Hoje todo modo e gravado sob a mesma identidade,
+    /// entao o buraco e inerte — este teste e o que impede ele de acordar.
+    #[test]
+    fn modo_customizado_de_outro_usuario_nao_e_devolvido() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let meu = store
+            .create_custom_mode(
+                "usuario-a",
+                "Rust Strict",
+                Some("meu modo"),
+                "code",
+                &serde_json::json!({ "deny": ["bash"] }),
+                Some("prompt privado do A"),
+                &serde_json::json!({}),
+            )
+            .expect("criar modo do A");
+
+        assert!(
+            store
+                .get_custom_mode_for_user(&meu.id, "usuario-a")
+                .unwrap()
+                .is_some(),
+            "o dono ve o proprio modo"
+        );
+        assert!(
+            store
+                .get_custom_mode_for_user(&meu.id, "usuario-b")
+                .unwrap()
+                .is_none(),
+            "outro usuario nao ve — nem o prompt_override"
+        );
+
+        // E a listagem por usuario ja era escopada; confirma que continua.
+        assert!(store.get_custom_modes("usuario-b").unwrap().is_empty());
+        assert_eq!(store.get_custom_modes("usuario-a").unwrap().len(), 1);
+
+        // A consulta crua continua sem escopo, e e por isso que ela nao pode
+        // ser a que a execucao usa.
+        assert!(
+            store.get_custom_mode(&meu.id).unwrap().is_some(),
+            "documenta o comportamento da crua, para a diferenca ficar visivel"
+        );
     }
 
     // ── Modo escolhido x modo deduzido (#988) ──────────────────────────────

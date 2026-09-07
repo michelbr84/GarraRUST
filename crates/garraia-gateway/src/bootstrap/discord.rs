@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use garraia_agents::ChatMessage;
-use garraia_agents::exec_context::ExecContext;
 use garraia_config::AppConfig;
 use garraia_security::{Allowlist, PairingManager};
 use tracing::{info, warn};
@@ -127,8 +126,7 @@ pub fn build_discord_channels(
                     // definido" e a politica de ferramenta nao valia, so no Telegram
                     // valia. Assimetria silenciosa e pior que ausencia: o usuario
                     // acredita na restricao.
-                    let exec =
-                        ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await);
+                    let exec = state.exec_context_for(&session_id).await;
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state

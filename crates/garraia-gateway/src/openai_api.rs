@@ -4,7 +4,6 @@
 //! with the OpenAI API format, enabling VS Code extensions to connect.
 //! Supports both streaming (SSE) and non-streaming modes.
 
-use garraia_agents::exec_context::ExecContext;
 use std::convert::Infallible;
 
 use axum::{
@@ -563,7 +562,7 @@ async fn handle_streaming(
                 Some(model_clone.as_str()),
                 None,
                 None,
-                &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+                &state.exec_context_for(&session_id).await,
             )
             .await
         {
@@ -723,7 +722,7 @@ async fn handle_non_streaming(
             Some(model.as_str()),
             None,
             None,
-            &ExecContext::with_mode(state.chosen_agent_mode_for(&session_id).await),
+            &state.exec_context_for(&session_id).await,
         )
         .await;
 
