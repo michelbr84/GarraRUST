@@ -9,7 +9,8 @@
 - **Links:**
   - Issue: [GAR-373](https://linear.app/chatgpt25/issue/GAR-373)
   - Plan: [`plans/0002-gar-373-adr-postgres-decision.md`](../../plans/0002-gar-373-adr-postgres-decision.md)
-  - Benchmark: [`benches/database-poc/results.md`](../../benches/database-poc/results.md)
+  - Benchmark: `benches/database-poc/results.md` — harness removed on 2026-08-16 by #814;
+    the results table is reproduced verbatim in §Validation below.
   - Research base: [`deep-research-report.md`](../../deep-research-report.md) (produced via web research early in Fase 3 planning; contains literature-grounded database comparisons. This ADR supersedes any latency estimates in that document with the empirical benchmark in `benches/database-poc/`. The research report remains authoritative for qualitative arguments about LGPD/GDPR architecture, schema patterns, and operational guidance it cites.)
 
 ---
@@ -281,7 +282,9 @@ Dual-write was considered and rejected: it would require keeping both `garraia-d
 
 ### Benchmark evidence
 
-Full results: [`benches/database-poc/results.md`](../../benches/database-poc/results.md). Summary table reproduced here:
+Full results lived in `benches/database-poc/results.md`. The harness was removed on
+2026-08-16 by #814, per the CLAUDE.md mandate to delete the PoC once `garraia-workspace`
+stabilised, so the summary table reproduced here is now the record:
 
 | # | Scenario | Postgres p95 | SQLite p95 | Winner |
 |---|---|---:|---:|---|
@@ -327,9 +330,10 @@ This ADR's merge unblocks:
 
 - Issue: [GAR-373](https://linear.app/chatgpt25/issue/GAR-373)
 - Plan: [`plans/0002-gar-373-adr-postgres-decision.md`](../../plans/0002-gar-373-adr-postgres-decision.md)
-- Benchmark harness: [`benches/database-poc/`](../../benches/database-poc/)
-- Benchmark results: [`benches/database-poc/results.md`](../../benches/database-poc/results.md)
-- Raw JSON: [`results-postgres.json`](../../benches/database-poc/results-postgres.json), [`results-sqlite.json`](../../benches/database-poc/results-sqlite.json)
+- Benchmark harness, results and raw JSON: `benches/database-poc/` (`results.md`,
+  `results-postgres.json`, `results-sqlite.json`) — removed on 2026-08-16 by #814.
+  The numbers survive in §Validation above; the files themselves are recoverable from
+  history at `2188751^`.
 - Research base: [`deep-research-report.md`](../../deep-research-report.md) §"Comparativo de bancos de dados"
 - [PostgreSQL 16 documentation](https://www.postgresql.org/docs/16/)
 - [pgvector repository](https://github.com/pgvector/pgvector)

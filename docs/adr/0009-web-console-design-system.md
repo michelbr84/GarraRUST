@@ -2,7 +2,12 @@
 
 - **Status:** Accepted (2026-05-14, Florida local)
 - **Deciders:** michelbr84
-- **Plan:** [`plans/0116a-web-console-redesign-garra-glass.md`](../../plans/0116a-web-console-redesign-garra-glass.md) (PR-A foundation slice), [`plans/0116b-transformar-a-tela-atual-do-GarraIA.md`](../../plans/0116b-transformar-a-tela-atual-do-GarraIA.md) (full multi-page vision)
+- **Plan:** `plans/0116a-web-console-redesign-garra-glass.md` (PR-A foundation slice) and
+  `plans/0116b-transformar-a-tela-atual-do-GarraIA.md` (full multi-page vision) — neither was
+  ever committed to the repository, so these are names of record, not files. The roll-out that
+  was actually delivered is recorded in `CLAUDE.md` (ten PRs, #330-#341, 2026-05-14); the
+  follow-up plan that does exist in-tree is
+  [`plans/0117-gar-618-web-console-pr4-dashboard.md`](../../plans/0117-gar-618-web-console-pr4-dashboard.md).
 - **Supersedes:** —
 - **Related:** ADR 0007 (Desktop frontend) — distinct surface; this ADR governs the *web console* served by `garraia-gateway` only.
 
