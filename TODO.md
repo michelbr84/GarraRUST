@@ -5,28 +5,66 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-05 (America/New_York)
+**Atualizado:** 2026-09-07 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
-## Em andamento 2026-09-05 — pós-v0.3.9: Trilha B (épico #944) e novo lote de memória
+## Estado 2026-09-07 — v0.3.9 publicada, zero issues abertas
 
-A v0.3.9 fecha os dois lotes de campo (#920-#925 e #928-#930). Estado:
+**O repositório está com zero issues abertas.** A v0.3.9 saiu em 2026-09-07
+(https://github.com/michelbr84/GarraRUST/releases/tag/v0.3.9), 51 assets, os
+8 binários crus com os `.sha256` irmãos.
+
+Ela tinha sido preparada em 05/09 — `Cargo.toml` bumpado, seção no CHANGELOG
+— e **nunca foi tagueada**, então nada tinha sido publicado. O conteúdo dela
+acabou sendo a soma daquele lote com tudo que entrou depois: 48 issues e PRs,
+de #933 a #1012.
 
 | Trilha | Estado |
 | --- | --- |
-| A operacional (#928-#930) | **fechada** — #945 e #946 merged; **#947 (a2a_send) fechado sem merge pelo dono** — a direção de conversa entre agentes migrou para a #965 (agentes nomeados via `agent_router`, não URL); #929 segue aberta aguardando essa direção |
-| B — épico #944 Terminal UX v2 | Fase 1 em voo: **B-PR1 (#933, sinks de tracing + `--verbose`)** pronto em `claude/6-issues-strategy-5mufs3-b1`; **B-PR2 (#936, spinner com janela de aparição + cronômetro)** pronto em `…-b2`; PRs abrem após o corte da v0.3.9. Depois: B-PR3 (#934+#935), ADR 0017 antes do #942 |
-| C — memória semântica (novo) | 18 issues novas do dono (#948-#964 embeddings/memória + #965 A2A nomeado) abertas em 2026-09-05, **fora do plano aprovado** — prioridade entre B e C é decisão do dono |
+| A operacional (#928-#930) | **fechada**. #947 (a2a_send) foi fechado sem merge pelo dono; a direção migrou para a #965, entregue no PR #1016. A #929 foi fechada como `not_planned` |
+| B — épico #944 Terminal UX v2 | **fechado**. #933, #934/#935, #936, #937, #938, #939, #940, #941, #942, #943, #995, #996 |
+| C — memória semântica | **fechada**. #948-#965, incluindo o `garra memory` completo e o benchmark de recall (#958) |
+| Bloco de modos (#979-#988) | **fechado**. A `ToolPolicy` passou a valer no executor — antes era só pedida no prompt |
+| SEC #1012 | **fechada** no PR #1018 |
 
-Pendências registradas sem issue: `/ws/parrot` sem auth; rotas A2A do
-servidor sem auth (loopback é a única proteção); `server.rs` >1500 linhas
-(candidato a refactor); `timeouts.channels` (só se o retry do #946 não
-bastar); `openclaw_bridge.rs` morto no disco; #928 aguarda journal do
-binário Rust do relator.
+### Decisões pendentes com o dono
+
+Nenhuma bloqueia trabalho:
+
+1. **ADR 0018** (`Proposed`) — aceitar é o gatilho para remover o crate órfão
+   `garraia-embeddings` num PR próprio.
+2. **#1012, §2 vs §3** — implementei a §2 (auth-free explícito, nenhum cliente
+   quebra). A §3, exigir auth de verdade em `/v1/chat/completions`, quebraria
+   todo cliente local apontado para o gateway.
+3. **`Security Gate (BOLA & Tenant Isolation)` como required check** — é branch
+   protection (`docs/security/protect-main-ruleset.md`).
+4. **O wiki** deve apontar para `docs/src/memory.md` em vez de `docs/memory.md`?
+
+### Registrado, não corrigido — cada um merece PR próprio
+
+Todos conferidos contra o código em 2026-09-07:
+
+- **Agent card do A2A publica o `system_prompt`** de cada agente sem
+  autenticação. Um prompt que funcione como controle fica anulado ao ser
+  público.
+- **`state.a2a_tasks` é um `DashMap` sem expiração** — tarefas completadas
+  acumulam, sem teto.
+- **`tools:` continua ignorado no `POST /api/chat`.** O mecanismo existe desde
+  o #1016; falta estendê-lo.
+- **`commands.rs` tem 27 `unwrap()` em código de produção** — o arquivo não tem
+  `#[cfg(test)]`, então nenhum é de teste. Regra absoluta 4.
+- **`/ws/parrot` sem auth** e as **5 rotas A2A do router sem auth** — loopback é
+  a única proteção.
+- **Arquivos grandes** (Quality Ratchet, report-only): `me.rs` 6366,
+  `chat.rs` 2653, `server.rs` 1572, `memory_cmd.rs` 1579 linhas. O
+  `memory_cmd.rs` cruzou 1500 no #1017, desta sessão.
+- **`garra about`** escreve ANSI incondicional em saída redirecionada.
+- **O `session_id` logado é controlado pelo cliente** e pode conter PII.
+- **`openclaw_bridge.rs`** segue no disco (`garraia-agents/src/tools/`).
 
 ## Concluído 2026-09-04/05 — segundo lote de campo (#920-#925), 4 PRs
 
