@@ -490,9 +490,11 @@ impl AppState {
     /// **O barramento e global, nao por usuario** (#1012). Ate 2026-09-07 esta
     /// funcao recebia um `_user_id` que nunca usava — o `_` era a unica coisa
     /// separando o leitor da conclusao errada de que a chave era escopada por
-    /// pessoa. Quatorze chamadores passavam identidade real (Telegram, Slack,
-    /// WhatsApp, Discord, iMessage), e todos recebiam a mesma
-    /// `bus:shared-global` de volta.
+    /// pessoa. Dos quatorze chamadores, **sete** passavam um id por pessoa
+    /// literal (Telegram x2, Slack, WhatsApp, Discord, iMessage, e a
+    /// `task.user_id` do A2A em `server.rs`), tres repassavam o parametro que
+    /// receberam, e quatro ja passavam `None` — e todos os quatorze recebiam a
+    /// mesma `bus:shared-global` de volta.
     ///
     /// O parametro foi removido em vez de passar a ser usado: honra-lo mudaria
     /// o significado de `memory.shared_continuity` para quem ja o ligou, e

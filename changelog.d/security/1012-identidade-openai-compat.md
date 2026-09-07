@@ -16,11 +16,15 @@
   resposta honesta para instalacao sem dono: preenche-la com o header seria
   inventar um dono. O `garra-local` continua resolvendo o dono, com teste de
   nao-regressao. Um bearer que nao seja `garra-local` e ignorado, com apenas o
-  fingerprint no log — nunca o token.
+  fingerprint no log — nunca o token. E o **valor do dono tambem nao vai para o
+  log**: a primeira versao desta correcao o logava em toda requisicao, o que
+  era pior que o codigo vulneravel (que so o logava quando um `garra-local`
+  era apresentado). No WhatsApp o dono e o proprio numero de telefone.
 - **`AppState::continuity_key` perdeu o parametro que nunca usava.** Ele
-  recebia `_user_id` e quatorze chamadores passavam identidade real (Telegram,
-  Slack, WhatsApp, Discord, iMessage) recebendo a mesma `bus:shared-global` de
-  volta; o `_` era a unica coisa separando o leitor da conclusao errada de que
+  recebia `_user_id`, e dos quatorze chamadores **sete** passavam um id por
+  pessoa literal (Telegram x2, Slack, WhatsApp, Discord, iMessage, e a
+  `task.user_id` do A2A) — todos recebendo a mesma `bus:shared-global` de
+  volta. O `_` era a unica coisa separando o leitor da conclusao errada de que
   a chave era escopada por pessoa. O parametro foi **removido** em vez de
   passar a ser honrado: honra-lo mudaria o significado de
   `memory.shared_continuity` para quem ja o ligou, e "shared" e o que a opcao

@@ -336,8 +336,10 @@ que a identidade real do `garraia-auth` chegar a este caminho legado.
 
 **Mitigacao**: a identidade e a do dono da instalacao local (allowlist), ou
 `None`. O `X-User-Id` deixou de ser lido; um bearer que nao seja `garra-local`
-e ignorado (com fingerprint no log, nunca o token — §invariante herdado de
-2026-08-29). `None` e a resposta honesta para instalacao sem dono: preenche-la
+e ignorado (com fingerprint no log, nunca o token — invariante herdado de
+2026-08-29), e o **valor do dono tambem nao sai no log**: a primeira versao
+desta correcao o logava em toda requisicao, o que era pior que o codigo
+vulneravel, que so o logava quando um `garra-local` era apresentado. `None` e a resposta honesta para instalacao sem dono: preenche-la
 com o header seria inventar um dono. Guards em
 `openai_api.rs`: `x_user_id_forjado_nao_vira_identidade`,
 `x_user_id_forjado_nao_preenche_instalacao_sem_dono`,
@@ -345,8 +347,10 @@ com o header seria inventar um dono. Guards em
 `garra_local_continua_resolvendo_o_dono` para a nao-regressao.
 
 **Tambem**: `AppState::continuity_key` recebia um `_user_id` que **nunca
-usava**, e quatorze chamadores passavam identidade real (Telegram, Slack,
-WhatsApp, Discord, iMessage) recebendo a mesma `bus:shared-global` de volta. O
+usava**. Dos quatorze chamadores, **sete** passavam um id por pessoa literal
+(Telegram x2, Slack, WhatsApp, Discord, iMessage, e a `task.user_id` do A2A em
+`server.rs:1173`), tres repassavam o parametro recebido e quatro ja passavam
+`None` — e os quatorze recebiam a mesma `bus:shared-global` de volta. O
 parametro foi removido em vez de passar a ser honrado: honra-lo mudaria o
 significado de `memory.shared_continuity` para quem ja o ligou, e "shared" e o
 que a opcao promete. O barramento e global **por desenho**, e agora a
@@ -357,6 +361,7 @@ assinatura diz isso.
 | **S** Spoofing | `curl -H 'X-User-Id: vitima' localhost:3000/v1/chat/completions` grava a sessão sob o nome da vítima. | Header não é lido; identidade vem da allowlist local. Guard de regressão contra o código vulnerável. | — |
 | **S** Spoofing | Bearer arbitrário vira `user_id` ("custom API keys identify users"). | Bearer não-`garra-local` é ignorado; só o fingerprint vai ao log. | Se a rota algum dia precisar de auth real, verificar contra `garraia-auth` e devolver 401 — decisão de produto, quebra todo cliente local existente. |
 | **I** Information disclosure | Bearer de terceiro escrito no log de toda requisição. | `token_fingerprint` (6 bytes de SHA-256); guard `api_token_never_reaches_the_log`. | — |
+| **I** Information disclosure | O **dono** escrito no log de toda requisição. No WhatsApp o dono é o próprio número de telefone (`bootstrap/whatsapp.rs:88`, `claim_owner(&from_number)`); no iMessage, número ou Apple ID. | O valor nunca sai: o log diz só se houve dono ou não. Guard `o_valor_do_dono_nao_vai_para_o_log`. | — |
 | **E** Elevation of privilege | Barramento de memória "por usuário" que na verdade é global, ligado por quem leu a assinatura. | Parâmetro removido: a assinatura não sugere mais escopo por pessoa. | Barramento por pessoa, se desejado, exige função nova e decisão explícita. |
 
 **O que ficou fora, de propósito**: promover `Security Gate (BOLA & Tenant

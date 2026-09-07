@@ -22,7 +22,7 @@ use garraia_agents::{ChatMessage, ChatRole, MessagePart};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::state::SharedState;
@@ -952,9 +952,20 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
         .ok()
         .and_then(|list| list.owner().map(str::to_string));
 
+    // O **valor** do dono nunca sai no log, e essa e a diferenca em relacao ao
+    // codigo anterior. Ele so logava o dono quando um `garra-local` era
+    // apresentado; esta funcao resolve o dono em **toda** requisicao, entao
+    // logar o valor aqui o repetiria a cada chamada. E o que vira dono nem
+    // sempre e um id opaco: no WhatsApp e o proprio numero de telefone
+    // (`bootstrap/whatsapp.rs:88`, `claim_owner(&from_number)`), no iMessage o
+    // numero ou o Apple ID (`bootstrap/imessage.rs:59`). Regra absoluta 6.
+    //
+    // O que quem depura precisa saber e se a requisicao foi atribuida a alguem
+    // ou a ninguem — um booleano. O valor esta no `allowlist.json`, que a
+    // mesma pessoa pode abrir.
     match &owner {
-        Some(o) => info!("resolved user_id={o} from local allowlist owner"),
-        None => info!("no owner claimed yet; request recorded without user_id"),
+        Some(_) => debug!("user_id resolvido pelo dono da allowlist local (valor omitido)"),
+        None => info!("nenhum dono reivindicado ainda; requisicao gravada sem user_id"),
     }
     owner
 }
@@ -1164,6 +1175,36 @@ mod tests {
             "o token do chamador nao pode virar o `user_id`"
         );
         assert_eq!(resolvido.as_deref(), Some("dono-real"));
+    }
+
+    /// O **valor** do dono nao pode aparecer no log.
+    ///
+    /// Achado ALTO da auditoria do #1012, e uma regressao que a *primeira*
+    /// versao desta correcao introduziu: o codigo antigo so logava o dono
+    /// quando um `garra-local` era apresentado; a correcao passou a resolver o
+    /// dono em toda requisicao e logava o valor junto — mais vezes, portanto,
+    /// que o codigo vulneravel que ela substituia.
+    ///
+    /// E o dono nem sempre e um id opaco: no WhatsApp e o proprio numero de
+    /// telefone (`bootstrap/whatsapp.rs:88` chama `claim_owner(&from_number)`),
+    /// no iMessage e o numero ou o Apple ID. Regra absoluta 6.
+    #[tracing_test::traced_test]
+    #[test]
+    fn o_valor_do_dono_nao_vai_para_o_log() {
+        const DONO: &str = "+15551234567";
+        let state = state_de_teste_com_dono(Some(DONO));
+
+        let resolvido = resolve_user_id(&headers(&[]), &state);
+
+        // O dono continua sendo resolvido — a correcao e sobre o log, nao
+        // sobre a resolucao.
+        assert_eq!(resolvido.as_deref(), Some(DONO));
+
+        assert!(
+            !logs_contain(DONO),
+            "o valor do dono vazou para o log — no WhatsApp isso e um numero \
+             de telefone, repetido a cada requisicao"
+        );
     }
 
     /// E o caminho que precisa continuar funcionando: `garra-local`.
