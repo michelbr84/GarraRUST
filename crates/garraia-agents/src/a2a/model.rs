@@ -163,4 +163,21 @@ pub struct CreateTaskRequest {
     /// Metadados adicionais enviados junto com a criação.
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+
+    /// Qual agente **nomeado** deve atender a tarefa (#965).
+    ///
+    /// `None` mantém o comportamento de sempre: a tarefa é processada pelo
+    /// agente padrão. `Some(nome)` seleciona um dos agentes que o operador
+    /// configurou em `agents:` — e **só** eles: um nome desconhecido é
+    /// recusado com 400, e nunca cai no padrão em silêncio. Um chamador que
+    /// pede a Hera e recebe a Garra sem aviso acredita ter falado com quem não
+    /// falou, que é o mesmo engano que o `/mode` decorativo produzia.
+    ///
+    /// Os nomes aceitos são exatamente os `skills` do
+    /// `GET /.well-known/agent.json` — o card já os publica.
+    ///
+    /// O alias existe porque a issue fala em "`target`/`agent_id`" e não há
+    /// razão para escolher por quem chama: os dois nomes entram.
+    #[serde(default, alias = "agentId", alias = "agent_id")]
+    pub target: Option<String>,
 }
