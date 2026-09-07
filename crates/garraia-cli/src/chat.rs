@@ -1820,7 +1820,14 @@ mod tests {
         let printed = strip_spinner(&String::from_utf8(out).expect("utf8"));
         assert!(printed.starts_with("d0 "));
         assert!(printed.ends_with("d299 "));
-        assert_eq!(printed.matches(' ').count(), 300);
+        // Separadores, e nao espacos: com a quebra por largura do #939 o
+        // espaco que separa duas palavras vira `\n` quando a linha enche. O
+        // que este teste mede e que os 300 deltas chegaram — e sao 300
+        // separadores de um jeito ou de outro.
+        assert_eq!(printed.matches(char::is_whitespace).count(), 300);
+        for i in 0..300 {
+            assert!(printed.contains(&format!("d{i}")), "faltou o delta d{i}");
+        }
     }
 
     /// On timeout the call future must be dropped (closing the sender) and

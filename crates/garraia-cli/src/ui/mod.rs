@@ -41,6 +41,7 @@
 pub mod ansi_filter;
 pub mod conversation;
 pub mod error_card;
+pub mod markdown;
 pub mod spinner;
 pub mod tool_log;
 
@@ -229,12 +230,16 @@ pub struct TerminalRenderer {
     /// o texto do modelo e streaming e uma sequencia pode chegar partida entre
     /// dois deltas, cada metade inofensiva sozinha. Ver `ansi_filter`.
     filtro: ansi_filter::AnsiFilter,
+    /// Renderiza Markdown enquanto o texto chega (#939). Vem **depois** do
+    /// filtro: ele limpa o que o modelo mandou, e este acrescenta o nosso.
+    markdown: markdown::MarkdownStream,
 }
 
 impl TerminalRenderer {
     pub fn new(caps: Capabilities, spinner: Option<Spinner>) -> Self {
         Self {
             filtro: ansi_filter::AnsiFilter::new(),
+            markdown: markdown::MarkdownStream::new(caps.style(), caps.width),
             assistant_prefix: caps.style().assistant_prefix(),
             caps,
             spinner,
@@ -262,6 +267,7 @@ impl TerminalRenderer {
             prefix_written: false,
             animating: true,
             filtro: ansi_filter::AnsiFilter::new(),
+            markdown: markdown::MarkdownStream::new(caps.style(), caps.width),
         }
     }
 
@@ -271,6 +277,9 @@ impl TerminalRenderer {
         self.spinner = spinner;
         self.prefix_written = false;
         self.animating = true;
+        // Turno novo comeca com o Markdown zerado: uma cerca de codigo que o
+        // turno anterior deixou aberta nao pode engolir o estilo do proximo.
+        self.markdown = markdown::MarkdownStream::new(self.caps.style(), self.caps.width);
     }
 
     /// Ha animacao rodando neste turno? O `select!` usa isto para nao armar o
@@ -322,11 +331,17 @@ impl TerminalRenderer {
             let _ = write!(out, "{}", self.assistant_prefix);
             self.prefix_written = true;
         }
-        // O texto do modelo nao pode escrever comando no terminal (#996). O
-        // filtro tem estado porque a sequencia pode chegar partida entre dois
-        // deltas — ver `ansi_filter`.
+        // A ordem entre os dois importa.
+        //
+        // Primeiro o filtro (#996): o texto do modelo nao pode escrever comando
+        // no terminal, e o filtro tem estado porque a sequencia pode chegar
+        // partida entre dois deltas — ver `ansi_filter`.
+        //
+        // Depois o Markdown (#939), que **adiciona** escapes nossos. Na ordem
+        // inversa o filtro comeria o proprio estilo que acabamos de aplicar.
         let seguro = self.filtro.push(delta);
-        let _ = write!(out, "{seguro}");
+        let renderizado = self.markdown.push(&seguro);
+        let _ = write!(out, "{renderizado}");
         let _ = out.flush();
         // A linha agora pertence a resposta.
         self.animating = false;
@@ -348,8 +363,16 @@ impl TerminalRenderer {
         // ainda deve virar quebra, e um `ESC` pendurado nao pode atravessar
         // para o turno seguinte e engolir o primeiro caractere dele (#996).
         let pendente = self.filtro.finish();
+        // Os dois fecham na mesma ordem em que trabalham: o filtro entrega o
+        // que reteve, o Markdown renderiza isso e entrega o que ele reteve. Um
+        // `**` sem par no fim do texto sai como texto — nada se perde (#939).
+        let pendente = self.markdown.push(&pendente);
+        let resto = self.markdown.finish();
         if !pendente.is_empty() {
             let _ = write!(out, "{pendente}");
+        }
+        if !resto.is_empty() {
+            let _ = write!(out, "{resto}");
         }
         if !self.prefix_written {
             let _ = write!(out, "{}", self.assistant_prefix);
@@ -723,6 +746,84 @@ mod tests {
         renderer.handle(UiEvent::TurnFinished, &mut out);
         let saida = String::from_utf8(out).expect("UTF-8");
         assert!(saida.starts_with("\r\x1b[2K"), "nao limpou: {saida:?}");
+    }
+
+    /// O Markdown chega ao renderizador, e o filtro ANSI nao come o estilo.
+    ///
+    /// A ordem entre os dois so aparece aqui: no `markdown.rs` os dois testes
+    /// vivem separados, e passar em ambos nao prova que estao encadeados na
+    /// ordem certa.
+    #[test]
+    fn markdown_atravessa_o_renderizador_num_terminal_rico() {
+        let caps = Capabilities {
+            interactive: true,
+            unicode: true,
+            animation: false,
+            width: 80,
+        };
+        let mut renderer = TerminalRenderer::with_prefix(caps, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        // O titulo vem no primeiro delta de proposito: e a resposta que comeca
+        // com `# `, e ela so vira titulo se o estado do turno estiver zerado.
+        renderer.handle(
+            UiEvent::TextDelta("# Titulo\nveja **isto** aqui\n"),
+            &mut out,
+        );
+        renderer.handle(UiEvent::TurnFinished, &mut out);
+        let saida = String::from_utf8(out).expect("UTF-8");
+
+        assert!(saida.contains("\x1b[1misto\x1b[0m"), "negrito: {saida:?}");
+        assert!(!saida.contains("**"), "os asteriscos nao chegam a tela");
+        assert!(saida.contains("Titulo"), "o titulo sai: {saida:?}");
+        assert!(
+            !saida.contains("# "),
+            "o sustenido nao chega a tela: {saida:?}"
+        );
+    }
+
+    /// E num terminal sem cor nada disso acontece — nem um escape.
+    ///
+    /// E o criterio "redirected output does not contain unwanted ANSI escapes"
+    /// medido no ponto em que o usuario o observa.
+    #[test]
+    fn saida_redirecionada_nao_ganha_escape_de_markdown() {
+        let mut renderer = TerminalRenderer::with_prefix(Capabilities::PLAIN, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        renderer.handle(UiEvent::TextDelta("# titulo\n- item **forte**\n"), &mut out);
+        renderer.handle(UiEvent::TurnFinished, &mut out);
+        let saida = String::from_utf8(out).expect("UTF-8");
+
+        assert!(!saida.contains('\x1b'), "nenhum escape: {saida:?}");
+        assert!(saida.contains("# titulo"), "o texto sai como veio");
+        assert!(saida.contains("- item **forte**"));
+    }
+
+    /// A largura do terminal chega ao renderizador de Markdown.
+    ///
+    /// Testar a quebra so no `markdown.rs` provaria que ela funciona quando
+    /// alguem passa a largura — nao que alguem passa. E o mesmo tipo de teste
+    /// que ja passou verde com a funcionalidade desligada nesta serie.
+    #[test]
+    fn a_largura_do_terminal_chega_ao_markdown() {
+        let caps = Capabilities {
+            interactive: true,
+            unicode: true,
+            animation: false,
+            width: 24,
+        };
+        let mut renderer = TerminalRenderer::with_prefix(caps, None, "");
+        let mut out: Vec<u8> = Vec::new();
+        renderer.handle(
+            UiEvent::TextDelta("uma frase razoavelmente longa que precisa quebrar\n"),
+            &mut out,
+        );
+        renderer.handle(UiEvent::TurnFinished, &mut out);
+        let saida = String::from_utf8(out).expect("UTF-8");
+
+        assert!(
+            saida.lines().count() > 1,
+            "com 24 colunas isto tinha de quebrar: {saida:?}"
+        );
     }
 
     /// Um turno novo volta a dever o rotulo — senao a segunda resposta da
