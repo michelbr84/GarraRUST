@@ -62,6 +62,29 @@ const ITALICO: &str = "\x1b[3m";
 const CIANO: &str = "\x1b[36m";
 const AMARELO: &str = "\x1b[33m";
 
+/// Teto do que fica retido esperando um delimitador fechar.
+///
+/// Sem ele, `**` sem par e uma linha sem `\n` bastam para o buffer crescer sem
+/// limite: `limite_de_emissao` devolveria a posicao do `**` para sempre e nada
+/// sairia. Passado o teto, o texto sai cru — os asteriscos aparecem, que e
+/// melhor do que a tela parada e a memoria subindo. Mesma forma do
+/// `MAX_DENTRO_DE_SEQUENCIA` do [`super::ansi_filter`].
+///
+/// 1 KiB e folgado para o que existe de verdade — a URL mais longa de um link,
+/// a frase mais longa em negrito — e o valor tambem e o custo: a varredura le
+/// o pendente inteiro a cada caractere, entao o teto e o multiplicador do pior
+/// caso (uma linha sem espaco nenhum, tipo base64). Oito vezes maior custaria
+/// oito vezes mais e nao cobriria nenhum construto real a mais.
+const MAX_RETIDO: usize = 1024;
+
+/// A partir de quanto ja emitido vale compactar a linha.
+///
+/// `emitido` e indice dentro de `linha`, entao o que ja foi para a tela fica
+/// no buffer ate a proxima quebra de linha. Numa resposta de uma linha so
+/// (JSON, base64) isso e a resposta inteira em memoria. Compactar a cada
+/// caractere seria O(n²); a cada quilobyte e amortizado.
+const COMPACTA_ACIMA_DE: usize = 4 * 1024;
+
 /// Quantos caracteres bastam para decidir o tipo de bloco de uma linha.
 ///
 /// O maior prefixo que interessa e ```` ```lang ```` e `###### `; sete cobre
@@ -116,6 +139,14 @@ pub struct MarkdownStream {
     /// marca a segunda emissao parecia uma palavra nova e ganhava uma quebra
     /// no meio — bem no unico caso em que quebrar nao ajuda.
     palavra_em_curso: bool,
+    /// O bloco corrente abriu estilo que so fecha no fim da linha?
+    ///
+    /// Titulo e citacao emitem o escape no prefixo e o `RESET` na quebra de
+    /// linha. Quando o turno acaba sem `\n` — truncamento, timeout, ou o
+    /// modelo simplesmente nao emitiu — o estilo ficava aberto e o proximo
+    /// prompt saia em negrito. Derivar isso de `linha.starts_with('#')` no
+    /// fim nao funciona mais: a linha e compactada enquanto sai.
+    fecha_com_reset: bool,
     /// Com o que comeca a continuacao quando a linha quebra.
     ///
     /// E o que faz um item de lista longo continuar parecendo um item: sem
@@ -135,6 +166,7 @@ impl MarkdownStream {
             em_fence: false,
             coluna: 0,
             palavra_em_curso: false,
+            fecha_com_reset: false,
             recuo: String::new(),
         }
     }
@@ -172,10 +204,13 @@ impl MarkdownStream {
         self.recuo.clear();
         self.bloco = Bloco::Indeciso;
         // A cerca aberta nao e fechada a forca: o texto acabou assim, e
-        // inventar um fim mudaria o que o modelo disse.
-        if !saida.is_empty() && self.em_fence {
+        // inventar um fim mudaria o que o modelo disse. Mas o **estilo** e
+        // fechado sempre: um titulo sem `\n` no fim deixava o terminal em
+        // negrito e o proximo prompt saia estilizado.
+        if self.fecha_com_reset || (!saida.is_empty() && self.em_fence) {
             saida.push_str(RESET);
         }
+        self.fecha_com_reset = false;
         saida
     }
 
@@ -210,7 +245,12 @@ impl MarkdownStream {
                 self.coluna = 3;
                 return Some(format!("{DIM}```{RESET}"));
             }
-            if l.chars().count() >= 3 || !"`".starts_with(&l[..l.len().min(1)]) {
+            // `l.starts_with('`')`, e nao um fatiamento por byte: `&l[..1]`
+            // entra em panico quando o primeiro caractere e multibyte, e o
+            // primeiro caractere de uma linha de codigo e multibyte sempre que
+            // alguem escreve `# Acao` ou `"resume"`. Achado na auditoria, com
+            // contraexemplo — o CLI caia inteiro.
+            if l.chars().count() >= 3 || !l.starts_with('`') {
                 self.bloco = Bloco::Codigo;
                 return Some(self.emite_ate(self.linha.len()));
             }
@@ -238,6 +278,7 @@ impl MarkdownStream {
                     self.emitido = sustenidos + 1;
                     // O `# ` some da tela, entao a coluna nao anda.
                     self.coluna = 0;
+                    self.fecha_com_reset = true;
                     return Some(format!("{BOLD}{CIANO}"));
                 }
                 // `#texto` nao e titulo em Markdown.
@@ -257,6 +298,7 @@ impl MarkdownStream {
             self.emitido = 2;
             self.coluna = 2;
             self.recuo = "  ".to_string();
+            self.fecha_com_reset = true;
             let barra = if self.style.unicode { "│ " } else { "| " };
             return Some(format!("{DIM}{barra}"));
         }
@@ -423,12 +465,16 @@ impl MarkdownStream {
                     i += 1;
                 }
                 _ => {
-                    if aberto.is_none() && (b as char).is_whitespace() {
+                    // `b.is_ascii_whitespace()`, e nao `(b as char)`: os bytes
+                    // de continuacao 0x85 e 0xA0 aparecem dentro de `a`, `A`,
+                    // `s`, `c`... e viravam NEL e NBSP na conversao, marcando
+                    // um "espaco" no meio de um caractere.
+                    if aberto.is_none() && b.is_ascii_whitespace() {
                         // So o **inicio** do grupo: assim o espaco que separa
                         // duas palavras viaja com a segunda, e a quebra
                         // consegue descarta-lo em vez de deixa-lo pendurado.
                         let anterior_era_espaco = i > self.emitido
-                            && (bytes[i - 1] as char).is_whitespace()
+                            && bytes[i - 1].is_ascii_whitespace()
                             && espaco_livre.is_some();
                         if !anterior_era_espaco {
                             espaco_livre = Some(i);
@@ -439,8 +485,18 @@ impl MarkdownStream {
             }
         }
 
-        let construto = aberto.map(|(pos, _)| pos).unwrap_or(bytes.len());
+        // Teto do retido: passado ele, o construto pendente deixa de ser
+        // motivo para segurar. Ver `MAX_RETIDO`.
+        let estourou = bytes.len() - self.emitido > MAX_RETIDO;
+        let construto = if estourou {
+            bytes.len()
+        } else {
+            aberto.map(|(pos, _)| pos).unwrap_or(bytes.len())
+        };
         if self.largura == 0 {
+            return construto;
+        }
+        if estourou {
             return construto;
         }
         match espaco_livre {
@@ -469,7 +525,7 @@ impl MarkdownStream {
         let mut saida = String::new();
         for grupo in grupos(estilizado) {
             let largura_do_grupo = console::measure_text_width(grupo);
-            if grupo.starts_with(char::is_whitespace) {
+            if grupo.starts_with(|c: char| c.is_ascii_whitespace()) {
                 saida.push_str(grupo);
                 self.coluna += largura_do_grupo;
                 self.palavra_em_curso = false;
@@ -512,6 +568,12 @@ impl MarkdownStream {
         }
         let trecho = self.linha[self.emitido..fim].to_string();
         self.emitido = fim;
+        if self.emitido >= COMPACTA_ACIMA_DE {
+            // O que ja foi para a tela nao volta: sai do buffer. Ver
+            // `COMPACTA_ACIMA_DE`.
+            self.linha.drain(..self.emitido);
+            self.emitido = 0;
+        }
         if self.bloco == Bloco::Codigo {
             // Codigo nao quebra: o criterio de aceite pede que continue facil
             // de copiar, e um `\n` que o modelo nao escreveu vira um `\n` que
@@ -532,12 +594,10 @@ impl MarkdownStream {
 
     /// Termina a linha corrente e devolve o que faltava mais o `\n`.
     fn fecha_linha(&mut self) -> String {
-        let era_titulo = self.linha.starts_with('#')
-            && !self.em_fence
-            && self.linha.chars().take_while(|c| *c == '#').count() <= 6;
         let mut saida = self.emite_resto_da_linha();
-        if era_titulo || self.linha.starts_with("> ") {
+        if self.fecha_com_reset {
             saida.push_str(RESET);
+            self.fecha_com_reset = false;
         }
         saida.push('\n');
         self.linha.clear();
@@ -633,7 +693,9 @@ fn grupos(s: &str) -> Vec<&str> {
     let mut inicio = 0;
     let mut atual: Option<bool> = None;
     for (i, c) in s.char_indices() {
-        let espaco = c.is_whitespace();
+        // ASCII de proposito, e igual ao `limite_de_emissao`: um espaco
+        // inquebravel (U+00A0) existe justamente para nao ser ponto de quebra.
+        let espaco = c.is_ascii_whitespace();
         match atual {
             Some(anterior) if anterior != espaco => {
                 saida.push(&s[inicio..i]);
@@ -655,7 +717,9 @@ fn grupos(s: &str) -> Vec<&str> {
 /// O espaco que separava duas palavras nao deve virar o ultimo caractere da
 /// linha: em selecao de texto e em `cat -A` ele aparece, e ninguem o escreveu.
 fn apara_espacos(saida: &mut String, coluna: &mut usize) {
-    let aparado = saida.trim_end_matches(char::is_whitespace).len();
+    let aparado = saida
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .len();
     if aparado < saida.len() {
         *coluna -= console::measure_text_width(&saida[aparado..]);
         saida.truncate(aparado);
@@ -1023,6 +1087,161 @@ mod tests {
 
         let vazio = renderiza("um `` vazio\n");
         assert!(vazio.contains("``"), "as duas crases ficam: {vazio:?}");
+    }
+
+    /// Acento dentro de bloco cercado nao derruba o CLI.
+    ///
+    /// O ramo que decide se a linha e a cerca de fechamento fatiava o primeiro
+    /// **byte** da linha; num `é` esse byte nao e fronteira de caractere e o
+    /// programa inteiro caia. Achado na auditoria — nenhum teste tinha
+    /// multibyte **dentro** de cerca, so fora. Casos reais: `# Acao` num
+    /// comentario, `"resume"` numa string, um emoji.
+    #[test]
+    fn multibyte_dentro_de_cerca_nao_entra_em_panico() {
+        for conteudo in ["été", "çedilha", "中文", "🦀 rust", "# Ação"] {
+            let s = renderiza(&format!("```\n{conteudo}\n```\n"));
+            assert!(s.contains(conteudo), "perdeu {conteudo:?}: {s:?}");
+        }
+        // E partido em todo tamanho de pedaco, que e como o delta chega.
+        for saida in renderiza_em_todos_os_cortes("```\nété\n```\n") {
+            assert!(saida.contains("été"), "saiu: {saida:?}");
+        }
+    }
+
+    /// Delimitador sem par nao segura a saida para sempre.
+    ///
+    /// Um `**` que nunca fecha, numa resposta sem `\n`, fazia o buffer crescer
+    /// sem teto e a tela ficar parada. Passado o teto o texto sai cru.
+    #[test]
+    fn delimitador_sem_par_nao_segura_a_saida_para_sempre() {
+        let mut m = rico();
+        // Uma abertura so, e nunca o fechamento: `**` repetido casaria em
+        // pares e o texto sairia sozinho — a primeira versao deste teste
+        // passava verde com o teto desligado exatamente por isso.
+        let mut visto = m.push("**").len();
+        for _ in 0..8 {
+            visto += m.push(&"x".repeat(512)).len();
+        }
+        assert!(
+            visto > 0,
+            "com {MAX_RETIDO} de teto, isto tinha de comecar a sair"
+        );
+        assert!(
+            m.linha.len() <= MAX_RETIDO + COMPACTA_ACIMA_DE + 1024,
+            "o buffer cresceu sem teto: {} bytes",
+            m.linha.len()
+        );
+    }
+
+    /// Uma linha muito longa nao guarda em memoria o que ja foi para a tela.
+    #[test]
+    fn a_linha_e_compactada_enquanto_sai() {
+        let mut m = rico();
+        for _ in 0..2000 {
+            let _ = m.push("palavra ");
+        }
+        assert!(
+            m.linha.len() < COMPACTA_ACIMA_DE * 2,
+            "16 KB emitidos e o buffer ficou com {} bytes",
+            m.linha.len()
+        );
+    }
+
+    /// Titulo sem `\n` no fim nao deixa o terminal em negrito.
+    ///
+    /// O `RESET` do titulo vinha da quebra de linha; num turno truncado ele
+    /// nunca chegava e o prompt seguinte saia estilizado.
+    #[test]
+    fn titulo_sem_quebra_de_linha_fecha_o_estilo_no_fim() {
+        let mut m = rico();
+        let mut s = m.push("# Titulo truncado");
+        s.push_str(&m.finish());
+        assert!(
+            s.ends_with(RESET),
+            "o estilo tem de fechar no fim do turno: {s:?}"
+        );
+
+        let mut m = rico();
+        let mut c = m.push("> citacao truncada");
+        c.push_str(&m.finish());
+        assert!(c.ends_with(RESET), "e a citacao tambem: {c:?}");
+    }
+
+    /// Texto acentuado quebra tao limpo quanto texto ASCII.
+    ///
+    /// A varredura convertia **byte** para `char`, e os bytes de continuacao
+    /// 0x85 e 0xA0 — que aparecem dentro de `à`, `Å`, `š` — viravam NEL e
+    /// NBSP. O corte caia no meio do caractere, o `emite_ate` recuava ate a
+    /// fronteira, e o espaco anterior ficava num pedaco ja escrito: o
+    /// `apara_espacos` nao alcancava mais, e cada linha quebrada terminava com
+    /// um espaco. Medido comparando a saida das duas versoes — nao suposto.
+    #[test]
+    fn acento_nao_deixa_espaco_pendurado_na_quebra() {
+        for amostra in [
+            "à à à à à à à à à à à à à à à à à à à à à à à à",
+            "Šaomeword àcomprida Ålongademais e mais texto aqui",
+            "Ação à Åland e coração numa frase que precisa quebrar",
+        ] {
+            let mut m = estreito(24);
+            let mut s = m.push(amostra);
+            s.push_str(&m.finish());
+            for linha in sem_escape(&s).lines() {
+                assert_eq!(
+                    linha,
+                    linha.trim_end(),
+                    "linha com espaco no fim em {amostra:?}: {linha:?}"
+                );
+            }
+            for palavra in amostra.split(' ') {
+                assert!(s.contains(palavra), "perdeu {palavra:?}: {s:?}");
+            }
+        }
+    }
+
+    /// Espaco inquebravel nao vira ponto de quebra — e para isso que ele serve.
+    #[test]
+    fn nbsp_nao_vira_ponto_de_quebra() {
+        let mut m = estreito(24);
+        let mut nb = m.push("um\u{a0}par inquebravel de palavras aqui no fim\n");
+        nb.push_str(&m.finish());
+        assert!(
+            nb.contains("um\u{a0}par"),
+            "o NBSP nao pode virar quebra: {nb:?}"
+        );
+    }
+
+    /// Sonda de throughput — nao e gate, e o registro de uma medida.
+    ///
+    /// Medido nesta maquina: **1 MiB de prosa em ~0,38 s** e **1 MiB numa
+    /// linha sem um unico espaco em ~5,3 s**. A diferenca e o `MAX_RETIDO`:
+    /// sem espaco onde cortar, a varredura le o pendente inteiro a cada
+    /// caractere, e o teto e o multiplicador.
+    ///
+    /// 5 MiB/s parece pouco para um numero absoluto e e enorme para este uso:
+    /// a entrada e um stream de tokens de LLM, que entrega na ordem de 1 KiB/s.
+    /// A folga e de tres ordens de grandeza. E ainda assim e uma melhora
+    /// grande sobre a versao sem teto, onde o pendente crescia sem limite e o
+    /// custo por caractere crescia junto.
+    #[test]
+    #[ignore = "sonda de throughput; roda com --ignored"]
+    fn sonda_throughput_linha_degenerada() {
+        let t = std::time::Instant::now();
+        let mut m = rico();
+        let mut saiu = 0usize;
+        for _ in 0..256 {
+            saiu += m.push(&"x".repeat(4096)).len();
+        }
+        saiu += m.finish().len();
+        eprintln!("1 MiB sem espaco: {:?}, {saiu} bytes na tela", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let mut m = rico();
+        let mut saiu = 0usize;
+        for _ in 0..256 {
+            saiu += m.push(&"palavra ".repeat(512)).len();
+        }
+        saiu += m.finish().len();
+        eprintln!("1 MiB de prosa:   {:?}, {saiu} bytes na tela", t.elapsed());
     }
 
     /// Uma linha que so tem `-` ou `--` nao trava esperando virar regra.

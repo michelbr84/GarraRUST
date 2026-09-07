@@ -31,3 +31,13 @@
   que e o que mantem `garra chat > arquivo` util para automacao. O `garra ask`
   fica de fora por contrato proprio ja escrito no codigo: ele nunca imprime
   ANSI no stdout.
+- **Tres limites que a auditoria pediu, e um pânico que ela achou.** Acento
+  como primeiro caractere de uma linha dentro de bloco cercado derrubava o CLI
+  — o ramo que decide se a linha e a cerca de fechamento fatiava o primeiro
+  **byte**, e num `é` esse byte nao e fronteira de caractere. Alem disso: o que
+  fica retido esperando um delimitador fechar tem teto (um `**` sem par numa
+  resposta sem quebra de linha segurava a tela e o buffer crescia junto), a
+  linha e compactada enquanto sai (uma resposta de uma linha so ficava inteira
+  em memoria), e o estilo de titulo ou citacao e fechado no fim do turno mesmo
+  sem o `\n` final — antes um turno truncado deixava o proximo prompt em
+  negrito.
