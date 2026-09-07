@@ -58,18 +58,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 Text(
                   'Olá! Eu sou o Garra.',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'Faça login para continuar',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurface.withValues(alpha: 0.6),
-                      ),
+                    color: cs.onSurface.withValues(alpha: 0.6),
+                  ),
                 ),
                 const SizedBox(height: 36),
                 TextFormField(
@@ -91,7 +90,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
-                          _obscure ? Icons.visibility_off : Icons.visibility),
+                        _obscure ? Icons.visibility_off : Icons.visibility,
+                      ),
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
@@ -136,8 +136,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (s.contains('401') || s.contains('invalid credentials')) {
       return 'E-mail ou senha incorretos.';
     }
-    if (s.contains('network') || s.contains('connection') ||
-        s.contains('socketexception') || s.contains('refused')) {
+    if (s.contains('network') ||
+        s.contains('connection') ||
+        s.contains('socketexception') ||
+        s.contains('refused')) {
       return 'Sem conexão. Verifique sua internet.';
     }
     return 'Erro ao entrar. Tente novamente.';

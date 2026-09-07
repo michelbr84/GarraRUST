@@ -138,3 +138,31 @@ Result: **PASS** / **FAIL** (circle one)
 If FAIL — blocker issue(s):
 - [ ] GAR-____ (describe)
 - [ ] GAR-____ (describe)
+
+## 8. Runtime local-first (Garra Mobile v0.4.0)
+
+Vale para o APK `garraia-mobile-android.apk` da Release. Sem os secrets
+`ANDROID_KEYSTORE_*` o APK sai assinado com a keystore de debug do runner:
+desinstale qualquer build anterior antes de instalar.
+
+### Onboarding
+
+- [ ] Primeira abertura cai em **Onboarding** (nome → runtime → pronto), sem tela de login.
+- [ ] "On this phone" mostra o comando de instalação do Termux e o **Test connection** contra `http://127.0.0.1:3888` responde com a versão do gateway (`garra start` rodando no Termux).
+- [ ] "Another Garra" aceita `192.168.x.x:3888` sem esquema (normaliza para `http://`) e, com `gateway.api_key` configurada no PC, exige a chave (401 sem ela).
+- [ ] "Garra Cloud" leva para `/login` depois do onboarding.
+- [ ] Matar e reabrir o app preserva o runtime escolhido (home direto, sem onboarding).
+
+### Home
+
+- [ ] Card **Runtime** verde com `garra` rodando; vermelho com "Not running — open Termux…" depois de `garra stop`; volta a verde sozinho em até ~20 s ao religar.
+- [ ] Card **LLM** mostra provider/modelo do `/api/health` (ex.: `ollama` → "Connected to PC").
+- [ ] Tile **Automations** aparece com o selo *Unavailable* e abre a explicação (o gateway não expõe scheduling).
+- [ ] Pull-to-refresh na home recarrega health e capabilities.
+- [ ] Chat envia e recebe pela `/api/sessions/{id}/messages`; "New session" no menu zera a conversa; a sessão persiste entre aberturas.
+
+### Telas dos tiles
+
+- [ ] Memory lista `/api/memory/recent` e a busca funciona; Skills lista skills aprendidas + slash commands; Files lista projetos; Agents lista modos + MCP; Providers lista providers com o `default` marcado.
+- [ ] Com o gateway parado, cada tela mostra o estado de erro com **Retry**, nunca uma tela em branco.
+

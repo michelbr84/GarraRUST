@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- GarraColors.bg — the app is always dark; the launch window must be
+         too, otherwise a white flash precedes the first Flutter frame. -->
+    <color name="garra_bg">#FF05060F</color>
+    <!-- Adaptive icon background (violet-deep of the brand palette). -->
+    <color name="garra_icon_bg">#FF1B1747</color>
+</resources>

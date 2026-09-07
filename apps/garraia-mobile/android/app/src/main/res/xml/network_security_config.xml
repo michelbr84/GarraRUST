@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Garra Mobile is local-first: the runtime it talks to is usually
+  http://127.0.0.1:<port> (Termux) or http://192.168.x.x:<port> (a PC on the
+  LAN running Ollama / llama-server / a Garra gateway). Those are plain HTTP by
+  design, and Android's network-security config cannot express "private
+  ranges only" (domain-config takes host names, not CIDRs), so cleartext stays
+  allowed at the base level.
+
+  What we CAN pin is the cloud: the Garra hosted API is HTTPS-only, and this
+  config makes any accidental http:// to it fail instead of silently
+  downgrading. Replaces the previous blanket android:usesCleartextTraffic.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">garraia.org</domain>
+    </domain-config>
+</network-security-config>

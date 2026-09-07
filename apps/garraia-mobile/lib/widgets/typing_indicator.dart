@@ -25,9 +25,10 @@ class _TypingIndicatorState extends State<TypingIndicator>
     );
 
     _animations = _controllers.map((ctrl) {
-      return Tween<double>(begin: 0, end: -8).animate(
-        CurvedAnimation(parent: ctrl, curve: Curves.easeInOut),
-      );
+      return Tween<double>(
+        begin: 0,
+        end: -8,
+      ).animate(CurvedAnimation(parent: ctrl, curve: Curves.easeInOut));
     }).toList();
 
     // Stagger the animations

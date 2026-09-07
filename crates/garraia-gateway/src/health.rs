@@ -390,7 +390,7 @@ pub fn spawn_periodic_checks(state: SharedState, cache: HealthCache) {
 
 /// Computes the gateway URL from the live config (`scheme://host:port`).
 /// `scheme` is `https` when TLS is configured, otherwise `http`. Used in
-/// `/api/health` and `/api/capabilities`.
+/// `/api/health`; `/api/capabilities` lives in `capabilities.rs`.
 fn gateway_url_from_config(cfg: &garraia_config::AppConfig) -> String {
     let scheme = if cfg.gateway.tls_cert_path.is_some() {
         "https"
@@ -491,107 +491,6 @@ pub async fn health_handler(State(state): State<SharedState>) -> Json<HealthResp
         channels,
         warnings,
         checks,
-    })
-}
-
-// ─── /api/capabilities ─────────────────────────────────────────────────────
-
-/// What the Web Console + future remote clients can rely on. Each list is
-/// computed live from the running gateway (`AgentRuntime`,
-/// `ChannelRegistry`, `CommandRegistry`). Secret-free.
-#[derive(Debug, Clone, Serialize)]
-pub struct CapabilitiesResponse {
-    /// Cargo-feature-flag-shaped capability flags.
-    pub features: Vec<String>,
-    /// Provider IDs currently registered (sorted, deduped).
-    pub providers: Vec<String>,
-    /// Per-provider configured model — emitted as `provider/model`.
-    pub models: Vec<String>,
-    /// Live channel registry list.
-    pub channels: Vec<String>,
-    /// Slash-command registry — names only, no descriptions or aliases that
-    /// might leak admin paths.
-    pub commands: Vec<String>,
-    /// Skin / theme presets the front-end can offer.
-    pub skins: Vec<String>,
-    /// Forward-compat hook for `--experimental-*` flags. Empty for now.
-    pub experimental_flags: Vec<String>,
-    /// Gateway binary version, mirroring `/api/health`.
-    pub version: &'static str,
-}
-
-/// GET /api/capabilities — read-only snapshot of what the gateway can
-/// currently do. Renders the Dashboard "Arquitetura" card + drives the
-/// Skins page enumeration without hardcoded JS lists.
-pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<CapabilitiesResponse> {
-    // Static feature flags driven by Cargo cfg + runtime state shape.
-    let mut features: Vec<String> = Vec::new();
-    features.push("chat".into());
-    features.push("websocket".into());
-    features.push("multi-channel".into());
-    if state.voice_client.is_some() {
-        features.push("tts".into());
-    }
-    if state.stt_client.is_some() {
-        features.push("stt".into());
-    }
-    if state.mcp_manager_arc.is_some() {
-        features.push("mcp".into());
-    }
-    if state.openclaw_client.is_some() {
-        features.push("openclaw".into());
-    }
-    if state.auth_provider.is_some() {
-        features.push("auth-v1".into());
-    }
-
-    let mut providers: Vec<String> = state.agents.provider_ids().to_vec();
-    providers.sort();
-    providers.dedup();
-
-    let models: Vec<String> = providers
-        .iter()
-        .filter_map(|pid| {
-            state
-                .agents
-                .get_provider(pid)
-                .and_then(|p| p.configured_model().map(|m| format!("{}/{}", pid, m)))
-        })
-        .collect();
-
-    let channels: Vec<String> = state
-        .channels
-        .read()
-        .await
-        .list()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    let commands: Vec<String> = state
-        .command_registry
-        .read()
-        .map(|r| r.list().into_iter().map(|(n, _d)| n.to_string()).collect())
-        .unwrap_or_default();
-
-    // Plan 0117 lists four canonical skins. The Settings Registry (PR-8)
-    // can later persist user-defined skins server-side.
-    let skins: Vec<String> = vec![
-        "garra-blue".into(),
-        "aurora-admin".into(),
-        "editorial".into(),
-        "cyber-garra".into(),
-    ];
-
-    Json(CapabilitiesResponse {
-        features,
-        providers,
-        models,
-        channels,
-        commands,
-        skins,
-        experimental_flags: Vec::new(),
-        version: env!("CARGO_PKG_VERSION"),
     })
 }
 

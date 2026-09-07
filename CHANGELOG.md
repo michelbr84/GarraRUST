@@ -6,6 +6,167 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+Garra Mobile vira produto: a v0.4.0 e a primeira release em que o app
+Android (`apps/garraia-mobile`) deixa de ser um cliente da cloud e passa a
+ser a interface local-first da ADR 0016 — runtime no proprio aparelho
+(Termux), num PC da rede ou no Garra Cloud, com a home do design de
+referencia e o APK publicado como asset. O CI ganhou o workflow `mobile.yml`
+e o download do Swagger UI foi endurecido em todos os jobs que compilam o
+gateway, depois de o E2E cair em `main` no dia do corte da v0.3.9.
+
+### Added
+- **Garra Mobile v0.4.0: home local-first e o app deixa de ser so cliente da
+  cloud (ADR 0016, amendment 2026-09-07).** `apps/garraia-mobile` ganha o
+  design system Garra Neon (Inter + JetBrains Mono bundladas, marca vetorial
+  do lobo em `CustomPainter`, sem PNG binario), a home da referencia — header,
+  saudacao, dois cards de status alimentados por `GET /api/health`, seis tiles
+  (Chat, Memory, Skills, Files, Agents, Automations), Quick Actions e bottom
+  nav — e uma camada `lib/runtime/` (`GarraConnection`) com tres modos:
+  *On this phone* (Termux em `127.0.0.1:3888`), *Another Garra* (URL na LAN +
+  `gateway.api_key` opcional no `flutter_secure_storage`) e *Garra Cloud* (o
+  cliente JWT antigo). O onboarding pede nome e runtime e nao exige login nos
+  modos local/LAN; o gate do router passou de "tem JWT?" para "tem runtime
+  configurado?". Telas novas de Memory, Skills, Files, Agents, Providers,
+  Activity, Notifications e Profile consomem so endpoints que o gateway ja
+  expoe (`/api/memory/*`, `/api/learning/skills`, `/api/projects`,
+  `/api/modes`, `/api/mcp`, `/api/providers`, `/api/sessions`, `/api/logs`).
+- **Negociacao de capabilities entre app e gateway.** `GET /api/capabilities`
+  passa a anunciar `memory`, `learning-skills`, `projects` e `modes`
+  (`capabilities.rs::feature_flags`, aditivo, com teste que trava o contrato); a
+  home marca como *Unavailable* qualquer tile cuja feature o runtime nao
+  anuncia. `automations` fica ausente de proposito — o gateway nao expoe API
+  de scheduling, e o tile diz isso em vez de fingir.
+- **APK no CI e na Release.** Workflow `mobile.yml` (`flutter analyze` +
+  `flutter test` + APK como artefato em PRs que tocam o app) e job best-effort
+  `build-android-apk` no `release.yml` publicando `garraia-mobile-android.apk`
+  + `.sha256` — asset aditivo, nada que o `garra update` resolve muda.
+  Assinado com os secrets `ANDROID_KEYSTORE_*` quando existirem, senao com a
+  keystore de debug do runner (o job avisa com `::warning::`).
+
+### Changed
+- **Garra Mobile migra para Riverpod 3 (`riverpod_generator` 4) e sobe
+  `record` para 6.2.1.** O `riverpod_generator` 2.6.x prendia o `analyzer` na
+  linguagem 3.9 e a codegen morria em Dart >= 3.13 com `Missing implementation
+  of visitDotShorthandPropertyAccess`; `custom_lint` e `riverpod_lint` sairam
+  (contradizem-se em `analyzer_plugin`; `flutter_lints` segue como gate). O
+  `record` 5.1.2 resolvia `record_web` e `record_platform_interface`
+  incompativeis e quebrava `flutter build web`. Flutter fixado em 3.47.2 no
+  CI e o `pubspec.lock` reresolvido contra ele. A versao do app passa a ter
+  fonte unica (`lib/app_version.dart`, com teste contra o `pubspec.yaml`) —
+  antes havia tres (`0.2.1+2`, `v0.1.0 (Alpha)` na tela de Settings, `0.1.0`
+  no sync).
+- **Download do Swagger UI endurecido em todo job que compila o gateway
+  (GAR-822, segunda rodada).** O `build.rs` do `utoipa-swagger-ui` baixa o
+  zip em tempo de compilacao e de vez em quando recebe corpo truncado
+  (`InvalidArchive("Could not find EOCD")`); o fix anterior cobria so `test` e
+  `msrv`, e em 2026-09-07 foi o job E2E que caiu em `main`. Um composite
+  action (`.github/actions/swagger-ui-cache`) pre-baixa com retry, verifica
+  que o arquivo e um zip valido mesmo em cache hit, e e usado em `clippy`,
+  `coverage`, `build`, `android`, `e2e`, `playwright`, `test`, `msrv` e em
+  todos os jobs de build do `release.yml` — inclusive o `cross` do
+  linux-arm64, via zip dentro do workspace e `passthrough` no `Cross.toml`.
+
+### Fixed
+- **Garra Mobile: transcricao de voz apontava para um endpoint que nao
+  existe.** O app chamava `POST /api/voice/transcribe`; o gateway expoe
+  `POST /api/stt` (`voice_handler.rs`). Corrigido no cliente cloud e na
+  `GatewayConnection`.
+- **Garra Mobile: o build Android so funcionava numa maquina.**
+  `android/gradle.properties` fixava `org.gradle.java.home=C:/Program
+  Files/Java/jdk-23`, o que derrubava qualquer build Linux/macOS/CI antes de
+  o Gradle iniciar. Removido (o JDK vem de `JAVA_HOME`). No mesmo passe:
+  `MainActivity` passa a estender `FlutterFragmentActivity` (exigencia do
+  `local_auth`), o splash deixa de ser branco num app que so tem tema escuro,
+  as permissoes que os plugins declarados exigem (`RECORD_AUDIO`, `CAMERA`,
+  `POST_NOTIFICATIONS`, `USE_BIOMETRIC`, `ACCESS_NETWORK_STATE`) entram no
+  manifest, e os deep links `garraia://chat/<id>` e `garraia://session/<id>`
+  que o router ja tratava ganham o intent-filter que faltava.
+- **Os documentos da raiz contradiziam o produto em cinco pontos, conferidos
+  contra o binario e o codigo.** Os dois READMEs diziam que um subcomando
+  `garra memory` "esta no roadmap" — ele existe desde o #950/#953, com dez
+  subcomandos, e ganhou o `add` no #958. O `README.pt-BR` ainda atribuia a API
+  do gateway operacoes de "adicionar" e "exportar" que ela nao tem: as rotas
+  reais sao `GET /api/memory/recent`, `GET /api/memory/search` e
+  `DELETE /api/memory`, tres e nao cinco.
+- **O `AGENTS.md` declarava `rust-version = "1.94"`;** o `Cargo.toml` diz
+  `1.95`. E mandava rodar `cargo test --workspace` sem excluir o
+  `garraia-desktop`, cujo `build.rs` precisa de GTK/glib e de um sidecar do
+  Windows que uma maquina limpa nao tem — seguir o arquivo ao pe da letra
+  falhava em algo que nao era a mudanca de quem seguia. O `CONTRIBUTING.md`
+  repetia o mesmo comando.
+- **O `CONTRIBUTING.md` nao mencionava o `changelog.d/`,** que e obrigatorio em
+  todo PR desde o #973 e existe justamente para dois PRs paralelos nao
+  colidirem na secao `[Unreleased]`. Ganhou passo proprio, com a razao junto.
+- A tabela de "Politicas de Ferramentas" dos modos era **aspiracional** ate a
+  v0.3.9: a `ToolPolicy` era declarada e nunca verificada no executor (#988).
+  Os dois READMEs agora dizem desde quando ela vale, e o que valia antes.
+- `ROADMAP.md` e `TODO.md` reancorados na v0.3.9 e em zero issues abertas; o
+  `CLAUDE.md` registra o invariante novo do corpo de release e a armadilha de
+  `.gitignore` sem ancora que engoliu o `scripts/release/notes.py`.
+- **O titulo do README voltou a ser um `<h1>`.** O #1021 fechou o seletor de
+  idioma como `</p` sem o `>`, e o tokenizador HTML, ao procurar o fim daquela
+  tag, engolia o `<h1 align="center">` inteiro da linha seguinte: "GarraIA"
+  passava a ser texto solto e sem centralizacao na capa do repositorio. Um
+  caractere devolvido; a remocao do logo, que foi decisao do #1021, fica.
+- **O `deep-research-report.md` renderizava 98 blocos de lixo.** O documento
+  entrou no repositorio em 2026-04-13 com os marcadores internos de citacao da
+  ferramenta que o gerou ainda embutidos — sequencias delimitadas por
+  caracteres da Private Use Area do Unicode (U+E200/E201/E202), que o GitHub
+  desenha como tofu e nenhum leitor consegue seguir: `turn1search3` referencia
+  um resultado de busca efemero da sessao que produziu o texto, morto desde
+  entao. Eram 93 marcadores de citacao, removidos.
+- Os outros 5 marcadores eram de tipo diferente e **envolviam texto de
+  verdade**: apagar os spans sem olhar teria excluido as palavras `Brasil`,
+  `ANPD`, `Uniao Europeia`, `NIST` e `European Data Protection Board` das
+  frases em que aparecem. Foram substituidos pelo nome de exibicao. A
+  conferencia foi por palavra: 5066 antes, 5066 depois, zero diferencas.
+- O relatorio ganhou um **cabecalho de contexto** que ele nunca teve. Nao tinha
+  data nem status, e o `CLAUDE.md` o importa como "base arquitetural da Fase
+  3" — o que convidava a ler como especificacao viva uma pesquisa de abril. O
+  cabecalho diz o que ele e, de quando e, que o ADR vence onde divergirem, e
+  quais dos "itens nao especificados" ja foram decididos (ADR 0003, 0004 e
+  0005).
+- **Sete links relativos apontavam para arquivos que nao existem.** Cinco eram
+  para `benches/database-poc/`, o PoC removido em 2026-08-16 pelo #814 — que
+  ja tinha estabelecido o tratamento ("links mortos viram mencao historica"),
+  mas corrigiu README e ROADMAP e deixou passar o ADR 0003, onde estava a
+  maioria deles. A tabela B1-B5 continua reproduzida no proprio ADR, entao
+  nenhum numero se perdeu; os arquivos seguem recuperaveis em `2188751^`.
+- Os outros dois eram do ADR 0009, para `plans/0116a-*` e `plans/0116b-*`.
+  Conferido: esses planos **nunca existiram** em ponto nenhum da historia do
+  repositorio. Viraram nome de registro, com ponteiro para o plano que existe.
+- `docs/src/SUMMARY.md`, o indice do mdBook, mandava para `./installation.md`
+  e `./configuration.md`; os dois arquivos vivem em `docs/`, nao em
+  `docs/src/`. As paginas "Instalacao" e "Configuracao" do livro sairiam
+  vazias. Corrigido para `../`, que e o que o proprio SUMMARY ja usa para a
+  persona da Hera. Mesmo erro em `docs/src/continue-modes.md`.
+
+### Security
+- **Garra Mobile: cleartext deixa de ser global e o cloud passa a exigir
+  HTTPS.** `android:usesCleartextTraffic="true"` foi trocado por um
+  `network_security_config.xml`: HTTP continua permitido na base — o runtime
+  local-first e `http://127.0.0.1` ou `http://192.168.x.x`, e o Android nao
+  aceita faixas CIDR em `domain-config` — mas `garraia.org` e subdominios
+  ficam `cleartextTrafficPermitted="false"`, entao um `http://` acidental
+  para o cloud falha em vez de rebaixar em silencio. A `gateway.api_key` do
+  modo LAN vive so no `flutter_secure_storage` (teste garante que nunca cai
+  em `SharedPreferences`), e chaves de provider continuam no runtime, nunca
+  no telefone — enquanto o runtime for outro app (UID do Termux != UID do
+  app), o Keystore do app nao alcanca o cofre do Garra.
+- **Garra Mobile: backup do Android desligado e cookie de sessao so onde
+  faz sentido.** `android:allowBackup="false"` no manifesto — as
+  `SharedPreferences` guardam a URL do runtime e o `session_id` do gateway,
+  e o auto-backup / `adb backup` os copiaria para fora do aparelho sem ganho
+  nenhum (refazer o onboarding leva trinta segundos). A `CloudConnection`
+  deixa de herdar o replay do cookie `garraia_session`: no cloud a unica
+  credencial e o JWT e `POST /api/sessions` nunca e chamado, entao um cookie
+  ali so poderia ter sido plantado por uma resposta hostil. O onboarding
+  avisa quando o endereco LAN e `http://` puro, e a fila offline passou a
+  falar com o runtime diretamente (sessao persistida) em vez de acordar o
+  notifier do chat, que e autoDispose e pode nao existir sem tela aberta.
+
 ## [0.3.9] - 2026-09-07
 
 A v0.3.9 foi preparada em 2026-09-05 e nunca chegou a ser publicada — nao

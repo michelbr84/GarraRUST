@@ -7,6 +7,7 @@ pub mod auth_metrics;
 pub mod auth_routes;
 pub mod billing;
 pub mod bootstrap;
+pub mod capabilities;
 pub mod channel_send;
 pub mod cluster;
 pub mod commands;

@@ -1,51 +1,39 @@
 import 'package:flutter/material.dart';
 
+import '../theme/garra_theme.dart';
+import '../theme/garra_tokens.dart';
+import '../widgets/brand/wolf_mark.dart';
+
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
+      backgroundColor: GarraColors.bg,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _GarraLogo(),
-            SizedBox(height: 24),
-            CircularProgressIndicator(),
+            const WolfMark(size: 112),
+            const SizedBox(height: 18),
+            Text(
+              'Garra',
+              style: garraText(
+                size: 30,
+                weight: FontWeight.w800,
+                letterSpacing: 2,
+              ),
+            ),
+            const SizedBox(height: 24),
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           ],
         ),
       ),
-    );
-  }
-}
-
-class _GarraLogo extends StatelessWidget {
-  const _GarraLogo();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Placeholder — replace with Rive mascot when .riv is available
-        Container(
-          width: 96,
-          height: 96,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.smart_toy_rounded, size: 56),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'Garra',
-          style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2,
-              ),
-        ),
-      ],
     );
   }
 }

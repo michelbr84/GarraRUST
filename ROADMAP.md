@@ -987,6 +987,13 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 ### 4.2 Garra Mobile (Flutter — Android & iOS)
 
 - [x] **Fix build Android**: gradle 8.14, AGP 8.11.1, Java 17; `compileSdk` delegado ao Flutter SDK (`flutter.compileSdkVersion`) ✅
+- [x] **Garra Mobile v0.4.0 — home local-first** (ADR 0016 amendment 2026-09-07): design
+  system Garra Neon (Inter + JetBrains Mono bundladas, marca vetorial), home com 6 tiles +
+  cards de status alimentados por `/api/health`, `RuntimeConnection` (Termux local / LAN /
+  Cloud), onboarding sem login, capabilities via `/api/capabilities`, Riverpod 3, workflow
+  `mobile.yml` (analyze + test + APK) e asset `garraia-mobile-android.apk` na release ✅
+- [ ] **Assinatura de release do APK**: criar os secrets `ANDROID_KEYSTORE_*` (ação manual do
+  dono); até lá o APK sai assinado com a keystore de debug do runner.
 - [ ] **iOS target**: `flutter create --platforms ios`, ajustes CocoaPods, assinatura dev.
 - [ ] **WebSocket seguro** (wss) para chat em tempo real; fallback REST. *(Parcial: cliente wss em `sync_service.dart`; fallback REST pendente.)*
 - [ ] **Upload retomável**: integrar `tus_client` para arquivos grandes.
@@ -1041,7 +1048,15 @@ estático proibido (quebra DNS).
 - [ ] **v0 follow-up**: usuário validando fim-a-fim em aparelho real
   (Termux → installer → `garraia doctor` → `garraia chat` na cloud/LAN) —
   pré-requisito para a v1.
-- [ ] **v1 — Companion Kotlin/Compose**: app novo (decisão do dono) com
+- [x] **v1 (primeiro corte, v0.4.0)** — decisão revista no amendment 2026-09-07 da ADR 0016:
+  a interface é o Flutter existente, não um app Compose novo. Entregue: `RuntimeConnection`
+  (local 127.0.0.1:3888 / LAN / Cloud), onboarding sem login, capabilities negociadas,
+  APK no CI. Pendente para v0.5.x: ponte Kotlin `RUN_COMMAND`, pairing por token local,
+  foreground service.
+- [ ] **v1 (fechamento) — bridge Kotlin**: `com.termux.permission.RUN_COMMAND` + `<queries>` com.termux, setup guiado de `allow-external-apps=true`, stdout/exit via
+  `RUN_COMMAND_PENDING_INTENT` (cap 100KB), detecção do fork Play do Termux
+  com degradação avisada, foreground service "Always On". *(texto original abaixo, mantido como referência)*
+- [ ] ~~**v1 — Companion Kotlin/Compose**~~: app novo (decisão do dono) com
   `com.termux.permission.RUN_COMMAND` + `<queries>` com.termux, setup
   guiado de `allow-external-apps=true`, stdout/exit via
   `RUN_COMMAND_PENDING_INTENT` (cap 100KB), detecção do fork Play do Termux

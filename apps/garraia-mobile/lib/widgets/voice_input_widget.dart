@@ -97,14 +97,14 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
       });
 
       // Track amplitude for waveform
-      _amplitudeTimer =
-          Timer.periodic(const Duration(milliseconds: 100), (_) async {
+      _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 100), (
+        _,
+      ) async {
         final amplitude = await _recorder.getAmplitude();
         if (mounted && _isRecording) {
           setState(() {
             // Normalize amplitude from dB (-160 to 0) to 0.0-1.0
-            final normalized =
-                ((amplitude.current + 60) / 60).clamp(0.0, 1.0);
+            final normalized = ((amplitude.current + 60) / 60).clamp(0.0, 1.0);
             _amplitudes.add(normalized);
             // Keep only last 50 samples for display
             if (_amplitudes.length > 50) {
@@ -231,9 +231,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: _isRecording
-                        ? cs.error
-                        : cs.surfaceContainerHighest,
+                    color: _isRecording ? cs.error : cs.surfaceContainerHighest,
                     shape: BoxShape.circle,
                   ),
                   child: Icon(

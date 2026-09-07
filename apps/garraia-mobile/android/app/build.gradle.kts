@@ -1,8 +1,27 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing (Garra Mobile v0.4.0):
+//   - `android/key.properties` present → real upload keystore (CI writes it
+//     from the ANDROID_KEYSTORE_* secrets; locally you create it by hand).
+//   - absent → fall back to the debug keystore so `flutter build apk --release`
+//     still produces an installable APK. Each machine/runner has its own debug
+//     key, so a debug-signed build cannot upgrade an install signed elsewhere
+//     (INSTALL_FAILED_UPDATE_INCOMPATIBLE) — the CI job prints a ::warning::
+//     when it takes this path. Never commit a keystore (see android/.gitignore).
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+val keystoreProperties = Properties().apply {
+    if (hasReleaseKeystore) {
+        FileInputStream(keystorePropertiesFile).use { load(it) }
+    }
 }
 
 android {
@@ -34,11 +53,24 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

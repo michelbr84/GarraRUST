@@ -241,3 +241,61 @@ Num gateway local single-user não importa — o console web, `/ws`,
 `/v1/chat/completions`, o `mcp-server` e os canais não passam por `/auth/*` —,
 mas `/chat` (mobile, via `MobileAuth`) e o workspace multi-tenant passam. O
 aviso passa a dizer as duas coisas e o comando de correção.
+
+---
+
+## Amendment 2026-09-07 — a v1 é Flutter, não um app Compose novo (Garra Mobile v0.4.0)
+
+A decisão original previa a v1 como "companion Kotlin/Compose (app novo)".
+Ao executar a estratégia mobile completa (sessão 2026-09-07), a conclusão foi
+outra, e este amendment a registra:
+
+**Escolha:** manter `apps/garraia-mobile` (Flutter) como a interface do
+Garra Mobile e adicionar bridges nativos (Kotlin hoje, Swift depois) por
+Platform Channel quando cada capability exigir. **Motivo:** o app já tinha
+Riverpod, go_router, Dio, `flutter_secure_storage`, biometria, gravação de
+áudio, QR, fila offline em SQLite, notificações locais e WebSocket; recomeçar
+em Compose reconstruiria tudo isso e pioraria o caminho para iOS.
+**Alternativas consideradas:** Compose novo (a decisão anterior), React
+Native/Expo, Tauri Mobile — nenhuma reaproveita o que existe.
+**Trade-offs:** algumas capabilities Android (RUN_COMMAND do Termux,
+foreground service, Keystore) exigirão Kotlin via bridge; isso fica para a
+v0.5.x e não muda o core.
+
+O que a v0.4.0 entrega, e o que ela deliberadamente não entrega:
+
+- **`RuntimeConnection`** (`lib/runtime/`): a UI não sabe onde o Garra está.
+  Três modos — *On this phone* (`http://127.0.0.1:3888`, Termux), *Another
+  Garra* (URL manual na LAN + `gateway.api_key` opcional, guardada no
+  `flutter_secure_storage`) e *Garra Cloud* (JWT, o cliente antigo). Os dois
+  primeiros falam a superfície `/api/*` do gateway; o cloud herda os reads e
+  troca só o chat por `/chat`.
+- **Negociação de capabilities:** a home lê `GET /api/capabilities` e um tile
+  cuja feature não é anunciada renderiza *Unavailable* em vez de tela morta.
+  O gateway passou a anunciar `memory`, `learning-skills`, `projects` e
+  `modes` (`capabilities.rs::feature_flags`, aditivo); `automations` fica ausente
+  de propósito porque não existe API de scheduling.
+- **Onboarding sem login** nos modos local/LAN; o gate do router passou de
+  "tem JWT?" para "tem runtime configurado?".
+- **Fora:** ponte Kotlin `RUN_COMMAND`, pairing por token local, foreground
+  service, capabilities de câmera/contatos/localização — a estratégia §5.1
+  Fase 1 continua o mapa; este é o primeiro corte utilizável.
+
+Distribuição: o APK sai do GitHub Actions (job best-effort
+`build-android-apk` no `release.yml`, asset `garraia-mobile-android.apk` +
+`.sha256`, aditivo — regra 15 intacta). Assinado com os secrets
+`ANDROID_KEYSTORE_*` quando existirem, senão com a keystore de debug do
+runner (instalável; não atualiza por cima de uma instalação assinada por
+outra chave — o job avisa com `::warning::`). O Play não é alvo desta trilha
+(ver "Google Play + Termux" na estratégia); a distribuição é Release do
+GitHub, e o app **não baixa executável nenhum** — o runtime vem do Termux.
+
+Descobertas técnicas que valem registro: `riverpod_generator 2.6.x` prende o
+`analyzer` na linguagem 3.9 e quebra em Dart >= 3.13
+(`visitDotShorthandPropertyAccess`) — o app migrou para Riverpod 3 /
+generator 4 e abandonou `custom_lint` + `riverpod_lint`; `record 5.1.2`
+resolvia `record_web` e `record_platform_interface` incompatíveis e quebrava
+`flutter build web` — subiu para 6.2.1; `gradle.properties` fixava um
+`org.gradle.java.home` do Windows que impedia qualquer build fora daquela
+máquina.
+

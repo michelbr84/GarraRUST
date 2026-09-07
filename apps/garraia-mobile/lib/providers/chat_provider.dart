@@ -1,21 +1,29 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../services/api_service.dart';
+import '../runtime/models.dart';
+import '../runtime/runtime_config.dart';
+import '../runtime/runtime_providers.dart';
 
 part 'chat_provider.g.dart';
 
-/// Holds the in-memory list of chat messages (loaded from history + appended on send).
+/// In-memory list of chat messages for the current session (loaded from
+/// history, appended on send). Runtime-agnostic: every call goes through
+/// `GarraConnection`.
 @riverpod
 class ChatMessages extends _$ChatMessages {
   @override
   Future<List<ChatMessage>> build() async {
-    final api = ref.read(apiServiceProvider);
-    return api.getHistory();
+    final conn = requireConnection(ref);
+    if (conn.mode == RuntimeMode.cloud) return conn.history(null);
+    final sessionId = await ref.watch(currentSessionProvider.future);
+    return conn.history(sessionId);
   }
 
   Future<void> send(String text) async {
+    final conn = requireConnection(ref);
+
     // Optimistically add user message
-    final current = state.valueOrNull ?? [];
+    final current = state.value ?? const [];
     state = AsyncData([
       ...current,
       ChatMessage(
@@ -25,13 +33,15 @@ class ChatMessages extends _$ChatMessages {
       ),
     ]);
 
-    ref.read(mascotStateNotifierProvider.notifier).set(MascotState.thinking);
+    ref.read(mascotStateProvider.notifier).set(MascotState.thinking);
 
     try {
-      final api = ref.read(apiServiceProvider);
-      final reply = await api.sendMessage(text);
+      final sessionId = conn.mode == RuntimeMode.cloud
+          ? null
+          : await ref.read(currentSessionProvider.notifier).ensure();
+      final reply = await conn.sendMessage(text, sessionId: sessionId);
 
-      final updated = state.valueOrNull ?? [];
+      final updated = state.value ?? const [];
       state = AsyncData([
         ...updated,
         ChatMessage(
@@ -41,15 +51,15 @@ class ChatMessages extends _$ChatMessages {
         ),
       ]);
 
-      ref.read(mascotStateNotifierProvider.notifier).set(MascotState.talking);
-      await Future.delayed(const Duration(seconds: 2));
-      ref.read(mascotStateNotifierProvider.notifier).set(MascotState.idle);
+      ref.read(mascotStateProvider.notifier).set(MascotState.talking);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      ref.read(mascotStateProvider.notifier).set(MascotState.idle);
     } catch (e) {
-      final withoutOptimistic = (state.valueOrNull ?? [])
+      final withoutOptimistic = (state.value ?? const [])
           .where((m) => m.content != text || m.role != 'user')
           .toList();
       state = AsyncData(withoutOptimistic);
-      ref.read(mascotStateNotifierProvider.notifier).set(MascotState.idle);
+      ref.read(mascotStateProvider.notifier).set(MascotState.idle);
       rethrow;
     }
   }
@@ -58,6 +68,8 @@ class ChatMessages extends _$ChatMessages {
 /// Mascot animation state machine.
 enum MascotState { idle, thinking, talking, happy }
 
+/// Generated provider name: `mascotStateProvider` (riverpod_generator 4 drops
+/// the `Notifier` suffix — the old `mascotStateNotifierProvider` alias is gone).
 @riverpod
 class MascotStateNotifier extends _$MascotStateNotifier {
   @override
@@ -65,6 +77,3 @@ class MascotStateNotifier extends _$MascotStateNotifier {
 
   void set(MascotState s) => state = s;
 }
-
-/// Shorthand alias used throughout the UI.
-final mascotStateProvider = mascotStateNotifierProvider;
