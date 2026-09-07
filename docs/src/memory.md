@@ -9,6 +9,9 @@ real de cada comando, chave de configuração e arquivo.
 > com array de fatos datados, chaves `auto_extract` e `max_facts`. Nada disso
 > existiu. A reescrita (#963) foi feita conferindo cada afirmação contra o
 > código; onde algo é parcial ou tem limite conhecido, está dito.
+>
+> Desde 2026-09-07 o `garra memory add` **existe** (#958) — construído, não
+> herdado daquela lista. `clear`, `export` e `disable` seguem sem existir.
 
 ## O caminho de um turno
 
@@ -192,9 +195,27 @@ GET    /api/memory/search?q=...    # busca
 DELETE /api/memory                 # limpa
 ```
 
+## Semear a memória à mão
+
+```bash
+garra memory add "O condominio fica na rua das Flores" --session projeto-x
+```
+
+O embedding é gerado **na hora**: uma entrada sem vetor não aparece na busca
+semântica, e um comando de semear que deixasse a entrada invisível até um
+segundo comando seria uma armadilha. Sem provider de embeddings configurado
+ele grava assim mesmo, **diz** que gravou sem vetor, e aponta o `reindex`.
+
+`--no-embed` pula o embedding de propósito (semeadura em massa, para
+`reindex` depois). `--session` e `--user` preenchem os campos homônimos, e a
+sessão tem default `cli-seed`, para que o que você semeia seja distinguível
+do que veio de conversa. O `tenant_id` é sempre `default`, o mesmo que o
+runtime usa — semear noutro faria a entrada existir e o recall do agente
+nunca achá-la.
+
 ## O que ainda não existe
 
-- **Não há `garra memory add`.** Entradas nascem de conversas ou da extração
-  de fatos; não há inserção manual pela CLI.
+- **Não há `clear`, `export` nem `disable`.** Para apagar, use `delete` (uma
+  entrada) ou `compact` (por idade); para levar embora, `backup`.
 - **O retriever do `garraia-learning` é um stub.** A busca semântica de
   *skills* (distinta da memória de conversa) espera a Fase 2.1 — ver ADR 0002.
