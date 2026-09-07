@@ -844,6 +844,27 @@ jobs:
           echo "--- per-asset .sha256 files ---"
           ls -1 *.sha256
 
+      - name: Build release notes from CHANGELOG
+        # `generate_release_notes: true` sozinho produz so a lista de PRs desde
+        # o tag anterior. Util, mas nao e a nota de release: o resumo escrito
+        # para humano e a prosa de abertura da secao da versao no CHANGELOG.
+        #
+        # A secao inteira nao serve — a da v0.3.9 tem 1298 linhas e 90 KB, perto
+        # do teto de 125 KB do corpo de release e ilegivel como pagina. O script
+        # extrai so a prosa (o que vem antes da primeira subsecao `###`) e linka
+        # o CHANGELOG para o detalhe. O softprops anexa a lista gerada embaixo.
+        #
+        # O script **nunca falha**: versao ausente, arquivo ausente ou prosa
+        # vazia produzem um corpo minimo com exit 0. Uma release nao pode ser
+        # bloqueada pelas proprias notas.
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/notes.py "$VERSION" CHANGELOG.md > RELEASE_NOTES.md
+          echo "--- corpo da release ($(wc -c < RELEASE_NOTES.md) caracteres) ---"
+          cat RELEASE_NOTES.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -855,6 +876,7 @@ jobs:
           name: Release ${{ steps.version.outputs.VERSION }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'rc') }}
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           # `softprops/action-gh-release` uses glob expansion on this list, so
           # `*.sha256` covers every per-asset checksum (one per staged asset;

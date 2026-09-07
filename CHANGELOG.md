@@ -6,32 +6,879 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Inicio da Trilha B — epico #944 (Garra Terminal UX v2), Fase 1 — e da
-Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
-2026-09-05.
+## [0.3.9] - 2026-09-07
 
-### Security
-- **O caminho KNN do recall passa a respeitar tenant, sessao e continuidade
-  (achado da verificacao da Trilha C — sem issue).** O indice sqlite-vec so
-  conhece distancia; o fetch dos candidatos (`fetch_entries_by_ids`) fazia
-  `WHERE id IN (...)` sem NENHUM dos filtros da query, enquanto o caminho SQL
-  sempre filtrou. Com o vec ativo, um recall com `tenant_id` definido podia
-  devolver memorias de outro tenant. O fetch agora reescopa os quatro filtros
-  (tenant, sessao, continuidade e modelo) e ha teste garantindo que linha de
-  outro tenant nunca volta pelo KNN.
-- **Corpo de erro de provider de embeddings deixa de poder ir cru para o log
-  (achado da auditoria deste lote).** Enquanto o runtime engolia esses erros
-  com `.ok()`, o corpo da resposta HTTP nunca chegava a lugar nenhum; a
-  correcao do #948 passou a loga-los, e corpo de erro nao e conteudo
-  confiavel — a OpenAI ecoa de volta a chave que voce mandou quando ela esta
-  errada, e um endpoint self-hosted pode devolver o request inteiro. Agora os
-  tres providers sanitizam na origem: 401 e 403 perdem o corpo por completo
-  (o status, que e o que o operador precisa, fica), e os demais sao truncados
-  e tem tokens de formato conhecido raspados. Teste ponta a ponta contra um
-  servidor que devolve 401 com a chave no corpo garante que ela nao aparece na
-  mensagem de erro.
+A v0.3.9 foi preparada em 2026-09-05 e nunca chegou a ser publicada — nao
+houve tag. O que estava pronto naquele dia ficou, e o que entrou depois entrou
+junto: esta secao e a soma das duas coisas.
+
+**O que ja estava pronto em 05/09.** Dois lotes de retorno de campo do mesmo
+usuario da v0.3.6/v0.3.7 (Samsung A16 / Android 13 / Termux, com o Garra
+orquestrado pelo Hermes via MCP): issues #920-#925 (PRs #926/#927/#931/#932) e
+#928-#930 (#945/#946), mais a persona da Hera (#966). Como nos lotes
+anteriores, a verificacao mudou o diagnostico da maioria dos relatos — o
+detalhe esta no corpo de cada PR — e achou um bug de seguranca que ninguem
+reportou (#945).
+
+**O que entrou de 05/09 a 07/09.** 48 issues e PRs, de #933 a #1012, em tres
+frentes:
+
+- **Trilha B — Garra Terminal UX v2** (epico #944, fechado): eventos de
+  ferramenta visiveis no terminal, Markdown renderizado sem parar o streaming,
+  superficies de status (`/status`, `/tools`, `/logs`), `garra logs`, e o fim
+  da cor incondicional — `garra chat 2>/dev/null | cat` nao carrega mais
+  escape ANSI.
+- **Trilha C — memoria semantica** (#948-#965): isolamento de tenant no
+  caminho KNN, embeddings confiaveis, `garra memory` com `add`/`reindex`/
+  `backup`/`pin`/`ttl`, retencao, metricas, e um benchmark de qualidade de
+  recall em portugues.
+- **Bloco de modos** (#979-#988): a `ToolPolicy` era declarada e **nunca
+  verificada no executor** — modos anunciados como somente-leitura nao
+  bloqueavam `file_write` nem `bash`, so pediam no prompt. Agora a politica
+  vale na execucao.
+
+**O padrao que atravessa o lote** e uma classe so de defeito: *restricao
+declarada que ninguem aplica*. A `ToolPolicy` dos modos (#988), o `tools:` de
+agente nomeado que o A2A ignorava (#965), o `X-User-Id` que decidia identidade
+numa rota sem auth (#1012), o `continuity_key(_user_id)` que sugeria escopo por
+pessoa e devolvia um barramento global. Cada um prometia uma propriedade que o
+codigo nao entregava.
+
+Junto vieram tres documentos que contradiziam o binario, corrigidos ao serem
+conferidos contra ele: o `retriever` (#964), o `docs/src/memory.md` (#963) e a
+pagina `docs/memory.md`, para onde o wiki do projeto aponta duas vezes e que
+ainda descrevia comandos inexistentes.
+
+### Added
+
+- **`IntegrityReport.entries_missing_model` e o teste de dimensao divergente
+  fecham a #960.** O contador conta entradas COM vetor e SEM
+  `embedding_model` — o legado de antes do #954, que perde o eixo semantico
+  (0.7 do score) sempre que o recall chega com modelo definido, sem nenhum
+  aviso no caminho SQL; um `debug!` por recall complementa, contando os
+  candidatos rebaixados por modelo divergente. A reindexacao (#953) zera essa
+  fila. O teste novo garante que vetor de tamanho diferente do da tabela nao
+  entra e que a recusa nao deixa rastro no `vec_id_map` — com ele, os quatro
+  testes de integridade que a issue propos estao no lugar (os outros tres
+  vieram no #971).
+- **`MemoryStore::integrity_report()` (#960).** Conta entradas com/sem
+  embedding (a fila de reindexacao do #953), linhas por tabela vetorial e
+  mapeamentos orfaos — a verificacao que em 2026-09-05 precisou de script
+  externo (7.101 entradas vs vetores) vira uma chamada. Base do futuro
+  `garra memory stats` (#950). `in_memory_with_vectors()` liga o caminho KNN
+  em testes; 7 testes novos cobrem isolamento, mistura de modelos, orfaos e
+  idempotencia da delecao.
+- **Health check do provider de embeddings no boot (#951).** O
+  `health_check()` existia no trait desde sempre e **nunca era chamado**: o
+  boot logava "configured ollama embedding provider" e seguia, mesmo com o
+  Ollama desligado. Agora o boot pergunta e avisa alto quando nao ha resposta,
+  dizendo o que vai acontecer (memorias novas sem vetor, recall textual) e o
+  que fazer depois (reindexar). Avisa, nao derruba: memoria semantica e
+  opcional, e recusar subir por causa dela deixaria o usuario sem chat nenhum.
+  `AgentRuntime::embedding_provider()` expoe o provider ativo — a mesma porta
+  que a reindexacao da CLI (#953) vai usar.
+- **O terminal mostra o que o agente esta fazendo, ferramenta por ferramenta
+  (#937).** Ate aqui a execucao de ferramenta era invisivel no `garra chat`:
+  o usuario via o indicador de atividade e, minutos depois, a resposta pronta —
+  sem saber se o agente estava lendo um arquivo, rodando `cargo test` ou parado.
+  Agora cada chamada aparece em duas linhas compactas: `● Bash cargo test` ao
+  comecar e `└─ 148 passed · 6.3s` ao terminar, com glifo e cor diferentes na
+  falha (`× Bash └─ error: exit 101 · 4.2s`). Saida longa **nao** e despejada:
+  vira a primeira linha mais a contagem das outras.
+
+  Por baixo, o `garraia-agents` ganha `TurnEvent` e `TurnSink`. O runtime
+  passa a contar o turno inteiro — texto e ciclo de vida de ferramenta — num
+  canal so, o que preserva a ordem entre os dois (dois canais nao garantiriam,
+  e o agente intercala texto e ferramenta no mesmo turno). Os sete consumidores
+  que so querem texto — Telegram, Slack, Discord, WhatsApp, `openai_api`,
+  `parrot_ws` e o `garra ask` — ficam intactos: num sink de texto os eventos de
+  ferramenta sao descartados na origem.
+
+  O resumo do input e o do output passam por `redact_secrets` **antes** de
+  virar evento, e nao no renderer: qualquer consumidor futuro herda a garantia
+  sem precisar lembrar dela.
+
+- **O indicador de atividade volta depois que a ferramenta termina (#937).**
+  Ele parava no primeiro token e nao voltava mais, entao o tempo em que o
+  modelo pensa **depois** de uma ferramenta era prompt morto de novo. Faltava
+  o evento para ouvir; agora existe. O rotulo `Garra` continua saindo uma vez
+  so por turno.
+
+- **O redactor de segredos aprendeu os segredos de terceiro (#937).** Ate aqui
+  ele so via log, onde aparecem as chaves que o proprio GarraIA usa — Anthropic,
+  OpenAI, Slack, Discord. Com os eventos de ferramenta ele passou a ver
+  **comando que o agente monta**, e ali entra credencial que o usuario deu no
+  contexto. Foram acrescentados: PAT do GitHub (classico e fine-grained), JWT,
+  access key da AWS (fixa e temporaria), token de bot do Telegram e senha
+  embutida em connection string (`postgres://user:senha@host`). Como o
+  `redact_secrets` e o mesmo que o `RedactingWriter` usa, todo log do projeto
+  ganhou a cobertura junto. O que ele continua **nao** cobrindo, e esta escrito
+  no codigo: segredo sem formato reconhecivel, como `--password minhasenha` —
+  um regex que tentasse pegar "o argumento depois de --password" erraria mais
+  do que acertaria.
+- **`/tool` mostra a saida inteira de uma chamada de ferramenta (#938).** O
+  #937 reduziu cada chamada a uma linha, o que deixou a conversa legivel — mas
+  resumo bom e resumo que esconde coisa, e esconder sem dar como reaver e so
+  perder: quando o `cargo test` diz "Failed" e o resumo mostra a primeira
+  linha, a causa costuma estar na linha 300. Agora cada linha de ferramenta
+  termina com um numero (`#7`) e `/tool 7` mostra a saida completa; `/tool`
+  sozinho lista o que esta guardado. O numero e curto de proposito porque
+  aparece em toda linha, e ele existe porque sem ele o `/tool <n>` do `/help`
+  seria instrucao sem como ser seguida.
+- **Indices nao sao reusados.** Numerar por posicao faria `/tool 3` significar
+  coisas diferentes conforme outras chamadas acontecessem — o usuario le "3" na
+  tela, roda mais um comando e recebe outra saida sem nada indicando a troca.
+  Sao monotonicos, e pedir uma entrada ja descartada diz que ela expirou em vez
+  de mostrar a errada. "Expirou" e "nunca existiu" sao mensagens diferentes: a
+  primeira e acionavel (rode de novo), a segunda quer dizer que o numero esta
+  errado.
+- **Dois limites, nao um.** O registro guarda as 20 ultimas chamadas E no
+  maximo 512 KiB. So o teto de entradas nao seguraria memoria (vinte saidas de
+  64 KiB sao 1,2 MiB grudados no processo); so o teto de bytes tornaria o
+  `/tool` imprevisivel, porque uma saida gorda expulsaria dez pequenas e o
+  indice recem-visto sumiria. Cada saida e capada em 64 KiB **na origem**, no
+  `garraia-agents`, preservando comeco e fim com marcador do que sumiu — so o
+  fim perderia o que estava sendo compilado, so o comeco perderia a causa da
+  falha.
+- **A saida completa passa pelas mesmas garantias do resumo**: redacao de
+  segredo e remocao de controle de terminal (#995), na origem. Era criterio de
+  aceite explicito da issue e daria para errar, porque o resumo ja era seguro e
+  dava para achar que a saida crua tambem era. A diferenca e so de forma —
+  quebra de linha e tabulacao sobrevivem, porque sao a estrutura do texto que o
+  usuario pediu para ler; o `\r` nao sobrevive, porque sozinho ele devolve o
+  cursor ao inicio da linha e e a primitiva de sobrescrever texto ja impresso —
+  mas na saida completa ele vira **quebra de linha** em vez de sumir, senao uma
+  barra de progresso (`10%\r20%\r100%`) viraria `10%20%100%`, um amontoado que
+  o leitor nao distingue de uma saida que era assim mesmo. Idem backspace,
+  tabulacao vertical e form feed, que viram marcador visivel.
+- **A resposta do modelo passa a sair formatada no terminal (#939).** Titulo,
+  negrito, enfase, codigo inline, bloco cercado, lista com marcador ou numero,
+  citacao, link e regra horizontal saem renderizados em vez de com a sintaxe
+  crua na tela.
+- **Sem bufferizar por linha, que era a solucao obvia e errada.** Renderizar a
+  linha inteira quando ela fecha da resultado perfeito e zero cintilacao — e
+  para a prosa: o modelo costuma emitir um paragrafo inteiro como uma unica
+  linha, entao o usuario ficaria olhando para o nada ate o ponto final.
+  Streaming que nao aparece nao e streaming. O renderizador segura so o que
+  ainda pode mudar de significado: poucos caracteres no inicio da linha para
+  decidir o tipo de bloco, e depois a cauda a partir do ultimo delimitador
+  inline ainda sem par. O atraso maximo e de uma palavra.
+- **Um construto partido entre dois deltas continua sendo um construto.** E a
+  mesma classe de problema do filtro ANSI (#996) e tem a mesma forma de
+  solucao — estado que atravessa as chamadas. O teste que importa renderiza
+  cada exemplo em **todo** tamanho de pedaco possivel, e nao num corte
+  escolhido a dedo: o corte que o autor imagina e justamente o que nao quebra.
+- **A prosa quebra na largura do terminal, e a continuacao recebe o recuo do
+  bloco.** E esse alinhamento que justifica quebrar: o terminal ja quebra
+  sozinho no limite direito, mas sempre na coluna zero, e a segunda linha de um
+  item de lista passava a parecer um item novo. Quem mede e
+  `console::measure_text_width`, que ignora escape e conta largura visual —
+  contar bytes erraria com acento e com ideograma.
+- **Bloco cercado nao ganha estilo inline nem quebra.** O criterio de aceite
+  pede que codigo continue facil de copiar: um `*` no meio de um programa e um
+  `*`, e um `\n` que o modelo nao escreveu vira um `\n` que o usuario cola.
+  Linha longa de codigo passa a decisao ao terminal. Pela mesma razao, um bloco
+  unico maior que a linha inteira (URL longa, base64) sai sem quebra inventada.
+- **Sem cor, nada disto acontece — nem um escape.** Saida redirecionada,
+  `NO_COLOR` ou `TERM=dumb` devolvem o texto exatamente como veio, byte a byte,
+  que e o que mantem `garra chat > arquivo` util para automacao. O `garra ask`
+  fica de fora por contrato proprio ja escrito no codigo: ele nunca imprime
+  ANSI no stdout.
+- **Tres limites que a auditoria pediu, e um pânico que ela achou.** Acento
+  como primeiro caractere de uma linha dentro de bloco cercado derrubava o CLI
+  — o ramo que decide se a linha e a cerca de fechamento fatiava o primeiro
+  **byte**, e num `é` esse byte nao e fronteira de caractere. Alem disso: o que
+  fica retido esperando um delimitador fechar tem teto (um `**` sem par numa
+  resposta sem quebra de linha segurava a tela e o buffer crescia junto), a
+  linha e compactada enquanto sai (uma resposta de uma linha so ficava inteira
+  em memoria), e o estilo de titulo ou citacao e fechado no fim do turno mesmo
+  sem o `\n` final — antes um turno truncado deixava o proximo prompt em
+  negrito.
+- **`/status` e `/tools` novos, e `/context` legivel (#940).** O `/status` diz
+  provider, modelo, ferramentas, sessao e o que o ultimo turno de fato usou —
+  sempre o valor **vivo**: o `/model` troca o modelo no meio da sessao, entao
+  ler a config diria o que era verdade no boot. O `/tools` responde "quais
+  ferramentas o agente tem", que ate aqui nao dava para perguntar: `/tools` era
+  apelido de `/tool`, que mostra o que elas **produziram**.
+- **As superficies pararam de escrever cor incondicional.** `/help`,
+  `/context`, `/tool`, `/history`, `/models` e a despedida usavam
+  `println!("{DIM}...{RESET}")`, entao `garra chat | cat` carregava escape.
+  Medido no binario: **12 sequencias de escape numa sessao de seis comandos
+  redirecionada, agora zero.** E a divida que a ADR 0017 registra, paga onde
+  ela mais aparecia.
+- **Um painel e uma lista, com a mesma moldura.** Vale a regra do cartao de
+  erro: quem sabe **o que** mostrar e o `chat.rs`, quem sabe **como desenhar**
+  e a interface. Sendo funcao pura de `(titulo, linhas, estilo, largura)` para
+  `String`, "respeita `NO_COLOR`", "cabe no terminal estreito" e "alinha a
+  continuacao" viram assercao sobre um valor de retorno, sem terminal e sem
+  processo.
+- **O `/help` nao pode mais divergir do que existe** — e ele ja divergia: nao
+  citava `/models`, e prometia `/provider <nome>` como se trocasse de provider
+  (ele responde "reinicie"). Os comandos viraram uma tabela, e um teste confere
+  os dois sentidos contra o proprio fonte: comando anunciado que nao existe, e
+  comando que existe sem ser anunciado, param no CI.
+- **Sem contagem de arquivos no `/context`**, ao contrario do exemplo da issue.
+  A propria issue pede para nao varrer o diretorio so para desenhar status, e
+  num repositorio grande a varredura custa mais que todo o resto do comando. O
+  `/context` tambem deixou de despejar quinze nomes de arquivo no campo
+  "Projeto": aquela listagem existe para o prompt do sistema, onde e util ao
+  modelo, e nao para quem digitou o comando querendo uma linha.
+- **Valor sem espaco maior que a largura estoura, e nao e truncado.** Um
+  caminho e um nome de ramo nao tem onde quebrar, e cortar com reticencia
+  destruiria justamente o que se copia do painel — quem quebra e o terminal.
+- **ADR 0017: camada de apresentacao do CLI (`UiEvent` + `TerminalRenderer`).**
+  Formaliza a Fase 2 do epico #944 antes do codigo, como manda a regra absoluta
+  8. Registra onde a camada mora (`garraia-cli`, nunca `garraia-agents`), o que
+  o renderer possui e o que nao possui — o relogio continua vindo do
+  `select!`, e `tracing` nao vira interface —, e quatro invariantes: o renderer
+  e chamado de dentro do `select!` e nunca de uma task propria (e o que protege
+  a drenagem do canal limitado que ja derrubou o `garra chat` uma vez), todo
+  caminho de desenho aceita `impl io::Write` para ser afirmavel em teste, o
+  cursor nunca e escondido, e nao-TTY nao emite escape algum. Rejeita
+  explicitamente um TUI de tela cheia: ele quebraria scrollback e pipe, que sao
+  o modo normal de usar uma CLI de conversa em fluxo.
+- **`garra logs` e `garra logs --follow` (#943).** Le o arquivo canonico
+  (`garraia.log`, no diretorio de config) direto do disco: **nao fala com o
+  gateway** e nao pede que ele esteja rodando — que e justamente quando o log
+  importa. `-n/--lines` escolhe quantas linhas do fim (100 por padrao) e
+  `--path` imprime so o caminho, para encadear com outro comando.
+- **A redacao continua sendo da escrita, e o comando nao a repete.** O
+  `RedactingMakeWriter` envolve o appender, entao o que esta no disco ja esta
+  redigido. Redigir de novo na leitura mascararia um vazamento em vez de
+  conserta-lo: quem abrisse o arquivo no `less` veria o segredo do mesmo jeito,
+  e nos acharíamos que estamos protegidos. Ha teste afirmando que o comando
+  devolve o byte que leu.
+- **`Ctrl+C` no `--follow` sai limpo, com codigo 130** — a convencao do shell,
+  a mesma que o `garra chat` ocioso ja seguia, e a mesma do `tail -f` e do
+  `journalctl -f`.
+- **Log ausente nao e erro.** E o estado normal de quem nunca rodou nada, e a
+  mensagem diz onde o arquivo estaria e o que o cria.
+- **`/logs` no chat diz onde o log esta, e nao o despeja na conversa.**
+  Misturar centenas de linhas de log com a conversa e o oposto do que a Fase 2
+  deste epico foi fazer, e seguir o arquivo em tempo real disputaria a mesma
+  tela com o streaming da resposta.
+- **Sem `--level`, com o motivo escrito.** Uma entrada de log ocupa varias
+  linhas quando carrega backtrace, e filtrar linha a linha partiria a entrada
+  ao meio — sobraria a primeira linha do erro sem o rastro que a explica. Quem
+  quer menos ruido tem o `RUST_LOG`, que decide na escrita.
+- **`-n 0` mostra nada, que e o idioma do `tail`** e o par natural do
+  `--follow` ("so o que vier daqui em diante"). Ele fazia o oposto: o buffer
+  circular nunca podava e o arquivo **inteiro** ia para a memoria e para a
+  tela. Num log de 1 GB, um OOM com uma flag. Achado rodando o binario e
+  confirmado na auditoria.
+- **Linha maior que 1 MiB e pulada.** `BufReader::lines()` nao tem limite: um
+  arquivo binario ou sem quebra de linha viraria uma alocacao do tamanho do
+  arquivo. Log de texto nao tem linha assim; o que tem e arquivo corrompido.
+- **`garra memory` inspeciona, repara e limpa a memoria semantica (#950, #953).**
+  Ate aqui a memoria era caixa-preta: nao havia como saber quantas entradas
+  existiam, quantas tinham vetor, se o indice estava consistente, nem como
+  consertar as que a cadeia de perda silenciosa (#948, #951, #962) deixou sem
+  embedding — e o `docs/src/memory.md` chegava a documentar seis subcomandos
+  que nunca existiram. Agora sao seis de verdade: `stats` mostra o relatorio de
+  integridade do #960 (inclusive a fila legada de vetor sem modelo), `list`
+  lista as entradas recentes ou so a fila de reindexacao, `search` roda o mesmo
+  recall do agente e diz se foi semantico ou textual, `reindex` reprocessa as
+  entradas gravadas sem vetor, `delete` apaga uma entrada com o vetor dela e
+  `compact` apaga tudo anterior a N dias. Os dois destrutivos exigem confirmacao
+  e, sem terminal, exigem `--yes` explicito. `stats`, `list`, `search` e
+  `reindex` tem `--json` para script. O reindex para no primeiro lote que falha
+  em vez de insistir: a fila e derivada do banco, entao rodar de novo depois
+  continua de onde parou. A CLI abre o **mesmo** `memory.db` do gateway
+  (`AppConfig::memory_db_path`, agora fonte unica) e pede o **mesmo** provider
+  de embeddings (`bootstrap::build_embedding_provider`, extraido de
+  `build_agent_runtime`) — o que o `reindex` grava e exatamente o que o recall
+  do agente le de volta.
+
+- **`garra memory reindex` tambem repara o indice, sem custo de provider (#950).**
+  O `remember_sync` grava a linha e insere no indice em best-effort: com o
+  sqlite-vec fora do ar por um momento, a entrada fica com vetor na coluna e
+  **fora** da busca semantica, e o reindex normal nao a alcanca porque ele
+  procura `embedding IS NULL`. O reparo agora roda antes, sem chamar provider
+  nenhum — o vetor ja existe, so falta indexa-lo — e aparece como
+  `index_repaired` no relatorio. Na mesma linha, `set_embedding` virou
+  fail-closed: se o indice recusar o vetor, a coluna volta a NULL, para a
+  entrada continuar na fila em vez de sair dela sem ter sido indexada.
+- **`garra memory backup` — retrato consistente da memoria, com retencao (#955).**
+  A memoria e o ativo que mais doi perder e vivia num arquivo so, sem copia. O
+  comando escreve um retrato em `<data_dir>/backups/`, com nome ordenavel por
+  data (`memory-20260906T054500123Z.db`, UTC com milissegundo).
+
+  **`VACUUM INTO`, nao `cp`.** O banco roda em WAL: copiar o arquivo com `cp`
+  pega uma foto sem as transacoes que ainda estao no `-wal` ao lado, e o
+  resultado e um backup que parece bom e esta incompleto — o pior tipo. O
+  `VACUUM INTO` le sob uma transacao e escreve o estado commitado inteiro, sem
+  checkpoint e sem parar o gateway, e de brinde compacta.
+
+  **O indice vetorial vai junto** — verificado, nao presumido: uma sonda contra
+  um banco com `vec_embeddings_*` real confirmou que as tabelas vec0, as
+  sombras delas e o `vec_id_map` chegam integros, e a copia reabre com o mesmo
+  relatorio de integridade. Era o risco de verdade; o WAL, que a issue
+  levantou, o `VACUUM INTO` ja resolve sozinho.
+
+  `--keep-days N` apaga backups **nossos** mais velhos que N dias, depois de o
+  novo existir. Duas garantias: so apaga arquivo que casa com o padrao que o
+  proprio comando cria (backup manual com outro nome fica), e a idade vem do
+  **nome**, nao do `mtime` — copiar o diretorio para outra maquina renova todo
+  `mtime` e apagaria tudo na primeira execucao seguinte. Sem `--keep-days`,
+  nada e apagado.
+
+  Restauracao em `docs/src/memory-backup.md`, e o proprio comando imprime os
+  quatro passos ao terminar, ja com os caminhos da instalacao. O passo que
+  costuma ser esquecido — apagar o `-wal` antigo — esta em destaque nos dois:
+  um `-wal` ao lado de um banco restaurado reintroduz exatamente o que se
+  acabou de descartar.
+- **O tamanho da memoria aparece no `/metrics` (#957, fecha a issue).** O #994
+  entregou quatro metricas de **instrumentacao** — elas contam o que aconteceu
+  quando aconteceu. Faltavam as de **estado**: quantas entradas existem agora e
+  quantas estao no indice vetorial. Estado nao tem evento, entao alguem precisa
+  ir olhar. Entram `garraia_memory_entries{has_embedding}` e
+  `garraia_memory_vector_index_size`.
+- **Os dois devem ser lidos juntos, e a distancia entre eles e o sinal.** Uma
+  entrada com vetor na coluna mas fora do indice nao aparece na busca
+  semantica. Isso era invisivel ate alguem rodar `garra memory stats` — que so
+  mostra quando perguntam. Como gauge, vira tendencia, que e o que faz alguem
+  pensar em perguntar. A consulta esta no `docs/telemetry.md`.
+- **Worker proprio, e nao um braco do de retencao.** Era o caminho obvio, ja
+  que existe um laco periodico tocando a memoria, e e errado por dois motivos
+  independentes: o `memory_retention_worker` so sobe quando
+  `memory.retention.enabled` e true, que nasce false porque apaga dado — os
+  gauges ficariam mortos em quase toda instalacao; e a cadencia dele e de 24h,
+  que nao mostra tendencia, mostra dois pontos por semana. Verificado no
+  binario: com a retencao desligada (o padrao), o log diz que aquele worker nao
+  subiu e os gauges estao servindo assim mesmo.
+- **Leitura barata, e nao o relatorio de integridade.** O `integrity_report()`
+  que alimenta o `garra memory stats` faz um `SELECT id FROM memory_entries`
+  inteiro mais varredura de orfaos — trabalho justificado sob demanda,
+  desperdicio a cada poucos minutos. O `gauge_snapshot()` novo sao tres
+  `count(*)`, com as **mesmas** consultas, e ha teste cobrando que os dois
+  concordem: dois numeros que deviam ser iguais e nao sao e o pior caso para
+  quem esta diagnosticando.
+- Falha de leitura nao derruba o laco: o proximo tick tenta de novo. Um gauge
+  que para de atualizar em silencio e pior que um que some, porque o Prometheus
+  continua servindo o ultimo valor e o painel mostra numero velho como atual.
+- Achados da auditoria tratados antes do merge: a leitura solta o mutex do banco
+  principal **antes** de consultar o vetorial (segurar os dois nao trava hoje,
+  porque nenhum caminho adquire na ordem inversa, mas bloqueava recall e
+  remember durante o tick e deixava a armadilha armada para o proximo caminho
+  com locking invertido); contagem inconsistente (`com vetor > total`, que so
+  acontece com corrupcao) passa a gritar em vez de publicar zero mudo; e entra
+  `garraia_memory_gauge_errors_total`, porque um gauge que congela em silencio e
+  pior que um que some — o Prometheus continua servindo o ultimo valor como se
+  fosse atual.
+- **A memoria passa a aparecer no `/metrics` (#957).** Ate aqui o `/metrics`
+  tinha quatro metricas HTTP genericas e nada sobre o componente central do
+  produto: o operador nao tinha como monitorar a saude do recall semantico.
+  Entram quatro, com prefixo `garraia_` — nao `garra_` como a issue propoe,
+  porque duas familias de prefixo no mesmo endpoint quebrariam todo dashboard
+  que agrupa por `garraia_.*`: `garraia_memory_embed_latency_seconds`
+  {provider,operation}, `garraia_memory_embed_failures_total`{provider,operation},
+  `garraia_memory_recall_latency_seconds` e `garraia_memory_ingested_total`
+  {outcome}. A que mais importa e a de falha: o #948 tirou a falha de embedding
+  do silencio no log, e esta a tira do painel — log conta o caso, metrica conta
+  a tendencia, e e a tendencia que faz alguem descobrir que o provider caiu
+  antes de o recall degradar. `no_provider` e `failed` sao desfechos separados
+  de proposito (a diferenca entre "ninguem configurou" e "configurou e esta
+  quebrado"), e `noise` existe por causa do filtro do #952 — sem ele o total de
+  entradas sem vetor subiria sem que ninguem distinguisse defeito de politica.
+  Emitidas pelo facade `metrics` via `garraia-common`, e **nao** pelo
+  `garraia-telemetry`: quem emite e o `garraia-agents`, que a CLI linka, e
+  depender da telemetria arrastaria OpenTelemetry, OTLP, tonic e axum para
+  dentro do binario da CLI. Sem recorder instalado cada chamada e um no-op.
+  Toda label vem de conjunto fechado, com teste afirmando que id de sessao, id
+  de usuario e conteudo nunca chegam a uma label.
+- **`benches/recall_quality/` — benchmark de qualidade do recall em portugues
+  (#958).** O benchmark que existia mede desempenho (tamanho de binario, RSS,
+  cold start); este mede se a memoria devolve a lembranca **certa**:
+  recall@k, precision@k e MRR sobre 40 consultas com ground truth, em 13
+  grupos que separam tipos de falha (parafrase, sinonimo, consulta de uma
+  palavra, consulta em espanhol contra corpus em portugues).
+- **`ruido@k` para consulta que nao deve casar com nada.** E o que a issue pede
+  sem nomear: ela relata que "quem e Michel" devolveu "oi" no top-K. Um
+  benchmark que so mede acerto daria nota cheia a um sistema que devolve tudo
+  para tudo, entao o grupo `ruido-puro` tem ground truth vazio e e pontuado
+  numa escala separada, onde menor e melhor. As consultas desse grupo perguntam
+  por assuntos que o corpus nao tem, e o `run.sh` recusa o dataset se alguma
+  delas usar palavra que aparece no corpus — sem isso a sonda mediria acerto
+  como se fosse ruido. As saudacoes seguem entre os **documentos**, que e onde
+  importam: como distratoras das consultas de verdade.
+- **`garra memory add` novo.** O `garra memory` sabia inspecionar (`list`,
+  `search`, `stats`) e podar (`delete`, `compact`, `ttl`), mas nao **semear**:
+  a unica forma de por algo na memoria era conversar com o agente, o que exige
+  um provider de LLM. Sem isso nao havia como medir recall de forma
+  reproduzivel. O embedding e gerado na hora — uma entrada sem vetor nao
+  aparece na busca semantica, e um comando de semear que deixa a entrada
+  invisivel ate um segundo comando e uma armadilha. Quando nao ha provider, ele
+  **diz** e aponta o `reindex`.
+- **Nao e gate de CI, e nao deve virar um.** A execucao depende de um provider
+  de embeddings, e um numero que varia com a maquina e com o modelo instalado
+  nao pode reprovar o PR de ninguem.
+- **Primeira medida, commitada como artefato:** MRR 0,108 na **busca textual**
+  (sem provider configurado). O que o numero diz nao e "a memoria e ruim" — e
+  que o fallback textual e quase inutil para pergunta em linguagem natural.
+  `recall@1` igual a `recall@10` e a assinatura: a busca e
+  `LIKE '%frase inteira%'`, entao ou a frase casa ou nao casa. As quatro
+  consultas que acertaram, das 37 com resposta esperada, sao exatamente aquelas
+  cuja string aparece **literal** no documento — nao as mais curtas.
+- **Memoria do agente ganha prazo de validade e fixacao (#959).** A memoria de
+  workspace (`rest_v1/memory.rs`) ja tinha `ttl_expires_at` e `pinned_at`; a
+  memoria que alimenta o recall semantico nao tinha nenhum dos dois — memoria
+  obsoleta (preferencia que mudou, fato de sessao antiga) ficava para sempre
+  poluindo o recall, e nao havia como proteger da compactacao o que importava.
+  Agora `memory_entries` tem as duas colunas (migracao aditiva, forward-only:
+  banco existente ganha as colunas na abertura) e a CLI tem
+  `garra memory pin <id> [--unpin]` e `garra memory ttl <id> <dias|--clear>`.
+  Entrada vencida sai do recall **na hora**, pelo caminho textual e pelo KNN —
+  o indice vec0 so conhece distancia, entao o filtro tambem foi para o fetch
+  dos candidatos, como o #971 teve de fazer para tenant. Entrada fixada nunca e
+  apagada pela compactacao, automatica ou manual. `garra memory stats` conta as
+  fixadas e as vencidas.
+- **`POST /a2a/tasks` passa a rotear para um agente nomeado (#965).** O corpo
+  aceita `target` (e as grafias `agentId` e `agent_id`, que a issue cita) para
+  escolher entre os agentes que o operador configurou. Sem o campo, nada muda:
+  o agente padrao atende como sempre atendeu, e nenhum cliente A2A existente
+  quebra.
+- **Um alvo desconhecido e recusado com 400, e nunca cai no padrao em
+  silencio.** O `agent_router::resolve` cai — e esta certo, porque ele existe
+  para escolher quando ninguem escolheu. Mas quem pede a Hera e recebe a Garra
+  com 200 e sem sinal nenhum acredita ter falado com quem nao falou; e a mesma
+  forma do `/mode` decorativo que este lote inteiro vem eliminando. Entrou um
+  `resolve_exact` que devolve ausencia, e o teste poe os dois lado a lado na
+  mesma entrada para o contraste ficar no CI.
+- **A resposta 400 lista os nomes conhecidos.** Nao vaza nada: o
+  `GET /.well-known/agent.json` ja publica todos como `skills`. Sem a lista, o
+  chamador so poderia adivinhar.
+- **O nome pedido nao entra no log.** Ele vem de um endpoint sem
+  autenticacao, e ecoar entrada de fora para o arquivo de log e o caminho
+  curto para poluicao e injecao de linha.
+- **O `tools:` de um agente nomeado passa a valer — ele nunca valeu.** A config
+  documenta o campo como "Restrict which tools this agent can use (empty = all
+  tools)" e nenhum codigo o lia: nem aqui, nem no `POST /api/chat`, que ja
+  aceitava `agent_id`. Quem escrevia `tools = ["web_search"]` acreditava ter
+  restringido e o agente seguia com todas. E a mesma forma da #988, e o
+  conserto entra **aqui** porque este PR abre o caminho dos agentes nomeados
+  para um endpoint sem autenticacao — uma restricao que nao vale e pior num
+  lugar onde qualquer um chega. Lista vazia continua significando "todas".
+- **E o `model:` do agente tambem era ignorado.** Um agente configurado com
+  `model = "gpt-4"` respondia pelo modelo padrao do provider.
+- **Fragmentos de changelog em `changelog.d/` (#973).** Todo par de PRs
+  paralelos colidia na secao `[Unreleased]` do `CHANGELOG.md` — duas vezes so
+  na sessao de 2026-09-05, e numa delas as entradas foram parar dentro da
+  versao ja publicada porque o contexto do hunk sobreviveu ao rename da secao.
+  A causa e estrutural: dois PRs que anexam linhas na mesma secao do mesmo
+  arquivo conflitam sempre. Agora cada PR deixa um arquivo proprio em
+  `changelog.d/<secao>/<numero>-<slug>.md`, e `scripts/changelog/assemble.py`
+  junta tudo no passo de release — respeitando secao existente e nunca
+  escrevendo dentro de uma versao ja publicada.
+- **O timeout por execucao de ferramenta virou configuravel (#981).** Eram 30s
+  fixos em `ExecutionBudget::padrao()`, e isso matava ferramenta que chama LLM
+  por dentro: um MCP que sumariza, um `ask` aninhado, geracao de resposta
+  longa. O agente recebia `tool timeout` como se fosse falha da ferramenta — o
+  erro apontava para o lugar errado. Agora `GARRA_TOOL_TIMEOUT_SECS` sobrescreve,
+  e o default segue 30s (zero mudanca para quem nao configurar).
+- **Valor invalido avisa em vez de sumir.** `=abc` ou `=0` volta ao padrao **e
+  loga**. Cair no padrao em silencio faria alguem configurar, ver o
+  comportamento antigo e nao ter como saber por que.
+- **Valor absurdo e aceito, com aviso.** Acima de uma hora por ferramenta o log
+  diz que, se a intencao era milissegundos, o numero esta 1000x maior — mas
+  usa o que foi pedido. Quem quer mesmo um turno longo tem direito ao numero
+  dele; quem digitou `30000` querendo `30` descobre antes de esperar 8 horas.
+- **E variavel de ambiente, e nao chave de config, por um motivo concreto:** o
+  `garraia-agents` nao depende do `garraia-config`, e criar essa dependencia so
+  para um `u64` acoplaria o crate de agentes ao carregador inteiro. O preco
+  seria o knob nascer invisivel — pago em separado: `garra config check` agora
+  lista `GARRA_TOOL_TIMEOUT_SECS` entre as env vars detectadas, entao o
+  operador descobre sem ler codigo.
+- **`/goal` existe de verdade (#983).** `/goal <texto>` define o objetivo da
+  sessao, `/goal` consulta, `/goal clear` remove. O objetivo persiste entre
+  mensagens e entre reinicios, e nao vaza entre sessoes.
+- **O runtime recebe o objetivo explicitamente**, num campo do `ExecContext`, e
+  nao concatenado na mensagem — que e o que o criterio de aceite pede. A
+  diferenca e pratica: concatenado na mensagem, o objetivo sumiria da janela
+  junto com ela quando o historico fosse podado. Como enquadramento do turno,
+  ele entra no prompt de sistema e fica.
+- **O objetivo e por pessoa, e nao por sessao — e isso e seguranca, nao
+  preferencia.** Achado ALTO de auditoria: em grupo do Telegram ou do iMessage a
+  chave da sessao e do **canal** (`external_id = chat_id`), entao todos os
+  membros compartilham uma sessao. Como o objetivo entra no prompt de
+  **sistema**, um objetivo por sessao deixaria qualquer membro escrever
+  instrucao de sistema para os turnos dos outros — com um comando `Role::User`,
+  sem eles saberem. Em conversa de um para um nada muda: a sessao tem uma pessoa
+  so. Objetivo compartilhado de time e outra funcionalidade, e precisaria de
+  permissao explicita para quem define.
+- **O texto tem teto de 2000 caracteres, e passar disso e recusa e nao
+  truncamento.** O objetivo volta no prompt de sistema de **todo** turno
+  seguinte, entao um `/goal` de 10 MB seria custo de token recorrente — e, em
+  canal de grupo, um membro escolheria esse custo para o canal inteiro.
+- O objetivo mora no mesmo metadado de sessao que o modo. Isso so e seguro desde
+  a correcao do upsert (#1008): antes, a gravacao do turno substituia a coluna
+  inteira, entao gravar objetivo ali seria gravar e perder no mesmo turno —
+  exatamente o que acontecia com o `/mode`. Ha teste para os dois convivendo.
+- **Modo customizado passa a valer na execucao (#986).** O CRUD existe desde o
+  GAR-232 — `POST/GET/PATCH /api/modes/custom`, com UI no WebChat — e o runtime
+  nunca leu nada dele: dava para criar um modo, tentar seleciona-lo, tomar 400 do
+  `POST /api/mode/select` (que so aceitava os nove nativos), e, se conseguisse
+  gravar por outro caminho, ver a execucao ignorar tudo. Agora o `base_mode`, o
+  `prompt_override`, os `tool_policy_overrides` e os `defaults` formam um perfil
+  efetivo que chega ao portao de ferramentas.
+- **As duas grafias do override de politica sao aceitas.** O `README.pt-BR.md`
+  documenta `{"allow": [...], "deny": [...]}` e a struct chama os campos
+  `allowed`/`denied`. Quem seguiu a documentacao publicada nao pode ver o
+  override ser ignorado em silencio. Chave ausente preserva a do perfil base;
+  presente substitui — nao ha merge de listas, porque quem declara `allow` esta
+  dizendo qual e a lista, e nao acrescentando a ela.
+- **O `prompt_override` e o `defaults` chegam ao modelo.** Achado de auditoria:
+  na primeira versao os dois eram gravados, devolvidos pela API e **nunca lidos
+  na execucao** — o perfil os carregava e nada extraia dali. O criterio de aceite
+  da issue ("overrides de politica, prompt e defaults sao respeitados") nao
+  estava cumprido, e o teste que eu tinha escrito verificava so o struct, entao
+  passava com a feature morta. Precedencia: override explicito do chamador >
+  valor do modo > config do runtime > default. Diferente dos `ModeLimits`, o
+  `max_tokens` do modo **nao** e limitado ao padrao: aquele limita quantas vezes
+  o agente roda ferramenta (cada uma podendo rodar `bash`) e o tempo de parede
+  junto; este limita o tamanho de uma resposta, e o README documenta `8192` como
+  uso pretendido. Quem configurou `max_tokens` no runtime continua vencendo.
+- **Nome de modo nativo e recusado na criacao.** `select_mode` tenta o nativo
+  primeiro — e tem de tentar, para um customizado chamado `code` nao sequestrar
+  o nativo. A consequencia era que um modo criado com nome nativo ficava gravado
+  e nunca selecionavel. Aceitar a criacao e negar a selecao depois e o pior dos
+  dois.
+- **`GET /api/modes` passa a listar os customizados**, com a `tool_policy`
+  **efetiva** e nao a do modo base. A mensagem de erro do `select` mandava
+  conferir uma lista que nunca continha o modo recem-criado.
+- **Um lugar so monta o `ExecContext`.** Os dez pontos que atendem usuario
+  chamavam `ExecContext::with_mode(state.chosen_agent_mode_for(..).await)` cada
+  um por si; agora chamam `state.exec_context_for(..)`, que resolve o modo e, se
+  for customizado, ja traz o perfil. E a mesma razao de o `chosen_agent_mode_for`
+  existir: foi a repeticao que deixou o `/mode` gravando numa chave e a execucao
+  lendo outra por meses.
+
+- **Wrapper `garra-mcp-server-linker` no Termux (#920).** "O exec falha no
+  Termux" sao na verdade duas falhas com o mesmo sintoma: (A) o host MCP nao
+  consegue exec'ar o wrapper *script*, e (B) o wrapper roda e o exec interno do
+  ELF falha. O `LD_PRELOAD` da v0.3.7 cobre B — e so quando o shim esta
+  instalado. O wrapper novo entrega o ELF ao loader do Android
+  (`/system/bin/linker64`, com fallback no caminho do apex), que mapeia o
+  binario sem shim e sem `LD_PRELOAD` nenhum.
+
+  **A nao tem solucao dentro de um wrapper**, porque o wrapper tambem precisa
+  ser exec'ado, e o CHANGELOG nao finge que tem: para A o host aponta
+  `command: /system/bin/linker64` e passa o binario como argumento — a config
+  que o relator validou fim a fim com `env -i`. Documentada em
+  `docs/installation.md` e `docs/cli-mcp-server.md`, e impressa pelo
+  `garraia doctor` com o caminho real preenchido.
+
+  Arquivo separado do wrapper existente por decisao de teste: a suite afirma
+  `grep -c '^exec '` == 1 em cada um, o que faz uma futura fusao dos dois
+  derrubar os testes em vez de apagar o fallback em silencio.
+  `detect_platform.sh` 21 -> 28 casos.
+- **Bloco Termux do `doctor` ganha "Wrapper MCP (loader)" (#920)**, com a
+  receita do `linker64` pronta para colar. `TermuxItem.next_step` passa de
+  `&'static str` para `String` para poder nomear o caminho real; a forma
+  serializada de `doctor --json` nao muda.
+- **Tool `telegram_send` de envio proativo (#921).** O agente pode *iniciar*
+  uma mensagem no Telegram (lembrete agendado, "o backup terminou", resposta
+  de tarefa longa) em vez de so responder. Deny-by-default: responder no chat
+  corrente nao pede config; mandar para um chat que o modelo *nomeia* exige o
+  id em `channels.telegram.proactive_chat_ids` — lista separada de proposito
+  do allowlist de usuarios (que tem modo `open`, perigoso demais para decidir
+  quem o bot pode procurar sozinho). Vazia = recusa tudo; lida a cada envio
+  (revogacao sem restart). Rate limit de 5 mensagens/conversa/minuto
+  (`SendBudget`); recusa nao consome cota. Documentada em `docs/channels.md`.
+
+  De quebra, a investigacao achou que **a entrega Telegram de tarefas
+  agendadas estava silenciosamente quebrada** — nada no repo escrevia
+  `telegram_chat_id` no metadata que `Channel::send_message` exige — e o
+  mesmo caminho novo de enderecamento (`ProactiveTargets`/
+  `with_channel_address`) conserta os heartbeats.
+- **Persona: o Garra conhece a Hera e a Forja (#966).** Port do plan 0274
+  adaptado ao `agent_router`/`NamedAgentConfig`; a persona explica que a
+  conversa direta entre agentes ainda nao esta disponivel (issue #965).
+  `docs/configuration.md` corrige o exemplo de `agents:` para o formato real
+  e `docs/hera-persona.md` entra na doc.
+
+### Changed
+
+- **Quatro testes de KNN deixam de passar em vazio (divida da auditoria do
+  #971).** Eles faziam `return` silencioso quando o sqlite-vec nao carregava —
+  inclusive os dois de isolamento de tenant, que assim jamais exercitariam o
+  caminho que existem para proteger. Agora afirmam `knn_enabled()`: o
+  sqlite-vec e compilado no binario (`rusqlite` com `bundled`), entao ausencia
+  dele e defeito de build, nao ambiente aceitavel.
+- **O console interativo fica limpo por default (#933).** O subscriber unico
+  escrevia o mesmo fluxo em `garraia.log` e no stderr, entao todo INFO de
+  registro de provider/tools/sessao competia com o spinner e com a resposta
+  streamada do chat. Agora sao dois layers com filtros independentes: o
+  arquivo segue com tudo no nivel pedido (`--log-level`, elevado por
+  `--debug`) e o stderr mostra so WARN+ — `--verbose` (flag global nova) traz
+  o INFO operacional conciso e `--debug` espelha o arquivo. `RUST_LOG` setado
+  e valido continua vencendo os dois lados, como sempre (GAR-138). A redacao
+  (regra absoluta 6) permanece nos dois caminhos, com teste que varre o fonte
+  para impedir a regressao de redigir so uma metade.
+
+  Ficam **fora** do console limpo, por serem canal de log e nao console:
+  `start`/`restart` (journald le o stderr do foreground) e `mcp-server` (o
+  host MCP loga o stderr do filho — `docs/cli-mcp-server.md` §Stdio
+  invariants). Esses espelham o arquivo como antes.
+- **O indicador de atividade ganha janela de aparicao e cronometro (#936).**
+  Resposta quase instantanea nao pisca mais spinner nenhum: os primeiros
+  ~270ms (3 ticks de 90ms) avancam o estado sem pintar nada, entao nao ha
+  flash a limpar. Espera longa ganha o tempo decorrido na linha (`4.7s`, a
+  partir de ~2,5s, junto da primeira rotacao de mensagem). As mensagens
+  passam a intercalar 3 profissionais para 1 com a personalidade do Garra
+  (exatamente as quatro que a issue cita), com teste fixando razao e
+  espacamento. Tudo derivado de **ticks**, nunca de relogio — o
+  `SpinnerState` continua puro, renderizado como braco do `tokio::select!`
+  (nunca task propria), cursor nunca escondido, fallback ASCII cobrindo
+  quadro, texto e cronometro. Os testes de timing do chat migram para tempo
+  virtual (`start_paused`) porque a janela de aparicao tornaria margens de
+  30ms flake garantido em runner carregado.
+- **O lote de embeddings do Ollama passa a ser paralelo.** O endpoint dele e
+  um-texto-por-request e o loop era serial: reindexar as ~7k entradas de uma
+  base real seriam 7k idas e voltas encadeadas. Agora sao lotes de 4, com
+  teste garantindo que a saida mantem a ordem dos textos de entrada —
+  embaralhar ali corromperia a memoria em silencio, porque o chamador casa
+  vetor com texto por indice.
+- **O chat ganha layout de conversa e cabecalho compacto (#934, #935).**
+  `voce >` virou `❯` e `garra > ` virou um rotulo `Garra` em linha propria —
+  o rotulo na mesma linha da resposta so identificava o primeiro paragrafo.
+  A abertura deixou de gastar doze linhas com o mascote mais `Diretorio:` e
+  `Projeto: Arquivos: a, b, c...`: agora sao tres linhas com versao, modelo,
+  modo, caminho encurtado, ramo do git e tipo de projeto. O mascote nao
+  sumiu, virou `garra about`; a inspecao detalhada de diretorio virou
+  `/context`; e a listagem de arquivos, que ninguem lia na tela, continua
+  indo para o prompt do sistema, onde serve para alguma coisa. O ramo do git
+  sai do `.git/HEAD` sem subprocesso, seguindo o ponteiro `gitdir:` de
+  worktree e submodulo. Novo modulo `conversation.rs`, puro no molde do
+  `spinner` (nao escreve no terminal nem le o relogio), o que torna
+  afirmavel o que ninguem exercita a mao: o caminho ASCII, o sem cor e o
+  terminal estreito.
+- **O resumo de ferramenta passa a dizer o resultado, e nao a primeira linha
+  (#938).** Ate aqui `cargo test` aparecia como `Compiling garraia-agents
+  v0.3.9 (+104 linha(s))` — a primeira linha nao-vazia, que nao diz nada sobre
+  ter passado. Agora aparece `85 passou`, e um `cargo test --workspace` soma os
+  binarios (uma linha `test result:` por alvo; "148 passou" espalhado em 54
+  linhas nao e resposta). Em falha, `3 falhou, 145 passou`, com a falha na
+  frente porque e ela que muda o que a pessoa faz em seguida.
+- **Em erro de compilacao o resumo e o proprio erro.** `error[E0382]: borrow of
+  moved value` em vez de `Compiling ...`, que era o que a issue pedia como
+  "concise relevant excerpt". Mais de um erro mostra o primeiro e diz quantos
+  faltam.
+- **A classificacao olha a forma da saida, nao o comando.** A mesma contagem
+  sai de `cargo test`, `cargo nextest` e de um `make test` que embrulhe
+  qualquer um dos dois — e o comando nem chega ate a funcao de resumo. Formato
+  sem caso escrito continua no comportamento generico: nao se adivinha, pela
+  mesma razao que o resumo do **input** nao adivinha campo (adivinhar foi como
+  ele chegou a exibir connection string).
+- **Sanear vem antes de classificar.** Saida de terminal costuma vir colorida,
+  e um reconhecedor rodando no texto cru procuraria `test result:` numa linha
+  que comeca com escape ANSI. O caso comum falharia em silencio, caindo no
+  resumo generico sem nada indicando por que.
+- **Erro no `garra chat` passa a dizer o que fazer (#941).** O #933 tirou o
+  tracing do console, e isso criou uma divida: silenciar o log de rotina nao
+  pode significar esconder a falha. Ate aqui saia `Erro: {mensagem crua do
+  provedor}` e, para dois casos, uma dica escolhida por `err_str.contains(...)`
+  solto no meio do laco do chat. Agora sai um cartao com o componente que
+  falhou no titulo, a mensagem redigida no corpo e o proximo passo embaixo —
+  oito classes (credencial, timeout, inalcancavel, modelo indisponivel, limite
+  de taxa, permissao, provedor local fora do ar, desconhecida) em vez de duas.
+- **Nao reconhecer nunca perde informacao.** Classe desconhecida cai num cartao
+  generico que mostra a mensagem original **inteira**, e sem acao inventada.
+  Trocar um erro feio por um erro invisivel seria pior, e ha teste afirmando
+  isso.
+- **Provedor local tem conserto proprio.** "Verifique a rede" para quem
+  esqueceu de subir o Ollama e mandar investigar a coisa errada; o cartao
+  sugere `ollama serve`. Rodar o binario contra um Ollama desligado mostrou que
+  a frase real do `reqwest` e "error sending request for url" — que nao contem
+  "connect" nem "refused", entao a lista de padroes escrita de cabeca perdia
+  justamente o caso mais comum do projeto. O codigo antigo tambem o perdia.
+- **Segredo nunca aparece no cartao.** Criterio de aceite da issue, e nao
+  teorico: mensagem de erro de provedor e corpo de resposta HTTP, e ha provedor
+  que ecoa o pedido com o `Authorization` dentro. O texto passa por
+  `redact_secrets` e pelo filtro de controle do #996 — na origem **e** no
+  renderer, porque confiar so na origem deixaria um jeito de errar para quem
+  montar um cartao a mao.
+- **A variante `UiEvent::Error` de uma linha saiu.** Depois do cartao ela nao
+  tinha mais caso proprio: um erro sem proximo passo e um cartao de acoes
+  vazias, e ganha do texto solto por nomear o componente. O aviso do `/model`
+  migrou do `println!` com cor incondicional para o renderer, entao passou a
+  respeitar `NO_COLOR` e pipe — uma linha a menos da divida que o plano de
+  migracao da ADR 0017 registra.
+- **A saida do terminal passa por um renderer, nao mais por `println!` espalhado
+  (#942).** Ate aqui tres donos que nao se conheciam montavam a tela do
+  `garra chat`: `println!` direto, o `stream_turn` e o `tracing` — e a separacao
+  entre log e interface, que o #933 conquistou, era convencao, nao estrutura.
+  Agora ha `UiEvent` (o que aconteceu) e `TerminalRenderer` (o que aparece),
+  conforme a ADR 0017. A ordem obrigatoria de escrita — apagar a animacao,
+  escrever o rotulo `Garra` uma unica vez, so entao o texto do modelo — saiu de
+  uma macro dentro do `stream_turn` e virou responsabilidade do renderer. O
+  `spinner` e o `conversation` viraram `ui::spinner` e `ui::conversation`, sem
+  alteracao propria. Comportamento visivel identico, com uma excecao de
+  proposito: num terminal interativo sem UTF-8 (`LANG=C`), a conversa e a
+  animacao agora caem para ASCII **juntas**. Antes cada uma decidia sozinha e o
+  usuario via `❯` em UTF-8 ao lado de uma animacao ASCII — o desencontro que a
+  ADR 0017 manda acabar. `GARRAIA_NO_SPINNER` passou a desligar so a animacao,
+  mantendo o resto da interface rica de pe. A largura do terminal tambem virou
+  fonte unica: pergunta ao terminal primeiro, `COLUMNS` como segunda opiniao.
+- **A ADR 0002 passa a dizer o que foi construido (#949).** Ela decidia
+  "pgvector, 768 dimensoes fixas, mxbai" e ninguem voltou nela quando a memoria
+  do agente foi construida em **sqlite-vec**, com uma tabela `vec_embeddings_{dims}`
+  por dimensao, criada sob demanda a partir do vetor que o provider devolve.
+  Quem lia o ADR de cima a baixo acreditava num sistema que nao existe em
+  instalacao nenhuma. A Amendment de 2026-09-06 registra a divergencia campo a
+  campo, explica por que ela aconteceu (memoria do agente e local-first e
+  mono-usuario; exigir Postgres teria matado o caso de uso principal) e delimita
+  o que do ADR continua valendo — tudo que ele decide para o workspace
+  multi-tenant em Postgres. O status segue `Accepted`: o documento nao estava
+  errado, estava sem escopo. O crate orfao `garraia-embeddings` ganha um aviso
+  no topo dizendo que **nao** e o caminho em uso e apontando para o par que e
+  (`garraia_agents::embeddings` + `garraia_db::vector_store`). Remover ou alinhar
+  o crate fica como decisao propria, com ADR, porque o `CLAUDE.md` o registra
+  como scaffold deliberado da Fase 2.1.
+- **O crate `garraia-embeddings` passa a avisar no compilador que e orfao
+  (#949).** Ele nao e usado por nada no workspace e descreve um sistema que nao
+  roda: pgvector com 768 dimensoes fixas, quando o caminho vivo e
+  `garraia_agents::embeddings` + `garraia_db::vector_store` (sqlite-vec, com a
+  dimensao derivada do vetor que o provider devolve). O aviso deixou de ser so
+  um comentario no `lib.rs` e virou `#![deprecated]`: como o CI roda
+  `clippy -D warnings`, um `use garraia_embeddings::...` novo **quebra o
+  build** em vez de passar despercebido.
+- **A `EMBEDDING_DIM = 768` casa por acaso com o modelo padrao de hoje**
+  (`nomic-embed-text`), e e por isso que ela engana: a constante parece certa
+  enquanto a afirmacao que ela faz — "o sistema tem uma dimensao, e e esta" — e
+  falsa. Trocar o numero consertaria o valor e manteria o erro.
+- **A decisao de remover ou alinhar o crate esta na ADR 0018, com status
+  `Proposed`** — a regra absoluta 8 pede o ADR antes da decisao, e a decisao e
+  do dono. Nada foi removido.
+- **O `docs/src/memory.md` passa a descrever o sistema que existe (#963).** A
+  pagina documentava um produto que nunca foi construido: `garra memory
+  add/clear/export/disable`, um `facts.json` com array de fatos datados, e as
+  chaves `memory.auto_extract`, `extraction_interval` e `max_facts`. Nenhum
+  desses comandos existe; nenhuma dessas chaves e lida. Quem seguisse a pagina
+  batia num `error: unrecognized subcommand` e concluia que o produto estava
+  quebrado — documentacao errada e pior que documentacao ausente, porque a
+  ausente manda a pessoa ler o `--help`.
+- Agora estao la os nove subcomandos reais (`stats`, `list`, `search`,
+  `reindex`, `backup`, `pin`, `ttl`, `delete`, `compact`), as chaves reais
+  (`memory.ingestion.*`, `memory.retention.*`, `embeddings.<nome>`), e as
+  quatro metricas do #957. Cada afirmacao foi conferida contra o codigo e
+  contra o binario — a tabela de comandos bate com o `garra memory --help`, e a
+  frase "diz se rodou semantica ou textual" foi verificada rodando a busca.
+- Registra tambem o que **nao** existe, que e metade do valor: nao ha `garra
+  memory add`; o retriever do `garraia-learning` segue stub ate a Fase 2.1; e
+  os dois gauges de tamanho do indice da #957 ainda nao foram entregues, com o
+  motivo (precisam de worker proprio, porque pendura-los no worker de retencao
+  os deixaria mortos para quem nao liga a retencao — que e o padrao).
+- Esclarece uma confusao que a pagina antiga criava: `fatos.json` existe, mas
+  e um **perfil estatico** escrito a mao e injetado no boot, e nao onde os
+  fatos extraidos ficam. Os fatos extraidos por LLM (confianca >= 0,80) moram
+  no mesmo `memory.db`, como entradas `[FACT]`, e nao passam pelo filtro de
+  ruido — um fato extraido e, por definicao, o que o extrator julgou ser sinal.
+- **`/mode auto` passa a restringir de verdade (#979).** Ate aqui escolher
+  `auto` resolvia para um perfil de politica vazia — ou seja, nao mudava nada.
+  Agora o perfil do turno sai da classificacao da mensagem: "escreve uma funcao
+  que soma" ganha permissao de escrita, "onde fica o handler de login" roda
+  somente-leitura. A linha que isto **nao** cruza e a do #988: deduzir para quem
+  escolheu `auto` e executar a escolha; deduzir para quem nao escolheu nada
+  continua sem ligar politica nenhuma.
+- **O classificador entende portugues.** As listas de palavra-chave eram so em
+  ingles. Enquanto o modo era decoracao de prompt, um classificador que nunca
+  dispara para "implementar o parser de config" era so inerte; com a politica
+  valendo, `/mode auto` para quem escreve em portugues virava **nenhuma
+  restricao**, em silencio, justamente para o publico principal do projeto. O
+  vocabulario veio do `AutoRouter` morto de `agent_mode.rs`; o algoritmo dele
+  nao veio — era primeiro-que-casar-vence e devolvia sempre um modo, nunca
+  `None`, e classificar "oi" como `code` sob politica aplicada seria pior que
+  nao classificar.
+- **Os limites do modo alimentam o orcamento de execucao (#979).**
+  `ModeLimits` existia desde o desenho dos modos e o runtime nunca o leu: todo
+  turno rodava com o padrao fixo, entao um modo que se declarava mais curto nao
+  era mais curto em lugar nenhum. `max_tool_loops` e `timeout_secs` passam a
+  valer. Precedencia: override explicito de `max_tool_calls` > limites do modo >
+  padrao.
+- **O modo baixa o teto de execucao, nunca levanta.** Achado de auditoria: dos
+  nove perfis, um so pede mais que o padrao — o `orchestrator`, com 100 chamadas
+  e 60s de timeout, que levaria o pior caso de um turno de ~25 para ~100
+  minutos. Modo e um seletor do usuario (`/mode` e comando, e o
+  `POST /api/mode/select` e aberto), entao deixa-lo levantar o teto faria o
+  custo de API e o tempo de parede dependerem do que a pessoa digitou, sem o
+  operador ter dito nada. O padrao — que o operador ja configura — vira o limite
+  superior, e o modo so encurta a partir dali. Quem quer mais passa
+  `max_tool_calls` explicito, que e knob de quem sobe o processo.
+- **A lacuna do MCP passa a ser dita em voz alta.** Um modo whitelist
+  (`search`, `review`, `architect`, `debug`, `edit`) lista so nomes nativos, e
+  ferramenta de servidor MCP passa por ele — continua sujeita ao `denied`, mas
+  nao a whitelist. Isso ja era assim; o que mudou e **quem encontra**, porque
+  `/mode auto` deixou de ser inerte. Quem digitou `auto` e escreveu uma pergunta
+  de busca agora acredita estar somente-leitura enquanto uma ferramenta MCP de
+  escrita continua disponivel, e acreditar numa restricao que nao existe e pior
+  que nao ter restricao. Fechar a lacuna derrubaria toda integracao MCP nesses
+  cinco modos, em silencio, entao por ora o runtime emite `warn!` nomeando as
+  ferramentas MCP que passaram — para o operador que conectou o servidor, nao
+  para o modelo. Um whitelist que entenda servidor MCP precisa ser desenhado.
+- **`/stats` passa a dizer o que a ultima resposta usou de verdade (#984).**
+  Mostrava tres contadores globais — sessoes ativas, overrides de modelo, tarefas
+  A2A — e nada sobre o LLM. Agora mostra provider, modelo, ferramentas
+  executadas, tokens, latencia e se um fallback respondeu.
+- **Efetivo, e nao configurado.** A issue faz a distincao certa: o runtime
+  resolve override, prefixo de modelo, `tools_model` e fallback pelo caminho,
+  entao perguntar a config e perguntar a quem nao sabe. O runtime passa a
+  registrar, no fim de cada turno, o que de fato aconteceu — e o modelo vem da
+  **resposta do provider**, o unico valor que sobreviveu a todas as resolucoes.
+- **O que nao da para saber aparece como nao sabido.** No streaming nao ha
+  `LlmResponse`: so deltas de texto. Ali o modelo conhecido e o *pedido* e nao ha
+  contagem de tokens, entao o `/stats` marca os dois em vez de mostrar o pedido
+  como se fosse o efetivo. Zero-porque-nao-sei e diferente de
+  zero-porque-nao-usou.
+- **Modo aplicado, e nao apenas o salvo.** O #988 separou escolha de deducao, e
+  so a escolha liga a `ToolPolicy`. O `/stats` diz qual dos dois esta em vigor —
+  mostrar so o modo salvo faria o usuario acreditar numa restricao que nao vale.
+  Mostra o objetivo da sessao (#983) junto.
+- O registro por sessao tem teto de 512 entradas com despejo do mais antigo: a
+  chave e o `session_id`, que vem de request, e sem teto o mapa cresceria com o
+  numero de sessoes que ja passaram. Batimento agendado (`process_heartbeat`)
+  **nao** grava — sobrescrever o `/stats` com um turno que o usuario nao pediu
+  seria pior que nao ter o dado.
+- Os dois `unwrap()` do closure do `/stats` sairam (regra absoluta 4). Os outros
+  24 de `commands.rs` continuam la, fora do escopo deste trabalho.
+
+### Removed
+
+- **`garraia_agents::agent_mode` removido (496 linhas).** `AutoRouter`,
+  `ToolPolicyEngine`, `LlmRouter`, `ModeProfileExt`, `ModeSelectionMethod` e
+  `SessionModeMetadata` estavam todos re-exportados em `lib.rs` e nenhum tinha
+  consumidor fora do proprio arquivo. A #979 pedia para conectar o
+  `AutoRouter`/`ToolPolicyEngine` daqui ao runtime; era o par inferior. O
+  roteador vivo — com pontuacao, folga minima e estagio de LLM — mudou de
+  `garraia-gateway` para `garraia-agents`, que e onde o runtime alcanca (a CLI
+  monta o proprio `AgentRuntime` e nao passa pelo gateway).
+- **Duas das quatro camadas do sistema de modos eram inalcancaveis, e sairam
+  (#985, #987).** O `garraia-runtime/src/mode.rs` tinha ~910 linhas com
+  `AgentMode`, `ModeProfile`, `ToolPolicy` e `ModeEngine` proprios e **nunca
+  foi instanciado**: o unico consumidor do crate e o gateway, que importa so o
+  `RuntimeSettings`. Os ~250 usos de `ModeEngine::new()` que o arquivo tinha
+  eram testes dele mesmo. O `/mode` e o `/modes` de
+  `garraia-channels/src/commands/builtins/` idem: `register_builtins` nao e
+  chamado em lugar nenhum, e o registry que atende o usuario nasce vazio e e
+  preenchido so pelo `register_commands` do gateway.
+- **A #985 descrevia o risco errado, e o certo e menor.** Ela falava em
+  "validar um modo que o runtime nao aplica" — isso nao acontecia, porque
+  codigo inalcancavel nao executa nada. O custo real era manutencao dupla e
+  leitura enganosa: o `ToolPolicy` morto tinha `read_only` e o vivo nao, e a
+  #988 chegou a propor "honrar `read_only`" com base na copia morta. A #987
+  falava em "comportamento divergente em canais que usam a camada generica" —
+  nao existe tal canal.
+- **Fica registrado qual e o canonico**, no lugar onde alguem vai procurar:
+  `garraia_agents::modes` e o que o `/mode`, o `POST /api/mode/select` e o
+  `GET /api/modes` usam; e o roteamento automatico em producao e o
+  `garraia_gateway::auto_router`, nao o `AutoRouter` de
+  `garraia_agents::agent_mode`, que tambem nao tem chamadores.
+- Os outros doze comandos de `builtins/` continuam no mesmo estado de
+  inalcancavel. Nao os apaguei: liga-los ou remove-los e decisao de quem os
+  escreveu. Mas o docblock do modulo agora diz que nao estao ligados, para nao
+  enganar um terceiro leitor — ja enganou dois.
 
 ### Fixed
+
 - **Limpeza do indice vetorial: janela de corrida fechada e delecao atomica
   (divida da auditoria do #971).** `compact` e `delete_session_memory`
   coletavam os ids condenados e deletavam sob guards diferentes do mutex: uma
@@ -86,132 +933,186 @@ Trilha C, o lote de memoria semantica (#948-#965) priorizado pelo dono em
   providers, endpoint proprio (LM Studio, vLLM, gateway interno) segue sem
   credencial e sem mandar `Authorization` vazio, e endpoint oficial sem chave
   e pulado com aviso em vez de subir quebrado.
+- **Os docs de memoria contradiziam o binario, em dois arquivos.**
+  `docs/src/memory.md` afirmava "**Nao ha `garra memory add`**" — falso desde
+  que o comando entrou (#958). E `docs/memory.md`, para onde **o wiki do
+  projeto aponta duas vezes** como "Sistema de memoria", ainda descrevia o
+  sistema que nunca foi construido: um `facts.json` com array de fatos
+  datados, as chaves `auto_extract` e `max_facts`, e os comandos
+  `garraia memory clear`, `export` e `disable`. A reescrita do #963 conferiu
+  cada afirmacao contra o codigo, mas conferiu a pagina do book; esta copia
+  ficou para tras e seguiu sendo servida a quem chegava pelo wiki.
+- `docs/memory.md` vira redirecionamento para a pagina viva — apaga-lo
+  quebraria os links do wiki. `docs/src/memory.md` ganha a secao do
+  `garra memory add`, com o que importa: o embedding e gerado **na hora**,
+  porque uma entrada sem vetor nao aparece na busca semantica e um comando de
+  semear que deixasse a entrada invisivel ate um segundo comando seria uma
+  armadilha.
+- **O turno que caiu no fallback nao-streaming nao era anotado.** O `/stats`
+  (#984) e o `/status` novo respondiam "nenhum turno ainda" **depois de um
+  turno inteiro**, sempre que o provider nao fazia streaming — Ollama antigo,
+  llama.cpp sem SSE, ou qualquer provider num momento em que o streaming
+  falha. Dos tres `return Ok` do `stream_turn_with_sink`, so um anotava.
+  Achado rodando o binario: `Turnos 1` e `Ultimo turno: nenhum ainda` na mesma
+  tela.
+- **E o ramo do fallback agora anota melhor que o de streaming.** La ha uma
+  `LlmResponse` de verdade, entao o modelo vem **confirmado pelo provider** e a
+  contagem de tokens existe — o caminho de streaming so conhece o modelo
+  *pedido*. O turno que pede confirmacao de ferramenta tambem passou a contar:
+  um `/stats` em branco depois de uma pergunta diria que nada aconteceu.
+- **A descricao de ferramenta MCP passa por redacao de segredo.** Ela e texto
+  livre escrito pelo servidor, e o `/tools` a mostra. O painel ja tirava
+  escape, mas escape nao e o unico problema: uma descricao mal escrita pode
+  trazer uma URL com token, e ela iria para a tela em texto plano. E a mesma
+  redacao que a **saida** da ferramenta ja recebia.
+- **Turno curto ou puramente social deixa de poluir a busca semantica (#952).**
+  `"oi"`, `"ok"`, `"kkkk"` e `"bom dia"` eram embeddados como qualquer outra
+  mensagem e disputavam o top-K com memoria de verdade — texto curto tem
+  cosseno alto com quase tudo. Numa base de ~7.100 entradas, "quem e Michel"
+  trazia entradas `"oi"` entre os primeiros resultados. Agora a ingestao
+  decide se vale gastar um vetor: a entrada **continua gravada** e achavel
+  pelo recall textual, so nao entra no indice vetorial. A regra de frase so
+  casa com o conteudo **inteiro** (`"obrigado"` e ruido, `"obrigado pela
+  ajuda com o deploy"` nao), e nada e apagado nem retroativo — vetor de ruido
+  ja indexado continua onde esta. Configuravel em `memory.ingestion`
+  (`filter_noise`, `min_chars`, `extra_noise_phrases`), validado pelo
+  `garra config check`, documentado em `docs/src/memory-ingestion.md`.
+  `garra memory reindex` usa a **mesma** politica — com politicas divergentes
+  ele reembeddaria uma por uma as entradas que a ingestao acabou de pular — e
+  passa a separar no relatorio o que seria reindexado do que fica sem vetor
+  de proposito, para que o total de "sem vetor" do `stats` pare de parecer
+  defeito.
+- **A compactacao da memoria passa a rodar sozinha — ate aqui nunca rodou (#956).**
+  O `MemoryStore::compact()` existia desde sempre e os unicos chamadores eram os
+  testes e, desde o #950, a CLI. Na pratica a memoria de longo prazo crescia sem
+  teto: ruido acumulava, o recall degradava (mais candidatos no KNN, mais lixo
+  entre eles) e o backup ficava maior a cada dia. Agora o gateway sobe uma
+  varredura periodica (`memory.retention`) que apaga entradas nao-fixadas mais
+  velhas que a janela configurada. **Nasce desligada de proposito:** liga-la por
+  default numa atualizacao apagaria memoria de quem so quis atualizar a versao.
+  Enquanto esta desligada o boot avisa uma vez que a memoria cresce sem teto e
+  como ligar — o operador ganha o sinal sem pagar com dado.
+- **O stub do retriever de skills parava de mentir (#964).** A doc dizia
+  "Returns empty list until then" e o corpo devolvia `Err` — duas frases sobre a
+  mesma funcao, discordando. Quem lesse o comentario escreveria
+  `retrieve(q)?.is_empty()` e levaria um erro em producao. O comportamento que
+  ficou e o `Err`, porque `Ok(vec![])` seria pior: lista vazia e indistinguivel
+  de "procurei e nao achei nada", e o chamador seguiria em frente com um recall
+  que nunca rodou. A doc tambem citava a dependencia errada (`garraia-embeddings`,
+  o crate orfao do #949) e agora aponta o par que de fato funciona na memoria do
+  agente. Nao ha chamador no workspace hoje.
+- **Acento derrubava o turno no roteador por LLM.** O corte da mensagem para a
+  chamada de classificacao era `&text[..text.len().min(400)]`, e `len()` conta
+  **bytes**: numa mensagem em portugues com mais de 400 bytes, o corte cai no
+  meio de um `c`-cedilha ou de um `a`-til e o slice entra em panico. Passa a
+  cortar por caractere. Caminho alcancavel sempre que
+  `agent.auto_router_llm_enabled` estiver ligado e a heuristica ficar em duvida.
+- **O modo escolhido passa a valer de verdade (#982, #988).** Ate aqui `/mode
+  code` respondia "modo definido", gravava no banco, e a proxima mensagem rodava
+  igual — o modo era salvo e nunca lido no caminho de execucao, e a
+  `ToolPolicy` de cada modo era declarada e nunca verificada. Modos anunciados
+  como somente-leitura (`search`, `review`, `architect`) nao bloqueavam
+  `file_write` nem `bash`: apenas pediam no prompt. Agora o modo chega ao
+  runtime pelos dez pontos que atendem usuario, e a politica e aplicada.
+- **Aplicada em dois niveis, de proposito.** O filtro na montagem tira a
+  ferramenta da lista que o modelo ve — e UX, o modelo nao gasta turno pedindo
+  o que nao pode. O guard antes de cada `tool.execute` e a garantia: o criterio
+  de aceite e "nenhuma ferramenta proibida e executada, **mesmo que solicitada
+  pelo LLM**", e o modelo pode pedir um nome que nunca esteve na lista.
+- **"Sem modo escolhido" nao e "modo Ask", e essa distincao evita a regressao
+  mais provavel do lote.** O default do enum e `Ask`, e `ask` nega
+  `file_write`. Se sessao sem modo resolvesse para `Ask`, ligar a politica
+  quebraria escrita por padrao em **todo** canal, CLI incluso — que nunca seta
+  modo. O criterio de aceite pede que o comportamento padrao nao regrida, e o
+  comportamento padrao de hoje e nao ter politica.
+- **Ferramenta MCP nao e barrada por whitelist, e isso e um limite conhecido.**
+  Tool de servidor MCP se chama `{servidor}__{tool}`, e os whitelists de cinco
+  dos nove modos listam so nomes nativos — aplicar ao pe da letra derrubaria
+  toda integracao MCP nesses modos, em silencio. Ela passa pelo whitelist e
+  continua sujeita ao `denied`. **A consequencia:** um modo somente-leitura nao
+  restringe ferramenta MCP. Se o operador conectou um servidor que escreve
+  arquivo, o modo `search` nao o impede. Um whitelist que entenda servidor MCP
+  precisa ser desenhado, e nao cabia aqui.
+- **O `working_dir` chega as ferramentas de arquivo (#980).** Caminho relativo
+  passa a resolver contra o diretorio do projeto em vez do cwd do processo.
+  **Isto nao e um sandbox**, ao contrario do que a issue afirma: o
+  `resolve_tool_path` rejeita `..` e junta relativo com o diretorio, mas nao
+  canonicaliza nem confina — caminho absoluto passa igual, antes e depois. E o
+  `bash_tool` ignora o campo por completo. O que a issue chama de validacao ja
+  testada (`is_path_allowed`, `ProjectToolContext`) e codigo morto, alcancado
+  so pelos proprios testes.
+- **Deduzir nao e consentir.** O auto-router (GAR-227) classifica a mensagem e
+  grava o modo na sessao. Enquanto o modo era decoracao de prompt isso era
+  inofensivo; com a politica valendo no executor, ler dali aplicaria restricao
+  a quem nunca escolheu nada — bastava a heuristica achar que a pergunta
+  parecia busca para `file_write` sumir. O store passa a registrar **quem**
+  escolheu (`agent_mode_source`): o `/mode` e o `GET /api/mode/current`
+  continuam mostrando o modo deduzido, e so o escolhido liga a politica. Sessao
+  gravada antes do marcador conta como nao-escolhida — e o comportamento que
+  ela ja tinha, e o primeiro `/mode` regulariza.
+- **O `X-Agent-Mode` nunca chegava ao banco.** O gateway gravava o modo antes
+  de `hydrate_session_history` criar a linha da sessao, e `set_agent_mode` e um
+  `UPDATE ... WHERE id = ?`: zero linhas casadas, `Ok(())` devolvido, `let _ =`
+  no chamador. O header dizia `search` e o banco ficava vazio — bug anterior a
+  este lote, achado rodando o binario, invisivel a qualquer teste que so
+  chamasse o setter numa sessao existente. Agora a gravacao acontece depois da
+  hidratacao, o setter devolve erro quando nao encontra a sessao, e o `/mode` do
+  Telegram avisa em vez de responder "modo definido" com o banco intacto.
+- **O upsert da sessao apagava o modo a cada requisicao.** Causa-raiz mais
+  profunda que a anterior, e a razao real de o `/mode` nunca ter funcionado:
+  `upsert_session_with_tenant` fazia `metadata = excluded.metadata` —
+  substituicao inteira — e os dois chamadores de producao
+  (`hydrate_session_history` no inicio do turno, `persist_turn` no fim) passam
+  `{}` ou so `{"continuity_key": ...}`. O `/mode search` respondia "modo
+  definido", gravava, e o proprio turno apagava. Enquanto o modo era decoracao
+  de prompt isso so tornava o comando inutil; com a `ToolPolicy` valendo,
+  passou a ser uma restricao que o produto promete e nao entrega. O upsert
+  passa a **mesclar** (`json_patch`, RFC 7396: chave presente sobrescreve,
+  ausente preserva, `null` apaga), com guarda para linha de metadado nula ou
+  quebrada — `json_patch(NULL, ...)` devolveria `NULL` e trocaria a
+  substituicao por um apagamento pior.
+- **Nome de modo invalido para de virar escolha.** O `/mode` e o
+  `PUT /api/mode` ja recusavam nome desconhecido com mensagem; o header
+  `X-Agent-Mode` e o prefixo `mode:` gravavam a string crua. Depois da politica
+  isso era uma escolha registrada que nao resolve para perfil nenhum: portao
+  aberto, `/mode` exibindo um modo inexistente, ninguem sabendo. Agora valida,
+  loga `warn!` e segue como "nao pediu modo" — o request nao cai por causa de
+  um typo em header. O valor logado passa por um limitador: nome de modo real e
+  uma palavra curta em ASCII, e o engano que preocupa e colar um segredo no
+  lugar do nome, entao o campo sai com 24 caracteres, sem controle e marcado
+  quando ha corte.
+- **Slack, Discord, WhatsApp, iMessage e o terceiro braco do `POST /api/chat`
+  entram junto.** Eles chamavam os wrappers `_with_context`, que passam
+  `ExecContext::default()`: `/mode search` respondia "modo definido" e a
+  restricao valia so no Telegram. Assimetria silenciosa e pior que ausencia,
+  porque o usuario acredita na restricao. Um teste varre o fonte para o proximo
+  canal — que sera escrito copiando um destes — nao reintroduzir o buraco.
+  `a2a.rs` fica de fora com o motivo escrito: a sessao `a2a:{task_id}` nasce e
+  morre na requisicao, entao nao ha escolha para ler.
+- Um `ExecContext` no lugar de mais dois `Option<&str>`: o metodo ja tinha dez
+  parametros e dois `#[allow(clippy::too_many_arguments)]`, e a #986 traria
+  mais um.
+- **`/mode` e `/model` no Telegram gravavam numa sessao que a execucao nunca
+  lia.** O GAR-202 migrou a chave de sessao de `telegram-{chat_id}` —
+  adivinhavel — para um UUID do `ChatSessionManager`, mas a migracao pegou so o
+  caminho de execucao. A camada de comandos continuou montando a string antiga,
+  em tres lugares. O efeito era um recurso que parecia funcionar: `/mode code`
+  respondia "modo definido", gravava no banco, e a proxima mensagem rodava sem
+  ele; `/mode` sozinho lia da chave errada e mostrava "modo atual: ask" logo
+  depois. So nao aparecia quando o `chat_session_manager` era `None`, que e o
+  caminho de fallback.
+- **A correcao e ter um lugar so.** `AppState::telegram_session_id` passa a ser
+  a unica funcao que monta a chave, e os cinco pontos — tres de comando, dois de
+  execucao — chamam ela. Duplicar a resolucao foi o que permitiu a divergencia.
+- **Um teste varre o fonte** procurando `format!("telegram-{` fora do
+  `state.rs`. E o unico jeito de pegar a proxima copia antes de ela divergir:
+  um teste de comportamento so falharia depois de alguem reintroduzir o bug e
+  alguem mais notar.
+- O `user_id` continua sendo passado onde existe. Ele nao muda **qual** sessao
+  e encontrada (a busca e por `chat_id`), mas define o dono no `upsert` de
+  criacao — sem ele, um `/mode` antes da primeira mensagem criaria a sessao com
+  dono `"anonymous"`.
 
-### Added
-- **`IntegrityReport.entries_missing_model` e o teste de dimensao divergente
-  fecham a #960.** O contador conta entradas COM vetor e SEM
-  `embedding_model` — o legado de antes do #954, que perde o eixo semantico
-  (0.7 do score) sempre que o recall chega com modelo definido, sem nenhum
-  aviso no caminho SQL; um `debug!` por recall complementa, contando os
-  candidatos rebaixados por modelo divergente. A reindexacao (#953) zera essa
-  fila. O teste novo garante que vetor de tamanho diferente do da tabela nao
-  entra e que a recusa nao deixa rastro no `vec_id_map` — com ele, os quatro
-  testes de integridade que a issue propos estao no lugar (os outros tres
-  vieram no #971).
-- **`MemoryStore::integrity_report()` (#960).** Conta entradas com/sem
-  embedding (a fila de reindexacao do #953), linhas por tabela vetorial e
-  mapeamentos orfaos — a verificacao que em 2026-09-05 precisou de script
-  externo (7.101 entradas vs vetores) vira uma chamada. Base do futuro
-  `garra memory stats` (#950). `in_memory_with_vectors()` liga o caminho KNN
-  em testes; 7 testes novos cobrem isolamento, mistura de modelos, orfaos e
-  idempotencia da delecao.
-- **Health check do provider de embeddings no boot (#951).** O
-  `health_check()` existia no trait desde sempre e **nunca era chamado**: o
-  boot logava "configured ollama embedding provider" e seguia, mesmo com o
-  Ollama desligado. Agora o boot pergunta e avisa alto quando nao ha resposta,
-  dizendo o que vai acontecer (memorias novas sem vetor, recall textual) e o
-  que fazer depois (reindexar). Avisa, nao derruba: memoria semantica e
-  opcional, e recusar subir por causa dela deixaria o usuario sem chat nenhum.
-  `AgentRuntime::embedding_provider()` expoe o provider ativo — a mesma porta
-  que a reindexacao da CLI (#953) vai usar.
-
-### Changed
-- **Quatro testes de KNN deixam de passar em vazio (divida da auditoria do
-  #971).** Eles faziam `return` silencioso quando o sqlite-vec nao carregava —
-  inclusive os dois de isolamento de tenant, que assim jamais exercitariam o
-  caminho que existem para proteger. Agora afirmam `knn_enabled()`: o
-  sqlite-vec e compilado no binario (`rusqlite` com `bundled`), entao ausencia
-  dele e defeito de build, nao ambiente aceitavel.
-- **O console interativo fica limpo por default (#933).** O subscriber unico
-  escrevia o mesmo fluxo em `garraia.log` e no stderr, entao todo INFO de
-  registro de provider/tools/sessao competia com o spinner e com a resposta
-  streamada do chat. Agora sao dois layers com filtros independentes: o
-  arquivo segue com tudo no nivel pedido (`--log-level`, elevado por
-  `--debug`) e o stderr mostra so WARN+ — `--verbose` (flag global nova) traz
-  o INFO operacional conciso e `--debug` espelha o arquivo. `RUST_LOG` setado
-  e valido continua vencendo os dois lados, como sempre (GAR-138). A redacao
-  (regra absoluta 6) permanece nos dois caminhos, com teste que varre o fonte
-  para impedir a regressao de redigir so uma metade.
-
-  Ficam **fora** do console limpo, por serem canal de log e nao console:
-  `start`/`restart` (journald le o stderr do foreground) e `mcp-server` (o
-  host MCP loga o stderr do filho — `docs/cli-mcp-server.md` §Stdio
-  invariants). Esses espelham o arquivo como antes.
-- **O indicador de atividade ganha janela de aparicao e cronometro (#936).**
-  Resposta quase instantanea nao pisca mais spinner nenhum: os primeiros
-  ~270ms (3 ticks de 90ms) avancam o estado sem pintar nada, entao nao ha
-  flash a limpar. Espera longa ganha o tempo decorrido na linha (`4.7s`, a
-  partir de ~2,5s, junto da primeira rotacao de mensagem). As mensagens
-  passam a intercalar 3 profissionais para 1 com a personalidade do Garra
-  (exatamente as quatro que a issue cita), com teste fixando razao e
-  espacamento. Tudo derivado de **ticks**, nunca de relogio — o
-  `SpinnerState` continua puro, renderizado como braco do `tokio::select!`
-  (nunca task propria), cursor nunca escondido, fallback ASCII cobrindo
-  quadro, texto e cronometro. Os testes de timing do chat migram para tempo
-  virtual (`start_paused`) porque a janela de aparicao tornaria margens de
-  30ms flake garantido em runner carregado.
-- **O lote de embeddings do Ollama passa a ser paralelo.** O endpoint dele e
-  um-texto-por-request e o loop era serial: reindexar as ~7k entradas de uma
-  base real seriam 7k idas e voltas encadeadas. Agora sao lotes de 4, com
-  teste garantindo que a saida mantem a ordem dos textos de entrada —
-  embaralhar ali corromperia a memoria em silencio, porque o chamador casa
-  vetor com texto por indice.
-
-## [0.3.9] - 2026-09-05
-
-Dois lotes de retorno de campo do mesmo usuario da v0.3.6/v0.3.7 (Samsung
-A16 / Android 13 / Termux, com o Garra orquestrado pelo Hermes via MCP):
-issues #920-#925 (4 PRs: #926/#927/#931/#932) e #928-#930 (#945/#946), mais
-a persona da Hera (#966). Como nos lotes anteriores, a verificacao mudou o
-diagnostico da maioria dos relatos — o detalhe esta no corpo de cada PR — e
-achou um bug de seguranca que ninguem reportou (#945).
-
-### Added
-- **Wrapper `garra-mcp-server-linker` no Termux (#920).** "O exec falha no
-  Termux" sao na verdade duas falhas com o mesmo sintoma: (A) o host MCP nao
-  consegue exec'ar o wrapper *script*, e (B) o wrapper roda e o exec interno do
-  ELF falha. O `LD_PRELOAD` da v0.3.7 cobre B — e so quando o shim esta
-  instalado. O wrapper novo entrega o ELF ao loader do Android
-  (`/system/bin/linker64`, com fallback no caminho do apex), que mapeia o
-  binario sem shim e sem `LD_PRELOAD` nenhum.
-
-  **A nao tem solucao dentro de um wrapper**, porque o wrapper tambem precisa
-  ser exec'ado, e o CHANGELOG nao finge que tem: para A o host aponta
-  `command: /system/bin/linker64` e passa o binario como argumento — a config
-  que o relator validou fim a fim com `env -i`. Documentada em
-  `docs/installation.md` e `docs/cli-mcp-server.md`, e impressa pelo
-  `garraia doctor` com o caminho real preenchido.
-
-  Arquivo separado do wrapper existente por decisao de teste: a suite afirma
-  `grep -c '^exec '` == 1 em cada um, o que faz uma futura fusao dos dois
-  derrubar os testes em vez de apagar o fallback em silencio.
-  `detect_platform.sh` 21 -> 28 casos.
-- **Bloco Termux do `doctor` ganha "Wrapper MCP (loader)" (#920)**, com a
-  receita do `linker64` pronta para colar. `TermuxItem.next_step` passa de
-  `&'static str` para `String` para poder nomear o caminho real; a forma
-  serializada de `doctor --json` nao muda.
-- **Tool `telegram_send` de envio proativo (#921).** O agente pode *iniciar*
-  uma mensagem no Telegram (lembrete agendado, "o backup terminou", resposta
-  de tarefa longa) em vez de so responder. Deny-by-default: responder no chat
-  corrente nao pede config; mandar para um chat que o modelo *nomeia* exige o
-  id em `channels.telegram.proactive_chat_ids` — lista separada de proposito
-  do allowlist de usuarios (que tem modo `open`, perigoso demais para decidir
-  quem o bot pode procurar sozinho). Vazia = recusa tudo; lida a cada envio
-  (revogacao sem restart). Rate limit de 5 mensagens/conversa/minuto
-  (`SendBudget`); recusa nao consome cota. Documentada em `docs/channels.md`.
-
-  De quebra, a investigacao achou que **a entrega Telegram de tarefas
-  agendadas estava silenciosamente quebrada** — nada no repo escrevia
-  `telegram_chat_id` no metadata que `Channel::send_message` exige — e o
-  mesmo caminho novo de enderecamento (`ProactiveTargets`/
-  `with_channel_address`) conserta os heartbeats.
-- **Persona: o Garra conhece a Hera e a Forja (#966).** Port do plan 0274
-  adaptado ao `agent_router`/`NamedAgentConfig`; a persona explica que a
-  conversa direta entre agentes ainda nao esta disponivel (issue #965).
-  `docs/configuration.md` corrige o exemplo de `agents:` para o formato real
-  e `docs/hera-persona.md` entra na doc.
-
-### Fixed
 - **O aviso de secret de auth ausente passa a ser acionavel (#925).** Ele dizia
   o que estava errado sem dizer se importava. Num gateway local single-user nao
   importa: console web, `/ws`, `/v1/chat/completions`, `mcp-server`, CLI e
@@ -280,6 +1181,128 @@ achou um bug de seguranca que ninguem reportou (#945).
   do #921 em `session_store.rs` moveu a linha ancorada; o fix reaponta linha
   e referencias internas sem tocar o `sink_snippet` (que o script proibe
   editar para "passar").
+
+### Security
+
+- **O caminho KNN do recall passa a respeitar tenant, sessao e continuidade
+  (achado da verificacao da Trilha C — sem issue).** O indice sqlite-vec so
+  conhece distancia; o fetch dos candidatos (`fetch_entries_by_ids`) fazia
+  `WHERE id IN (...)` sem NENHUM dos filtros da query, enquanto o caminho SQL
+  sempre filtrou. Com o vec ativo, um recall com `tenant_id` definido podia
+  devolver memorias de outro tenant. O fetch agora reescopa os quatro filtros
+  (tenant, sessao, continuidade e modelo) e ha teste garantindo que linha de
+  outro tenant nunca volta pelo KNN.
+- **Corpo de erro de provider de embeddings deixa de poder ir cru para o log
+  (achado da auditoria deste lote).** Enquanto o runtime engolia esses erros
+  com `.ok()`, o corpo da resposta HTTP nunca chegava a lugar nenhum; a
+  correcao do #948 passou a loga-los, e corpo de erro nao e conteudo
+  confiavel — a OpenAI ecoa de volta a chave que voce mandou quando ela esta
+  errada, e um endpoint self-hosted pode devolver o request inteiro. Agora os
+  tres providers sanitizam na origem: 401 e 403 perdem o corpo por completo
+  (o status, que e o que o operador precisa, fica), e os demais sao truncados
+  e tem tokens de formato conhecido raspados. Teste ponta a ponta contra um
+  servidor que devolve 401 com a chave no corpo garante que ela nao aparece na
+  mensagem de erro.
+- **`/v1/chat/completions` para de derivar identidade do que o chamador
+  escreve (#1012).** A rota e auth-free por desenho, como todo o `/api/*` — mas
+  auth-free significa "nao exige credencial", e nao "aceita a identidade que o
+  chamador afirmar". Ela aceitava as duas coisas que vem do proprio chamador:
+  um `Authorization: Bearer` qualquer virava o `user_id` (o comentario no fonte
+  dizia *"this allows custom API keys to identify users"*, o que nunca foi
+  verdade — a rota nao verifica o token contra nada, entao equivalia a deixar
+  o chamador escolher o proprio nome), e na ausencia dele o header `X-User-Id`
+  era usado cru.
+- **Severidade: latente, nao ativa.** Rastreado ate o fim, o `user_id` nao abria
+  leitura de dado alheio — a carga de historico e chaveada por `session_id`. O
+  impacto era **atribuicao falsa**: a sessao e o registro no banco ficavam sob
+  uma identidade que ninguem provou. Vale fechar porque e a mesma forma do
+  buraco que a #1010 fechou de proposito *antes* de ligar execucao nele.
+- **Agora a identidade e a do dono da instalacao local, ou `None`.** `None` e a
+  resposta honesta para instalacao sem dono: preenche-la com o header seria
+  inventar um dono. O `garra-local` continua resolvendo o dono, com teste de
+  nao-regressao. Um bearer que nao seja `garra-local` e ignorado, com apenas o
+  fingerprint no log — nunca o token. E o **valor do dono tambem nao vai para o
+  log**: a primeira versao desta correcao o logava em toda requisicao, o que
+  era pior que o codigo vulneravel (que so o logava quando um `garra-local`
+  era apresentado). No WhatsApp o dono e o proprio numero de telefone.
+- **`AppState::continuity_key` perdeu o parametro que nunca usava.** Ele
+  recebia `_user_id`, e dos quatorze chamadores **sete** passavam um id por
+  pessoa literal (Telegram x2, Slack, WhatsApp, Discord, iMessage, e a
+  `task.user_id` do A2A) — todos recebendo a mesma `bus:shared-global` de
+  volta. O `_` era a unica coisa separando o leitor da conclusao errada de que
+  a chave era escopada por pessoa. O parametro foi **removido** em vez de
+  passar a ser honrado: honra-lo mudaria o significado de
+  `memory.shared_continuity` para quem ja o ligou, e "shared" e o que a opcao
+  promete. O barramento e global por desenho, e agora a assinatura diz isso.
+- Postura da rota documentada em `docs/security/threat-model.md` §5.9.
+- **`GET /api/modes/custom/{id}` deixa de ler o modo de qualquer usuario.** A
+  consulta filtrava so por `id`, e a tabela tem `user_id` — entao o endpoint
+  devolvia o `prompt_override` de outra pessoa. Hoje o buraco e inerte, porque
+  todo modo e gravado sob a mesma identidade e o `/api/*` e auth-free por
+  desenho (local-first, mono-usuario); mas o #986 faz a **execucao** passar a
+  depender da resolucao de modo customizado, e ligar isso a uma busca sem escopo
+  transformaria um buraco inerte em caminho ativo. O handler passa a usar
+  `get_custom_mode_for_user`, a resolucao de execucao procura por nome dentro de
+  `get_custom_modes(user_id)`, e o `user_id` fixo deixa de ser uma string
+  repetida em quatro lugares para virar uma constante nomeada — de modo que quem
+  trocar por identidade real troque num lugar so. Teste cross-user confirma que
+  nem o `GET` por id, nem a listagem, nem o `select` alcancam o modo alheio.
+- **`PATCH` e `DELETE /api/modes/custom/{id}` tambem passam a respeitar o dono.**
+  A primeira versao deste trabalho deu escopo so ao `GET`, usando para a leitura
+  um argumento que vale **mais** para a escrita: sobrescrever ou apagar o modo de
+  outra pessoa e pior que le-lo. O escopo entra na clausula `WHERE` das duas
+  consultas, e nao num filtro depois — um `UPDATE` que casa a linha alheia ja
+  escreveu quando o filtro rodaria. Como o resto, hoje e inerte e existe para o
+  dia em que houver identidade de verdade.
+- O `format!` que monta a lista de colunas do `UPDATE` ganhou o comentario de
+  auditoria que a regra absoluta 5 exige na sua propria excecao: os fragmentos
+  sao literais Rust escritos no bloco, nenhum vem de request, e todo valor
+  continua indo por `?`. Sem o comentario, a proxima pessoa a acrescentar coluna
+  ali nao tem o sinal de alerta.
+- **Saida de ferramenta nao injeta mais comando no terminal (#995).** O resumo
+  do #937 redigia segredo e trocava quebra de linha por espaco, mas deixava
+  passar `ESC` e os demais controles — e saida de ferramenta nao e conteudo
+  confiavel: e o que o agente leu de um arquivo, baixou de uma pagina ou o que
+  um comando escreveu. Um `README` de repositorio clonado conseguia limpar a
+  tela de quem roda o `garra chat` com `\x1b[2J`, trocar o titulo da janela com
+  OSC, ou reposicionar o cursor para sobrescrever linhas ja impressas, forjando
+  texto que parece ter vindo do proprio Garra. O caso mais pontudo era
+  `\x1b[?25l`: o projeto tem invariante explicita de que essa sequencia nao e
+  emitida em lugar nenhum, para que nenhum caminho de saida deixe o terminal
+  sem cursor — e saida de ferramenta a violava. Agora todo controle C0, C1 e
+  DEL sai, no `garraia-agents`, junto da redacao de segredo e antes do
+  truncamento (truncar antes deixaria meia sequencia passar, pela mesma razao
+  que ja valia para segredo). A seguranca vem da regra por caractere, nao do
+  reconhecimento de sequencia: sem `ESC`, `[2J` e texto inerte. O
+  reconhecimento de CSI e OSC que existe serve so para legibilidade, porque
+  saida colorida e comum e legitima e trocar so o `ESC` por marcador deixaria
+  ruido na tela do caso normal. Vale para o resumo do input tambem — o
+  `command` do bash tambem vem de fora.
+- **O texto do modelo tambem para de injetar comando no terminal (#996).** O
+  #995 fechou a superficie da ferramenta; esta e a irma. O `write_delta`
+  escrevia o delta do modelo direto no terminal, entao um modelo induzido a
+  emitir `\x1b[2J` limpava a tela de quem estava conversando, e `\x1b[?25l`
+  deixava o terminal sem cursor — a mesma invariante do CLAUDE.md violada por
+  outro caminho. Vale tambem para aviso, erro e dica, que carregam texto de
+  fora (corpo de erro de provedor, por exemplo).
+- **O filtro tem estado, e e isso que o distingue do #995.** Aquele recebe a
+  saida da ferramenta inteira e decide olhando o texto todo. Este nao: o texto
+  do modelo e streaming, e `\x1b` pode chegar num delta e `[2J` no seguinte —
+  cada metade inofensiva isolada, e um filtro sem estado deixaria as duas
+  passarem, com o terminal executando a concatenacao. Ha teste que varre
+  **todos** os cortes possiveis de uma carga hostil, nao so um escolhido a
+  dedo. O `finish` do turno limpa o pendente, senao um `ESC` no fim de uma
+  resposta engoliria o primeiro caractere da proxima.
+- **Cor do modelo fica bloqueada, e nao por conservadorismo.** A issue deixava
+  em aberto se o modelo devia poder emitir cor de proposito, como algumas CLIs
+  permitem. A resposta sai de um principio que o projeto ja tem escrito:
+  respeitar `NO_COLOR`, non-TTY e saida redirecionada. Cor vinda do modelo
+  passa por cima disso — ela nao sabe se o usuario pediu `NO_COLOR`, se a saida
+  vai para um pipe, ou se o terminal e legado. Quem decide cor e o
+  `TerminalRenderer`, olhando `Capabilities`; o modelo escreve texto.
+- **Teto para sequencia sem terminador.** Um `ESC ]` solto engoliria a resposta
+  inteira em silencio, porque OSC so termina em `BEL` ou `ESC \`. Com teto de
+  128 caracteres, o pior caso e perder um trecho curto.
 
 ## [0.3.8] - 2026-09-04
 

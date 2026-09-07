@@ -4,7 +4,7 @@
 
 - [Architecture Overview](https://github.com/michelbr84/GarraRUST/blob/main/docs/architecture.md) — estrutura do workspace (22 crates), fluxo do runtime, pipeline de voz, multi-agente, memória, segurança, hot-reload
 - [Referência da API REST do gateway](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/api-reference.md) · [OpenAPI da API mobile](https://github.com/michelbr84/GarraRUST/blob/main/docs/mobile-api-v1.yaml)
-- [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/memory.md) · [Benchmarks](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/benchmarks.md)
+- [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/memory.md) · [Benchmarks](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/benchmarks.md)
 
 ## ADRs — Architectural Decision Records
 
