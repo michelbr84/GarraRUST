@@ -5,12 +5,29 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-05 (America/New_York)
+**Atualizado:** 2026-09-07 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Em andamento 2026-09-07 — v0.4.0: Garra Mobile local-first (ADR 0016 amendment)
+
+A v0.3.9 foi tagueada em 2026-09-07 (Release verde, 51 assets). A v0.4.0 entra
+em seguida com o primeiro corte utilizável do Garra Mobile — a hipótese
+"Termux como runtime, Flutter como interface" validada e registrada no
+amendment da ADR 0016. Detalhe em `docs/mobile/architecture.md`.
+
+| Item | Estado |
+| --- | --- |
+| Home Garra Neon + `RuntimeConnection` (local/LAN/cloud) + onboarding sem login + telas dos tiles | **entregue** (`apps/garraia-mobile`, 15 testes, `flutter analyze` limpo, visual provado via `build web` + screenshot) |
+| `/api/capabilities` anuncia `memory`/`learning-skills`/`projects`/`modes` | **entregue** (`health.rs::feature_flags`, teste trava o contrato) |
+| APK no CI (`mobile.yml`) e na release (`build-android-apk`, best-effort) | **entregue**; assinatura de release depende dos secrets `ANDROID_KEYSTORE_*` (**ação manual do dono**) |
+| Swagger UI pre-baixado em todo job que compila o gateway (composite action) | **entregue** — o E2E de `main` caiu por isso no dia do corte da v0.3.9 |
+| Ponte Kotlin `RUN_COMMAND`, pairing por token local, foreground service | **v0.5.x** (estratégia §Fase 1, fechamento) |
+| Trocar `flutter_markdown` (descontinuado) por fork mantido | dívida 0.4.x |
+| Validar o APK em aparelho real (`docs/mobile-qa-checklist.md` §8) | **pendente — dono** |
 
 ## Em andamento 2026-09-05 — pós-v0.3.9: Trilha B (épico #944) e novo lote de memória
 

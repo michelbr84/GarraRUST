@@ -6,6 +6,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+Garra Mobile vira produto: a v0.4.0 e a primeira release em que o app
+Android (`apps/garraia-mobile`) deixa de ser um cliente da cloud e passa a
+ser a interface local-first da ADR 0016 — runtime no proprio aparelho
+(Termux), num PC da rede ou no Garra Cloud, com a home do design de
+referencia e o APK publicado como asset. O CI ganhou o workflow `mobile.yml`
+e o download do Swagger UI foi endurecido em todos os jobs que compilam o
+gateway, depois de o E2E cair em `main` no dia do corte da v0.3.9.
+
+### Added
+- **Garra Mobile v0.4.0: home local-first e o app deixa de ser so cliente da
+  cloud (ADR 0016, amendment 2026-09-07).** `apps/garraia-mobile` ganha o
+  design system Garra Neon (Inter + JetBrains Mono bundladas, marca vetorial
+  do lobo em `CustomPainter`, sem PNG binario), a home da referencia — header,
+  saudacao, dois cards de status alimentados por `GET /api/health`, seis tiles
+  (Chat, Memory, Skills, Files, Agents, Automations), Quick Actions e bottom
+  nav — e uma camada `lib/runtime/` (`GarraConnection`) com tres modos:
+  *On this phone* (Termux em `127.0.0.1:3888`), *Another Garra* (URL na LAN +
+  `gateway.api_key` opcional no `flutter_secure_storage`) e *Garra Cloud* (o
+  cliente JWT antigo). O onboarding pede nome e runtime e nao exige login nos
+  modos local/LAN; o gate do router passou de "tem JWT?" para "tem runtime
+  configurado?". Telas novas de Memory, Skills, Files, Agents, Providers,
+  Activity, Notifications e Profile consomem so endpoints que o gateway ja
+  expoe (`/api/memory/*`, `/api/learning/skills`, `/api/projects`,
+  `/api/modes`, `/api/mcp`, `/api/providers`, `/api/sessions`, `/api/logs`).
+- **Negociacao de capabilities entre app e gateway.** `GET /api/capabilities`
+  passa a anunciar `memory`, `learning-skills`, `projects` e `modes`
+  (`health.rs::feature_flags`, aditivo, com teste que trava o contrato); a
+  home marca como *Unavailable* qualquer tile cuja feature o runtime nao
+  anuncia. `automations` fica ausente de proposito — o gateway nao expoe API
+  de scheduling, e o tile diz isso em vez de fingir.
+- **APK no CI e na Release.** Workflow `mobile.yml` (`flutter analyze` +
+  `flutter test` + APK como artefato em PRs que tocam o app) e job best-effort
+  `build-android-apk` no `release.yml` publicando `garraia-mobile-android.apk`
+  + `.sha256` — asset aditivo, nada que o `garra update` resolve muda.
+  Assinado com os secrets `ANDROID_KEYSTORE_*` quando existirem, senao com a
+  keystore de debug do runner (o job avisa com `::warning::`).
+
+### Changed
+- **Garra Mobile migra para Riverpod 3 (`riverpod_generator` 4) e sobe
+  `record` para 6.2.1.** O `riverpod_generator` 2.6.x prendia o `analyzer` na
+  linguagem 3.9 e a codegen morria em Dart >= 3.13 com `Missing implementation
+  of visitDotShorthandPropertyAccess`; `custom_lint` e `riverpod_lint` sairam
+  (contradizem-se em `analyzer_plugin`; `flutter_lints` segue como gate). O
+  `record` 5.1.2 resolvia `record_web` e `record_platform_interface`
+  incompativeis e quebrava `flutter build web`. Flutter fixado em 3.47.2 no
+  CI e o `pubspec.lock` reresolvido contra ele. A versao do app passa a ter
+  fonte unica (`lib/app_version.dart`, com teste contra o `pubspec.yaml`) —
+  antes havia tres (`0.2.1+2`, `v0.1.0 (Alpha)` na tela de Settings, `0.1.0`
+  no sync).
+- **Download do Swagger UI endurecido em todo job que compila o gateway
+  (GAR-822, segunda rodada).** O `build.rs` do `utoipa-swagger-ui` baixa o
+  zip em tempo de compilacao e de vez em quando recebe corpo truncado
+  (`InvalidArchive("Could not find EOCD")`); o fix anterior cobria so `test` e
+  `msrv`, e em 2026-09-07 foi o job E2E que caiu em `main`. Um composite
+  action (`.github/actions/swagger-ui-cache`) pre-baixa com retry, verifica
+  que o arquivo e um zip valido mesmo em cache hit, e e usado em `clippy`,
+  `coverage`, `build`, `android`, `e2e`, `playwright`, `test`, `msrv` e em
+  todos os jobs de build do `release.yml` — inclusive o `cross` do
+  linux-arm64, via zip dentro do workspace e `passthrough` no `Cross.toml`.
+
+### Fixed
+- **Garra Mobile: transcricao de voz apontava para um endpoint que nao
+  existe.** O app chamava `POST /api/voice/transcribe`; o gateway expoe
+  `POST /api/stt` (`voice_handler.rs`). Corrigido no cliente cloud e na
+  `GatewayConnection`.
+- **Garra Mobile: o build Android so funcionava numa maquina.**
+  `android/gradle.properties` fixava `org.gradle.java.home=C:/Program
+  Files/Java/jdk-23`, o que derrubava qualquer build Linux/macOS/CI antes de
+  o Gradle iniciar. Removido (o JDK vem de `JAVA_HOME`). No mesmo passe:
+  `MainActivity` passa a estender `FlutterFragmentActivity` (exigencia do
+  `local_auth`), o splash deixa de ser branco num app que so tem tema escuro,
+  as permissoes que os plugins declarados exigem (`RECORD_AUDIO`, `CAMERA`,
+  `POST_NOTIFICATIONS`, `USE_BIOMETRIC`, `ACCESS_NETWORK_STATE`) entram no
+  manifest, e os deep links `garraia://chat/<id>` e `garraia://session/<id>`
+  que o router ja tratava ganham o intent-filter que faltava.
+
+### Security
+- **Garra Mobile: cleartext deixa de ser global e o cloud passa a exigir
+  HTTPS.** `android:usesCleartextTraffic="true"` foi trocado por um
+  `network_security_config.xml`: HTTP continua permitido na base — o runtime
+  local-first e `http://127.0.0.1` ou `http://192.168.x.x`, e o Android nao
+  aceita faixas CIDR em `domain-config` — mas `garraia.org` e subdominios
+  ficam `cleartextTrafficPermitted="false"`, entao um `http://` acidental
+  para o cloud falha em vez de rebaixar em silencio. A `gateway.api_key` do
+  modo LAN vive so no `flutter_secure_storage` (teste garante que nunca cai
+  em `SharedPreferences`), e chaves de provider continuam no runtime, nunca
+  no telefone — enquanto o runtime for outro app (UID do Termux != UID do
+  app), o Keystore do app nao alcanca o cofre do Garra.
+
 ## [0.3.9] - 2026-09-07
 
 A v0.3.9 foi preparada em 2026-09-05 e nunca chegou a ser publicada — nao
