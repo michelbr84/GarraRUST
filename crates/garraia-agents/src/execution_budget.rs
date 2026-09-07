@@ -153,20 +153,32 @@ impl ExecutionBudget {
     /// dois campos que tem correspondencia direta sao mapeados; `max_turns` e
     /// do escopo de conversa, nao de orcamento de ferramenta, e nao entra aqui.
     ///
+    /// # O modo baixa o teto, nunca levanta
+    ///
+    /// Modo e um seletor do **usuario**: `/mode` e um comando, e o
+    /// `POST /api/mode/select` e aberto. Deixar o modo levantar o teto faria o
+    /// custo de API e o tempo de parede de um turno serem funcao do que o
+    /// usuario digitou, sem o operador ter dito nada. Dos nove perfis, um so
+    /// pede mais que o padrao — o `orchestrator`, com 100 chamadas e 60s, que
+    /// levaria o pior caso de ~25 para ~100 minutos.
+    ///
+    /// Entao o teto do padrao (que ja e configuravel pelo operador, via
+    /// `GARRAIA_TOOL_TIMEOUT_SECS` no caso do timeout) e o limite superior, e o
+    /// modo so encurta a partir dali. Quem **quer** um orcamento maior passa
+    /// `max_tool_calls` explicito no runtime, que continua vencendo tudo — e
+    /// esse e um knob de quem sobe o processo, nao de quem manda mensagem.
+    ///
     /// O `max_per_turn` acompanha o teto da tarefa quando o modo pede menos que
     /// os 10 do padrao — um modo que so permite 3 chamadas na tarefa inteira
     /// nao pode ter um teto de turno de 10, senao o limite mais apertado dos
     /// dois nunca seria o do modo.
-    ///
-    /// O override explicito de `max_tool_calls` no runtime continua vencendo:
-    /// quem passou um numero na mao pediu aquele numero.
     pub fn com_limites_do_modo(limits: &crate::modes::ModeLimits) -> Self {
-        let max_per_task = limits.max_tool_loops.max(1) as usize;
         let padrao = Self::padrao();
+        let max_per_task = (limits.max_tool_loops.max(1) as usize).min(padrao.max_per_task);
         Self {
             max_per_task,
             max_per_turn: padrao.max_per_turn.min(max_per_task),
-            tool_timeout_secs: limits.timeout_secs.max(1),
+            tool_timeout_secs: limits.timeout_secs.max(1).min(padrao.tool_timeout_secs),
             ..padrao
         }
     }
@@ -277,6 +289,30 @@ mod tests {
             !b.pode_chamar_ferramenta(),
             "o teto do modo (3) precisa valer; com o max_per_turn de 10 do \
              padrao intacto, a quarta chamada passaria"
+        );
+    }
+
+    /// Modo nao levanta o teto do operador (#979, achado de auditoria).
+    ///
+    /// `orchestrator` declara 100 chamadas e 60s — o dobro do padrao. Modo e um
+    /// seletor do usuario; deixar `/mode orchestrator` quadruplicar o tempo de
+    /// parede faria o custo do turno depender do que a pessoa digitou, sem o
+    /// operador ter dito nada.
+    #[test]
+    fn modo_nao_levanta_o_teto_do_padrao() {
+        let generoso = crate::modes::ModeLimits {
+            max_tool_loops: 100,
+            timeout_secs: 60,
+            max_turns: 10,
+        };
+        let padrao = ExecutionBudget::padrao();
+        let b = ExecutionBudget::com_limites_do_modo(&generoso);
+
+        assert_eq!(b.max_per_task, padrao.max_per_task, "o teto e o do padrao");
+        assert_eq!(
+            b.timeout().as_secs(),
+            padrao.timeout().as_secs(),
+            "o timeout tambem nao sobe"
         );
     }
 

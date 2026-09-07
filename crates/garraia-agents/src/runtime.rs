@@ -192,6 +192,44 @@ pub struct AgentRuntime {
     noise_policy: crate::memory_noise::NoisePolicy,
 }
 
+/// Avisa quando o modo whitelist deixou ferramenta MCP passar (#979).
+///
+/// A `ToolPolicy` de `search`, `review`, `architect`, `debug` e `edit` lista so
+/// nomes nativos. Aplicar a whitelist ao pe da letra derrubaria toda integracao
+/// MCP nesses modos, em silencio, entao ferramenta MCP passa — e continua
+/// sujeita ao `denied`. A consequencia e que **um modo somente-leitura nao
+/// restringe ferramenta MCP**.
+///
+/// Isso ja era assim. O que mudou no #979 e quem encontra: `/mode auto` deixou
+/// de ser inerte e passou a aplicar a politica do modo deduzido, entao alguem
+/// que digitou `auto` e escreveu uma pergunta de busca agora acredita estar
+/// somente-leitura. Acreditar numa restricao que nao existe e pior que nao ter
+/// restricao, e a unica coisa honesta a fazer enquanto o whitelist nao entender
+/// servidor MCP e dizer em voz alta que a lacuna esta aberta **neste** turno.
+///
+/// Fica em `warn!` de proposito: quem precisa ver isto e o operador que
+/// conectou o servidor MCP, nao o modelo.
+fn avisar_lacuna_mcp(portao: &crate::modes::ToolGate, tool_defs: &[crate::ToolDefinition]) {
+    if !portao.restringe_por_whitelist() {
+        return;
+    }
+    let mcp: Vec<&str> = tool_defs
+        .iter()
+        .map(|d| d.name.as_str())
+        .filter(|n| crate::modes::ToolGate::eh_ferramenta_mcp(n))
+        .collect();
+    if mcp.is_empty() {
+        return;
+    }
+    warn!(
+        modo = portao.nome_do_modo().unwrap_or(""),
+        ferramentas_mcp = ?mcp,
+        "modo restrito nao cobre ferramenta MCP: a whitelist lista so nomes \
+         nativos, entao estas passam. Use `denied` no perfil para barrar uma \
+         especifica."
+    );
+}
+
 impl AgentRuntime {
     pub fn new() -> Self {
         Self {
@@ -849,6 +887,7 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -1099,6 +1138,7 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, tools_model_override) =
             self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
@@ -1562,6 +1602,7 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(

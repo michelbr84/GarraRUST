@@ -363,6 +363,23 @@ impl ToolGate {
         }
     }
 
+    /// O modo em vigor restringe por whitelist?
+    ///
+    /// Serve para o chamador perceber a lacuna do MCP: um modo whitelist se
+    /// anuncia somente-leitura e **nao** cobre ferramenta de servidor MCP (ver
+    /// o docblock do tipo). Quem monta a lista de ferramentas sabe se sobrou
+    /// alguma MCP, e so ele pode avisar.
+    pub fn restringe_por_whitelist(&self) -> bool {
+        self.profile
+            .as_ref()
+            .is_some_and(|p| p.tool_policy.whitelist_mode && !p.tool_policy.allowed.is_empty())
+    }
+
+    /// A ferramenta e de servidor MCP?
+    pub fn eh_ferramenta_mcp(tool_name: &str) -> bool {
+        tool_name.contains(SEPARADOR_MCP)
+    }
+
     /// Os limites do modo que vale neste turno, se algum vale (#979).
     pub fn limites(&self) -> Option<&ModeLimits> {
         self.profile.as_ref().map(|p| &p.limits)
@@ -1215,6 +1232,44 @@ mod tests {
             ToolGate::sem_politica().limites().is_none(),
             "sem modo nao ha limites de modo"
         );
+    }
+
+    /// O portao sabe dizer quando a lacuna do MCP esta aberta (#979).
+    ///
+    /// A auditoria apontou que ativar politica para `auto` torna essa lacuna
+    /// materialmente relevante: quem digitou `auto` e escreveu uma pergunta de
+    /// busca passa a acreditar que esta somente-leitura, e ferramenta MCP de
+    /// escrita continua passando. O portao nao consegue fechar a lacuna sem
+    /// derrubar toda integracao MCP nesses modos — mas consegue dizer que ela
+    /// esta aberta, e quem monta a lista de ferramentas avisa.
+    #[test]
+    fn o_portao_reconhece_a_lacuna_do_mcp() {
+        let search = ToolGate::for_mode_name("search");
+        assert!(search.restringe_por_whitelist());
+        assert!(
+            search.permite("servidor__escreve_arquivo"),
+            "a lacuna existe: ferramenta MCP passa pela whitelist"
+        );
+
+        // `denied` continua valendo para MCP — e a alavanca do operador.
+        let mut perfil = ModeProfile::from_mode(AgentMode::Search);
+        perfil
+            .tool_policy
+            .denied
+            .push("servidor__escreve_arquivo".to_string());
+        assert!(!ToolGate::from_profile(&perfil).permite("servidor__escreve_arquivo"));
+
+        assert!(
+            !ToolGate::sem_politica().restringe_por_whitelist(),
+            "sem politica nao ha lacuna a avisar"
+        );
+        assert!(
+            !ToolGate::for_mode_name("code").restringe_por_whitelist(),
+            "modo sem whitelist nao promete restricao nenhuma"
+        );
+
+        assert!(ToolGate::eh_ferramenta_mcp("servidor__tool"));
+        assert!(!ToolGate::eh_ferramenta_mcp("file_write"));
     }
 
     /// A recusa diz por que, e o que fazer. Sem isso o modelo tende a repetir
