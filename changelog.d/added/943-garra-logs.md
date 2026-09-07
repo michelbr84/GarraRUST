@@ -22,3 +22,11 @@
   linhas quando carrega backtrace, e filtrar linha a linha partiria a entrada
   ao meio — sobraria a primeira linha do erro sem o rastro que a explica. Quem
   quer menos ruido tem o `RUST_LOG`, que decide na escrita.
+- **`-n 0` mostra nada, que e o idioma do `tail`** e o par natural do
+  `--follow` ("so o que vier daqui em diante"). Ele fazia o oposto: o buffer
+  circular nunca podava e o arquivo **inteiro** ia para a memoria e para a
+  tela. Num log de 1 GB, um OOM com uma flag. Achado rodando o binario e
+  confirmado na auditoria.
+- **Linha maior que 1 MiB e pulada.** `BufReader::lines()` nao tem limite: um
+  arquivo binario ou sem quebra de linha viraria uma alocacao do tamanho do
+  arquivo. Log de texto nao tem linha assim; o que tem e arquivo corrompido.

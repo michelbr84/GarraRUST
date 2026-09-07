@@ -9,12 +9,22 @@
 //!
 //! # Redacao
 //!
-//! Nao ha redacao aqui, e isso e de proposito. Ela acontece na **escrita**: o
-//! `RedactingMakeWriter` embrulha o appender em `main.rs`, entao o que esta no
-//! disco ja esta redigido. Redigir de novo na leitura mascararia um vazamento
-//! em vez de conserta-lo — quem depura um incidente lendo `garraia.log` no
-//! `less` veria o segredo do mesmo jeito, e nos acharíamos que estamos
-//! protegidos. Ha um teste afirmando que o comando devolve o byte que leu.
+//! Nao ha redacao aqui, e isso e de proposito: ela acontece na **escrita**.
+//! Redigir de novo na leitura mascararia um vazamento em vez de conserta-lo —
+//! quem depura um incidente lendo `garraia.log` no `less` veria o segredo do
+//! mesmo jeito, e nos acharíamos que estamos protegidos. Ha um teste afirmando
+//! que o comando devolve o byte que leu.
+//!
+//! **A premissa tem um limite, e vale escrever qual.** O
+//! `RedactingMakeWriter` cobre o que passa pelo `tracing`, nos dois caminhos
+//! (foreground e daemon). No daemon, porem, o `dup2` manda stdout e stderr
+//! para o mesmo arquivo **antes** de o subscriber existir, entao um
+//! `println!` de codigo de producao que rode no processo do gateway chega ao
+//! log cru — o proprio `main.rs` documenta isso onde o `dup2` acontece. Hoje
+//! nao ha nenhum: a auditoria do #943 varreu `garraia-gateway` e
+//! `garraia-agents` e os `println!` que existem estao todos dentro de
+//! `#[test]`. Se um dia houver, o conserto e **la**, na escrita. Ler menos
+//! aqui nao protegeria ninguem que abrisse o arquivo por fora.
 //!
 //! # Por que nao ha `--level`
 //!
@@ -39,6 +49,14 @@ pub const LINHAS_PADRAO: usize = 100;
 /// diretorio montado por rede, onde a notificacao do sistema nao chega. 250 ms
 /// e imperceptivel para quem le e e barato — um `read` num fd ja aberto.
 const INTERVALO_DO_FOLLOW: Duration = Duration::from_millis(250);
+
+/// Teto de uma linha lida do log.
+///
+/// `BufReader::lines()` aloca uma `String` por linha sem limite: um arquivo
+/// sem `\n` nenhum viraria uma alocacao do tamanho do arquivo. Uma linha de
+/// log de verdade nao chega perto de 1 MiB — o que chega e arquivo corrompido
+/// ou binario, e desses o util e pular, nao carregar.
+const MAX_BYTES_POR_LINHA: usize = 1024 * 1024;
 
 /// O caminho canonico do log.
 ///
@@ -78,6 +96,14 @@ pub fn tail(caminho: &Path, linhas: usize, out: &mut impl Write) -> Result<()> {
     if !caminho.exists() {
         return ausente(caminho, out);
     }
+    // `-n 0` e o idioma do `tail` para "so o que vier daqui em diante", e e o
+    // par natural do `--follow`. Sem esta guarda ele fazia o **oposto**: o
+    // `ultimas.len() == 0` era verdade so na primeira volta, entao o buffer
+    // circular nunca podava e o arquivo inteiro ia para a memoria e para a
+    // tela. Achado rodando o binario e confirmado na auditoria.
+    if linhas == 0 {
+        return Ok(());
+    }
     let arquivo = std::fs::File::open(caminho)
         .with_context(|| format!("nao consegui abrir {}", caminho.display()))?;
     let leitor = BufReader::new(arquivo);
@@ -85,13 +111,21 @@ pub fn tail(caminho: &Path, linhas: usize, out: &mut impl Write) -> Result<()> {
     // Buffer circular: guarda so as ultimas `linhas`.
     let mut ultimas: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     for linha in leitor.lines() {
-        // Linha invalida em UTF-8 nao derruba o comando: um log truncado no
-        // meio de um caractere e exatamente o caso em que se quer ler o log.
         let linha = match linha {
+            // Linha maior que o teto e descartada em vez de carregada: um
+            // arquivo binario ou um JSON de centenas de MB numa linha so
+            // viraria uma `String` do tamanho do arquivo. Log de texto nao
+            // tem linha assim; o que tem e arquivo corrompido.
+            Ok(l) if l.len() > MAX_BYTES_POR_LINHA => continue,
             Ok(l) => l,
+            // Linha invalida em UTF-8 nao derruba o comando: um log truncado
+            // no meio de um caractere e exatamente o caso em que se quer ler
+            // o log.
             Err(_) => continue,
         };
-        if ultimas.len() == linhas {
+        // `>=` e nao `==`: e a semantica correta de um buffer circular, e nao
+        // depende de o contador passar exatamente pelo limite.
+        if ultimas.len() >= linhas {
             ultimas.pop_front();
         }
         ultimas.push_back(linha);
@@ -239,6 +273,77 @@ mod tests {
         tail(&p, 10, &mut out).expect("nao derruba");
         let s = String::from_utf8(out).expect("utf8");
         assert!(s.contains("boa") && s.contains("fim"), "saiu: {s:?}");
+    }
+
+    /// `-n 0` nao mostra nada — e o idioma do `tail`, e o par do `--follow`.
+    ///
+    /// Antes ele fazia o oposto: o `len() == 0` era verdade so na primeira
+    /// volta, entao o buffer nunca podava e o arquivo **inteiro** ia para a
+    /// memoria e para a tela. Num log de 1 GB isso e um OOM com uma flag.
+    #[test]
+    fn lines_zero_nao_mostra_nada() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let corpo: String = (1..=200).map(|n| format!("linha {n}\n")).collect();
+        let p = escreve(dir.path(), &corpo);
+
+        let mut out: Vec<u8> = Vec::new();
+        tail(&p, 0, &mut out).expect("ok");
+        assert!(
+            out.is_empty(),
+            "devia sair vazio: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    /// E `-n 0 --follow` mostra so o que chegar depois.
+    #[test]
+    fn lines_zero_com_follow_mostra_so_o_que_vem_depois() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let p = escreve(dir.path(), "historico antigo\n");
+
+        let voltas = std::sync::atomic::AtomicUsize::new(0);
+        let caminho = p.clone();
+        let parar = move || {
+            let n = voltas.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&caminho)
+                    .expect("abrir");
+                f.write_all(b"chegou agora\n").expect("escrever");
+            }
+            n >= 2
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        follow(&p, 0, &mut out, &parar).expect("ok");
+        let s = String::from_utf8(out).expect("utf8");
+        assert!(!s.contains("historico antigo"), "sem historico: {s:?}");
+        assert!(s.contains("chegou agora"), "com o que chegou: {s:?}");
+    }
+
+    /// Linha maior que o teto e pulada, e o resto do arquivo continua saindo.
+    ///
+    /// Sem o teto, um arquivo sem `\n` viraria uma `String` do tamanho do
+    /// arquivo — o `BufReader::lines()` nao tem limite proprio.
+    #[test]
+    fn linha_gigante_e_pulada_sem_derrubar_o_resto() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let gigante = "x".repeat(MAX_BYTES_POR_LINHA + 10);
+        let p = escreve(dir.path(), &format!("antes\n{gigante}\ndepois\n"));
+
+        let mut out: Vec<u8> = Vec::new();
+        tail(&p, 100, &mut out).expect("ok");
+        let s = String::from_utf8(out).expect("utf8");
+        assert!(
+            s.contains("antes") && s.contains("depois"),
+            "saiu: {}",
+            s.len()
+        );
+        assert!(
+            !s.contains(&"x".repeat(1000)),
+            "a linha gigante nao vai para a tela"
+        );
     }
 
     /// O follow para quando mandam parar — e o caminho do Ctrl+C.
