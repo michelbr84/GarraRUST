@@ -18,6 +18,7 @@ use garraia_config::AppConfig;
 use tokio::sync::mpsc;
 
 use crate::ui::error_card::ErrorCard;
+use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
 use crate::ui::{TerminalRenderer, UiEvent};
 use garraia_agents::TurnEvent;
@@ -25,20 +26,60 @@ use garraia_agents::TurnEvent;
 use std::path::Path;
 
 /// ANSI color helpers
-const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+/// Os comandos do `garra chat`, e a fonte do `/help`.
+///
+/// Uma tabela, e nao dez `println!`: o `/help` de antes era uma lista escrita
+/// a mao ao lado do `match`, entao ele ja mentia — nao citava `/models` nem
+/// `/tools`, e prometia um `/provider <nome>` que so responde "reinicie".
+/// Ha um teste que confere a tabela contra o `match` do REPL, para a proxima
+/// divergencia aparecer no CI e nao no terminal de quem usa.
+const COMANDOS: &[(&str, &str)] = &[
+    ("/status", "Provider, modelo, ferramentas e o ultimo turno"),
+    ("/context", "Diretorio, ramo e projeto detectados"),
+    ("/tools", "Ferramentas que o agente tem"),
+    ("/tool", "Saidas de ferramenta guardadas nesta sessao"),
+    ("/tool <n>", "A saida inteira de uma chamada"),
+    ("/history", "Historico da conversa"),
+    ("/models", "Modelos que este provider lista"),
+    ("/model <nome>", "Trocar de modelo sem reiniciar"),
+    (
+        "/provider <nome>",
+        "Como trocar de provider (pede reinicio)",
+    ),
+    ("/clear", "Limpar o historico"),
+    ("/help", "Mostrar isto"),
+    ("/exit", "Sair"),
+];
+
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
-/// Scan the current directory for project markers and build a context summary.
-fn scan_directory_context(cwd: &str) -> String {
+/// So os marcadores de projeto, sem a listagem de arquivos (#940).
+///
+/// O `/context` mostra isto e o prompt do sistema mostra
+/// [`scan_directory_context`], que acrescenta os arquivos do topo. Sao
+/// publicos diferentes: o modelo se beneficia de saber que existe um
+/// `docker-compose.yml`; a pessoa que digitou `/context` queria uma linha, e
+/// recebia quinze nomes de arquivo embrulhados no painel.
+///
+/// Nao ha varredura nova aqui — sao `exists()` de caminho conhecido. A propria
+/// issue pede para nao varrer o diretorio so para desenhar status.
+fn project_summary(cwd: &str) -> String {
     let p = Path::new(cwd);
     // Mesma tabela que o cabecalho usa (#935) — duas copias divergiriam.
     let mut markers = crate::ui::project_markers(p);
     if p.join(".git").exists() {
         markers.push("Git repo");
     }
+    markers.join(", ")
+}
+
+/// Scan the current directory for project markers and build a context summary.
+fn scan_directory_context(cwd: &str) -> String {
+    let p = Path::new(cwd);
+    let markers = project_summary(cwd);
 
     // List top-level files (up to 15) for context
     let mut files: Vec<String> = Vec::new();
@@ -58,7 +99,7 @@ fn scan_directory_context(cwd: &str) -> String {
         return String::new();
     }
 
-    let mut result = markers.join(", ");
+    let mut result = markers;
     if !files.is_empty() {
         if !result.is_empty() {
             result.push_str(" | ");
@@ -1034,9 +1075,17 @@ pub async fn run_chat(
     //   - ocioso no prompt -> encerra a sessão, como sempre encerrou.
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Uma so fonte para a despedida, usada aqui e no `/exit`. Com cor quando
+    // ha terminal, e sem um escape sequer quando a saida esta redirecionada.
+    let despedida = if style.color {
+        format!("{DIM}Ate mais! 🦀{RESET}")
+    } else {
+        "Ate mais!".to_string()
+    };
     {
         let cancel = std::sync::Arc::clone(&cancel);
         let turn_active = std::sync::Arc::clone(&turn_active);
+        let despedida = despedida.clone();
         tokio::spawn(async move {
             loop {
                 if tokio::signal::ctrl_c().await.is_err() {
@@ -1047,7 +1096,10 @@ pub async fn run_chat(
                     cancel.notify_waiters();
                 } else {
                     // 130 = terminado por SIGINT, a convenção do shell.
-                    println!("\n{DIM}Ate mais! 🦀{RESET}");
+                    // A despedida sai pelo estilo detectado: dentro da task
+                    // nao ha `&mut renderer`, entao o texto e montado antes e
+                    // movido para ca ja pronto (#940).
+                    println!("\n{despedida}");
                     let _ = io::stdout().flush();
                     std::process::exit(130);
                 }
@@ -1065,7 +1117,7 @@ pub async fn run_chat(
         let mut input = String::new();
         if reader.read_line(&mut input)? == 0 {
             // EOF (Ctrl+D)
-            println!("\n{DIM}Ate mais! 🦀{RESET}");
+            println!("\n{despedida}");
             break;
         }
 
@@ -1077,56 +1129,181 @@ pub async fn run_chat(
         // Handle slash commands
         match input.as_str() {
             "/exit" | "/quit" | "/sair" => {
-                println!("{DIM}Ate mais! 🦀{RESET}");
+                println!("{despedida}");
                 break;
             }
             "/clear" | "/limpar" => {
                 history.clear();
-                println!("{DIM}Historico limpo.{RESET}");
+                renderer.handle(UiEvent::Hint("Historico limpo."), &mut io::stdout());
                 continue;
             }
             "/help" | "/ajuda" => {
-                println!("{DIM}Comandos disponiveis:{RESET}");
-                println!("  /model <nome>      Trocar modelo");
-                println!("  /provider <nome>   Trocar provider (ollama, anthropic, openai)");
-                println!("  /models            Listar modelos disponiveis");
-                println!("  /clear             Limpar historico");
-                println!("  /history           Mostrar historico");
-                println!("  /context           Diretorio e projeto detectados");
-                println!("  /tool              Listar saidas de ferramenta guardadas");
-                println!("  /tool <n>          Ver a saida inteira de uma chamada");
-                println!("  /exit              Sair");
+                // A lista sai pela mesma moldura das outras superficies, e nao
+                // por `println!` com cor incondicional: era o `/help` que
+                // aparecia com escape em `garra chat | cat` (#940).
+                let itens: Vec<String> = COMANDOS
+                    .iter()
+                    .map(|(nome, o_que_faz)| format!("  {nome:<18} {o_que_faz}"))
+                    .collect();
+                renderer.handle(
+                    UiEvent::List {
+                        titulo: "Comandos",
+                        itens: &itens,
+                    },
+                    &mut io::stdout(),
+                );
+                continue;
+            }
+            // As superficies de status que a #940 pede. O que elas mostram e
+            // sempre o valor **vivo** — `/model` troca o modelo no meio da
+            // sessao, entao ler a config diria o que era verdade no boot.
+            "/status" => {
+                let ferramentas = runtime.list_tool_info();
+                let mut linhas = vec![
+                    panel::linha("Provider", provider_name.clone()),
+                    panel::linha("Modelo", model_name.clone()),
+                    panel::linha("Ferramentas", ferramentas.len().to_string()),
+                    panel::linha("Sessao", session_id.clone()),
+                    panel::linha("Turnos", turn_index.to_string()),
+                ];
+                match runtime.last_turn_stats(&session_id) {
+                    // O `/stats` dos canais (#984) faz a mesma distincao, e
+                    // pela mesma razao: no streaming o provider nao informa
+                    // token nenhum, e zero-porque-nao-sei nao e
+                    // zero-porque-nao-usou.
+                    Some(st) => {
+                        let modelo = if st.model_confirmado {
+                            format!("{} (confirmado pelo provider)", st.model)
+                        } else {
+                            format!("{} (pedido; o provider nao confirmou)", st.model)
+                        };
+                        linhas.push(panel::linha("Ultimo modelo", modelo));
+                        linhas.push(panel::linha(
+                            "Ultimo turno",
+                            format!(
+                                "{} ferramenta(s), {}",
+                                st.tool_calls,
+                                crate::ui::format_duration(std::time::Duration::from_millis(
+                                    st.latency_ms
+                                ))
+                            ),
+                        ));
+                        linhas.push(panel::linha(
+                            "Tokens",
+                            if st.tokens_conhecidos {
+                                format!("{} entrada, {} saida", st.input_tokens, st.output_tokens)
+                            } else {
+                                "nao informados neste caminho".to_string()
+                            },
+                        ));
+                        if st.fallback {
+                            linhas.push(panel::linha("Fallback", "sim — o primario falhou"));
+                        }
+                    }
+                    None => linhas.push(panel::linha("Ultimo turno", "nenhum ainda")),
+                }
+                renderer.handle(
+                    UiEvent::Panel {
+                        titulo: "Status",
+                        linhas: &linhas,
+                    },
+                    &mut io::stdout(),
+                );
+                continue;
+            }
+            // Quais ferramentas o agente **tem** — diferente do `/tool`, que
+            // mostra o que elas **produziram**. Ate aqui `/tools` era apelido
+            // de `/tool`, e nao havia como perguntar a primeira coisa.
+            "/tools" | "/ferramentas" => {
+                let ferramentas = runtime.list_tool_info();
+                if ferramentas.is_empty() {
+                    renderer.handle(
+                        UiEvent::Hint("Nenhuma ferramenta registrada nesta sessao."),
+                        &mut io::stdout(),
+                    );
+                    continue;
+                }
+                // Painel, e nao lista: nome e descricao sao duas colunas, e
+                // so o painel alinha a continuacao. Como lista de strings ja
+                // montadas, a descricao longa do `file_write` quebrava na
+                // coluna zero e desmontava o alinhamento — visto rodando o
+                // binario.
+                let linhas: Vec<panel::Linha<'_>> = ferramentas
+                    .iter()
+                    .map(|(nome, descricao)| {
+                        // A descricao vem da tool, e tool de servidor MCP vem
+                        // de fora: uma linha so, e o painel ainda saneia.
+                        panel::linha(nome.as_str(), descricao.lines().next().unwrap_or(""))
+                    })
+                    .collect();
+                renderer.handle(
+                    UiEvent::Panel {
+                        titulo: "Ferramentas disponiveis",
+                        linhas: &linhas,
+                    },
+                    &mut io::stdout(),
+                );
                 continue;
             }
             // A inspecao detalhada de diretorio saiu do cabecalho de abertura
             // (#935) e mora aqui: quem quer ver, pede.
             "/context" | "/contexto" => {
-                println!("{DIM}Diretorio: {cwd}{RESET}");
-                match crate::ui::git_branch(std::path::Path::new(&cwd)) {
-                    Some(branch) => println!("{DIM}Ramo:      {branch}{RESET}"),
-                    None => println!("{DIM}Ramo:      (fora de um repositorio git){RESET}"),
-                }
-                if dir_context.is_empty() {
-                    println!("{DIM}Projeto:   nenhum marcador detectado{RESET}");
+                let ramo = crate::ui::git_branch(std::path::Path::new(&cwd))
+                    .unwrap_or_else(|| "(fora de um repositorio git)".to_string());
+                let marcadores = project_summary(&cwd);
+                let projeto = if marcadores.is_empty() {
+                    "nenhum marcador detectado".to_string()
                 } else {
-                    println!("{DIM}Projeto:   {dir_context}{RESET}");
-                }
+                    marcadores
+                };
+                // **Sem** contagem de arquivos, que o exemplo da issue mostra.
+                // A propria issue pede para nao varrer o diretorio so para
+                // desenhar status, e num repositorio grande a varredura custa
+                // mais que tudo o mais junto. O marcador de projeto ja responde
+                // "que projeto e este" sem ler a arvore.
+                let linhas = vec![
+                    panel::linha("Diretorio", cwd.clone()),
+                    panel::linha("Ramo", ramo),
+                    panel::linha("Projeto", projeto),
+                    panel::linha("Provider", provider_name.clone()),
+                    panel::linha("Modelo", model_name.clone()),
+                    panel::linha("Ferramentas", runtime.list_tool_info().len().to_string()),
+                ];
+                renderer.handle(
+                    UiEvent::Panel {
+                        titulo: "Contexto",
+                        linhas: &linhas,
+                    },
+                    &mut io::stdout(),
+                );
                 continue;
             }
             // A saida completa das ferramentas (#938). O resumo de uma linha
             // do #937 deixou a conversa legivel; sem isto ele so teria
             // escondido a causa da falha.
-            "/tool" | "/tools" | "/saida" => {
+            "/tool" | "/saida" => {
                 if tool_log.vazio() {
-                    println!("{DIM}Nenhuma ferramenta foi chamada ainda nesta sessao.{RESET}");
-                } else {
-                    println!("{DIM}Saidas guardadas (use /tool <n> para ver inteira):{RESET}");
-                    for e in tool_log.listar() {
+                    renderer.handle(
+                        UiEvent::Hint("Nenhuma ferramenta foi chamada ainda nesta sessao."),
+                        &mut io::stdout(),
+                    );
+                    continue;
+                }
+                let itens: Vec<String> = tool_log
+                    .listar()
+                    .map(|e| {
                         let marca = if e.sucesso { " " } else { "!" };
                         let detalhe: String = e.detalhe.chars().take(52).collect();
-                        println!("  {marca}#{:<3} {:<12} {}", e.indice, e.ferramenta, detalhe);
-                    }
-                }
+                        format!("  {marca}#{:<3} {:<12} {}", e.indice, e.ferramenta, detalhe)
+                    })
+                    .collect();
+                renderer.handle(
+                    UiEvent::List {
+                        titulo: "Saidas guardadas (use /tool <n> para ver inteira)",
+                        itens: &itens,
+                    },
+                    &mut io::stdout(),
+                );
                 continue;
             }
             _ if input.starts_with("/tool ") || input.starts_with("/saida ") => {
@@ -1138,16 +1315,20 @@ pub async fn run_chat(
                     Ok(n) => match tool_log.buscar(n) {
                         Busca::Achou(e) => {
                             let estado = if e.sucesso { "ok" } else { "falhou" };
-                            println!(
-                                "{DIM}#{} {} · {} · {}{RESET}",
-                                e.indice,
-                                e.ferramenta,
-                                estado,
-                                crate::ui::format_duration(e.duracao)
-                            );
+                            let mut cabecalho = vec![panel::linha(
+                                "Estado",
+                                format!("{estado} · {}", crate::ui::format_duration(e.duracao)),
+                            )];
                             if !e.detalhe.is_empty() {
-                                println!("{DIM}{}{RESET}", e.detalhe);
+                                cabecalho.push(panel::linha("Resumo", e.detalhe.clone()));
                             }
+                            renderer.handle(
+                                UiEvent::Panel {
+                                    titulo: &format!("#{} {}", e.indice, e.ferramenta),
+                                    linhas: &cabecalho,
+                                },
+                                &mut io::stdout(),
+                            );
                             println!();
                             // A saida ja veio redigida e saneada do
                             // `garraia-agents`; aqui e so imprimir.
@@ -1157,44 +1338,65 @@ pub async fn run_chat(
                         // proposito: "saiu do registro" e acionavel (rode de
                         // novo), "nunca existiu" quer dizer que o numero esta
                         // errado.
-                        Busca::Expirada => println!(
-                            "{DIM}A saida #{n} ja saiu do registro — so as mais \
-                             recentes ficam guardadas. Rode o comando de novo \
-                             para ve-la.{RESET}"
+                        Busca::Expirada => renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "A saida #{n} ja saiu do registro — so as mais \
+                                 recentes ficam guardadas. Rode o comando de novo \
+                                 para ve-la."
+                            )),
+                            &mut io::stdout(),
                         ),
-                        Busca::Inexistente => println!(
-                            "{DIM}Nao ha saida #{n}. Use /tool para ver as \
-                             disponiveis.{RESET}"
+                        Busca::Inexistente => renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "Nao ha saida #{n}. Use /tool para ver as disponiveis."
+                            )),
+                            &mut io::stdout(),
                         ),
                     },
-                    Err(_) => println!("{DIM}Uso: /tool <numero>. Ex.: /tool 3{RESET}"),
+                    Err(_) => renderer.handle(
+                        UiEvent::Hint("Uso: /tool <numero>. Ex.: /tool 3"),
+                        &mut io::stdout(),
+                    ),
                 }
                 continue;
             }
             "/history" | "/historico" => {
                 if history.is_empty() {
-                    println!("{DIM}Historico vazio.{RESET}");
-                } else {
-                    for msg in &history {
+                    renderer.handle(UiEvent::Hint("Historico vazio."), &mut io::stdout());
+                    continue;
+                }
+                let itens: Vec<String> = history
+                    .iter()
+                    .map(|msg| {
                         let role = match msg.role {
-                            ChatRole::User => format!("{GREEN}voce{RESET}"),
-                            ChatRole::Assistant => format!("{CYAN}garra{RESET}"),
-                            _ => "system".to_string(),
+                            ChatRole::User => "voce",
+                            ChatRole::Assistant => "garra",
+                            _ => "system",
                         };
                         let text = match &msg.content {
                             MessagePart::Text(t) => t.as_str(),
                             MessagePart::Parts(_) => "(multi-part)",
                         };
+                        // O texto do modelo entra aqui: o painel saneia, mas o
+                        // corte de 80 tambem e defesa — uma resposta inteira
+                        // por linha tornaria o historico ilegivel.
                         let preview: String = text.chars().take(80).collect();
-                        println!("  {role}: {preview}");
-                    }
-                }
+                        format!("  {role:<6} {preview}")
+                    })
+                    .collect();
+                renderer.handle(
+                    UiEvent::List {
+                        titulo: "Historico",
+                        itens: &itens,
+                    },
+                    &mut io::stdout(),
+                );
                 continue;
             }
             _ if input.starts_with("/model ") => {
                 let new_model = input[7..].trim();
                 if new_model.is_empty() {
-                    println!("{DIM}Uso: /model <nome>{RESET}");
+                    renderer.handle(UiEvent::Hint("Uso: /model <nome>"), &mut io::stdout());
                     continue;
                 }
                 // On Ollama, `/model qwen3.8` means `qwen3.8:latest` — spell
@@ -1224,9 +1426,15 @@ pub async fn run_chat(
                     );
                 }
                 model_name = resolved;
-                println!("{DIM}Modelo alterado para: {model_name}{RESET}");
-                println!(
-                    "{DIM}  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model){RESET}"
+                renderer.handle(
+                    UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
+                    &mut io::stdout(),
+                );
+                renderer.handle(
+                    UiEvent::Hint(&format!(
+                        "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
+                    )),
+                    &mut io::stdout(),
                 );
                 continue;
             }
@@ -1235,27 +1443,46 @@ pub async fn run_chat(
                 if let Some(p) = provider_ref {
                     match p.available_models().await {
                         Ok(models) => {
-                            println!("{DIM}Modelos disponiveis ({provider_name}):{RESET}");
-                            for m in models.iter().take(20) {
-                                let marker = if m == &model_name { " *" } else { "" };
-                                println!("  {m}{marker}");
-                            }
+                            let mut itens: Vec<String> = models
+                                .iter()
+                                .take(20)
+                                .map(|m| {
+                                    let marker = if m == &model_name { " *" } else { "" };
+                                    format!("  {m}{marker}")
+                                })
+                                .collect();
                             if models.len() > 20 {
-                                println!("  ... e mais {} modelos", models.len() - 20);
+                                itens.push(format!("  ... e mais {} modelos", models.len() - 20));
                             }
+                            renderer.handle(
+                                UiEvent::List {
+                                    titulo: &format!("Modelos disponiveis ({provider_name})"),
+                                    itens: &itens,
+                                },
+                                &mut io::stdout(),
+                            );
                         }
-                        Err(e) => println!("{DIM}Erro listando modelos: {e}{RESET}"),
+                        // A mensagem do provider e de fora: vai como aviso, que
+                        // ja saneia, e nao como `println!` cru.
+                        Err(e) => renderer.handle(
+                            UiEvent::Warning(&format!("Erro listando modelos: {e}")),
+                            &mut io::stdout(),
+                        ),
                     }
                 }
                 continue;
             }
             _ if input.starts_with("/provider ") => {
                 let new_provider = input[10..].trim();
-                println!(
-                    "{DIM}Para trocar provider, reinicie com: garraia chat --provider {new_provider}{RESET}"
+                renderer.handle(
+                    UiEvent::Hint(&format!(
+                        "Para trocar provider, reinicie com: garraia chat --provider {new_provider}"
+                    )),
+                    &mut io::stdout(),
                 );
-                println!(
-                    "{DIM}  Para um modelo local do Ollama basta: garraia --model <tag>{RESET}"
+                renderer.handle(
+                    UiEvent::Hint("  Para um modelo local do Ollama basta: garraia --model <tag>"),
+                    &mut io::stdout(),
                 );
                 continue;
             }
@@ -1385,6 +1612,91 @@ mod tests {
     use super::*;
     use garraia_config::{AgentConfig, AppConfig, LlmProviderConfig};
     use std::collections::HashMap;
+
+    /// Apelidos aceitos no `match` que **de proposito** nao aparecem no
+    /// `/help`: listar `/sair`, `/limpar` e `/historico` ao lado de `/exit`,
+    /// `/clear` e `/history` dobraria a tela sem ensinar nada.
+    const APELIDOS: &[&str] = &[
+        "/quit",
+        "/sair",
+        "/limpar",
+        "/ajuda",
+        "/contexto",
+        "/historico",
+        "/saida",
+        "/ferramentas",
+    ];
+
+    /// O `/help` nao pode divergir do `match` — e ele ja tinha divergido.
+    ///
+    /// A lista antiga era escrita a mao ao lado do `match` e omitia `/models`,
+    /// nao tinha `/status` nem `/tools`, e prometia `/provider <nome>` como se
+    /// trocasse de provider. O jeito de isso nao voltar e o CI conferir os dois
+    /// lados, e nao a disciplina de quem edita.
+    ///
+    /// Le o proprio fonte por `include_str!`: e o mesmo recurso que os
+    /// tripwires do `state.rs` usam, e o unico jeito de afirmar sobre o `match`
+    /// sem transforma-lo numa tabela em runtime.
+    #[test]
+    fn o_help_e_o_match_nao_divergem() {
+        const FONTE: &str = include_str!("chat.rs");
+
+        // A varredura tem de excluir a **propria** tabela e o modulo de teste,
+        // senao ela se satisfaz sozinha: um `/fantasma` inventado no `/help`
+        // aparece como literal na tabela e passaria por "existe no match".
+        // Foi o que aconteceu na primeira versao deste teste — verifiquei
+        // inserindo o comando falso, e ele passou verde.
+        let tabela = FONTE.find("const COMANDOS:").expect("a tabela existe");
+        let fim_tabela = FONTE[tabela..]
+            .find("\n];")
+            .map(|i| tabela + i)
+            .expect("a tabela fecha");
+        let inicio_testes = FONTE.find("#[cfg(test)]").unwrap_or(FONTE.len());
+        let corpo = format!("{}{}", &FONTE[..tabela], &FONTE[fim_tabela..inicio_testes]);
+        let corpo = corpo.as_str();
+
+        // Todo comando anunciado existe de verdade.
+        //
+        // Duas grafias porque ha duas formas de casar: comando sem argumento
+        // vira braco exato (`"/status"`), e comando com argumento vira prefixo
+        // (`starts_with("/model ")`) — com o espaco fazendo parte do literal.
+        for (nome, _) in COMANDOS {
+            let base = nome.split(' ').next().unwrap_or(nome);
+            let exato = corpo.contains(&format!("\"{base}\""));
+            let prefixo = corpo.contains(&format!("\"{base} \""));
+            assert!(exato || prefixo, "{base} esta no /help e nao no match");
+        }
+
+        // E todo comando do match esta anunciado ou e apelido declarado.
+        //
+        // So os literais de comando: o corpo dos arms tem texto de ajuda com
+        // barra dentro, e a busca e ancorada em `"/` seguido de letra.
+        let mut vistos = std::collections::BTreeSet::new();
+        let bytes = corpo.as_bytes();
+        for (i, _) in corpo.match_indices("\"/") {
+            let resto = &corpo[i + 2..];
+            let fim = resto
+                .find(|c: char| !c.is_ascii_lowercase())
+                .unwrap_or(resto.len());
+            if fim == 0 || bytes.get(i + 2 + fim) != Some(&b'"') {
+                continue;
+            }
+            vistos.insert(format!("/{}", &resto[..fim]));
+        }
+        for cmd in &vistos {
+            let anunciado = COMANDOS
+                .iter()
+                .any(|(nome, _)| nome.split(' ').next() == Some(cmd.as_str()));
+            assert!(
+                anunciado || APELIDOS.contains(&cmd.as_str()),
+                "{cmd} existe no match e nao aparece no /help nem em APELIDOS"
+            );
+        }
+        assert!(
+            vistos.contains("/status"),
+            "a varredura achou algo: {vistos:?}"
+        );
+    }
 
     fn make_llm_cfg(
         provider: &str,
