@@ -1417,7 +1417,17 @@ function levelBadgeForLog(level) {
 async function pageAudit() {
   if (auditAutoRefresh !== null) { clearInterval(auditAutoRefresh); auditAutoRefresh = null; }
   try {
-    var resp = await fetch('/api/logs');
+    // #1045: com `gateway.api_key` configurada o servidor exige
+    // `Authorization: Bearer` em `/api/*`. O painel de admin autentica por
+    // cookie, que continua sendo exigido — a chave e um segundo fator de
+    // rede, nao um substituto. Esta e a unica chamada `/api/` do admin; o
+    // resto vai por `/admin/api/*`, que o cookie ja cobre.
+    var chaveDoGateway = localStorage.getItem('garraia.gateway_key') || '';
+    var opcoesDeLog = { credentials: 'same-origin', headers: {} };
+    if (chaveDoGateway) {
+      opcoesDeLog.headers['Authorization'] = 'Bearer ' + chaveDoGateway;
+    }
+    var resp = await fetch('/api/logs', opcoesDeLog);
     var data = await resp.json();
     var rawLogs = data.logs || '';
     var lines = rawLogs.split('\n').filter(function(l) { return l.trim().length > 0; });
