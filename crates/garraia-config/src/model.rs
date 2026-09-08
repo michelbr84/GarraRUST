@@ -648,6 +648,37 @@ pub struct AgentConfig {
     /// Example: `"google/gemini-2.0-flash-exp:free"` (free, supports tools).
     #[serde(default)]
     pub tools_model: Option<String>,
+    /// #1034: de onde a tool `web_search` tira os resultados. Sem esta secao
+    /// o comportamento e o de sempre: a tool so existe quando uma chave do
+    /// Brave resolve (`llm.brave.api_key`, cofre ou `BRAVE_API_KEY`).
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+}
+
+/// Backend da tool `web_search` (#1034).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebSearchBackend {
+    /// Brave Search API — precisa de chave (`llm.brave.api_key` ou `BRAVE_API_KEY`).
+    Brave,
+    /// SearXNG self-hosted, sem chave — precisa de `searxng_url` (ou
+    /// `GARRAIA_SEARXNG_URL`) e da instancia com `format: json` habilitado.
+    Searxng,
+}
+
+/// Secao `agent.web_search` (#1034).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    /// `brave` | `searxng`. Explicito ganha, e se faltar o que ele precisa a
+    /// tool fica de fora (cair no outro em silencio seria surpresa). Sem
+    /// valor: Brave se houver chave, senao SearXNG se houver URL.
+    #[serde(default)]
+    pub backend: Option<WebSearchBackend>,
+    /// Base da instancia SearXNG, ex.: `http://127.0.0.1:8081`. Loopback e
+    /// LAN sao alvos legitimos aqui (self-hosted); link-local, CGNAT e a
+    /// metadata de nuvem continuam bloqueados pelo guard de SSRF.
+    #[serde(default)]
+    pub searxng_url: Option<String>,
 }
 
 /// A named agent configuration for multi-agent routing.

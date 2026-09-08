@@ -853,9 +853,20 @@ impl AppState {
     /// e a pessoa.
     pub async fn exec_context_for(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
         let goal = self.session_goal_for(session_id, user_id).await;
+        // O diretorio da sessao existe desde a Fase 1.3 (`SessionState::working_dir`,
+        // gravado por `POST /api/sessions` com `project_id`/`working_dir`) e nunca
+        // chegava aqui: todo turno HTTP saia com `working_dir: None`, e o
+        // `resolve_tool_path` recusava qualquer caminho relativo com "a sessao
+        // nao tem working_dir". O agente no celular respondia que nao conseguia
+        // olhar os proprios arquivos — e nao conseguia mesmo.
+        let working_dir = self
+            .sessions
+            .get(session_id)
+            .and_then(|s| s.working_dir.clone());
         let Some(nome) = self.chosen_agent_mode_for(session_id).await else {
             return ExecContext {
                 goal,
+                working_dir,
                 ..ExecContext::default()
             };
         };
@@ -864,6 +875,7 @@ impl AppState {
             None => ExecContext::with_mode(Some(nome)),
         };
         exec.goal = goal;
+        exec.working_dir = working_dir;
         exec
     }
 
@@ -1158,6 +1170,45 @@ mod tests {
         st.set_session_store(Arc::clone(&store));
         st.set_chat_session_manager(Arc::new(ChatSessionManager::new(store)));
         st
+    }
+
+    /// O `working_dir` da sessao chega ao `ExecContext` — com e sem modo.
+    ///
+    /// Antes, `exec_context_for` montava o contexto so com objetivo e modo, e
+    /// o diretorio que `POST /api/sessions` grava em `SessionState` morria ali.
+    /// Este teste cobre os dois ramos da funcao, porque o bug era justamente
+    /// um ramo lembrar de um campo e o outro nao.
+    #[tokio::test]
+    async fn working_dir_da_sessao_chega_ao_exec_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "sessao-com-diretorio";
+        st.hydrate_session_history(sid, Some("api"), None).await;
+
+        assert_eq!(
+            st.exec_context_for(sid, None).await.working_dir,
+            None,
+            "sessao sem diretorio nao inventa um"
+        );
+
+        st.sessions
+            .get_mut(sid)
+            .expect("sessao hidratada")
+            .working_dir = Some("/tmp/garra-projeto".to_string());
+
+        // Sem modo escolhido: ramo do early-return.
+        let exec = st.exec_context_for(sid, None).await;
+        assert_eq!(exec.working_dir.as_deref(), Some("/tmp/garra-projeto"));
+        assert_eq!(exec.agent_mode, None);
+
+        // Com modo escolhido: ramo que monta pelo perfil.
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store.set_agent_mode(sid, "search").expect("gravar o modo");
+        }
+        let exec = st.exec_context_for(sid, None).await;
+        assert_eq!(exec.working_dir.as_deref(), Some("/tmp/garra-projeto"));
+        assert_eq!(exec.agent_mode.as_deref(), Some("search"));
     }
 
     /// O objetivo da sessao chega ao `ExecContext` (#983).
