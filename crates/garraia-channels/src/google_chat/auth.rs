@@ -149,18 +149,53 @@ pub async fn verificar_token(
     verificar_com_chave(token, &chave, audience)
 }
 
-/// A parte pura da verificacao, separada para poder ser testada com uma
-/// chave montada no teste, sem rede.
-fn verificar_com_chave(token: &str, chave: &DecodingKey, audience: &str) -> Result<(), AuthError> {
+/// Monta a politica de validacao.
+///
+/// Separada e nomeada porque **a garantia deste modulo esta toda aqui**, e a
+/// linha do `set_required_spec_claims` nao e obvia.
+///
+/// ## Por que ela nao e redundante com `set_issuer`/`set_audience`
+///
+/// Sozinhos, os dois setters so dizem "se o claim vier, tem de bater". No
+/// `jsonwebtoken` 11 o casamento e por `match`, e o braco
+/// `(TryParse::NotPresent, Some(esperado))` cai no `_ => {}` — ou seja, um
+/// token **sem** `aud` passa por `set_audience`, e um token **sem** `iss`
+/// passa por `set_issuer`. E `Validation::new` poe **so** `exp` em
+/// `required_spec_claims`.
+///
+/// Sem esta linha a defesa central some sem barulho: um JWT assinado pela
+/// chave certa do Google, com `exp` valido e **nenhum** `aud`, seria aceito
+/// por todos os canais configurados — exatamente o vetor que a `audience`
+/// existe para fechar. Nenhum token legitimo do Chat cai nesse caso, o que
+/// piora a situacao: a falha nao aparece em teste manual, so em ataque.
+///
+/// `set_required_spec_claims` **substitui** o conjunto, entao `exp` precisa
+/// ser repetido aqui — sem isso a expiracao deixaria de ser exigida.
+fn validacao_para(audience: &str) -> Validation {
     let mut validation = Validation::new(Algorithm::RS256);
     // Exatamente um algoritmo aceito. `Validation::new` ja faz isso, mas
     // deixar explicito impede que um `insert` futuro passe despercebido.
     validation.algorithms = vec![Algorithm::RS256];
     validation.set_issuer(&[ISSUER]);
     validation.set_audience(&[audience]);
+    validation.set_required_spec_claims(&["exp", "iss", "aud"]);
     validation.validate_exp = true;
+    // Token emitido "para o futuro" nao vale. O Google Chat emite com
+    // `nbf == iat`, entao na pratica nunca dispara — e defesa em
+    // profundidade, e custa uma linha.
+    validation.validate_nbf = true;
+    // Explicito, e nao herdado: 60s e o default do `jsonwebtoken`, e sem
+    // esta linha o proximo leitor nao sabe se a janela foi escolhida ou
+    // esquecida. Cobre relogio dessincronizado sem abrir nada relevante —
+    // um token expirado ha um minuto ainda exige a chave privada do Google.
+    validation.leeway = 60;
+    validation
+}
 
-    decode::<Claims>(token, chave, &validation)
+/// A parte pura da verificacao, separada para poder ser testada com uma
+/// chave montada no teste, sem rede.
+fn verificar_com_chave(token: &str, chave: &DecodingKey, audience: &str) -> Result<(), AuthError> {
+    decode::<Claims>(token, chave, &validacao_para(audience))
         .map(|_| ())
         .map_err(|_| AuthError::TokenInvalido)
 }
@@ -274,6 +309,53 @@ mod tests {
         assert_eq!(
             verificar_token(&jwks, token, "1234").await,
             Err(AuthError::HeaderMalformado)
+        );
+    }
+
+    /// **O teste do achado HIGH.** `set_issuer` e `set_audience` sozinhos so
+    /// exigem que o claim bata **quando ele existe**: no `jsonwebtoken` 11 o
+    /// braco `(TryParse::NotPresent, Some(esperado))` cai no `_ => {}`. Sem
+    /// `aud` e `iss` em `required_spec_claims`, um JWT assinado pela chave
+    /// certa do Google, com `exp` valido e sem esses dois claims, passaria em
+    /// todos os canais — o vetor que a `audience` existe para fechar.
+    ///
+    /// Nenhum token legitimo do Chat cai nesse caso, o que torna a falha
+    /// invisivel em teste manual. Este teste e o unico lugar que a percebe.
+    #[test]
+    fn a_validacao_exige_aud_e_iss_e_nao_so_os_confere_quando_existem() {
+        let v = validacao_para("1234567890");
+        for claim in ["aud", "iss", "exp"] {
+            assert!(
+                v.required_spec_claims.contains(claim),
+                "{claim} tem de ser exigido, senao um token sem ele passa: {:?}",
+                v.required_spec_claims
+            );
+        }
+    }
+
+    /// O resto da politica, junto, para a mudanca de um campo so nao passar
+    /// despercebida.
+    #[test]
+    fn a_politica_de_validacao_e_a_esperada() {
+        let v = validacao_para("1234567890");
+        assert_eq!(
+            v.algorithms,
+            vec![Algorithm::RS256],
+            "so RS256: qualquer outro abre confusao de algoritmo"
+        );
+        assert!(v.validate_exp, "token expirado nao vale");
+        assert!(v.validate_nbf, "token emitido para o futuro nao vale");
+        assert_eq!(v.leeway, 60, "a janela de relogio e escolhida, nao herdada");
+        assert!(
+            v.iss
+                .as_ref()
+                .is_some_and(|s| s.len() == 1 && s.contains(ISSUER)),
+            "um emissor so, e o do Chat"
+        );
+        assert_eq!(
+            v.aud.as_ref().map(|s| s.len()),
+            Some(1),
+            "uma audiencia so: a deste canal"
         );
     }
 

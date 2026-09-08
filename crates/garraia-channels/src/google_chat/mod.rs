@@ -118,7 +118,17 @@ impl GoogleChatChannel {
     }
 
     /// Send a text message to a Google Chat space via REST API.
+    ///
+    /// `space_name` vem do corpo do webhook (`message.space.name`). O corpo
+    /// ja passou pela autenticacao, mas quem manda a mensagem ainda controla
+    /// o valor — entao ele e validado antes de entrar na URL. Ver
+    /// [`space_name_valido`].
     pub async fn send_to_space(&self, space_name: &str, text: &str) -> Result<()> {
+        if !space_name_valido(space_name) {
+            return Err(Error::Channel(format!(
+                "google chat: space name recusado, fora da forma 'spaces/<id>': {space_name:?}"
+            )));
+        }
         let url = format!("https://chat.googleapis.com/v1/{}/messages", space_name);
 
         let body = serde_json::json!({
@@ -177,6 +187,30 @@ impl GoogleChatChannel {
     }
 }
 
+/// O `space_name` tem a forma `spaces/<id>` e nada mais.
+///
+/// Ele e interpolado no caminho de uma URL da API do Google, e vem do corpo
+/// do webhook — autenticado, mas escrito por quem manda a mensagem. O host
+/// e fixo (`chat.googleapis.com`), entao nao ha como alcancar a rede interna
+/// por aqui; o que um valor torto alcanca sao **outros endpoints do Google**,
+/// com o token da conta de servico junto: `spaces/../../v1/admin/...` sobe um
+/// nivel de caminho, e `spaces/x?alt=media#` injeta query e fragmento.
+///
+/// Por isso uma allow-list de forma, e nao uma deny-list de caracteres ruins:
+/// tudo que nao for exatamente `spaces/` seguido de um identificador
+/// alfanumerico (com `-` e `_`) e recusado. O threat model (§5.6) lista este
+/// call site como lacuna do `garraia_common::ssrf`; como o host e constante,
+/// a validacao de forma cobre o que sobra.
+fn space_name_valido(space_name: &str) -> bool {
+    let Some(id) = space_name.strip_prefix("spaces/") else {
+        return false;
+    };
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 #[async_trait]
 impl Channel for GoogleChatChannel {
     fn channel_type(&self) -> &str {
@@ -227,6 +261,73 @@ impl Channel for GoogleChatChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_name_bem_formado_e_aceito() {
+        for bom in [
+            "spaces/AAAA",
+            "spaces/AAAAQQ_-1234",
+            "spaces/a",
+            "spaces/ABCdef123",
+        ] {
+            assert!(space_name_valido(bom), "{bom} deveria passar");
+        }
+    }
+
+    /// O `space_name` vem do corpo do webhook. Ele e interpolado no caminho
+    /// de uma URL do Google **com o token da conta de servico junto**, entao
+    /// um valor torto alcanca endpoints que ninguem pretendeu — nao a rede
+    /// interna (o host e constante), mas outras APIs do Google.
+    #[test]
+    fn space_name_torto_e_recusado() {
+        for ruim in [
+            // Sobe niveis de caminho.
+            "spaces/../../v1/admin",
+            "spaces/..",
+            "spaces/a/../../b",
+            // Injeta query e fragmento.
+            "spaces/x?alt=media",
+            "spaces/x#frag",
+            // Tenta trocar o caminho inteiro.
+            "spaces/x/messages/../../../v2/other",
+            // Sem o prefixo nao e space nenhum.
+            "AAAA",
+            "/spaces/AAAA",
+            "https://evil.example/spaces/AAAA",
+            // Prefixo sem id.
+            "spaces/",
+            "",
+            // Barra a mais quebra a forma `spaces/<id>`.
+            "spaces/a/b",
+            // Espaco vira %20 ou pior, dependendo do cliente.
+            "spaces/a b",
+        ] {
+            assert!(!space_name_valido(ruim), "{ruim:?} nao deveria passar");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_to_space_recusa_space_name_torto_antes_de_qualquer_requisicao() {
+        let on_msg: GoogleChatOnMessageFn = Arc::new(|_space, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
+        let config = GoogleChatConfig {
+            webhook_url: None,
+            service_account_key_path: None,
+            service_account_token: String::new(),
+            audience: "1234567890".into(),
+            name: "gchat-teste".into(),
+        };
+        let channel = GoogleChatChannel::new(config, on_msg).expect("audience nao vazia");
+        let erro = channel
+            .send_to_space("spaces/../../v1/admin", "oi")
+            .await
+            .expect_err("space name torto tem de ser recusado");
+        assert!(
+            erro.to_string().contains("space name recusado"),
+            "erro inesperado: {erro}"
+        );
+    }
 
     #[test]
     fn channel_type_is_google_chat() {

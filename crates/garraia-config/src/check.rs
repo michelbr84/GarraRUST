@@ -1095,7 +1095,13 @@ fn validate_google_chat(
                 .get(campo)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|v| !v.trim().is_empty());
-            if configurado_inline || std::env::var_os(env).is_some() {
+            // `var(..).is_ok_and(nao vazio)`, e nao `var_os(..).is_some()`:
+            // `var_os` devolve `Some("")` para uma variavel definida como
+            // vazia, e o boot usa `resolve_api_key`, que filtra vazio. Com
+            // `var_os` o operador definiria `GOOGLE_CHAT_AUDIENCE=""`, veria
+            // o check dizer "ok", e o canal nao subiria — o check estaria
+            // afirmando o contrario do que o boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
                 continue;
             }
             push_warn(

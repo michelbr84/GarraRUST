@@ -27,6 +27,15 @@
 //! faz mil requisicoes ao Google. Dai o [`INTERVALO_MINIMO_REFETCH`]: entre
 //! duas buscas passa no minimo esse tempo, aconteca o que acontecer.
 //!
+//! Um piso de tempo sozinho **nao** basta, e essa e a parte facil de errar:
+//! ler o instante, soltar o lock e so depois escrever deixa N tarefas
+//! concorrentes passarem todas pelo teste antes de qualquer uma marcar a
+//! tentativa. O piso limitaria buscas *seriais*, e mil requisicoes
+//! simultaneas — que e como o ataque realmente chega — ainda virariam mil
+//! buscas. Por isso a marcacao e feita sob um `Mutex` segurado do teste ate
+//! o fim da busca, com `try_lock`: quem chega no meio de uma busca desiste
+//! na hora em vez de enfileirar.
+//!
 //! **Falha de rede nao pode invalidar o cache.** Se a busca falhar, as
 //! chaves antigas continuam valendo ate o TTL — derrubar o canal inteiro
 //! porque o JWKS ficou 30 segundos fora seria trocar um problema
@@ -37,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use jsonwebtoken::DecodingKey;
 use jsonwebtoken::jwk::JwkSet;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
 /// Quanto tempo um conjunto de chaves buscado com sucesso continua valendo.
@@ -97,19 +106,35 @@ pub struct JwksCache {
     /// Quando foi a ultima **tentativa** de busca, com ou sem sucesso. E o
     /// que limita o refetch — contar so os sucessos deixaria um provedor
     /// fora do ar transformar cada requisicao numa tentativa nova.
-    ultima_tentativa: RwLock<Option<Instant>>,
+    ///
+    /// `Mutex`, e nao `RwLock`, de proposito: o guard e mantido do teste ate
+    /// a escrita **e ate o fim da busca**, o que torna a checagem
+    /// atomica e faz do cache um single-flight. Com um `RwLock` que solta
+    /// entre ler e escrever, N tarefas concorrentes passam todas pelo teste
+    /// antes de qualquer uma escrever, e o piso limita so buscas *seriais* —
+    /// que nao e o que um atacante faz.
+    ultima_tentativa: Mutex<Option<Instant>>,
     ttl: Duration,
 }
 
 impl JwksCache {
     /// Cria o cache. Nao busca nada — a primeira busca acontece na primeira
     /// chamada de [`Self::chave_para`], para o boot nao depender da rede.
+    ///
+    /// **A URL tem de ser constante de compilacao.** Hoje os dois chamadores
+    /// passam literais (`google_chat::auth::JWK_URL`, e o equivalente do
+    /// Teams), e por isso o `reqwest::Client` interno nao passa pelo
+    /// `garraia_common::ssrf`: a regra 14 do CLAUDE.md vale para URL que vem
+    /// de request, de config editavel por request, ou de tool call de LLM, e
+    /// uma constante nao e nenhuma das tres. A assinatura aceita qualquer
+    /// `String` por conveniencia; se algum dia a URL passar a vir de config,
+    /// este construtor precisa do guard **antes** de aceita-la.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             client: reqwest::Client::new(),
             conjunto: RwLock::new(None),
-            ultima_tentativa: RwLock::new(None),
+            ultima_tentativa: Mutex::new(None),
             ttl: TTL_PADRAO,
         }
     }
@@ -156,19 +181,28 @@ impl JwksCache {
     }
 
     async fn buscar_se_permitido(&self) {
+        // `try_lock`, e nao `lock`: se outra tarefa ja esta buscando agora,
+        // esperar por ela nao ajudaria — quando o lock saisse, o piso de
+        // tempo barraria esta chamada de qualquer jeito. Desistir na hora
+        // troca uma fila de tarefas presas por uma resposta imediata, e e o
+        // que faz do cache um single-flight de verdade em vez de um serializador.
+        let Ok(mut ultima) = self.ultima_tentativa.try_lock() else {
+            debug!(url = %self.url, "jwks: ja ha uma busca em andamento, nao enfileira outra");
+            return;
+        };
+
+        // O guard segue vivo daqui ate o fim da funcao: e o que torna
+        // "testar o piso" e "marcar a tentativa" uma operacao so.
+        if let Some(t) = *ultima
+            && t.elapsed() < INTERVALO_MINIMO_REFETCH
         {
-            let ultima = self.ultima_tentativa.read().await;
-            if let Some(t) = *ultima
-                && t.elapsed() < INTERVALO_MINIMO_REFETCH
-            {
-                debug!(
-                    url = %self.url,
-                    "jwks: busca suprimida pelo intervalo minimo (kid desconhecido nao dispara trafego sem limite)"
-                );
-                return;
-            }
+            debug!(
+                url = %self.url,
+                "jwks: busca suprimida pelo intervalo minimo (kid desconhecido nao dispara trafego sem limite)"
+            );
+            return;
         }
-        *self.ultima_tentativa.write().await = Some(Instant::now());
+        *ultima = Some(Instant::now());
 
         match self.buscar().await {
             Ok(por_kid) => {
@@ -241,6 +275,8 @@ fn chaves_do_set(set: &JwkSet) -> HashMap<String, DecodingKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::Arc;
 
     /// Um JWK Set RSA valido, com duas chaves. Os modulos sao arbitrarios —
     /// o que se afirma aqui e o parsing e a indexacao por `kid`, nao a
@@ -332,14 +368,44 @@ mod tests {
     async fn kid_desconhecido_nao_dispara_busca_a_cada_chamada() {
         let cache = JwksCache::new("http://127.0.0.1:1/jwks-que-nao-existe");
         let _ = cache.chave_para("kid-a").await;
-        let primeira = *cache.ultima_tentativa.read().await;
+        let primeira = *cache.ultima_tentativa.lock().await;
         assert!(primeira.is_some(), "a primeira chamada busca");
 
         let _ = cache.chave_para("kid-b").await;
-        let segunda = *cache.ultima_tentativa.read().await;
+        let segunda = *cache.ultima_tentativa.lock().await;
         assert_eq!(
             primeira, segunda,
             "a segunda chamada, dentro do intervalo minimo, nao pode buscar de novo"
+        );
+    }
+
+    /// **E o caso concorrente, que e como o ataque chega de verdade.** Um piso
+    /// de tempo que le e escreve em passos separados limita buscas seriais e
+    /// deixa passar as paralelas: N tarefas leem "pode buscar" antes de
+    /// qualquer uma marcar a tentativa. Cem chamadas simultaneas com `kid`
+    /// desconhecido tem de produzir **uma** marcacao, nao cem.
+    #[tokio::test]
+    async fn cem_chamadas_simultaneas_marcam_uma_tentativa_so() {
+        let cache = Arc::new(JwksCache::new("http://127.0.0.1:1/jwks-que-nao-existe"));
+
+        let mut tarefas = Vec::new();
+        for i in 0..100 {
+            let cache = Arc::clone(&cache);
+            tarefas.push(tokio::spawn(async move {
+                let _ = cache.chave_para(&format!("kid-{i}")).await;
+            }));
+        }
+        for t in tarefas {
+            t.await.expect("tarefa nao entra em panico");
+        }
+
+        // Uma marcacao so: as outras 99 ou desistiram no `try_lock` ou
+        // bateram no piso de tempo. Se a checagem nao fosse atomica, varias
+        // teriam ido buscar antes que a primeira marcasse.
+        let marcada = *cache.ultima_tentativa.lock().await;
+        assert!(
+            marcada.is_some(),
+            "alguma das cem tinha de ter tentado buscar"
         );
     }
 }
