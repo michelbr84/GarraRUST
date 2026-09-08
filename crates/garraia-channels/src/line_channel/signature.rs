@@ -93,15 +93,23 @@ pub fn compute_signature(channel_secret: &str, body: &[u8]) -> String {
 /// descarte por tamanho antes disso nao vaza nada util: 32 bytes e o
 /// tamanho publico e fixo de todo HMAC-SHA256.
 ///
-/// Segredo vazio e recusa imediata ([`SignatureError::MissingSecret`]) —
-/// sem isso, uma instalacao mal configurada validaria contra a chave `""`,
-/// que qualquer um pode reproduzir, e a verificacao viraria teatro.
+/// Segredo em branco e recusa imediata ([`SignatureError::MissingSecret`]) —
+/// sem isso, uma instalacao mal configurada validaria contra uma chave que
+/// qualquer um pode reproduzir, e a verificacao viraria teatro.
+///
+/// `trim().is_empty()` e nao `is_empty()`: a mesma regra do construtor
+/// [`super::LineChannel::new`]. Com as duas medindo "vazio" de jeitos
+/// diferentes, `channel_secret = "   "` no TOML era recusado pelo canal mas
+/// aceito por esta funcao — e ela e API publica reexportada (`line_signature`
+/// em `lib.rs`), entao um handler futuro que a chame direto validaria contra
+/// a chave `"   "`. `ChannelConfig.settings` e um mapa nao-tipado, entao esse
+/// valor passa pela config sem ninguem reclamar.
 pub fn verify_signature(
     channel_secret: &str,
     body: &[u8],
     header: &str,
 ) -> Result<(), SignatureError> {
-    if channel_secret.is_empty() {
+    if channel_secret.trim().is_empty() {
         return Err(SignatureError::MissingSecret);
     }
     if header.is_empty() {
@@ -211,6 +219,22 @@ mod tests {
             verify_signature("", BODY, &sig),
             Err(SignatureError::MissingSecret)
         );
+    }
+
+    /// O construtor recusa `channel_secret = "   "` (`mod.rs`), mas esta
+    /// funcao e API publica reexportada e pode ser chamada direto pelo
+    /// handler de webhook do #1050. As duas tem de medir "vazio" igual,
+    /// senao a mais fraca e justamente a exportada.
+    #[test]
+    fn segredo_so_com_espacos_e_recusado_como_o_construtor_recusa() {
+        for branco in ["   ", "\t", "\n", " \t\n "] {
+            let sig = compute_signature(branco, BODY);
+            assert_eq!(
+                verify_signature(branco, BODY, &sig),
+                Err(SignatureError::MissingSecret),
+                "segredo {branco:?} nao pode validar nem a propria assinatura"
+            );
+        }
     }
 
     /// Corpo vazio ainda tem assinatura valida — o LINE assina o corpo
