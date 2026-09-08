@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
+use super::tool_context::{process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 /// Default timeout for test execution
@@ -31,6 +32,11 @@ enum TestFramework {
 /// Auto-detects the test framework based on project files.
 pub struct RunTestsTool {
     timeout: Duration,
+    /// Roda `cargo test` / `npm test` / ... — e `npm test` executa o que o
+    /// `package.json` do diretorio mandar. E execucao arbitraria com outro
+    /// nome, entao segue a mesma regra do `bash` (GAR-187): com
+    /// `agent.tool_confirmation_enabled`, pede confirmacao antes de rodar.
+    confirmation_enabled: bool,
 }
 
 impl RunTestsTool {
@@ -38,6 +44,15 @@ impl RunTestsTool {
     pub fn new(timeout_secs: Option<u64>) -> Self {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            confirmation_enabled: false,
+        }
+    }
+
+    /// Como [`Self::new`], mas exige confirmacao humana antes de executar.
+    pub fn new_with_confirmation(timeout_secs: Option<u64>) -> Self {
+        Self {
+            confirmation_enabled: true,
+            ..Self::new(timeout_secs)
         }
     }
 
@@ -202,23 +217,43 @@ impl Tool for RunTestsTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let test_name = input.get("test_name").and_then(|v| v.as_str());
+        // Sem `working_dir`, o diretorio da sessao; com, o mesmo resolvedor
+        // do `file_read` (relativo a sessao, `..` recusado). Auditoria do
+        // #1039: o valor vinha cru do modelo e ia direto para `current_dir`.
         let working_dir_str = input
             .get("working_dir")
             .and_then(|v| v.as_str())
             .unwrap_or(".");
-
-        let working_dir = std::path::PathBuf::from(working_dir_str);
+        let resolved = match resolve_tool_path(
+            working_dir_str,
+            context.working_dir.as_deref(),
+            process_home_dir().as_deref(),
+        ) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::error(e.to_string())),
+        };
+        let working_dir = resolved.path.clone();
 
         if !working_dir.exists() {
             return Ok(ToolOutput::error(format!(
                 "Working directory not found: {}",
-                working_dir_str
+                resolved.describe()
+            )));
+        }
+
+        if self.confirmation_enabled && !context.is_confirmation_approved {
+            tracing::warn!(
+                dir = %working_dir.display(),
+                session = %context.session_id,
+                "run_tests: requires user confirmation"
+            );
+            return Ok(ToolOutput::confirmation_request(format!(
+                "[CONFIRM_REQUIRED] run_tests vai executar a suite de testes em:\n\
+                 ```\n{}\n```\n\
+                 Responda **sim** para executar ou **nao** para cancelar.",
+                working_dir.display()
             )));
         }
 
@@ -324,5 +359,76 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         let tool = RunTestsTool::new(None);
         let schema = tool.input_schema();
         assert!(schema.get("properties").is_some());
+    }
+
+    fn ctx(working_dir: Option<&str>, approved: bool) -> ToolContext {
+        ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+            is_confirmation_approved: approved,
+            working_dir: working_dir.map(str::to_string),
+            project_id: None,
+        }
+    }
+
+    /// Com confirmacao ligada e sem aprovacao, nada roda: a tool devolve o
+    /// pedido de confirmacao apontando o diretorio da sessao (o default).
+    #[tokio::test]
+    async fn asks_confirmation_before_running_in_the_session_dir() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let tool = RunTestsTool::new_with_confirmation(Some(1));
+        let out = tool
+            .execute(&ctx(Some(dir), false), serde_json::json!({}))
+            .await
+            .expect("executa");
+        assert!(out.requires_confirmation, "{}", out.content);
+        assert!(out.content.contains(dir), "{}", out.content);
+    }
+
+    /// `..` e recusado antes de qualquer execucao; relativo sem sessao
+    /// resolve contra o CWD do processo (como o `file_read`) e, quando nao
+    /// existe, o erro explica de onde veio.
+    #[tokio::test]
+    async fn refuses_traversal_and_explains_relative_without_session_dir() {
+        let tool = RunTestsTool::new(Some(1));
+        let out = tool
+            .execute(
+                &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
+                serde_json::json!({"working_dir": "../.."}),
+            )
+            .await
+            .expect("executa");
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("traversal"), "{}", out.content);
+
+        let out = tool
+            .execute(
+                &ctx(None, true),
+                serde_json::json!({"working_dir": "nao_existe_xyz"}),
+            )
+            .await
+            .expect("executa");
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("não tem working_dir"),
+            "{}",
+            out.content
+        );
+    }
+
+    /// Diretorio inexistente: erro com o caminho resolvido, sem rodar nada.
+    #[tokio::test]
+    async fn missing_dir_is_an_error_with_the_resolved_path() {
+        let tool = RunTestsTool::new(Some(1));
+        let out = tool
+            .execute(
+                &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
+                serde_json::json!({"working_dir": "nao_existe_xyz"}),
+            )
+            .await
+            .expect("executa");
+        assert!(out.is_error);
+        assert!(out.content.contains("nao_existe_xyz"), "{}", out.content);
     }
 }

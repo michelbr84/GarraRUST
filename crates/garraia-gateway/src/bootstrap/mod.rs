@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use garraia_agents::tools::Tool;
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, CohereEmbeddingProvider, EmbeddingProvider,
-    FileReadTool, FileWriteTool, LlamaCppProvider, McpManager, NoisePolicy,
-    OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
-    ResilientEmbeddingProvider, WebFetchTool, WebSearchTool,
+    AgentRuntime, AnthropicProvider, BashTool, CodeReviewTool, CohereEmbeddingProvider,
+    EmbeddingProvider, FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager,
+    NoisePolicy, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
+    RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -564,6 +564,42 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(FileReadTool::new(None)));
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
+
+    // #1033 / #1035: estas tres existiam, com schema e testes verdes, e nunca
+    // entraram no runtime — o unico `new()` delas no repo era dentro dos
+    // proprios modulos de teste. As whitelists dos modos (`search`, `debug`,
+    // `review`) ja anunciavam `list_dir` e `repo_search`; o modelo via a
+    // promessa na policy e nao recebia a ferramenta.
+    runtime.register_tool(Box::new(ListDirTool::new(None)));
+    runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
+    // `run_tests` executa o que o projeto mandar (`npm test` roda o script do
+    // package.json), entao respeita a mesma chave de confirmacao do bash.
+    let run_tests = if config.agent.tool_confirmation_enabled {
+        RunTestsTool::new_with_confirmation(None)
+    } else {
+        RunTestsTool::new(None)
+    };
+    runtime.register_tool(Box::new(run_tests));
+
+    // `code_review` roda um segundo LLM por dentro, entao precisa de um
+    // provider resolvido aqui, e nao de `None`. Usa o default do boot: se o
+    // operador trocar o default depois, a revisao continua no provider de
+    // quando o gateway subiu — aceitavel para uma ferramenta auxiliar, e
+    // dito aqui para ninguem procurar o porque.
+    match runtime.default_provider_id() {
+        Some(pid) => match runtime
+            .get_provider(&pid)
+            .and_then(|p| p.configured_model().map(str::to_string).map(|m| (p, m)))
+        {
+            Some((provider, model)) => {
+                runtime.register_tool(Box::new(CodeReviewTool::new(provider, model, None)));
+            }
+            None => info!(
+                "code_review not registered: default provider '{pid}' has no configured model"
+            ),
+        },
+        None => info!("code_review not registered: no default provider at boot"),
+    }
 
     // Web search (#1034): Brave (chave) ou SearXNG (URL, sem chave). Sem a
     // secao `agent.web_search`, o comportamento e o de sempre — so com chave
@@ -1320,6 +1356,34 @@ mod tests {
         // ...e sem o que precisa nao cai para o outro.
         assert!(select_web_search_backend(Some(WebSearchBackend::Searxng), k(), None).is_none());
         assert!(select_web_search_backend(Some(WebSearchBackend::Brave), None, u()).is_none());
+    }
+
+    /// #1033 / #1035: as ferramentas de exploracao entram no runtime sem
+    /// depender de provider. `code_review` precisa de um LLM por dentro e,
+    /// com config vazia, fica de fora — sem derrubar o boot e sem aparecer
+    /// na lista que o modelo recebe.
+    #[test]
+    fn build_agent_runtime_registers_exploration_tools() {
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let names = runtime.tool_names();
+        for expected in [
+            "bash",
+            "file_read",
+            "file_write",
+            "web_fetch",
+            "list_dir",
+            "repo_search",
+            "run_tests",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} ausente em {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n == "code_review"),
+            "sem provider default, code_review nao pode ter sido registrada: {names:?}"
+        );
     }
 
     /// O literal "no-key" que existia aqui tratava LM Studio e a OpenAI
