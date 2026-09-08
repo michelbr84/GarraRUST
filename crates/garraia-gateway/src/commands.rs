@@ -7,8 +7,12 @@ use garraia_channels::commands::{
 /// A model id as every provider spells it: `gpt-4o`, `qwen2.5:7b-instruct`,
 /// `openrouter/auto`, `claude-3.5`. Anything else is not a model name.
 fn valid_model_name(s: &str) -> bool {
+    // `/` is a namespace separator here (`openrouter/auto`), never a root,
+    // and `..` is not a segment any provider has — so nothing path-shaped.
     !s.is_empty()
         && s.len() <= 128
+        && !s.starts_with('/')
+        && !s.contains("..")
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
 }

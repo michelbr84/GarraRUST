@@ -1144,16 +1144,30 @@ mod slash_dispatch_tests {
     #[test]
     fn model_name_is_validated() {
         let st = state_with_commands();
-        let bad = dispatch_slash_command(&st, "s1", "/model ../../etc/passwd").expect("capturado");
-        assert!(bad.content.contains("model name"), "{}", bad.content);
-        assert!(st.channel_models.get("s1").is_none());
-
-        let ok =
-            dispatch_slash_command(&st, "s1", "/model qwen2.5:7b-instruct").expect("capturado");
-        assert!(ok.content.contains("qwen2.5:7b-instruct"), "{}", ok.content);
-        assert_eq!(
-            st.channel_models.get("s1").map(|m| m.clone()),
-            Some("qwen2.5:7b-instruct".to_string())
-        );
+        let long = "x".repeat(129);
+        for junk in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "gpt-4o;id",
+            long.as_str(),
+        ] {
+            let bad =
+                dispatch_slash_command(&st, "s1", &format!("/model {junk}")).expect("capturado");
+            assert!(
+                bad.content.contains("model name"),
+                "{junk}: {}",
+                bad.content
+            );
+            assert!(st.channel_models.get("s1").is_none(), "{junk} foi aceito");
+        }
+        for good in ["openrouter/auto", "claude-3.5-sonnet", "llama3.1:8b"] {
+            let ok =
+                dispatch_slash_command(&st, "s1", &format!("/model {good}")).expect("capturado");
+            assert!(ok.content.contains(good), "{}", ok.content);
+            assert_eq!(
+                st.channel_models.get("s1").map(|m| m.clone()),
+                Some(good.to_string())
+            );
+        }
     }
 }
