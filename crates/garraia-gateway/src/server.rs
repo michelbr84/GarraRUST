@@ -13,8 +13,8 @@ use crate::admin;
 #[cfg(target_os = "macos")]
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
-    build_agent_runtime, build_channels, build_discord_channels, build_mcp_tools,
-    build_slack_channels, build_telegram_channels, build_whatsapp_channels,
+    build_agent_runtime, build_channels, build_discord_channels, build_matrix_channels,
+    build_mcp_tools, build_slack_channels, build_telegram_channels, build_whatsapp_channels,
     warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
@@ -797,6 +797,23 @@ impl GatewayServer {
                 Ok(()) => state.channels.write().await.register(channel),
                 Err(e) => {
                     warn!("telegram channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
+        // Start configured Matrix channels (#1050).
+        //
+        // O homeserver pode estar fora do ar no boot sem que isso seja
+        // permanente, entao vai pelo retry com backoff do Telegram (#928) em
+        // vez do `warn!` de uma linha que deixaria o canal mudo ate um
+        // restart manual.
+        let matrix_channels = build_matrix_channels(&state.config, &state);
+        for mut channel in matrix_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("matrix channel failed to connect: {e}; retrying in background");
                     spawn_channel_connect_retry(Arc::clone(&state), channel);
                 }
             }

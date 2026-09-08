@@ -668,6 +668,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
+    validate_matrix(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
 
@@ -693,6 +694,10 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "discord" => Some("DISCORD_BOT_TOKEN"),
             "slack" => Some("SLACK_BOT_TOKEN"),
             "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
+            // #1050: sem este braco, um canal Matrix sem `access_token` saia
+            // do check em silencio — `has_inline_token` ja procura
+            // `access_token`, mas a falta dele nao tinha env var para nomear.
+            "matrix" => Some("MATRIX_ACCESS_TOKEN"),
             _ => None,
         };
         if let Some(var) = env_var
@@ -1041,6 +1046,37 @@ fn validate_auth(
              GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
                 .into(),
         );
+    }
+}
+
+/// O `homeserver_url` do Matrix nao e credencial, entao a checagem generica
+/// de token nao o alcanca (#1050) — e sem ele o canal e pulado no boot com um
+/// `warn!` que so aparece no log.
+fn validate_matrix(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "matrix" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let tem_url = ch
+            .settings
+            .get("homeserver_url")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+
+        if !tem_url && std::env::var_os("MATRIX_HOMESERVER_URL").is_none() {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "matrix channel '{name}' is enabled but has no homeserver_url in config or the MATRIX_HOMESERVER_URL env var; the channel will be skipped at boot"
+                ),
+            );
+        }
     }
 }
 
@@ -2080,6 +2116,81 @@ mod tests {
         assert!(
             findings.iter().all(|f| f.field != "channels.telegram"),
             "inline token should suppress channel warning: {findings:?}"
+        );
+    }
+
+    // ─── #1050: o Matrix precisa de token E de homeserver ─────────────────
+
+    fn cfg_matrix(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "mx".into(),
+            crate::model::ChannelConfig {
+                channel_type: "matrix".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Antes deste braco, a falta de `access_token` no Matrix nao tinha env
+    /// var para nomear e o canal saia do check em silencio.
+    #[test]
+    fn matrix_sem_token_avisa_nomeando_a_env() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"homeserver_url": "https://matrix.exemplo"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("MATRIX_ACCESS_TOKEN")),
+            "esperava aviso de token: {findings:?}"
+        );
+    }
+
+    /// O `homeserver_url` nao e credencial, entao a checagem generica nao o
+    /// alcanca — e sem ele o canal e pulado no boot.
+    #[test]
+    fn matrix_sem_homeserver_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"access_token": "syt_fake"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("homeserver_url")),
+            "esperava aviso de homeserver_url: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_completo_nao_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({
+                "homeserver_url": "https://matrix.exemplo",
+                "access_token": "syt_fake",
+            }),
+        ));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_desligado_fica_calado() {
+        let findings = validate(&cfg_matrix(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal desligado nao deveria gerar achado: {findings:?}"
         );
     }
 
