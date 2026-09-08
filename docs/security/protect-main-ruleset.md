@@ -20,14 +20,45 @@ A ruleset aplica os seguintes controles à branch `main`:
 | `deletion` | A branch `main` não pode ser deletada. |
 | `non_fast_forward` | Force push em `main` é bloqueado. |
 | `pull_request` | Toda mudança em `main` precisa passar por PR (review opcional, sem dismissal automático). |
-| `required_status_checks` (strict) | Os 4 jobs CI abaixo precisam ficar verdes na cabeça da PR antes do merge. |
+| `required_status_checks` | Os 4 jobs CI abaixo precisam ficar verdes antes do merge. |
+| `merge_queue` | Merge em `main` só acontece pela fila; cada entrada é testada em cima da anterior. |
 
-Required status checks (todos obrigatórios, `strict_required_status_checks_policy: true`):
+Required status checks (todos obrigatórios):
 
 - `Format Check`
 - `Clippy Linting`
 - `Test (ubuntu-latest)`
 - `Test (windows-latest)`
+
+### Merge queue (desde 2026-09-08)
+
+A fila substitui o `strict_required_status_checks_policy`, que passou a
+`false` no mesmo commit. Os dois davam a mesma garantia — "o código testado
+é o código que vai para `main`" — mas por caminhos opostos: o `strict`
+**rejeitava** toda PR que não estivesse na cabeça de `main`, o que serializava
+os merges (cada merge invalidava as demais PRs abertas, obrigando um
+`update-branch` + rodada nova de CI por PR, ~25 min cada). A fila **constrói**
+o merge: o GitHub cria um ref temporário `refs/heads/gh-readonly-queue/main/…`
+com a PR já rebaseada sobre a entrada anterior, roda os 4 checks ali, e só
+então mergeia. Duas PRs independentes entram juntas em vez de esperar uma
+pela outra, e nada entra em `main` sem ter sido testado no estado final.
+
+Parâmetros escolhidos:
+
+| Parâmetro | Valor | Por quê |
+|---|---|---|
+| `merge_method` | `SQUASH` | é o método usado em todos os merges do repo; o título do squash vem do título da PR (por isso Conventional Commits no título) |
+| `grouping_strategy` | `ALLGREEN` | uma entrada vermelha não derruba as demais do lote |
+| `check_response_timeout_minutes` | `60` | o CI completo leva ~25 min; 60 dá folga para fila de runners sem travar a fila |
+| `max_entries_to_build` / `max_entries_to_merge` | `5` | teto de runners paralelos gastos pela fila |
+| `min_entries_to_merge` | `1` | uma PR sozinha não espera por companhia |
+| `min_entries_to_merge_wait_minutes` | `5` | janela curta para agrupar PRs que chegam juntas |
+
+**Pré-requisito no CI:** os 4 checks obrigatórios vivem todos em
+`.github/workflows/ci.yml`, que precisa do trigger `merge_group:` — sem ele a
+fila espera para sempre por checks que nunca são reportados. Esse trigger foi
+adicionado no mesmo commit desta mudança. Ao mover um check obrigatório para
+outro workflow, adicionar `merge_group:` lá também.
 
 `bypass_actors` está vazio — **ninguém** tem bypass automático. Mudanças em
 `main` sempre passam pelo fluxo PR + CI verde.
@@ -96,7 +127,8 @@ Padrão correto para os bloqueios mais comuns:
 
 | Sintoma | Root cause provável | Resposta correta |
 |---|---|---|
-| `head branch is not up to date` | Branch divergiu de `main` após push | `gh pr update-branch <PR>` + esperar nova rodada CI |
+| `head branch is not up to date` | Branch divergiu de `main` após push | Com a fila ligada isso deixa de bloquear (a fila rebaseia sozinha). Se aparecer mesmo assim: `gh pr update-branch <PR>` + esperar nova rodada CI |
+| PR sai da fila com check vermelho | Bug genuíno, ou base quebrada | Ler o run do ref `gh-readonly-queue/main/…`, corrigir e re-enfileirar. Nunca desabilitar a fila para passar |
 | 1+ status check vermelho | Bug genuíno na branch | Fix the bug, push, esperar verde |
 | Auto-merge não disponível | Repo desabilitou auto-merge | `gh pr merge --squash <PR>` manualmente após CI verde |
 | Required check faltando | CI não rodou aquele job | Investigar o workflow, não bypassar |
