@@ -56,7 +56,7 @@ pub use google_chat::{GoogleChatChannel, GoogleChatConfig, GoogleChatOnMessageFn
 #[cfg(feature = "irc")]
 pub use irc::{IrcChannel, IrcConfig, IrcOnMessageFn};
 #[cfg(feature = "line")]
-pub use line_channel::{LineChannel, LineConfig, LineOnMessageFn};
+pub use line_channel::{LineChannel, LineConfig, LineOnMessageFn, signature as line_signature};
 #[cfg(feature = "matrix")]
 pub use matrix::{MatrixChannel, MatrixConfig, MatrixOnMessageFn};
 #[cfg(feature = "openclaw")]
