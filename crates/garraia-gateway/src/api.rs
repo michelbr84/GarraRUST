@@ -132,12 +132,33 @@ pub fn dispatch_slash_command(
 pub struct CreateSessionRequest {
     /// Optional named agent to use for this session.
     pub agent_id: Option<String>,
+    /// Modo do agente ja na criacao (`code`, `search`, um customizado...).
+    ///
+    /// Validado exatamente como no `POST /api/mode/select` e gravado antes
+    /// de a resposta sair (#1028). Antes o campo era descartado pelo serde:
+    /// 201, sessao sem politica nenhuma, e o cliente achando que restringiu.
+    pub mode: Option<String>,
+    /// Diretorio de trabalho da sessao: a base dos caminhos relativos que as
+    /// ferramentas de arquivo recebem (`resolve_tool_path`).
+    ///
+    /// Passa por `project_root::confine`, a mesma regra do `path` de projeto:
+    /// tem de ser um diretorio existente sob uma das raizes permitidas
+    /// (`GARRAIA_PROJECT_ROOTS`; padrao, o home). Era descartado pelo serde
+    /// como o `mode` — o `create_session_with_project` que o aceitava nunca
+    /// foi roteado (ver `docs/security/threat-model.md` §5.5).
+    pub working_dir: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct CreateSessionResponse {
     pub session_id: String,
     pub agent_id: Option<String>,
+    /// O modo gravado, na grafia canonica (`search`, `Auditor`); `null`
+    /// quando nao foi pedido.
+    pub mode: Option<String>,
+    /// O diretorio **confinado** (canonicalizado), que e o que a sessao usa —
+    /// nunca o cru do corpo; `null` quando nao foi pedido.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,13 +200,110 @@ pub async fn create_session(
     headers: HeaderMap,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
+    // #1028: o `mode` do corpo era engolido em silencio. Resolve-o ANTES de
+    // criar a sessao, para um 400 nao deixar sessao orfa, e recusa-se a
+    // fingir quando nao ha onde gravar: e o `session_store` que o executor
+    // consulta para aplicar a politica de ferramentas (#988), entao sem ele
+    // "modo aplicado" seria a mesma mentira de antes, so que com 201.
+    let mode = match body.mode.as_deref() {
+        None => None,
+        Some(pedido) => match resolver_nome_de_modo(&state, pedido).await {
+            Some(nome) => Some(nome),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "Invalid mode '{pedido}'. Use GET /api/modes to see available modes."
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+        },
+    };
+    // `working_dir` e a mesma superficie do `path` de projeto — string crua do
+    // corpo que vira diretorio de trabalho — e passa pelo mesmo confinamento.
+    // Um corpo de 400 so, para todas as variantes (nao existe, fora da raiz,
+    // symlink para fora), como no `POST /api/projects`: um erro por variante
+    // viraria oraculo de existencia de diretorio (threat-model §5.5).
+    let working_dir = match body
+        .working_dir
+        .as_deref()
+        .map(crate::project_root::confine)
+    {
+        Some(Ok(p)) => Some(p.to_string_lossy().into_owned()),
+        Some(Err(_)) => {
+            warn!(
+                working_dir = ?body.working_dir,
+                "recusado POST /api/sessions: working_dir fora das raizes permitidas"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "working_dir is not an allowed directory",
+                    "hint": format!(
+                        "o caminho precisa ser um diretorio existente sob uma das raizes \
+                         permitidas (padrao: o home do usuario; configuravel em {})",
+                        crate::project_root::ROOTS_ENV
+                    ),
+                })),
+            )
+                .into_response();
+        }
+        None => None,
+    };
+    let store_para_modo = match (&mode, &state.session_store) {
+        (None, _) => None,
+        (Some(_), Some(store)) => Some(std::sync::Arc::clone(store)),
+        (Some(_), None) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "mode cannot be applied: session store unavailable",
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let session_id = state.create_session();
 
     // If an agent_id was requested, tag it on the session metadata
-    if let Some(ref agent_id) = body.agent_id
-        && let Some(mut session) = state.sessions.get_mut(&session_id)
-    {
-        session.channel_id = Some(format!("api:{agent_id}"));
+    if let Some(mut session) = state.sessions.get_mut(&session_id) {
+        if let Some(ref agent_id) = body.agent_id {
+            session.channel_id = Some(format!("api:{agent_id}"));
+        }
+        if let Some(ref wd) = working_dir {
+            session.working_dir = Some(wd.clone());
+        }
+    }
+
+    if let (Some(nome), Some(store)) = (&mode, &store_para_modo) {
+        // `set_agent_mode` exige a linha da sessao no banco; o upsert cria-a
+        // com o mesmo `{}` que `hydrate_session_history` usaria depois — o
+        // metadado e mesclado, nao substituido, entao nada se perde.
+        let gravado = {
+            let store = store.lock().await;
+            store
+                .upsert_session(&session_id, "api", "anonymous", &serde_json::json!({}))
+                .and_then(|_| store.set_agent_mode(&session_id, nome))
+        };
+        if let Err(e) = gravado {
+            warn!(
+                session_id = %session_id,
+                erro = %e,
+                "falhou ao gravar o modo pedido na criacao da sessao"
+            );
+            // Sem a sessao meio-configurada: o cliente pediu um modo e nao
+            // o teve, entao nao recebe um id que pareca valido.
+            state.sessions.remove(&session_id);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to apply mode" })),
+            )
+                .into_response();
+        }
     }
 
     // GAR-202: Issue a session token and set cookie.
@@ -231,8 +349,11 @@ pub async fn create_session(
         Json(CreateSessionResponse {
             session_id,
             agent_id: body.agent_id,
+            mode,
+            working_dir,
         }),
     )
+        .into_response()
 }
 
 /// DELETE /api/sessions/:id — logout / revoke all tokens for a session.
@@ -548,6 +669,27 @@ async fn nome_de_modo_customizado(state: &SharedState, pedido: &str) -> Option<S
         .map(|m| m.name.clone())
 }
 
+/// O nome que vai para o banco quando `pedido` e um modo valido.
+///
+/// Valida contra os nativos **e** os customizados (#986). Antes so
+/// `AgentMode::from_str` valia, entao um modo customizado criado pelo
+/// `POST /api/modes/custom` nao podia ser selecionado — o CRUD existia e
+/// desembocava em 400.
+///
+/// O nome nativo e minusculo por convencao; o customizado e o que o usuario
+/// escreveu, e nao pode ser achatado. A validacao tenta nativo primeiro, o que
+/// tambem impede um customizado chamado `code` de sequestrar o nativo.
+///
+/// E uma funcao so porque tem dois chamadores — `POST /api/mode/select` e,
+/// desde o #1028, `POST /api/sessions` — e duas copias da mesma regra e como
+/// elas passam a divergir.
+async fn resolver_nome_de_modo(state: &SharedState, pedido: &str) -> Option<String> {
+    if AgentMode::from_str(pedido).is_some() {
+        return Some(pedido.to_lowercase());
+    }
+    nome_de_modo_customizado(state, pedido).await
+}
+
 /// POST /api/mode/select — select mode for a session.
 /// Header: X-Session-Id (optional) - if not provided, uses a default session ID.
 pub async fn select_mode(
@@ -555,27 +697,7 @@ pub async fn select_mode(
     headers: HeaderMap,
     Json(body): Json<SelectModeRequest>,
 ) -> impl IntoResponse {
-    // Valida contra os nativos **e** os customizados (#986).
-    //
-    // Antes so `AgentMode::from_str` valia, entao um modo customizado criado
-    // pelo `POST /api/modes/custom` nao podia ser selecionado — o CRUD existia
-    // e desembocava em 400.
-    //
-    // O nome nativo e minusculo por convencao; o customizado e o que o usuario
-    // escreveu, e nao pode ser achatado. Por isso os dois nomes andam juntos:
-    // `mode_str` e o que vai para o banco, e a validacao tenta nativo primeiro.
-    let nativo = AgentMode::from_str(&body.mode);
-    let customizado = if nativo.is_none() {
-        nome_de_modo_customizado(&state, &body.mode).await
-    } else {
-        None
-    };
-    let mode_str = match (&nativo, &customizado) {
-        (Some(_), _) => body.mode.to_lowercase(),
-        (None, Some(nome)) => nome.clone(),
-        (None, None) => String::new(),
-    };
-    if mode_str.is_empty() {
+    let Some(mode_str) = resolver_nome_de_modo(&state, &body.mode).await else {
         let mode_str = body.mode.clone();
         return (
             StatusCode::BAD_REQUEST,
@@ -588,7 +710,7 @@ pub async fn select_mode(
                 ),
             })),
         );
-    }
+    };
 
     // Get session ID from X-Session-Id header or use default
     let session_id = headers
@@ -1034,6 +1156,162 @@ pub async fn delete_custom_mode(
             message: "Session store not available".to_string(),
         })),
     )
+}
+
+#[cfg(test)]
+mod create_session_tests {
+    use std::sync::Arc;
+
+    use axum::extract::{ConnectInfo, State};
+    use axum::response::IntoResponse;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::AppConfig;
+    use garraia_db::SessionStore;
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::state::{AppState, CUSTOM_MODE_USER_ID};
+
+    fn state_sem_store() -> SharedState {
+        Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ))
+    }
+
+    fn state_com_store() -> SharedState {
+        let mut st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        st.session_store = Some(Arc::new(Mutex::new(
+            SessionStore::in_memory().expect("store em memoria"),
+        )));
+        Arc::new(st)
+    }
+
+    /// Chama o handler como o Axum chamaria e devolve (status, corpo JSON).
+    async fn post_sessions(
+        st: &SharedState,
+        corpo: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req: CreateSessionRequest = serde_json::from_value(corpo).expect("corpo valido");
+        let resp = create_session(
+            State(Arc::clone(st)),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))),
+            HeaderMap::new(),
+            Json(req),
+        )
+        .await
+        .into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("corpo da resposta");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("resposta em JSON"),
+        )
+    }
+
+    async fn modo_escolhido(st: &SharedState, session_id: &str) -> Option<String> {
+        let store = st.session_store.as_ref().expect("store");
+        let store = store.lock().await;
+        // `get_chosen_agent_mode` e o que liga a politica de ferramentas
+        // (#988) — e o que o #1028 viu nao acontecer.
+        store
+            .get_chosen_agent_mode(session_id)
+            .expect("ler o modo escolhido")
+    }
+
+    /// #1028: `{"mode": "search"}` gravava nada. Agora grava, na grafia
+    /// canonica, e e o modo **escolhido** — o que o executor consulta.
+    #[tokio::test]
+    async fn mode_nativo_e_gravado_na_criacao() {
+        let st = state_com_store();
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "Search" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert_eq!(corpo["mode"], "search");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert!(st.sessions.contains_key(id));
+        assert_eq!(modo_escolhido(&st, id).await.as_deref(), Some("search"));
+    }
+
+    #[tokio::test]
+    async fn mode_customizado_e_aceito_com_a_grafia_gravada() {
+        let st = state_com_store();
+        {
+            let store = st.session_store.as_ref().expect("store");
+            let store = store.lock().await;
+            store
+                .create_custom_mode(
+                    CUSTOM_MODE_USER_ID,
+                    "Auditor",
+                    None,
+                    "review",
+                    &serde_json::json!({}),
+                    None,
+                    &serde_json::json!({}),
+                )
+                .expect("criar modo customizado");
+        }
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "auditor" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert_eq!(corpo["mode"], "Auditor", "a grafia gravada, nao a digitada");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert_eq!(modo_escolhido(&st, id).await.as_deref(), Some("Auditor"));
+    }
+
+    /// Modo desconhecido e 400 **sem** sessao orfa — a validacao vem antes
+    /// do `create_session`, de proposito.
+    #[tokio::test]
+    async fn mode_desconhecido_da_400_e_nao_cria_sessao() {
+        let st = state_com_store();
+        for ruim in ["turbo", ""] {
+            let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": ruim })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{ruim:?}: {corpo}");
+            assert!(
+                corpo["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("GET /api/modes"),
+                "{corpo}"
+            );
+        }
+        assert!(st.sessions.is_empty(), "400 nao pode deixar sessao criada");
+    }
+
+    /// Sem `session_store` nao ha onde a politica ser lida depois; dizer 201
+    /// aqui seria repetir o bug com outra cara.
+    #[tokio::test]
+    async fn mode_sem_store_da_503_em_vez_de_fingir() {
+        let st = state_sem_store();
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "code" })).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{corpo}");
+        assert!(st.sessions.is_empty());
+    }
+
+    /// O contrato de quem nao manda `mode` nao muda: 201, `mode: null`, e
+    /// nenhum modo escolhido — nem mesmo uma linha no banco.
+    #[tokio::test]
+    async fn sem_mode_continua_como_antes() {
+        let st = state_com_store();
+        let (status, corpo) =
+            post_sessions(&st, serde_json::json!({ "agent_id": "reachy_voice" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert!(corpo["mode"].is_null());
+        assert!(corpo["working_dir"].is_null());
+        assert_eq!(corpo["agent_id"], "reachy_voice");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert_eq!(modo_escolhido(&st, id).await, None);
+        assert_eq!(
+            st.sessions.get(id).and_then(|s| s.working_dir.clone()),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
