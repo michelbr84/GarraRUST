@@ -144,12 +144,17 @@ class MemoryEntry {
   final String createdAt;
   final String? sessionId;
 
+  /// `pinned_at != null` on the runtime: compaction skips it, but a delete
+  /// does not — the UI warns before asking.
+  final bool pinned;
+
   const MemoryEntry({
     required this.id,
     required this.role,
     required this.content,
     required this.createdAt,
     this.sessionId,
+    this.pinned = false,
   });
 
   factory MemoryEntry.fromJson(Map<String, dynamic> json) => MemoryEntry(
@@ -158,6 +163,7 @@ class MemoryEntry {
     content: json['content'] as String? ?? '',
     createdAt: json['created_at']?.toString() ?? '',
     sessionId: json['session_id'] as String?,
+    pinned: json['pinned'] == true || json['pinned_at'] != null,
   );
 }
 

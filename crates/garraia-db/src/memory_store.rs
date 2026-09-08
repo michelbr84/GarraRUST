@@ -254,6 +254,12 @@ pub trait MemoryProvider: Send + Sync {
     async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport>;
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize>;
 
+    /// Apaga **uma** entrada pelo id (vetor e mapeamento junto). `false` se o
+    /// id nao existia. Ate a v0.4.1 so a CLI (`garra memory`) chegava aqui; o
+    /// `/api/*` que o celular usa so tinha `DELETE /api/memory`, que apaga a
+    /// sessao inteira.
+    async fn delete_entry(&self, id: &str) -> Result<bool>;
+
     /// Contagens para os gauges (#957). Ver [`MemoryGauges`].
     async fn gauge_snapshot(&self) -> Result<MemoryGauges>;
 }
@@ -1406,6 +1412,10 @@ impl MemoryProvider for MemoryStore {
 
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize> {
         self.delete_session_memory(session_id).await
+    }
+
+    async fn delete_entry(&self, id: &str) -> Result<bool> {
+        MemoryStore::delete_entry(self, id)
     }
 
     async fn gauge_snapshot(&self) -> Result<MemoryGauges> {

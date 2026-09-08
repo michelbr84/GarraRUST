@@ -229,6 +229,10 @@ pub fn build_router(
             axum::routing::delete(crate::memory_handler::clear_memory),
         )
         .route(
+            "/api/memory/{id}",
+            axum::routing::delete(crate::memory_handler::delete_memory_entry),
+        )
+        .route(
             "/api/memory/recent",
             get(crate::memory_handler::get_recent_memory),
         )
