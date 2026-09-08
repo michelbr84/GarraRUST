@@ -14,6 +14,11 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Este job e um dos checks obrigatorios da ruleset de `main`, entao a fila
+  # de merge precisa ve-lo reportar no ref temporario que ela cria. Sem este
+  # trigger a fila espera para sempre. Ver docs/security/protect-main-ruleset.md.
+  merge_group:
+    branches: [main]
 
 concurrency:
   group: bola-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
