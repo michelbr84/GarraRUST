@@ -18,6 +18,7 @@ mod team;
 mod tracing_setup;
 mod ui;
 mod update;
+mod update_scan;
 mod verify;
 mod wizard;
 
