@@ -615,13 +615,24 @@ impl AgentRuntime {
             .then(|| self.embedding_model())
             .flatten();
 
+        // #1042: os dois escopos se somavam (o store faz AND entre
+        // `session_id` e `continuity_key`, `memory_store.rs` SQL e KNN), entao
+        // ligar `shared_continuity` nao compartilhava nada: uma sessao nova so
+        // enxergava o que ela mesma tinha gravado sob a mesma chave. A chave de
+        // continuidade **substitui** o escopo de sessao — e o que ela promete,
+        // e o que `get_continuity_context` ja fazia do outro lado.
+        let session_scope = match continuity_key {
+            Some(_) => None,
+            None => session_id.map(|s| s.to_string()),
+        };
+
         let resultado = memory
             .recall(RecallQuery {
                 tenant_id: None,
                 query_text: Some(query_text.to_string()),
                 query_embedding,
                 embedding_model,
-                session_id: session_id.map(|s| s.to_string()),
+                session_id: session_scope,
                 continuity_key: continuity_key.map(|s| s.to_string()),
                 limit,
             })
@@ -3754,6 +3765,113 @@ mod tests {
         // Same checks as above but using Default
         assert!(runtime.providers.read().unwrap().is_empty());
         assert!(runtime.default_provider.read().unwrap().is_none());
+    }
+
+    // ─── issue #1042: continuity_key substitui o escopo de sessao ──────────
+    //
+    // Antes destes testes nenhum caso passava `session_id: Some` **e**
+    // `continuity_key: Some` ao mesmo tempo, que e exatamente o que os tres
+    // call sites de producao fazem. O AND do store tornava a flag
+    // `shared_continuity` um no-op entre sessoes.
+
+    /// Grava na sessao A com a chave compartilhada e recupera na sessao B.
+    /// Com o AND (o comportamento anterior), a linha da sessao A ficava fora
+    /// do resultado porque `session_id = "sessao-b"` nunca casa com ela.
+    #[tokio::test]
+    async fn recall_com_continuity_key_atravessa_sessoes() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+
+        rt.remember_turn(
+            "sessao-a",
+            Some("bus:shared-global"),
+            None,
+            "o gato da Maria se chama Frajola",
+            "",
+        )
+        .await
+        .expect("remember_turn");
+
+        let achados = rt
+            .recall_context("gato", Some("sessao-b"), Some("bus:shared-global"), 10)
+            .await
+            .expect("recall_context");
+
+        assert!(
+            achados.iter().any(|m| m.content.contains("Frajola")),
+            "a memoria da sessao A nao atravessou para a sessao B: {achados:?}"
+        );
+    }
+
+    /// O irmao: sem chave de continuidade o escopo de sessao continua valendo,
+    /// e nada atravessa. E o que prova que a mudanca nao abriu a memoria de
+    /// todo mundo para todo mundo.
+    #[tokio::test]
+    async fn recall_sem_continuity_key_nao_atravessa_sessoes() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+
+        rt.remember_turn(
+            "sessao-a",
+            None,
+            None,
+            "o gato da Maria se chama Frajola",
+            "",
+        )
+        .await
+        .expect("remember_turn");
+
+        let achados = rt
+            .recall_context("gato", Some("sessao-b"), None, 10)
+            .await
+            .expect("recall_context");
+
+        assert!(
+            !achados.iter().any(|m| m.content.contains("Frajola")),
+            "sem continuity_key a memoria da sessao A vazou para a sessao B: {achados:?}"
+        );
+
+        // E na propria sessao A ela continua visivel.
+        let na_propria = rt
+            .recall_context("gato", Some("sessao-a"), None, 10)
+            .await
+            .expect("recall_context");
+        assert!(
+            na_propria.iter().any(|m| m.content.contains("Frajola")),
+            "a memoria sumiu da propria sessao que a gravou: {na_propria:?}"
+        );
+    }
+
+    /// Com a chave ligada, a memoria da **propria** sessao continua visivel —
+    /// ela tambem e gravada com a chave, entao trocar o escopo nao esconde
+    /// nada de quem esta conversando agora.
+    #[tokio::test]
+    async fn recall_com_continuity_key_ainda_ve_a_propria_sessao() {
+        let store = Arc::new(garraia_db::MemoryStore::in_memory_with_vectors().expect("store"));
+        let mut rt = AgentRuntime::new();
+        rt.set_memory_provider(store);
+
+        rt.remember_turn(
+            "sessao-a",
+            Some("bus:shared-global"),
+            None,
+            "o gato da Maria se chama Frajola",
+            "",
+        )
+        .await
+        .expect("remember_turn");
+
+        let achados = rt
+            .recall_context("gato", Some("sessao-a"), Some("bus:shared-global"), 10)
+            .await
+            .expect("recall_context");
+
+        assert!(
+            achados.iter().any(|m| m.content.contains("Frajola")),
+            "a memoria da propria sessao sumiu com a chave ligada: {achados:?}"
+        );
     }
 }
 
