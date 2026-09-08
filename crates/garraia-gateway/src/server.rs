@@ -14,8 +14,8 @@ use crate::admin;
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_mcp_tools,
-    build_slack_channels, build_telegram_channels, build_whatsapp_channels,
-    warn_if_embeddings_unhealthy,
+    build_openclaw_config, build_slack_channels, build_telegram_channels, build_whatsapp_channels,
+    spawn_openclaw_router, warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -649,7 +649,27 @@ impl GatewayServer {
         let health_cache = crate::health::new_health_cache();
         state.health_cache = Some(health_cache.clone());
 
+        // #1050: o bridge OpenClaw. `OpenClawClient::new` ja dispara o loop de
+        // conexao, entao construi-lo aqui e o que liga o canal; o `Receiver`
+        // fica para depois do `Arc`, porque o roteador precisa do estado
+        // compartilhado. Ate agora `state.openclaw_client` era `None`
+        // constante e as quatro rotas de `/api/openclaw/*` caiam todas no
+        // ramo "nao configurado".
+        let openclaw_rx = match build_openclaw_config(&state.config) {
+            Some(cfg) => {
+                let (client, rx) = garraia_channels::OpenClawClient::new(cfg.clone());
+                state.openclaw_client = Some(Arc::clone(&client));
+                state.openclaw_config = Some(cfg);
+                Some((client, rx))
+            }
+            None => None,
+        };
+
         let state = Arc::new(state);
+
+        if let Some((client, rx)) = openclaw_rx {
+            spawn_openclaw_router(Arc::clone(&state), client, rx);
+        }
 
         // `garra_status` reads the live `AppState` (provider, model, tools,
         // features, channels, session mode), so it can only exist once the
