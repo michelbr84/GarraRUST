@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Google Chat channel configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleChatConfig {
     /// Webhook URL for incoming messages (simple integration).
     pub webhook_url: Option<String>,
@@ -15,14 +15,4 @@ pub struct GoogleChatConfig {
     /// Populated at runtime after authentication.
     #[serde(skip)]
     pub service_account_token: String,
-}
-
-impl Default for GoogleChatConfig {
-    fn default() -> Self {
-        Self {
-            webhook_url: None,
-            service_account_key_path: None,
-            service_account_token: String::new(),
-        }
-    }
 }
