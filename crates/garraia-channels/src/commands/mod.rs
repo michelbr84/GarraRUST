@@ -54,6 +54,12 @@ pub struct CommandContext {
     pub user_role: Role,
     /// Shared application state (type-erased to avoid coupling to gateway).
     pub state: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The session the command acts on, when the caller already knows it.
+    ///
+    /// `POST /api/sessions/{id}/messages` has the id in the path; channels do
+    /// not, and leave this `None` so session-scoped commands (`/clear`,
+    /// `/mode`, `/goal`) resolve it from `chat_id` as they always did.
+    pub session_id: Option<String>,
 }
 
 // ─── Command result ─────────────────────────────────────────────────

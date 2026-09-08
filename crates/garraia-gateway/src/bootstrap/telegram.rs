@@ -419,9 +419,19 @@ fn handle_command(
         args,
         user_role: role,
         state: Some(Arc::clone(state) as Arc<dyn std::any::Any + Send + Sync>),
+        session_id: None,
     };
 
-    match state.command_registry.read().unwrap().dispatch(&ctx) {
+    // Handle first, lock gone, then run — `/help` reads the registry again
+    // (see `CommandRegistry::resolve`).
+    let cmd = state.command_registry.read().unwrap().resolve(full_text);
+    let result = match cmd {
+        Some(cmd) => garraia_channels::CommandRegistry::run(cmd.as_ref(), &ctx),
+        None => Ok(garraia_channels::CommandRegistry::unknown_command_reply(
+            garraia_channels::CommandRegistry::command_name(full_text),
+        )),
+    };
+    match result {
         Ok(response) => Ok(response),
         Err(garraia_channels::CommandError::Unauthorized(msg)) => Ok(format!("⛔ {msg}")),
         Err(garraia_channels::CommandError::InvalidArgs(msg)) => Ok(format!("❌ {msg}")),
