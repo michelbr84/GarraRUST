@@ -30,6 +30,7 @@ pub mod mobile_chat;
 pub mod oauth;
 pub mod observability;
 pub mod openai_api;
+pub mod openai_models;
 pub mod openclaw_handler;
 pub mod parrot_ws;
 pub mod path_validation;

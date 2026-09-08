@@ -450,44 +450,62 @@ async fn update_project_rejects_path_outside_allowed_roots() {
     assert_eq!(after["project"]["path"], good.to_str().unwrap());
 }
 
-/// `working_dir` **não** é uma superfície viva hoje, e este teste fixa isso.
+/// `working_dir` em `POST /api/sessions` passa pelo mesmo confinamento do
+/// `path` de projeto (#1028 — o campo era descartado pelo serde junto com o
+/// `mode`; o `create_session_with_project` que o aceitava nunca foi roteado).
 ///
-/// `POST /api/sessions` roteia para `api::create_session` (`router.rs:116-118`),
-/// cujo `CreateSessionRequest` tem só `agent_id` — o `working_dir` do corpo é
-/// descartado pelo serde e nunca vira diretório. O
-/// `projects_handler::create_session_with_project`, que aceita `working_dir`,
-/// é `pub` mas **não está roteado em lugar nenhum**.
-///
-/// Ele já foi endurecido junto com o resto (confina o `working_dir` antes de
-/// usá-lo), então rotear depois não reabre o buraco. Se alguém trocar a rota
-/// para ele, este teste passa a ver um 400 no lugar do 201 e é o sinal de
-/// reavaliar o que aqui está escrito.
+/// Fora das raízes é 400 com o **mesmo corpo** do `POST /api/projects`, sem
+/// sessão criada; e a resposta nunca ecoa um caminho não confinado.
 #[tokio::test]
 #[serial]
-async fn post_sessions_does_not_expose_working_dir_today() {
+async fn post_sessions_confines_working_dir() {
     let env = start_test_gateway().await;
     let base = &env.base;
     let client = reqwest::Client::new();
 
+    for fora in ["/etc", "../../etc", "/nao/existe/mesmo"] {
+        let resp = client
+            .post(format!("{base}/api/sessions"))
+            .json(&json!({ "working_dir": fora }))
+            .send()
+            .await
+            .expect("request should succeed");
+        assert_eq!(resp.status(), 400, "{fora}: fora das raizes tem de ser 400");
+        let body: serde_json::Value = resp.json().await.expect("valid JSON");
+        assert_eq!(
+            body["error"], "working_dir is not an allowed directory",
+            "{fora}: {body}"
+        );
+        assert!(
+            body.get("session_id").is_none(),
+            "400 nao pode devolver sessao: {body}"
+        );
+    }
+}
+
+/// O caminho feliz: diretório real sob a raiz permitida vira o `working_dir`
+/// da sessão, e a resposta ecoa o **canonicalizado** — é ele que as
+/// ferramentas de arquivo recebem como base dos caminhos relativos.
+#[tokio::test]
+#[serial]
+async fn post_sessions_accepts_working_dir_inside_the_allowed_root() {
+    let env = start_test_gateway().await;
+    let base = &env.base;
+    let client = reqwest::Client::new();
+
+    let good = env.root.join("workspace");
+    std::fs::create_dir_all(&good).expect("create dir");
+
     let resp = client
         .post(format!("{base}/api/sessions"))
-        .json(&json!({ "working_dir": "/etc" }))
+        .json(&json!({ "working_dir": good.to_str().unwrap() }))
         .send()
         .await
         .expect("request should succeed");
-
-    assert_eq!(
-        resp.status(),
-        201,
-        "a rota viva ignora working_dir; um 400 aqui significa que \
-         create_session_with_project foi roteado — reavalie o comentario acima"
-    );
-
+    assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().await.expect("valid JSON");
-    assert!(
-        body.get("working_dir").is_none_or(|v| v.is_null()),
-        "a resposta nao deve ecoar um working_dir nao confinado: {body}"
-    );
+    assert_eq!(body["working_dir"], good.to_str().unwrap(), "{body}");
+    assert!(body["session_id"].is_string(), "{body}");
 }
 
 /// O caminho feliz continua funcionando: diretório real sob a raiz permitida

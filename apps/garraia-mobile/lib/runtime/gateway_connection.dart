@@ -180,9 +180,11 @@ class GatewayConnection implements GarraConnection {
   }
 
   @override
-  Future<List<String>> slashCommands() async {
+  Future<List<SlashCommandInfo>> slashCommands() async {
     final r = await _dio.get<Object>('/api/slash-commands');
-    return unwrapNames(r.data, const ['commands']);
+    return unwrapList(r.data, const [
+      'commands',
+    ]).map(SlashCommandInfo.fromJson).toList();
   }
 
   // ── Providers / agents / files ───────────────────────────────────────────

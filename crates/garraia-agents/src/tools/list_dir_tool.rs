@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use garraia_common::Result;
 use std::path::{Path, PathBuf};
 
+use super::tool_context::{process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
 /// Maximum depth for directory traversal
@@ -210,11 +211,9 @@ impl Tool for ListDirTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
+        // Sem `path`, lista o diretorio da sessao — nunca o CWD do processo
+        // do gateway, que nao significa nada para quem esta no telefone.
         let path_str = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let depth = input
@@ -226,18 +225,33 @@ impl Tool for ListDirTool {
 
         let pattern = input.get("pattern").and_then(|v| v.as_str());
 
-        let path = PathBuf::from(path_str);
+        // O mesmo resolvedor do `file_read` (#923): `~` expandido, relativo
+        // juntado ao `working_dir` da sessao, `..` recusado. Auditoria do
+        // #1039: a tool ficou anos sem ser registrada, e quando entrou no
+        // runtime aceitava qualquer caminho cru do modelo.
+        let resolved = match resolve_tool_path(
+            path_str,
+            context.working_dir.as_deref(),
+            process_home_dir().as_deref(),
+        ) {
+            Ok(r) => r,
+            Err(e) => return Ok(ToolOutput::error(e.to_string())),
+        };
+        let path: PathBuf = resolved.path.clone();
 
         // Validate path exists
         if !path.exists() {
             return Ok(ToolOutput::error(format!(
                 "Directory not found: {}",
-                path_str
+                resolved.describe()
             )));
         }
 
         if !path.is_dir() {
-            return Ok(ToolOutput::error(format!("Not a directory: {}", path_str)));
+            return Ok(ToolOutput::error(format!(
+                "Not a directory: {}",
+                resolved.describe()
+            )));
         }
 
         let mut entries = Vec::new();
@@ -286,25 +300,67 @@ mod tests {
         assert!(glob_match("test*", "test_file"));
     }
 
-    #[tokio::test]
-    async fn test_list_dir_current() {
-        let tool = ListDirTool::new(None);
-        let ctx = ToolContext {
+    fn ctx(working_dir: Option<&str>) -> ToolContext {
+        ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
             is_confirmation_approved: false,
-            working_dir: None,
+            working_dir: working_dir.map(str::to_string),
             project_id: None,
-        };
+        }
+    }
+
+    /// `.` e o diretorio da sessao, e sem `path` o default e o mesmo.
+    #[tokio::test]
+    async fn test_list_dir_current() {
+        let tool = ListDirTool::new(None);
+        let ctx = ctx(Some(env!("CARGO_MANIFEST_DIR")));
 
         let output = tool
             .execute(&ctx, serde_json::json!({"path": ".", "depth": 1}))
             .await
             .expect("should not error");
+        assert!(!output.is_error, "{}", output.content);
+        assert!(output.content.contains("Cargo.toml"), "{}", output.content);
 
-        assert!(!output.is_error);
-        assert!(!output.content.is_empty());
+        let output = tool
+            .execute(&ctx, serde_json::json!({"depth": 1}))
+            .await
+            .expect("should not error");
+        assert!(!output.is_error, "{}", output.content);
+        assert!(output.content.contains("Cargo.toml"), "{}", output.content);
+    }
+
+    /// Relativo sem sessao resolve contra o CWD do processo, como o
+    /// `file_read` — e o erro diz isso, para o modelo saber pedir um caminho
+    /// absoluto em vez de tentar de novo.
+    #[tokio::test]
+    async fn test_list_dir_relative_without_session_dir_explains_itself() {
+        let tool = ListDirTool::new(None);
+        let output = tool
+            .execute(&ctx(None), serde_json::json!({"path": "nao_existe_xyz"}))
+            .await
+            .expect("should not error");
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            output.content.contains("não tem working_dir"),
+            "{}",
+            output.content
+        );
+    }
+
+    /// `..` nunca passa, com ou sem sessao.
+    #[tokio::test]
+    async fn test_list_dir_rejects_parent_dir() {
+        let tool = ListDirTool::new(None);
+        for wd in [Some(env!("CARGO_MANIFEST_DIR")), None] {
+            let output = tool
+                .execute(&ctx(wd), serde_json::json!({"path": "../.."}))
+                .await
+                .expect("should not error");
+            assert!(output.is_error, "{}", output.content);
+        }
     }
 
     #[tokio::test]

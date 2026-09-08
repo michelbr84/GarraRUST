@@ -63,7 +63,7 @@ pub use providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, ToolDefinition,
 };
-pub use runtime::AgentRuntime;
+pub use runtime::{AgentRuntime, resolve_provider_from_model};
 pub use tools::{
     BashTool, CodeReviewTool, EventTrigger, EventType, FileReadTool, FileWriteTool, ListDirTool,
     RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus,

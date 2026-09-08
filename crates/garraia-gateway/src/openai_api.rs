@@ -31,7 +31,7 @@ use crate::state::SharedState;
 pub fn build_openai_router(state: SharedState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/models", get(list_models))
+        .route("/v1/models", get(crate::openai_models::list_models))
         .with_state(state)
 }
 
@@ -457,9 +457,20 @@ pub async fn chat_completions(
 
     // GAR-184: Resolve slash commands (MCP prompts + /help).
     // /mode is excluded here — it is already handled by the `final_mode` logic above.
+    //
+    // Only `/help`, `/mode` and MCP prompts are handled on this path. The
+    // registry commands (`/clear`, `/model`, `/goal`, …) are dispatched by
+    // `POST /api/sessions/{id}/messages` (`api::dispatch_slash_command`),
+    // not by the OpenAI-compatible endpoint: a client that speaks this
+    // protocol expects the model to answer, and a `/clear` here reaches the
+    // model as text. Said here so nobody debugs it as a bug (#1040 review).
     if new_user_text.starts_with('/')
-        && let Some(resolved) =
-            crate::slash_commands::resolve(&new_user_text, state.mcp_manager_arc.as_ref()).await
+        && let Some(resolved) = crate::slash_commands::resolve(
+            &new_user_text,
+            crate::api::registry_commands_for_http(&state),
+            state.mcp_manager_arc.as_ref(),
+        )
+        .await
     {
         match resolved {
             crate::slash_commands::ResolvedCommand::McpPrompt(prompt_msgs) => {
@@ -968,46 +979,6 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
         None => info!("nenhum dono reivindicado ainda; requisicao gravada sem user_id"),
     }
     owner
-}
-
-/// GET /v1/models - List available models
-pub async fn list_models() -> Response<Body> {
-    Json(serde_json::json!({
-        "object": "list",
-        "data": [
-            {
-                "id": "gpt-4",
-                "object": "model",
-                "created": 1687882411,
-                "owned_by": "openai"
-            },
-            {
-                "id": "gpt-4-turbo",
-                "object": "model",
-                "created": 1704067200,
-                "owned_by": "openai"
-            },
-            {
-                "id": "gpt-3.5-turbo",
-                "object": "model",
-                "created": 1677649963,
-                "owned_by": "openai"
-            },
-            {
-                "id": "claude-3-opus",
-                "object": "model",
-                "created": 1709596800,
-                "owned_by": "anthropic"
-            },
-            {
-                "id": "claude-3-sonnet",
-                "object": "model",
-                "created": 1709596800,
-                "owned_by": "anthropic"
-            }
-        ]
-    }))
-    .into_response()
 }
 
 #[cfg(test)]

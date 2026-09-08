@@ -292,6 +292,23 @@ jobs:
           cargo clippy -p garraia-channels --features signal --all-targets -- -D warnings
           cargo test -p garraia-channels --features signal --lib
 
+      - name: Run clippy + tests (line)
+        # Mesmo buraco do `signal` acima: `pub mod line_channel` e
+        # `#[cfg(feature = "line")]` e a feature e OFF por default, entao nem
+        # o `--workspace` do step anterior nem o `cargo test --workspace` do
+        # job `test` compilam uma linha do canal LINE.
+        #
+        # Concreto: a verificacao de assinatura do webhook
+        # (`line_channel::signature`) e o unico ponto que impede forjar
+        # mensagem como se viesse do LINE, e os nove testes que a provam
+        # — vetor valido, formato Base64 travado contra troca por hex, corpo
+        # adulterado, segredo errado, header ausente/malformado/curto, segredo
+        # vazio e corpo vazio — so existem sob esta feature. Sem este step
+        # eles seriam decoracao, exatamente como o comentario do `signal` diz.
+        run: |
+          cargo clippy -p garraia-channels --features line --all-targets -- -D warnings
+          cargo test -p garraia-channels --features line --lib
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,

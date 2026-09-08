@@ -31,7 +31,7 @@ abstract interface class GarraConnection {
 
   // Skills / commands
   Future<List<SkillSummary>> skills();
-  Future<List<String>> slashCommands();
+  Future<List<SlashCommandInfo>> slashCommands();
 
   // Providers / agents / files
   Future<List<ProviderInfo>> providers();

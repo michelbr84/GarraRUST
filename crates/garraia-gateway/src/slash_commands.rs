@@ -4,7 +4,11 @@
 //!
 //! ## Sources
 //!
-//! - **Built-in** (`/help`): always available; lists all commands.
+//! - **Built-in**: the gateway's `CommandRegistry` (`commands.rs`, populated
+//!   at boot with `/help`, `/mode`, `/clear`, `/model`, ...). Until v0.4.1 this
+//!   module kept its own two-item table (`help`, `mode`) and
+//!   `GET /api/slash-commands` disagreed with `GET /api/capabilities` about
+//!   which commands existed; the registry is the single source now.
 //! - **MCP prompts**: discovered at runtime from connected MCP servers.
 //!   Each prompt exposed by an MCP server becomes an invocable slash command.
 //!
@@ -62,41 +66,28 @@ pub enum ResolvedCommand {
     McpPrompt(Vec<ChatMessage>),
 }
 
-// ── Built-in commands ─────────────────────────────────────────────────────────
-
-/// Built-in commands that are always available. `/mode` is excluded (handled elsewhere).
-const BUILT_INS: &[(&str, &str)] = &[("help", "List all available slash commands")];
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// List all available slash commands: built-ins + MCP prompts from connected servers.
+/// List all available slash commands: the registry's built-ins + MCP prompts
+/// from connected servers.
 ///
-/// Used by `GET /api/slash-commands` for client auto-complete.
-pub async fn list_commands(mcp: Option<&Arc<McpManager>>) -> Vec<SlashCommand> {
-    let mut commands: Vec<SlashCommand> = BUILT_INS
-        .iter()
-        .map(|(name, desc)| SlashCommand {
-            name: name.to_string(),
-            description: desc.to_string(),
+/// `built_ins` is `(name, description)` straight from
+/// `CommandRegistry::list_for_role` — the caller picks the role, because the
+/// list should match what that caller is allowed to dispatch. Used by
+/// `GET /api/slash-commands` for client auto-complete and by `/help`.
+pub async fn list_commands(
+    built_ins: Vec<(String, String)>,
+    mcp: Option<&Arc<McpManager>>,
+) -> Vec<SlashCommand> {
+    let mut commands: Vec<SlashCommand> = built_ins
+        .into_iter()
+        .map(|(name, description)| SlashCommand {
+            name,
+            description,
             source: CommandSource::BuiltIn,
             args: vec![],
         })
         .collect();
-
-    // Also expose /mode as a built-in (for discovery, even though processing is elsewhere)
-    commands.insert(
-        0,
-        SlashCommand {
-            name: "mode".to_string(),
-            description: "Set agent mode (e.g. /mode debug)".to_string(),
-            source: CommandSource::BuiltIn,
-            args: vec![ArgDef {
-                name: "mode".to_string(),
-                description: Some("Agent mode name".to_string()),
-                required: true,
-            }],
-        },
-    );
 
     if let Some(manager) = mcp {
         for (server, prompts) in manager.list_all_prompts().await {
@@ -130,7 +121,11 @@ pub async fn list_commands(mcp: Option<&Arc<McpManager>>) -> Vec<SlashCommand> {
 /// - The message does not start with `/`.
 /// - The command is `/mode` (handled by `openai_api.rs`).
 /// - The command is not recognized (pass through to LLM as plain text).
-pub async fn resolve(message: &str, mcp: Option<&Arc<McpManager>>) -> Option<ResolvedCommand> {
+pub async fn resolve(
+    message: &str,
+    built_ins: Vec<(String, String)>,
+    mcp: Option<&Arc<McpManager>>,
+) -> Option<ResolvedCommand> {
     if !message.starts_with('/') {
         return None;
     }
@@ -150,7 +145,7 @@ pub async fn resolve(message: &str, mcp: Option<&Arc<McpManager>>) -> Option<Res
 
     // /help — generate list of available commands
     if cmd_lower == "help" {
-        let all = list_commands(mcp).await;
+        let all = list_commands(built_ins, mcp).await;
         let text = format_help(&all);
         return Some(ResolvedCommand::McpPrompt(vec![ChatMessage {
             role: ChatRole::System,
@@ -257,4 +252,61 @@ fn format_help(commands: &[SlashCommand]) -> String {
         ));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn built_ins() -> Vec<(String, String)> {
+        vec![
+            ("clear".into(), "Clear current conversation history".into()),
+            ("help".into(), "Show available commands".into()),
+            ("mode".into(), "Get or set the agent mode".into()),
+        ]
+    }
+
+    /// A lista e a do registry, na ordem do registry, e nada e inventado
+    /// aqui — a tabela paralela de dois itens acabou.
+    #[tokio::test]
+    async fn built_ins_come_from_the_registry_only() {
+        let all = list_commands(built_ins(), None).await;
+        let names: Vec<&str> = all.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["clear", "help", "mode"]);
+        assert!(
+            all.iter()
+                .all(|c| matches!(c.source, CommandSource::BuiltIn)),
+            "sem MCP, tudo e built-in"
+        );
+        assert_eq!(all[0].description, "Clear current conversation history");
+    }
+
+    /// Registry vazio + sem MCP = lista vazia, sem `help` fantasma.
+    #[tokio::test]
+    async fn empty_registry_lists_nothing() {
+        assert!(list_commands(Vec::new(), None).await.is_empty());
+    }
+
+    /// `/help` no caminho OpenAI vira um prompt de sistema com todos os
+    /// comandos do registry, nao so os dois antigos.
+    #[tokio::test]
+    async fn help_lists_every_registry_command() {
+        let Some(ResolvedCommand::McpPrompt(msgs)) = resolve("/help", built_ins(), None).await
+        else {
+            panic!("/help resolve para um prompt");
+        };
+        let MessagePart::Text(text) = &msgs[0].content else {
+            panic!("texto");
+        };
+        for name in ["/clear", "/help", "/mode"] {
+            assert!(text.contains(name), "{name} ausente em {text}");
+        }
+    }
+
+    /// Comando desconhecido nao e capturado: passa para o modelo.
+    #[tokio::test]
+    async fn unknown_command_passes_through() {
+        assert!(resolve("/naoexiste", built_ins(), None).await.is_none());
+        assert!(resolve("hello", built_ins(), None).await.is_none());
+    }
 }

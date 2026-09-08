@@ -37,7 +37,7 @@ Emulador Android → PC hospedeiro: use `10.0.2.2:3888` como "Another Garra".
 
 ```bash
 flutter analyze          # zero issues e a regra do CI
-flutter test             # 15 testes: home (capabilities, estados), runtime store, settings, versao
+flutter test             # home (capabilities, estados), runtime store, settings, versao, sugestoes de /
 flutter build web --no-web-resources-cdn   # prova visual no navegador; nao e alvo de produto
 ```
 

@@ -10,7 +10,7 @@ use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
 
-use crate::state::SharedState;
+use crate::state::{AppState, SharedState};
 
 /// What the Web Console + future remote clients can rely on. Each list is
 /// computed live from the running gateway (`AgentRuntime`,
@@ -46,6 +46,22 @@ pub struct FeatureInputs {
     pub openclaw: bool,
     pub auth_v1: bool,
     pub memory: bool,
+}
+
+/// What the runtime has wired, read once from the live `AppState`.
+///
+/// Shared by the HTTP handler and by the agent's own `garra_status` tool, so
+/// the console and the model can never disagree about what this gateway can
+/// do — one reading, one truth.
+pub fn feature_inputs(state: &AppState) -> FeatureInputs {
+    FeatureInputs {
+        tts: state.voice_client.is_some(),
+        stt: state.stt_client.is_some(),
+        mcp: state.mcp_manager_arc.is_some(),
+        openclaw: state.openclaw_client.is_some(),
+        auth_v1: state.auth_provider.is_some(),
+        memory: state.agents.memory_provider().is_some(),
+    }
 }
 
 /// Feature flags advertised by `GET /api/capabilities`.
@@ -95,14 +111,7 @@ pub fn feature_flags(inputs: &FeatureInputs) -> Vec<String> {
 /// currently do. Renders the Dashboard "Arquitetura" card + drives the
 /// Skins page enumeration without hardcoded JS lists.
 pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<CapabilitiesResponse> {
-    let features = feature_flags(&FeatureInputs {
-        tts: state.voice_client.is_some(),
-        stt: state.stt_client.is_some(),
-        mcp: state.mcp_manager_arc.is_some(),
-        openclaw: state.openclaw_client.is_some(),
-        auth_v1: state.auth_provider.is_some(),
-        memory: state.agents.memory_provider().is_some(),
-    });
+    let features = feature_flags(&feature_inputs(&state));
 
     let mut providers: Vec<String> = state.agents.provider_ids().to_vec();
     providers.sort();
@@ -127,11 +136,14 @@ pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<Capa
         .map(|s| s.to_string())
         .collect();
 
-    let commands: Vec<String> = state
-        .command_registry
-        .read()
-        .map(|r| r.list().into_iter().map(|(n, _d)| n.to_string()).collect())
-        .unwrap_or_default();
+    // The same list `POST /api/sessions/{id}/messages` dispatches and
+    // `GET /api/slash-commands` advertises — one role, one truth. Listing
+    // owner commands here that the HTTP caller cannot run was the old kind
+    // of lie in a third place (review of #1040).
+    let commands: Vec<String> = crate::api::registry_commands_for_http(&state)
+        .into_iter()
+        .map(|(n, _d)| n)
+        .collect();
 
     // Plan 0117 lists four canonical skins. The Settings Registry (PR-8)
     // can later persist user-defined skins server-side.

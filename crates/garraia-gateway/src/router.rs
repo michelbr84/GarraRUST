@@ -202,7 +202,7 @@ pub fn build_router(
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(openai_api::chat_completions))
-        .route("/v1/models", get(openai_api::list_models))
+        .route("/v1/models", get(crate::openai_models::list_models))
         // Anthropic-compatible endpoints (plan 0361 / ADR 0014). Deliberately
         // does NOT register `/v1/models`: it is already registered just above,
         // and Axum panics at startup on a duplicate method+path.
@@ -1419,7 +1419,13 @@ async fn mcp_health(
 async fn list_slash_commands(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let commands = crate::slash_commands::list_commands(state.mcp_manager_arc.as_ref()).await;
+    // Mesma lista que `POST /api/sessions/{id}/messages` despacha: a do
+    // registry, no papel que o HTTP tem (`Role::User`). Antes vinha de uma
+    // tabela paralela de dois itens e o app mostrava `/help` e `/mode` como
+    // se fossem os unicos comandos da instalacao.
+    let built_ins = crate::api::registry_commands_for_http(&state);
+    let commands =
+        crate::slash_commands::list_commands(built_ins, state.mcp_manager_arc.as_ref()).await;
     axum::Json(serde_json::json!({ "commands": commands }))
 }
 

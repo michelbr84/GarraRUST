@@ -14,16 +14,151 @@ use crate::agent_router;
 use crate::rate_limiter::{TRUSTED_PROXIES_ENV, parse_trusted_proxies, real_client_ip};
 use crate::state::SharedState;
 
+/// The registry's `(name, description)` list as the HTTP surface sees it.
+///
+/// HTTP callers dispatch as [`garraia_channels::Role::User`] (see
+/// [`dispatch_slash_command`]), so discovery lists what that role can run —
+/// advertising `/pair` or `/config` to a caller that gets "permission denied"
+/// would be the old kind of lie in a new place. A poisoned lock yields an
+/// empty list rather than a panic on a read path.
+pub fn registry_commands_for_http(state: &SharedState) -> Vec<(String, String)> {
+    let Ok(registry) = state.command_registry.read() else {
+        return Vec::new();
+    };
+    registry
+        .list_for_role(garraia_channels::Role::User)
+        .into_iter()
+        .filter(|(n, _)| !HTTP_HIDDEN.contains(n))
+        .map(|(n, d)| (n.to_string(), d.to_string()))
+        .collect()
+}
+
+/// Registry commands that mean nothing over HTTP and are neither listed nor
+/// dispatched there.
+///
+/// `/start` is Telegram onboarding: on a fresh install it **claims the
+/// bot's owner** for whoever sends it first. Over HTTP the caller's id is a
+/// synthetic `api:<session>` that no channel will ever present, so a LAN
+/// request could take the owner slot and lock the real owner out — the
+/// blocker the security audit of #1040 found. The closure itself refuses
+/// callers with a `session_id` too; this list is the outer wall.
+const HTTP_HIDDEN: &[&str] = &["start"];
+
+/// What `/start` gets over HTTP instead of the registry.
+const START_OVER_HTTP: &str =
+    "/start is Telegram onboarding. Here you are already talking to Garra — just send a message.";
+
+/// A slash command the registry handled instead of the agent.
+pub struct SlashReply {
+    /// Command name without the `/`.
+    pub command: String,
+    /// User-facing text (a `CommandError` is rendered through its `Display`,
+    /// which is what the Telegram path shows too).
+    pub content: String,
+}
+
+/// Route a message that starts with `/` through the `CommandRegistry`.
+///
+/// Returns `None` when the text is not a registered command — including an
+/// unknown `/something` — so it falls through to the model exactly as
+/// before. Only a name the registry knows is intercepted, which is the
+/// contract that keeps this from changing behaviour for any existing client.
+///
+/// Why this exists: the registry is populated at boot (`server.rs`) with the
+/// full command set, and the only thing that ever called `dispatch` was the
+/// Telegram adapter. `/help` from the phone reached the model as plain text,
+/// and the model answered that "no slash commands are registered" — a
+/// hallucination the user could not tell from the truth.
+///
+/// Role is `User`: `/api/*` carries no identity beyond the session, and the
+/// owner/admin commands (`/pair`, `/users`, `/config`, `/mcp`, `/health`,
+/// `/providers`, `/stats`) answer with "permission denied" here. Elevating an
+/// HTTP caller is a separate decision tied to `gateway.api_key`.
+pub fn dispatch_slash_command(
+    state: &SharedState,
+    session_id: &str,
+    content: &str,
+) -> Option<SlashReply> {
+    let text = content.trim();
+    let name = text.strip_prefix('/')?.split_whitespace().next()?;
+    if name.is_empty() {
+        return None;
+    }
+
+    if HTTP_HIDDEN.contains(&name) {
+        return Some(SlashReply {
+            command: name.to_string(),
+            content: START_OVER_HTTP.to_string(),
+        });
+    }
+
+    // Take a handle and release the lock before running: `/help` reads the
+    // registry again, and a read held across a read is a deadlock the moment
+    // a writer queues up (see `CommandRegistry::resolve`).
+    let cmd = {
+        let Ok(registry) = state.command_registry.read() else {
+            return None;
+        };
+        registry.resolve(text)?
+    };
+
+    let args: Vec<String> = text
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect();
+    let ctx = garraia_channels::CommandContext {
+        user_id: format!("api:{session_id}"),
+        user_name: "api".to_string(),
+        chat_id: 0,
+        full_text: text.to_string(),
+        args,
+        user_role: garraia_channels::Role::User,
+        state: Some(std::sync::Arc::clone(state) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+        session_id: Some(session_id.to_string()),
+    };
+
+    let content = match garraia_channels::CommandRegistry::run(cmd.as_ref(), &ctx) {
+        Ok(reply) => reply,
+        Err(err) => err.to_string(),
+    };
+    Some(SlashReply {
+        command: name.to_string(),
+        content,
+    })
+}
+
 #[derive(Deserialize)]
 pub struct CreateSessionRequest {
     /// Optional named agent to use for this session.
     pub agent_id: Option<String>,
+    /// Modo do agente ja na criacao (`code`, `search`, um customizado...).
+    ///
+    /// Validado exatamente como no `POST /api/mode/select` e gravado antes
+    /// de a resposta sair (#1028). Antes o campo era descartado pelo serde:
+    /// 201, sessao sem politica nenhuma, e o cliente achando que restringiu.
+    pub mode: Option<String>,
+    /// Diretorio de trabalho da sessao: a base dos caminhos relativos que as
+    /// ferramentas de arquivo recebem (`resolve_tool_path`).
+    ///
+    /// Passa por `project_root::confine`, a mesma regra do `path` de projeto:
+    /// tem de ser um diretorio existente sob uma das raizes permitidas
+    /// (`GARRAIA_PROJECT_ROOTS`; padrao, o home). Era descartado pelo serde
+    /// como o `mode` — o `create_session_with_project` que o aceitava nunca
+    /// foi roteado (ver `docs/security/threat-model.md` §5.5).
+    pub working_dir: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct CreateSessionResponse {
     pub session_id: String,
     pub agent_id: Option<String>,
+    /// O modo gravado, na grafia canonica (`search`, `Auditor`); `null`
+    /// quando nao foi pedido.
+    pub mode: Option<String>,
+    /// O diretorio **confinado** (canonicalizado), que e o que a sessao usa —
+    /// nunca o cru do corpo; `null` quando nao foi pedido.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -65,13 +200,110 @@ pub async fn create_session(
     headers: HeaderMap,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
+    // #1028: o `mode` do corpo era engolido em silencio. Resolve-o ANTES de
+    // criar a sessao, para um 400 nao deixar sessao orfa, e recusa-se a
+    // fingir quando nao ha onde gravar: e o `session_store` que o executor
+    // consulta para aplicar a politica de ferramentas (#988), entao sem ele
+    // "modo aplicado" seria a mesma mentira de antes, so que com 201.
+    let mode = match body.mode.as_deref() {
+        None => None,
+        Some(pedido) => match resolver_nome_de_modo(&state, pedido).await {
+            Some(nome) => Some(nome),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "Invalid mode '{pedido}'. Use GET /api/modes to see available modes."
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+        },
+    };
+    // `working_dir` e a mesma superficie do `path` de projeto — string crua do
+    // corpo que vira diretorio de trabalho — e passa pelo mesmo confinamento.
+    // Um corpo de 400 so, para todas as variantes (nao existe, fora da raiz,
+    // symlink para fora), como no `POST /api/projects`: um erro por variante
+    // viraria oraculo de existencia de diretorio (threat-model §5.5).
+    let working_dir = match body
+        .working_dir
+        .as_deref()
+        .map(crate::project_root::confine)
+    {
+        Some(Ok(p)) => Some(p.to_string_lossy().into_owned()),
+        Some(Err(_)) => {
+            warn!(
+                working_dir = ?body.working_dir,
+                "recusado POST /api/sessions: working_dir fora das raizes permitidas"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "working_dir is not an allowed directory",
+                    "hint": format!(
+                        "o caminho precisa ser um diretorio existente sob uma das raizes \
+                         permitidas (padrao: o home do usuario; configuravel em {})",
+                        crate::project_root::ROOTS_ENV
+                    ),
+                })),
+            )
+                .into_response();
+        }
+        None => None,
+    };
+    let store_para_modo = match (&mode, &state.session_store) {
+        (None, _) => None,
+        (Some(_), Some(store)) => Some(std::sync::Arc::clone(store)),
+        (Some(_), None) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "mode cannot be applied: session store unavailable",
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let session_id = state.create_session();
 
     // If an agent_id was requested, tag it on the session metadata
-    if let Some(ref agent_id) = body.agent_id
-        && let Some(mut session) = state.sessions.get_mut(&session_id)
-    {
-        session.channel_id = Some(format!("api:{agent_id}"));
+    if let Some(mut session) = state.sessions.get_mut(&session_id) {
+        if let Some(ref agent_id) = body.agent_id {
+            session.channel_id = Some(format!("api:{agent_id}"));
+        }
+        if let Some(ref wd) = working_dir {
+            session.working_dir = Some(wd.clone());
+        }
+    }
+
+    if let (Some(nome), Some(store)) = (&mode, &store_para_modo) {
+        // `set_agent_mode` exige a linha da sessao no banco; o upsert cria-a
+        // com o mesmo `{}` que `hydrate_session_history` usaria depois — o
+        // metadado e mesclado, nao substituido, entao nada se perde.
+        let gravado = {
+            let store = store.lock().await;
+            store
+                .upsert_session(&session_id, "api", "anonymous", &serde_json::json!({}))
+                .and_then(|_| store.set_agent_mode(&session_id, nome))
+        };
+        if let Err(e) = gravado {
+            warn!(
+                session_id = %session_id,
+                erro = %e,
+                "falhou ao gravar o modo pedido na criacao da sessao"
+            );
+            // Sem a sessao meio-configurada: o cliente pediu um modo e nao
+            // o teve, entao nao recebe um id que pareca valido.
+            state.sessions.remove(&session_id);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to apply mode" })),
+            )
+                .into_response();
+        }
     }
 
     // GAR-202: Issue a session token and set cookie.
@@ -117,8 +349,11 @@ pub async fn create_session(
         Json(CreateSessionResponse {
             session_id,
             agent_id: body.agent_id,
+            mode,
+            working_dir,
         }),
     )
+        .into_response()
 }
 
 /// DELETE /api/sessions/:id — logout / revoke all tokens for a session.
@@ -164,6 +399,21 @@ pub async fn send_message(
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "session not found" })),
+        )
+            .into_response();
+    }
+
+    // Slash commands never reach the model. Not persisted into history either
+    // (same as Telegram): `/help` output is not conversation, and it would
+    // only pollute the context the next turn sends.
+    if let Some(reply) = dispatch_slash_command(&state, &session_id, &body.content) {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "session_id": session_id,
+                "content": reply.content,
+                "command": reply.command,
+            })),
         )
             .into_response();
     }
@@ -419,6 +669,27 @@ async fn nome_de_modo_customizado(state: &SharedState, pedido: &str) -> Option<S
         .map(|m| m.name.clone())
 }
 
+/// O nome que vai para o banco quando `pedido` e um modo valido.
+///
+/// Valida contra os nativos **e** os customizados (#986). Antes so
+/// `AgentMode::from_str` valia, entao um modo customizado criado pelo
+/// `POST /api/modes/custom` nao podia ser selecionado — o CRUD existia e
+/// desembocava em 400.
+///
+/// O nome nativo e minusculo por convencao; o customizado e o que o usuario
+/// escreveu, e nao pode ser achatado. A validacao tenta nativo primeiro, o que
+/// tambem impede um customizado chamado `code` de sequestrar o nativo.
+///
+/// E uma funcao so porque tem dois chamadores — `POST /api/mode/select` e,
+/// desde o #1028, `POST /api/sessions` — e duas copias da mesma regra e como
+/// elas passam a divergir.
+async fn resolver_nome_de_modo(state: &SharedState, pedido: &str) -> Option<String> {
+    if AgentMode::from_str(pedido).is_some() {
+        return Some(pedido.to_lowercase());
+    }
+    nome_de_modo_customizado(state, pedido).await
+}
+
 /// POST /api/mode/select — select mode for a session.
 /// Header: X-Session-Id (optional) - if not provided, uses a default session ID.
 pub async fn select_mode(
@@ -426,27 +697,7 @@ pub async fn select_mode(
     headers: HeaderMap,
     Json(body): Json<SelectModeRequest>,
 ) -> impl IntoResponse {
-    // Valida contra os nativos **e** os customizados (#986).
-    //
-    // Antes so `AgentMode::from_str` valia, entao um modo customizado criado
-    // pelo `POST /api/modes/custom` nao podia ser selecionado — o CRUD existia
-    // e desembocava em 400.
-    //
-    // O nome nativo e minusculo por convencao; o customizado e o que o usuario
-    // escreveu, e nao pode ser achatado. Por isso os dois nomes andam juntos:
-    // `mode_str` e o que vai para o banco, e a validacao tenta nativo primeiro.
-    let nativo = AgentMode::from_str(&body.mode);
-    let customizado = if nativo.is_none() {
-        nome_de_modo_customizado(&state, &body.mode).await
-    } else {
-        None
-    };
-    let mode_str = match (&nativo, &customizado) {
-        (Some(_), _) => body.mode.to_lowercase(),
-        (None, Some(nome)) => nome.clone(),
-        (None, None) => String::new(),
-    };
-    if mode_str.is_empty() {
+    let Some(mode_str) = resolver_nome_de_modo(&state, &body.mode).await else {
         let mode_str = body.mode.clone();
         return (
             StatusCode::BAD_REQUEST,
@@ -459,7 +710,7 @@ pub async fn select_mode(
                 ),
             })),
         );
-    }
+    };
 
     // Get session ID from X-Session-Id header or use default
     let session_id = headers
@@ -905,4 +1156,296 @@ pub async fn delete_custom_mode(
             message: "Session store not available".to_string(),
         })),
     )
+}
+
+#[cfg(test)]
+mod create_session_tests {
+    use std::sync::Arc;
+
+    use axum::extract::{ConnectInfo, State};
+    use axum::response::IntoResponse;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::AppConfig;
+    use garraia_db::SessionStore;
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::state::{AppState, CUSTOM_MODE_USER_ID};
+
+    fn state_sem_store() -> SharedState {
+        Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ))
+    }
+
+    fn state_com_store() -> SharedState {
+        let mut st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        st.session_store = Some(Arc::new(Mutex::new(
+            SessionStore::in_memory().expect("store em memoria"),
+        )));
+        Arc::new(st)
+    }
+
+    /// Chama o handler como o Axum chamaria e devolve (status, corpo JSON).
+    async fn post_sessions(
+        st: &SharedState,
+        corpo: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req: CreateSessionRequest = serde_json::from_value(corpo).expect("corpo valido");
+        let resp = create_session(
+            State(Arc::clone(st)),
+            ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))),
+            HeaderMap::new(),
+            Json(req),
+        )
+        .await
+        .into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("corpo da resposta");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("resposta em JSON"),
+        )
+    }
+
+    async fn modo_escolhido(st: &SharedState, session_id: &str) -> Option<String> {
+        let store = st.session_store.as_ref().expect("store");
+        let store = store.lock().await;
+        // `get_chosen_agent_mode` e o que liga a politica de ferramentas
+        // (#988) — e o que o #1028 viu nao acontecer.
+        store
+            .get_chosen_agent_mode(session_id)
+            .expect("ler o modo escolhido")
+    }
+
+    /// #1028: `{"mode": "search"}` gravava nada. Agora grava, na grafia
+    /// canonica, e e o modo **escolhido** — o que o executor consulta.
+    #[tokio::test]
+    async fn mode_nativo_e_gravado_na_criacao() {
+        let st = state_com_store();
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "Search" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert_eq!(corpo["mode"], "search");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert!(st.sessions.contains_key(id));
+        assert_eq!(modo_escolhido(&st, id).await.as_deref(), Some("search"));
+    }
+
+    #[tokio::test]
+    async fn mode_customizado_e_aceito_com_a_grafia_gravada() {
+        let st = state_com_store();
+        {
+            let store = st.session_store.as_ref().expect("store");
+            let store = store.lock().await;
+            store
+                .create_custom_mode(
+                    CUSTOM_MODE_USER_ID,
+                    "Auditor",
+                    None,
+                    "review",
+                    &serde_json::json!({}),
+                    None,
+                    &serde_json::json!({}),
+                )
+                .expect("criar modo customizado");
+        }
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "auditor" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert_eq!(corpo["mode"], "Auditor", "a grafia gravada, nao a digitada");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert_eq!(modo_escolhido(&st, id).await.as_deref(), Some("Auditor"));
+    }
+
+    /// Modo desconhecido e 400 **sem** sessao orfa — a validacao vem antes
+    /// do `create_session`, de proposito.
+    #[tokio::test]
+    async fn mode_desconhecido_da_400_e_nao_cria_sessao() {
+        let st = state_com_store();
+        for ruim in ["turbo", ""] {
+            let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": ruim })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{ruim:?}: {corpo}");
+            assert!(
+                corpo["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("GET /api/modes"),
+                "{corpo}"
+            );
+        }
+        assert!(st.sessions.is_empty(), "400 nao pode deixar sessao criada");
+    }
+
+    /// Sem `session_store` nao ha onde a politica ser lida depois; dizer 201
+    /// aqui seria repetir o bug com outra cara.
+    #[tokio::test]
+    async fn mode_sem_store_da_503_em_vez_de_fingir() {
+        let st = state_sem_store();
+        let (status, corpo) = post_sessions(&st, serde_json::json!({ "mode": "code" })).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{corpo}");
+        assert!(st.sessions.is_empty());
+    }
+
+    /// O contrato de quem nao manda `mode` nao muda: 201, `mode: null`, e
+    /// nenhum modo escolhido — nem mesmo uma linha no banco.
+    #[tokio::test]
+    async fn sem_mode_continua_como_antes() {
+        let st = state_com_store();
+        let (status, corpo) =
+            post_sessions(&st, serde_json::json!({ "agent_id": "reachy_voice" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        assert!(corpo["mode"].is_null());
+        assert!(corpo["working_dir"].is_null());
+        assert_eq!(corpo["agent_id"], "reachy_voice");
+        let id = corpo["session_id"].as_str().expect("session_id");
+        assert_eq!(modo_escolhido(&st, id).await, None);
+        assert_eq!(
+            st.sessions.get(id).and_then(|s| s.working_dir.clone()),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod slash_dispatch_tests {
+    use super::*;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::AppConfig;
+    use std::sync::Arc;
+
+    fn state_with_commands() -> SharedState {
+        let state = Arc::new(crate::state::AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+        crate::commands::register_commands(&mut state.command_registry.write().unwrap());
+        state
+    }
+
+    /// O que o telefone mandou: `/help` chega ao registry e volta a lista
+    /// real, nao uma negacao do modelo.
+    #[test]
+    fn help_is_answered_by_the_registry() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "/help").expect("comando registrado");
+        assert_eq!(reply.command, "help");
+        for name in ["/help", "/mode", "/clear", "/model"] {
+            assert!(
+                reply.content.contains(name),
+                "{name} ausente em {}",
+                reply.content
+            );
+        }
+        assert!(
+            !reply.content.contains("/pair"),
+            "comando de owner nao aparece para Role::User: {}",
+            reply.content
+        );
+    }
+
+    /// Nome desconhecido e texto comum passam para o modelo.
+    #[test]
+    fn unknown_or_plain_text_falls_through() {
+        let st = state_with_commands();
+        assert!(dispatch_slash_command(&st, "s1", "/naoexiste").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "hello /help").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "/").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "   ").is_none());
+    }
+
+    /// Comando de owner via HTTP: capturado (nao vai ao modelo) e negado com
+    /// a mensagem do registry.
+    #[test]
+    fn owner_commands_are_denied_not_forwarded() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "/pair").expect("capturado");
+        assert_eq!(reply.command, "pair");
+        assert!(
+            reply.content.contains("Permission denied"),
+            "{}",
+            reply.content
+        );
+    }
+
+    /// Espaco em volta e argumentos: o nome sai limpo e os args chegam.
+    #[test]
+    fn trims_and_splits_arguments() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "  /modes  ").expect("capturado");
+        assert_eq!(reply.command, "modes");
+    }
+
+    /// A lista de descoberta e a mesma que o dispatch aceita, no mesmo papel.
+    #[test]
+    fn discovery_matches_dispatch_role() {
+        let st = state_with_commands();
+        let names: Vec<String> = registry_commands_for_http(&st)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(names.iter().any(|n| n == "help"));
+        assert!(names.iter().any(|n| n == "mode"));
+        assert!(!names.iter().any(|n| n == "pair"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "config"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "start"), "{names:?}");
+    }
+
+    /// Bloqueador da auditoria do #1040: `/start` pelo HTTP nao pode virar
+    /// dono da allowlist do Telegram. Nem chega ao registry, e a allowlist
+    /// continua sem dono.
+    #[test]
+    fn start_over_http_never_claims_the_owner() {
+        let st = state_with_commands();
+        assert!(
+            st.allowlist.lock().unwrap().needs_owner(),
+            "instalacao nova: sem dono"
+        );
+        let reply = dispatch_slash_command(&st, "s1", "/start").expect("capturado");
+        assert_eq!(reply.command, "start");
+        assert!(reply.content.contains("Telegram"), "{}", reply.content);
+        let list = st.allowlist.lock().unwrap();
+        assert!(list.needs_owner(), "a allowlist ganhou dono pelo HTTP");
+        assert!(!list.is_owner("api:s1"));
+    }
+
+    /// `/model` recusa lixo (auditoria do #1040, S-2) e aceita nomes reais.
+    #[test]
+    fn model_name_is_validated() {
+        let st = state_with_commands();
+        let long = "x".repeat(129);
+        for junk in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "gpt-4o;id",
+            long.as_str(),
+        ] {
+            let bad =
+                dispatch_slash_command(&st, "s1", &format!("/model {junk}")).expect("capturado");
+            assert!(
+                bad.content.contains("model name"),
+                "{junk}: {}",
+                bad.content
+            );
+            assert!(st.channel_models.get("s1").is_none(), "{junk} foi aceito");
+        }
+        for good in ["openrouter/auto", "claude-3.5-sonnet", "llama3.1:8b"] {
+            let ok =
+                dispatch_slash_command(&st, "s1", &format!("/model {good}")).expect("capturado");
+            assert!(ok.content.contains(good), "{}", ok.content);
+            assert_eq!(
+                st.channel_models.get("s1").map(|m| m.clone()),
+                Some(good.to_string())
+            );
+        }
+    }
 }

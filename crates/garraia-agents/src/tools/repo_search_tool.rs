@@ -91,11 +91,7 @@ impl Tool for RepoSearchTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let query = input
             .get("query")
             .and_then(|v| v.as_str())
@@ -115,8 +111,14 @@ impl Tool for RepoSearchTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_CONTEXT_LINES as u64) as u32;
 
-        // Build and execute the search command
+        // Build and execute the search command. `.` abaixo e o CWD do
+        // processo — o diretorio da sessao, quando ha um, e o que o usuario
+        // quer dizer com "o repositorio" (auditoria do #1039: sem isto, um
+        // gateway lancado de dentro de um repo buscava nesse repo).
         let mut cmd = Command::new("rg");
+        if let Some(wd) = context.working_dir.as_deref() {
+            cmd.current_dir(wd);
+        }
         cmd.arg("--line-number")
             .arg("--no-heading")
             .arg("--color")
@@ -166,6 +168,9 @@ impl Tool for RepoSearchTool {
                 } else {
                     "grep"
                 });
+                if let Some(wd) = context.working_dir.as_deref() {
+                    grep_cmd.current_dir(wd);
+                }
 
                 if cfg!(target_os = "windows") {
                     grep_cmd.arg("/s").arg("/n").arg(query).arg("*.*");
@@ -218,6 +223,32 @@ mod tests {
         let schema = tool.input_schema();
         assert!(schema.get("properties").is_some());
         assert_eq!(schema["required"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    /// A busca acontece no diretorio da sessao, nao no CWD do gateway.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn searches_in_the_session_dir() {
+        let dir = std::env::temp_dir().join(format!("garra-repo-search-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        std::fs::write(dir.join("notas.txt"), "agulha_unica_xyz\n").expect("write");
+
+        let tool = RepoSearchTool::new(Some(10), None);
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+            is_confirmation_approved: false,
+            working_dir: Some(dir.to_string_lossy().into_owned()),
+            project_id: None,
+        };
+        let result = tool
+            .execute(&ctx, serde_json::json!({"query": "agulha_unica_xyz"}))
+            .await
+            .expect("executa");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("notas.txt"), "{}", result.content);
     }
 
     #[tokio::test]

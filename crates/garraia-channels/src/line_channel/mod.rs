@@ -4,6 +4,7 @@
 //! communicating via the LINE Messaging API webhooks and REST endpoints.
 
 pub mod config;
+pub mod signature;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::traits::{Channel, ChannelStatus};
 use garraia_common::{Error, Message, MessageContent, Result};
@@ -50,13 +51,24 @@ pub struct LineChannel {
 
 impl LineChannel {
     /// Create a new `LineChannel` from config and callback.
-    pub fn new(config: LineConfig, on_message: LineOnMessageFn) -> Self {
-        Self {
+    ///
+    /// Recusa a construcao quando `channel_secret` esta vazio (#1051): sem
+    /// segredo nao ha como verificar a assinatura do webhook, e um canal
+    /// que aceita qualquer POST nao deve existir nem por engano. E aqui,
+    /// e nao no bootstrap, porque assim nenhum wiring futuro consegue
+    /// pular a checagem — o compilador obriga a tratar o erro.
+    pub fn new(config: LineConfig, on_message: LineOnMessageFn) -> Result<Self> {
+        if config.channel_secret.trim().is_empty() {
+            return Err(Error::Channel(
+                "line: channel_secret e obrigatorio para verificar a assinatura do webhook".into(),
+            ));
+        }
+        Ok(Self {
             config,
             client: Client::new(),
             status: ChannelStatus::Disconnected,
             on_message,
-        }
+        })
     }
 
     /// Access the current config.
@@ -150,15 +162,34 @@ impl LineChannel {
         Ok(())
     }
 
-    /// Validate a webhook signature using HMAC-SHA256.
+    /// Verifica a assinatura de um webhook do LINE.
+    ///
+    /// `body` tem de ser o corpo cru da requisicao, byte a byte, lido
+    /// antes de qualquer parse de JSON — reserializar o valor ja
+    /// desserializado muda espacos e ordem de chaves e invalida a
+    /// assinatura.
+    ///
+    /// Devolve `Ok(())` quando confere. O motivo da recusa serve para
+    /// log; a resposta HTTP deve ser 403 em todos os casos, sem
+    /// distinguir qual deles ocorreu.
+    pub fn verify_webhook_signature(
+        &self,
+        body: &[u8],
+        signature: &str,
+    ) -> std::result::Result<(), signature::SignatureError> {
+        signature::verify_signature(&self.config.channel_secret, body, signature)
+    }
+
+    /// Versao booleana de [`Self::verify_webhook_signature`], para quem so
+    /// precisa decidir entre seguir e devolver 403.
     pub fn validate_signature(&self, body: &[u8], signature: &str) -> bool {
-        use std::io::Write;
-        // HMAC-SHA256 validation of LINE webhook signature.
-        // In production, use ring or hmac crate. Stub returns true for now.
-        let _ = (body, signature);
-        let _ = std::io::sink().write(b"");
-        // TODO: implement HMAC-SHA256 validation with ring
-        true
+        match self.verify_webhook_signature(body, signature) {
+            Ok(()) => true,
+            Err(reason) => {
+                warn!(%reason, "line: webhook com assinatura invalida recusado");
+                false
+            }
+        }
     }
 }
 
@@ -233,7 +264,7 @@ mod tests {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
         };
-        let channel = LineChannel::new(config, on_msg);
+        let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.channel_type(), "line");
         assert_eq!(channel.display_name(), "LINE");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
@@ -248,7 +279,7 @@ mod tests {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
         };
-        let channel = LineChannel::new(config, on_msg);
+        let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         let msg = Message::text(
             garraia_common::types::SessionId::from_string("test-session"),
             garraia_common::types::ChannelId::from_string("test-channel"),
@@ -269,8 +300,27 @@ mod tests {
             channel_access_token: "token".into(),
             channel_secret: "secret".into(),
         };
-        let channel = LineChannel::new(config, on_msg);
+        let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    /// #1051: sem `channel_secret` o canal nao existe. Um LineChannel
+    /// construido assim aceitaria qualquer POST forjado.
+    #[test]
+    fn sem_channel_secret_o_canal_nao_e_construido() {
+        let on_msg: LineOnMessageFn = Arc::new(|_reply, _uid, _user, _text, _delta_tx| {
+            Box::pin(async { Ok("test".to_string()) })
+        });
+        for vazio in ["", "   "] {
+            let config = LineConfig {
+                channel_access_token: "t".into(),
+                channel_secret: vazio.into(),
+            };
+            assert!(
+                LineChannel::new(config, on_msg.clone()).is_err(),
+                "channel_secret {vazio:?} deveria ser recusado"
+            );
+        }
     }
 
     #[test]
@@ -282,7 +332,7 @@ mod tests {
             channel_access_token: "t".into(),
             channel_secret: "s".into(),
         };
-        let channel = LineChannel::new(config, on_msg);
+        let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.display_name(), "LINE");
     }
 }

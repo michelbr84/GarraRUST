@@ -11,6 +11,7 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/mascot_widget.dart';
 import '../widgets/queue_status_indicator.dart';
 import '../widgets/scroll_to_bottom_button.dart';
+import '../widgets/slash_suggestions.dart';
 import '../widgets/typing_indicator.dart';
 import '../widgets/voice_input_widget.dart';
 
@@ -19,7 +20,10 @@ class ChatScreen extends ConsumerStatefulWidget {
   /// the persisted current session.
   final String? sessionId;
 
-  const ChatScreen({super.key, this.sessionId});
+  /// Text to start the input with (`/chat?draft=/help `), from Skills.
+  final String? initialDraft;
+
+  const ChatScreen({super.key, this.sessionId, this.initialDraft});
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -38,10 +42,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollCtrl.addListener(_onScroll);
+    final draft = widget.initialDraft;
+    if (draft != null && draft.isNotEmpty) {
+      _inputCtrl.value = TextEditingValue(
+        text: draft,
+        selection: TextSelection.collapsed(offset: draft.length),
+      );
+    }
     final id = widget.sessionId;
     if (id != null && id.isNotEmpty) {
       Future.microtask(
         () => ref.read(currentSessionProvider.notifier).select(id),
+      );
+    }
+  }
+
+  @override
+  void didUpdateWidget(ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // `/chat?draft=a` then `/chat?draft=b` reuses this State: without this,
+    // the second draft was dropped on the floor (review of #1040).
+    final draft = widget.initialDraft;
+    if (draft != null && draft.isNotEmpty && draft != oldWidget.initialDraft) {
+      _inputCtrl.value = TextEditingValue(
+        text: draft,
+        selection: TextSelection.collapsed(offset: draft.length),
       );
     }
   }
@@ -291,6 +316,7 @@ class _InputBar extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           const Divider(height: 1),
+          SlashSuggestions(controller: controller),
           if (showVoiceInput)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),

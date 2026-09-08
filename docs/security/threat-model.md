@@ -213,12 +213,17 @@ o GET.
 | **I** Information disclosure | Resposta distingue "não existe" de "fora das raízes", virando oráculo de existência de diretório. | 400 com corpo idêntico para todas as variantes de erro, como o 401 byte-idêntico de `/v1/auth/login`. | — |
 | **T** Tampering | Symlink dentro da raiz apontando para fora, criado entre o registro e a leitura (TOCTOU). | `canonicalize` resolve o symlink, e a re-validação em `list_project_files` roda no momento da leitura. | Janela residual entre o `canonicalize` e o `read_dir` é inerente ao filesystem; reduzida, não eliminada. |
 
-**Nota sobre `working_dir`**: `projects_handler::create_session_with_project`
-aceita um `working_dir` e foi endurecido junto, mas **não está roteado** —
-`POST /api/sessions` vai para `api::create_session`, cujo `CreateSessionRequest`
-só tem `agent_id`, então o campo é descartado pelo serde. Não era superfície
-viva; o guard existe para o dia em que a rota mudar, e
-`post_sessions_does_not_expose_working_dir_today` fixa esse estado.
+**Nota sobre `working_dir`**: desde o #1028, `POST /api/sessions`
+(`api::create_session`) aceita `working_dir` e o passa por
+`project_root::confine` **antes** de criar a sessão — fora das raízes é 400 com
+um corpo só para todas as variantes (não existe, fora da raiz, symlink para
+fora), como no `POST /api/projects`, sem sessão órfã, e a resposta ecoa só o
+caminho canonicalizado. Antes o campo era descartado pelo serde (a rota viva só
+conhecia `agent_id`); o `projects_handler::create_session_with_project`, que já
+o confinava, segue **não roteado**. Guards:
+`post_sessions_confines_working_dir` e
+`post_sessions_accepts_working_dir_inside_the_allowed_root` em
+`tests/projects_test.rs`.
 
 ## 5.75. Saída de ferramenta escrita no terminal (#995)
 
