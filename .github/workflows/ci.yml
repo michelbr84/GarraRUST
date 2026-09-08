@@ -5,6 +5,13 @@ on:
     branches: [main, develop, master]
   pull_request:
     branches: [main, develop, master]
+  # Merge queue: os 4 checks obrigatorios (Format Check, Clippy Linting,
+  # Test (ubuntu-latest), Test (windows-latest)) vivem todos neste workflow,
+  # entao ele precisa rodar tambem no ref temporario que a fila cria
+  # (refs/heads/gh-readonly-queue/main/...). Sem este trigger a fila espera
+  # para sempre por checks que nunca sao reportados.
+  merge_group:
+    branches: [main]
 
 # Cancel superseded in-flight runs on the same PR to avoid empilhar FAILUREs
 # em Dependabot rebases e PRs que serão fechados (ex.: #289/#286/#291 hoje
